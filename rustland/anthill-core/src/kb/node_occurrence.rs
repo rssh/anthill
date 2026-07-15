@@ -303,7 +303,7 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
         Expr::ConstructRequirement { requirements, .. } => {
             for r in std::mem::take(requirements) { stack.push(r); }
         }
-        Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
+        Expr::Const(_) | Expr::Spliced(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
     }
 }
@@ -781,6 +781,14 @@ pub enum Expr {
     // ── Leaves ──────────────────────────────────────────────────────
     Var(Var),
     Const(Literal),
+    /// WI-714 (proposal 052) — a pre-built `Value` spliced into the occurrence
+    /// tree by a compile-time macro (`guarded_of`). Evaluates to the carried
+    /// value verbatim: the Value-carrier generalization of `Const(Literal)`,
+    /// letting a macro hand a computed value (a `LogicalQuery` goal recipe) to a
+    /// runtime builtin (`where_run`) without a hash-consed round-trip. A leaf —
+    /// no occurrence children — and structurally `Opaque` in `TermView` (a
+    /// pre-evaluated node, like the native carriers `Relation`/`Stream`).
+    Spliced(Value),
     Ref(Symbol),
     Ident(Symbol),
     Bottom,
@@ -1056,7 +1064,7 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
         Expr::ConstructRequirement { requirements, .. } => {
             for r in requirements.iter() { f(r); }
         }
-        Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
+        Expr::Const(_) | Expr::Spliced(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
     }
 }

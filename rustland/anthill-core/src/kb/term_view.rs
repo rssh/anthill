@@ -330,6 +330,12 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             functor_view_head(kb, *name, pos_args.len(), named_args.len())
         }
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
+        // WI-714: a `Spliced` occurrence carries a structured `Value` (which
+        // itself implements `TermView`) — present the value's head, never
+        // `Opaque`. This is the mirror of the `Value::Node(occ) => occ_head(occ)`
+        // delegation below: a value carrying an occurrence views through to the
+        // occurrence, so an occurrence carrying a value views through to the value.
+        Some(Expr::Spliced(v)) => v.head(kb),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
         // A `let` / lambda / op-param binder reference reads as its reflect term
@@ -1221,32 +1227,60 @@ impl TermView for Value {
 /// no `Value::Node` wrap/unwrap between match and rebuild on each iteration.
 /// (`Value::Node` still appears *inside* the substitution as a bound child,
 /// which is intrinsic and a single `Rc` bump.) Reuses the `occ_*` helpers.
+/// WI-714: if `occ` is a `Spliced(value)` leaf, the carried `Value` — which
+/// itself implements [`TermView`] — is the structural view. The occurrence-child
+/// helpers (`occ_pos_child`, …) return *occurrence* children, and a `Spliced`
+/// leaf has none, so the occurrence `TermView` impl delegates to the value here
+/// (the head delegates in `occ_head`). Symmetric to `Value::Node`'s delegation
+/// to its occurrence — the two carriers view through to whatever they carry.
+fn spliced_value(occ: &NodeOccurrence) -> Option<&Value> {
+    match occ.as_expr() {
+        Some(Expr::Spliced(v)) => Some(v),
+        _ => None,
+    }
+}
+
 impl TermView for Rc<NodeOccurrence> {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         occ_head(self, kb)
     }
 
     fn pos_arg<'a>(&'a self, kb: &'a KnowledgeBase, i: usize) -> Option<ViewItem<'a>> {
+        if let Some(v) = spliced_value(self) {
+            return v.pos_arg(kb, i);
+        }
         occ_pos_child(self, kb, i).map(ViewItem::Node)
     }
 
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+        if let Some(v) = spliced_value(self) {
+            return v.named_arg(kb, sym);
+        }
         occ_type_named(self, kb, sym)
             .or_else(|| occ_named_child(self, kb, sym).map(ViewItem::Node))
     }
 
     fn named_keys(&self, kb: &KnowledgeBase) -> Vec<Symbol> {
+        if let Some(v) = spliced_value(self) {
+            return v.named_keys(kb);
+        }
         occ_named_keys(self, kb)
     }
 
     fn as_bind_value(&self) -> BindValue {
+        if let Some(v) = spliced_value(self) {
+            return v.as_bind_value();
+        }
         BindValue::Value(Value::Node(Rc::clone(self)))
     }
 
     /// Override the `Global`-only default: an occurrence keys a stored-pattern
     /// var of any kind (Global / Rigid / DeBruijn) as a var-edge, like the
     /// `TermId` carrier (WI-373).
-    fn index_var(&self, _kb: &KnowledgeBase) -> Option<Var> {
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        if let Some(v) = spliced_value(self) {
+            return v.index_var(kb);
+        }
         occ_index_var(self)
     }
 }

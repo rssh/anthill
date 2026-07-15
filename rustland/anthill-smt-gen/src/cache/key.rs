@@ -192,6 +192,8 @@ fn hash_occurrence(
         Expr::Var(Var::DeBruijn(idx)) => { h.update(b"v"); h.update(idx.to_le_bytes()); }
         Expr::Var(other) => { h.update(b"v?"); h.update(format!("{other:?}").as_bytes()); }
         Expr::Const(lit) => { h.update(b"k"); h.update(format!("{lit:?}").as_bytes()); }
+        // WI-714: a macro-spliced pre-built value — hash its debug form (leaf).
+        Expr::Spliced(v) => { h.update(b"sp"); h.update(format!("{v:?}").as_bytes()); }
         Expr::RequirementAtSort { slot, .. } => { h.update(b"R"); h.update(slot.to_le_bytes()); }
         // Child-bearing control-flow / collection forms: a discriminant tag is
         // enough — the children are hashed by the recursion below.

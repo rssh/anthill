@@ -2339,6 +2339,12 @@ fn lower_node(
             message: "post-elaboration / higher-order Expr variant not \
                       supported by cpp-gen profile yet".into(),
         }),
+        // WI-714: a macro-spliced value (a relational-algebra goal recipe) — the
+        // design end-state is to emit the recipe as plain data, not yet built.
+        Expr::Spliced(_) => Err(CppCodegenError {
+            message: "WI-714: macro-spliced relational recipe not yet emitted by \
+                      cpp-gen (splice-as-data is the codegen end-state)".into(),
+        }),
         Expr::Var(v) => {
             let name_sym = match v {
                 anthill_core::kb::term::Var::Global(vid) => vid.name(),

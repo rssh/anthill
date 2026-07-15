@@ -151,6 +151,8 @@ impl Interpreter {
                 let v = self.literal_to_value(lit.clone())?;
                 Ok(StepOutcome::Deliver(v))
             }
+            // WI-714: a macro-spliced pre-built value evaluates to itself verbatim.
+            Expr::Spliced(v) => Ok(StepOutcome::Deliver(v.clone())),
             Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym, occ),
             Expr::VarRef { name } => self.reduce_var(*name, occ),
             Expr::If { condition, then_branch, else_branch } => {

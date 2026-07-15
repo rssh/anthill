@@ -297,7 +297,7 @@ fn reduce(
         Expr::Ref(s) | Expr::Ident(s) => Some(subst_leaf(env, *s, occ)),
         Expr::VarRef { name } => Some(subst_leaf(env, *name, occ)),
         // Non-Global vars never name a body parameter (bodies carry Global, WI-487).
-        Expr::Var(_) | Expr::Const(_) | Expr::Bottom => Some(Rc::clone(occ)),
+        Expr::Var(_) | Expr::Const(_) | Expr::Spliced(_) | Expr::Bottom => Some(Rc::clone(occ)),
 
         // ── match: reduce when the scrutinee's shape is statically known ──
         Expr::Match { scrutinee, branches } => reduce_match(kb, occ, scrutinee, branches, env, pass),

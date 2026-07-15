@@ -198,6 +198,24 @@ impl Value {
         Value::Term { id }
     }
 
+    /// WI-714 — the normalizing constructor for the `Value::Node` carrier. A
+    /// carrier must not redundantly wrap another, so an occurrence that already
+    /// IS a value-carrier collapses instead of nesting: `node(Spliced(v)) = v`
+    /// (a value wrapped in a node wrapped in a value is just the value), and
+    /// `node(Var(x)) = Value::Var(x)` (a bare variable occurrence is a value-level
+    /// variable). The carrier algebra then cancels — `Spliced(Node(occ))` and
+    /// `node(Spliced(v))` undo each other — so no view or walker ever meets a
+    /// doubly-wrapped carrier. Prefer this over a raw `Value::Node(occ)`.
+    pub fn node(occ: Rc<NodeOccurrence>) -> Value {
+        use crate::kb::node_occurrence::Expr;
+        match occ.as_expr() {
+            Some(Expr::Spliced(v)) => return v.clone(),
+            Some(Expr::Var(var)) => return Value::Var(*var),
+            _ => {}
+        }
+        Value::Node(occ)
+    }
+
     /// Scalar-leaf equality. Tuples / Entities / Closures / Streams
     /// compare as unequal here. For shape-aware, CARRIER-AGNOSTIC structural
     /// compare on any two `Value`s — including the cross-carrier `Value::Term`

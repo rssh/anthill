@@ -4436,6 +4436,17 @@ fn visit_type(
         // values; they never appear in surface source. If one shows up,
         // it's a post-elaboration form being re-typed.
         Expr::Const(_) => results.push(Err(TypeError::BottomExpr { span: occ_span })),
+        // WI-714: a macro-spliced value's type belongs to its BUILDER, not the
+        // typer — only `guarded_of` (which constructs the recipe) knows it. Read
+        // the type the constructor stamped (`set_inferred_type`, carrier-neutral);
+        // else adopt the context's expected type; else we genuinely don't know it
+        // → loud error, never a fabricated one.
+        Expr::Spliced(_) => match occ.inferred_type().or_else(|| expected.clone()) {
+            Some(ty) => {
+                results.push(Ok(TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))))
+            }
+            None => results.push(Err(TypeError::BottomExpr { span: occ_span })),
+        },
         Expr::Ref(sym) => {
             let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ, expected.as_ref());
             results.push(r);

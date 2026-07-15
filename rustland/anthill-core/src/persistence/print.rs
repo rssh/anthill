@@ -276,6 +276,10 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(self.view.sym_name(vid.name()));
             }
             Expr::Const(lit) => self.write_literal(lit, buf),
+            // WI-714: a macro-spliced pre-built value has no surface syntax — it
+            // only appears in a post-expansion op body, never in round-tripped
+            // source. Render an opaque marker.
+            Expr::Spliced(_) => buf.push_str("<spliced>"),
             Expr::Ref(sym) | Expr::Ident(sym) | Expr::VarRef { name: sym } => {
                 buf.push_str(self.view.sym_name(*sym));
             }

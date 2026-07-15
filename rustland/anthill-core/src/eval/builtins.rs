@@ -1152,9 +1152,22 @@ fn rename_query_vars(
             Ok(Value::Entity { functor: *functor, pos: pos2.into(), named: named2.into() })
         }
         Value::Term { id } => Ok(Value::term(kb.apply_subst(*id, sigma))),
-        Value::Node(_) | Value::Var(_) => Err(EvalError::Internal(format!(
-            "Relation.union: cannot align variables — unexpected {} carrier in a \
-             relation query",
+        // A carrier-neutral logic-variable leaf (`Value::Var`, WI-714/WI-348):
+        // resolve it through σ — the placeholder→column alignment `where_run` (and
+        // `union`) builds — instead of rejecting it. A `Global` column var maps to
+        // its σ-image (`resolve_as_value`); a var σ does not bind, or a
+        // `DeBruijn`/`Rigid` (no query σ touches those), rides through unchanged.
+        // This is what makes `rename_query_vars` genuinely carrier-neutral rather
+        // than assuming a var only ever rides interned inside a `Value::Term`.
+        Value::Var(crate::kb::term::Var::Global(vid)) => Ok(match sigma.resolve_as_value(*vid) {
+            Some(bound) => bound.clone(),
+            None => v.clone(),
+        }),
+        Value::Var(_) => Ok(v.clone()),
+        // A `Value::Node` occurrence never appears in an eval-built query; if one
+        // does, surface it loudly rather than silently cloning a var that must align.
+        Value::Node(_) => Err(EvalError::Internal(format!(
+            "relation query alignment: unexpected {} carrier in a relation query",
             v.type_name()
         ))),
         _ => Ok(v.clone()),
