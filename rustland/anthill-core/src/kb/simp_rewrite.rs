@@ -523,10 +523,90 @@ pub(super) fn try_fire(
             if subst.is_contradiction() {
                 continue;
             }
-            return Some(substitute_to_occurrence(kb, rhs, &subst, occ, pass));
+            let template = substitute_to_occurrence(kb, rhs, &subst, occ, pass);
+            // WI-722 (043.1): if the substituted RHS is headed by a compile-time
+            // MACRO (a syntax→syntax op — every param + result an occurrence,
+            // §3.1), evaluate it over its argument occurrences and splice the
+            // occurrence it returns, instead of leaving the template call. The
+            // typer's `push_visit` continuation re-types the spliced subtree.
+            if let Some(expanded) = try_expand_macro(kb, &template) {
+                return Some(expanded);
+            }
+            return Some(template);
         }
     }
     None
+}
+
+/// WI-722 (proposal 043.1) — if `template` (the just-substituted `[simp]` RHS) is
+/// headed by a compile-time MACRO, evaluate it and return the occurrence it
+/// produces; else `None` (the caller keeps the template unchanged).
+///
+/// A macro is an occurrence→occurrence op ([`super::typing::is_macro`]).
+/// [`substitute_to_occurrence`] has already reused each matched pattern-var CHILD
+/// OCCURRENCE in place, so the template `m(?a, ?b)` is `apply(m, [<occ a>, <occ
+/// b>])` with the REAL argument occurrences. We bind the macro's params to those
+/// occurrences as `Value::Node` — NOT materialized: the flatten in
+/// `bridge_op_to_eval` is deliberately skipped (it would lower a lambda-body
+/// argument to `Bottom`), so occurrence structure survives — and run the body
+/// through the WI-625 scratch interpreter, which now also carries the occurrence
+/// build builtins (`make_apply`, …). The body returns a `Value::Node`, spliced.
+///
+/// A macro that fails to produce an occurrence (a non-`Node` return, an eval
+/// error, or the re-entry cap) yields `None`: the template call is kept, and its
+/// downstream type-check surfaces the failure loudly at the redex — never a
+/// silently-wrong rewrite.
+fn try_expand_macro(
+    kb: &mut KnowledgeBase,
+    template: &Rc<NodeOccurrence>,
+) -> Option<Rc<NodeOccurrence>> {
+    // Read the head cheaply and gate on `is_macro` BEFORE building the argument
+    // vector: `try_expand_macro` runs on EVERY fired `[simp]` rewrite, and the gate
+    // is false for all but a macro head, so the common path allocates nothing. The
+    // head must be a positional `apply` — a macro is called on the matched
+    // pattern-var occurrences; named / type args are not part of the Inc-1 surface,
+    // so a macro carrying those declines to expand and stays a template.
+    let Some(Expr::Apply { functor, pos_args, named_args, type_args }) = template.as_expr() else {
+        return None;
+    };
+    let functor = *functor;
+    if !named_args.is_empty() || !type_args.is_empty() || !super::typing::is_macro(kb, functor) {
+        return None;
+    }
+    // Bind the macro's params to the argument occurrences as `Value::Node` — NOT
+    // materialized: the flatten in `bridge_op_to_eval` is deliberately skipped (it
+    // would lower a lambda-body argument to `Bottom`), so occurrence structure
+    // survives. Run the body through the WI-625 scratch interpreter, which now also
+    // carries the occurrence build builtins (`make_apply`, …). `None` = re-entry
+    // cap hit (`run_in_bridge_interp` mem::takes the KB and reclaims it).
+    let node_args: Vec<Value> = pos_args.iter().map(|o| Value::Node(Rc::clone(o))).collect();
+    let outcome = kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args))?;
+    match outcome {
+        // The body returned a spliceable occurrence — the rewrite result.
+        Ok(Value::Node(result)) => Some(result),
+        // A macro's declared return is `NodeOccurrence`, so a non-`Node` value is a
+        // type/evaluator invariant break — loud in debug, decline in release.
+        Ok(other) => {
+            debug_assert!(
+                false,
+                "WI-722: macro `{}` returned a non-occurrence value: {other:?}",
+                kb.qualified_name_of(functor),
+            );
+            None
+        }
+        // A macro that fails to produce an occurrence declines: the template call is
+        // kept, and its downstream type-check surfaces the failure loudly at the
+        // redex. A `Suspended` flounder / runtime-domain error residualizes quietly;
+        // an `Internal` evaluator bug is asserted loudly, mirroring `bridge_op_to_eval`.
+        Err(e) => {
+            debug_assert!(
+                !matches!(e, crate::eval::EvalError::Internal(_)),
+                "WI-722: internal evaluator error expanding macro `{}`: {e}",
+                kb.qualified_name_of(functor),
+            );
+            None
+        }
+    }
 }
 
 /// The functor of an equation's LHS, read from the *stored* head (no

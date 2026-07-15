@@ -120,6 +120,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.as_term", as_term)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
+    // WI-722 (043.1) — the occurrence-BUILD side of a compile-time macro. A
+    // per-shape occurrence builder returning a spliceable `NodeOccurrence` (not a
+    // `Term`, as `make_fn` does). Available wherever eval runs; a macro is the
+    // only caller (at compile time, via the `[simp]` fire hook).
+    register_if_present(interp, "anthill.reflect.make_apply", reflect_make_apply)?;
     register_if_present(interp, "anthill.reflect.is_modifiable", reflect_is_modifiable)?;
     register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
     register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
@@ -1799,6 +1804,66 @@ fn reflect_fresh_var(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     Ok(Value::term(tid))
 }
 
+/// Walk a reflect cons-list `Value` into a `Vec`, applying `extract` to each
+/// element. Cons cells come in two shapes: `build_list_value` (Rust-side) emits
+/// named `head`/`tail` keys; anthill-source `cons(h, t)` emits positional args —
+/// try named first, fall back to positional. Field-name comparison stays
+/// string-based (the loader may qualify field symbols; the canonical short name
+/// is `head`/`tail`). A non-cons/nil cell or a malformed cons is a LOUD error,
+/// never a silently-dropped element. `ctx` prefixes the internal-error messages;
+/// `list_type` names the expected element list for the non-list `type_mismatch`.
+/// Shared by `make_fn` (element → `TermId`) and `make_apply` (element → occurrence).
+fn reflect_cons_to_vec<T>(
+    interp: &Interpreter,
+    list: Value,
+    ctx: &str,
+    list_type: &'static str,
+    mut extract: impl FnMut(Value) -> Result<T, EvalError>,
+) -> Result<Vec<T>, EvalError> {
+    let cons_sym = interp.reflect.cons;
+    let nil_sym = interp.reflect.nil;
+    let mut out: Vec<T> = Vec::new();
+    let mut cursor = list;
+    loop {
+        match cursor {
+            Value::Entity { functor, pos, named, .. } => {
+                if Some(functor) == nil_sym {
+                    break;
+                }
+                if Some(functor) != cons_sym {
+                    let n = interp.kb.resolve_sym(functor);
+                    return Err(EvalError::Internal(format!("{ctx}: expected cons/nil, got {n}")));
+                }
+                let (head, tail) = if !named.is_empty() {
+                    let h = named
+                        .iter()
+                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "head")
+                        .map(|(_, v)| v.clone())
+                        .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing head field")))?;
+                    let t = named
+                        .iter()
+                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "tail")
+                        .map(|(_, v)| v.clone())
+                        .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing tail field")))?;
+                    (h, t)
+                } else if pos.len() >= 2 {
+                    (pos[0].clone(), pos[1].clone())
+                } else {
+                    return Err(EvalError::Internal(format!(
+                        "{ctx}: cons cell shape unrecognized (pos={}, named={})",
+                        pos.len(),
+                        named.len(),
+                    )));
+                };
+                out.push(extract(head)?);
+                cursor = tail;
+            }
+            other => return Err(type_mismatch(list_type, &other, None)),
+        }
+    }
+    Ok(out)
+}
+
 /// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
 /// Build a `Term::Fn { functor, pos_args, named_args = [] }` whose functor
 /// is resolved by qualified or short name. Companion to `fresh_var`: anthill
@@ -1820,59 +1885,11 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     let functor = interp.kb.try_resolve_symbol(&name)
         .ok_or_else(|| EvalError::Internal(format!("make_fn: unknown symbol `{name}`")))?;
 
-    // Walk the cons-chain into Vec<TermId>. Cons cells come in two
-    // shapes: `build_list_value` (Rust-side) emits named-arg shape with
-    // `head`/`tail` keys; anthill-source `cons(h, t)` emits positional
-    // shape (args in `pos`, named empty). Try named first, fall back to
-    // positional. Field-name comparison stays string-based — the loader
-    // may qualify field symbols, but the canonical short name is
-    // `head`/`tail`.
-    let cons_sym = interp.reflect.cons;
-    let nil_sym = interp.reflect.nil;
-    let mut pos_vec: Vec<TermId> = Vec::new();
-    let mut cursor = args_arg.clone();
-    loop {
-        match cursor {
-            Value::Entity { functor, pos, named, .. } => {
-                if Some(functor) == nil_sym { break; }
-                if Some(functor) != cons_sym {
-                    let n = interp.kb.resolve_sym(functor);
-                    return Err(EvalError::Internal(
-                        format!("make_fn: expected cons/nil, got {n}")
-                    ));
-                }
-                let (head, tail) = if !named.is_empty() {
-                    let h = named.iter()
-                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "head")
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| EvalError::Internal(
-                            "make_fn: cons missing head field".into()
-                        ))?;
-                    let t = named.iter()
-                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "tail")
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| EvalError::Internal(
-                            "make_fn: cons missing tail field".into()
-                        ))?;
-                    (h, t)
-                } else if pos.len() >= 2 {
-                    (pos[0].clone(), pos[1].clone())
-                } else {
-                    return Err(EvalError::Internal(format!(
-                        "make_fn: cons cell shape unrecognized (pos={}, named={})",
-                        pos.len(), named.len(),
-                    )));
-                };
-                let tid = match head {
-                    Value::Term { id: t, .. } => t,
-                    other => return Err(type_mismatch("Term", &other, None)),
-                };
-                pos_vec.push(tid);
-                cursor = tail;
-            }
-            other => return Err(type_mismatch("List[Term]", &other, None)),
-        }
-    }
+    let pos_vec: Vec<TermId> =
+        reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", |v| match v {
+            Value::Term { id, .. } => Ok(id),
+            other => Err(type_mismatch("Term", &other, None)),
+        })?;
 
     let pos_args = smallvec::SmallVec::from_vec(pos_vec);
     let tid = interp.kb.alloc(Term::Fn {
@@ -1881,6 +1898,54 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         named_args: smallvec::SmallVec::new(),
     });
     Ok(Value::term(tid))
+}
+
+/// WI-722 (proposal 043.1) — `anthill.reflect.make_apply(name: String,
+/// args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence`.
+///
+/// The occurrence-BUILD side of a compile-time macro: build a synthesized
+/// `Expr::Apply` occurrence whose functor is resolved from `name` and whose
+/// positional argument occurrences are the `args` list — each reused in place, so
+/// an input occurrence keeps its own identity and span. Unlike `make_fn` (which
+/// builds a flat `Term`), this returns a spliceable `NodeOccurrence`, so a macro's
+/// result can carry child occurrences (a reused argument, later a lambda body)
+/// that a `Term` cannot represent. `from` is the source occurrence the built node
+/// points at for diagnostics — the `Synthesized.from` (043.1 §3.5).
+///
+/// The node is stamped with a dedicated `macro_expand` pass, so a macro-built
+/// occurrence is distinguishable from a template-substituted one and the simp
+/// engine's `Synthesized.from` ancestor-loop check (043 §4.5) sees it. The
+/// spliced subtree is RE-TYPED by the typer's `push_visit` continuation, so this
+/// builder leaves `inferred_type` unset (as `synthesized_expr` does).
+fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use std::rc::Rc;
+    let [name_arg, args_arg, from_arg] = expect_args::<3>("make_apply", args)?;
+    let name = match &name_arg {
+        Value::Str(s) => s.clone(),
+        other => return Err(type_mismatch("String", other, None)),
+    };
+    let functor = interp
+        .kb
+        .try_resolve_symbol(&name)
+        .ok_or_else(|| EvalError::Internal(format!("make_apply: unknown symbol `{name}`")))?;
+
+    // Reuse each argument occurrence in place (identity + span preserved). A
+    // non-occurrence element is a LOUD error, never a silently-dropped node.
+    let pos_args: Vec<Rc<NodeOccurrence>> =
+        reflect_cons_to_vec(interp, args_arg, "make_apply", "List[NodeOccurrence]", |v| match v {
+            Value::Node(occ) => Ok(occ),
+            other => Err(type_mismatch("NodeOccurrence", &other, None)),
+        })?;
+
+    let from = match &from_arg {
+        Value::Node(occ) => Rc::clone(occ),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
+    let owner = from.owner;
+    let expr = Expr::Apply { functor, pos_args, named_args: Vec::new(), type_args: Vec::new() };
+    Ok(Value::Node(NodeOccurrence::synthesized_expr(expr, from, pass, owner)))
 }
 
 /// `anthill.reflect.find_fact(t: Term) -> Option[FactId]`.

@@ -5569,7 +5569,9 @@ impl KnowledgeBase {
     /// Re-registering the builtins per call is the simple-correct choice (the
     /// interpreter owns the lent KB, so they can't persist across calls); a
     /// registration failure surfaces as `Some(Err(_))`, which callers residualize.
-    fn run_in_bridge_interp<F>(&mut self, f: F) -> Option<Result<Value, EvalError>>
+    // WI-722: `pub(super)` so the `[simp]` macro fire hook (`simp_rewrite.rs`) can
+    // run a macro op body through the same compile-time scratch interpreter.
+    pub(super) fn run_in_bridge_interp<F>(&mut self, f: F) -> Option<Result<Value, EvalError>>
     where
         F: FnOnce(&mut Interpreter) -> Result<Value, EvalError>,
     {

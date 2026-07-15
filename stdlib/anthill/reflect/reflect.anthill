@@ -241,6 +241,16 @@ namespace anthill.reflect
   -- the goal term you can hand to `pattern_query` / `execute`.
   operation make_fn(name: String, args: List[Term]) -> Term
 
+  -- WI-722 (proposal 043.1) — the occurrence-BUILD side of a compile-time macro.
+  -- Build a spliceable `apply` OCCURRENCE (not a flat `Term`, as `make_fn` does):
+  -- the functor is resolved from `name`, the positional argument occurrences are
+  -- reused in place (so each keeps its identity + span), and `from` is the source
+  -- occurrence the built node points at for diagnostics (`Synthesized.from`). A
+  -- macro (an occurrence-returning op in a `[simp]` RHS) constructs its result
+  -- through this rather than `make_fn`, because a result that carries child
+  -- occurrences — a reused argument, a lambda body — cannot be a `Term`.
+  operation make_apply(name: String, args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence
+
   -- Look up the asserted fact whose head term equals `t`, returning the
   -- backing FactId so callers can hand it to `NonMonotonicStore.retract`. Mutating
   -- commands (claim / deliver / verify / update / delete) walk

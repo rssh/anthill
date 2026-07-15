@@ -3130,6 +3130,50 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
     errors
 }
 
+/// WI-722 (proposal 043.1 §6) — the macro purity gate. A macro (an
+/// occurrence→occurrence operation, [`super::typing::is_macro`]) is EVALUATED at
+/// compile time by the `[simp]` engine, so its declared effect row must be PURE:
+/// at most `Error` (a compile-time diagnostic at the redex), never
+/// `Modify`/`Console`/`Branch`/etc. Checked statically at load — by now every
+/// operation's `OperationInfo` effect row is present. An impure macro would
+/// otherwise fail only at first USE (the scratch interpreter's empty effect
+/// registry turns an unhandled effect into a residualize → a confusing downstream
+/// type error), so the gate moves the rejection early and names the cause.
+///
+/// No existing stdlib op is a macro (the reflect occurrence ops return
+/// `Term`/`List`/`Option`, not a bare occurrence), so this gate is a no-op until a
+/// user authors an occurrence→occurrence op.
+fn check_macro_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let error_sym = kb.try_resolve_symbol("anthill.prelude.Error");
+    let mut errors = Vec::new();
+    let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    // `all_operation_effects` yields one row PER FACT — a spec op and its impl are
+    // SEPARATE `OperationInfo` facts, each with its OWN declared effect row (WI-701),
+    // so checking only the first (cached) fact would let an impure IMPL of a
+    // pure-declared macro slip through. Check EVERY fact's row; report each macro
+    // once (the row is in hand, so no second `lookup_operation_info` / fallback).
+    for (op, effects) in crate::kb::op_info::all_operation_effects(kb) {
+        if !super::typing::is_macro(kb, op) {
+            continue;
+        }
+        let impure = effects.iter().any(|e| {
+            !error_sym.is_some_and(|es| super::typing::effect_label_names_sort(kb, e, es))
+        });
+        if impure && reported.insert(op) {
+            errors.push(LoadError::Other {
+                message: format!(
+                    "macro `{}` (an occurrence→occurrence operation, evaluated at compile time by \
+                     the [simp] engine) declares an impure effect row — a macro must be pure (at \
+                     most `Error`), since it runs during type-checking with no effect handlers. \
+                     Drop the effects, or make it an ordinary (non-occurrence-returning) operation.",
+                    kb.qualified_name_of(op),
+                ),
+            });
+        }
+    }
+    errors
+}
+
 /// Recursively verify a const body occurrence is pure. CONSERVATIVE by
 /// construction: only forms whose purity is statically provable are accepted;
 /// any unrecognized or dynamically-dispatched form (higher-order / dot calls,
@@ -3479,6 +3523,12 @@ fn load_phase_inner(
     // every effect row is queryable.
     all_errors.extend(check_const_purity(kb));
     mark!("check_const_purity");
+    // WI-722 (043.1 §6): the macro purity gate. An occurrence→occurrence op is
+    // evaluated at compile time by the [simp] engine, so it must have a pure (at
+    // most `Error`) effect row. Runs after all operations load, so every effect
+    // row is queryable.
+    all_errors.extend(check_macro_purity(kb));
+    mark!("check_macro_purity");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.

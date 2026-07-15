@@ -14853,6 +14853,45 @@ pub(crate) fn is_option_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
     }
 }
 
+/// WI-722: is this resolved type EXACTLY an occurrence type — a bare
+/// `anthill.reflect.NodeOccurrence` or reflect `Expr`? A CONTAINER of one
+/// (`Option[NodeOccurrence]`, `List[NodeOccurrence]`) is deliberately NOT — only
+/// a directly spliceable occurrence counts (proposal 043.1 §3.1), so a runtime
+/// reflect op like `operation_body -> Option[NodeOccurrence]` is never misread as
+/// a macro. Mirrors [`is_reflect_term_type`]; `NodeOccurrence`/`Expr` are
+/// non-parametric, so only the bare `SortRef` head matches.
+pub(crate) fn is_occurrence_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    matches!(type_head(kb, ty),
+        TypeHead::SortRef(s)
+            if matches!(kb.qualified_name_of(s),
+                "anthill.reflect.NodeOccurrence" | "anthill.reflect.Expr"))
+}
+
+/// WI-722: is `op` a compile-time MACRO — a syntax→syntax operation whose EVERY
+/// parameter type AND result type is an occurrence type ([`is_occurrence_type`])?
+/// A macro appearing as the head of a fired `[simp]` rule's RHS is EVALUATED at
+/// compile time over its argument occurrences, and the occurrence it returns is
+/// spliced as the rewrite result (proposal 043.1). There is NO marker — the
+/// signature classifies it, and the SAME op is an ordinary function at a runtime
+/// call site, a macro only as a `[simp]` RHS.
+///
+/// Both conditions carry weight (043.1 §3.1): every argument being an occurrence
+/// is 043 §4.2's argument-domain rule (the macro is fed the matched pattern-var
+/// occurrences, so a value parameter would type-mismatch); the result being
+/// EXACTLY an occurrence — not a container of one — is what makes it spliceable,
+/// separating a macro from a compile-time guard reader (`min_sort(occ) -> Sort`:
+/// expr in, value out).
+pub fn is_macro(kb: &KnowledgeBase, op: Symbol) -> bool {
+    let Some(info) = lookup_operation_info_full(kb, op) else { return false };
+    // At least one parameter: a macro is FED the matched pattern-var occurrences
+    // (043 §4.2's argument-domain rule assumes ≥1 occurrence arg), so a nullary
+    // occurrence-returning op is a constructor-like value, not a macro — it is not
+    // silently evaluated at compile time nor subjected to the purity gate.
+    !info.params.is_empty()
+        && is_occurrence_type(kb, &info.return_type)
+        && info.params.iter().all(|(_, t)| is_occurrence_type(kb, t))
+}
+
 /// WI-385: the base/head sort symbol of a ground type — `S` for a bare `S`, the
 /// base `S` for an application `S[…]`; `None` for a structural form (arrow,
 /// named_tuple, …). Used to test provider admissibility against a bare spec.
@@ -25774,7 +25813,10 @@ fn guarded_effect_label(kb: &KnowledgeBase, v: &Value) -> Option<Value> {
 /// `absent(...)` (`-External`) is deliberately NOT unwrapped — an absent label is not
 /// performed, so it must not trip the gate. A row var / arrow / other head is not a
 /// named effect sort. Carrier-agnostic — reads the head through [`TermView`].
-fn effect_label_names_sort(kb: &KnowledgeBase, label: &Value, sort: Symbol) -> bool {
+///
+/// WI-722: `pub(super)` so the load-time macro purity gate (`load.rs`) can test a
+/// macro's declared effect labels against `Error`.
+pub(super) fn effect_label_names_sort(kb: &KnowledgeBase, label: &Value, sort: Symbol) -> bool {
     let guarded = guarded_effect_label(kb, label);
     let label = guarded.as_ref().unwrap_or(label);
     match type_head(kb, label) {
