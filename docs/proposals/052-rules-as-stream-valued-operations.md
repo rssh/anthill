@@ -232,6 +232,59 @@ take a **row lambda** (columns via destructuring or dot-access), **projection** 
 on either path — `Relation`'s two faces (a metalevel rule result, held as a value that
 `provides` a stream) are what let a rule's output drop into functional code as a composable value.
 
+### Compiling a row lambda into a query — the expression-tree translation
+
+`join`/`where`'s row lambda is **never applied** — it is compiled, *as syntax*, into the query. This is
+exactly LINQ's `IQueryable`: the condition is captured as an **expression tree** and a provider
+translates the tree into the backend query. Here the backend is the `LogicalQuery` ADT (026.1), not SQL.
+
+**The mapping** — a `Bool`-valued expression tree → a goal; each node maps to a query-algebra
+constructor:
+
+| lambda expression | `LogicalQuery` |
+|---|---|
+| atomic predicate `eq(a,b)`, `lt(a,b)`, … | goal atom |
+| `&&` / `\|\|` / `!` | `conjunction` / `disjunction` / `negation` |
+| `c.x` (row field access) | the column's logic variable |
+| literal | term constant |
+
+and the op wraps the result: `where` → `guarded(r.query, ⟨goal⟩)`, `join` → `conjunction` (over both
+rows' columns). The compile is **partial** — only the goal-expressible `Bool` subset; anything else (an
+`if`, a non-predicate call) is a **compile error**, the analog of LINQ's *"cannot translate to SQL"* (a
+computed column goes through `.map` on the stream instead — it is no longer a `Relation`).
+
+**Two phases, joined at the columns.** A relation's columns are logic variables minted only when the
+relation *runs* (`VarId`s in the `Relation` value), so the compile splits:
+
+- **compile-time** — parse the lambda's expression tree and build a **query-term recipe**: the
+  `LogicalQuery` above with the columns left as **holes** (`c.x` compiled to *column position i*, not a
+  name — positional, so no cross-scope name comparison).
+- **runtime** — *extract the query term*: fill the holes with the relation's actual column `VarId`s.
+  This is the variable alignment `union` already performs (`rename_query_vars`), one operand.
+
+The query term is the **carrier-neutral representation** (a `Value` spine — `Value::Entity` constructors,
+`VarId` columns, `Value::Term`/`Node` leaves), never a hash-consed `TermId` (the WI-348 boundary) — what
+`build_logical_query_value` already produces for `negate`/`union`.
+
+**Why the split is forced by codegen.** The translation can run *wherever the lambda's tree survives to
+runtime* — a C# `Expression<>`, a Scala `Expr`, or the interpreter's `closure.body` (all LINQ-style:
+translate on enumerate). It is forced **earlier**, to anthill's **compile-time**, only for a host that
+keeps no tree at runtime — a plain Rust `Fn` after codegen carries no AST. Building the recipe at
+compile-time and emitting a plain query into the generated code makes it codegen-safe on *every* host.
+
+**Only the functional condition is a lambda; logic-variable conditions are rules.** A raw logic-variable
+goal is **not** a `where`/`join` argument (`where(r, eq(?x, 1))` is out): it would carry the metalevel
+(logic vars, rule-scoping) into functional expression syntax, and the clean form already exists — write
+a **rule** (the Division of labor above). This is a **layer separation**, not a soundness rule; the
+lambda binder is simply the *functional* way to name a column — field access on a row value.
+
+**Implementation locus.** A **compile-time transform in the typer** builds the recipe: it reads the
+lambda's already-typed occurrence (`c.x` resolved against the row schema) and emits the carrier-neutral
+`LogicalQuery` `Value` directly — uniform with the Rust `negate`/`union` builtins. Authoring this
+transform *in anthill* instead — user-extensible relational algebra via the
+[043.1](043.1-compile-time-macros.md) compile-time macro — is the alternative route; it is not required
+for the built-in ops (and carries the occurrence-build surface 043.1 specifies).
+
 ### Naming the relation — rule reference (label else head), and how a bare name parses
 
 A relation is cited **by name**, and the name resolves the way rule identity already works — a labeled
@@ -358,6 +411,10 @@ No change to `Substitution`, `SearchStream`, or unification.
   the `Solver`/`match`-over-a-solver surface lives entirely there.
 - **The Stream/Iterable provides cluster** (WI-424/599/608/609/614) is reused unchanged — the
   consumption API is *inherited* through `provides`, not re-implemented.
+- **[043.1](043.1-compile-time-macros.md) is the *alternative* locus for the row-lambda compile.** Its
+  compile-time macro is the user-extensible way to author the expression-tree → query translation in
+  anthill; the built-in `where`/`join` instead do it as a typer pass (§"Compiling a row lambda into a
+  query"), so 043.1 is a *related* mechanism, not a prerequisite.
 
 ## Build path
 
@@ -375,7 +432,10 @@ No change to `Substitution`, `SearchStream`, or unification.
 
 **Increments (one wired `LogicalQuery` constructor + one schema rule each):** join (`conjunction`),
 union (`|`, `disjunction`), negate (`not`, `negation`), where (`guarded`) — all four constructors are
-**already wired in `kb/execute.rs`**. **Project** (→ `projected`) has no `select` op — it is the
+**already wired in `kb/execute.rs`**. `union`/`negate` are just constructor + schema (they combine query
+*values*, no lambda — **delivered**); `where`/`join` additionally carry the **row-lambda compile**
+(§"Compiling a row lambda into a query" — a compile-time expression-tree → query-term recipe over those
+constructors, columns filled with the relation's `VarId`s at runtime; typer-pass locus). **Project** (→ `projected`) has no `select` op — it is the
 **distribute-dot** `x.(f1, f2)` ⇒ `(f1: x.f1, f2: x.f2)`, lifted over a relation to `r.(f1, f2)` →
 `projected` — and because the resolver lowers `projected` as a pass-through, it needs caller-side column
 restriction at 052's materialization step. The single-field `x.f` is **delivered (WI-638)**; the
