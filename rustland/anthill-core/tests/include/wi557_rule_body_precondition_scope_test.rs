@@ -234,6 +234,98 @@ end
     );
 }
 
+// ── WI-565: a bare out-of-scope member call gets a scoping diagnostic ─────────
+
+/// WI-565: a bare (unqualified) call `guarded(box(value: 1), n)` to a `Box`
+/// MEMBER operation, written at namespace scope (outside `Box`), must be
+/// rejected — a member's bare name is in scope only within its defining sort.
+/// The BEHAVIOR (rejection) was already correct; WI-565 improves the terse
+/// "unknown functor" message to one that names the owning sort and the two
+/// remedies (qualified `Box.guarded(…)` / dot `receiver.guarded(…)`). This is
+/// independent of the precondition machinery — a member with no `requires` fails
+/// identically (see `bare_member_call_with_no_requires_also_diagnosed`).
+#[test]
+fn bare_out_of_scope_member_call_names_owning_sort() {
+    let src = format!(
+        r#"
+namespace anthill.test.wi565bare
+{PRELUDE}
+  operation caller(n: Int64) -> Int64 =
+    guarded(box(value: 1), n)
+end
+"#
+    );
+    let (_kb, errs) = load_capturing_errors(&src);
+    let text = errors_text(&errs);
+    assert!(
+        text.contains("member of sort Box"),
+        "the diagnostic must name the owning sort `Box`; got:\n{text}"
+    );
+    assert!(
+        text.contains("Box.guarded") && text.contains("receiver.guarded"),
+        "the diagnostic must suggest BOTH the qualified `Box.guarded(…)` and the \
+         dot `receiver.guarded(…)` remedy; got:\n{text}"
+    );
+    assert!(
+        !text.contains("unknown functor"),
+        "the refined member-scoping diagnostic must replace the terse \
+         `unknown functor` message; got:\n{text}"
+    );
+}
+
+/// WI-565: the diagnostic keys on MEMBER scoping, not on the `requires`
+/// precondition — a member op with NO `requires` reaches the same Path-3 failure
+/// and gets the same owning-sort hint. (The WI notes it "surfaced during WI-557
+/// … independent of the precondition/requires machinery".)
+#[test]
+fn bare_member_call_with_no_requires_also_diagnosed() {
+    let src = r#"
+namespace anthill.test.wi565noreq
+  import anthill.prelude.{Int64}
+  sort Crate
+    entity crate(n: Int64)
+    operation peek(c: Crate) -> Int64 = c.n
+  end
+  operation caller(c: Crate) -> Int64 =
+    peek(c)
+end
+"#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(
+        text.contains("member of sort Crate") && text.contains("Crate.peek"),
+        "a member op with NO `requires` must still get the owning-sort hint; got:\n{text}"
+    );
+}
+
+/// WI-565 acceptance guard: a GENUINELY-unknown bare functor (the short name of
+/// no member operation anywhere) is UNCHANGED — it keeps the terse
+/// `UnknownApplyFunctor` "unknown functor" message, never the member hint.
+#[test]
+fn genuinely_unknown_bare_functor_stays_terse() {
+    let src = format!(
+        r#"
+namespace anthill.test.wi565unknown
+{PRELUDE}
+  operation caller(n: Int64) -> Int64 =
+    zzz_no_such_op_anywhere(n)
+end
+"#
+    );
+    let (_kb, errs) = load_capturing_errors(&src);
+    let text = errors_text(&errs);
+    assert!(
+        text.contains("unknown functor"),
+        "a genuinely-unknown name must keep the terse `unknown functor` diagnostic; \
+         got:\n{text}"
+    );
+    assert!(
+        !text.contains("member of sort"),
+        "a genuinely-unknown name must NOT be reported as a member of any sort; \
+         got:\n{text}"
+    );
+}
+
 #[test]
 fn op_body_value_precondition_qualified_call_still_errors() {
     // The non-dot analog: the SAME `Box` member called by its QUALIFIED name

@@ -72,6 +72,20 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// WI-565: the refinement of [`UnknownApplyFunctor`] for the specific case
+    /// where the unresolved bare functor IS the short name of a MEMBER operation
+    /// of one or more sorts (`owning_sorts`). A member's bare name is in scope
+    /// only WITHIN its defining sort (a sibling member can bare-call it); from
+    /// outside it must be qualified `Sort.member(…)` or dot-dispatched
+    /// `receiver.member(…)`. The scoping is correct — this variant only carries a
+    /// better diagnostic that names the owning sort(s) and the qualified/dot
+    /// remedy, instead of the terse "unknown functor". `owning_sorts` is deduped
+    /// (by qualified name) and sorted for a deterministic message.
+    BareMemberCall {
+        span: Option<Span>,
+        member: Symbol,
+        owning_sorts: SmallVec<[Symbol; 2]>,
+    },
     /// Spec-op dispatch found no impl whose per-call bindings match the
     /// inferred type arguments. `op` is the qualified spec-op symbol
     /// (e.g. `anthill.prelude.Numeric.add`).
@@ -341,6 +355,11 @@ impl TypeError {
             TypeError::UnknownApplyFunctor { name, .. } => {
                 format!("unknown apply functor: {}", kb.resolve_sym(*name))
             }
+            TypeError::BareMemberCall { member, owning_sorts, .. } => {
+                let sort_names: Vec<String> =
+                    owning_sorts.iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
+                bare_member_call_message(kb.resolve_sym(*member), &sort_names)
+            }
             TypeError::DispatchNoMatch { op, .. } => {
                 format!(
                     "dispatch failed: no impl of {} for the per-call bindings",
@@ -450,6 +469,7 @@ impl TypeError {
             | TypeError::UnresolvedName { span, .. }
             | TypeError::NoConstructor { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
+            | TypeError::BareMemberCall { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
@@ -543,6 +563,14 @@ impl TypeError {
                 expected_type: "known operation or arrow-typed variable".to_string(),
                 actual_type: "unknown functor".to_string(),
                 span: self.span(kb),
+            },
+            TypeError::BareMemberCall { member, owning_sorts, .. } => LoadError::BareMemberCall {
+                span: self.span(kb),
+                member: kb.resolve_sym(*member).to_string(),
+                owning_sorts: owning_sorts
+                    .iter()
+                    .map(|s| kb.resolve_sym(*s).to_string())
+                    .collect(),
             },
             TypeError::DispatchNoMatch { op, .. } => LoadError::TypeMismatch {
                 origin: None,
@@ -8073,7 +8101,19 @@ fn check_apply_iter(
     let _ = named_args;
     lookup_operation_return_type(kb, fn_sym)
         .map(|ty| TypeResult { ty: Value::term(ty), env: env.clone(), effects, node: Rc::clone(occ) })
-        .ok_or(TypeError::UnknownApplyFunctor { span, name: fn_sym })
+        .ok_or_else(|| {
+            // WI-565: refine the terse "unknown functor" when the bare name IS a
+            // member operation of some sort — bare member names are in scope only
+            // within their defining sort, so name the owning sort(s) and the
+            // qualified/dot remedy. A genuinely-unknown name (no owning sort)
+            // keeps the plain `UnknownApplyFunctor`.
+            let owning_sorts = member_owning_sorts_for_bare(kb, fn_sym);
+            if owning_sorts.is_empty() {
+                TypeError::UnknownApplyFunctor { span, name: fn_sym }
+            } else {
+                TypeError::BareMemberCall { span, member: fn_sym, owning_sorts }
+            }
+        })
 }
 
 /// WI-218: allocate a rewritten `apply` term with `fn = impl_op_sym`,
@@ -8132,6 +8172,63 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let qn = kb.qualified_name_of(op_sym);
     let (parent_qn, _) = qn.rsplit_once('.')?;
     kb.try_resolve_symbol(parent_qn)
+}
+
+/// WI-565: the sorts that declare a MEMBER operation whose SHORT name equals that
+/// of the bare, out-of-scope apply functor `fn_sym`. Called only on the Path-3
+/// failure edge (`fn_sym` did not resolve to a known free operation): a non-empty
+/// result turns the terse `UnknownApplyFunctor` into the scoping hint
+/// [`TypeError::BareMemberCall`]. A member's bare name is in scope only within its
+/// defining sort; from outside it must be qualified (`Sort.member(…)`) or
+/// dot-dispatched (`receiver.member(…)`). The scan walks every registered
+/// qualified name (an error-path cost only), keeping a member op whose parent
+/// resolves to a `Sort`. Deduped by the parent sort's qualified name and sorted by
+/// it, so the diagnostic is deterministic across the `by_qualified_name` HashMap's
+/// iteration order.
+fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> SmallVec<[Symbol; 2]> {
+    let short = kb.resolve_sym(fn_sym).to_string();
+    // Keyed by the owning sort's qualified name: dedups interned copies and yields
+    // the sorts in a deterministic (qualified-name) order via `into_values`.
+    let mut by_qn: std::collections::BTreeMap<String, Symbol> = std::collections::BTreeMap::new();
+    for (qn, &sym) in kb.symbols.by_qualified_name.iter() {
+        if kb.kind_of(sym) != Some(crate::intern::SymbolKind::Operation) {
+            continue;
+        }
+        let Some((parent_qn, last)) = qn.rsplit_once('.') else {
+            continue;
+        };
+        if last != short {
+            continue;
+        }
+        let Some(parent_sym) = kb.try_resolve_symbol(parent_qn) else {
+            continue;
+        };
+        if kb.kind_of(parent_sym) != Some(crate::intern::SymbolKind::Sort) {
+            continue;
+        }
+        by_qn.entry(parent_qn.to_string()).or_insert(parent_sym);
+    }
+    by_qn.into_values().collect()
+}
+
+/// WI-565: the one message body for a bare out-of-scope member-op call, shared by
+/// [`TypeError::format`] and [`super::load::LoadError`]'s renderings so the wording
+/// cannot drift. `member` is the bare short name; `owning_sorts` are the owning
+/// sorts' short names (already deduped + sorted). Names the sort(s) and the two
+/// remedies — qualified `Sort.member(…)` and dot `receiver.member(…)`.
+pub(crate) fn bare_member_call_message(member: &str, owning_sorts: &[String]) -> String {
+    let (noun, sorts, exemplar) = match owning_sorts {
+        [one] => ("sort".to_string(), one.clone(), one.clone()),
+        many => (
+            "sorts".to_string(),
+            many.join(", "),
+            "<Sort>".to_string(),
+        ),
+    };
+    format!(
+        "`{member}` is a member of {noun} {sorts}, not in scope as a bare name here; \
+         call it qualified as `{exemplar}.{member}(…)` or via a receiver `receiver.{member}(…)`"
+    )
 }
 
 /// WI-672 — sort identity by CANONICAL symbol: `a` and `b` name the same sort iff their

@@ -192,6 +192,20 @@ pub enum LoadError {
         /// constructs a `TypeMismatch` directly.
         origin: Option<TypeMismatchOrigin>,
     },
+    /// WI-565: a bare (unqualified) call to a MEMBER operation from outside its
+    /// defining sort — the refinement of the typer's `UnknownApplyFunctor` for
+    /// this case (see [`super::typing::TypeError::BareMemberCall`]). A member's
+    /// bare name is in scope only within its defining sort; from outside it must be
+    /// qualified `Sort.member(…)` or dot-dispatched `receiver.member(…)`. The
+    /// scoping is correct — this variant only carries a diagnostic that names the
+    /// owning sort(s). `member` is the bare short name; `owning_sorts` are the
+    /// owning sorts' short names (deduped + sorted). Load-blocking, exactly as the
+    /// `UnknownApplyFunctor`→`TypeMismatch` it refines.
+    BareMemberCall {
+        span: Option<Span>,
+        member: String,
+        owning_sorts: Vec<String>,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -511,6 +525,15 @@ impl LoadError {
                     format!("type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
                 }
             }
+            LoadError::BareMemberCall { member, owning_sorts, span } => {
+                let msg = super::typing::bare_member_call_message(member, owning_sorts);
+                if let Some(sp) = span {
+                    let (line, col) = Span::line_col(source, sp.start);
+                    format!("{}:{}: {}", line, col, msg)
+                } else {
+                    msg
+                }
+            }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
                 format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
                     carrier, spec, required, carrier, required, required)
@@ -656,6 +679,9 @@ impl LoadError {
     pub fn is_load_blocking(&self) -> bool {
         matches!(self,
             LoadError::TypeMismatch { .. }
+            // WI-565: a bare out-of-scope member call names no callable operation —
+            // block, exactly as the `UnknownApplyFunctor`→`TypeMismatch` it refines.
+            | LoadError::BareMemberCall { .. }
             | LoadError::UnresolvedImport { .. }
             | LoadError::UnsatisfiedProviderRequires { .. }
             | LoadError::UnbackedProviderOperation { .. }
@@ -872,6 +898,14 @@ impl std::fmt::Display for LoadError {
                     write!(f, "type mismatch in {}.{}{}: expected {}, got {}{} at {}..{}", entity_name, field_name, tag, expected_type, actual_type, site, sp.start, sp.end)
                 } else {
                     write!(f, "type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
+                }
+            }
+            LoadError::BareMemberCall { member, owning_sorts, span } => {
+                let msg = super::typing::bare_member_call_message(member, owning_sorts);
+                if let Some(sp) = span {
+                    write!(f, "{} at {}..{}", msg, sp.start, sp.end)
+                } else {
+                    write!(f, "{}", msg)
                 }
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
