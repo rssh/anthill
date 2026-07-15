@@ -2418,35 +2418,46 @@ impl KnowledgeBase {
     /// Updates in-memory indexes (sort_entities, entity_parent).
     /// The loader separately asserts EntityOf(entity, parent) facts in the KB.
     pub fn register_entity_of(&mut self, entity: TermId, parent: TermId) {
-        self.sort_entities
-            .entry(parent)
-            .or_default()
-            .push(entity);
         // WI-697: key the parent index by the constructor's functor SYMBOL. A
         // symbol has ONE spelling, so this retires the former Fn{c}/Ref(c) TermId
         // dual-keying (which existed only because the WI-511 alloc canon —
         // `Fn{c,[],[]}` → `Ref(c)`, gated on `is_constructor_symbol` — is
         // order-dependent, leaving the same symbol with two TermId identities
         // pre/post registration).
+        //
+        // A constructor identity is always `Fn{c}` / `Ref(c)` (built via
+        // `name_to_sort_term`); anything else is a malformed registration that
+        // would half-populate the indexes. Fail LOUD (release too), not a
+        // release-silent `debug_assert` skip — the repo's loud-over-silent rule.
         let functor = match *self.terms.get(entity) {
-            Term::Fn { functor, .. } => Some(functor),
-            Term::Ref(s) => Some(s),
-            _ => None,
-        };
-        match functor {
-            Some(f) => {
-                self.constructor_symbols.insert(f);
-                self.entity_parent.insert(f, parent);
-            }
-            // A constructor identity is always `Fn{c}` / `Ref(c)` (built via
-            // `name_to_sort_term`); anything else is a malformed registration that
-            // would half-populate the indexes (pushed into `sort_entities` above,
-            // absent from `entity_parent`). Fail LOUD (release too), not a
-            // release-silent `debug_assert` skip — the repo's loud-over-silent rule.
-            None => panic!(
+            Term::Fn { functor, .. } => functor,
+            Term::Ref(s) => s,
+            _ => panic!(
                 "register_entity_of: entity term {entity:?} is neither Fn nor Ref (no functor symbol)"
             ),
+        };
+        // WI-719: dedup the child list by functor SYMBOL. Now that
+        // `register_prelude` pre-registers the prelude constructors
+        // (some/none/nil/cons) at bootstrap — so `is_constructor_symbol`, and
+        // thus the alloc/discrim `Fn{c}`↔`Ref(c)` canon, is order-independent —
+        // `register_entity_of` runs TWICE for each of them: once at bootstrap,
+        // once when option/list.anthill's sort body loads. The two calls can
+        // even pass DIFFERENT TermId spellings of the same constructor (`Ref(c)`
+        // vs the pre-canon `Fn{c}`), so dedup on the functor symbol, not the
+        // TermId, to keep `sort_children`/`by_sort` from double-counting one
+        // constructor.
+        let already = self.sort_entities.get(&parent).is_some_and(|children| {
+            children.iter().any(|&e| match *self.terms.get(e) {
+                Term::Fn { functor: f, .. } => f == functor,
+                Term::Ref(s) => s == functor,
+                _ => false,
+            })
+        });
+        if !already {
+            self.sort_entities.entry(parent).or_default().push(entity);
         }
+        self.constructor_symbols.insert(functor);
+        self.entity_parent.insert(functor, parent);
     }
 
     /// Check if `sub` is an entity of `sup` (1-level entity → parent sort). The
