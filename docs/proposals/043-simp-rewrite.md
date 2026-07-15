@@ -379,6 +379,6 @@ See `docs/design/simp-rewrite-design.md`. In brief: extend `TermView` so `Value:
 ## Non-goals
 
 - No grammar change (`.` already parses).
-- No new "macro" concept; `[simp]`/`[unfold]`/`[hint]` syntax stays as WI-139.
+- No new "macro" concept; `[simp]`/`[unfold]`/`[hint]` syntax stays as WI-139. (Compile-time macros — [043.1](043.1-compile-time-macros.md) — bear this out rather than revise it: a macro is just an occurrence-returning op in a `[simp]` RHS, read from its signature, no new concept.)
 - Not replacing `field_access` (reached via `dot_field`, builtin unchanged).
 - Not the Z3-side translation of simp rules (025.1's separate deferral), nor bidirectional simp (LHS→RHS only in the typer phase), nor side-effecting expansion (rules are pure).
