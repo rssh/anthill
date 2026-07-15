@@ -179,10 +179,21 @@ end
         // bindings (lineage-preserving — EntityInfo fact heads are TermId).
         match sol.subst.resolve_as_value(vn) {
             Some(Value::Term { id: t, .. }) => {
-                if let Term::Fn { functor, .. } = kb.get_term(*t) {
-                    if *functor == red_tid { seen_colors.insert("red"); }
-                    if *functor == green_tid { seen_colors.insert("green"); }
-                    if *functor == blue_tid { seen_colors.insert("blue"); }
+                // WI-720: a nullary constructor identity now canonicalizes to its
+                // bare `Ref(c)` form. Since scan_definitions marks `red`/`green`/
+                // `blue` as constructors before any body loads, the EntityInfo
+                // `name` field is emitted post-registration, so `alloc` folds
+                // `Fn{c,[],[]}`→`Ref(c)`. Read the head symbol carrier-agnostically
+                // (both spellings denote the same constructor).
+                let functor = match kb.get_term(*t) {
+                    Term::Fn { functor, .. } => Some(*functor),
+                    Term::Ref(s) => Some(*s),
+                    _ => None,
+                };
+                if let Some(f) = functor {
+                    if f == red_tid { seen_colors.insert("red"); }
+                    if f == green_tid { seen_colors.insert("green"); }
+                    if f == blue_tid { seen_colors.insert("blue"); }
                 }
             }
             // Non-Term Value variants shouldn't appear here — the source

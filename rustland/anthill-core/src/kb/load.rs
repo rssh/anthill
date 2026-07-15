@@ -1797,6 +1797,20 @@ fn scan_items_pass1(
                 // positional→named desugar / partial-expansion / over-arity check are
                 // load-order-independent. Field TYPES stay in load_entity.
                 register_entity_field_names_scan(kb, parse_sym, e, entity_sym, &short);
+                // WI-720: a sort-nested `entity` is a CONSTRUCTOR of the enclosing
+                // sort — mark it NOW (pass 1), before any fact/rule body converts, so
+                // `is_constructor_symbol` and the alloc/discrim `Fn{c,[],[]}`→`Ref(c)`
+                // canon are settled load-order-independently for EVERY constructor
+                // (not just the prelude four WI-719 pre-registers). Keyed on the
+                // enclosing `scope` being a sort (mirrors the load-time
+                // `register_entity_of` loop, which registers exactly a sort body's
+                // direct `entity` children); a namespace-level `entity` is a
+                // free-standing type, NOT a constructor, so it is left unmarked. The
+                // parent/field indexes are still filled by `register_entity_of` at
+                // sort-body load.
+                if is_sort_scope(kb, scope) {
+                    kb.mark_constructor_symbol(entity_sym);
+                }
             }
             Item::Operation(o) => {
                 let name = join_segments(parse_sym, &o.name.segments);

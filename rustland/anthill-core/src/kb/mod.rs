@@ -5276,6 +5276,20 @@ impl KnowledgeBase {
         self.constructor_symbols.contains(&functor)
     }
 
+    /// WI-720: mark a functor SYMBOL as a constructor, WITHOUT the parent-sort /
+    /// field registration [`Self::register_entity_of`] additionally performs.
+    /// `scan_definitions` pass 1 calls this for every sort-nested `entity`, so
+    /// `is_constructor_symbol` — and with it the order-dependent alloc/discrim
+    /// `Fn{c,[],[]}`→`Ref(c)` canon ([`Self::alloc`]) — is settled before ANY
+    /// fact/rule body converts. Because pass 1 defines every name across every
+    /// file before any body loads, this makes the canon load-order-independent
+    /// for EVERY constructor (WI-719 pre-registered only the four prelude ones).
+    /// The parent/field indexes (`entity_parent`, `sort_entities`) are still
+    /// populated later by `register_entity_of` when the sort body loads.
+    pub fn mark_constructor_symbol(&mut self, functor: Symbol) {
+        self.constructor_symbols.insert(functor);
+    }
+
     /// WI-352 — whether `sym` is an operation's reserved `result` binder
     /// (`<op>.result`, proposal 041), by its **symbol kind**. WI-341 first
     /// moved this off a spelling match (`rsplit('.') == "result"`) onto symbol
