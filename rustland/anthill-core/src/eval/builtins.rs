@@ -125,6 +125,17 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // `Term`, as `make_fn` does). Available wherever eval runs; a macro is the
     // only caller (at compile time, via the `[simp]` fire hook).
     register_if_present(interp, "anthill.reflect.make_apply", reflect_make_apply)?;
+    // WI-722 inc 2 (043.1) — the occurrence-READ side of a compile-time macro,
+    // the value-domain complement of the resolver's `occurrence_term` /
+    // `sub_occurrences` / `type_of` goal handlers (`kb/resolve.rs`). A macro reads
+    // its argument occurrences through these (structure via `occurrence_term`,
+    // children via `sub_occurrences`, the typer-stamped type via `occurrence_type`)
+    // and rebuilds through `make_apply`. Registered on the eval side (surface A) so
+    // the macro-eval path (`call_op_bridged`) dispatches them with `Value::Node`
+    // args untouched.
+    register_if_present(interp, "anthill.reflect.occurrence_term", reflect_occurrence_term)?;
+    register_if_present(interp, "anthill.reflect.sub_occurrences", reflect_sub_occurrences)?;
+    register_if_present(interp, "anthill.reflect.occurrence_type", reflect_occurrence_type)?;
     register_if_present(interp, "anthill.reflect.is_modifiable", reflect_is_modifiable)?;
     register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
     register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
@@ -1946,6 +1957,110 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let owner = from.owner;
     let expr = Expr::Apply { functor, pos_args, named_args: Vec::new(), type_args: Vec::new() };
     Ok(Value::Node(NodeOccurrence::synthesized_expr(expr, from, pass, owner)))
+}
+
+/// WI-722 inc 2 (proposal 043.1) — `anthill.reflect.occurrence_term(occ:
+/// NodeOccurrence) -> Term`.
+///
+/// The occurrence-READ side of a compile-time macro: reflect the argument
+/// occurrence as its hash-consed `Term` twin (via the shared
+/// [`try_occurrence_to_term`] reification — `apply` → `Fn`, an arg-less `dot_apply`
+/// → its `dot_apply` term, a literal → `Const`, …), so a macro can inspect a
+/// node's head + shape through the existing `Term` reflect surface
+/// (`term_functor_name`, `term_field`, `term_list_items`). This is the value-domain
+/// complement of the resolver's `occurrence_term` GOAL handler, which unifies a
+/// reflect PATTERN against the occurrence; a macro wants the term as a VALUE.
+///
+/// A child-bearing / binder-scoping form (`lambda`/`if`/`let`/`match`/…) has no
+/// flat goal-term shape — `try_occurrence_to_term` returns `None` — so this reads
+/// `Bottom` for it (`⊥`, matching `occurrence_to_term`'s own sentinel). That is not
+/// an error but the documented signal to navigate such a form STRUCTURALLY via
+/// [`reflect_sub_occurrences`] instead (e.g. a `where`/`join` row lambda: read its
+/// `[param, body]` children, then `occurrence_term` the applicative body).
+///
+/// Precondition: the reflect meta-constructors (`Expr.dot_apply`, `ListLiteral`,
+/// `Pattern.*`, …) `try_occurrence_to_term` resolves must be interned — the same
+/// prelude-loaded-KB precondition its existing callers rely on
+/// (`node_occurrence.rs`). This holds whenever the builtin is reachable:
+/// `register_if_present` only registers it once `anthill.reflect.occurrence_term`
+/// resolves, and that name is scanned together with its sibling constructors from
+/// the one `reflect.anthill` module.
+fn reflect_occurrence_term(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term::Term;
+    let [occ_arg] = expect_args::<1>("occurrence_term", args)?;
+    let occ = match &occ_arg {
+        Value::Node(o) => std::rc::Rc::clone(o),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let tid = crate::kb::node_occurrence::try_occurrence_to_term(&mut interp.kb, &occ)
+        .unwrap_or_else(|| interp.kb.alloc(Term::Bottom));
+    Ok(Value::term(tid))
+}
+
+/// WI-722 inc 2 (proposal 043.1) — `anthill.reflect.sub_occurrences(occ:
+/// NodeOccurrence) -> List[NodeOccurrence]`.
+///
+/// The occurrence's direct child occurrences, in a fixed per-form order
+/// ([`node_occurrence::for_each_child`] — the same order the resolver's
+/// `sub_occurrences` goal handler shows). The children keep their identity (the
+/// existing `Rc`s), so a macro can navigate INTO a child-bearing form (a lambda
+/// body, an `if` branch) that `occurrence_term` reads as `Bottom`, and then reuse a
+/// child in place when it rebuilds via [`reflect_make_apply`]. The list SPINE is
+/// the eval-side `Value::Entity` cons ([`build_value_list`]) — the representation
+/// `make_apply`'s cons-walk consumes and the interpreter itself produces — not the
+/// resolver's `Value::Node` occurrence-cons.
+///
+/// Only an `Expr`-kind occurrence has expression children; a `Pattern` / `Type` /
+/// `EffectExpr` occurrence yields the empty list (as the resolver handler does).
+fn reflect_sub_occurrences(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence;
+    use std::rc::Rc;
+    let [occ_arg] = expect_args::<1>("sub_occurrences", args)?;
+    let occ = match &occ_arg {
+        Value::Node(o) => Rc::clone(o),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let mut children: Vec<Value> = Vec::new();
+    if let Some(expr) = occ.as_expr() {
+        node_occurrence::for_each_child(expr, |c| children.push(Value::Node(Rc::clone(c))));
+    }
+    build_value_list(interp, children)
+}
+
+/// WI-722 inc 2 (proposal 043.1) — `anthill.reflect.occurrence_type(occ:
+/// NodeOccurrence) -> Option[Type]`.
+///
+/// The typer-stamped [`inferred_type`](crate::kb::node_occurrence::NodeOccurrence::inferred_type)
+/// of the occurrence, or `none()` when it is untyped (a rule head, a not-yet-typed
+/// or ill-typed node). A macro runs AFTER its arguments are typed (the typer-side
+/// rewriter is bottom-up), so `where`/`join` read a relation argument's schema —
+/// which lives in its *type*, not its syntax (043.1 §3.4) — through this reader.
+/// The type rides as a carrier-agnostic `Value` (WI-342/WI-502): a ground type is
+/// `Value::Term`, a denoted-bearing one `Value::Node`; either way it is wrapped
+/// verbatim in `some(value: …)`.
+fn reflect_occurrence_type(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [occ_arg] = expect_args::<1>("occurrence_type", args)?;
+    let occ = match &occ_arg {
+        Value::Node(o) => std::rc::Rc::clone(o),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    match occ.inferred_type() {
+        Some(ty) => {
+            let value_key = interp.kb.intern("value");
+            Ok(Value::Entity {
+                functor: some_sym,
+                pos: Vec::new().into(),
+                named: vec![(value_key, ty)].into(),
+            })
+        }
+        None => Ok(Value::Entity {
+            functor: none_sym,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        }),
+    }
 }
 
 /// `anthill.reflect.find_fact(t: Term) -> Option[FactId]`.

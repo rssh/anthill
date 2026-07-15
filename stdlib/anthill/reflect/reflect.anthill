@@ -101,6 +101,11 @@ namespace anthill.reflect
   operation occurrence_owner(occ: NodeOccurrence) -> Symbol
   operation sub_occurrences(occ: NodeOccurrence) -> List[NodeOccurrence]
 
+  -- WI-722 (043.1): the typer-stamped inferred type of an occurrence (None if
+  -- untyped). A compile-time macro reads an argument's type through this — e.g.
+  -- where/join read a relation argument's schema, which lives in its type.
+  operation occurrence_type(occ: NodeOccurrence) -> Option[T = Type]
+
   -- Find occurrences owned by a symbol (operation body, fact head, rule head/body).
   -- Returns all NodeOccurrences registered under this owner during loading.
   operation occurrences_of(owner: Symbol) -> List[NodeOccurrence]
