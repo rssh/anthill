@@ -41,6 +41,12 @@ mod wi714_relation_materialize_test;
 #[path = "include/wi714_relation_reference_test.rs"]
 mod wi714_relation_reference_test;
 
+#[path = "include/wi714_where_test.rs"]
+mod wi714_where_test;
+
+#[path = "include/wi723_row_lambda_binder_test.rs"]
+mod wi723_row_lambda_binder_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 

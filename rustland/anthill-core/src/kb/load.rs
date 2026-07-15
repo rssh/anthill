@@ -7806,7 +7806,20 @@ impl<'a> Loader<'a> {
         if member.contains('.') {
             return false;
         }
-        let Some(head_sym) = self.dot_receiver_binder(head) else {
+        // The receiver head names a VALUE place: a local binder / op param
+        // (`dot_receiver_binder`), OR — WI-723 (proposal 052) — a RULE, whose bare
+        // reference IS a `Relation[T]` value (WI-714). `person_row.where(λ)` is then a
+        // method call on that relation value (dispatched on the `Relation` sort), NOT a
+        // qualified name applied: the receiver becomes the same `var_ref(Ref(rule))` the
+        // bare-unqualified rule reference lowers to, so `where`'s row-lambda param
+        // (`(c: r.T) -> Bool`) hints the lambda binder at the relation's schema — the
+        // typer prerequisite the qualified-name flattening denied it. A sort/namespace
+        // head still resolves to `None` here (only Goal/Rule pass), keeping the applied
+        // `Sort.rule(args)` form on the qualified-name path.
+        let Some(head_sym) = self
+            .dot_receiver_binder(head)
+            .or_else(|| self.resolve_qualified_rule_readonly(head))
+        else {
             return false;
         };
         // Synthesized receiver: the `var_ref(name: Ref(binder))` shape

@@ -103,6 +103,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Relation.splitFirst", relation_split_first)?;
     register_if_present(interp, "anthill.prelude.Relation.negate", relation_negate)?;
     register_if_present(interp, "anthill.prelude.Relation.union", relation_union)?;
+    register_if_present(interp, "anthill.prelude.Relation.where_run", relation_where_run)?;
+    register_if_present(interp, "anthill.prelude.Relation.guarded_of", relation_guarded_of)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -1217,6 +1219,221 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
         vec![("left", (*qa).clone()), ("right", qb_aligned)],
     )?;
     Ok(Value::Relation { query: std::rc::Rc::new(disj), columns: cols_a })
+}
+
+/// `Relation.where_run` (WI-714 / proposal 052) — the RUNTIME back-end of `where`.
+/// The `guarded_of` macro has already compiled the row lambda into `cond`, a goal
+/// recipe whose column references are HOLES: `Var::Global` variables named by the
+/// schema field symbol (`c.x` → a var named `x`). Fill each hole with `r`'s real
+/// column variable of that name and wrap `guarded(query: r.query, condition:
+/// <goal>)` — a new LogicalQuery (the resolver lowers it to `[r.query's goals…,
+/// <goal>]`), so the result stays a composable Relation over `r`'s UNCHANGED
+/// schema. Same query-combining shape as `negate`/`union`; the hole-fill is the
+/// `where`-specific seam.
+fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r, cond] = expect_args::<2>("Relation.where_run", args)?;
+    let (query, columns) = expect_relation(r)?;
+    let goal = fill_column_holes(&interp.kb, &cond, &columns)?;
+    let guarded = interp.build_logical_query_value(
+        "guarded",
+        vec![("query", (*query).clone()), ("condition", goal)],
+    )?;
+    Ok(Value::Relation { query: std::rc::Rc::new(guarded), columns })
+}
+
+/// Replace each column HOLE in a goal-recipe `Value` — a `Var::Global` variable
+/// whose NAME is a schema field symbol (`guarded_of` mints it from `c.x`) — with
+/// `r`'s real column variable of that name (WI-714 `where_run`). Matching is by the
+/// interned field/column `Symbol`: the SAME symbol names the lambda's field access
+/// and the relation's column, so this is exact canonical equality, NOT a
+/// cross-scope short-name compare (WI-672). Every `Var::Global` in a `guarded_of`
+/// goal is a column hole (the translation introduces vars only for columns), so a
+/// hole naming no column — or a `Value::Node` occurrence, which never appears in an
+/// eval-built goal — is a loud error, never a silent drop.
+fn fill_column_holes(
+    kb: &crate::kb::KnowledgeBase,
+    v: &Value,
+    columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
+) -> Result<Value, EvalError> {
+    use crate::kb::term::Var;
+    match v {
+        Value::Entity { functor, pos, named } => {
+            let mut pos2 = Vec::with_capacity(pos.len());
+            for c in pos.iter() {
+                pos2.push(fill_column_holes(kb, c, columns)?);
+            }
+            let mut named2 = Vec::with_capacity(named.len());
+            for (k, c) in named.iter() {
+                named2.push((*k, fill_column_holes(kb, c, columns)?));
+            }
+            Ok(Value::Entity { functor: *functor, pos: pos2.into(), named: named2.into() })
+        }
+        Value::Var(Var::Global(hole)) => {
+            let name = hole.name();
+            let (_, vid) = columns.iter().find(|(cn, _)| *cn == name).ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "where_run: the compiled condition references column `{}`, which is not \
+                     in the relation's schema",
+                    kb.resolve_sym(name)
+                ))
+            })?;
+            Ok(Value::Var(Var::Global(*vid)))
+        }
+        Value::Node(_) => Err(EvalError::Internal(format!(
+            "where_run: unexpected {} carrier in a goal recipe",
+            v.type_name()
+        ))),
+        _ => Ok(v.clone()),
+    }
+}
+
+/// `Relation.guarded_of` (WI-714 / proposal 052) — the compile-time MACRO behind
+/// `where` (occurrence→occurrence, so the `[simp]` engine fires it at compile time,
+/// WI-722). It reads the row lambda `cond` and compiles its body — AS SYNTAX, never
+/// applied — into a goal recipe, then splices `where_run(r, <recipe>)`.
+///
+/// First increment: a single atomic predicate `pred(c.x, <lit>)` (e.g.
+/// `eq(c.x, 1)`). The predicate FUNCTOR is kept verbatim — the lambda's `eq`
+/// (`PartialEq.eq`) IS the resolver's eq connective, so there is no value→goal
+/// mapping. A field access `c.x` on the binder becomes a column HOLE: a fresh var
+/// NAMED by the field symbol `x`, which `where_run` fills with `r`'s real column of
+/// that name (canonical `Symbol` match, not a short-name compare). A literal becomes
+/// its value. Anything else is a loud compile error (LINQ's "cannot translate").
+/// `&&`/`||`/`!` nesting and `join` are later increments.
+fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
+    use std::rc::Rc;
+    let [r_arg, cond_arg] = expect_args::<2>("Relation.guarded_of", args)?;
+    let r_occ = match &r_arg {
+        Value::Node(o) => Rc::clone(o),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let cond_occ = match &cond_arg {
+        Value::Node(o) => Rc::clone(o),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+
+    // The condition must be a ROW LAMBDA `c -> <body>`; its binder scopes the
+    // columns. A non-lambda (e.g. a raw logic-variable goal) is rejected — that
+    // belongs in a rule, not the functional `where` (052 division of labour).
+    let (binder, body) = match cond_occ.as_expr() {
+        Some(Expr::Lambda { param, body }) => {
+            let binder = match param.as_pattern() {
+                Some(Pattern::Var { name, .. }) => *name,
+                _ => {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "a row lambda with a single binder (`c -> …`)",
+                        got: "a lambda whose parameter is not a plain binder".to_string(),
+                    })
+                }
+            };
+            (binder, Rc::clone(body))
+        }
+        _ => {
+            return Err(EvalError::TypeMismatch {
+                expected: "a row lambda (`c -> eq(c.x, …)`) as `where`'s condition",
+                got: "a non-lambda condition (a logic-variable goal belongs in a rule)".to_string(),
+            })
+        }
+    };
+
+    // Compile the lambda body, as syntax, into a goal recipe (column refs → holes).
+    let goal = compile_condition(interp, &body, binder)?;
+
+    // Splice `where_run(r, Spliced(goal))` — a normal runtime call the typer re-types
+    // and eval runs. The `Spliced` leaf carries the pre-built goal Value verbatim.
+    let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
+    let owner = r_occ.owner;
+    let spliced = NodeOccurrence::synthesized_expr(Expr::Spliced(goal), Rc::clone(&r_occ), pass, owner);
+    let where_run = interp
+        .kb
+        .try_resolve_symbol("anthill.prelude.Relation.where_run")
+        .ok_or_else(|| EvalError::Internal("WI-714: Relation.where_run unresolved".into()))?;
+    let call = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            functor: where_run,
+            pos_args: vec![Rc::clone(&r_occ), spliced],
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
+        r_occ,
+        pass,
+        owner,
+    );
+    Ok(Value::Node(call))
+}
+
+/// Compile a row-lambda condition body into a goal recipe `Value`, as syntax (never
+/// applied). First increment: one atomic predicate application `pred(args…)` — the
+/// functor is kept verbatim (the value predicate is the goal connective).
+fn compile_condition(
+    interp: &mut Interpreter,
+    body: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    binder: crate::intern::Symbol,
+) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence::Expr;
+    match body.as_expr() {
+        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
+            let mut pos = Vec::with_capacity(pos_args.len());
+            for a in pos_args {
+                pos.push(compile_operand(interp, a, binder)?);
+            }
+            let mut named = Vec::with_capacity(named_args.len());
+            for (k, a) in named_args {
+                named.push((*k, compile_operand(interp, a, binder)?));
+            }
+            Ok(Value::Entity { functor: *functor, pos: pos.into(), named: named.into() })
+        }
+        _ => Err(EvalError::TypeMismatch {
+            expected: "a goal-expressible predicate (`eq(c.x, …)`) as the `where` condition",
+            got: "a condition that does not translate to a query goal".to_string(),
+        }),
+    }
+}
+
+/// Compile one predicate operand: a column field-access `c.x` on the binder becomes
+/// a HOLE (a fresh var named `x`, filled by `where_run`); a literal becomes its value.
+fn compile_operand(
+    interp: &mut Interpreter,
+    occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    binder: crate::intern::Symbol,
+) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence::Expr;
+    use crate::kb::term::{Literal, Var};
+    match occ.as_expr() {
+        Some(Expr::DotApply { receiver, name, pos_args, named_args })
+            if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binder) =>
+        {
+            let hole = interp.kb.fresh_var(*name);
+            Ok(Value::Var(Var::Global(hole)))
+        }
+        Some(Expr::Const(lit)) => Ok(match lit {
+            Literal::Int(n) => Value::Int(*n),
+            Literal::Float(f) => Value::Float(f.0),
+            Literal::Bool(b) => Value::Bool(*b),
+            Literal::String(s) => Value::Str(s.clone()),
+            other => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "an Int/Float/Bool/String literal in the `where` condition",
+                    got: format!("an unsupported literal kind: {other:?}"),
+                })
+            }
+        }),
+        _ => Err(EvalError::TypeMismatch {
+            expected: "a column (`c.x`) or a literal in the `where` condition",
+            got: "an operand that is neither a row column nor a literal".to_string(),
+        }),
+    }
+}
+
+/// Is `occ` a reference to the row-lambda binder `binder`? A binder reference lowers
+/// to `var_ref(name)` (WI-552); accept the plain `Ref`/`Ident` forms defensively.
+fn is_binder_ref(occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, binder: crate::intern::Symbol) -> bool {
+    use crate::kb::node_occurrence::Expr;
+    matches!(
+        occ.as_expr(),
+        Some(Expr::VarRef { name }) | Some(Expr::Ref(name)) | Some(Expr::Ident(name)) if *name == binder
+    )
 }
 
 fn logical_stream_split_first(

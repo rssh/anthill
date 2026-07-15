@@ -21,6 +21,7 @@
 --   edge threads it so every inherited Stream op types at {Error}, not {}.
 sort anthill.prelude.Relation
   import anthill.prelude.{LogicalStream, Option, Pair, Unit}
+  import anthill.reflect.{NodeOccurrence, Term}
 
   sort T = ?              -- schema: named tuple of the free head parameters
   -- E is threaded abstractly (like FiniteStream/Stream) so the `provides` override
@@ -89,4 +90,40 @@ sort anthill.prelude.Relation
   -- union runs BOTH operands' search (`or` explores both branches), so both rows are
   -- incurred (both are {Error} today, but this stays sound if either ever carries more).
   operation union(a: Relation, b: Relation) -> Relation[T = a.T, E = {a.E, b.E}]
+
+  -- where — FILTER a relation by a row condition (WI-714 / proposal 052 §"Compiling
+  -- a row lambda into a query"). `where(r, c -> eq(c.x, 1))` keeps the solutions of
+  -- `r` for which the condition holds; schema is unchanged (T = r.T).
+  --
+  -- The condition is a ROW LAMBDA: its binder `c` names the row, so a column is
+  -- reached as a TYPED field access `c.x` (WI-638) resolved against `r`'s schema —
+  -- NOT a free logic variable. The lambda is NEVER APPLIED; it is compiled, as
+  -- syntax, into a `guarded` LogicalQuery (`eq`/`lt`/… → a goal atom, `c.x` → the
+  -- column's logic variable BY schema position, a literal → a term constant).
+  -- Anything not goal-expressible is a compile error (LINQ's "cannot translate").
+  --
+  -- Two-stage lowering (compile-time recipe, runtime fill):
+  --   * `where(?r, ?cond) <=> guarded_of(?r, ?cond) [simp]` fires at COMPILE time;
+  --     `guarded_of` is a MACRO (occurrence→occurrence, WI-722/043.1) that reads the
+  --     lambda + `r`'s schema and splices `where_run(r, <goal recipe>)`.
+  --   * `where_run` is the RUNTIME back-end: it fills the recipe's column HOLES with
+  --     `r`'s real column variables and wraps `guarded(r.query, <goal>)` — the same
+  --     query-combining step `negate`/`union` perform.
+  operation where(r: Relation, cond: (c: r.T) -> Bool) -> Relation[T = r.T, E = r.E]
+
+  rule where(?r, ?cond) <=> guarded_of(?r, ?cond) [simp]
+
+  -- The compile-time MACRO: an occurrence→occurrence op, so the `[simp]` engine
+  -- evaluates it at compile time (WI-722). It reads the row lambda `cond` and `r`'s
+  -- schema and returns a spliced `where_run(r, <recipe>)` occurrence. Backed by a
+  -- host builtin — the lambda→query translation is Rust (there is no reflect
+  -- LogicalQuery BUILD interface yet; that is a future enhancement).
+  operation guarded_of(r: NodeOccurrence, cond: NodeOccurrence) -> NodeOccurrence
+
+  -- The RUNTIME back-end — a query combinator like `negate`/`union`. Given `r` and
+  -- the compiled goal recipe (whose column holes are placeholder variables), align
+  -- the holes to `r`'s real column variables and wrap `guarded(r.query, <goal>)`: a
+  -- new LogicalQuery, so the result stays a composable Relation over `r`'s schema.
+  -- Body-less; the host builtin does the wrap.
+  operation where_run(r: Relation, cond: Term) -> Relation[T = r.T, E = r.E]
 end

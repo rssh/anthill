@@ -3553,7 +3553,16 @@ fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Valu
             Expr::Ref(name) | Expr::Ident(name) => *name,
             _ => return None,
         };
-        return env.lookup_var(name);
+        // WI-723: a dot-call receiver reference already TYPED in an earlier frame
+        // (`r.where(λ)` synthesizes `where(r, λ)` with `r` pre-typed + stamped) carries
+        // its type on the node — but a RULE reference (a `Relation[T]` value, WI-714) is
+        // not bound in the value env, so `lookup_var` misses it. Read the stamped
+        // `inferred_type` as a fallback so the receiver's schema still eliminates a
+        // sibling callback param's projection (`(c: r.T) -> Bool`) at hint time — the
+        // same threading a let-local receiver gets for free through the env. Env first:
+        // a still-flexible env binding is the live one; the stamp is only a fallback for
+        // a reference the env doesn't carry.
+        return env.lookup_var(name).or_else(|| arg.inferred_type());
     }
     None
 }
