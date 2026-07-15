@@ -85,7 +85,8 @@ The rules in `rules.anthill` drive backward chaining:
 
 ```anthill
 rule claimable(?id, ?desc)
-  :- WorkItem(id: ?id, status: Open, description: ?desc),
+  :- WorkItem(id: ?id, status: Open, description: ?d),
+     description_view(?d, ?desc),
      all_deps_verified(?id)
 ```
 
@@ -94,7 +95,8 @@ When the CLI runs `query "claimable(?id, ?desc)"`:
 1. Parse the query string → KB term with variables
 2. `kb.resolve([goal], config)` — SLD resolution
 3. Resolution matches `claimable` rule head → proves body goals:
-   - `WorkItem(id: ?id, status: Open, description: ?desc)` — partial entity expansion fills missing fields with `?`, then pattern-matches against WorkItem facts
+   - `WorkItem(id: ?id, status: Open, description: ?d)` — partial entity expansion fills the pattern's missing fields with `?`, then pattern-matches against WorkItem facts. (The fill is position-dependent since WI-716: a *pattern's* missing field is a wildcard, but a *fact's* missing optional field is stored as `none()` — which is why `description_view` and the `depends_on: none()` rule exist, WI-717.)
+   - `description_view(?d, ?desc)` — unwraps a present description (`some(?desc)`); an omitted one surfaces as `none` so the item is still listed
    - `all_deps_verified(?id)` — recursively walks dependency list through more rules
 4. Each successful proof yields a `Solution` with variable bindings
 5. CLI prints bound values via `TermPrinter`

@@ -1134,12 +1134,22 @@ entity Marker
 →  sort Marker { entity Marker }
 ```
 
+> **Omitted optional fields (surface semantics, WI-716).** Omitting an
+> `Option[…]`-typed field is position-dependent: in a **value position** (a
+> `fact`, or the head of an entity-deriving rule) the absent field denotes
+> `none()`; in a **pattern position** (a query, or a rule-body atom) it denotes
+> "matches anything". A reflect `Term`-typed field holds a *quoted pattern*, so
+> its content is pattern position even inside a fact — an entity omitted-field
+> there stays a wildcard (e.g. `fact FactHolds(pattern: E(id: ?x))`). So a rule
+> that matches an optional field structurally (`some(?x)`, `nil()`, `cons(…)`)
+> does NOT match a fact that omits the field — add a `none()` case when the
+> domain intends omitted to mean empty/absent (see WI-717).
+>
 > **See also — runtime representation.** How an entity value crosses between the
 > interpreter's `Value::Entity` and the hash-consed `Term::Fn` at runtime (fact
 > load, materialization, optional-field defaulting, 0-ary constructor storage) is
 > an internal-representation concern, documented in
-> [`docs/design/entity-term-mapping.md`](design/entity-term-mapping.md). It has no
-> bearing on the surface language described here.
+> [`docs/design/entity-term-mapping.md`](design/entity-term-mapping.md).
 
 ### 6.4 Operation and Rule Blocks
 

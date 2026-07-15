@@ -19,8 +19,13 @@ namespace anthill.stage0.workflow
     :- WorkItem(id: ?dep, status: Verified(at: ?))
 
   -- A work item has all dependencies satisfied if:
-  --   1. It has an empty depends_on list, or
+  --   1. It has no dependencies — an explicitly empty list, or the field
+  --      omitted entirely (stored as none() since WI-716; reads as "no
+  --      deps", the same normalization the CLI applies) — or
   --   2. All items in depends_on are Delivered or Verified.
+  rule all_deps_satisfied(?wi)
+    :- WorkItem(id: ?wi, depends_on: none())
+
   rule all_deps_satisfied(?wi)
     :- WorkItem(id: ?wi, depends_on: nil())
 
@@ -48,23 +53,33 @@ namespace anthill.stage0.workflow
   -- Status queries (convenience rules)
   -- ================================================================
 
+  -- A description slot viewed for listing: a present description unwraps
+  -- to its term; an omitted one (stored as none() since WI-716) surfaces
+  -- as none() so the item is still listed rather than dropped (WI-717).
+  rule description_view(some(?d), ?d)
+  rule description_view(none(), none())
+
   -- Find all open work items
   rule open_item(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: some(?desc))
+    :- WorkItem(id: ?id, status: Open, description: ?d),
+       description_view(?d, ?desc)
 
   -- Find all work items ready to be claimed
   -- (Open + all dependencies satisfied)
   rule claimable(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: some(?desc)),
+    :- WorkItem(id: ?id, status: Open, description: ?d),
+       description_view(?d, ?desc),
        all_deps_satisfied(?id)
 
   -- Find blocked work items (Open + at least one unmet dependency).
   rule blocked(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: some(?desc)),
+    :- WorkItem(id: ?id, status: Open, description: ?d),
+       description_view(?d, ?desc),
        has_unmet_deps(?id)
 
   -- Find delivered items awaiting review
   rule needs_review(?id, ?desc)
-    :- WorkItem(id: ?id, status: Delivered(agent: ?, at: ?), description: some(?desc))
+    :- WorkItem(id: ?id, status: Delivered(agent: ?, at: ?), description: ?d),
+       description_view(?d, ?desc)
 
 end

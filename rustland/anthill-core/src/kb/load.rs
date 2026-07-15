@@ -2556,6 +2556,19 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
     kb.assert_rule_debruijn_with_nodes(head, vec![], er_sort_as_sort_term, er_sort_as_sort_term, None);
 }
 
+/// WI-719: register one prelude constructor (`nil`/`cons`/`none`/`some`) as a
+/// constructor of `parent_sort` at bootstrap, so `is_constructor_symbol` — and
+/// with it the order-dependent alloc/discrim `Fn{c,[],[]}`↔`Ref(c)` canon — is
+/// settled before any project file loads. Builds the identity as the bare
+/// `Ref(c)` that `alloc` canonicalizes a nullary constructor `Fn` into, so it is
+/// the SAME TermId `name_to_sort_term` produces once the constructor is
+/// registered — the load-time re-registration then dedups on the functor symbol
+/// (`register_entity_of`).
+fn register_prelude_constructor(kb: &mut KnowledgeBase, ctor_sym: Symbol, parent_sort: TermId) {
+    let ctor_term = kb.alloc(Term::Ref(ctor_sym));
+    kb.register_entity_of(ctor_term, parent_sort);
+}
+
 /// Create the stdlib scope hierarchy for names the loader references directly.
 ///
 /// Mirrors the structure of `stdlib/anthill/prelude/{list,option}.anthill`
@@ -2608,8 +2621,22 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     });
     // WI-521: defined (registers in `by_qualified_name`) but NOT `_global`-imported
     // — the prelude resolves these via the `prelude_qualified` fallback.
-    kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
-    kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
+    let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
+    let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
+    // WI-719: register List's constructors as constructors NOW, at bootstrap,
+    // so `is_constructor_symbol(nil/cons)` answers true before any project file
+    // loads. Without this the alloc canon (`Fn{c,[],[]}`→`Ref(c)`, gated on
+    // `is_constructor_symbol`) is order-dependent: a fact carrying a bare `nil`
+    // converted before list.anthill's sort body runs `register_entity_of` keys
+    // it `Fn{nil,0,0}`, while a rule pattern loaded afterward keys it `Ref(nil)`
+    // — a silent discrim miss (WI-697). Pre-registering makes the canon, and so
+    // the discrim key, load-order-independent. The identity is built as `Ref(c)`
+    // to match load's post-registration `name_to_sort_term` spelling, so the two
+    // `register_entity_of` calls share ONE TermId (dedup in `register_entity_of`
+    // tolerates a spelling mismatch regardless). `list.anthill`'s later scan
+    // re-registers idempotently.
+    register_prelude_constructor(kb, nil_sym, list_term);
+    register_prelude_constructor(kb, cons_sym, list_term);
 
     // anthill.prelude.Type sort — the opaque, term-backed type handle (WI-361).
     // Its structural forms now live in `TypeExtractor` (below); `Type` itself is
@@ -2708,8 +2735,18 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         is_enclosing: true,
     });
     // WI-521: defined but NOT `_global`-imported (prelude_qualified fallback).
-    kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
-    kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
+    let some_sym = kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
+    let none_sym = kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
+    // WI-719: pre-register Option's constructors at bootstrap (see the List
+    // block above). `none` is the load-bearing case — it is NULLARY, so a bare
+    // `none` fact field converted before option.anthill loads keys `Fn{none,0,0}`
+    // while a `some(?)`/omitted-`none()` rule pattern keys `Ref(none)`, the
+    // WI-697 discrim miss that made `anthill query ... -p stdlib -p project`
+    // (project sorting before stdlib) return no solutions. It also stabilizes
+    // the WI-716 omitted-optional `none()` fill: the fill builds `Fn{none}`,
+    // which now canonicalizes to the same `Ref(none)` the query expects.
+    register_prelude_constructor(kb, none_sym, option_term);
+    register_prelude_constructor(kb, some_sym, option_term);
 
     // WI-644 / proposal 004: PartialEq / PartialOrd are the partial bases that
     // hold the eq/neq and gt/lt/gte/lte OPERATIONS; Eq / Ordered are the lawful /
