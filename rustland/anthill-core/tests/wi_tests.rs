@@ -47,6 +47,9 @@ mod wi714_where_test;
 #[path = "include/wi723_row_lambda_binder_test.rs"]
 mod wi723_row_lambda_binder_test;
 
+#[path = "include/wi724_eq_int64_coherence_test.rs"]
+mod wi724_eq_int64_coherence_test;
+
 #[path = "include/wi023_quantified_constraint_test.rs"]
 mod wi023_quantified_constraint_test;
 
