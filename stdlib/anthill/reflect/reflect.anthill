@@ -384,10 +384,6 @@ namespace anthill.reflect
     -- (the `facts_of` precedent; WI-632).
     operation sort_template(kb: KB, sort: Type) -> LogicalQuery
 
-    -- Instantiate a sort template with bindings → concrete query
-    operation instantiation_query(kb: KB, sort: Type, bindings: Substitution)
-      -> LogicalQuery
-
     -- Mutation: assert a fact and check registered constraints.
     -- If a constraint is violated, returns none.
     -- The KB analyzes constraint clauses and optimizes recognizable

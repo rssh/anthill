@@ -773,14 +773,6 @@ impl KB for KbBridge {
         LogicalQuery::SortQuery { sort: rterm(sort.value().clone()) }
     }
 
-    fn instantiation_query(
-        &self,
-        sort: Type,
-        _bindings: &dyn Substitution,
-    ) -> LogicalQuery {
-        LogicalQuery::SortQuery { sort: rterm(sort.value().clone()) }
-    }
-
     /// Assert a fact with integrity checking (WI-546). The fact head must be a
     /// hash-consed term (a denoted value-fact head is loud via `expect_term`).
     /// The fact's sort — the key `assert_checked` triggers guards on and indexes
