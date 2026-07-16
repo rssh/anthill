@@ -107,6 +107,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Relation.guarded_of", relation_guarded_of)?;
     register_if_present(interp, "anthill.prelude.Relation.join_run", relation_join_run)?;
     register_if_present(interp, "anthill.prelude.Relation.conjoin_of", relation_conjoin_of)?;
+    register_if_present(interp, "anthill.prelude.Relation.project_run", relation_project_run)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -1564,6 +1565,66 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let guarded =
         interp.build_logical_query_value("guarded", vec![("query", conj), ("condition", goal)])?;
     Ok(Value::Relation { query: std::rc::Rc::new(guarded), columns: merged })
+}
+
+/// `Relation.project_run` (WI-714 / proposal 052) — the RUNTIME back-end of `project`
+/// (the distribute-dot `r.(f1, f2)`), a column restriction rather than a query
+/// combinator. `spec` is the compile-time projection map the typer spliced: a
+/// `Value::Tuple` whose named fields are `result-key ↦ Str(source-column-name)`.
+/// Rebuild `columns` as `[(result-key, r's column variable of source-name)]` —
+/// SELECTING (and RENAMING, when a result key differs from its source) — while leaving
+/// `r.query` UNCHANGED: `projected` is a resolver pass-through (kb/execute.rs), so 052
+/// applies the restriction HERE at materialization. Only the kept columns are read into
+/// each answer row; a dropped column is still SOLVED, so the row multiplicity is the
+/// source relation's (bag projection, OQ6). Source names match `r`'s columns by INTERNED
+/// symbol — the same canonical seam `where_run` fills holes on, NOT a short-name compare
+/// (WI-672). A source naming no column is a loud error, never a silent drop.
+fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r, spec] = expect_args::<2>("Relation.project_run", args)?;
+    let (query, columns) = expect_relation(r)?;
+    let pairs = match &spec {
+        Value::Tuple { named, .. } => named,
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "a projection spec tuple (result-key ↦ source-column-name)",
+                got: other.type_name().to_string(),
+            })
+        }
+    };
+    let mut projected: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
+        Vec::with_capacity(pairs.len());
+    for (result_key, source) in pairs.iter() {
+        let source_name = match source {
+            Value::Str(s) => s.as_str(),
+            other => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "a source column name (String) in the projection spec",
+                    got: other.type_name().to_string(),
+                })
+            }
+        };
+        // Resolve the source name to its canonical interned `Symbol`, then match `r`'s column
+        // by SYMBOL equality — a column's name symbol is the canonical intern-map entry for
+        // its short name (`rule_head_var_slots` names positional columns by the head var's
+        // `.name()` and named columns by the head field key, both global-interned), so
+        // `lookup_symbol` round-trips to exactly the column symbol. This is the same
+        // interned-symbol seam `where_run` fills holes on (its holes carry the field symbol
+        // `guarded_of` interned at compile time), NOT a short-name compare (WI-672). A source
+        // that resolves to no column is a loud error (typer already verified the column
+        // exists in the schema, so this only fires on a programmatically-built spec).
+        let vid = interp
+            .kb
+            .lookup_symbol(source_name)
+            .and_then(|sy| columns.iter().find(|(cn, _)| *cn == sy).map(|(_, v)| *v))
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "project_run: the projection selects column `{source_name}`, which is not \
+                     in the relation's schema"
+                ))
+            })?;
+        projected.push((*result_key, vid));
+    }
+    Ok(Value::Relation { query, columns: projected.into() })
 }
 
 /// Compile a row-lambda condition body into a goal recipe `Value`, as syntax (never

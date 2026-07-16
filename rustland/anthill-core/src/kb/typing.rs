@@ -3243,50 +3243,298 @@ fn relation_type_from_columns(
         .filter(|c| seen_names.insert(c.name))
         .map(|c| (c.name, c.ty))
         .collect();
-    // Schema T: 0 → Unit, 1 → the element (1-collapse), else the named tuple.
-    let schema = match columns.len() {
-        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
-        1 => columns.into_iter().next().unwrap().1,
-        _ => named_tuple_value(kb, &columns, sp, None),
-    };
-    // `Relation[T = schema, E = {Error}]`. The base sort IS the functor
-    // (`make_parameterized_type` producer flip); `parameterized_value` keeps a ground
-    // schema hash-consed and a denoted-bearing one occurrence-carried. `T` binds the
-    // first VALUE param; the EFFECT-ROW param `E` is pinned to `{Error}` — running a
-    // relation is not pure (search can raise, 026.1 `execute effects Error`), and the
-    // `provides LogicalStream[T, E]` edge threads this row so every inherited Stream
-    // op types at `{Error}`, not `{}` (Typing §3). Pinned HERE (at the value site),
-    // not on the sort — a concrete override on the abstract sort op would widen it
-    // (WI-347); the sort threads `E` abstractly (like FiniteStream).
     let relation_sym = kb
         .try_resolve_symbol("anthill.prelude.Relation")
         .ok_or(TypeError::UnresolvedName { span, name: sym })?;
-    // The `{Error}` access-effect row (a canonical `present(Error)` effects row).
-    let error_row: Option<TermId> = kb
-        .try_resolve_symbol("anthill.prelude.Error")
-        .map(|es| {
-            let label = kb.make_sort_ref(es);
-            kb.build_canonical_effects_rows(&[label])
-        });
-    let params: Vec<(Symbol, TermId)> = sort_type_params_as_pairs(kb, relation_sym)
-        .iter()
-        .copied()
-        .collect();
+    // The EFFECT-ROW param `E` is pinned to `{Error}` — running a relation is not pure
+    // (search can raise, 026.1 `execute effects Error`), and the `provides LogicalStream[T,
+    // E]` edge threads this row so every inherited Stream op types at `{Error}`, not `{}`
+    // (Typing §3). Pinned HERE (at the value site), not on the sort — a concrete override on
+    // the abstract sort op would widen it (WI-347); the sort threads `E` abstractly.
+    let error_row = error_effect_row(kb);
+    Ok(assemble_relation_type(kb, relation_sym, &columns, error_row, sp))
+}
+
+/// WI-714 — the canonical `{Error}` access-effect row (a `present(Error)` effects row), the
+/// floor every relation value carries (running a query can raise, 026.1 `execute effects
+/// Error`). `None` only if `anthill.prelude.Error` is unresolvable (prelude not loaded).
+fn error_effect_row(kb: &mut KnowledgeBase) -> Option<Value> {
+    kb.try_resolve_symbol("anthill.prelude.Error").map(|es| {
+        let label = kb.make_sort_ref(es);
+        Value::term(kb.build_canonical_effects_rows(&[label]))
+    })
+}
+
+/// WI-714 — assemble `Relation[T = <schema from `columns`>, E = <effect_row>]`. The schema
+/// 1-collapses to the element for one column, `Unit` for none, else the named tuple keyed by
+/// the column symbols in the GIVEN order (NOT re-sorted, so the type's field order matches
+/// the runtime materialized row). `effect_row` binds the sort's effect-row param
+/// (`sort_param_is_effect_row`) when `Some` — `{Error}` for a fresh relation reference
+/// ([`relation_type_from_columns`]), the receiver's threaded `E` for a projection
+/// ([`projected_relation_type`]). `make_parameterized_type`'s producer flip makes the base
+/// sort the functor; `parameterized_value` keeps a ground schema hash-consed and a
+/// denoted-bearing one occurrence-carried.
+fn assemble_relation_type(
+    kb: &mut KnowledgeBase,
+    relation_sym: Symbol,
+    columns: &[(Symbol, Value)],
+    effect_row: Option<Value>,
+    sp: crate::span::SourceSpan,
+) -> Value {
+    let schema = match columns.len() {
+        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
+        1 => columns[0].1.clone(),
+        _ => named_tuple_value(kb, columns, sp, None),
+    };
+    let params = sort_type_params_as_pairs(kb, relation_sym);
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
     let mut schema = Some(schema);
-    for (psym, _) in params {
-        let short = short_name_of(kb.resolve_sym(psym)).to_string();
+    for (psym, _) in params.iter() {
+        let short = short_name_of(kb.resolve_sym(*psym)).to_string();
         if sort_param_is_effect_row(kb, relation_sym, &short) {
-            if let Some(row) = error_row {
-                bindings.push((psym, Value::term(row)));
+            if let Some(e) = &effect_row {
+                bindings.push((*psym, e.clone()));
             }
         } else if let Some(s) = schema.take() {
             // The first value parameter is the schema `T`.
-            bindings.push((psym, s));
+            bindings.push((*psym, s));
         }
     }
     let base = kb.make_sort_ref(relation_sym);
-    Ok(parameterized_value(kb, base, &bindings, sp, None))
+    parameterized_value(kb, base, &bindings, sp, None)
+}
+
+/// WI-714 (proposal 052) — PROJECTION `r.(f1, f2)`. The projected `Relation[T', E]`
+/// TYPE for selecting `projections` (an ordered `(result-key, source-column-short-name)`
+/// map — bare `r.(f)` auto-labels result = source, rename `r.(a: f)` differs) from a
+/// relation whose type is `recv_ty`. The receiver's schema `T` (a NAMED TUPLE — a
+/// 1-collapsed / membership relation has no named column to select by name) supplies
+/// each kept column's TYPE; the projected schema 1-collapses to the element for one
+/// kept column, `Unit` for none, else the named tuple keyed by the RESULT keys. The
+/// access-effect row `E` threads through unchanged (projection runs no extra search).
+/// `None` when the receiver is not a Relation, its schema is not a named tuple, or a
+/// source names no column — the caller then falls through (dot dispatch →
+/// `DotDispatchNoMatch`; the tuple pre-check → ordinary tuple typing).
+fn projected_relation_type(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    projections: &[(Symbol, String)],
+    sp: crate::span::SourceSpan,
+) -> Option<Value> {
+    let relation_sym = kb.try_resolve_symbol("anthill.prelude.Relation")?;
+    if sort_functor_of_view(kb, recv_ty) != Some(relation_sym) {
+        return None;
+    }
+    let schema = extract_type_param(kb, recv_ty, "T")?;
+    let fields = match extract_type(kb, &schema) {
+        TypeExtractor::NamedTuple(fs) => fs,
+        _ => return None,
+    };
+    // Resolve each source column against the schema by SHORT name — the schema field
+    // symbol IS the runtime column symbol (both from `rule_head_var_slots`), so this is
+    // the schema's own field lookup (WI-638 mode 3), not a cross-scope compare (WI-672).
+    let mut proj_columns: Vec<(Symbol, Value)> = Vec::with_capacity(projections.len());
+    for (result_key, source) in projections {
+        let col_ty = fields
+            .iter()
+            .find_map(|(f, t)| (short_name_of(kb.resolve_sym(*f)) == *source).then(|| t.clone()))?;
+        proj_columns.push((*result_key, col_ty));
+    }
+    // Reassemble `Relation[T = <projected schema>, E = recv's E]` via the shared builder
+    // (1-collapse / Unit / named-tuple + param-threading). The effect row is the RECEIVER's
+    // (threaded, not re-pinned) — projection adds no search, and threading `r.E` matches
+    // `where_run`/`join_run`. `E` is always present on a real relation value (pinned at every
+    // producer), but FLOOR to `{Error}` if it is ever absent so a projected relation never
+    // silently narrows below the `{Error}` access floor `relation_type_from_columns` pins.
+    let e_row = extract_type_param(kb, recv_ty, "E").or_else(|| error_effect_row(kb));
+    Some(assemble_relation_type(kb, relation_sym, &proj_columns, e_row, sp))
+}
+
+/// WI-714 (proposal 052) — synthesize the `project_run(receiver, <spec>)` call AND its
+/// projected type for a distribute-dot projection over a relation. `project` carries no
+/// lambda, so — unlike `where`/`join` — there is NO compile-time macro: the typer builds
+/// the runtime call directly and stamps the projected schema ([`projected_relation_type`]).
+/// The spec is a `Value::Tuple` (result-key ↦ `Str(source-name)`) spliced as a `Term`
+/// carrier — the same compile-time→runtime handoff `where`/`join` use — which the runtime
+/// `project_run` reads to rebuild the relation's materialized `columns`. `None` when the
+/// projection does not type-check ([`projected_relation_type`]), so the caller falls
+/// through.
+fn build_relation_projection(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: &Value,
+    recv_effects: &[Value],
+    receiver_node: &Rc<NodeOccurrence>,
+    projections: &[(Symbol, String)],
+    occ: &Rc<NodeOccurrence>,
+) -> Option<TypeResult> {
+    let projected_ty = projected_relation_type(kb, recv_ty, projections, occ.span)?;
+    // The runtime spec: a `Value::Tuple` mapping each RESULT key to its source column
+    // NAME (a `Value::Str`), in projection order. `project_run` selects `r`'s column of
+    // that source name and re-keys it to the result key.
+    let spec_named: Vec<(Symbol, Value)> =
+        projections.iter().map(|(k, src)| (*k, Value::Str(src.clone()))).collect();
+    let spec = Value::Tuple { pos: Vec::new().into(), named: spec_named.into() };
+    let pass = super::simp_rewrite::simp_pass(kb);
+    // Splice the spec as a `Term` carrier (the `project_run` `spec: Term` slot); the
+    // `Expr::Spliced` typer arm reads `inferred_type`, so stamp it (as `where`/`join` do).
+    let spliced =
+        NodeOccurrence::synthesized_expr(Expr::Spliced(spec), Rc::clone(occ), pass, occ.owner);
+    let term_ty = Value::term(kb.make_sort_ref_by_name("anthill.reflect.Term"));
+    spliced.set_inferred_type(term_ty);
+    let project_run = kb.try_resolve_symbol("anthill.prelude.Relation.project_run")?;
+    let synth = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            functor: project_run,
+            pos_args: vec![Rc::clone(receiver_node), spliced],
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    );
+    // No re-typing against `project_run`'s (widening `-> Relation[T = r.T]`) signature —
+    // stamp the exact projected schema directly (the field-access INC-1b pattern). A
+    // later re-visit re-derives it idempotently via [`relation_projection_type`].
+    synth.set_inferred_type(projected_ty.clone());
+    Some(TypeResult { ty: projected_ty, env: env.clone(), effects: recv_effects.to_vec(), node: synth })
+}
+
+/// WI-714 — the `(receiver, source-column-short-name)` of a tuple field that is a bare
+/// single-column access `rel.c` on a relation VALUE — an `Expr::DotApply { receiver,
+/// name }` (the distribute-dot's desugaring over a value receiver, zero call args).
+/// `None` for any other field shape (including a bare rule-ref receiver, whose members
+/// desugar to `field_access(…, Ident)` and error before reaching here — that form needs
+/// a `let` binding first, the WI-443/F1 dot-access limitation `where`/`join` share), so
+/// the tuple falls through to ordinary tuple typing.
+fn relation_column_access_parts(
+    kb: &KnowledgeBase,
+    field: &Rc<NodeOccurrence>,
+) -> Option<(Rc<NodeOccurrence>, String)> {
+    match field.as_expr()? {
+        Expr::DotApply { receiver, name, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            Some((Rc::clone(receiver), short_name_of(kb.resolve_sym(*name)).to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// WI-714 — do two projection-field receiver occurrences denote the SAME relation? The
+/// distribute-dot shares ONE receiver across its members (`convert.rs`), so a genuine
+/// projection's fields all carry the same simple reference (a let-bound var, a bare rule
+/// ref). Conservative: only leaf references compare equal (a computed receiver —
+/// `r.where(..).​(f1, f2)` — is a follow-up), so a non-matching shape falls through to
+/// ordinary tuple typing rather than mis-firing.
+fn projection_receivers_same(a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) -> bool {
+    if Rc::ptr_eq(a, b) {
+        return true;
+    }
+    fn leaf_sym(occ: &NodeOccurrence) -> Option<Symbol> {
+        match occ.as_expr()? {
+            Expr::Var(Var::Global(v)) => Some(v.name()),
+            Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => Some(*s),
+            _ => None,
+        }
+    }
+    match (leaf_sym(a), leaf_sym(b)) {
+        (Some(sa), Some(sb)) => sa == sb,
+        _ => false,
+    }
+}
+
+/// WI-714 — the `Relation[T]` type of a projection's receiver: a let-bound relation var
+/// (env), a bare rule reference (a `Relation` value, WI-714 C2, not in the value env),
+/// or a computed relation the receiver node already carries stamped. Companion readers
+/// [`varref_arg_env_type`] / [`relation_ref_arg_type`] the where/join hint path uses.
+fn projection_receiver_type(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    receiver: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    varref_arg_env_type(env, receiver)
+        .or_else(|| relation_ref_arg_type(kb, receiver))
+        .or_else(|| receiver.inferred_type())
+}
+
+/// WI-714 (proposal 052) — recognize a name-keyed row tuple `(f1: rel.f1, f2: rel.f2)`
+/// (rename `(a: rel.f1, …)`) ALL of whose fields are single-column accesses on the SAME
+/// relation `rel` as a PROJECTION `r.(f1, f2)` and synthesize the projected relation.
+/// Runs BEFORE the tuple checker's arg-error aggregation, since each `rel.c` field FAILS
+/// ordinary dot dispatch (a `Relation` has no member `c`). Requires ≥2 named fields (a
+/// single member 1-collapses at convert to a bare `rel.c`, handled by dot dispatch); a
+/// positional field, a non-`rel.c` field, or fields on differing receivers fall through
+/// to ordinary tuple typing.
+fn try_relation_projection_tuple(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    positional: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    occ: &Rc<NodeOccurrence>,
+) -> Option<TypeResult> {
+    if positional > 0 || named_args.len() < 2 {
+        return None;
+    }
+    let mut receiver: Option<Rc<NodeOccurrence>> = None;
+    let mut projections: Vec<(Symbol, String)> = Vec::with_capacity(named_args.len());
+    for (label, field) in named_args {
+        let (recv_occ, source) = relation_column_access_parts(kb, field)?;
+        match &receiver {
+            None => receiver = Some(recv_occ),
+            Some(r) => {
+                if !projection_receivers_same(r, &recv_occ) {
+                    return None;
+                }
+            }
+        }
+        projections.push((*label, source));
+    }
+    let receiver = receiver?;
+    let recv_ty = projection_receiver_type(kb, env, &receiver)?;
+    // No expr effects: the receiver here is always a LEAF ref (a let-bound var / bare rule
+    // ref — `projection_receivers_same` matches only leaves), whose evaluation is pure, and
+    // building the `Value::Relation` is itself pure (search runs only on consumption, via the
+    // type's `provides` edge). So `&[]` is exact, not incidental. NOTE: if this leaf
+    // restriction is ever relaxed to admit a COMPUTED receiver (`r.where(..).(f1,f2)`), thread
+    // that receiver's effects here — as the single-column dot-dispatch mode already does.
+    build_relation_projection(kb, env, &recv_ty, &[], &receiver, &projections, occ)
+}
+
+/// WI-714 — re-derive a synthesized `project_run(r, <spec>)` call's projected type,
+/// idempotency guard for a RE-VISIT (the field-access INC-1b pattern). The projected
+/// schema is stamped once at synthesis; unlike `where_run`/`join_run` — whose declared
+/// returns (`Relation[T = r.T]` / `Concat[A, B]`) are self-correct on a re-type — a
+/// projection's schema is a SUBSET/rename of `r.T`, inexpressible as a fixed signature,
+/// so were a later pass to re-type this call against `project_run`'s nominal
+/// `-> Relation[T = r.T]` it would silently WIDEN to the full schema. The current passes
+/// don't re-type a user-op projection, so this is a guard, not a hot path; it reads the
+/// projection map back from the spliced spec and recomputes from the receiver's type.
+/// `None` ⇒ not a `project_run` projection call — fall through to ordinary op typing.
+fn relation_projection_type(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+) -> Option<Value> {
+    let project_run = kb.try_resolve_symbol("anthill.prelude.Relation.project_run")?;
+    if fn_sym != project_run || pos_args.len() != 2 || !named_args.is_empty() {
+        return None;
+    }
+    let projections: Vec<(Symbol, String)> = match pos_args[1].as_expr()? {
+        Expr::Spliced(Value::Tuple { named, .. }) => named
+            .iter()
+            .map(|(k, v)| match v {
+                Value::Str(s) => Some((*k, s.clone())),
+                _ => None,
+            })
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    let recv_ty = pos_results.first()?.as_ref().ok().map(|r| r.ty.clone())?;
+    projected_relation_type(kb, &recv_ty, &projections, pos_args[0].span)
 }
 
 /// WI-714 — the identity of a rule-head argument SLOT, stable across a relation's
@@ -5732,6 +5980,29 @@ fn build_type(
                 }
             }
 
+            // WI-714 (proposal 052) — FOURTH dot-dispatch mode: a zero-arg member naming
+            // a COLUMN of a RELATION receiver is a single-column PROJECTION `r.f` (also
+            // `r.(f)`, which 1-collapses to this at convert). Select that column, the
+            // result 1-collapsing to its element (`person_row.name : Relation[String]`).
+            // Multi-column `r.(f1, f2)` is the name-keyed-tuple form, recognized at the
+            // tuple checker's pre-check; this arm is the single-member / 1-collapse leaf.
+            // Sits last: an ordinary op/field member already resolved above.
+            if pos_nodes.is_empty() && named_nodes.is_empty() {
+                let member_short = short_name_of(kb.resolve_sym(member)).to_string();
+                if let Some(tr) = build_relation_projection(
+                    kb,
+                    &env,
+                    &recv.ty,
+                    &recv.effects,
+                    &receiver_node,
+                    &[(member, member_short)],
+                    &occ,
+                ) {
+                    results.push(Ok(tr));
+                    return;
+                }
+            }
+
             // No method and no field matched → clear diagnostic at the dot span.
             results.push(Err(TypeError::DotDispatchNoMatch {
                 span: dot_span,
@@ -6646,6 +6917,19 @@ fn check_apply_iter(
     }
 
     if let Some(ty) = field_access_projection_type(kb, fn_sym, pos_args, named_args, pos_results, span) {
+        let effects = pos_results.first()
+            .and_then(|r| r.as_ref().ok())
+            .map(|r| r.effects.clone())
+            .unwrap_or_default();
+        return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
+    }
+
+    // WI-714 (proposal 052) — idempotency guard for a synthesized `project_run(r, <spec>)`
+    // PROJECTION call (the distribute-dot `r.(f1, f2)`): were it re-visited, re-derive its
+    // projected schema rather than widen to `project_run`'s nominal `-> Relation[T = r.T]`
+    // (the field-access idempotency peer above, for the column-restriction op). Sits before
+    // ordinary op typing so any re-type stays exact.
+    if let Some(ty) = relation_projection_type(kb, fn_sym, pos_args, named_args, pos_results) {
         let effects = pos_results.first()
             .and_then(|r| r.as_ref().ok())
             .map(|r| r.effects.clone())
@@ -16085,6 +16369,16 @@ fn check_tuple_literal_constructor(
     if pos_results.is_empty() && named_results.is_empty() {
         let unit_ty = kb.make_sort_ref_by_name("anthill.prelude.Unit");
         return Ok(TypeResult::pure(unit_ty, env.clone(), Rc::clone(occ)));
+    }
+
+    // WI-714 (proposal 052) — a name-keyed row tuple all of whose fields are single-
+    // column accesses `rel.c` on the SAME relation IS a PROJECTION `r.(f1, f2)` (the
+    // distribute-dot desugars to this tuple). Recognize it BEFORE arg-error aggregation:
+    // each `rel.c` field FAILS ordinary dot dispatch (a `Relation` has no member `c`),
+    // so `collect_arg_errors` would otherwise report those failures instead. A tuple
+    // that is NOT such a projection falls through to ordinary tuple typing unchanged.
+    if let Some(tr) = try_relation_projection_tuple(kb, env, pos_results.len(), named_args, occ) {
+        return Ok(tr);
     }
 
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
