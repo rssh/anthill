@@ -1583,6 +1583,153 @@ fn named_tuple_value(
     }
 }
 
+/// WI-714 (proposal 052) — the INTERNAL type-level operation behind the `Concat[A, B]`
+/// type constructor: given two NAMED-TUPLE types, produce the named tuple whose fields are
+/// `A`'s followed by `B`'s. Both operands must be named tuples with DISJOINT field names;
+/// a non-named-tuple operand (a 1-collapse / `Unit` relation schema, a scalar) or a
+/// field-name collision is an error, returned as a message [`reduce_concat_in_type`]
+/// wraps in a `TypeError`. `Concat` is a type FORM (the surface a signature writes); this
+/// is its reduction — the projection precedent (`ExprCarried` is the form,
+/// `project_type_member` its reduction). The result is an ordinary named tuple.
+fn concat_named_tuple_types(
+    kb: &mut KnowledgeBase,
+    a: &Value,
+    b: &Value,
+    span: crate::span::SourceSpan,
+) -> Result<Value, String> {
+    let fa = match extract_type(kb, a) {
+        TypeExtractor::NamedTuple(f) => f,
+        _ => return Err("`concat` operand `a` must be a named-tuple type (a relation with at \
+                         least two named columns); a 1-collapse / membership schema is not \
+                         supported".to_string()),
+    };
+    let fb = match extract_type(kb, b) {
+        TypeExtractor::NamedTuple(f) => f,
+        _ => return Err("`concat` operand `b` must be a named-tuple type (a relation with at \
+                         least two named columns); a 1-collapse / membership schema is not \
+                         supported".to_string()),
+    };
+    let mut merged: Vec<(Symbol, Value)> = Vec::with_capacity(fa.len() + fb.len());
+    merged.extend(fa);
+    for (name, ty) in fb {
+        if merged.iter().any(|(n, _)| *n == name) {
+            return Err(format!(
+                "`concat` operands share the field name `{}` — a merged schema requires \
+                 disjoint field names (rename one, or project first)",
+                kb.resolve_sym(name)
+            ));
+        }
+        merged.push((name, ty));
+    }
+    Ok(named_tuple_value(kb, &merged, span, None))
+}
+
+/// WI-714 — does a type mention the `Concat` type constructor ANYWHERE? A cheap per-op
+/// gate (over the DECLARED signature type, like `op_has_projection`) so only a signature
+/// that actually writes `Concat[..]` pays for [`reduce_concat_in_type`] at each call.
+/// Recurses through EVERY carrier — parameterized bindings, arrow parts, named-tuple
+/// fields, effect rows — mirroring [`value_contains_projection`] so the gate never misses a
+/// `Concat` that the reducer would then have to surface (loud error over silent skip).
+fn type_mentions_concat(kb: &KnowledgeBase, ty: &Value) -> bool {
+    let Some(concat_sym) = kb.try_resolve_symbol("anthill.prelude.Concat") else { return false };
+    fn walk(kb: &KnowledgeBase, ty: &Value, concat_sym: Symbol) -> bool {
+        match extract_type(kb, ty) {
+            TypeExtractor::Parameterized { base, bindings } => {
+                base == concat_sym || bindings.iter().any(|(_, v)| walk(kb, v, concat_sym))
+            }
+            TypeExtractor::Arrow { param, result, effects } => {
+                walk(kb, &param, concat_sym)
+                    || walk(kb, &result, concat_sym)
+                    || walk(kb, &effects, concat_sym)
+            }
+            TypeExtractor::NamedTuple(fields) => {
+                fields.iter().any(|(_, v)| walk(kb, v, concat_sym))
+            }
+            TypeExtractor::EffectsRows(e) => walk(kb, &e, concat_sym),
+            _ => false,
+        }
+    }
+    walk(kb, ty, concat_sym)
+}
+
+/// WI-714 — evaluate the `Concat` type constructor wherever it appears in a type:
+/// `Concat[A = <nt>, B = <nt>]` reduces to the named tuple concatenating the two operands'
+/// fields ([`concat_named_tuple_types`]). This is the INTERNAL type-level operation behind
+/// the `Concat` form — keyed on the `Concat` sort symbol and evaluated at the SAME
+/// return-type normalization boundary the `s.T` projection is (`project_type_member`), so
+/// ANY signature may write it; never keyed on a domain operation's identity. Recurses
+/// through parameterized BINDINGS (where a schema-producing `Concat` sits — the `T` binding
+/// of `Relation[T = Concat[..]]`). FIRST INCREMENT scope: `Concat` reduces only as a DIRECT
+/// parameterized type argument, over CONCRETE named-tuple operands. A field-name collision
+/// or a non-named-tuple (1-collapse / abstract) operand, and a `Concat` nested in any other
+/// carrier (a named-tuple field, an arrow, an effect row), are LOUD errors via `ctx` — never
+/// a silent pass-through of an un-reduced `Concat` (repo rule: loud error over silent skip).
+/// A carrier that mentions no `Concat` returns unchanged.
+fn reduce_concat_in_type(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    ctx: &TypeErrorContext,
+    sp: crate::span::SourceSpan,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    let concat_sym = match kb.try_resolve_symbol("anthill.prelude.Concat") {
+        Some(s) => s,
+        None => return Ok(ty.clone()),
+    };
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings } => {
+            // Reduce each binding first — the schema-producing `Concat` is nested (the
+            // `T` binding of `Relation[T = Concat[..]]`), so descend before evaluating.
+            let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+            for (p, v) in bindings {
+                reduced.push((p, reduce_concat_in_type(kb, &v, ctx, sp, span)?));
+            }
+            if base == concat_sym {
+                // `Concat[A = .., B = ..]` — read both operands by param name (as
+                // `extract_type_param` reads a type application's bindings) and merge.
+                let mut a: Option<Value> = None;
+                let mut b: Option<Value> = None;
+                for (p, v) in &reduced {
+                    match kb.resolve_sym(*p) {
+                        "A" => a = Some(v.clone()),
+                        "B" => b = Some(v.clone()),
+                        _ => {}
+                    }
+                }
+                match (a, b) {
+                    (Some(a), Some(b)) => concat_named_tuple_types(kb, &a, &b, sp)
+                        .map_err(|msg| projection_type_error(ctx, span, &msg)),
+                    _ => Err(projection_type_error(
+                        ctx,
+                        span,
+                        "`Concat` needs both operands `A` and `B`",
+                    )),
+                }
+            } else {
+                let base_id = kb.make_sort_ref(base);
+                Ok(parameterized_value(kb, base_id, &reduced, sp, None))
+            }
+        }
+        // A `Concat` nested in a NON-parameterized-argument carrier (a named-tuple field,
+        // an arrow, an effect row) is out of the first increment's scope — surface it
+        // LOUDLY rather than clone an un-reduced `Concat` through. A carrier that mentions
+        // no `Concat` is returned unchanged.
+        _ => {
+            if type_mentions_concat(kb, ty) {
+                Err(projection_type_error(
+                    ctx,
+                    span,
+                    "`Concat` is only supported as a direct type argument (e.g. \
+                     `Relation[T = Concat[A = .., B = ..]]`); a `Concat` nested in a tuple \
+                     field, arrow, or effect row is not yet supported",
+                ))
+            } else {
+                Ok(ty.clone())
+            }
+        }
+    }
+}
+
 /// WI-462: thread one tuple-literal component's EXPECTED type into its inferred type.
 /// If `exp_fields` (the expected named-tuple's component types) has an entry whose SHORT
 /// name matches `field_name`, unify the component's inferred `ty` against it (binding a free
@@ -3567,6 +3714,30 @@ fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Valu
     None
 }
 
+/// WI-714: the `Relation[T]` type of an argument occurrence that is a bare RULE
+/// reference (`join(r1, r2, …)`'s `r2`), computed directly from the rule's schema. A
+/// rule reference is a `Relation` value (WI-714 C2/C3) but is never bound in the value
+/// env, so [`varref_arg_env_type`] misses it — yet a sibling callback param may project
+/// its schema (`cond: (c: r1.T, q: r2.T) -> Bool`), which must be eliminated at HINT time
+/// so the two-row lambda's binder types at the concrete schema. Only fires for a
+/// reference whose resolved symbol is a `Goal`/`Rule`; any other arg yields `None` (the
+/// env/stamp path already covers a receiver and ordinary values).
+fn relation_ref_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Value> {
+    let name = match &arg.kind {
+        NodeKind::Expr { expr: Expr::VarRef { name }, .. }
+        | NodeKind::Expr { expr: Expr::Ref(name), .. }
+        | NodeKind::Expr { expr: Expr::Ident(name), .. } => *name,
+        _ => return None,
+    };
+    if !matches!(
+        kb.kind_of(name),
+        Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
+    ) {
+        return None;
+    }
+    relation_reference_type(kb, name, Some(arg.span.span), arg).ok()
+}
+
 /// WI-485: eliminate a cross-param projection in a callback PARAM type (e.g. find's
 /// `pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}`) against the receiver param's argument
 /// type, so a LAMBDA callback's param is hinted with the THREADED element
@@ -4551,7 +4722,16 @@ fn visit_type(
                             named_args.iter().find(|(n, _)| same_label(kb, *n, *psym)).map(|(_, a)| a)
                         });
                         if let Some(a) = arg {
-                            if let Some(t) = varref_arg_env_type(&env, a) {
+                            // A sibling callback param may project this arg's schema
+                            // (`join`'s `cond: (c: r1.T, q: r2.T) -> Bool`). The env / stamp
+                            // covers a receiver (WI-723); a bare RULE-reference arg
+                            // (`join(r1, r2, …)`'s `r2`) is a `Relation[T]` value never bound
+                            // in the env, so compute its schema directly (WI-714) — else
+                            // `r2.T` cannot be eliminated at hint time and the two-row
+                            // lambda's binder stays an unresolved projection.
+                            if let Some(t) = varref_arg_env_type(&env, a)
+                                .or_else(|| relation_ref_arg_type(kb, a))
+                            {
                                 m.insert(*psym, t);
                             }
                         }
@@ -6644,6 +6824,10 @@ fn check_apply_iter(
         let op_has_projection = params_have_projection
             || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
+        // WI-714: does the RETURN type write the `Concat[A, B]` type constructor? A per-op
+        // gate (over the declared signature, like `op_has_projection`) so only a signature
+        // that actually merges schemas pays for the `Concat` reduction at each call.
+        let op_return_has_concat = type_mentions_concat(kb, &op.return_type);
         // Each param symbol → the inferred type of the argument bound to it, so a
         // projection `param.M` in the return / effects / a LATER param can read the
         // receiver's actual per-call type (the synthesis-time discharge point).
@@ -7025,6 +7209,22 @@ fn check_apply_iter(
         // here). The projection-free case never reaches elimination, so re-key it here.
         let proj_return_type = if !param_to_arg_sym.is_empty() && !op_has_projection {
             substitute_ref_syms_value(kb, &proj_return_type, &param_to_arg_sym)
+        } else {
+            proj_return_type
+        };
+
+        // WI-714: EVALUATE the `Concat[A, B]` type constructor in the return type. Its
+        // operands are the per-call schemas — but they reach here as the op type params
+        // `L`/`R` (or `r1.T`/`r2.T` projections) BOUND IN `subst`, not yet substituted into
+        // the type, so WALK the return through `subst` first (resolving `Concat[A = L, B =
+        // R]` to `Concat[A = nt1, B = nt2]`), then reduce to the merged named tuple. A
+        // non-named-tuple operand or a field-name collision is a loud error. Universal
+        // (keyed on the `Concat` sort, not the op), gated per-op on the DECLARED return
+        // type actually writing `Concat`.
+        let proj_return_type = if op_return_has_concat {
+            let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
+            let walked = walk_type_deep_value(kb, &subst, &proj_return_type);
+            reduce_concat_in_type(kb, &walked, &ret_ctx, occ.span, span)?
         } else {
             proj_return_type
         };
@@ -17195,14 +17395,32 @@ fn eliminate_node_projections(
                     ))
                 }
             }
-            // A projection inside a `named_tuple` carrier is the remaining follow-on: its
-            // `fields` ride a `Value`-carried list (not `TypeChild` children), so the
-            // structural descent above does not reach them. Bail loudly rather than leak.
-            TypeNode::NamedTuple { .. } => Err(projection_type_error(
-                ctx,
-                span,
-                "a type projection nested in a named-tuple denoted-bearing type is not yet supported",
-            )),
+            // WI-714: a projection nested in a `named_tuple` carrier — the two-row `join`
+            // lambda's param type `(c: r1.T, q: r2.T)`. Its `fields` ride a `Value`-carried
+            // list (not `TypeChild` children), so the structural descent above does not
+            // reach them; instead READ the fields (`extract_type`), eliminate each field's
+            // TYPE (the full dispatcher, so a `Term`-carried single-ref projection `r1.T`
+            // and a `Node`-carried one both resolve), and REBUILD the named tuple. An
+            // operand projection that cannot resolve still bails loudly inside the per-field
+            // elimination — never a silent leak.
+            TypeNode::NamedTuple { .. } => {
+                let fields = match extract_type(kb, &Value::Node(Rc::clone(occ))) {
+                    TypeExtractor::NamedTuple(f) => f,
+                    _ => {
+                        return Err(projection_type_error(
+                            ctx,
+                            span,
+                            "a named-tuple type carrier did not extract as a named tuple",
+                        ))
+                    }
+                };
+                let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+                for (name, fty) in fields {
+                    let f = eliminate_type_projections(kb, &fty, arg_types, arg_syms, ctx, span)?;
+                    reduced.push((name, f));
+                }
+                Ok(named_tuple_value(kb, &reduced, sp, owner))
+            }
         },
         NodeKind::EffectExpr(node) => match node {
             EffectExprNode::Merge { left, right } => {
@@ -18674,8 +18892,29 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     if !unify_types(kb, subst, &TermIdView(a_base_ty), &TermIdView(b_base_ty)) {
         return false;
     }
+    // WI-726: match each binding param by LABEL, but ONLY within one base sort. A
+    // parameterized type's binding key can arrive either as the sort's CANONICAL param
+    // symbol (`anthill.prelude.Relation.T`, a `Relation[T]` VALUE built via
+    // `sort_type_params_as_pairs`) or as a BARE last-segment `T` (a signature type
+    // `Relation[T = L]`, lowered via `reintern(p.last())`). Raw `p == param` misses the
+    // canonical-vs-bare pair, so a `Relation[T = (name,age)]` argument silently did NOT
+    // unify its `T` slot against a `Relation[T = L]` parameter — leaving the op type param
+    // `L` unbound. Within one sort, short-name IS the canonical param identity (params have
+    // distinct labels), so `same_label` is exact and safe.
+    //
+    // But the base check above deliberately accepts DIFFERENT bases related by provider
+    // admissibility / subtyping (`List provides Stream`, WI-344). Across two DISTINCT
+    // sorts, `same_label` would pair `List.T` with `Stream.T` by short name — tripping its
+    // own cross-qualified-name `debug_assert` AND wrongly cross-unifying two unrelated
+    // slots. So gate on `same_sort_canonical`: label-match within one sort, plain identity
+    // across sorts — mirroring the subtype sibling `parameterized_compatible_view`, which
+    // crosses sorts only through an explicitly aligned provider view, never a bare label.
+    let same_base = same_sort_canonical(kb, a_base, b_base);
     for (param, av) in &a_bindings {
-        if let Some((_, bv)) = b_bindings.iter().find(|(p, _)| p == param) {
+        let found = b_bindings
+            .iter()
+            .find(|(p, _)| if same_base { same_label(kb, *p, *param) } else { *p == *param });
+        if let Some((_, bv)) = found {
             if !unify_types(kb, subst, av, bv) {
                 return false;
             }

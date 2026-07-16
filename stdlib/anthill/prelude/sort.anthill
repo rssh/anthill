@@ -36,6 +36,32 @@ namespace anthill.prelude
   fact Lattice[T = Type]
 end
 
+{< Concat[A, B]: the TYPE-position surface of a schema merge (WI-714 / proposal 052 —
+   `join`'s merged schema `T = Concat[A = r1.T, B = r2.T]`). A type constructor, so it
+   is writable where a type is expected (a signature's return type); it names the
+   concatenation of two NAMED-TUPLE types — `A`'s fields followed by `B`'s.
+
+   Concat is INERT as written and carries no values: like `Type`, it has NO entities, so
+   a `Concat[..]` is never a runtime value — it only NAMES a merge. The typer performs
+   that merge as an INTERNAL type-level operation: `Concat[A = nt1, B = nt2]` REDUCES to
+   the single named tuple concatenating the two operands' fields, at the same
+   normalization boundary the `s.T` projection is eliminated (`reduce_concat_in_type` in
+   kb/typing.rs, sharing `concat_named_tuple_types`). This is the projection precedent —
+   `ExprCarried` is a type FORM, `project_type_member` its internal reduction; `Concat`
+   is the form, the merge its reduction.
+
+   FIRST-INCREMENT scope (WI-714 join): `Concat` reduces only as a DIRECT type argument
+   (the schema position `Relation[T = Concat[A = .., B = ..]]`) over two CONCRETE named
+   tuples with DISJOINT field names. Each of the following is a LOUD error — deferred to a
+   follow-up, never a silent skip: a field-name collision; a non-named-tuple operand (a
+   1-collapse / membership schema); an ABSTRACT operand (an un-instantiated schema type
+   param — so a generic wrapper over abstract relation schemas is not yet expressible); and
+   a `Concat` nested in any other carrier (a tuple field, an arrow, an effect row). >}
+sort anthill.prelude.Concat
+  sort A = ?
+  sort B = ?
+end
+
 {< EffectExpression: the effect-row carried by an arrow (proposal 045 §3, §6).
 
    The surface algebra a programmer writes — `present` / `absent` / `open`

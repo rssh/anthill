@@ -105,6 +105,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Relation.union", relation_union)?;
     register_if_present(interp, "anthill.prelude.Relation.where_run", relation_where_run)?;
     register_if_present(interp, "anthill.prelude.Relation.guarded_of", relation_guarded_of)?;
+    register_if_present(interp, "anthill.prelude.Relation.join_run", relation_join_run)?;
+    register_if_present(interp, "anthill.prelude.Relation.conjoin_of", relation_conjoin_of)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -1327,7 +1329,7 @@ fn fill_column_holes(
 /// its value. Anything else is a loud compile error (LINQ's "cannot translate").
 /// `&&`/`||`/`!` nesting and `join` are later increments.
 fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
+    use crate::kb::node_occurrence::{Expr, Pattern};
     use std::rc::Rc;
     let [r_arg, cond_arg] = expect_args::<2>("Relation.guarded_of", args)?;
     let r_occ = match &r_arg {
@@ -1363,48 +1365,205 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         }
     };
 
-    // Compile the lambda body, as syntax, into a goal recipe (column refs → holes).
-    let goal = compile_condition(interp, &body, binder)?;
+    // Compile the lambda body, as syntax, into a goal recipe (column refs → holes),
+    // then splice `where_run(r, <recipe>)` — the runtime back-end.
+    let goal = compile_condition(interp, &body, &[binder])?;
+    splice_query_runner(interp, "anthill.prelude.Relation.where_run", &[r_occ], goal)
+}
 
-    // Splice `where_run(r, Spliced(goal))` — a normal runtime call the typer re-types
-    // and eval runs. The `Spliced` leaf carries the pre-built goal Value verbatim.
+/// Splice a `<runner>(<relation…>, <goal>)` call for a row-lambda macro — the shared
+/// tail of `guarded_of` → `where_run` (one row) and `conjoin_of` → `join_run` (two
+/// rows). The compiled `goal` rides an `Expr::Spliced` leaf STAMPED
+/// `anthill.reflect.Term` (the `runner`'s `cond: Term` slot); the relation
+/// occurrences pass through positionally ahead of it. The result is a normal runtime
+/// call the typer re-types (via the macro-expand splice) and eval runs.
+fn splice_query_runner(
+    interp: &mut Interpreter,
+    runner_qn: &str,
+    relations: &[std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>],
+    goal: Value,
+) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use std::rc::Rc;
+    // The first relation occurrence anchors the synthesized nodes' source/owner.
+    let anchor = relations.first().ok_or_else(|| {
+        EvalError::Internal("WI-714: query-runner splice with no relation operand".into())
+    })?;
     let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
-    let owner = r_occ.owner;
-    let spliced = NodeOccurrence::synthesized_expr(Expr::Spliced(goal), Rc::clone(&r_occ), pass, owner);
+    let owner = anchor.owner;
+    let spliced = NodeOccurrence::synthesized_expr(Expr::Spliced(goal), Rc::clone(anchor), pass, owner);
     // STAMP the spliced leaf's type. The `Expr::Spliced` typer arm reads a synthesized
     // leaf's type from `inferred_type` else the position's `expected` — and errors
     // `BottomExpr` when both are absent. `synthesized_expr` resets `inferred_type` to
-    // None, so the constructor (this macro) supplies it: the recipe fills `where_run`'s
+    // None, so the constructor (this macro) supplies it: the recipe fills the runner's
     // `cond: Term` slot, so its type is the reflect `Term` sort (the carrier design's
     // "type from the constructor", WI-714 / carrier leaf).
     // `make_sort_ref_by_name` SILENTLY interns an Unresolved sort if the name is
     // missing (kb/mod.rs), and the `Expr::Spliced` typer arm reads `inferred_type`
-    // OVER `expected` — so a phantom `Term` would override `where_run`'s real `cond:
+    // OVER `expected` — so a phantom `Term` would override the runner's real `cond:
     // Term` hint. Resolve loudly instead. (reflect.anthill always loads before user
     // code types, so this never fires — a belt for a hostile load order.)
     if interp.kb.try_resolve_symbol("anthill.reflect.Term").is_none() {
-        return Err(EvalError::Internal(
-            "WI-714 where lowering: anthill.reflect.Term is not resolvable".into(),
-        ));
+        return Err(EvalError::Internal(format!(
+            "WI-714 {runner_qn} lowering: anthill.reflect.Term is not resolvable"
+        )));
     }
     let term_ty = Value::term(interp.kb.make_sort_ref_by_name("anthill.reflect.Term"));
     spliced.set_inferred_type(term_ty);
-    let where_run = interp
+    let runner = interp
         .kb
-        .try_resolve_symbol("anthill.prelude.Relation.where_run")
-        .ok_or_else(|| EvalError::Internal("WI-714: Relation.where_run unresolved".into()))?;
+        .try_resolve_symbol(runner_qn)
+        .ok_or_else(|| EvalError::Internal(format!("WI-714: {runner_qn} unresolved")))?;
+    let mut pos_args: Vec<Rc<NodeOccurrence>> = relations.to_vec();
+    pos_args.push(spliced);
     let call = NodeOccurrence::synthesized_expr(
-        Expr::Apply {
-            functor: where_run,
-            pos_args: vec![Rc::clone(&r_occ), spliced],
-            named_args: Vec::new(),
-            type_args: Vec::new(),
-        },
-        r_occ,
+        Expr::Apply { functor: runner, pos_args, named_args: Vec::new(), type_args: Vec::new() },
+        Rc::clone(anchor),
         pass,
         owner,
     );
     Ok(Value::Node(call))
+}
+
+/// `Relation.conjoin_of` (WI-714 / proposal 052) — the compile-time MACRO behind
+/// `join` (occurrence→occurrence, WI-722). It reads the TWO-row lambda `cond` and
+/// compiles its body — AS SYNTAX, never applied — into a goal recipe over BOTH rows'
+/// columns, then splices `join_run(r1, r2, <recipe>)`.
+///
+/// The condition is a two-binder lambda `(c, q) -> <body>` — a tuple pattern whose two
+/// sub-binders name the two rows. A field access `c.x` / `q.y` on either binder becomes
+/// a column HOLE named by the field symbol (the same `compile_condition` the single-row
+/// `where` uses, given both binders); `join_run` fills each hole from the merged column
+/// set, whose names are disjoint across the two rows in this increment. First increment:
+/// a single atomic predicate `pred(c.x, q.y)`, exactly as `where`.
+fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence::{Expr, Pattern};
+    use std::rc::Rc;
+    let [r1_arg, r2_arg, cond_arg] = expect_args::<3>("Relation.conjoin_of", args)?;
+    let as_occ = |v: &Value| match v {
+        Value::Node(o) => Ok(Rc::clone(o)),
+        other => Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let r1_occ = as_occ(&r1_arg)?;
+    let r2_occ = as_occ(&r2_arg)?;
+    let cond_occ = as_occ(&cond_arg)?;
+
+    // The condition must be a TWO-ROW lambda `(c, q) -> <body>`: a lambda whose single
+    // parameter is a tuple pattern binding the two rows. A single-binder lambda (one
+    // row) or a non-lambda is rejected — `join` combines two rows.
+    let (binders, body) = match cond_occ.as_expr() {
+        Some(Expr::Lambda { param, body }) => {
+            let binders = match param.as_pattern() {
+                Some(Pattern::Tuple { positional, .. }) => {
+                    let mut bs: Vec<crate::intern::Symbol> = Vec::with_capacity(positional.len());
+                    for sub in positional {
+                        match sub.as_pattern() {
+                            Some(Pattern::Var { name, .. }) => bs.push(*name),
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "a two-row lambda `(c, q) -> …` binding two plain rows",
+                                    got: "a join lambda whose tuple binder nests a non-plain sub-pattern"
+                                        .to_string(),
+                                })
+                            }
+                        }
+                    }
+                    bs
+                }
+                _ => {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "a two-row lambda `(c, q) -> eq(c.x, q.y)` as `join`'s condition",
+                        got: "a `join` condition that is not a two-row tuple lambda".to_string(),
+                    })
+                }
+            };
+            (binders, Rc::clone(body))
+        }
+        _ => {
+            return Err(EvalError::TypeMismatch {
+                expected: "a two-row lambda `(c, q) -> eq(c.x, q.y)` as `join`'s condition",
+                got: "a non-lambda condition (a logic-variable goal belongs in a rule)".to_string(),
+            })
+        }
+    };
+    // First increment: exactly two rows. A different arity is a clean user-facing error.
+    if binders.len() != 2 {
+        return Err(EvalError::TypeMismatch {
+            expected: "a `join` row lambda binding exactly two rows `(c, q) -> …`",
+            got: format!("a join row lambda binding {} rows", binders.len()),
+        });
+    }
+    let goal = compile_condition(interp, &body, &binders)?;
+    splice_query_runner(interp, "anthill.prelude.Relation.join_run", &[r1_occ, r2_occ], goal)
+}
+
+/// `Relation.join_run` (WI-714 / proposal 052) — the RUNTIME back-end of `join`, a
+/// query combinator like `union`. Given `r1`, `r2` and the compiled goal recipe (whose
+/// column references are HOLES named by the schema field symbol), it:
+///   1. freshens `r2`'s column variables (like `union` aligns operands) so a self-join
+///      `r.join(r, …)` does not accidentally unify the two copies' columns;
+///   2. fills each recipe hole with the real column variable of that name, over the
+///      MERGED column set `r1.columns ++ r2'.columns` (disjoint names in this increment,
+///      so the field name alone identifies the column — a collision is a loud error);
+///   3. wraps `guarded(conjunction(r1.query, r2'.query), <goal>)` — a new LogicalQuery
+///      (`conjunction` conjoins the two queries, `guarded` adds the join predicate) — so
+///      the result stays a composable `Relation` over the merged schema.
+fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r1, r2, cond] = expect_args::<3>("Relation.join_run", args)?;
+    let (q1, cols1) = expect_relation(r1)?;
+    let (q2, cols2) = expect_relation(r2)?;
+
+    // Freshen r2's column variables (map each to a fresh var of the same name) and
+    // rewrite r2's query accordingly — so r1 and r2 never share a column variable
+    // (a self-join `r.join(r, …)` would otherwise force the two copies equal). Same
+    // alignment `union` performs, one operand.
+    let mut sigma = crate::kb::subst::Substitution::new();
+    let cols2_fresh: std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]> = cols2
+        .iter()
+        .map(|(name, vid)| {
+            let fresh = interp.kb.fresh_var(*name);
+            let fresh_term =
+                interp.kb.alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(fresh)));
+            sigma.bind(&interp.kb, *vid, fresh_term);
+            (*name, fresh)
+        })
+        .collect();
+    let q2_fresh = rename_query_vars(&mut interp.kb, &q2, &sigma)?;
+
+    // The merged column set — r1's columns then r2's (freshened). Column NAMES must be
+    // DISJOINT across the two rows in this increment: the recipe's holes are filled by
+    // name over this merged set, and a materialized row is a named tuple keyed by these
+    // names, so a clash is ambiguous both ways. A loud error (the typer's `concat`
+    // enforces this at LOAD; this backstops a relation built past the typer via reflect).
+    let mut merged: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
+        Vec::with_capacity(cols1.len() + cols2_fresh.len());
+    merged.extend(cols1.iter().copied());
+    for (name, vid) in cols2_fresh.iter() {
+        if cols1.iter().any(|(n, _)| n == name) {
+            return Err(EvalError::TypeMismatch {
+                expected: "two relations with DISJOINT column names (join)",
+                got: format!(
+                    "column `{}` appears in both rows — a shared join-column name is not yet \
+                     supported (rename one, or project); qualified merge is a follow-up",
+                    interp.kb.resolve_sym(*name)
+                ),
+            });
+        }
+        merged.push((*name, *vid));
+    }
+    let merged: std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]> = merged.into();
+
+    // Fill the recipe's column holes over the merged set, then wrap
+    // `guarded(conjunction(q1, q2'), <goal>)`.
+    let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
+    let goal = fill_column_holes(&interp.kb, &cond, &merged, whole_row)?;
+    let conj = interp.build_logical_query_value(
+        "conjunction",
+        vec![("left", (*q1).clone()), ("right", q2_fresh)],
+    )?;
+    let guarded =
+        interp.build_logical_query_value("guarded", vec![("query", conj), ("condition", goal)])?;
+    Ok(Value::Relation { query: std::rc::Rc::new(guarded), columns: merged })
 }
 
 /// Compile a row-lambda condition body into a goal recipe `Value`, as syntax (never
@@ -1413,40 +1572,41 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 fn compile_condition(
     interp: &mut Interpreter,
     body: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
-    binder: crate::intern::Symbol,
+    binders: &[crate::intern::Symbol],
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
     match body.as_expr() {
         Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
             let mut pos = Vec::with_capacity(pos_args.len());
             for a in pos_args {
-                pos.push(compile_operand(interp, a, binder)?);
+                pos.push(compile_operand(interp, a, binders)?);
             }
             let mut named = Vec::with_capacity(named_args.len());
             for (k, a) in named_args {
-                named.push((*k, compile_operand(interp, a, binder)?));
+                named.push((*k, compile_operand(interp, a, binders)?));
             }
             Ok(Value::Entity { functor: *functor, pos: pos.into(), named: named.into() })
         }
         _ => Err(EvalError::TypeMismatch {
-            expected: "a goal-expressible predicate (`eq(c.x, …)`) as the `where` condition",
+            expected: "a goal-expressible predicate (`eq(c.x, …)`) as the row-lambda condition",
             got: "a condition that does not translate to a query goal".to_string(),
         }),
     }
 }
 
-/// Compile one predicate operand: a column field-access `c.x` on the binder becomes
-/// a HOLE (a fresh var named `x`, filled by `where_run`); a literal becomes its value.
+/// Compile one predicate operand: a column field-access `c.x` on a binder becomes a
+/// HOLE (a fresh var named `x`, filled by `where_run`/`join_run`); a literal becomes
+/// its value. `binders` holds the one (`where`) or two (`join`) row binders.
 fn compile_operand(
     interp: &mut Interpreter,
     occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
-    binder: crate::intern::Symbol,
+    binders: &[crate::intern::Symbol],
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
     use crate::kb::term::{Literal, Var};
-    // A column reference `c.x` on the binder becomes a HOLE: a fresh var NAMED by
-    // the field symbol, which `where_run` fills with `r`'s real column of that name.
-    if let Some(field) = binder_field_access(interp, occ, binder) {
+    // A column reference `c.x` on a binder becomes a HOLE: a fresh var NAMED by the
+    // field symbol, which `where_run`/`join_run` fills with the real column of that name.
+    if let Some(field) = binder_field_access(interp, occ, binders) {
         let hole = interp.kb.fresh_var(field);
         return Ok(Value::Var(Var::Global(hole)));
     }
@@ -1455,7 +1615,7 @@ fn compile_operand(
     // comparison has no single eq column. The arity is NOT visible here (only the
     // runtime schema is) and a multi-column `eq(c, c)` DOES type-check (named-tuple eq),
     // so the single-column check is deferred to `where_run` when it fills the hole.
-    if is_binder_ref(occ, binder) {
+    if is_binder_ref(occ, binders) {
         let sole = interp.kb.intern(WHOLE_ROW_HOLE);
         let hole = interp.kb.fresh_var(sole);
         return Ok(Value::Var(Var::Global(hole)));
@@ -1492,7 +1652,7 @@ fn compile_operand(
 fn binder_field_access(
     interp: &mut Interpreter,
     occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
-    binder: crate::intern::Symbol,
+    binders: &[crate::intern::Symbol],
 ) -> Option<crate::intern::Symbol> {
     use crate::kb::node_occurrence::Expr;
     match occ.as_expr()? {
@@ -1500,11 +1660,11 @@ fn binder_field_access(
         Expr::Apply { functor, pos_args, named_args, .. } if named_args.is_empty() => {
             let (receiver, field) =
                 crate::kb::body_specialize::field_access_parts(&interp.kb, *functor, pos_args)?;
-            is_binder_ref(&receiver, binder).then(|| interp.kb.intern(&field))
+            is_binder_ref(&receiver, binders).then(|| interp.kb.intern(&field))
         }
         // Pre-lowering fallback: `c.x` as a zero-arg `DotApply`.
         Expr::DotApply { receiver, name, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binder) =>
+            if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binders) =>
         {
             Some(*name)
         }
@@ -1512,13 +1672,20 @@ fn binder_field_access(
     }
 }
 
-/// Is `occ` a reference to the row-lambda binder `binder`? A binder reference lowers
+/// Is `occ` a reference to one of the row-lambda binders? A binder reference lowers
 /// to `var_ref(name)` (WI-552); accept the plain `Ref`/`Ident` forms defensively.
-fn is_binder_ref(occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, binder: crate::intern::Symbol) -> bool {
+/// `binders` is a slice so a `where` single-row lambda (`[c]`) and a `join` two-row
+/// lambda (`[c, q]`) share the recognizer — a field access on EITHER binder yields the
+/// field name, which `*_run` fills from the merged column set (disjoint across the two
+/// rows in the first `join` increment, so the field name alone identifies the column).
+fn is_binder_ref(
+    occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    binders: &[crate::intern::Symbol],
+) -> bool {
     use crate::kb::node_occurrence::Expr;
     matches!(
         occ.as_expr(),
-        Some(Expr::VarRef { name }) | Some(Expr::Ref(name)) | Some(Expr::Ident(name)) if *name == binder
+        Some(Expr::VarRef { name }) | Some(Expr::Ref(name)) | Some(Expr::Ident(name)) if binders.contains(name)
     )
 }
 

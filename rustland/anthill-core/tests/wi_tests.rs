@@ -44,6 +44,9 @@ mod wi714_relation_reference_test;
 #[path = "include/wi714_where_test.rs"]
 mod wi714_where_test;
 
+#[path = "include/wi714_join_test.rs"]
+mod wi714_join_test;
+
 #[path = "include/wi725_self_carried_spec_simp_test.rs"]
 mod wi725_self_carried_spec_simp_test;
 
