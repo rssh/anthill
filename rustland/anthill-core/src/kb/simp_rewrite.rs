@@ -476,7 +476,10 @@ pub(super) fn try_fire(
     // entirely: the guard was ~78% of per-node simp cost (and fires 0 rewrites over the
     // whole stdlib), pure waste on a non-matching node. Sound: the guard verdict is
     // irrelevant when nothing matches the functor, and it is side-effect-free.
-    let mut guard_ok = false;
+    // The type-directed guard verdict for this node: `None` = not yet evaluated,
+    // `Some(true)` = holds (value-RHS laws may fire), `Some(false)` = fails (only a
+    // macro-RHS lowering may fire). Evaluated at most once per node (WI-655).
+    let mut guard: Option<bool> = None;
     // WI-646: `rids` are the eq+unify candidates gathered ONCE by the caller
     // (`KnowledgeBase::simp_equation_rids` — `eq` for a legacy `=` equation,
     // `unify` for the `<=>` head, proposal 049; WI-139 keeps only
@@ -500,16 +503,23 @@ pub(super) fn try_fire(
         if stored_lhs_functor(kb, rid) != Some(node_functor) {
             continue;
         }
-        // WI-655: FIRST functor match — evaluate the type-directed guard once here.
-        // A spec/sort rule's law holds only for carriers satisfying its sort; the
-        // guard is keyed on the node functor, so it is shared by every candidate rule
-        // under it (guard-free `true` for a concrete functor). `guard_ok` memoizes it
-        // across sibling rids under the same functor.
-        if !guard_ok {
-            if !super::typing::simp_fire_guard_holds(kb, occ) {
-                return None;
-            }
-            guard_ok = true;
+        // WI-655: evaluate the type-directed guard ONCE per node (a spec/sort law holds
+        // only for carriers satisfying its sort), memoized across sibling rids of the
+        // same functor and kept BEFORE the allocate-heavy `open_equation`.
+        let guard_holds = *guard.get_or_insert_with(|| super::typing::simp_fire_guard_holds(kb, occ));
+        // WI-714: a MACRO-headed RHS (`where <=> guarded_of`) is a definitional
+        // compile-time LOWERING, not a conditional typeclass law — it bypasses the
+        // carrier guard (the macro is its own validity check; its carrier need not
+        // `provides` its own abstract self-sort, `sort_provides(Relation, Relation)`
+        // being false, else `where` would stay permanently dormant). So when the guard
+        // did NOT hold, a value-RHS law is skipped but a macro-RHS lowering still fires.
+        // Read from the STORED head (no DeBruijn open) and ONLY on guard failure, so the
+        // common guard-passing path pays nothing. (WI-611 catch-22: firing a Map/Set
+        // value-RHS reducing law on an abstract carrier yields an eval-broken body.)
+        if !guard_holds
+            && !stored_rhs_functor(kb, rid).is_some_and(|f| super::typing::is_macro(kb, f))
+        {
+            continue;
         }
         // The typer skips typed-bound rules above, so it ignores the opened
         // `fresh` globals (they key only the resolver's typed-pattern bounds).
@@ -536,6 +546,36 @@ pub(super) fn try_fire(
         }
     }
     None
+}
+
+/// The functor of an equation's RHS (`Fn{eq/unify, [lhs, rhs]}` → rhs head), read
+/// from the STORED head with NO DeBruijn opening — the sibling of [`stored_lhs_functor`]
+/// (which reads the LHS at arg 0; this reads the RHS at arg 1). [`try_fire`] uses it to
+/// detect a macro-RHS lowering (`where <=> guarded_of`) cheaply, before the
+/// allocate-heavy `open_equation`, so a macro-RHS rule can bypass the spec-op carrier
+/// guard while the common value-RHS path keeps guarding first (WI-655 cost model). A
+/// non-`Fn` RHS (a bare const / nullary ref, e.g. `peek(?s) <=> true`) reads `None` —
+/// never a macro, so it stays guard-gated.
+fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
+    stored_eq_operand_functor(kb, rid, 1)
+}
+
+/// The functor of one operand of an equation's stored head (`Fn{eq/unify, [lhs, rhs]}`)
+/// — `idx` 0 = LHS, 1 = RHS — read WITHOUT DeBruijn opening. The shared core of
+/// [`stored_lhs_functor`] / [`stored_rhs_functor`], which differ only in the operand
+/// index. Read carrier-agnostically via `fact_head_term` (WI-663): a value-fact head
+/// (never an equation) reads `None` and the caller skips it. A non-binary head or a
+/// non-`Fn` operand reads `None`.
+fn stored_eq_operand_functor(kb: &KnowledgeBase, rid: RuleId, idx: usize) -> Option<Symbol> {
+    let head = kb.fact_head_term(rid)?;
+    let operand = match kb.get_term(head) {
+        Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[idx],
+        _ => return None,
+    };
+    match kb.get_term(operand) {
+        Term::Fn { functor, .. } => Some(*functor),
+        _ => None,
+    }
 }
 
 /// WI-722 (proposal 043.1) — if `template` (the just-substituted `[simp]` RHS) is
@@ -620,15 +660,7 @@ fn try_expand_macro(
 /// already pre-gate with `is_equation`/`is_simp_equation` (carrier-agnostic), so
 /// this is belt-and-suspenders that also makes the reader intrinsically safe.
 pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
-    let head = kb.fact_head_term(rid)?;
-    let lhs = match kb.get_term(head) {
-        Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[0],
-        _ => return None,
-    };
-    match kb.get_term(lhs) {
-        Term::Fn { functor, .. } => Some(*functor),
-        _ => None,
-    }
+    stored_eq_operand_functor(kb, rid, 0)
 }
 
 /// Open an equation's DeBruijn vars to fresh globals and return its
