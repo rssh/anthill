@@ -672,8 +672,10 @@ fn ctor_field_occs(
 /// NB: `anthill-smt-gen`'s `as_field_access` recognizes the SAME reflect form
 /// (same QN check, same three selector shapes) for its own lowering — the two
 /// are independent copies of one desugaring contract across the crate boundary;
-/// a new selector form must be mirrored in both.
-fn field_access_parts(
+/// a new selector form must be mirrored in both. `pub(crate)` so the WI-714
+/// `where` row-lambda→goal compiler (`eval::builtins::compile_operand`) reads a
+/// column reference `c.x` through this SAME contract rather than a third copy.
+pub(crate) fn field_access_parts(
     kb: &KnowledgeBase,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],

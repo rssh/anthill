@@ -1233,13 +1233,22 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r, cond] = expect_args::<2>("Relation.where_run", args)?;
     let (query, columns) = expect_relation(r)?;
-    let goal = fill_column_holes(&interp.kb, &cond, &columns)?;
+    // The whole-row sentinel symbol (if `compile_operand` ever minted one) — resolved
+    // ONCE here, not per `Var::Global` node in the recipe walk.
+    let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
+    let goal = fill_column_holes(&interp.kb, &cond, &columns, whole_row)?;
     let guarded = interp.build_logical_query_value(
         "guarded",
         vec![("query", (*query).clone()), ("condition", goal)],
     )?;
     Ok(Value::Relation { query: std::rc::Rc::new(guarded), columns })
 }
+
+/// Reserved hole name for a bare-binder (WHOLE-ROW) reference `c` in a `where`
+/// condition over a 1-collapse (single-column) relation — `eq(c, 30)`. `where_run`
+/// maps it to the relation's sole column. A dunder name that cannot clash with a user
+/// field (column names are head-variable names, never dunders).
+const WHOLE_ROW_HOLE: &str = "__anthill_where_whole_row__";
 
 /// Replace each column HOLE in a goal-recipe `Value` — a `Var::Global` variable
 /// whose NAME is a schema field symbol (`guarded_of` mints it from `c.x`) — with
@@ -1254,22 +1263,39 @@ fn fill_column_holes(
     kb: &crate::kb::KnowledgeBase,
     v: &Value,
     columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
+    whole_row: Option<crate::intern::Symbol>,
 ) -> Result<Value, EvalError> {
     use crate::kb::term::Var;
     match v {
         Value::Entity { functor, pos, named } => {
             let mut pos2 = Vec::with_capacity(pos.len());
             for c in pos.iter() {
-                pos2.push(fill_column_holes(kb, c, columns)?);
+                pos2.push(fill_column_holes(kb, c, columns, whole_row)?);
             }
             let mut named2 = Vec::with_capacity(named.len());
             for (k, c) in named.iter() {
-                named2.push((*k, fill_column_holes(kb, c, columns)?));
+                named2.push((*k, fill_column_holes(kb, c, columns, whole_row)?));
             }
             Ok(Value::Entity { functor: *functor, pos: pos2.into(), named: named2.into() })
         }
         Value::Var(Var::Global(hole)) => {
             let name = hole.name();
+            // A WHOLE-ROW hole (bare binder `c`, e.g. `eq(c, 30)`) refers to the entire
+            // row, which is a single column ONLY for a 1-collapse (single-column)
+            // relation. Over a multi-column relation the whole row is a named tuple with
+            // no eq column — a USER error, not a compiler invariant break: `eq(c, c)`
+            // type-checks for a multi-column row (named-tuple `eq`), so this IS reachable
+            // (compile_operand can't see the arity — only the runtime schema can).
+            if whole_row == Some(name) {
+                return match columns {
+                    [(_, vid)] => Ok(Value::Var(Var::Global(*vid))),
+                    _ => Err(EvalError::TypeMismatch {
+                        expected: "a single-column relation for a whole-row `where` condition \
+                                   (compare a specific column `c.field` over a multi-column row)",
+                        got: format!("a bare whole-row binder `c` over a {}-column relation", columns.len()),
+                    }),
+                };
+            }
             let (_, vid) = columns.iter().find(|(cn, _)| *cn == name).ok_or_else(|| {
                 EvalError::Internal(format!(
                     "where_run: the compiled condition references column `{}`, which is not \
@@ -1345,6 +1371,24 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
     let owner = r_occ.owner;
     let spliced = NodeOccurrence::synthesized_expr(Expr::Spliced(goal), Rc::clone(&r_occ), pass, owner);
+    // STAMP the spliced leaf's type. The `Expr::Spliced` typer arm reads a synthesized
+    // leaf's type from `inferred_type` else the position's `expected` — and errors
+    // `BottomExpr` when both are absent. `synthesized_expr` resets `inferred_type` to
+    // None, so the constructor (this macro) supplies it: the recipe fills `where_run`'s
+    // `cond: Term` slot, so its type is the reflect `Term` sort (the carrier design's
+    // "type from the constructor", WI-714 / carrier leaf).
+    // `make_sort_ref_by_name` SILENTLY interns an Unresolved sort if the name is
+    // missing (kb/mod.rs), and the `Expr::Spliced` typer arm reads `inferred_type`
+    // OVER `expected` — so a phantom `Term` would override `where_run`'s real `cond:
+    // Term` hint. Resolve loudly instead. (reflect.anthill always loads before user
+    // code types, so this never fires — a belt for a hostile load order.)
+    if interp.kb.try_resolve_symbol("anthill.reflect.Term").is_none() {
+        return Err(EvalError::Internal(
+            "WI-714 where lowering: anthill.reflect.Term is not resolvable".into(),
+        ));
+    }
+    let term_ty = Value::term(interp.kb.make_sort_ref_by_name("anthill.reflect.Term"));
+    spliced.set_inferred_type(term_ty);
     let where_run = interp
         .kb
         .try_resolve_symbol("anthill.prelude.Relation.where_run")
@@ -1400,13 +1444,23 @@ fn compile_operand(
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
     use crate::kb::term::{Literal, Var};
+    // A column reference `c.x` on the binder becomes a HOLE: a fresh var NAMED by
+    // the field symbol, which `where_run` fills with `r`'s real column of that name.
+    if let Some(field) = binder_field_access(interp, occ, binder) {
+        let hole = interp.kb.fresh_var(field);
+        return Ok(Value::Var(Var::Global(hole)));
+    }
+    // A BARE binder reference `c` is the WHOLE ROW. For a 1-collapse (single-column)
+    // relation it IS the sole column (`eq(c, 30)`); over a multi-column row a whole-row
+    // comparison has no single eq column. The arity is NOT visible here (only the
+    // runtime schema is) and a multi-column `eq(c, c)` DOES type-check (named-tuple eq),
+    // so the single-column check is deferred to `where_run` when it fills the hole.
+    if is_binder_ref(occ, binder) {
+        let sole = interp.kb.intern(WHOLE_ROW_HOLE);
+        let hole = interp.kb.fresh_var(sole);
+        return Ok(Value::Var(Var::Global(hole)));
+    }
     match occ.as_expr() {
-        Some(Expr::DotApply { receiver, name, pos_args, named_args })
-            if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binder) =>
-        {
-            let hole = interp.kb.fresh_var(*name);
-            Ok(Value::Var(Var::Global(hole)))
-        }
         Some(Expr::Const(lit)) => Ok(match lit {
             Literal::Int(n) => Value::Int(*n),
             Literal::Float(f) => Value::Float(f.0),
@@ -1423,6 +1477,38 @@ fn compile_operand(
             expected: "a column (`c.x`) or a literal in the `where` condition",
             got: "an operand that is neither a row column nor a literal".to_string(),
         }),
+    }
+}
+
+/// Recognize a column reference `c.x` on the row-lambda binder and return the field
+/// SYMBOL (which names the query HOLE `where_run` later fills). Post-typing, `c.x` is
+/// lowered to the reflect form `field_access(c, "x")` (WI-638 / WI-681) — an `Apply`,
+/// NOT a `DotApply` — so the column is read through the SAME `field_access_parts`
+/// contract the op-body specializer uses (no third copy of the desugaring; the field
+/// string is interned to the canonical `Symbol`, so `where_run`'s hole/column match
+/// is exact-symbol, not a WI-672 short-name compare). A raw zero-arg `DotApply` (the
+/// pre-lowering shape) is accepted as a defensive fallback. `None` for any operand
+/// that is not a binder field access.
+fn binder_field_access(
+    interp: &mut Interpreter,
+    occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    binder: crate::intern::Symbol,
+) -> Option<crate::intern::Symbol> {
+    use crate::kb::node_occurrence::Expr;
+    match occ.as_expr()? {
+        // Post-typing form (the real one): `c.x` → `field_access(c, "x")`.
+        Expr::Apply { functor, pos_args, named_args, .. } if named_args.is_empty() => {
+            let (receiver, field) =
+                crate::kb::body_specialize::field_access_parts(&interp.kb, *functor, pos_args)?;
+            is_binder_ref(&receiver, binder).then(|| interp.kb.intern(&field))
+        }
+        // Pre-lowering fallback: `c.x` as a zero-arg `DotApply`.
+        Expr::DotApply { receiver, name, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binder) =>
+        {
+            Some(*name)
+        }
+        _ => None,
     }
 }
 
