@@ -847,11 +847,7 @@ impl SearchStream {
         // `__pop_assumption` classifies carrier-neutrally; the forall/quant
         // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
-            ViewHead::Functor { functor: Some(f), .. } => {
-                let n = kb.resolve_sym(f);
-                n == "__pop_assumption" || n == "forall_impl"
-                    || n == "forall_in" || n == "some_in"
-            }
+            ViewHead::Functor { functor: Some(f), .. } => is_scoping_marker_name(kb.resolve_sym(f)),
             _ => false,
         };
         if is_marker {
@@ -2428,6 +2424,20 @@ impl SearchStream {
             if !caller_fresh_vars.is_empty()
                 && kb.body_builtins_delay_on_caller_vars_nodes(&fresh_nodes, &caller_fresh_vars, &merged)
             {
+                // WI-670: before delaying the WHOLE rule on a caller var, refute
+                // it if one of its OTHER conjuncts is already provably
+                // unsatisfiable — those conjuncts never get to run once the rule
+                // is delayed, and on the default resolve path the still-delayed
+                // rule-goal residualizes into a SPURIOUS solution. A refuted
+                // candidate is simply dropped (no delay, `any_delayed` left as-is
+                // for sibling candidates); an honest, still-satisfiable rule keeps
+                // the old conservative delay.
+                let context_opaque = !frame.assumed_facts.is_empty()
+                    || self.config.gamma.is_some()
+                    || self.config.simplify;
+                if kb.body_refuted_by_ground_conjunct(&fresh_nodes, &merged, context_opaque) {
+                    return Some(StepResult::Continue);
+                }
                 let f = self.stack.last_mut().unwrap();
                 match &mut f.state {
                     FrameState::ChoicePoint { any_delayed, .. } => *any_delayed = true,
@@ -6203,6 +6213,93 @@ impl KnowledgeBase {
         false
     }
 
+    /// WI-670: would this opened rule body be REFUTED by one of its own
+    /// conjuncts, independent of the caller var(s) that
+    /// [`Self::body_builtins_delay_on_caller_vars_nodes`] wants to delay the
+    /// whole rule on?
+    ///
+    /// The open-time pre-check delays a WHOLE RULE before its body opens whenever
+    /// a body builtin's first arg is an unbound caller var — the rationale being
+    /// that the rule's own body can't bind that var, so let the caller's sibling
+    /// goals bind it first. But that skips the rule's OTHER conjuncts, some of
+    /// which may already REFUTE the rule regardless of what the caller var
+    /// becomes. When they do, delaying is pointless and (on the default
+    /// `kb.resolve` path) the still-delayed rule-goal residualizes into a
+    /// SPURIOUS solution (the repro: `entity_of(Color, ?s)` whose
+    /// `EntityInfo(name: Color)` conjunct has no facts). Refuting here — before
+    /// the delay — drops the dead candidate so it never becomes a phantom
+    /// residual.
+    ///
+    /// SOUNDNESS — this only ever refutes when a conjunct is PROVABLY
+    /// unsatisfiable in every continuation, so it can never drop a satisfiable
+    /// rule (a false refutation would lose real solutions, unsound under NAF):
+    /// - Only a NON-builtin conjunct with a concrete functor is judged (a
+    ///   builtin's satisfiability isn't a discrim-candidate count; a var-headed
+    ///   goal has no fixed functor to look up).
+    /// - `query_view` is an over-approximation, so **zero** candidates is a hard
+    ///   fact: no rule/fact head can unify with the conjunct under σ, and since
+    ///   the KB is fixed during resolution and the conjunct's functor is
+    ///   concrete, no later binding of the caller var (or any var) can create
+    ///   one. (A conjunct that instead depends on an as-yet-unbound var stays a
+    ///   discrim WILDCARD and matches ≥1 candidate whenever any fact for that
+    ///   functor exists, so it is NOT refuted — this is exactly what keeps the
+    ///   honest `check(?a) :- nonvar(?a), is_thing(?a)` residual alive while
+    ///   `is_thing(42)` exists.)
+    /// - Refutation is DISABLED when a conjunct could be discharged by a
+    ///   resolution path `query_view` does not see — the frame's `assumed_facts`
+    ///   (WI-108), the Γ overlay (WI-537), the `[simp]` eq-rewrite pass, a route
+    ///   handler (external rows), a scoping/quantifier MARKER (`forall_impl` /
+    ///   `forall_in` / `some_in` / `__pop_assumption`), or a
+    ///   `bare_bodied_bool_relation` (routed to `eq(f(args), true)`). The caller
+    ///   folds the assumptions/Γ/simplify conditions into `context_opaque`; the
+    ///   remaining per-functor forms are skipped here. Each such form is a goal
+    ///   with zero discrim candidates that `step_init` nonetheless resolves, so
+    ///   treating it as refuted would be a FALSE refutation.
+    fn body_refuted_by_ground_conjunct(
+        &mut self,
+        nodes: &[Rc<NodeOccurrence>],
+        subst: &Substitution,
+        context_opaque: bool,
+    ) -> bool {
+        // Context we can't see through the discrim tree ⇒ don't refute.
+        if context_opaque {
+            return false;
+        }
+        for node in nodes {
+            // A builtin conjunct's satisfiability is not a candidate count.
+            if self.get_builtin_view(node).is_some() {
+                continue;
+            }
+            let walked = Value::Node(node_occurrence::substitute_occurrence(self, node, subst));
+            // Need a concrete functor to look up; a var-/non-functor-headed goal
+            // is not refutable here.
+            let functor = match walked.head(self) {
+                ViewHead::Functor { functor: Some(f), .. } => f,
+                _ => continue,
+            };
+            // Skip every non-builtin functor that `step_init` resolves off the
+            // discrim path — otherwise its zero candidates would falsely refute.
+            if self.route_handler_for(functor).is_some()
+                || self.bare_bodied_bool_relation(functor)
+                || is_scoping_marker_name(self.resolve_sym(functor))
+            {
+                continue;
+            }
+            // Zero non-equation candidates ⇒ provably unsatisfiable ⇒ the rule is
+            // dead. (Equation candidates are filtered as in `step_init`'s discrim
+            // query — an equation-only goal resolves via the simp/eq path, not as
+            // a rule, so it does not keep the conjunct alive here.)
+            let has_candidate = self
+                .query_view(&walked)
+                .iter()
+                .any(|(rid, _)| !self.is_equation(*rid));
+            if !has_candidate {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Mirror of `walk`'s var-detection without needing a `TermId`: chase a
     /// `Global` var through `Value::Term` bindings and report whether the chain
     /// ends at a variable (unbound, rigid, or DeBruijn) rather than a concrete
@@ -6475,6 +6572,17 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
         }
         _ => None,
     }
+}
+
+/// The scoping / quantifier MARKER functor names `step_init` resolves off the
+/// discrim path — skolemised / expanded in place, never via rule/fact
+/// candidates: `forall_impl` (WI-108 hereditary-Harrop), `forall_in` / `some_in`
+/// (WI-027 bounded quantification), and the `__pop_assumption` scope discharge.
+/// Shared by `step_init`'s marker dispatch and WI-670's refutation skip so the
+/// two name sets never drift (a marker missing from the refutation set would be
+/// mistaken for a 0-candidate goal and falsely refute a rule that uses it).
+fn is_scoping_marker_name(name: &str) -> bool {
+    matches!(name, "forall_impl" | "forall_in" | "some_in" | "__pop_assumption")
 }
 
 // ── Tests ───────────────────────────────────────────────────────
