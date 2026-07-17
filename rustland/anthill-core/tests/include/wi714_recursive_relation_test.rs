@@ -73,58 +73,23 @@ namespace test.wi714rec
 end
 "#;
 
-/// Decode `List[(c: String, e: String)]` (a `cons`/`nil` chain of named tuples).
-fn collect_pairs(v: &Value) -> Vec<(String, String)> {
+/// Walk a `List` (`cons(head, tail)` chain, field-less `nil` end), decoding each
+/// element with `head_of`. The tail is the one `Entity`-valued field, so `head_of`
+/// must not accept an `Entity` — both callers here decode a `Tuple` or a `Str`.
+fn collect_list<T>(v: &Value, head_of: impl Fn(&Value) -> Option<T>) -> Vec<T> {
     let mut out = Vec::new();
     let mut cur = v.clone();
     while let Value::Entity { named, .. } = &cur {
         if named.is_empty() {
             break;
         }
-        let mut head_tuple: Option<Value> = None;
+        let mut head: Option<T> = None;
         let mut tail: Option<Value> = None;
         for (_k, val) in named.iter() {
-            match val {
-                Value::Tuple { .. } => head_tuple = Some(val.clone()),
-                Value::Entity { .. } => tail = Some(val.clone()),
-                _ => {}
-            }
-        }
-        match (head_tuple, tail) {
-            (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
-                // Columns ride in head-declaration order (c, e).
-                let cols: Vec<String> = fields
-                    .iter()
-                    .filter_map(|(_, v)| match v {
-                        Value::Str(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(cols.len(), 2, "each row is the 2-column tuple (c, e)");
-                out.push((cols[0].clone(), cols[1].clone()));
-                cur = t;
-            }
-            _ => break,
-        }
-    }
-    out
-}
-
-/// Decode a `List[String]` (`cons`/`nil` chain).
-fn collect_strings(v: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = v.clone();
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break;
-        }
-        let mut head: Option<String> = None;
-        let mut tail: Option<Value> = None;
-        for (_k, val) in named.iter() {
-            match val {
-                Value::Str(s) => head = Some(s.clone()),
-                Value::Entity { .. } => tail = Some(val.clone()),
-                _ => {}
+            match head_of(val) {
+                Some(h) => head = Some(h),
+                None if matches!(val, Value::Entity { .. }) => tail = Some(val.clone()),
+                None => {}
             }
         }
         match (head, tail) {
@@ -136,6 +101,31 @@ fn collect_strings(v: &Value) -> Vec<String> {
         }
     }
     out
+}
+
+/// Decode `List[(c: String, e: String)]` — each element a 2-column named tuple,
+/// whose columns ride in head-declaration order (c, e).
+fn collect_pairs(v: &Value) -> Vec<(String, String)> {
+    collect_list(v, |val| {
+        let Value::Tuple { named: fields, .. } = val else { return None };
+        let cols: Vec<String> = fields
+            .iter()
+            .filter_map(|(_, v)| match v {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cols.len(), 2, "each row is the 2-column tuple (c, e)");
+        Some((cols[0].clone(), cols[1].clone()))
+    })
+}
+
+/// Decode a `List[String]`.
+fn collect_strings(v: &Value) -> Vec<String> {
+    collect_list(v, |val| match val {
+        Value::Str(s) => Some(s.clone()),
+        _ => None,
+    })
 }
 
 /// A recursive rule cited BY NAME is a `Relation[T]` that LOADS and enumerates the
