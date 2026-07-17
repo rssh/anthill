@@ -50,6 +50,9 @@ mod wi714_join_test;
 #[path = "include/wi714_project_test.rs"]
 mod wi714_project_test;
 
+#[path = "include/wi714_drain_test.rs"]
+mod wi714_drain_test;
+
 #[path = "include/wi727_fix_test.rs"]
 mod wi727_fix_test;
 

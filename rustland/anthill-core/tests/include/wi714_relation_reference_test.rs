@@ -258,13 +258,15 @@ fn wi714_negate_of_empty_is_nonempty() {
 }
 
 /// The single solution of `negate(empty)` materializes as `unit` — the 0-column
-/// membership row. `negate(has_zed).headOption == some(unit)`.
+/// membership row. Spelled `splitFirst` + `some(h)`, NOT `.headOption`: the latter
+/// is given by an equational rule on `Stream`, so it resolves under SLD but does
+/// not evaluate (the interpreter has no equational-rewrite fallback).
 #[test]
 fn wi714_negate_materializes_unit() {
     let mut interp = interp_for(SRC);
     let r = interp
         .call("test.wi714ref.negateEmptyHead", &[])
-        .expect("negate(has_zed).headOption");
+        .expect("negate(has_zed) yields its one row via splitFirst");
     // some(unit) — payload rides positionally (some) or as the single named field.
     let inner = match &r {
         Value::Entity { pos, .. } if !pos.is_empty() => pos[0].clone(),

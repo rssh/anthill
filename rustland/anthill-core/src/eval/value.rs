@@ -156,7 +156,7 @@ pub enum Value {
     /// NOT "a handle for live state": a relation's content is a `LogicalQuery`,
     /// which is data. The load-bearing fact is only "constructor-less abstract
     /// sort → native carrier".) The one thing it carries that `Stream` lacks is the
-    /// query; everything else (`head`/`map`/`toList`/…) is inherited through
+    /// query; everything else (`splitFirst`/`takeN`/`find`/…) is inherited through
     /// `provides LogicalStream`.
     ///
     /// Two payloads:

@@ -11710,7 +11710,7 @@ fn collect_provides_candidates(
             // impl sort (the direct hot path) OR — only as a FALLBACK, when the
             // carrier does not directly provide the spec — when it TRANSITIVELY
             // provides it (a provider CHAIN). A `Relation[T, E]` value dispatches a
-            // `Stream` op (`head`/`headOption`/`toList`) whose only provider of
+            // `Stream` op (`takeN`/`find`/`isEmpty`) whose only provider of
             // `Stream` is `LogicalStream` (`impl_sort = LogicalStream`), reached via
             // `Relation provides LogicalStream provides Stream`. Before 052 the typer
             // never saw a 2-hop carrier (a `.map` return type collapses to the direct
@@ -14667,7 +14667,7 @@ fn bind_spec_params_from_carrier(
     // (`fact Stream[T = T]` ⇒ spec `T` ↦ carrier `T`). WI-714: TRANSITIVE — a
     // `Relation[T, E]` receiver grounds `Stream`'s params through the chain
     // `Relation provides LogicalStream provides Stream` (no direct fact), so the
-    // self-receiver spec-op-on-a-2-hop-carrier case (`headOption`/`toList` on a
+    // self-receiver spec-op-on-a-2-hop-carrier case (`takeN`/`find` on a
     // relation) threads `Stream.T ↦ Relation.T`, `Stream.E ↦ Relation.E`.
     let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
     let Some(view_bindings) =

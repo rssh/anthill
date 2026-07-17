@@ -6,11 +6,33 @@
 --     it composes — join / where / union / negate / project (landed as increments,
 --     each mapping to a LogicalQuery constructor).
 --   * Extensional (LogicalStream, via `provides`): a Relation IS a LogicalStream,
---     so it runs and is consumed through the ordinary Stream API (head / headOption
---     / map / find / toList / …). The provision runs the query LAZILY — `splitFirst`
---     advances the resolver one solution (= 026.1 `execute`) and MATERIALIZES that
---     solution's substitution onto the relation's free variables into a named-tuple
---     record, in declaration order.
+--     so it runs and is consumed through the ordinary Stream API (`splitFirst`,
+--     `takeN`, `find`, `isEmpty`, `map`, `filter`). The provision runs the query
+--     LAZILY — `splitFirst` advances the resolver one solution (= 026.1 `execute`)
+--     and MATERIALIZES that solution's substitution onto the relation's free
+--     variables into a named-tuple record, in declaration order.
+--
+-- A relation is MAYBE-INFINITE, so its drain is BOUNDED — there is no `collect` /
+-- `toList` here, by design rather than by omission. A recursive rule enumerates
+-- unboundedly, so `Relation`'s provision closure is exactly {LogicalStream, Stream,
+-- Iterable} and stops short of `FiniteCollection` — the sort that owns the eager
+-- drains (`collect` / `size` / `foldLeft` / `foldRight`) precisely because they walk
+-- to the end and so diverge on a maybe-infinite carrier (WI-589 / proposal
+-- library/003 Phase C; `stream.anthill` makes the same cut for `Stream` itself).
+-- Providing `collect` IS the finiteness guarantee (`finite_collection.anthill`), and
+-- a relation cannot honor it: the resolver's depth cap makes a drain TERMINATE, but
+-- "terminates" is not "can be fully consumed" — a truncated drain would silently
+-- return an incomplete answer.
+--
+-- So collect a relation by BOUNDING it first: `takeN` is body-backed over
+-- `splitFirst` and returns a `List`, which DOES provide `FiniteCollection` — the
+-- fold then happens where the finiteness is real:
+--
+--     foldLeft(r.takeN(100000), empty(), add)   -- bound → List → fold
+--
+-- (`head` / `headOption` / `tail` are given by equational RULES, so they resolve
+-- under SLD but do not evaluate — the interpreter has no equational-rewrite
+-- fallback. Reach the first solution through `splitFirst` instead.)
 --
 -- T = the schema: the named tuple of the relation's free head parameters. Two
 --   degenerate arities collapse at the typer's schema boundary — one free variable

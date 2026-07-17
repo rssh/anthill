@@ -97,7 +97,20 @@ queens.find(board -> valid(board))       -- inherited via provides, no re-implem
 
 There is **no `Solver` sort and no `all`/`one` keyword** — those were a redundant renaming of the
 Stream API and belong to the effectful layer ([027.2](027.2-branch-from-streams.md)). Mapping for the
-record: `one ≡ .head`/`.headOption`; `all ≡ the stream itself` / `.toList`.
+record: `one ≡ .head`/`.headOption`; `all ≡ the stream itself` / a **bounded** drain, `.takeN(n)`.
+
+> **There is no `.toList` — the drain is bounded** (settled during the WI-714 build; earlier drafts of
+> this proposal wrote `.toList`, which never existed in the stdlib on any sort). A relation is
+> *maybe-infinite*: a recursive rule enumerates unboundedly. The eager drains (`collect` / `size` /
+> `foldLeft` / `foldRight`) live on `FiniteCollection`, **not** on `Stream`, exactly because they walk to
+> the end (WI-589 / [library/003](library/003-finite-collection.md) Phase C) — and *providing `collect` IS
+> the finiteness guarantee*, which a relation cannot honor. `Relation`'s provision closure is
+> `{LogicalStream, Stream, Iterable}` and stops short of `FiniteCollection`. The resolver's depth cap
+> makes a drain terminate, but "terminates" is not "can be fully consumed": a truncated drain would
+> silently return an incomplete answer. So bound first — `takeN` returns a `List`, which *does* provide
+> `FiniteCollection`, and the fold happens where the finiteness is real:
+> `foldLeft(r.takeN(100000), empty(), add)`. This is not a concession: 052's own motivating consumer
+> (WI-713's `query_id_set`) is already capped at 100000 today, self-described as "a runaway guard".
 
 ### Relational algebra — conditions via row lambdas, projection via the distribute-dot, `fix` by key
 
@@ -365,7 +378,13 @@ The empty solution set is just an empty stream; "not found" reuses the Stream AP
 |---|---|---|
 | a value, assume present | `.head` | partial — errors per `Stream.head` |
 | a total result | `.headOption` | `Option` — `None` = not found |
-| all solutions | the stream / `.toList` | empty stream / list |
+| the first solution, today | `.splitFirst` | `none` |
+| all solutions | the stream / `.takeN(n)` (bounded — see above) | empty stream / list |
+
+`.head`/`.headOption` are given by equational **rules** on `Stream`, so they resolve under SLD but do
+**not** evaluate — the interpreter has no equational-rewrite fallback. Until that gap closes (a WI-567
+follow-on, not 052's), reach the first solution through `.splitFirst`, the primitive both are defined
+from.
 
 ### Destructuring — positional today, by-name optional
 
