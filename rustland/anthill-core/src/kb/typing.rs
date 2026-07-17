@@ -3379,7 +3379,7 @@ fn relation_columns_across_clauses(
             let Some(c) = columns.iter_mut().find(|c| c.slot == oc.slot) else {
                 continue;
             };
-            match join_types(kb, c.ty.clone(), oc.ty) {
+            match join_column_types(kb, c.ty.clone(), oc.ty) {
                 Some(j) => c.ty = j,
                 None => {
                     let cname = c.name;
@@ -3395,6 +3395,51 @@ fn relation_columns_across_clauses(
         }
     }
     Ok(columns)
+}
+
+/// WI-714 — the lub of ONE column's type across two clauses, where a clause that
+/// leaves the column UNCONSTRAINED contributes no information.
+///
+/// A clause types a head parameter only where a body goal constrains it (an
+/// operation parameter, an entity field). A parameter whose only occurrence is a
+/// RULE subgoal gets no type at all — rule subgoals do not type their arguments —
+/// so [`relation_clause_columns`] mints it as a fresh raw `Var::Global`. That is the
+/// ABSENCE of a type, not a rival type, and it must not veto the lub. [`join_types`]
+/// already returns the other side for its own `TypeVar` inference wildcard, but does
+/// not recognize a raw `Var::Global` (whose type-dispatch tag is `None`), so it would
+/// climb the lattice, find the column incomparable, and report it disjoint.
+/// `resolved_var` is the same seam [`relation_reference_type_applied`] uses to spot an
+/// unconstrained column (there: accept the argument and narrow to its type).
+///
+/// This is what makes a RECURSIVE relation citable by name. In
+/// `anc(?c, ?e) :- parent(of: ?c, is: ?m), anc(?m, ?e)` the column `e` is typed only
+/// by the rule's OWN recursive self-reference, so it is unconstrained in that clause
+/// and takes String from the base clause — the fixpoint answer, reached without an
+/// assume-then-check iteration precisely BECAUSE a self-reference contributes nothing
+/// to begin with. It covers mutual recursion (and a plain rule subgoal) for the same
+/// reason, neither of which a self-reference-specific rule would catch.
+///
+/// Returns the informative side WITHOUT binding, mirroring `join_types`' own wildcard
+/// arm, which likewise returns the other side rather than unifying: the columns are
+/// lubbed independently, slot by slot, so nothing here should pin one column's type
+/// from another's.
+///
+/// This recognizes only the raw-`Var::Global` spelling of "unconstrained". A column
+/// left open as an uninstantiated SPEC TYPE PARAMETER instead — `rule r(?x) :-
+/// eq(?x, ?y)` types `?x` at `anthill.prelude.PartialEq.T`, a `Term::Ref` to the
+/// parameter symbol — is not a var by this test, so it still reaches `join_types` and
+/// can be reported disjoint against a concrete column. That is pre-existing and
+/// orthogonal to recursion (it needs the producer to resolve `var_types` through the
+/// substitution `collect_rule_var_types` currently drops); it fails loudly, not
+/// silently.
+fn join_column_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
+    if resolved_var(kb, &a).is_some() {
+        return Some(b);
+    }
+    if resolved_var(kb, &b).is_some() {
+        return Some(a);
+    }
+    join_types(kb, a, b)
 }
 
 /// WI-714 — assemble the `Relation[T = schema, E = {Error}]` value type from a final

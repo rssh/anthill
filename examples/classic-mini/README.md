@@ -14,26 +14,23 @@ any of these files.
 
 | Example | Shows | Status |
 |---------|-------|--------|
+| [`ancestor/`](ancestor/) | Recursion — transitive closure as two clauses; one relation queried in three modes | Runs |
 | [`map-colouring/`](map-colouring/) | Generate-and-test: a domain from facts, `neq` guards, the answer queried free | Runs |
 
 ### Not yet here
 
 | Example | Shows | Blocked on |
 |---------|-------|------------|
-| `ancestor/` | Recursion — transitive closure as two clauses | Relation schema synthesis has no fixpoint: a recursive rule cannot be cited as a `Relation[T]` (see below) |
 | `eight-queens/` | Proposal 052's own running example | WI-740 |
 
 Further candidates: dining philosophers, zebra puzzle, towers of hanoi, map
 colouring over a larger map, send+more=money.
 
-**`ancestor` is written and then withdrawn deliberately** — not forgotten. A
-recursive rule (`ancestor(?c,?e) :- parent(of:?c,is:?m), ancestor(?m,?e)`) cannot
-be cited by name as a relation value today: a column whose only typing source in
-a clause is the rule's *own* recursive self-reference gets no type, and the
-cross-clause LUB then reports the column disjoint. Non-recursive rules —
-single-clause and multi-clause alike — are fine. Filed against WI-714's schema
-typing. Transitive closure is the canonical recursive program, so this collection
-stays incomplete until it can be written honestly.
+`ancestor` **was** written and then withheld — a recursive rule could not be cited
+by name as a relation value, because a column typed only by the rule's own
+self-reference came out untyped and the cross-clause lub read that absence as a
+conflict. WI-714's schema synthesis now takes such a column's type from the clause
+that knows, so the example is here and runs.
 
 ## Running
 

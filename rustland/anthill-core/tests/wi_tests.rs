@@ -53,6 +53,9 @@ mod wi714_project_test;
 #[path = "include/wi714_drain_test.rs"]
 mod wi714_drain_test;
 
+#[path = "include/wi714_recursive_relation_test.rs"]
+mod wi714_recursive_relation_test;
+
 #[path = "include/wi738_operand_call_delay_test.rs"]
 mod wi738_operand_call_delay_test;
 

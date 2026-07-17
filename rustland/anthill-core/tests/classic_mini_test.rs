@@ -17,7 +17,7 @@ mod common;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -53,6 +53,76 @@ fn fresh(kb: &mut KnowledgeBase, name: &str) -> TermId {
     kb.alloc(Term::Var(Var::Global(vid)))
 }
 
+fn text(kb: &mut KnowledgeBase, s: &str) -> TermId {
+    kb.alloc(Term::Const(Literal::String(s.to_string())))
+}
+
+/// Resolve `qn(args)` and return its solutions.
+fn query(
+    kb: &mut KnowledgeBase,
+    qn: &str,
+    args: &[TermId],
+) -> Vec<anthill_core::kb::resolve::Solution> {
+    let functor = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("the `{qn}` rule must be in scope"));
+    let g = kb.alloc(Term::Fn {
+        functor,
+        pos_args: SmallVec::from_slice(args),
+        named_args: SmallVec::new(),
+    });
+    let cfg = ResolveConfig { max_solutions: 100, ..Default::default() };
+    kb.resolve(&[g], &cfg)
+}
+
+/// Ancestor: the transitive closure of `parent`, and the three modes the example
+/// advertises (both columns free, first bound, both bound).
+///
+/// LOADING this example is itself the regression test for WI-714's recursive
+/// schema synthesis, and is the reason the assertions below can be reached at all.
+/// The example cites `ancestor` BY NAME as a relation value, so the typer
+/// synthesizes its schema while type-checking `main`'s body at LOAD; before the
+/// fix, the column typed only by the rule's own recursive self-reference came out
+/// untyped, the cross-clause lub read that absence as a conflict, and
+/// `load_example` panicked with "disjoint types for column `elder`". Recursive
+/// rules always RESOLVED fine as subgoals — so the resolver queries here would have
+/// passed on their own; it is the load that pins the fix. The relation VALUE face
+/// (takeN / where / applied citation over a recursive rule) is covered end-to-end
+/// in `wi714_recursive_relation_test`.
+#[test]
+fn classic_mini_ancestor_yields_the_transitive_closure() {
+    let mut kb = load_example("ancestor");
+
+    // Mode (out, out): the whole closure.
+    let cols: Vec<TermId> = ["child", "elder"].iter().map(|n| fresh(&mut kb, n)).collect();
+    let sols = query(&mut kb, "classic.ancestry.ancestor", &cols);
+    assert!(
+        sols.iter().all(|s| s.is_definite()),
+        "every ancestor pair must be DECIDED — an undecided row would read as an answer",
+    );
+    assert_eq!(
+        sols.len(),
+        12,
+        "5 parent facts close transitively into 12 ancestor pairs (3+3+3+2+1); the \
+         base clause alone would yield only the 5 parent edges, so this pins that \
+         the RECURSIVE clause ran",
+    );
+
+    // Mode (in, out): bart's ancestors — homer, abe, orville.
+    let bart = text(&mut kb, "bart");
+    let elder = fresh(&mut kb, "elder");
+    let sols = query(&mut kb, "classic.ancestry.ancestor", &[bart, elder]);
+    assert_eq!(sols.len(), 3, "bart has three ancestors: homer, abe, orville");
+
+    // Mode (in, in): a membership question, derivable exactly once — and its
+    // converse is not derivable at all (the relation is not symmetric).
+    let (bart, orville) = (text(&mut kb, "bart"), text(&mut kb, "orville"));
+    let sols = query(&mut kb, "classic.ancestry.ancestor", &[bart, orville]);
+    assert_eq!(sols.len(), 1, "orville is bart's ancestor, three `parent` links up");
+    let sols = query(&mut kb, "classic.ancestry.ancestor", &[orville, bart]);
+    assert!(sols.is_empty(), "ancestry runs one way — bart is not orville's ancestor");
+}
+
 /// Map colouring: six free columns, three colours, nine border constraints.
 ///
 /// Pins the ANSWER (6), not just that it loads — and pins that every row is
@@ -68,16 +138,7 @@ fn classic_mini_map_colouring_yields_six_definite_colourings() {
         .iter()
         .map(|n| fresh(&mut kb, n))
         .collect();
-    let f = kb
-        .try_resolve_symbol("classic.mapcolouring.colouring")
-        .expect("the `colouring` rule must be in scope");
-    let g = kb.alloc(Term::Fn {
-        functor: f,
-        pos_args: SmallVec::from_slice(&cols),
-        named_args: SmallVec::new(),
-    });
-    let cfg = ResolveConfig { max_solutions: 100, ..Default::default() };
-    let sols = kb.resolve(&[g], &cfg);
+    let sols = query(&mut kb, "classic.mapcolouring.colouring", &cols);
 
     assert!(
         sols.iter().all(|s| s.is_definite()),

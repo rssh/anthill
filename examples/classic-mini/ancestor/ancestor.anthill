@@ -1,0 +1,61 @@
+-- Ancestry: the transitive closure of `parent`, written as two clauses.
+--
+-- THE classic recursive logic program. The whole algorithm is the second clause:
+-- someone's ancestor is their parent, or their parent's ancestor. There is no
+-- traversal, no visited set, no queue — the rule states what an ancestor IS and
+-- SLD resolution walks the chain, to any depth, by itself.
+--
+-- `ancestor` cited BY NAME is a Relation over its two free head parameters
+-- (proposal 052), and applying it — `ancestor("bart")` — BINDS the first column
+-- and narrows the relation to the second: the ancestors of bart.
+
+namespace classic.ancestry
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.List.{length}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  -- Five parent edges. These facts ARE the family tree.
+  sort Family
+    entity parent(of: String, is: String)
+  end
+
+  fact parent(of: "bart", is: "homer")
+  fact parent(of: "lisa", is: "homer")
+  fact parent(of: "maggie", is: "homer")
+  fact parent(of: "homer", is: "abe")
+  fact parent(of: "abe", is: "orville")
+
+  -- An ancestor is a parent...
+  rule ancestor(?child, ?elder)
+    :- parent(of: ?child, is: ?elder)
+
+  -- ...or a parent's ancestor. This clause is the recursion: `ancestor` calls
+  -- itself, and the search follows the chain as far as the facts go.
+  rule ancestor(?child, ?elder)
+    :- parent(of: ?child, is: ?parent), ancestor(?parent, ?elder)
+
+  sort Program
+    requires anthill.cli.Main
+
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      -- The whole closure: 5 parent edges become 12 ancestor pairs. Bart alone
+      -- gains abe and orville, whom no fact mentions alongside him.
+      let all = ancestor.takeN(100)
+      let _ = println(console(), to_string(length(all)))
+
+      -- Applying the relation BINDS its first column and narrows the schema to
+      -- the second (052 §8.3): the ancestors of bart — homer, abe, orville.
+      let ofBart = ancestor("bart")
+      let _ = println(console(), to_string(length(ofBart.takeN(100))))
+
+      -- Both columns bound: a membership question. Orville is bart's
+      -- great-grandfather, three `parent` links away.
+      let bartOfOrville = ancestor("bart", "orville")
+      let _ = println(console(), to_string(length(bartOfOrville.takeN(100))))
+      0
+  end
+end
