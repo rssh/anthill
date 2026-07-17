@@ -1,7 +1,7 @@
 -- Map colouring: assign one of three colours to each region of Australia so
 -- that no two regions sharing a border get the same colour.
 --
--- The classic generate-and-test program: `colour(name: ?x)` GENERATES, `neq`
+-- The classic generate-and-test program: `palette(c: ?x)` GENERATES, `neq`
 -- TESTS, and the search does the rest. Nothing here is a search algorithm — the
 -- rule states what a valid colouring IS, and SLD resolution finds the ones that
 -- satisfy it.
@@ -13,15 +13,29 @@ namespace classic.mapcolouring
   import anthill.prelude.List.{length}
   import anthill.prelude.{Int64, String, List, Bool, Error}
 
-  -- The three colours. These facts ARE the domain: SLD enumerates them, so a
-  -- free colour variable ranges over exactly red / green / blue.
+  -- A colour is one of exactly three things — so it is a sort with three
+  -- variants, not a string. The sort says what a colour IS; the facts below say
+  -- which ones are on the palette. Because the columns are `Colour` and not
+  -- `String`, `colouring` types as
+  -- `Relation[(wa: Colour, nt: Colour, sa: Colour, q: Colour, nsw: Colour, v: Colour)]`
+  -- and a consumer of a row gets a colour, not any old text.
   sort Colour
-    entity colour(name: String)
+    entity red
+    entity green
+    entity blue
   end
 
-  fact colour(name: "red")
-  fact colour(name: "green")
-  fact colour(name: "blue")
+  -- These facts ARE the domain: SLD enumerates them, so a free colour variable
+  -- ranges over exactly red / green / blue. The wrapper sort is what carries the
+  -- TYPE — an entity field (`c: Colour`) is what tells the typer a column is a
+  -- Colour, which is why the palette is an entity + facts rather than a rule.
+  sort Palette
+    entity palette(c: Colour)
+  end
+
+  fact palette(c: red())
+  fact palette(c: green())
+  fact palette(c: blue())
 
   -- A valid colouring of the six mainland states and territories.
   --
@@ -33,8 +47,8 @@ namespace classic.mapcolouring
   -- Queried with every column free, this is mode (out,out,out,out,out,out) —
   -- generate-and-test with the answer unknown, which is the whole point.
   rule colouring(?wa, ?nt, ?sa, ?q, ?nsw, ?v)
-    :- colour(name: ?wa), colour(name: ?nt), colour(name: ?sa),
-       colour(name: ?q), colour(name: ?nsw), colour(name: ?v),
+    :- palette(c: ?wa), palette(c: ?nt), palette(c: ?sa),
+       palette(c: ?q), palette(c: ?nsw), palette(c: ?v),
        neq(?wa, ?nt), neq(?wa, ?sa),
        neq(?nt, ?sa), neq(?nt, ?q),
        neq(?sa, ?q), neq(?sa, ?nsw), neq(?sa, ?v),

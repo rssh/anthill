@@ -25,12 +25,31 @@ Borders: WA–NT, WA–SA, NT–SA, NT–Q, SA–Q, SA–NSW, SA–V, Q–NSW, N
 
 Two pieces, and neither is an algorithm.
 
-**The domain is facts.** `fact colour(name: "red")` and friends. A free colour
+**A colour is a sort, not a string.** `sort Colour { entity red, entity green,
+entity blue }` — three variants, so a colour is one of exactly three things and
+`colouring` types as `Relation[(wa: Colour, nt: Colour, …)]`. A consumer of a row
+gets a colour, not any old text.
+
+**The domain is facts.** `fact palette(c: red())` and friends. A free colour
 variable ranges over exactly these three, because SLD enumerates the facts. There
 is no separate notion of "domain" in the language — a domain *is* a relation.
 
+The two are not the redundancy they look like; they do different jobs, and both
+are load-bearing (each verified by deleting it):
+
+- **The sort is the type, not a generator.** SLD resolves goals against facts and
+  rules; a sort declaration is not something you can call. Drop the palette facts
+  and keep only `rule colouring(?wa: Colour, ?nt: Colour) :- neq(?wa, ?nt)` and
+  nothing generates — `?wa` stays unbound, `neq` cannot decide, and it raises
+  `relation_floundered` rather than enumerating.
+- **The entity field is what carries the type.** The palette could have been a
+  rule (`rule palette(?c) :- eq(?c, red())`, three clauses, no wrapper sort) — it
+  enumerates fine, but the columns come out as `(wa: ?_, nt: ?_)`, *untyped*,
+  because a rule subgoal constrains nothing. It is `palette(c: Colour)`'s entity
+  field that tells the typer a column is a `Colour`.
+
 **The map is a rule.** `colouring(?wa, ?nt, ?sa, ?q, ?nsw, ?v)` says: each region
-takes some colour, and every bordering pair differs. The `colour(name: ?x)` goals
+takes some colour, and every bordering pair differs. The `palette(c: ?x)` goals
 generate; the `neq` goals test. Read it as a definition of what a valid colouring
 *is* — the search is not written down anywhere.
 
