@@ -1,0 +1,9 @@
+-- WI-744: the KB `anthill query` runs its patterns against.
+namespace probe.db
+  import anthill.prelude.{String, Int64}
+  sort Person
+    entity mk(name: String, age: Int64)
+  end
+  fact mk(name: "abe", age: 42)
+  fact mk(name: "bea", age: 37)
+end

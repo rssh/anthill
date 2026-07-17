@@ -74,40 +74,99 @@ prerequisite" step, in one command.
 
 // ── File collection ─────────────────────────────────────────────
 
-fn collect_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, extensions: &[&str]) {
+/// WI-744: an unreadable directory rides `errors` instead of being printed as a
+/// warning and skipped — a dropped directory yields a KB missing work items the
+/// user has on disk, and `list` would then under-report rather than fail.
+fn collect_files_recursive(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    extensions: &[&str],
+    errors: &mut Vec<String>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("warning: cannot read directory {}: {e}", dir.display());
+            errors.push(format!("cannot read directory {}: {e}", dir.display()));
             return;
         }
     };
-    for entry in entries.flatten() {
+    // NOT `entries.flatten()` — that maps an `io::Result` Err to zero items, so a
+    // work-item file failing mid-walk would vanish from the KB with no diagnostic
+    // and `list` would under-report. (`is_dir()`'s stat-failure gap is left as-is
+    // for the reason given in anthill-cli's copy of this function; WI-747 is
+    // about to make that "copy" a fact rather than a metaphor.)
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                errors.push(format!("cannot read an entry of directory {}: {e}", dir.display()));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.is_dir() {
-            collect_files_recursive(&path, out, extensions);
+            collect_files_recursive(&path, out, extensions, errors);
         } else if path.extension().and_then(|e| e.to_str()).map_or(false, |e| extensions.contains(&e)) {
             out.push(path);
         }
     }
 }
 
-fn collect_anthill_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+/// WI-744: `Err` when a named path cannot be read or is not something we can scan.
+///
+/// There is no `!path.exists() { continue; }` skip here, and the reason is worth
+/// stating because an earlier draft of this function had one, justified by "a
+/// fresh project has no `anthill-todo/` until `init`". That was fiction:
+/// `scan_dir` returns `<project>/anthill-todo` only when `is_dir()` says so and
+/// otherwise returns `<project>` itself, and `find_project_dir` hands it only
+/// directories it has already proven exist (an explicit `-d` must `is_dir()`;
+/// discovery needs a marker FILE inside). So the path always exists — and if that
+/// invariant ever breaks, or a TOCTOU delete lands between the two, the honest
+/// answer is a loud error, not a skip that makes `list` say "No work items found"
+/// and exit 0.
+fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>> {
     let mut files = Vec::new();
+    let mut errors = Vec::new();
     for path in paths {
-        if !path.exists() { continue; }
         if path.is_dir() {
-            collect_files_recursive(path, &mut files, &["anthill"]);
+            collect_files_recursive(path, &mut files, &["anthill"], &mut errors);
         } else if path.extension().and_then(|e| e.to_str()) == Some("anthill") {
             files.push(path.clone());
+        } else {
+            errors.push(format!("not a project directory: {}", path.display()));
         }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
     }
     files.sort();
     files.dedup();
-    files
+    Ok(files)
 }
 
 // ── Project directory discovery ──────────────────────────────────
+
+/// The files that mark a directory as an anthill-todo PROJECT. `init` writes
+/// `project.anthill`; every project accrues `workitems.anthill`. Either alone is
+/// proof (a pre-versioning project predates `project.anthill`).
+const PROJECT_MARKERS: [&str; 2] = ["project.anthill", "workitems.anthill"];
+
+/// Does this directory HOLD a project, as opposed to merely being NAMED
+/// `anthill-todo`?
+///
+/// WI-744: discovery used to accept any directory named `anthill-todo`, and any
+/// directory holding some `.anthill` file. Both are too loose, and this repo is
+/// the counterexample: `rustland/anthill-todo/` is this CLI's own CRATE (it holds
+/// `Cargo.toml`, `src/`, and the bundle's `anthill/*.anthill` sources). Running
+/// `anthill-todo list` from `rustland/` therefore resolved to the crate and
+/// reported "No work items found", exit 0, while the real project sat one level
+/// up with 98 of them — the long-standing "-d footgun", where a write could land
+/// in the wrong tree. A warning naming the chosen directory used to be the only
+/// hint; a marker test means there is nothing to hint AT, because the wrong
+/// directory is no longer a candidate.
+fn is_project_dir(dir: &Path) -> bool {
+    PROJECT_MARKERS.iter().any(|m| dir.join(m).is_file())
+}
 
 /// Find the project directory. Checks:
 /// 1. Explicit --dir flag
@@ -124,24 +183,24 @@ fn find_project_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir()
         .map_err(|e| format!("cannot determine current directory: {e}"))?;
 
+    // Discovery is by MARKER, not by name or by "holds some .anthill file", so a
+    // successful match needs no warning to caveat it (WI-744).
     let subdir = cwd.join("anthill-todo");
-    if subdir.is_dir() {
-        eprintln!("warning: no -d flag specified, using current directory: {}", cwd.display());
+    if is_project_dir(&subdir) {
+        return Ok(cwd);
+    }
+    // Already inside the project dir.
+    if is_project_dir(&cwd) {
         return Ok(cwd);
     }
 
-    // Maybe we're already inside an anthill-todo dir
-    let has_anthill = cwd.read_dir()
-        .map(|entries| entries.flatten().any(|e| {
-            e.path().extension().map_or(false, |ext| ext == "anthill")
-        }))
-        .unwrap_or(false);
-    if has_anthill {
-        eprintln!("warning: no -d flag specified, using current directory: {}", cwd.display());
-        return Ok(cwd);
-    }
-
-    Err("no anthill-todo/ directory found.\n  Run `anthill-todo init` or use -d <project-dir>.".into())
+    Err(format!(
+        "no anthill-todo project found in {cwd}.\n  \
+         Looked for {cwd}/anthill-todo/{markers} and {cwd}/{markers}.\n  \
+         Run `anthill-todo init`, or pass -d <project-dir>.",
+        cwd = cwd.display(),
+        markers = format!("{{{}}}", PROJECT_MARKERS.join(",")),
+    ))
 }
 
 /// Determine the directory to scan for workitem files.
@@ -502,16 +561,30 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         }
     };
     let scan = scan_dir(&project_dir);
-    let project_files = collect_anthill_files(&[scan]);
+    let project_files = match collect_anthill_files(&[scan]) {
+        Ok(f) => f,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return runner::EXIT_COMPILE;
+        }
+    };
     // Each project file pairs its on-disk path with the parsed IR so
     // the IndexedFileStore can later associate fact RuleIds with their
     // byte-range spans on disk.
     struct ProjectFile { path: PathBuf, parsed: ParsedFile }
     let mut project_items: Vec<ProjectFile> = Vec::new();
     for file in &project_files {
+        // WI-744: a project file we can SEE but cannot READ is an error. Skipping
+        // it made `list` silently under-report — the work items are on disk, and
+        // the user is told everything is fine.
         let source = match fs::read_to_string(file) {
             Ok(s) => s,
-            Err(e) => { eprintln!("warning: {}: {e}", file.display()); continue; }
+            Err(e) => {
+                eprintln!("error: {}: {e}", file.display());
+                return runner::EXIT_COMPILE;
+            }
         };
         match parse::parse(&source) {
             Ok(mut parsed) => {
@@ -545,19 +618,29 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         .collect();
     let project_offset = stdlib_parsed.len() + bundle_parsed.len();
     let per_file_results = match load::load_all_per_file(&mut kb, &all_refs, &NullResolver) {
+        // `merged.warnings` is dropped deliberately: the stdlib and bundle are
+        // EMBEDDED, so their advisories name files the user cannot act on. WI-745.
         Ok((_merged, per_file)) => per_file,
+        // WI-744: every `LoadError` blocks (see `LoadError`'s doc), so there is no
+        // fallback value here. The old fall-through returned an EMPTY per-file
+        // result, and `record_source` zips `project_items` against it — so zero
+        // fact→span mappings were recorded and `IndexedFileStore::retract` fell
+        // back to a content-keyed retract. The demotion corrupted WRITES, it did
+        // not merely mute a diagnostic.
+        //
+        // Deliberately asymmetric with the `parse::parse` arm below, which warns
+        // and SKIPS. What lets that arm skip is not that it is per-file
+        // attributable — the read arm above is too, and it BLOCKS — but WI-505:
+        // the skipped file is a stale `domain.anthill` whose definitions the
+        // bundle already supplies, so dropping it loses nothing. A load error has
+        // no such redundancy guarantee, and `load_all_per_file` returns a FLAT
+        // error vec with no file identity, so "skip just the offending file" is
+        // not even available here. WI-745 tracks the missing identity.
         Err(errs) => {
-            let mut had_fatal = false;
             for e in &errs {
-                if e.is_load_blocking() {
-                    had_fatal = true;
-                    eprintln!("error: {e}");
-                } else {
-                    eprintln!("warning: {e}");
-                }
+                eprintln!("error: {e}");
             }
-            if had_fatal { return runner::EXIT_COMPILE; }
-            Vec::new()
+            return runner::EXIT_COMPILE;
         }
     };
 

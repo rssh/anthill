@@ -1,0 +1,8 @@
+-- WI-744: paired with broken.toml in this directory. The .anthill is fine; the
+-- data file is not, and that must block the load.
+namespace data.broken
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity mk(name: String, age: Int64)
+  end
+end

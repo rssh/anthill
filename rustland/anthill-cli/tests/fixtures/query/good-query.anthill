@@ -1,0 +1,14 @@
+-- WI-744 control: the exact twin of bad-import-query.anthill — same shape, only
+-- the import differs. Pins that the sibling's block is attributable to the
+-- unresolved import and to nothing else about this file's structure.
+--
+-- The fact is TOP-LEVEL on purpose: `collect_queries` scans `parsed.items` for
+-- `Item::Fact`, so a fact nested in a namespace is invisible to it ("no fact
+-- declarations found"). The namespace is here only to host an import — which is
+-- the only way to write one, since the `-i` flag prepends a bare top-level
+-- `import` line that is not valid grammar.
+namespace probe.q
+  import anthill.prelude.String
+end
+
+fact probe.db.Person.mk(name: ?n, age: ?a)

@@ -1,0 +1,37 @@
+-- WI-744 fixture (see run_cmd_test.rs `ambiguous_symbol_blocks_the_run`): the
+-- ONLY fault is a name reachable via two wildcard imports; the program would
+-- otherwise print `RAN`. `AmbiguousSymbol` is the third variant the old
+-- `is_load_blocking` allowlist omitted, so it too used to demote to `warning:`
+-- and run — picking a referent the user never chose.
+namespace lib.one
+  import anthill.prelude.{Int64}
+  sort Thing
+    entity widget(n: Int64)
+  end
+end
+
+namespace lib.two
+  import anthill.prelude.{Int64}
+  sort Gadget
+    entity widget(n: Int64)
+  end
+end
+
+namespace my.app
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List}
+  import lib.one.Thing.*
+  import lib.two.Gadget.*
+
+  fact widget(n: 1)
+
+  sort Hello
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "RAN")
+      0
+  end
+end

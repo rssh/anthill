@@ -1,0 +1,12 @@
+-- WI-744: the ONLY fault is an import that names no module — the top-level fact
+-- below is valid and DID answer before the fix. `collect_queries` printed
+-- `warning: unresolved import ...` and ran the query anyway, exit 0, so the
+-- pattern's short names were left to resolve by accidental scope walk (or not at
+-- all) and the user got a confident wrong answer in place of a diagnostic.
+--
+-- Twin of good-query.anthill; keep the two in the same shape.
+namespace probe.q
+  import no.such.module.Nope
+end
+
+fact probe.db.Person.mk(name: ?n, age: ?a)

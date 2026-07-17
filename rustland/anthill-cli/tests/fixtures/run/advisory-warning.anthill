@@ -1,0 +1,33 @@
+-- WI-744 fixture (see run_cmd_test.rs `advisory_warnings_print_but_do_not_block`):
+-- the OTHER half of "every LoadError blocks" — a genuine advisory still prints
+-- and still runs. `Shadower.ping` shadows the `Pingable.ping` it requires, which
+-- is the WI-346 `LoadWarning::RequiresShadow` advisory: legal but suspicious.
+--
+-- This fixture triggers its OWN advisory rather than leaning on the stdlib's
+-- (FiniteCollection.map/filter shadow Iterable's, on every load) — those are a
+-- wart whose own message says to rename to silence, so a test anchored on them
+-- would fail the day someone takes that advice, for no WI-744 reason.
+namespace my.advisory
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List}
+
+  sort Pingable
+    sort T = ?
+    operation ping(x: T) -> T
+  end
+
+  sort Shadower
+    requires Pingable
+    operation ping(x: Int64) -> Int64 = x
+  end
+
+  sort Hello
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "advisory-fixture-ran")
+      0
+  end
+end

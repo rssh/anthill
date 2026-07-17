@@ -1,0 +1,22 @@
+-- WI-744 fixture (see run_cmd_test.rs `unresolved_name_blocks_the_run`): the
+-- ONLY fault is an unresolved name; the program would otherwise print `RAN`.
+-- Undotted, so it lands on the generic `UnresolvedName` rather than WI-429's
+-- `UnresolvedTypeName` (which needs a dotted, Capitalized-last name).
+namespace my.app
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List}
+
+  sort Lib
+    operation f(x: NoSuchSortXyz) -> Int64 = 0
+  end
+
+  sort Hello
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "RAN")
+      0
+  end
+end

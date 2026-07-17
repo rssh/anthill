@@ -1,0 +1,9 @@
+# WI-744: anthill data — it carries the `meta`+`data` envelope, so it IS addressed
+# to us — but it names an entity that does not exist. "Ours and broken" is the
+# loud path, and this is what pins it.
+#
+# NOT an unparseable file: that is indistinguishable from a foreign one (no parse
+# -> no envelope -> no evidence it was ever ours), so it is skipped, not reported.
+[people]
+meta = { entity = "data.broken.NoSuchEntityAnywhere" }
+data = [ { name = "abe", age = 42 } ]

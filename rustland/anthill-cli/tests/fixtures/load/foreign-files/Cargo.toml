@@ -1,0 +1,8 @@
+# Valid TOML, no `meta` envelope: not anthill data. Used to yield
+# `error: missing meta: section has no 'meta' key` and kill the load.
+[package]
+name = "a-realization-crate"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"

@@ -163,17 +163,42 @@ pub struct TypeMismatchOrigin {
     pub site: &'static std::panic::Location<'static>,
 }
 
+/// A diagnostic that BLOCKS the load — every variant, without exception. A
+/// `load_all` `Err` means the program will not run: callers print and exit,
+/// they do not triage.
+///
+/// WI-744: there used to be an `is_load_blocking()` allowlist, and the three
+/// variants missing from it (`UnresolvedName`, `AmbiguousSymbol`, `Other`) were
+/// demoted to `warning:` by every CLI and the program ran anyway — so a program
+/// with unresolved names exited 0. Since `Other` is the catch-all that most
+/// deliberately-loud guards raise, the allowlist's default for a new guard was
+/// "advisory", the exact inverse of the repo's loud-over-silent principle. The
+/// sweep found ZERO advisories among them, so the predicate had no content and
+/// is gone.
+///
+/// An advisory diagnostic does NOT belong here: it rides
+/// [`LoadResult::warnings`] on the `Ok` path (the WI-345/346 channel). Keep it
+/// that way — a new `LoadError` variant blocks by construction, and nothing has
+/// to remember to add it to a list.
 #[derive(Clone, Debug)]
 pub enum LoadError {
+    /// A name that resolves to nothing — a typo, or a reference to something
+    /// deleted/renamed. Nothing legitimate reaches here.
     UnresolvedName {
         name: String,
         span: Span,
         scope_name: String,
     },
+    /// An import that names no module. Its names never bind a local alias, so
+    /// every use-site referring to them by short name falls back on accidental
+    /// scope walks — resolving to the wrong symbol, or to none. Failing here
+    /// beats resolving silently-wrong later.
     UnresolvedImport {
         path: String,
         span: Span,
     },
+    /// A name reachable by two or more paths. Dispatch has no sound choice, so
+    /// loading would silently pick a referent the author never named.
     AmbiguousSymbol {
         name: String,
         candidates: Vec<String>,
@@ -570,9 +595,11 @@ impl LoadError {
                 format!("instance fact `{}[…]` binds operations but its carrier cannot be derived: the carrier type parameter '{}' is not bound to a concrete sort (write `fact {}[{} = SomeSort, …]`)",
                     spec, carrier_param, spec, carrier_param)
             }
-            LoadError::Other { message } => {
-                format!("load error: {}", message)
-            }
+            // WI-744: no "load error: " prefix — every other variant renders the
+            // bare fact and the callers prepend "error: ", so a prefix here read
+            // as `error: load error: …`. `Other` is now a blocking front-door
+            // diagnostic, so it matches its siblings.
+            LoadError::Other { message } => message.clone(),
             LoadError::ArrowTermInExprPosition { span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: {}", line, col, arrow_expr_hint())
@@ -668,78 +695,6 @@ impl LoadError {
                 )
             }
         }
-    }
-
-    /// Errors that block load — execution must not proceed:
-    /// - `TypeMismatch`: ill-typed program is unsound.
-    /// - `UnresolvedImport`: imported names won't bind a local alias, so
-    ///   any use-site that refers to them by short name relies on
-    ///   accidental scope walks; better to fail at load time than silently
-    ///   resolve to the wrong (or no) symbol.
-    pub fn is_load_blocking(&self) -> bool {
-        matches!(self,
-            LoadError::TypeMismatch { .. }
-            // WI-565: a bare out-of-scope member call names no callable operation —
-            // block, exactly as the `UnknownApplyFunctor`→`TypeMismatch` it refines.
-            | LoadError::BareMemberCall { .. }
-            | LoadError::UnresolvedImport { .. }
-            | LoadError::UnsatisfiedProviderRequires { .. }
-            | LoadError::UnbackedProviderOperation { .. }
-            // WI-658: a carrier providing both Eq and NonEq is contradictory.
-            | LoadError::IncompatibleEqNonEq { .. }
-            // WI-644: a NonEq carrier can't be a lawful `Eq` key (`Map[K=Float]`).
-            | LoadError::NonEqKeyRequiresLawfulEq { .. }
-            // WI-431 rule 2: ambiguous instance facts give dispatch no sound
-            // choice — block rather than silently pick the first. WI-450: the
-            // witness flavor (two provider sorts) is equally unsound.
-            | LoadError::AmbiguousInstanceFact { .. }
-            | LoadError::AmbiguousWitness { .. }
-            | LoadError::IncompatibleOverride { .. }
-            // WI-431 (B): a mis-typed instance-fact op binding would dispatch to
-            // a wrongly-typed impl — block.
-            | LoadError::IncompatibleInstanceBinding { .. }
-            // WI-431 (E): an op-bearing instance fact whose carrier cannot be
-            // derived would be silently dropped — block instead.
-            | LoadError::UnresolvableInstanceCarrier { .. }
-            // WI-366: a value-in-type in a sort-relation position is not yet
-            // resolvable — fail loudly rather than run with an unenforced clause.
-            | LoadError::ValueInTypeNotResolved { .. }
-            // WI-440: a typo'd place in a `-…` absence label = vacuous constraint.
-            | LoadError::UnresolvedEffectPlace { .. }
-            // WI-429: an unresolvable Capitalized dotted name in type position
-            // would otherwise load as a degenerate nominal sort.
-            | LoadError::UnresolvedTypeName { .. }
-            // WI-489: a value-in-type field projection onto a non-existent field
-            // names nothing — block rather than defer to a silent accept.
-            | LoadError::InvalidFieldProjection { .. }
-            // WI-709: a type argument the sort never declared (or one positional too
-            // many) makes the written type mean something other than what it says —
-            // and made the type- and value-position spellings of it disagree.
-            | LoadError::InvalidTypeArgument { .. }
-            // WI-369: a cross-scope reference to an `internal` name defeats the
-            // encapsulation it was declared for — block.
-            | LoadError::ForbiddenInternalAccess { .. }
-            // WI-525 (proposal 049): an unsound negated unify and a binding
-            // unify in a contract are both load-time NAF/contract-discipline
-            // violations — block ("know errors early").
-            | LoadError::UnsafeNegatedUnify { .. }
-            | LoadError::BindingInContract { .. }
-            // WI-605: a bare `pattern -> body` where a lambda was meant — the
-            // body's binder names resolve to nothing, so the operation cannot
-            // mean what was written.
-            | LoadError::ArrowTermInExprPosition { .. }
-            // WI-618: the same typo in a rule-body / constraint / contract
-            // position — the clause cannot mean what was written.
-            | LoadError::BareArrowInLogicPosition { .. }
-            // WI-023: an unenforceable aggregation constraint and a violated
-            // integrity constraint are both unsound to run with.
-            | LoadError::AggregationConstraintUnsupported { .. }
-            | LoadError::ConstraintViolated { .. }
-            | LoadError::ConstraintLoweringFailed { .. }
-            // WI-628: a constraint decided from a truncated (incomplete) search
-            // is unsound to run with — block rather than pass silently.
-            | LoadError::ConstraintUndecidable { .. }
-            | LoadError::UnsupportedConstraintForm { .. })
     }
 }
 
@@ -941,8 +896,9 @@ impl std::fmt::Display for LoadError {
             LoadError::UnresolvableInstanceCarrier { spec, carrier_param } => {
                 write!(f, "instance fact '{}' binds operations but its carrier ('{}') is not bound to a sort", spec, carrier_param)
             }
+            // WI-744: bare message — see `format_with_source`'s note.
             LoadError::Other { message } => {
-                write!(f, "load error: {}", message)
+                write!(f, "{}", message)
             }
             LoadError::ArrowTermInExprPosition { span } => {
                 write!(f, "{} at {}..{}", arrow_expr_hint(), span.start, span.end)
@@ -6657,8 +6613,9 @@ impl<'a> Loader<'a> {
                     // child / sort ref) was already classified or resolved
                     // before reaching this arm, so what's left is a typo that
                     // would mint a degenerate nominal sort. A lowercase-member
-                    // dotted name (a value place like `Modify[result.a]`)
-                    // keeps the advisory path.
+                    // dotted name (a value place like `Modify[result.a]`) falls
+                    // to the generic `UnresolvedName` below — a less PRECISE
+                    // diagnostic, not a softer one: both block (WI-744).
                     self.errors.push(LoadError::UnresolvedTypeName {
                         name: lookup_name,
                         span: name.span,

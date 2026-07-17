@@ -137,10 +137,11 @@ end
     );
 }
 
-/// Loud-error: a typo'd place in an absence label is load-BLOCKING (the
-/// constraint would be vacuous), not the advisory unresolved-name warning.
+/// Loud-error: a typo'd place in an absence label gets the PRECISE
+/// `UnresolvedEffectPlace` diagnostic (the constraint would be vacuous), not the
+/// generic unresolved-name one. Both block (WI-744); this pins the MESSAGE.
 #[test]
-fn unresolved_place_in_absence_is_load_blocking() {
+fn unresolved_place_in_absence_is_precise_diagnostic() {
     let src = r#"
 namespace wi440.typo
   import anthill.prelude.{Unit, Int64, Cell, Modify}

@@ -173,6 +173,111 @@ fn json_to_toml(val: &serde_json::Value) -> Result<toml::Value, String> {
 
 // ── Core deserializer ──────────────────────────────────────────
 
+/// The file extensions [`load_data_file`] can read.
+///
+/// Exported because whatever FINDS data files must key off the same list: a
+/// format that gets collected but not read comes back `Ok(None)` — "not ours" —
+/// and is dropped without a word. Sharing the list is what stops those two
+/// places from drifting into that silent skip.
+pub const DATA_EXTENSIONS: [&str; 2] = ["toml", "json"];
+
+/// Does this section carry `meta.entity` as a string — the signal that it was
+/// authored FOR US? This is exactly what [`load_section`] reads first (and errors
+/// on when absent), so the two cannot drift: a section this accepts is one
+/// `load_section` will attempt, and one it rejects is one `load_section` would
+/// have failed anyway.
+fn section_names_an_entity(section: &serde_json::Map<String, serde_json::Value>) -> bool {
+    section
+        .get("meta")
+        .and_then(|m| m.as_object())
+        .and_then(|m| m.get("entity"))
+        .and_then(|e| e.as_str())
+        .is_some()
+}
+
+/// Is this value ADDRESSED TO US — i.e. an anthill `meta`+`data` envelope whose
+/// `meta.entity` names an entity?
+///
+/// WI-744: a `.toml`/`.json` sitting next to a program is not automatically
+/// anthill data. An ordinary `Cargo.toml` or `package.json` is not *malformed*
+/// anthill data, it is *not anthill data*, and we have no claim on it. Without
+/// this test the CLI's directory scan treated every such file as ours and
+/// reported a "missing meta" failure for it — which was survivable only while
+/// that failure was demoted to a warning, i.e. one bug papering over another.
+///
+/// The discriminator is `meta.entity: String`, not merely a `meta` key. Keying on
+/// the bare key over-claimed: a foreign TOML with `[meta]`/`[data]` sections, or a
+/// JSON with a nested `meta` object, has no `entity` string yet was claimed and
+/// then errored — the same spurious block as the `Cargo.toml` case, in a rarer
+/// shape. `meta.entity` is what a real data file always carries (`load_section`
+/// requires it) and a config file essentially never does.
+///
+/// RESIDUAL (irreducible under discovery; WI-746 closes it via opt-in): a file
+/// GENUINELY meant as data but missing a string `meta.entity` reads as not-ours
+/// and is skipped silently. That is acceptable only because such a file would not
+/// load anyway (`load_section` errors on the same condition), so nothing loadable
+/// is dropped — and once data is DECLARED rather than discovered, "the user said
+/// this is data" is the evidence that turns that skip back into a loud error.
+fn is_anthill_data(value: &serde_json::Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false; // e.g. compile_commands.json — a top-level array
+    };
+    // Single section (mirrors `load_value`'s `meta`+`data` dispatch)…
+    if section_names_an_entity(obj) && obj.contains_key("data") {
+        return true;
+    }
+    // …or multi-section: at least one value is a section naming an entity.
+    obj.values()
+        .any(|v| v.as_object().is_some_and(section_names_an_entity))
+}
+
+/// Load a `.toml`/`.json` data file IF it is anthill data.
+///
+/// Three-way, which is the point (WI-744): `Ok(None)` = not addressed to us, so
+/// the caller must neither load it nor complain about it; `Ok(Some(n))` = ours,
+/// n facts loaded; `Err` = ours AND broken, which the caller must report loudly.
+/// `ext` is the file extension, lowercase (`"toml"` / `"json"`); anything else
+/// is `Ok(None)` — a file type we have no reader for is not our file either.
+///
+/// A file that will not PARSE is also `Ok(None)`, not `Err`. That looks like a
+/// silent skip and is worth the explanation: the envelope test needs a parsed
+/// value, so an unparseable file yields NO evidence that it was ever addressed to
+/// us — and "no evidence" must read as "not ours", exactly as it does for a file
+/// that parses without the envelope. The alternative was tried and is untenable:
+/// a `.vscode/settings.json` or `tsconfig.json` with JSONC comments is not valid
+/// strict JSON, so erroring here killed `anthill load` for anyone using VS Code,
+/// over a file the tool merely FOUND and had no stake in.
+///
+/// The residual: a file genuinely INTENDED as anthill data, with a syntax error
+/// bad enough to prevent parsing, is skipped without a word. That is inherent to
+/// discovering data by directory scan — intent is unobservable, so a malformed
+/// file is indistinguishable from a foreign one. Curing it needs data files to be
+/// OPT-IN (named explicitly, or in a conventional location), at which point
+/// "the user said this is data" is evidence a parse failure can be reported
+/// against. WI-746.
+pub fn load_data_file(
+    kb: &mut KnowledgeBase,
+    source: &str,
+    ext: &str,
+    domain: TermId,
+) -> Result<Option<usize>, Vec<SerError>> {
+    let value: serde_json::Value = match ext {
+        "toml" => match toml::from_str::<toml::Value>(source) {
+            Ok(v) => toml_to_json(v),
+            Err(_) => return Ok(None),
+        },
+        "json" => match serde_json::from_str(source) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    if !is_anthill_data(&value) {
+        return Ok(None);
+    }
+    load_value(kb, value, domain).map(Some)
+}
+
 /// Core deserializer: serde_json::Value → KB terms.
 fn load_value(
     kb: &mut KnowledgeBase,

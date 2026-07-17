@@ -1,0 +1,23 @@
+-- WI-744 fixture (see run_cmd_test.rs `catch_all_load_error_blocks_the_run`):
+-- the ONLY fault raises the catch-all `LoadError::Other`, via the
+-- reserved-`result`-parameter guard; the program would otherwise print `RAN`.
+-- That guard is the representative because it is STABLE — unlike the WI-582
+-- one, which WI-742 lifts for relational heads.
+namespace my.app
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List}
+
+  sort Lib
+    operation f(result: Int64) -> Int64 = 0
+  end
+
+  sort Hello
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "RAN")
+      0
+  end
+end

@@ -1,0 +1,10 @@
+-- WI-744: this directory holds ordinary non-anthill files. They must be ignored
+-- outright — not loaded, not warned about — exactly as a .md or .rs beside a
+-- program is. Before the `meta`+`data` envelope sniff, `collect_data_files`
+-- claimed every .toml/.json under a path, so these hard-failed the load.
+namespace data.foreign
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity mk(name: String, age: Int64)
+  end
+end

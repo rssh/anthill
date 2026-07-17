@@ -374,7 +374,7 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
             continue;
         }
         if path.is_dir() {
-            collect_files_recursive(path, &mut files, &["anthill"]);
+            collect_files_recursive(path, &mut files, &["anthill"], &mut errors);
         } else if has_extension(path, &["anthill"]) {
             files.push(path.clone());
         } else {
@@ -400,18 +400,46 @@ fn has_extension(path: &Path, extensions: &[&str]) -> bool {
 }
 
 /// Recursively collect files with matching extensions from a directory.
-fn collect_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, extensions: &[&str]) {
+///
+/// WI-744: an unreadable directory is reported through `errors`, not printed as
+/// a warning and skipped. Silently dropping a directory the user NAMED yields a
+/// KB missing files they asked for, and every later diagnostic then describes a
+/// program that isn't the one they wrote. Having no error channel here is what
+/// forced the old `eprintln!("warning: …"); return`.
+fn collect_files_recursive(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    extensions: &[&str],
+    errors: &mut Vec<String>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("warning: cannot read directory {}: {e}", dir.display());
+            errors.push(format!("cannot read directory {}: {e}", dir.display()));
             return;
         }
     };
-    for entry in entries.flatten() {
+    // NOT `entries.flatten()`: `ReadDir` yields `io::Result<DirEntry>`, and
+    // flatten maps an `Err` to zero items — so a file that fails mid-walk (the
+    // directory mutating under us, an NFS/FUSE hiccup) would drop out of the KB
+    // with no diagnostic, which is the exact silent skip the `errors` channel
+    // above exists to close.
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                errors.push(format!("cannot read an entry of directory {}: {e}", dir.display()));
+                continue;
+            }
+        };
         let path = entry.path();
+        // KNOWN GAP: `is_dir()` answers false on a stat failure, so an unstattable
+        // subdirectory is neither recursed into nor reported. Left as-is
+        // deliberately: `fs::metadata` would report it, but it follows symlinks,
+        // so a DANGLING symlink to anything irrelevant would become a hard error
+        // — over-claiming files that were never ours, the WI-746 disease.
         if path.is_dir() {
-            collect_files_recursive(&path, out, extensions);
+            collect_files_recursive(&path, out, extensions, errors);
         } else if has_extension(&path, extensions) {
             out.push(path);
         }
@@ -419,21 +447,31 @@ fn collect_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, extensions: &[&st
 }
 
 /// Collect `.toml` and `.json` data files from paths (directories or individual files).
-fn collect_data_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+///
+/// WI-744: returns `Err` rather than swallowing an unreadable directory. A path
+/// that is neither a directory nor a data file is NOT an error — the same paths
+/// are handed to [`collect_anthill_files`], so a `.anthill` file here is simply
+/// not data. Non-existent paths are likewise left to that function, which runs
+/// first and reports them.
+fn collect_data_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>> {
     let mut files = Vec::new();
+    let mut errors = Vec::new();
     for path in paths {
         if !path.exists() {
             continue;
         }
         if path.is_dir() {
-            collect_files_recursive(path, &mut files, &["toml", "json"]);
-        } else if has_extension(path, &["toml", "json"]) {
+            collect_files_recursive(path, &mut files, &term_ser::DATA_EXTENSIONS, &mut errors);
+        } else if has_extension(path, &term_ser::DATA_EXTENSIONS) {
             files.push(path.clone());
         }
     }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     files.sort();
     files.dedup();
-    files
+    Ok(files)
 }
 
 // ── Output naming ───────────────────────────────────────────────────
@@ -543,52 +581,64 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
                 eprintln!("{w}");
             }
         }
+        // WI-744: every `LoadError` blocks (see `LoadError`'s doc); an advisory
+        // rides `result.warnings` on the Ok path above.
         Err(load_errors) => {
-            let mut had_type_error = false;
             for e in &load_errors {
-                if e.is_load_blocking() {
-                    had_type_error = true;
-                    eprintln!("error: {e}");
-                } else {
-                    eprintln!("warning: {e}");
-                }
+                eprintln!("error: {e}");
             }
-            if had_type_error {
-                return Err(1);
-            }
+            return Err(1);
         }
     }
 
-    // Load .toml and .json data files (after entity definitions are available)
-    let data_files = collect_data_files(paths);
+    // Load .toml and .json data files (after entity definitions are available).
+    //
+    // WI-744: a data file that cannot be read or loaded is an ERROR. These used
+    // to warn and `continue`, so the facts never landed and the KB silently
+    // answered from data the user had supplied but which was never there — a
+    // confident wrong answer, which is worse than not answering. Errors are
+    // accumulated so one run reports every bad file, not just the first.
+    let data_files = match collect_data_files(paths) {
+        Ok(f) => f,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return Err(1);
+        }
+    };
     if !data_files.is_empty() {
         let domain = kb.make_name_term("_data");
+        let mut data_errors: Vec<String> = Vec::new();
         for file in &data_files {
             let source = match fs::read_to_string(file) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("warning: {}: read error: {e}", file.display());
+                    data_errors.push(format!("{}: read error: {e}", file.display()));
                     continue;
                 }
             };
             let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let result = match ext {
-                "toml" => term_ser::load_toml(&mut kb, &source, domain),
-                "json" => term_ser::load_json(&mut kb, &source, domain),
-                _ => continue,
-            };
-            match result {
-                Ok(n) => {
+            match term_ser::load_data_file(&mut kb, &source, ext, domain) {
+                // Not anthill data — an ordinary Cargo.toml / package.json that
+                // happens to sit under a path we were pointed at. Not ours, so
+                // neither loaded nor complained about.
+                Ok(None) => {}
+                Ok(Some(n)) => {
                     if verbose {
                         eprintln!("loaded {} fact(s) from {}", n, file.display());
                     }
                 }
                 Err(errs) => {
-                    for e in &errs {
-                        eprintln!("warning: {}: {e}", file.display());
-                    }
+                    data_errors.extend(errs.iter().map(|e| format!("{}: {e}", file.display())));
                 }
             }
+        }
+        if !data_errors.is_empty() {
+            for e in &data_errors {
+                eprintln!("error: {e}");
+            }
+            return Err(1);
         }
     }
 
@@ -1254,10 +1304,14 @@ fn collect_queries(
             }
         };
 
-        // Scan definitions for name resolution
+        // Scan definitions for name resolution. WI-744: every `LoadError` blocks
+        // (see `LoadError`'s doc).
         let scan_errors = load::scan_definitions(kb, &[&parsed]);
-        for e in &scan_errors {
-            eprintln!("warning: {e}");
+        if !scan_errors.is_empty() {
+            for e in &scan_errors {
+                eprintln!("error: {e}");
+            }
+            return Err(1);
         }
 
         // Extract the fact term and reintern into KB
@@ -1307,10 +1361,14 @@ fn collect_queries(
             }
         };
 
-        // Scan definitions for name resolution
+        // Scan definitions for name resolution. WI-744: a `LoadError` blocks —
+        // see the `--pattern` arm above.
         let scan_errors = load::scan_definitions(kb, &[&parsed]);
-        for e in &scan_errors {
-            eprintln!("warning: {e}");
+        if !scan_errors.is_empty() {
+            for e in &scan_errors {
+                eprintln!("error: {e}");
+            }
+            return Err(1);
         }
 
         // Extract all fact items as queries

@@ -1,0 +1,9 @@
+# Foreign TOML that happens to have [meta] and [data] sections but no
+# `meta.entity` string. Keying the sniff on a bare `meta` key claimed this and
+# errored; keying on `meta.entity: String` correctly leaves it alone.
+[meta]
+name = "some-tool"
+version = 2
+
+[data]
+path = "/somewhere"
