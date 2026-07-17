@@ -6228,20 +6228,40 @@ impl KnowledgeBase {
     /// occurrence body (`fresh_nodes`) rather than the term body — a step
     /// toward dropping `body: Vec<TermId>`.
     ///
-    /// If a builtin delays on an internal variable (created fresh for this
-    /// rule), other body goals may bind it — fine, no propagation needed. But
-    /// if it delays on a caller variable (one that came from the query via
-    /// `answer_links`), the whole rule should delay. `Not` is skipped (NAF
-    /// delays via goal rotation at resolution time), `PushChoice` is skipped
-    /// (a control primitive that fires immediately), and `Unify` is skipped
-    /// (proposal 049: a bare-var first operand of `<=>` / `let ?v = e` is the
-    /// variable the goal exists to BIND — pre-residualizing it would defeat the
-    /// point), so the only delay condition checked is "the builtin's first arg
-    /// resolves to a var". The
-    /// chase goes through `resolve_as_value` (WI-348): a `Value::Term`-bound var
-    /// follows the term chain as before, while a var bound to a concrete
-    /// non-`Term` carrier (a `Value::Node`) resolves as *bound* — it is not a
-    /// delaying variable.
+    /// Delay the WHOLE rule, before its body opens, when one of its body
+    /// builtins has an unbound CALLER var (one that came from the query via
+    /// `answer_links`) in a position from which no amount of later resolution
+    /// can rescue it. The caller's sibling goals then get to bind it first and
+    /// the rule retries.
+    ///
+    /// TWO such positions, and WI-739 is the story of them being conflated:
+    ///
+    /// - a **type-position** var — nothing ever binds a type arg, so the delay
+    ///   propagates unconditionally (WI-322);
+    /// - a **value-position** var under a builtin that is not
+    ///   [`Self::builtin_is_reorderable`] — one that would answer a different
+    ///   question, or none at all, if re-asked after rotation.
+    ///
+    /// WI-739: this used to read "any unbound caller var under any builtin
+    /// delays the whole rule", and that was the bug. For a REORDERABLE builtin
+    /// the premise ("nothing can make progress") is simply false: it suspends on
+    /// its own flex operand and rotation re-asks it once anything binds the var —
+    /// the rule's own generator or a caller sibling alike, since an opened body
+    /// is spliced into the caller's goal list. Pre-empting that collapsed
+    /// `distinct_pair(?x,?y) :- num(v:?x), num(v:?y), neq(?x,?y)` from 6 ground
+    /// rows to 1 floundered residual, while the identical `not(eq(..))`
+    /// enumerated fine — `Not` having been skipped all along for exactly the
+    /// reason that now generalizes to every reorderable tag.
+    ///
+    /// `Not` / `PushChoice` / `Unify` keep their wholesale skip above (NAF
+    /// delays via goal rotation; `PushChoice` fires immediately; proposal 049's
+    /// bare-var first operand of `<=>` / `let ?v = e` is the variable the goal
+    /// exists to BIND — pre-residualizing it would defeat the point).
+    ///
+    /// The var chase goes through `resolve_as_value` (WI-348): a
+    /// `Value::Term`-bound var follows the term chain, while a var bound to a
+    /// concrete non-`Term` carrier (a `Value::Node`) resolves as *bound* — it is
+    /// not a delaying variable.
     fn body_builtins_delay_on_caller_vars_nodes(
         &self,
         nodes: &[Rc<NodeOccurrence>],
@@ -6254,30 +6274,93 @@ impl KnowledgeBase {
                 continue;
             }
             let Some(arg) = node_first_pos_arg(node) else { continue };
-            let mut unbound = Vec::new();
-            // Value-arg delay: the builtin delays when its first arg resolves to
-            // an unbound var (the occurrence twin of `builtin_would_delay`'s
-            // non-`Not` arm). A compound first arg gives the builtin a concrete-
-            // headed value structure, so it does NOT delay on value vars (the
-            // builtin binds them via unification) — hence the bare-var gate.
-            if self.occ_top_resolves_to_var(&arg, subst) {
-                self.collect_unbound_vars_node(&arg, subst, &mut unbound);
-            }
-            // Type-position delay (WI-322): a caller var inside the first arg's
+
+            // TYPE-position delay (WI-322): a caller var inside the first arg's
             // own `type_args` / `type_annotation` (`f[T = ?caller_var](…)`)
             // blocks a type-dispatching builtin even when its value structure is
-            // ground — resolving the typed call needs `T` bound first. Unlike
-            // value structure, a type-position var is NOT something the builtin
-            // binds, so it must propagate delay. Latent until typer/simp
-            // populates type_args at a builtin first-arg position.
+            // ground — resolving the typed call needs `T` bound first. This
+            // propagates UNCONDITIONALLY: head unification binds value args, but
+            // the discrim tree keys on functor/arity/value-args only, so NO body
+            // goal can ever ground a type arg. The WI-739 reordering argument
+            // below is a statement about value positions and cannot apply here.
+            // Latent until typer/simp populates type_args at a builtin first-arg
+            // position.
+            let mut type_vars = Vec::new();
             if let Some(expr) = arg.as_expr() {
-                self.collect_expr_type_field_unbound_vars(expr, subst, &mut unbound);
+                self.collect_expr_type_field_unbound_vars(expr, subst, &mut type_vars);
+            }
+            if type_vars.iter().any(|v| caller_fresh_vars.contains(v)) {
+                return true;
+            }
+
+            // VALUE-position delay (WI-739): a caller var in the first arg's own
+            // value structure propagates ONLY for a builtin that must not be
+            // REORDERED past the goals that bind it. A reorderable builtin needs
+            // no wholesale delay — it suspends on its own flex operand and goal
+            // rotation re-asks it once something binds the var, whether that
+            // something is one of the rule's own generators or a sibling of the
+            // caller (an opened body is spliced into the caller's goal list, so
+            // rotation reaches both).
+            if Self::builtin_is_reorderable(tag) {
+                continue;
+            }
+            let mut unbound = Vec::new();
+            // The builtin delays when its first arg resolves to an unbound var.
+            // A compound first arg gives it a concrete-headed value structure, so
+            // it does NOT delay on value vars (the builtin binds them via
+            // unification) — hence the bare-var gate.
+            if self.occ_top_resolves_to_var(&arg, subst) {
+                self.collect_unbound_vars_node(&arg, subst, &mut unbound);
             }
             if unbound.iter().any(|v| caller_fresh_vars.contains(v)) {
                 return true;
             }
         }
         false
+    }
+
+    /// WI-739: may this builtin be REORDERED past the goals that bind its
+    /// operands — i.e. is "suspend now, re-ask after rotation" equivalent to
+    /// "ask now"?
+    ///
+    /// This is what the caller-var pre-check is actually about, and keying on it
+    /// is what lets generate-and-test enumerate. `neq(?x, ?y)` denotes "x ≠ y", a
+    /// property of VALUES: it suspends on a flex operand (`eq_operands` →
+    /// `Delay`), rotation lets `num` bind, and it is re-asked with the same
+    /// meaning. So it needs no wholesale delay, and imposing one collapsed
+    /// `distinct_pair(?x,?y) :- num(v:?x), num(v:?y), neq(?x,?y)` from its 6
+    /// ground rows to 1 floundered residual — while the logically identical
+    /// `not(eq(..))` enumerated correctly, `Not` being skipped above. That
+    /// divergence was the bug.
+    ///
+    /// Two families are NOT reorderable, for two different reasons — and both
+    /// are about the BUILTIN, never about what the body happens to contain:
+    ///
+    /// - **Non-monotonic under instantiation** (`nonvar` / `ground`). They do
+    ///   suspend on an unbound arg rather than answering, so rotation lets a
+    ///   generator bind it and they then VACUOUSLY SUCCEED — turning an honest
+    ///   residual into a proof. `check(?x) :- nonvar(?x), is_thing(?x)` must keep
+    ///   residualizing when `?x` arrives free even though `is_thing` would bind
+    ///   it: the question is about the CALLER's instantiation, so only the caller
+    ///   may answer it (`delay_propagation_residualizes_when_unresolvable`,
+    ///   `honest_delayed_rule_with_satisfiable_conjunct_still_residualizes`).
+    ///   Note this is NOT "they read the instantiation state and invert" — they
+    ///   never answer false; the inversion is produced by the rotation.
+    /// - **Hard-fails instead of suspending** (`ho_apply`). An unbound predicate
+    ///   var pops the frame outright (`step_init`: "can't apply unbound
+    ///   predicate") — there is no suspension to re-ask, so reordering does not
+    ///   defer the question, it destroys it. Without this arm `?- holds(?p, 5)`
+    ///   over `holds(?p,?n) :- ?p(?n), known_pred(p: ?p)` returns ZERO solutions
+    ///   while the conjunct-swapped spelling proves `?p = is_pos` — an honest
+    ///   residual traded for a silent false refutation, and the same
+    ///   conjunct-order divergence WI-739 exists to remove. It reaches real
+    ///   stdlib: every `<Sort>.induction(?P)` body is `ho_apply(?P, …), …`.
+    ///
+    /// `Not` / `PushChoice` / `Unify` are reorderable too, and are already
+    /// skipped wholesale above (NAF delays via rotation; `PushChoice` fires
+    /// immediately; `<=>`'s bare-var operand is the var the goal exists to BIND).
+    fn builtin_is_reorderable(tag: BuiltinTag) -> bool {
+        !matches!(tag, BuiltinTag::NonVar | BuiltinTag::Ground | BuiltinTag::HoApply)
     }
 
     /// WI-670: would this opened rule body be REFUTED by one of its own

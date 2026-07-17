@@ -7,7 +7,7 @@
 //! a floundered solution — one whose residual holds goals that delayed on variables
 //! that never got bound — materialized anyway, in two distinct lies:
 //!
-//!   1. A VAR-BEARING ROW. `distinct_pair` is typed `Relation[(x: Int64, y: Int64)]`
+//!   1. A VAR-BEARING ROW. `unbound_pair` is typed `Relation[(x: Int64, y: Int64)]`
 //!      yet drained to ONE row holding `(x: Var(Global(1232)), y: Var(Global(1233)))`
 //!      — a logic variable sitting in a column the schema types `Int64`. A type-level
 //!      lie in the very face built to REPLACE raw `Substitution` walking with typed
@@ -47,10 +47,21 @@ namespace test.wi737
   fact num(v: 2)
   fact num(v: 3)
 
-  -- SYMPTOM 1: both head vars free, so the comparison guard flounders in mode
-  -- (out, out) (WI-739) — the whole rule delays and never decides.
-  rule distinct_pair(?x, ?y) :- num(v: ?x), num(v: ?y), neq(?x, ?y)
-  operation pairCount() -> Int64 effects Error = length(distinct_pair.takeN(10))
+  -- SYMPTOM 1: both head vars free and NO body goal can bind either, so the
+  -- comparison guard delays the whole rule and never decides — a residual whose
+  -- two columns are still logic variables.
+  --
+  -- This fixture was `distinct_pair(?x,?y) :- num(v:?x), num(v:?y), neq(?x,?y)`
+  -- while WI-739 was open: back then the caller-var pre-check delayed that rule
+  -- wholesale even though its own `num` goals bind both columns, so it floundered
+  -- and served here as SYMPTOM 1's var-bearing row. WI-739 fixed that — the two
+  -- bugs composed, and `distinct_pair` now correctly enumerates its 6 ground rows
+  -- (pinned by wi739_guard_generator_delay_test), so it is no longer floundered
+  -- and no longer exercises this raise. The property SYMPTOM 1 pins is unchanged;
+  -- only the fixture had to become one that genuinely flounders. Dropping the
+  -- generators is what makes it genuine: nothing can ever bind ?x or ?y.
+  rule unbound_pair(?x, ?y) :- neq(?x, ?y)
+  operation pairCount() -> Int64 effects Error = length(unbound_pair.takeN(10))
 
   -- SYMPTOM 2: `?y` is body-local and NO goal ever binds it, so `neq(?y, ?x)`
   -- delays forever. `num(v: ?x)` still binds `?x`, so this drained THREE rows
@@ -65,18 +76,23 @@ namespace test.wi737
   rule flounders() :- neq(?y, 1)
   operation membershipCount() -> Int64 effects Error = length(flounders.takeN(10))
 
-  -- CONTROL: the SAME two free columns as `distinct_pair`, minus the guard —
+  -- CONTROL: the SAME two free columns as `unbound_pair`, minus the guard —
   -- a plain fact join, which decides. Isolates the raise to the FLOUNDER, not to
   -- "the relation has free columns" (which `negate`'s guard keys on) nor to arity.
   rule pair_any(?x, ?y) :- num(v: ?x), num(v: ?y)
   operation pairAnyCount() -> Int64 effects Error = length(pair_any.takeN(20))
 
-  -- CONTROL, the sharpest: the SAME body and the SAME `neq` guard as
-  -- `distinct_pair`, but `?x` / `?y` are BODY-LOCAL rather than head params — so
-  -- they are not CALLER vars, the rule-level pre-check does not delay, `num` binds
-  -- both before `neq` runs, and the guard DECIDES. Same guard, opposite verdict:
-  -- the flounder is a property of the MODE, and the gate reads the RESIDUAL — not
-  -- the guard's presence, not the rule's shape.
+  -- CONTROL, the sharpest: the SAME `neq` guard as `unbound_pair`, but over two
+  -- columns the body's own `num` goals BIND — so the guard decides and the drain
+  -- yields 6 rows. Same guard, opposite verdict: the flounder is a property of
+  -- whether anything can bind the guard's vars, and the gate reads the RESIDUAL —
+  -- not the guard's presence, not the rule's shape.
+  --
+  -- (Head-param vs body-local USED to be the discriminator here, `distinct_pair`
+  -- being the floundering twin of this rule. That divergence was WI-739's bug —
+  -- caller vars the body binds were delayed anyway — and is now fixed, so the
+  -- head-param spelling decides too and is no longer a contrast. `unbound_pair`
+  -- carries the floundering side now, on the honest ground that NOTHING binds it.)
   rule distinct_local() :- num(v: ?x), num(v: ?y), neq(?x, ?y)
   operation distinctLocalCount() -> Int64 effects Error =
     length(distinct_local.takeN(20))
@@ -158,7 +174,7 @@ fn assert_floundered(interp: &anthill_core::eval::Interpreter, err: EvalError) -
     n
 }
 
-/// SYMPTOM 1: the var-bearing row. `distinct_pair` is typed
+/// SYMPTOM 1: the var-bearing row. `unbound_pair` is typed
 /// `Relation[(x: Int64, y: Int64)]`; it used to drain to one row whose BOTH columns
 /// held unbound logic variables. Now the drain raises and names the pending goal.
 #[test]
@@ -201,7 +217,7 @@ fn wi737_zero_column_membership_raises_rather_than_yielding_unit() {
 }
 
 /// CONTROL: definite relations are unaffected. Same two free columns as
-/// `distinct_pair`, minus the floundering guard — so the raise is attributable to the
+/// `unbound_pair`, minus the floundering guard — so the raise is attributable to the
 /// FLOUNDER, not to free columns (what `negate`'s guard keys on) or to arity.
 #[test]
 fn wi737_definite_relation_still_drains() {
@@ -212,12 +228,18 @@ fn wi737_definite_relation_still_drains() {
     assert_eq!(n.as_int(), Some(9), "3 nums x 3 nums, no guard to flounder on");
 }
 
-/// CONTROL, the sharpest: the SAME `neq` guard that makes `distinct_pair` raise
-/// DECIDES here, because its vars are body-local rather than caller vars — so `num`
-/// binds them before the guard runs. Same guard, opposite verdict: the gate reads
-/// the RESIDUAL, not the guard's presence.
+/// CONTROL, the sharpest: the SAME `neq` guard that makes `unbound_pair` raise
+/// DECIDES here, because this body's own `num` goals bind its vars before the guard
+/// runs. Same guard, opposite verdict: the gate reads the RESIDUAL, not the guard's
+/// presence.
+///
+/// The discriminator used to be read as "are the guard's vars CALLER vars" — the
+/// head-param `distinct_pair` floundered where this body-local spelling decided. That
+/// divergence was WI-739's bug, not a property of relations; with it fixed, the real
+/// discriminator is "can anything BIND the guard's vars", which is what this control
+/// and `unbound_pair` now bracket.
 #[test]
-fn wi737_same_guard_drains_when_its_vars_are_not_caller_vars() {
+fn wi737_same_guard_drains_when_its_vars_are_bound_by_the_body() {
     let mut interp = interp_for(SRC);
     let n = interp
         .call("test.wi737.distinctLocalCount", &[])
