@@ -233,18 +233,9 @@ mod tests {
         }
     }
 
+    // WI-747: the walk is the shared `crate::fs_util`.
     fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        let Ok(entries) = std::fs::read_dir(dir) else { return files; };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_anthill_files(&path));
-            } else if path.extension().and_then(|s| s.to_str()) == Some("anthill") {
-                files.push(path);
-            }
-        }
-        files
+        crate::fs_util::collect_files(dir, &["anthill"]).expect("collect .anthill files")
     }
 
     fn load_with_src(src: &str) -> KnowledgeBase {

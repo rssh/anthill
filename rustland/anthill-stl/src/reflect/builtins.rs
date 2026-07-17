@@ -1073,21 +1073,9 @@ mod tests {
     use anthill_core::kb::load::{self, NullResolver};
     use anthill_core::parse;
 
+    // WI-747: the walk is the shared `anthill_core::fs_util`.
     fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        if dir.is_dir() {
-            for entry in std::fs::read_dir(dir).expect("read stdlib dir") {
-                let entry = entry.expect("read dir entry");
-                let path = entry.path();
-                if path.is_dir() {
-                    files.extend(collect_anthill_files(&path));
-                } else if path.extension().is_some_and(|e| e == "anthill") {
-                    files.push(path);
-                }
-            }
-        }
-        files.sort();
-        files
+        anthill_core::fs_util::collect_files(dir, &["anthill"]).expect("collect stdlib")
     }
 
     fn load_stdlib_and_source(source: &str) -> Interpreter {

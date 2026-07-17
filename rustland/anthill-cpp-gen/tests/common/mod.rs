@@ -13,22 +13,11 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
-/// Recursively collect .anthill files under a directory.
+/// Recursively collect .anthill files under a directory. WI-747: the walk is the
+/// shared `anthill_core::fs_util`; panic-on-fault (a broken fixture is a test
+/// bug) is the test-suite policy.
 pub fn collect_anthill_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
-            let entry = entry.expect("read dir entry");
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_anthill_files(&path));
-            } else if path.extension().is_some_and(|e| e == "anthill") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
+    anthill_core::fs_util::collect_files(dir, &["anthill"]).expect("collect .anthill files")
 }
 
 /// Path to the workspace's stdlib/anthill/ directory.

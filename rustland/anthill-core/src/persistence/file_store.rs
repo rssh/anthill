@@ -96,32 +96,16 @@ impl FileStore {
     }
 
     /// Recursively collect all `.anthill` files under a directory.
+    ///
+    /// WI-747: the walk is the shared `fs_util::collect_files` (fail-fast, the
+    /// shape this backend already used); only the "a not-yet-created root is
+    /// legitimately empty, not an error" policy — a `pull()` before the store's
+    /// directory exists — stays here. Its `String` fault becomes `Io`.
     fn collect_anthill_files(dir: &Path) -> Result<Vec<PathBuf>, PersistenceError> {
-        let mut files = Vec::new();
         if !dir.exists() {
-            return Ok(files);
+            return Ok(Vec::new());
         }
-        Self::collect_recursive(dir, &mut files)?;
-        files.sort();
-        Ok(files)
-    }
-
-    fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), PersistenceError> {
-        let entries = fs::read_dir(dir).map_err(|e| {
-            PersistenceError::Io(format!("failed to read directory {}: {e}", dir.display()))
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                PersistenceError::Io(format!("failed to read dir entry: {e}"))
-            })?;
-            let path = entry.path();
-            if path.is_dir() {
-                Self::collect_recursive(&path, files)?;
-            } else if path.extension().is_some_and(|e| e == "anthill") {
-                files.push(path);
-            }
-        }
-        Ok(())
+        crate::fs_util::collect_files(dir, &["anthill"]).map_err(PersistenceError::Io)
     }
 }
 

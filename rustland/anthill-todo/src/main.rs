@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anthill::{runner, stdlib};
+use anthill_core::fs_util;
 use anthill_core::kb::load;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
@@ -73,44 +74,10 @@ prerequisite" step, in one command.
 
 
 // ── File collection ─────────────────────────────────────────────
-
-/// WI-744: an unreadable directory rides `errors` instead of being printed as a
-/// warning and skipped — a dropped directory yields a KB missing work items the
-/// user has on disk, and `list` would then under-report rather than fail.
-fn collect_files_recursive(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    extensions: &[&str],
-    errors: &mut Vec<String>,
-) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            errors.push(format!("cannot read directory {}: {e}", dir.display()));
-            return;
-        }
-    };
-    // NOT `entries.flatten()` — that maps an `io::Result` Err to zero items, so a
-    // work-item file failing mid-walk would vanish from the KB with no diagnostic
-    // and `list` would under-report. (`is_dir()`'s stat-failure gap is left as-is
-    // for the reason given in anthill-cli's copy of this function; WI-747 is
-    // about to make that "copy" a fact rather than a metaphor.)
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                errors.push(format!("cannot read an entry of directory {}: {e}", dir.display()));
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files_recursive(&path, out, extensions, errors);
-        } else if path.extension().and_then(|e| e.to_str()).map_or(false, |e| extensions.contains(&e)) {
-            out.push(path);
-        }
-    }
-}
+//
+// WI-747: the recursive walk is `anthill_core::fs_util`; the POLICY below —
+// which named paths are an error — stays here (it differs from anthill-cli's:
+// this CLI has no `!path.exists()` skip, per the note below).
 
 /// WI-744: `Err` when a named path cannot be read or is not something we can scan.
 ///
@@ -129,8 +96,10 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
     let mut errors = Vec::new();
     for path in paths {
         if path.is_dir() {
-            collect_files_recursive(path, &mut files, &["anthill"], &mut errors);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("anthill") {
+            if let Err(e) = fs_util::collect_files_recursive(path, &["anthill"], &mut files) {
+                errors.push(e);
+            }
+        } else if fs_util::has_extension(path, &["anthill"]) {
             files.push(path.clone());
         } else {
             errors.push(format!("not a project directory: {}", path.display()));

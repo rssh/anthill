@@ -1,5 +1,6 @@
 pub mod intern;
 pub mod span;
+pub mod fs_util;
 pub mod parse;
 pub mod kb;
 pub mod codegen;

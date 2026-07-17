@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use anthill_core::codegen::generate_rust;
+use anthill_core::fs_util;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::subst::Substitution;
@@ -363,7 +364,15 @@ struct CheckArgs {
 }
 
 // ── File collection ─────────────────────────────────────────────────
+//
+// The recursive directory walk itself is `anthill_core::fs_util` (WI-747); only
+// the per-command POLICY — which paths count as an error — stays here. `load`
+// errors on a path it was told to load but cannot; a directory-read fault from
+// the walk joins those in the same `Vec<String>`.
 
+/// `.anthill` sources from the named paths. A path that does not exist, or a
+/// file without the `.anthill` extension, is an error — `anthill load` was told
+/// to load it.
 fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>> {
     let mut files = Vec::new();
     let mut errors = Vec::new();
@@ -374,8 +383,10 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
             continue;
         }
         if path.is_dir() {
-            collect_files_recursive(path, &mut files, &["anthill"], &mut errors);
-        } else if has_extension(path, &["anthill"]) {
+            if let Err(e) = fs_util::collect_files_recursive(path, &["anthill"], &mut files) {
+                errors.push(e);
+            }
+        } else if fs_util::has_extension(path, &["anthill"]) {
             files.push(path.clone());
         } else {
             errors.push(format!("not an .anthill file: {}", path.display()));
@@ -389,61 +400,6 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
     files.sort();
     files.dedup();
     Ok(files)
-}
-
-/// Check if a file path has one of the given extensions.
-fn has_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| extensions.contains(&e))
-        .unwrap_or(false)
-}
-
-/// Recursively collect files with matching extensions from a directory.
-///
-/// WI-744: an unreadable directory is reported through `errors`, not printed as
-/// a warning and skipped. Silently dropping a directory the user NAMED yields a
-/// KB missing files they asked for, and every later diagnostic then describes a
-/// program that isn't the one they wrote. Having no error channel here is what
-/// forced the old `eprintln!("warning: …"); return`.
-fn collect_files_recursive(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    extensions: &[&str],
-    errors: &mut Vec<String>,
-) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            errors.push(format!("cannot read directory {}: {e}", dir.display()));
-            return;
-        }
-    };
-    // NOT `entries.flatten()`: `ReadDir` yields `io::Result<DirEntry>`, and
-    // flatten maps an `Err` to zero items — so a file that fails mid-walk (the
-    // directory mutating under us, an NFS/FUSE hiccup) would drop out of the KB
-    // with no diagnostic, which is the exact silent skip the `errors` channel
-    // above exists to close.
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                errors.push(format!("cannot read an entry of directory {}: {e}", dir.display()));
-                continue;
-            }
-        };
-        let path = entry.path();
-        // KNOWN GAP: `is_dir()` answers false on a stat failure, so an unstattable
-        // subdirectory is neither recursed into nor reported. Left as-is
-        // deliberately: `fs::metadata` would report it, but it follows symlinks,
-        // so a DANGLING symlink to anything irrelevant would become a hard error
-        // — over-claiming files that were never ours, the WI-746 disease.
-        if path.is_dir() {
-            collect_files_recursive(&path, out, extensions, errors);
-        } else if has_extension(&path, extensions) {
-            out.push(path);
-        }
-    }
 }
 
 /// Collect `.toml` and `.json` data files from paths (directories or individual files).
@@ -461,8 +417,12 @@ fn collect_data_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>> {
             continue;
         }
         if path.is_dir() {
-            collect_files_recursive(path, &mut files, &term_ser::DATA_EXTENSIONS, &mut errors);
-        } else if has_extension(path, &term_ser::DATA_EXTENSIONS) {
+            if let Err(e) =
+                fs_util::collect_files_recursive(path, &term_ser::DATA_EXTENSIONS, &mut files)
+            {
+                errors.push(e);
+            }
+        } else if fs_util::has_extension(path, &term_ser::DATA_EXTENSIONS) {
             files.push(path.clone());
         }
     }

@@ -14,22 +14,11 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 
-/// Collect all .anthill files under a directory, recursively.
+/// Collect all .anthill files under a directory, recursively. WI-747: the walk
+/// is the shared `anthill_core::fs_util`; the test suites' policy is to panic on
+/// an unreadable directory (a broken fixture is a test-authoring bug).
 pub fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
-            let entry = entry.expect("read dir entry");
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_anthill_files(&path));
-            } else if path.extension().is_some_and(|e| e == "anthill") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
+    anthill_core::fs_util::collect_files(dir, &["anthill"]).expect("collect .anthill files")
 }
 
 /// Workspace root (the `oss/anthill/` directory containing rustland/, stdlib/,
