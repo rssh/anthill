@@ -20,7 +20,7 @@
 --   evaluated during resolution), exactly `execute`'s `effects Error`. The provides
 --   edge threads it so every inherited Stream op types at {Error}, not {}.
 sort anthill.prelude.Relation
-  import anthill.prelude.{LogicalStream, Option, Pair, Unit, Concat}
+  import anthill.prelude.{LogicalStream, Option, Pair, Unit, Concat, Without}
   import anthill.reflect.{NodeOccurrence, Term}
 
   sort T = ?              -- schema: named tuple of the free head parameters
@@ -200,4 +200,31 @@ sort anthill.prelude.Relation
   -- host builtin rebuilds `columns` as `[(result-key, r's column var of source-name)]`,
   -- keeping `r.query`. A source name naming no column is a loud error, never a drop.
   operation project_run(r: Relation, spec: Term) -> Relation[T = r.T, E = r.E]
+
+  -- fix — RESTRICT relation columns to constants and DROP them (WI-714 / proposal 052
+  -- §"`fix` is sugar"; the driving client of WI-727 / proposal 056 — variadic capture).
+  -- `r.fix(x: 1, z: 2)` keeps the solutions of `r` whose columns `x` / `z` equal the given
+  -- constants, then removes those columns from the schema — `≡ where(eq(x, 1)) + project`.
+  --
+  -- fix's "arguments" are a VARIADIC SET OF NAMES: `x` / `z` are DYNAMIC COLUMNS of the
+  -- receiver relation, not a fixed parameter list (a different relation has different
+  -- columns, `who` / `item`, …), so nothing in a declared signature can name them. The
+  -- `...args: R` VARIADIC CAPTURE parameter (proposal 056 §2.1) collects the leftover named
+  -- arguments into a named-tuple record `args`, whose TYPE binds the ordinary explicit type
+  -- parameter `R` — inferred from the call exactly as `join[L, R]` infers `L` / `R` from its
+  -- operands. So `fix` resolves through the ORDINARY operation path: NO compile-time macro
+  -- (there is no lambda), and NOTHING in the typer keyed on fix's identity — the `join` →
+  -- `Concat` "no op-name-keyed typer code" discipline (the alternative was an `op_sym ==
+  -- Relation.fix` recognizer, which that discipline forbids).
+  --
+  -- The narrowed schema is `Without[T = p.T, Drop = R]` — the DUAL of join's `Concat`: the
+  -- general type constructor that drops from `p`'s schema every column named in the captured
+  -- record `R`, reducing (with the membership + constant-type checks) at the return-type
+  -- normalization boundary where `Concat` / `s.T` reduce. `E` threads the receiver's `p.E`
+  -- (fix runs no extra search). Body-less; the host builtin reads the `args` record VALUE (a
+  -- `Value::Tuple`, no compile-time spec-splice — §2.1) and wraps `guarded(query, eq(col,
+  -- const))` + drops the columns (the column stays SOLVED in the query, so a dropped column
+  -- keeps the source multiplicity — bag semantics, OQ6, as `project`).
+  operation fix[R](p: Relation, ...args: R)
+    -> Relation[T = Without[T = p.T, Drop = R], E = p.E]
 end

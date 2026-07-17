@@ -520,6 +520,16 @@ pub struct KnowledgeBase {
     /// signature; they just read/write `record.body`.
     pub(crate) op_records: HashMap<Symbol, op_info::OperationRecord>,
 
+    /// WI-727 (proposal 056) — the VARIADIC CAPTURE parameter of each operation that
+    /// declares one: `op_sym → the name symbol of its `...args: R` capture parameter`.
+    /// Populated by the loader (the `...` marker is a syntactic property with no type
+    /// signal, so it cannot be recovered from the signature; and `build_op_signatures`
+    /// rebuilds `op_records` from facts, which would clobber a signature-carried flag —
+    /// hence a dedicated side-table, like `op_records` itself). Read O(1) by the typer's
+    /// argument matching (`check_apply_iter`) to collect leftover named arguments into
+    /// the capture record rather than rejecting them. Absent ⇒ the op has no capture.
+    pub(crate) op_capture_params: HashMap<Symbol, Symbol>,
+
     /// WI-659 — the SortAlias resolution index (source sort → alias target), built
     /// once at type-check start by `typing::build_sort_alias_index`. `None` until
     /// built; while `None`, `resolve_sort_alias` falls back to its (slower) scan.
@@ -846,6 +856,7 @@ impl KnowledgeBase {
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
+            op_capture_params: HashMap::new(),
             sort_alias_index: None,
             provides_index: None,
             sort_info_index: None,
@@ -979,6 +990,20 @@ impl KnowledgeBase {
     /// loader produced one. None for body-less ops (spec declarations).
     pub fn op_body_node(&self, op_sym: Symbol) -> Option<&Rc<NodeOccurrence>> {
         self.op_records.get(&op_sym).and_then(|r| r.body.as_ref())
+    }
+
+    /// WI-727 (proposal 056) — the name of `op_sym`'s VARIADIC CAPTURE parameter
+    /// (`...args: R`), if it declares one. `None` for the vast majority of ops. Read
+    /// by the typer's argument matching to route leftover named arguments into the
+    /// capture record. Recorded by the loader ([`record_op_capture_param`]).
+    pub fn op_capture_param(&self, op_sym: Symbol) -> Option<Symbol> {
+        self.op_capture_params.get(&op_sym).copied()
+    }
+
+    /// WI-727 — record `op_sym`'s variadic capture parameter name. Called by the
+    /// loader when an operation declares a `...`-marked parameter.
+    pub fn record_op_capture_param(&mut self, op_sym: Symbol, param: Symbol) {
+        self.op_capture_params.insert(op_sym, param);
     }
 
     /// WI-242 — record the value-typed body node for an operation.

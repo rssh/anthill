@@ -327,3 +327,32 @@ operation length(l: List) -> Int
     return_type: (simple_type
       (name
         (identifier)))))
+
+==================================
+Variadic capture parameter (...args) — WI-727
+==================================
+
+operation fix[R](p: Relation, ...args: R) -> Relation
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (operation_type_param_list
+      (operation_type_param
+        name: (identifier)))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))

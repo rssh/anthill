@@ -12222,6 +12222,29 @@ impl<'a> Loader<'a> {
             });
         }
 
+        // WI-727 (proposal 056): a VARIADIC CAPTURE parameter (`...args: R`) must be AT
+        // MOST ONE and TRAILING — a second `...` is ambiguous, and a non-trailing one
+        // would leave the declared-parameter matching that follows it undefined (the
+        // capture IS the residue, so it can only sit last). Both are LOAD errors here; a
+        // conforming capture is recorded in the FieldInfo loop below (where the param's
+        // field symbol — the same key the typer's `op.params` uses — is minted).
+        let rest_count = o.params.iter().filter(|p| p.rest).count();
+        if rest_count > 1 {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "operation '{op_qualified}': at most one variadic capture parameter (`...`) \
+                     is allowed"
+                ),
+            });
+        } else if rest_count == 1 && !o.params.last().map(|p| p.rest).unwrap_or(false) {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "operation '{op_qualified}': a variadic capture parameter (`...`) must be the \
+                     LAST parameter"
+                ),
+            });
+        }
+
         // Pre-allocate type-param Vars and seed the per-scope cache so
         // later `type_expr_to_value` calls reuse them, and we can publish
         // the list on OperationInfo. Skipping the `find_sort_alias_var`
@@ -12291,6 +12314,14 @@ impl<'a> Loader<'a> {
                 } else {
                     self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope.raw())
                 };
+                // WI-727: record a conforming variadic capture parameter under its FIELD
+                // symbol — the same key the typer's `op.params` carries, so argument
+                // matching can look the capture up by `functor`. (Validated trailing/unique
+                // above.) The param still rides `params` normally; the capture routing is
+                // driven by this side-table, not by any change to its FieldInfo shape.
+                if p.rest {
+                    self.kb.record_op_capture_param(functor, field_sym);
+                }
                 let name_term = self.kb.alloc(Term::Ref(field_sym));
                 // WI-341: bind a callback param's arrow param names to their
                 // `CallbackParam` places for this arrow type's conversion, so a

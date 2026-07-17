@@ -496,6 +496,11 @@ pub struct TypeParam {
 pub struct Param {
     pub name: Symbol,
     pub ty: TypeExpr,
+    /// WI-727 (proposal 056): `true` for a VARIADIC CAPTURE parameter — one marked
+    /// `...name: R` that collects every named argument not matched to a declared
+    /// parameter into a single named-tuple record. At most one, trailing (enforced
+    /// in the loader). `false` for an ordinary parameter.
+    pub rest: bool,
 }
 
 // ── Const (proposal 039 / WI-084) ───────────────────────────────

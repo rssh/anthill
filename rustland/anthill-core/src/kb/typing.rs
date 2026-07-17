@@ -1730,6 +1730,186 @@ fn reduce_concat_in_type(
     }
 }
 
+/// WI-727 (proposal 056) — the INTERNAL type-level operation behind the `Without[T, Drop]`
+/// type constructor, the DUAL of [`concat_named_tuple_types`]: given a named-tuple type `t`
+/// and a record type `drop` naming the columns to remove, produce `t` with every field
+/// named in `drop` dropped. The residual 1-collapses exactly as a relation schema does (the
+/// element for one kept column, `Unit` for none) — `Without` can shrink to 0/1 fields, which
+/// `Concat` (only grows) never does. BOTH checks the capture is deliberately unconstrained
+/// about live HERE (proposal 056 §2.2): a `drop` field naming no `t` field, or one whose
+/// (captured) type mismatches its column, is an error the caller wraps in a `TypeError`.
+/// `drop` is the record the variadic capture (`...args: R`) produced, so an EMPTY `drop`
+/// (an empty capture, `r.fix()`) drops nothing — the identity. `Without` is a type FORM (the
+/// surface a signature writes); this is its reduction (the `Concat` / projection precedent).
+fn without_named_tuple_types(
+    kb: &mut KnowledgeBase,
+    t: &Value,
+    drop: &Value,
+    span: crate::span::SourceSpan,
+) -> Result<Value, String> {
+    // The fields to drop — `drop` is the captured record type (a named tuple). An empty
+    // capture (an empty named tuple, or `Unit`) drops nothing → the identity (OQ #6).
+    let drop_fields = match extract_type(kb, drop) {
+        TypeExtractor::NamedTuple(f) => f,
+        _ if sort_functor_of_view(kb, drop) == kb.try_resolve_symbol("anthill.prelude.Unit") => {
+            Vec::new()
+        }
+        _ => {
+            return Err("`Without` drop operand must be a record (named tuple) of the columns \
+                        to drop — the record a variadic capture (`...args: R`) produces"
+                .to_string())
+        }
+    };
+    if drop_fields.is_empty() {
+        return Ok(t.clone());
+    }
+    // The base schema must be a named tuple to drop columns BY NAME — a 1-collapse /
+    // membership schema has no named column to match a dropped field against.
+    let t_fields = match extract_type(kb, t) {
+        TypeExtractor::NamedTuple(f) => f,
+        _ => {
+            return Err("`Without` base operand must be a named-tuple type (a relation with at \
+                        least two named columns); dropping from a 1-collapse / membership \
+                        schema is not supported"
+                .to_string())
+        }
+    };
+    // Membership + type checks — the LOAD errors that give the capture its meaning (§2.2).
+    // Each dropped field must NAME a column of the base schema, and its captured type must
+    // MATCH that column (a `fix(x: "s")` over an `Int64` column `x` is rejected here).
+    for (dname, dty) in &drop_fields {
+        match t_fields.iter().find(|(tn, _)| *tn == *dname) {
+            None => {
+                return Err(format!(
+                    "`Without` drops the field `{}`, which is not a column of the base schema \
+                     (a captured argument names no column to restrict)",
+                    kb.resolve_sym(*dname)
+                ))
+            }
+            Some((_, tty)) => {
+                let mut probe = Substitution::new();
+                if !types_compatible(kb, &mut probe, dty, tty) {
+                    return Err(format!(
+                        "`Without` drops the field `{}` with a value whose type does not match \
+                         its column",
+                        kb.resolve_sym(*dname)
+                    ));
+                }
+            }
+        }
+    }
+    // Keep every base field NOT named in `drop`, in the base's order; collapse the residual
+    // as a relation schema does (0 → `Unit`, 1 → the element, ≥2 → the named tuple).
+    let kept: Vec<(Symbol, Value)> = t_fields
+        .into_iter()
+        .filter(|(tn, _)| !drop_fields.iter().any(|(dn, _)| *dn == *tn))
+        .collect();
+    Ok(match kept.len() {
+        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
+        1 => kept[0].1.clone(),
+        _ => named_tuple_value(kb, &kept, span, None),
+    })
+}
+
+/// WI-727 — does a type mention the `Without` type constructor ANYWHERE? The per-op gate
+/// (over the DECLARED signature) so only a signature that writes `Without[..]` pays for
+/// [`reduce_without_in_type`] at each call. Recurses through every carrier, mirroring
+/// [`type_mentions_concat`].
+fn type_mentions_without(kb: &KnowledgeBase, ty: &Value) -> bool {
+    let Some(without_sym) = kb.try_resolve_symbol("anthill.prelude.Without") else {
+        return false;
+    };
+    fn walk(kb: &KnowledgeBase, ty: &Value, without_sym: Symbol) -> bool {
+        match extract_type(kb, ty) {
+            TypeExtractor::Parameterized { base, bindings } => {
+                base == without_sym || bindings.iter().any(|(_, v)| walk(kb, v, without_sym))
+            }
+            TypeExtractor::Arrow { param, result, effects } => {
+                walk(kb, &param, without_sym)
+                    || walk(kb, &result, without_sym)
+                    || walk(kb, &effects, without_sym)
+            }
+            TypeExtractor::NamedTuple(fields) => {
+                fields.iter().any(|(_, v)| walk(kb, v, without_sym))
+            }
+            TypeExtractor::EffectsRows(e) => walk(kb, &e, without_sym),
+            _ => false,
+        }
+    }
+    walk(kb, ty, without_sym)
+}
+
+/// WI-727 — evaluate the `Without` type constructor wherever it appears in a type:
+/// `Without[T = <nt>, Drop = <record>]` reduces to `<nt>` minus the dropped fields
+/// ([`without_named_tuple_types`]). Structurally the mirror of [`reduce_concat_in_type`]
+/// (reading the operands `T` / `Drop` instead of `A` / `B`): keyed on the `Without` sort
+/// symbol, evaluated at the SAME return-type normalization boundary, recursing through
+/// parameterized bindings (the schema-producing `Without` is the `T` binding of
+/// `Relation[T = Without[..]]`). FIRST-INCREMENT scope: `Without` reduces only as a direct
+/// parameterized type argument; a `Without` nested in any other carrier is a LOUD error.
+fn reduce_without_in_type(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    ctx: &TypeErrorContext,
+    sp: crate::span::SourceSpan,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    let without_sym = match kb.try_resolve_symbol("anthill.prelude.Without") {
+        Some(s) => s,
+        None => return Ok(ty.clone()),
+    };
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings } => {
+            // Reduce each binding first — the schema-producing `Without` is nested (the `T`
+            // binding of `Relation[T = Without[..]]`), so descend before evaluating.
+            let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+            for (p, v) in bindings {
+                reduced.push((p, reduce_without_in_type(kb, &v, ctx, sp, span)?));
+            }
+            if base == without_sym {
+                // `Without[T = .., Drop = ..]` — read both operands by param name and drop.
+                let mut base_t: Option<Value> = None;
+                let mut drop: Option<Value> = None;
+                for (p, v) in &reduced {
+                    match kb.resolve_sym(*p) {
+                        "T" => base_t = Some(v.clone()),
+                        "Drop" => drop = Some(v.clone()),
+                        _ => {}
+                    }
+                }
+                match (base_t, drop) {
+                    (Some(t), Some(d)) => without_named_tuple_types(kb, &t, &d, sp)
+                        .map_err(|msg| projection_type_error(ctx, span, &msg)),
+                    _ => Err(projection_type_error(
+                        ctx,
+                        span,
+                        "`Without` needs both operands `T` and `Drop`",
+                    )),
+                }
+            } else {
+                let base_id = kb.make_sort_ref(base);
+                Ok(parameterized_value(kb, base_id, &reduced, sp, None))
+            }
+        }
+        // A `Without` nested in a NON-parameterized-argument carrier is out of the first
+        // increment's scope — surface it LOUDLY. A carrier mentioning no `Without` is
+        // returned unchanged.
+        _ => {
+            if type_mentions_without(kb, ty) {
+                Err(projection_type_error(
+                    ctx,
+                    span,
+                    "`Without` is only supported as a direct type argument (e.g. \
+                     `Relation[T = Without[T = .., Drop = ..]]`); a `Without` nested in a \
+                     tuple field, arrow, or effect row is not yet supported",
+                ))
+            } else {
+                Ok(ty.clone())
+            }
+        }
+    }
+}
+
 /// WI-462: thread one tuple-literal component's EXPECTED type into its inferred type.
 /// If `exp_fields` (the expected named-tuple's component types) has an entry whose SHORT
 /// name matches `field_name`, unify the component's inferred `ty` against it (binding a free
@@ -6858,6 +7038,140 @@ fn field_access_owning_ctor(
     })
 }
 
+/// WI-727 (proposal 056) — the rewritten call a variadic capture produces: the SAME
+/// operation call with its leftover named arguments folded into one named-tuple record
+/// bound to the `...args: R` capture parameter. All three are rewritten CONSISTENTLY (the
+/// node's named LABELS, the argument list, and the typed results) so the ordinary
+/// argument-matching that follows — `R` inference, the `Without` reduction, and the node
+/// reorder for eval — runs UNCHANGED on `fix(p, args: (x: 1, z: 2))`.
+struct CaptureRewrite {
+    occ: Rc<NodeOccurrence>,
+    named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    named_results: Vec<Result<TypeResult, TypeError>>,
+}
+
+/// WI-727 — clone a typed argument result (`TypeResult` is intentionally not `Clone`;
+/// all its fields are). Used to carry a kept named argument's already-computed result
+/// into the rewritten result list.
+fn clone_arg_result(r: &Result<TypeResult, TypeError>) -> Result<TypeResult, TypeError> {
+    match r {
+        Ok(t) => Ok(TypeResult {
+            ty: t.ty.clone(),
+            env: t.env.clone(),
+            effects: t.effects.clone(),
+            node: Rc::clone(&t.node),
+        }),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+/// WI-727 (proposal 056) — if `fn_sym` declares a variadic capture parameter (`...args:
+/// R`) and this call does NOT already carry that record explicitly, fold every named
+/// argument that matches no DECLARED (non-capture) parameter into a single named-tuple
+/// occurrence bound to the capture parameter, and return the rewritten call. Returns
+/// `None` for the >99% of ops with no capture parameter, and for an already-normalized
+/// call (a named argument that names the capture parameter directly) — which then types
+/// through the ordinary path (`args` matches the capture parameter, `R` inferred from the
+/// tuple, the `Without` reduction narrows the schema). Every arg is `Ok` here
+/// (`check_apply_iter`'s `collect_arg_errors` returned early on any failure), so the
+/// leftover results are read directly. FIRST-INCREMENT scope: NAMED leftovers (fix's
+/// need); a positional leftover binds the capture parameter directly (positional capture
+/// is a deferred follow-up, proposal §5).
+fn normalize_variadic_capture(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    fn_sym: Symbol,
+    params: &[(Symbol, Value)],
+    occ: &Rc<NodeOccurrence>,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Option<CaptureRewrite> {
+    let capture_sym = kb.op_capture_param(fn_sym)?;
+    // Already-normalized / explicit-record guard: a named argument that names the capture
+    // parameter directly (a re-typed rewrite, or a caller passing the record explicitly)
+    // is left to ordinary typing. Without this the fold would re-fire every re-type.
+    if named_args.iter().any(|(label, _)| same_label(kb, capture_sym, *label)) {
+        return None;
+    }
+    // Partition the named arguments: those matching a DECLARED, NON-capture parameter are
+    // kept in place; the leftovers (a column name no fixed parameter names) are captured.
+    // The capture parameter is excluded from matching by symbol identity, so a leftover
+    // never lands in the capture slot via a name coincidence.
+    let mut kept_args: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+    let mut kept_results: Vec<Result<TypeResult, TypeError>> = Vec::new();
+    let mut captured: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+    let mut captured_fields: Vec<(Symbol, Value)> = Vec::new();
+    let mut captured_effects: Vec<Value> = Vec::new();
+    for (i, (label, arg_occ)) in named_args.iter().enumerate() {
+        let matches_declared = params
+            .iter()
+            .any(|(s, _)| *s != capture_sym && same_label(kb, *s, *label));
+        if matches_declared {
+            kept_args.push((*label, Rc::clone(arg_occ)));
+            kept_results.push(clone_arg_result(&named_results[i]));
+        } else if let Ok(r) = &named_results[i] {
+            // A leftover: a field of the captured record, keyed by its use-site label and
+            // typed field-by-field FROM the call (the capture is unconstrained — §2.2).
+            captured.push((*label, Rc::clone(&r.node)));
+            captured_fields.push((*label, r.ty.clone()));
+            merge_effects_into(kb, &mut captured_effects, &r.effects);
+        }
+    }
+    // The captured record's TYPE — a named tuple, NOT 1-collapsed (a single captured
+    // field keeps its name so `Without` can drop that column). Empty (`r.fix()`) is a
+    // legitimate empty record → `R = ()` → the `Without` identity (OQ #6).
+    let record_type = named_tuple_value(kb, &captured_fields, occ.span, occ.owner);
+    // The captured record's runtime VALUE occurrence: an ordinary named-tuple literal the
+    // back-end evaluates to a `Value::Tuple` (no `where`/`project` compile-time spec-splice
+    // — §2.1). Stamp its type so the arg-matching reads it without re-typing the children.
+    let pass = super::simp_rewrite::simp_pass(kb);
+    let tuple_functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+    // A named-tuple LITERAL occurrence (`Expr::Constructor`, the shape eval routes to
+    // `start_constructor` → `Value::Tuple`), NOT an `Expr::Apply` (which eval dispatches as
+    // an operation call → `UnknownOperation`).
+    let tuple_occ = NodeOccurrence::synthesized_expr(
+        Expr::Constructor { name: tuple_functor, pos_args: Vec::new(), named_args: captured },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    );
+    tuple_occ.set_inferred_type(record_type.clone());
+    let tuple_result = Ok(TypeResult {
+        ty: record_type,
+        env: env.clone(),
+        effects: captured_effects,
+        node: Rc::clone(&tuple_occ),
+    });
+    // Bind the record as the capture parameter's argument (kept named args first, the
+    // record last), keyed by the capture parameter's short name so ordinary named-arg
+    // matching binds it to `...args: R`.
+    let capture_short = short_name_of(kb.resolve_sym(capture_sym)).to_string();
+    let capture_label = kb.intern(&capture_short);
+    kept_args.push((capture_label, Rc::clone(&tuple_occ)));
+    kept_results.push(tuple_result);
+    // The rewritten call node — the type_args carry over from the original apply (a
+    // `fix[R]`'s `R` is inferred, so there are none in practice). `reorder_named_args_in_-
+    // apply` later rebuilds it from the typed results, so the pos/named children here are
+    // scaffolding; only the functor, named LABELS, and type_args are read from it.
+    let type_args = match occ.as_expr() {
+        Some(Expr::Apply { type_args, .. }) => type_args.clone(),
+        _ => Vec::new(),
+    };
+    let new_occ = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            functor: fn_sym,
+            pos_args: pos_args.to_vec(),
+            named_args: kept_args.clone(),
+            type_args,
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    );
+    Some(CaptureRewrite { occ: new_occ, named_args: kept_args, named_results: kept_results })
+}
+
 fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -7003,6 +7317,24 @@ fn check_apply_iter(
             // skip where bare was a loud mismatch) and stamp dangling vars
             // into annotated-let merges.
         }
+        // WI-727 (proposal 056): fold any leftover named arguments into the `...args: R`
+        // capture record, so everything below is the ORDINARY path — `args` matches the
+        // capture parameter, `R` is inferred from the record's type, and the `Without`
+        // reduction narrows the return schema. All three views are rewritten together (the
+        // node's labels, the argument list, the typed results) so the node reorder for eval
+        // stays consistent. `None` (no capture parameter, or an already-normalized call)
+        // keeps the original borrows — the zero-cost common path.
+        let capture_rewrite = normalize_variadic_capture(
+            kb, env, fn_sym, &op.params, occ, pos_args, named_args, named_results,
+        );
+        let (occ, named_args, named_results): (
+            &Rc<NodeOccurrence>,
+            &[(Symbol, Rc<NodeOccurrence>)],
+            &[Result<TypeResult, TypeError>],
+        ) = match &capture_rewrite {
+            Some(cr) => (&cr.occ, &cr.named_args, &cr.named_results),
+            None => (occ, named_args, named_results),
+        };
         let mut subst = Substitution::new();
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
         // seed the substitution first. Returns `NoSuchTypeParam` on
@@ -7112,6 +7444,8 @@ fn check_apply_iter(
         // gate (over the declared signature, like `op_has_projection`) so only a signature
         // that actually merges schemas pays for the `Concat` reduction at each call.
         let op_return_has_concat = type_mentions_concat(kb, &op.return_type);
+        // WI-727: the dual gate for the `Without[T, Drop]` schema-drop constructor (`fix`).
+        let op_return_has_without = type_mentions_without(kb, &op.return_type);
         // Each param symbol → the inferred type of the argument bound to it, so a
         // projection `param.M` in the return / effects / a LATER param can read the
         // receiver's actual per-call type (the synthesis-time discharge point).
@@ -7505,10 +7839,25 @@ fn check_apply_iter(
         // non-named-tuple operand or a field-name collision is a loud error. Universal
         // (keyed on the `Concat` sort, not the op), gated per-op on the DECLARED return
         // type actually writing `Concat`.
-        let proj_return_type = if op_return_has_concat {
+        // WI-727: `Without` (fix's schema drop) reduces at the SAME boundary as `Concat`
+        // (join's merge) and `s.T`. An op's return writes at most one, so share the single
+        // `subst`-walk (which substitutes the bound type params — `Drop = R`, the captured
+        // record — into the type before the operands are inspected), then apply whichever
+        // reduction the signature actually wrote. Each is universal (keyed on the sort, not
+        // the op) and gated per-op on the declared return type.
+        let proj_return_type = if op_return_has_concat || op_return_has_without {
             let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
             let walked = walk_type_deep_value(kb, &subst, &proj_return_type);
-            reduce_concat_in_type(kb, &walked, &ret_ctx, occ.span, span)?
+            let reduced = if op_return_has_concat {
+                reduce_concat_in_type(kb, &walked, &ret_ctx, occ.span, span)?
+            } else {
+                walked
+            };
+            if op_return_has_without {
+                reduce_without_in_type(kb, &reduced, &ret_ctx, occ.span, span)?
+            } else {
+                reduced
+            }
         } else {
             proj_return_type
         };

@@ -493,7 +493,15 @@ module.exports = grammar({
       optional(seq('=', field('default', $._type))),
     ),
 
+    // WI-727 (proposal 056): an optional leading `...` marks a VARIADIC CAPTURE
+    // parameter — a trailing param that collects every named argument not matched
+    // to a declared parameter into a single named-tuple record (`fix[R](p, ...args:
+    // R)`). A single FUSED lexer token (`token('...')`, like the distribute-dot
+    // `.(`) so it diverges at the lexer from `.` / `.(` / `A.B` and stays
+    // conflict-free. "At most one, trailing" is enforced in the loader, not the
+    // grammar.
     param: $ => seq(
+      optional(field('rest', token('...'))),
       field('name', $.identifier),
       ':',
       field('type', $._type),

@@ -108,6 +108,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Relation.join_run", relation_join_run)?;
     register_if_present(interp, "anthill.prelude.Relation.conjoin_of", relation_conjoin_of)?;
     register_if_present(interp, "anthill.prelude.Relation.project_run", relation_project_run)?;
+    register_if_present(interp, "anthill.prelude.Relation.fix", relation_fix)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -1625,6 +1626,76 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         projected.push((*result_key, vid));
     }
     Ok(Value::Relation { query, columns: projected.into() })
+}
+
+/// `Relation.fix` (WI-714 / proposal 052 §"`fix` is sugar"; WI-727 / proposal 056) — the
+/// RUNTIME back-end of `fix(p, x: 1, z: 2)`: RESTRICT relation columns to constants and
+/// DROP them. `fix` is an ORDINARY operation (proposal 056 §2.1) — no compile-time macro,
+/// no typer recognizer keyed on its name: the variadic capture folded its dynamic column
+/// arguments into `spec`, an ordinary `Value::Tuple` record `(column-name ↦ constant)`,
+/// which reaches this builtin as a plain argument. For each `(col, const)`: wrap
+/// `guarded(query, eq(col's variable, const))` — the same query-combining step
+/// `where`/`negate`/`union` perform, with `eq` the resolver's equality connective
+/// (`PartialEq.eq`, as `where`'s guards use) restricting the column to the constant — then
+/// DROP that column from `columns`. The column variable stays in the query (still SOLVED),
+/// so a dropped column keeps the source relation's row multiplicity (bag semantics, OQ6,
+/// exactly as `project`). Columns match `spec` keys by canonical interned symbol (the same
+/// seam `project_run`/`where_run` use), NOT a short-name compare (WI-672). A key naming no
+/// column is a loud error; an empty record (`r.fix()`) is the identity.
+fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [p, spec] = expect_args::<2>("Relation.fix", args)?;
+    let (query, columns) = expect_relation(p)?;
+    let fixes = match &spec {
+        Value::Tuple { named, .. } => named,
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "a fix record (column-name ↦ constant) captured named tuple",
+                got: other.type_name().to_string(),
+            })
+        }
+    };
+    let eq_sym = interp
+        .kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .ok_or_else(|| {
+            EvalError::Internal("fix: `anthill.prelude.PartialEq.eq` is unresolvable".to_string())
+        })?;
+    let mut query: Value = (*query).clone();
+    let mut dropped: std::collections::HashSet<crate::intern::Symbol> = std::collections::HashSet::new();
+    for (col_name, const_val) in fixes.iter() {
+        // The relation's real column variable of this name — matched by canonical interned
+        // `Symbol` (a column's name IS the intern-map entry for its short name), the same
+        // seam `project_run` uses. The typer's `Without` reduction already verified the
+        // column exists in the schema, so this only fires on a programmatically-built spec.
+        let vid = columns
+            .iter()
+            .find(|(cn, _)| *cn == *col_name)
+            .map(|(_, v)| *v)
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "fix: restricts column `{}`, which is not in the relation's schema",
+                    interp.kb.resolve_sym(*col_name)
+                ))
+            })?;
+        // The restrict guard `eq(?col, const)` — a goal atom the resolver conjoins with the
+        // query (guarded), pinning `?col` to the constant on the surviving solutions.
+        let guard = Value::Entity {
+            functor: eq_sym,
+            pos: std::rc::Rc::from(vec![
+                Value::Var(crate::kb::term::Var::Global(vid)),
+                const_val.clone(),
+            ]),
+            named: std::rc::Rc::from(Vec::new()),
+        };
+        query = interp
+            .build_logical_query_value("guarded", vec![("query", query), ("condition", guard)])?;
+        dropped.insert(*col_name);
+    }
+    // Drop the restricted columns from the materialized schema, KEEPING the query — the
+    // dropped column is still solved (bag semantics), exactly as `project`.
+    let kept: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
+        columns.iter().filter(|(cn, _)| !dropped.contains(cn)).copied().collect();
+    Ok(Value::Relation { query: std::rc::Rc::new(query), columns: kept.into() })
 }
 
 /// Compile a row-lambda condition body into a goal recipe `Value`, as syntax (never

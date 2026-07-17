@@ -3020,7 +3020,10 @@ impl<'a> Converter<'a> {
                 TypeExpr::Simple(Name::simple(sym, self.span(node)))
             });
 
-        Param { name, ty }
+        // WI-727: the `...` variadic-capture marker (grammar `rest` field).
+        let rest = self.field(node, "rest").is_some();
+
+        Param { name, ty, rest }
     }
 
     // ── Requires declaration ──────────────────────────────────────

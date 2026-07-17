@@ -819,12 +819,14 @@ Operation     ::= DescriptionBlock*
 TypeParamList ::= '[' TypeParam (',' TypeParam)* ']'
 TypeParam     ::= Name                          -- per proposal 042
 ParamList     ::= Param (',' Param)*
-Param         ::= Name ':' Type
+Param         ::= ['...'] Name ':' Type          -- leading '...' = variadic capture (056)
 ```
 
 Parameters are **named bindings** — referenced by name (without `?`) in `requires`/`ensures` clauses. This distinguishes them from rule variables (`?x`), which are pattern-matching unification variables. `requires` clauses may reference parameter names only (precondition: checked before execution). `ensures` clauses may additionally reference `result`, which binds to the return value (postcondition: checked after execution). Using `result` in `requires` is a semantic error.
 
 **Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int64, String](args)`) or named (`foo[T1 = Int64, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
+
+**Variadic capture parameter** (`...name: R`, proposal 056 / WI-727) — a leading `...` marks the one **trailing** parameter that **collects every named argument not matched to a declared parameter** into a single **named-tuple record** value. Its type is an ordinary explicit type parameter (`R`, inferred from the call, exactly as `join[L, R]` infers its schemas). This lets an operation whose "arguments" are a **variadic set of names** — not a fixed parameter list — resolve through the ordinary call path: the leftover `(x: 1, z: 2)` binds `R = (x: Int64, z: Int64)` and reaches the body/runtime as a plain named tuple (a `Value::Tuple`), with no macro and nothing keyed on the operation's identity. At most one, trailing (a second `...`, or a non-trailing one, is a load error). A positional leftover binds the capture parameter directly (`R` a single value); named + positional share the one mechanism. The record is consumed by an ordinary type constructor — e.g. `Without[T, Drop]` (the dual of `Concat`) drops from a schema every column named in the captured record: `fix[R](p: Relation, ...args: R) -> Relation[T = Without[T = p.T, Drop = R]]`, the driving client. See proposal 056.
 
 **Contracts** (`requires`/`ensures`) are scoped constraints — they generate denials over the operation's input/output bindings when an implementation is asserted:
 
