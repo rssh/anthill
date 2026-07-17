@@ -522,12 +522,17 @@ pub struct KnowledgeBase {
 
     /// WI-727 (proposal 056) — the VARIADIC CAPTURE parameter of each operation that
     /// declares one: `op_sym → the name symbol of its `...args: R` capture parameter`.
-    /// Populated by the loader (the `...` marker is a syntactic property with no type
-    /// signal, so it cannot be recovered from the signature; and `build_op_signatures`
-    /// rebuilds `op_records` from facts, which would clobber a signature-carried flag —
-    /// hence a dedicated side-table, like `op_records` itself). Read O(1) by the typer's
-    /// argument matching (`check_apply_iter`) to collect leftover named arguments into
-    /// the capture record rather than rejecting them. Absent ⇒ the op has no capture.
+    /// Populated by the loader, read O(1) by the typer's argument matching
+    /// (`check_apply_iter`) to collect leftover named arguments into the capture record
+    /// rather than rejecting them. Absent ⇒ the op has no capture.
+    ///
+    /// A dedicated side-table (mirroring `op_records` / `sort_alias_index`) rather than a
+    /// marker field on the `OperationInfo` fact's per-param `FieldInfo`: `FieldInfo` is
+    /// SHARED with entity fields (a capture marker is meaningless there), and `params`
+    /// threads through many typer sites as `Vec<(Symbol, Value)>` — a fact-backed flag
+    /// would either leak into that shape or need a parallel read anyway. The `...` marker
+    /// is loader-only (no runtime/persistence surface — the printer renders no operation
+    /// declarations), so the side-table needs no fact backing to survive.
     pub(crate) op_capture_params: HashMap<Symbol, Symbol>,
 
     /// WI-659 — the SortAlias resolution index (source sort → alias target), built

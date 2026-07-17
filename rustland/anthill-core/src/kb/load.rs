@@ -12225,11 +12225,14 @@ impl<'a> Loader<'a> {
         // WI-727 (proposal 056): a VARIADIC CAPTURE parameter (`...args: R`) must be AT
         // MOST ONE and TRAILING — a second `...` is ambiguous, and a non-trailing one
         // would leave the declared-parameter matching that follows it undefined (the
-        // capture IS the residue, so it can only sit last). Both are LOAD errors here; a
-        // conforming capture is recorded in the FieldInfo loop below (where the param's
-        // field symbol — the same key the typer's `op.params` uses — is minted).
+        // capture IS the residue, so it can only sit last). Both are LOAD errors here.
+        // `capture_ok` gates the recording in the FieldInfo loop below on the SAME
+        // conformance, so a malformed `...` op does not also get a capture entry (which
+        // would fold arguments at its call sites and mask the real diagnostic).
         let rest_count = o.params.iter().filter(|p| p.rest).count();
+        let mut capture_ok = rest_count == 1;
         if rest_count > 1 {
+            capture_ok = false;
             self.errors.push(LoadError::Other {
                 message: format!(
                     "operation '{op_qualified}': at most one variadic capture parameter (`...`) \
@@ -12237,6 +12240,7 @@ impl<'a> Loader<'a> {
                 ),
             });
         } else if rest_count == 1 && !o.params.last().map(|p| p.rest).unwrap_or(false) {
+            capture_ok = false;
             self.errors.push(LoadError::Other {
                 message: format!(
                     "operation '{op_qualified}': a variadic capture parameter (`...`) must be the \
@@ -12316,10 +12320,12 @@ impl<'a> Loader<'a> {
                 };
                 // WI-727: record a conforming variadic capture parameter under its FIELD
                 // symbol — the same key the typer's `op.params` carries, so argument
-                // matching can look the capture up by `functor`. (Validated trailing/unique
-                // above.) The param still rides `params` normally; the capture routing is
-                // driven by this side-table, not by any change to its FieldInfo shape.
-                if p.rest {
+                // matching can look the capture up by `functor`. Gated on `capture_ok` so a
+                // malformed `...` op (non-trailing / duplicated, already a load error above)
+                // gets NO capture entry — otherwise its call sites would fold arguments and
+                // bury the real diagnostic. The param still rides `params` normally; the
+                // capture routing is driven by this side-table, not by any FieldInfo change.
+                if p.rest && capture_ok {
                     self.kb.record_op_capture_param(functor, field_sym);
                 }
                 let name_term = self.kb.alloc(Term::Ref(field_sym));

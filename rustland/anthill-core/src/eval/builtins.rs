@@ -1616,7 +1616,7 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         let vid = interp
             .kb
             .lookup_symbol(source_name)
-            .and_then(|sy| columns.iter().find(|(cn, _)| *cn == sy).map(|(_, v)| *v))
+            .and_then(|sy| find_column(&columns, sy))
             .ok_or_else(|| {
                 EvalError::Internal(format!(
                     "project_run: the projection selects column `{source_name}`, which is not \
@@ -1661,22 +1661,17 @@ fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             EvalError::Internal("fix: `anthill.prelude.PartialEq.eq` is unresolvable".to_string())
         })?;
     let mut query: Value = (*query).clone();
-    let mut dropped: std::collections::HashSet<crate::intern::Symbol> = std::collections::HashSet::new();
     for (col_name, const_val) in fixes.iter() {
         // The relation's real column variable of this name — matched by canonical interned
         // `Symbol` (a column's name IS the intern-map entry for its short name), the same
         // seam `project_run` uses. The typer's `Without` reduction already verified the
         // column exists in the schema, so this only fires on a programmatically-built spec.
-        let vid = columns
-            .iter()
-            .find(|(cn, _)| *cn == *col_name)
-            .map(|(_, v)| *v)
-            .ok_or_else(|| {
-                EvalError::Internal(format!(
-                    "fix: restricts column `{}`, which is not in the relation's schema",
-                    interp.kb.resolve_sym(*col_name)
-                ))
-            })?;
+        let vid = find_column(&columns, *col_name).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "fix: restricts column `{}`, which is not in the relation's schema",
+                interp.kb.resolve_sym(*col_name)
+            ))
+        })?;
         // The restrict guard `eq(?col, const)` — a goal atom the resolver conjoins with the
         // query (guarded), pinning `?col` to the constant on the surviving solutions.
         let guard = Value::Entity {
@@ -1689,13 +1684,27 @@ fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         };
         query = interp
             .build_logical_query_value("guarded", vec![("query", query), ("condition", guard)])?;
-        dropped.insert(*col_name);
     }
     // Drop the restricted columns from the materialized schema, KEEPING the query — the
-    // dropped column is still solved (bag semantics), exactly as `project`.
-    let kept: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
-        columns.iter().filter(|(cn, _)| !dropped.contains(cn)).copied().collect();
+    // dropped column is still solved (bag semantics), exactly as `project`. A handful of
+    // columns, so a linear scan against the (equally tiny) `fixes` — no set needed.
+    let kept: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> = columns
+        .iter()
+        .filter(|(cn, _)| !fixes.iter().any(|(fn_name, _)| fn_name == cn))
+        .copied()
+        .collect();
     Ok(Value::Relation { query: std::rc::Rc::new(query), columns: kept.into() })
+}
+
+/// WI-714 — the relation column variable named `sym`, matched by canonical interned
+/// `Symbol` (a column's name IS the intern-map entry for its short name — the same seam
+/// `where_run` fills holes on, NOT a WI-672 short-name compare). Shared by the relation
+/// back-ends that select a column by name (`fix`, `project_run`).
+fn find_column(
+    columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
+    sym: crate::intern::Symbol,
+) -> Option<crate::kb::term::VarId> {
+    columns.iter().find(|(cn, _)| *cn == sym).map(|(_, v)| *v)
 }
 
 /// Compile a row-lambda condition body into a goal recipe `Value`, as syntax (never

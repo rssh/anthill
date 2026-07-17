@@ -1583,11 +1583,29 @@ fn named_tuple_value(
     }
 }
 
+/// WI-714 — collapse an ordered column list to a relation SCHEMA type: `Unit` for zero
+/// columns, the sole element's type for one (the 1-collapse — the column NAME is dropped),
+/// else the named tuple keyed by the columns IN GIVEN ORDER (not re-sorted, so the type's
+/// field order matches the runtime materialized row). The shared shape that
+/// [`assemble_relation_type`] (a fresh / projected relation) and [`without_named_tuple_types`]
+/// (fix's post-drop residual) both produce.
+fn collapse_schema(
+    kb: &mut KnowledgeBase,
+    columns: &[(Symbol, Value)],
+    sp: crate::span::SourceSpan,
+) -> Value {
+    match columns.len() {
+        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
+        1 => columns[0].1.clone(),
+        _ => named_tuple_value(kb, columns, sp, None),
+    }
+}
+
 /// WI-714 (proposal 052) — the INTERNAL type-level operation behind the `Concat[A, B]`
 /// type constructor: given two NAMED-TUPLE types, produce the named tuple whose fields are
 /// `A`'s followed by `B`'s. Both operands must be named tuples with DISJOINT field names;
 /// a non-named-tuple operand (a 1-collapse / `Unit` relation schema, a scalar) or a
-/// field-name collision is an error, returned as a message [`reduce_concat_in_type`]
+/// field-name collision is an error, returned as a message [`reduce_binary_type_ctor`]
 /// wraps in a `TypeError`. `Concat` is a type FORM (the surface a signature writes); this
 /// is its reduction — the projection precedent (`ExprCarried` is the form,
 /// `project_type_member` its reduction). The result is an ordinary named tuple.
@@ -1624,85 +1642,153 @@ fn concat_named_tuple_types(
     Ok(named_tuple_value(kb, &merged, span, None))
 }
 
-/// WI-714 — does a type mention the `Concat` type constructor ANYWHERE? A cheap per-op
-/// gate (over the DECLARED signature type, like `op_has_projection`) so only a signature
-/// that actually writes `Concat[..]` pays for [`reduce_concat_in_type`] at each call.
-/// Recurses through EVERY carrier — parameterized bindings, arrow parts, named-tuple
-/// fields, effect rows — mirroring [`value_contains_projection`] so the gate never misses a
-/// `Concat` that the reducer would then have to surface (loud error over silent skip).
-fn type_mentions_concat(kb: &KnowledgeBase, ty: &Value) -> bool {
-    let Some(concat_sym) = kb.try_resolve_symbol("anthill.prelude.Concat") else { return false };
-    fn walk(kb: &KnowledgeBase, ty: &Value, concat_sym: Symbol) -> bool {
-        match extract_type(kb, ty) {
-            TypeExtractor::Parameterized { base, bindings } => {
-                base == concat_sym || bindings.iter().any(|(_, v)| walk(kb, v, concat_sym))
-            }
-            TypeExtractor::Arrow { param, result, effects } => {
-                walk(kb, &param, concat_sym)
-                    || walk(kb, &result, concat_sym)
-                    || walk(kb, &effects, concat_sym)
-            }
-            TypeExtractor::NamedTuple(fields) => {
-                fields.iter().any(|(_, v)| walk(kb, v, concat_sym))
-            }
-            TypeExtractor::EffectsRows(e) => walk(kb, &e, concat_sym),
-            _ => false,
+/// WI-714 / WI-727 — does a type mention the sort `sort_sym` as a HEAD ANYWHERE? The
+/// reducer's `_`-arm guard so a type-constructor (`Concat` / `Without`) nested in an
+/// unsupported carrier is surfaced loudly rather than cloned through un-reduced. Recurses
+/// through EVERY carrier — parameterized bindings, arrow parts, named-tuple fields, effect
+/// rows — mirroring [`value_contains_projection`].
+fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool {
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings } => {
+            base == sort_sym || bindings.iter().any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
         }
+        TypeExtractor::Arrow { param, result, effects } => {
+            type_mentions_sort(kb, &param, sort_sym)
+                || type_mentions_sort(kb, &result, sort_sym)
+                || type_mentions_sort(kb, &effects, sort_sym)
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            fields.iter().any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
+        }
+        TypeExtractor::EffectsRows(e) => type_mentions_sort(kb, &e, sort_sym),
+        _ => false,
     }
-    walk(kb, ty, concat_sym)
 }
 
-/// WI-714 — evaluate the `Concat` type constructor wherever it appears in a type:
-/// `Concat[A = <nt>, B = <nt>]` reduces to the named tuple concatenating the two operands'
-/// fields ([`concat_named_tuple_types`]). This is the INTERNAL type-level operation behind
-/// the `Concat` form — keyed on the `Concat` sort symbol and evaluated at the SAME
-/// return-type normalization boundary the `s.T` projection is (`project_type_member`), so
-/// ANY signature may write it; never keyed on a domain operation's identity. Recurses
-/// through parameterized BINDINGS (where a schema-producing `Concat` sits — the `T` binding
-/// of `Relation[T = Concat[..]]`). FIRST INCREMENT scope: `Concat` reduces only as a DIRECT
-/// parameterized type argument, over CONCRETE named-tuple operands. A field-name collision
-/// or a non-named-tuple (1-collapse / abstract) operand, and a `Concat` nested in any other
-/// carrier (a named-tuple field, an arrow, an effect row), are LOUD errors via `ctx` — never
-/// a silent pass-through of an un-reduced `Concat` (repo rule: loud error over silent skip).
-/// A carrier that mentions no `Concat` returns unchanged.
-fn reduce_concat_in_type(
+/// WI-714 / WI-727 — the per-op reduction gate: which binary type constructors (`Concat`,
+/// `Without`) a return type writes, in a SINGLE traversal, so the >99% of ops that write
+/// neither skip [`reduce_binary_type_ctor`]'s descent entirely. Returns `(has_concat,
+/// has_without)`; an op writes at most one.
+fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> (bool, bool) {
+    let concat = kb.try_resolve_symbol(CONCAT_CTOR.qn);
+    let without = kb.try_resolve_symbol(WITHOUT_CTOR.qn);
+    fn walk(
+        kb: &KnowledgeBase,
+        ty: &Value,
+        concat: Option<Symbol>,
+        without: Option<Symbol>,
+        out: &mut (bool, bool),
+    ) {
+        match extract_type(kb, ty) {
+            TypeExtractor::Parameterized { base, bindings } => {
+                out.0 |= Some(base) == concat;
+                out.1 |= Some(base) == without;
+                for (_, v) in &bindings {
+                    walk(kb, v, concat, without, out);
+                }
+            }
+            TypeExtractor::Arrow { param, result, effects } => {
+                walk(kb, &param, concat, without, out);
+                walk(kb, &result, concat, without, out);
+                walk(kb, &effects, concat, without, out);
+            }
+            TypeExtractor::NamedTuple(fields) => {
+                for (_, v) in &fields {
+                    walk(kb, v, concat, without, out);
+                }
+            }
+            TypeExtractor::EffectsRows(e) => walk(kb, &e, concat, without, out),
+            _ => {}
+        }
+    }
+    let mut out = (false, false);
+    walk(kb, ty, concat, without, &mut out);
+    out
+}
+
+/// WI-714 / WI-727 — a BINARY type constructor (`Concat[A, B]`, `Without[T, Drop]`)
+/// reduced at the return-type normalization boundary by [`reduce_binary_type_ctor`]. Each is
+/// a type FORM keyed on its own sort symbol (never a domain op's identity), reading two
+/// operands by param name and merging them with `reduce`.
+struct BinaryTypeCtor {
+    /// The constructor sort's qualified name (`anthill.prelude.Concat`).
+    qn: &'static str,
+    /// Display label for diagnostics (`Concat`).
+    label: &'static str,
+    /// The two operand parameter names, in declaration order (`["A", "B"]`).
+    operands: [&'static str; 2],
+    /// The reduction over the two resolved operands → the merged type (or an error message
+    /// the caller wraps in a `TypeError`).
+    reduce: fn(&mut KnowledgeBase, &Value, &Value, crate::span::SourceSpan) -> Result<Value, String>,
+}
+
+const CONCAT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+    qn: "anthill.prelude.Concat",
+    label: "Concat",
+    operands: ["A", "B"],
+    reduce: concat_named_tuple_types,
+};
+
+const WITHOUT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+    qn: "anthill.prelude.Without",
+    label: "Without",
+    operands: ["T", "Drop"],
+    reduce: without_named_tuple_types,
+};
+
+/// WI-714 / WI-727 — evaluate a binary type constructor (`cfg`) wherever it appears in a
+/// type: `Ctor[op0 = <a>, op1 = <b>]` reduces to `cfg.reduce(a, b)`. The INTERNAL type-level
+/// operation behind the `Concat` / `Without` FORMS — keyed on the constructor's sort symbol
+/// and evaluated at the SAME return-type normalization boundary the `s.T` projection is, so
+/// ANY signature may write it; never keyed on a domain operation's identity. Recurses through
+/// parameterized BINDINGS (where a schema-producing ctor sits — the `T` binding of
+/// `Relation[T = Ctor[..]]`). FIRST-INCREMENT scope: reduces only as a DIRECT parameterized
+/// type argument, over CONCRETE operands. A malformed reduction (a collision / a
+/// non-named-tuple operand) and a ctor nested in any other carrier (a named-tuple field,
+/// arrow, effect row) are LOUD errors via `ctx` — never a silent pass-through. A carrier that
+/// mentions no `cfg` ctor returns unchanged.
+fn reduce_binary_type_ctor(
     kb: &mut KnowledgeBase,
     ty: &Value,
     ctx: &TypeErrorContext,
     sp: crate::span::SourceSpan,
     span: Option<Span>,
+    cfg: &BinaryTypeCtor,
 ) -> Result<Value, TypeError> {
-    let concat_sym = match kb.try_resolve_symbol("anthill.prelude.Concat") {
+    let ctor_sym = match kb.try_resolve_symbol(cfg.qn) {
         Some(s) => s,
         None => return Ok(ty.clone()),
     };
     match extract_type(kb, ty) {
         TypeExtractor::Parameterized { base, bindings } => {
-            // Reduce each binding first — the schema-producing `Concat` is nested (the
-            // `T` binding of `Relation[T = Concat[..]]`), so descend before evaluating.
+            // Reduce each binding first — the schema-producing ctor is nested (the `T`
+            // binding of `Relation[T = Ctor[..]]`), so descend before evaluating.
             let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
             for (p, v) in bindings {
-                reduced.push((p, reduce_concat_in_type(kb, &v, ctx, sp, span)?));
+                reduced.push((p, reduce_binary_type_ctor(kb, &v, ctx, sp, span, cfg)?));
             }
-            if base == concat_sym {
-                // `Concat[A = .., B = ..]` — read both operands by param name (as
-                // `extract_type_param` reads a type application's bindings) and merge.
+            if base == ctor_sym {
+                // `Ctor[op0 = .., op1 = ..]` — read both operands by param name and merge.
                 let mut a: Option<Value> = None;
                 let mut b: Option<Value> = None;
                 for (p, v) in &reduced {
-                    match kb.resolve_sym(*p) {
-                        "A" => a = Some(v.clone()),
-                        "B" => b = Some(v.clone()),
-                        _ => {}
+                    let name = kb.resolve_sym(*p);
+                    if name == cfg.operands[0] {
+                        a = Some(v.clone());
+                    } else if name == cfg.operands[1] {
+                        b = Some(v.clone());
                     }
                 }
                 match (a, b) {
-                    (Some(a), Some(b)) => concat_named_tuple_types(kb, &a, &b, sp)
+                    (Some(a), Some(b)) => (cfg.reduce)(kb, &a, &b, sp)
                         .map_err(|msg| projection_type_error(ctx, span, &msg)),
                     _ => Err(projection_type_error(
                         ctx,
                         span,
-                        "`Concat` needs both operands `A` and `B`",
+                        &format!(
+                            "`{}` needs both operands `{}` and `{}`",
+                            cfg.label, cfg.operands[0], cfg.operands[1]
+                        ),
                     )),
                 }
             } else {
@@ -1710,18 +1796,20 @@ fn reduce_concat_in_type(
                 Ok(parameterized_value(kb, base_id, &reduced, sp, None))
             }
         }
-        // A `Concat` nested in a NON-parameterized-argument carrier (a named-tuple field,
-        // an arrow, an effect row) is out of the first increment's scope — surface it
-        // LOUDLY rather than clone an un-reduced `Concat` through. A carrier that mentions
-        // no `Concat` is returned unchanged.
+        // A ctor nested in a NON-parameterized-argument carrier is out of the first
+        // increment's scope — surface it LOUDLY rather than clone an un-reduced ctor
+        // through. A carrier that mentions no ctor is returned unchanged.
         _ => {
-            if type_mentions_concat(kb, ty) {
+            if type_mentions_sort(kb, ty, ctor_sym) {
                 Err(projection_type_error(
                     ctx,
                     span,
-                    "`Concat` is only supported as a direct type argument (e.g. \
-                     `Relation[T = Concat[A = .., B = ..]]`); a `Concat` nested in a tuple \
-                     field, arrow, or effect row is not yet supported",
+                    &format!(
+                        "`{0}` is only supported as a direct type argument (e.g. `Relation[T = \
+                         {0}[..]]`); a `{0}` nested in a tuple field, arrow, or effect row is \
+                         not yet supported",
+                        cfg.label
+                    ),
                 ))
             } else {
                 Ok(ty.clone())
@@ -1751,7 +1839,13 @@ fn without_named_tuple_types(
     // capture (an empty named tuple, or `Unit`) drops nothing → the identity (OQ #6).
     let drop_fields = match extract_type(kb, drop) {
         TypeExtractor::NamedTuple(f) => f,
-        _ if sort_functor_of_view(kb, drop) == kb.try_resolve_symbol("anthill.prelude.Unit") => {
+        // A bare `Unit` drop (a generic `Without[T, Unit]`) drops nothing → identity. Both
+        // sides must be `Some` and equal — a `.zip` guards against `None == None` (a headless
+        // `drop` when `Unit` is also unresolvable) silently selecting this arm.
+        _ if sort_functor_of_view(kb, drop)
+            .zip(kb.try_resolve_symbol("anthill.prelude.Unit"))
+            .is_some_and(|(f, u)| f == u) =>
+        {
             Vec::new()
         }
         _ => {
@@ -1775,8 +1869,10 @@ fn without_named_tuple_types(
         }
     };
     // Membership + type checks — the LOAD errors that give the capture its meaning (§2.2).
-    // Each dropped field must NAME a column of the base schema, and its captured type must
-    // MATCH that column (a `fix(x: "s")` over an `Int64` column `x` is rejected here).
+    // Each dropped field must NAME a column of the base schema (recording the name to drop),
+    // and its captured type must MATCH that column (a `fix(x: "s")` over an `Int64` column
+    // `x` is rejected here).
+    let mut dropped: Vec<Symbol> = Vec::with_capacity(drop_fields.len());
     for (dname, dty) in &drop_fields {
         match t_fields.iter().find(|(tn, _)| *tn == *dname) {
             None => {
@@ -1797,118 +1893,15 @@ fn without_named_tuple_types(
                 }
             }
         }
+        dropped.push(*dname);
     }
-    // Keep every base field NOT named in `drop`, in the base's order; collapse the residual
-    // as a relation schema does (0 → `Unit`, 1 → the element, ≥2 → the named tuple).
-    let kept: Vec<(Symbol, Value)> = t_fields
-        .into_iter()
-        .filter(|(tn, _)| !drop_fields.iter().any(|(dn, _)| *dn == *tn))
-        .collect();
-    Ok(match kept.len() {
-        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
-        1 => kept[0].1.clone(),
-        _ => named_tuple_value(kb, &kept, span, None),
-    })
+    // Keep every base field NOT dropped, in the base's order; collapse the residual as a
+    // relation schema does (0 → `Unit`, 1 → the element, ≥2 → the named tuple).
+    let kept: Vec<(Symbol, Value)> =
+        t_fields.into_iter().filter(|(tn, _)| !dropped.contains(tn)).collect();
+    Ok(collapse_schema(kb, &kept, span))
 }
 
-/// WI-727 — does a type mention the `Without` type constructor ANYWHERE? The per-op gate
-/// (over the DECLARED signature) so only a signature that writes `Without[..]` pays for
-/// [`reduce_without_in_type`] at each call. Recurses through every carrier, mirroring
-/// [`type_mentions_concat`].
-fn type_mentions_without(kb: &KnowledgeBase, ty: &Value) -> bool {
-    let Some(without_sym) = kb.try_resolve_symbol("anthill.prelude.Without") else {
-        return false;
-    };
-    fn walk(kb: &KnowledgeBase, ty: &Value, without_sym: Symbol) -> bool {
-        match extract_type(kb, ty) {
-            TypeExtractor::Parameterized { base, bindings } => {
-                base == without_sym || bindings.iter().any(|(_, v)| walk(kb, v, without_sym))
-            }
-            TypeExtractor::Arrow { param, result, effects } => {
-                walk(kb, &param, without_sym)
-                    || walk(kb, &result, without_sym)
-                    || walk(kb, &effects, without_sym)
-            }
-            TypeExtractor::NamedTuple(fields) => {
-                fields.iter().any(|(_, v)| walk(kb, v, without_sym))
-            }
-            TypeExtractor::EffectsRows(e) => walk(kb, &e, without_sym),
-            _ => false,
-        }
-    }
-    walk(kb, ty, without_sym)
-}
-
-/// WI-727 — evaluate the `Without` type constructor wherever it appears in a type:
-/// `Without[T = <nt>, Drop = <record>]` reduces to `<nt>` minus the dropped fields
-/// ([`without_named_tuple_types`]). Structurally the mirror of [`reduce_concat_in_type`]
-/// (reading the operands `T` / `Drop` instead of `A` / `B`): keyed on the `Without` sort
-/// symbol, evaluated at the SAME return-type normalization boundary, recursing through
-/// parameterized bindings (the schema-producing `Without` is the `T` binding of
-/// `Relation[T = Without[..]]`). FIRST-INCREMENT scope: `Without` reduces only as a direct
-/// parameterized type argument; a `Without` nested in any other carrier is a LOUD error.
-fn reduce_without_in_type(
-    kb: &mut KnowledgeBase,
-    ty: &Value,
-    ctx: &TypeErrorContext,
-    sp: crate::span::SourceSpan,
-    span: Option<Span>,
-) -> Result<Value, TypeError> {
-    let without_sym = match kb.try_resolve_symbol("anthill.prelude.Without") {
-        Some(s) => s,
-        None => return Ok(ty.clone()),
-    };
-    match extract_type(kb, ty) {
-        TypeExtractor::Parameterized { base, bindings } => {
-            // Reduce each binding first — the schema-producing `Without` is nested (the `T`
-            // binding of `Relation[T = Without[..]]`), so descend before evaluating.
-            let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
-            for (p, v) in bindings {
-                reduced.push((p, reduce_without_in_type(kb, &v, ctx, sp, span)?));
-            }
-            if base == without_sym {
-                // `Without[T = .., Drop = ..]` — read both operands by param name and drop.
-                let mut base_t: Option<Value> = None;
-                let mut drop: Option<Value> = None;
-                for (p, v) in &reduced {
-                    match kb.resolve_sym(*p) {
-                        "T" => base_t = Some(v.clone()),
-                        "Drop" => drop = Some(v.clone()),
-                        _ => {}
-                    }
-                }
-                match (base_t, drop) {
-                    (Some(t), Some(d)) => without_named_tuple_types(kb, &t, &d, sp)
-                        .map_err(|msg| projection_type_error(ctx, span, &msg)),
-                    _ => Err(projection_type_error(
-                        ctx,
-                        span,
-                        "`Without` needs both operands `T` and `Drop`",
-                    )),
-                }
-            } else {
-                let base_id = kb.make_sort_ref(base);
-                Ok(parameterized_value(kb, base_id, &reduced, sp, None))
-            }
-        }
-        // A `Without` nested in a NON-parameterized-argument carrier is out of the first
-        // increment's scope — surface it LOUDLY. A carrier mentioning no `Without` is
-        // returned unchanged.
-        _ => {
-            if type_mentions_without(kb, ty) {
-                Err(projection_type_error(
-                    ctx,
-                    span,
-                    "`Without` is only supported as a direct type argument (e.g. \
-                     `Relation[T = Without[T = .., Drop = ..]]`); a `Without` nested in a \
-                     tuple field, arrow, or effect row is not yet supported",
-                ))
-            } else {
-                Ok(ty.clone())
-            }
-        }
-    }
-}
 
 /// WI-462: thread one tuple-literal component's EXPECTED type into its inferred type.
 /// If `exp_fields` (the expected named-tuple's component types) has an entry whose SHORT
@@ -3461,11 +3454,7 @@ fn assemble_relation_type(
     effect_row: Option<Value>,
     sp: crate::span::SourceSpan,
 ) -> Value {
-    let schema = match columns.len() {
-        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
-        1 => columns[0].1.clone(),
-        _ => named_tuple_value(kb, columns, sp, None),
-    };
+    let schema = collapse_schema(kb, columns, sp);
     let params = sort_type_params_as_pairs(kb, relation_sym);
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
     let mut schema = Some(schema);
@@ -7050,9 +7039,9 @@ struct CaptureRewrite {
     named_results: Vec<Result<TypeResult, TypeError>>,
 }
 
-/// WI-727 — clone a typed argument result (`TypeResult` is intentionally not `Clone`;
-/// all its fields are). Used to carry a kept named argument's already-computed result
-/// into the rewritten result list.
+/// WI-727 — clone a typed argument result (`TypeResult` does not derive `Clone`, though all
+/// its fields do). Used to carry a matched named argument's already-computed result into the
+/// rewritten result list when a capture op mixes declared-named args with captured ones.
 fn clone_arg_result(r: &Result<TypeResult, TypeError>) -> Result<TypeResult, TypeError> {
     match r {
         Ok(t) => Ok(TypeResult {
@@ -7110,13 +7099,20 @@ fn normalize_variadic_capture(
         if matches_declared {
             kept_args.push((*label, Rc::clone(arg_occ)));
             kept_results.push(clone_arg_result(&named_results[i]));
-        } else if let Ok(r) = &named_results[i] {
-            // A leftover: a field of the captured record, keyed by its use-site label and
-            // typed field-by-field FROM the call (the capture is unconstrained — §2.2).
-            captured.push((*label, Rc::clone(&r.node)));
-            captured_fields.push((*label, r.ty.clone()));
-            merge_effects_into(kb, &mut captured_effects, &r.effects);
+            continue;
         }
+        // A leftover: a field of the captured record, keyed by its use-site label and typed
+        // field-by-field FROM the call (the capture is unconstrained — §2.2). Every arg is
+        // `Ok` here (`check_apply_iter`'s `collect_arg_errors` returned early on any failure),
+        // so an `Err` leftover is unreachable — but decline to normalize rather than silently
+        // drop it (loud over silent), leaving the ordinary path to surface the error.
+        let r = match &named_results[i] {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
+        captured.push((*label, Rc::clone(&r.node)));
+        captured_fields.push((*label, r.ty.clone()));
+        merge_effects_into(kb, &mut captured_effects, &r.effects);
     }
     // The captured record's TYPE — a named tuple, NOT 1-collapsed (a single captured
     // field keeps its name so `Without` can drop that column). Empty (`r.fix()`) is a
@@ -7440,12 +7436,12 @@ fn check_apply_iter(
         let op_has_projection = params_have_projection
             || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
-        // WI-714: does the RETURN type write the `Concat[A, B]` type constructor? A per-op
-        // gate (over the declared signature, like `op_has_projection`) so only a signature
-        // that actually merges schemas pays for the `Concat` reduction at each call.
-        let op_return_has_concat = type_mentions_concat(kb, &op.return_type);
-        // WI-727: the dual gate for the `Without[T, Drop]` schema-drop constructor (`fix`).
-        let op_return_has_without = type_mentions_without(kb, &op.return_type);
+        // WI-714 / WI-727: does the RETURN type write a binary type constructor (`Concat`,
+        // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
+        // declared signature, like `op_has_projection`) — ONE traversal for both — so only a
+        // signature that actually reduces a schema pays for the reduction at each call.
+        let (op_return_has_concat, op_return_has_without) =
+            return_reducible_ctors(kb, &op.return_type);
         // Each param symbol → the inferred type of the argument bound to it, so a
         // projection `param.M` in the return / effects / a LATER param can read the
         // receiver's actual per-call type (the synthesis-time discharge point).
@@ -7849,12 +7845,12 @@ fn check_apply_iter(
             let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
             let walked = walk_type_deep_value(kb, &subst, &proj_return_type);
             let reduced = if op_return_has_concat {
-                reduce_concat_in_type(kb, &walked, &ret_ctx, occ.span, span)?
+                reduce_binary_type_ctor(kb, &walked, &ret_ctx, occ.span, span, &CONCAT_CTOR)?
             } else {
                 walked
             };
             if op_return_has_without {
-                reduce_without_in_type(kb, &reduced, &ret_ctx, occ.span, span)?
+                reduce_binary_type_ctor(kb, &reduced, &ret_ctx, occ.span, span, &WITHOUT_CTOR)?
             } else {
                 reduced
             }
