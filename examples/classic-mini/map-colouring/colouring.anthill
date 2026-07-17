@@ -1,7 +1,7 @@
 -- Map colouring: assign one of three colours to each region of Australia so
 -- that no two regions sharing a border get the same colour.
 --
--- The classic generate-and-test program: `palette(c: ?x)` GENERATES, `neq`
+-- The classic generate-and-test program: `palette(c: ?x)` GENERATES, `!=`
 -- TESTS, and the search does the rest. Nothing here is a search algorithm — the
 -- rule states what a valid colouring IS, and SLD resolution finds the ones that
 -- satisfy it.
@@ -40,20 +40,23 @@ namespace classic.mapcolouring
   -- A valid colouring of the six mainland states and territories.
   --
   -- Read it as a specification, not a procedure: each region takes some colour,
-  -- and every bordering pair differs. The seven `neq` goals are the map's edges
+  -- and every bordering pair differs. The nine `!=` goals are the map's edges
   -- — Western Australia borders Northern Territory and South Australia; South
   -- Australia borders everything except WA's far side; and so on.
+  --
+  -- `?a != ?b` is infix sugar that desugars to `neq(?a, ?b)` — the same
+  -- operation, the same resolver path.
   --
   -- Queried with every column free, this is mode (out,out,out,out,out,out) —
   -- generate-and-test with the answer unknown, which is the whole point.
   rule colouring(?wa, ?nt, ?sa, ?q, ?nsw, ?v)
     :- palette(c: ?wa), palette(c: ?nt), palette(c: ?sa),
        palette(c: ?q), palette(c: ?nsw), palette(c: ?v),
-       neq(?wa, ?nt), neq(?wa, ?sa),
-       neq(?nt, ?sa), neq(?nt, ?q),
-       neq(?sa, ?q), neq(?sa, ?nsw), neq(?sa, ?v),
-       neq(?q, ?nsw),
-       neq(?nsw, ?v)
+       ?wa != ?nt, ?wa != ?sa,
+       ?nt != ?sa, ?nt != ?q,
+       ?sa != ?q,  ?sa != ?nsw, ?sa != ?v,
+       ?q != ?nsw,
+       ?nsw != ?v
 
   sort Program
     requires anthill.cli.Main

@@ -15,7 +15,7 @@ any of these files.
 | Example | Shows | Status |
 |---------|-------|--------|
 | [`ancestor/`](ancestor/) | Recursion — transitive closure as two clauses; one relation queried in three modes | Runs |
-| [`map-colouring/`](map-colouring/) | Generate-and-test: a domain from facts, `neq` guards, the answer queried free | Runs |
+| [`map-colouring/`](map-colouring/) | Generate-and-test: a domain from facts, `!=` guards, the answer queried free | Runs |
 
 ### Not yet here
 
