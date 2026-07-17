@@ -385,17 +385,60 @@ fn collect_workitems(kb: &KnowledgeBase) -> Vec<WorkItemInfo> {
 /// through untagged items.
 // ── Init command ────────────────────────────────────────────────
 
-fn run_init(project_name: Option<&str>) {
+/// Scaffold a fresh project's `anthill-todo/` directory.
+///
+/// `base_dir` is the explicit `-d <dir>` when given, else `None` (⇒ cwd). WI-748:
+/// init used to hardcode the cwd and ignore `-d` entirely — the one subcommand
+/// that decided WHERE by position instead of by the flag every other command
+/// routes through `find_project_dir`. `-d X init` from any other directory then
+/// dropped the scaffold wherever the user stood, and the success message named
+/// no path to reveal it. Returns the process exit code (loud, non-zero, on the
+/// refusal guards).
+fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     let cwd = std::env::current_dir().expect("cannot determine current directory");
-    let dir = cwd.join("anthill-todo");
+    let base = base_dir.unwrap_or(cwd.as_path());
 
-    if dir.exists() {
-        eprintln!("error: anthill-todo/ already exists");
-        return;
+    // An explicit -d must name an existing directory — the same contract as
+    // `find_project_dir`'s explicit-dir arm, so a typo'd `-d` errors rather than
+    // conjuring a phantom tree (the write-side twin of the WI-744 discovery bug).
+    if base_dir.is_some() && !base.is_dir() {
+        eprintln!("error: project directory does not exist: {}", base.display());
+        return runner::EXIT_RUNTIME;
     }
 
-    let name = project_name.unwrap_or_else(|| {
-        cwd.file_name().and_then(|n| n.to_str()).unwrap_or("my-project")
+    // Resolve base to an absolute, symlink-free path — for a meaningful default
+    // project name and, above all, an ABSOLUTE success message even when -d is
+    // relative (`-d ../foo`). `base` is a directory we just proved exists, so a
+    // canonicalize failure is a genuine I/O fault (a permission wall, a TOCTOU
+    // delete). Surface it loudly rather than degrade to a non-normalized
+    // `cwd.join(base)`: that fallback would silently break the absolute/
+    // symlink-free guarantee AND feed the wrong directory to the is_project_dir
+    // guard below (CLAUDE.md: avoid fallbacks, prefer a loud error over a silent
+    // skip).
+    let abs_base = match fs::canonicalize(base) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot resolve project directory {}: {e}", base.display());
+            return runner::EXIT_RUNTIME;
+        }
+    };
+    let dir = abs_base.join("anthill-todo");
+
+    // Refuse to scaffold over an existing project rather than silently
+    // re-scaffolding: either an `anthill-todo/` subdir is already here, or `base`
+    // itself already carries the marker files (the flat "cwd IS the project"
+    // layout `find_project_dir` also accepts).
+    if dir.exists() {
+        eprintln!("error: {} already exists", dir.display());
+        return runner::EXIT_RUNTIME;
+    }
+    if is_project_dir(&abs_base) {
+        eprintln!("error: {} is already an anthill-todo project", abs_base.display());
+        return runner::EXIT_RUNTIME;
+    }
+
+    let name = project_name.map(str::to_string).unwrap_or_else(|| {
+        abs_base.file_name().and_then(|n| n.to_str()).unwrap_or("my-project").to_string()
     });
 
     fs::create_dir_all(&dir).expect("cannot create anthill-todo/");
@@ -412,10 +455,14 @@ fn run_init(project_name: Option<&str>) {
     let workitems = format!("-- Work items\n\nfact StoreFormat(version: {CURRENT_STORE_FORMAT_VERSION})\n\n");
     fs::write(dir.join("workitems.anthill"), workitems).expect("write workitems.anthill");
 
-    println!("created anthill-todo/ with:");
+    // The absolute path, not a bare `anthill-todo/`: a wrong-place write must be
+    // visible in the output even when -d is right. The old message named no path
+    // and so could not have revealed WI-748 even to someone staring at it.
+    println!("created {} with:", dir.display());
     println!("  project.anthill   — project configuration");
     println!("  workitems.anthill — work items (empty)");
     println!("(the anthill.stage0 domain + workflow rules ship bundled with anthill-todo)");
+    0
 }
 
 // `migrate` is served by the anthill bundle (main.anthill `cmd_migrate`): it
@@ -527,8 +574,9 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             Some("--name") => bundle_argv.get(2).map(|s| s.as_str()),
             other => other,
         };
-        run_init(name);
-        return 0;
+        // Honor the stripped `-d <dir>` — every other subcommand does, via
+        // find_project_dir; init used to be the lone exception (WI-748).
+        return run_init(explicit_dir.as_deref(), name);
     }
 
     // `skill` is a static doc print — served host-side so the output stays
