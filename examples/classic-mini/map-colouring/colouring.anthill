@@ -1,0 +1,58 @@
+-- Map colouring: assign one of three colours to each region of Australia so
+-- that no two regions sharing a border get the same colour.
+--
+-- The classic generate-and-test program: `colour(name: ?x)` GENERATES, `neq`
+-- TESTS, and the search does the rest. Nothing here is a search algorithm — the
+-- rule states what a valid colouring IS, and SLD resolution finds the ones that
+-- satisfy it.
+
+namespace classic.mapcolouring
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.Int64.{to_string}
+  import anthill.prelude.List.{length}
+  import anthill.prelude.{Int64, String, List, Bool, Error}
+
+  -- The three colours. These facts ARE the domain: SLD enumerates them, so a
+  -- free colour variable ranges over exactly red / green / blue.
+  sort Colour
+    entity colour(name: String)
+  end
+
+  fact colour(name: "red")
+  fact colour(name: "green")
+  fact colour(name: "blue")
+
+  -- A valid colouring of the six mainland states and territories.
+  --
+  -- Read it as a specification, not a procedure: each region takes some colour,
+  -- and every bordering pair differs. The seven `neq` goals are the map's edges
+  -- — Western Australia borders Northern Territory and South Australia; South
+  -- Australia borders everything except WA's far side; and so on.
+  --
+  -- Queried with every column free, this is mode (out,out,out,out,out,out) —
+  -- generate-and-test with the answer unknown, which is the whole point.
+  rule colouring(?wa, ?nt, ?sa, ?q, ?nsw, ?v)
+    :- colour(name: ?wa), colour(name: ?nt), colour(name: ?sa),
+       colour(name: ?q), colour(name: ?nsw), colour(name: ?v),
+       neq(?wa, ?nt), neq(?wa, ?sa),
+       neq(?nt, ?sa), neq(?nt, ?q),
+       neq(?sa, ?q), neq(?sa, ?nsw), neq(?sa, ?v),
+       neq(?q, ?nsw),
+       neq(?nsw, ?v)
+
+  sort Program
+    requires anthill.cli.Main
+
+    -- `colouring` cited BY NAME is a Relation over its six free head params
+    -- (proposal 052), which provides a stream — so the whole program is one
+    -- query, drained and counted. There is exactly one valid 3-colouring up to
+    -- the choice of colours for the WA/NT/SA triangle: 3! = 6.
+    operation main(args: List[T = String]) -> Int64
+      effects {ConsoleOutput, Error}
+    =
+      let sols = colouring.takeN(20)
+      let _ = println(console(), to_string(length(sols)))
+      0
+  end
+end
