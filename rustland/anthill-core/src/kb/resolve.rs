@@ -4435,11 +4435,13 @@ impl KnowledgeBase {
         // dispatched method-op operand (`eq(?v, ?b.peek())`) to its value.
         let a = self.reduce_operand(a, subst);
         let b = self.reduce_operand(b, subst);
-        // WI-483: a residual (complex, unfolded) op-call operand is treated as
-        // un-ground — delay rather than fail, so a complex callee residualizes
-        // (substitution transparency), not silently mismatches. A `Value::Node`
+        // WI-483/WI-738: an operand that is an unevaluated CALL — a complex
+        // op-call body that did not fold, or a builtin nested in operand position
+        // (`eq(?y, add(?x,?x))`) — is treated as un-ground: delay rather than
+        // decide, so it residualizes (substitution transparency) instead of
+        // silently mismatching against its own unevaluated term. A `Value::Node`
         // op-call carrier reads directly in its native carrier (WI-685).
-        if self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b) {
+        if self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b) {
             return EqOperands::Delay;
         }
         // WI-685: operands ride in their native carrier — a `Value::Node`
@@ -4584,9 +4586,10 @@ impl KnowledgeBase {
         let b = self.chase_value(b, work);
         let a = self.reduce_operand(a, work);
         let b = self.reduce_operand(b, work);
-        // Step 2: an unreduced complex op-call head ⇒ delay the whole goal
-        // (never commit to a structural verdict over an uninterpreted callee).
-        if self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b) {
+        // Step 2: an unreduced op-call head (a complex body, or a builtin in
+        // operand position — WI-738) ⇒ delay the whole goal (never commit to a
+        // structural verdict over an uninterpreted callee).
+        if self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b) {
             return UnifyOutcome::Delay;
         }
         // Step 3: a flex var on either side ⇒ occurs-checked bind-and-stop.
@@ -4879,9 +4882,11 @@ impl KnowledgeBase {
         // fold a method-op operand (`lt(?b.peek(), ?limit)`).
         let a = self.reduce_operand(a, subst);
         let b = self.reduce_operand(b, subst);
-        // WI-483: a residual complex op-call operand is un-ground → delay.
+        // WI-483/WI-738: an operand that is an unevaluated call (complex body, or
+        // a builtin nested in operand position — `lt(sub(?x,?y), 1)`) is
+        // un-ground → delay.
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
-            || self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b)
+            || self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b)
         {
             return BuiltinResult::delay();
         }
@@ -5034,9 +5039,11 @@ impl KnowledgeBase {
         // fold a method-op operand (`mul(?b.peek(), ?dt)`).
         let a = self.reduce_operand(a, subst);
         let b = self.reduce_operand(b, subst);
-        // WI-483: a residual complex op-call operand is un-ground → delay.
+        // WI-483/WI-738: an operand that is an unevaluated call is un-ground →
+        // delay. Includes a NESTED arithmetic builtin (`add(sub(?x,?y), 1, ?z)`),
+        // so nested arithmetic composes: the inner call delays until it grounds.
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
-            || self.is_unreduced_op_call(&a) || self.is_unreduced_op_call(&b)
+            || self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b)
         {
             return BuiltinResult::delay();
         }
@@ -5695,6 +5702,10 @@ impl KnowledgeBase {
     /// left un-reduced (a complex body)? Such an operand is treated as un-ground
     /// (delay) by `eq`/`cmp`/`arith`, so a complex callee residualizes rather
     /// than failing — the substitution-transparency rule.
+    ///
+    /// BODIED ops only: this also gates [`Self::op_call_as_occ`], which UNFOLDS
+    /// the callee's body to case-split, and a builtin has no body to unfold. The
+    /// delay sites want the wider [`Self::operand_is_unevaluated_call`].
     fn is_unreduced_op_call(&self, v: &Value) -> bool {
         let Value::Node(occ) = v else { return false };
         match occ.as_expr() {
@@ -5703,6 +5714,62 @@ impl KnowledgeBase {
             }
             _ => false,
         }
+    }
+
+    /// WI-738: is `v` an operand that is an unevaluated BUILTIN call — the
+    /// `sub(?x, ?y)` inside `neq(sub(?x, ?y), 1)`?
+    ///
+    /// [`Self::reduce_op_value`] returns a builtin call UNCHANGED ("reduced by
+    /// its own path, not folded") — but that path only exists when the builtin is
+    /// the goal's OWN functor. Nested as an OPERAND there is no such path, so the
+    /// call reaches the comparison still an `Apply`. It must not be compared
+    /// structurally: `sub(2,1)` and `1` are different TERMS but equal VALUES, so a
+    /// structural verdict made `neq(sub(?x,?y), 1)` silently, unconditionally TRUE
+    /// (and `eq(?y, add(?x,?x))` silently FALSE — the same root cause reads as a
+    /// false positive under `neq` and a false negative under `eq`). Deciding an
+    /// uninterpreted call is a WRONG ANSWER; delaying is honest — the goal
+    /// residualizes, and a residual that never grounds surfaces as a flounder
+    /// (loudly, per WI-737) instead of a silent lie.
+    ///
+    /// This is the SOUNDNESS FLOOR only: it makes an unevaluated call delay, it
+    /// does not make it compute. Evaluating one — flattening `eq(?z, add(?x,?y))`
+    /// to the graph form `add(?x, ?y, ?z)`, which the 3-arg arithmetic builtin
+    /// already binds — is additive and separate.
+    ///
+    /// A DATA constructor (`cons(head: ?h, tail: ?t)`, `some(?x)`) is NOT a
+    /// builtin and NOT bodied, so it still compares structurally, as it must.
+    /// Anthill can draw that line because an `operation` and an `entity`
+    /// constructor are distinct declarations — unlike Prolog, where `1+2` is
+    /// legitimately a term and `X = 1+2` must not evaluate.
+    ///
+    /// BOTH CARRIERS, mirroring [`Self::op_call_as_occ`]: a rule-body operand
+    /// reaches here as a `Value::Term` (a term-lowered goal — `walk_view` yields
+    /// `Value::term` for any `Term::Fn`), NOT only as a `Value::Node`. Checking
+    /// just the Node arm misses the very case that motivated this — the
+    /// `sub(?x,?y)` of `neq(sub(?x,?y), 1)` arrives Term-carried.
+    fn is_unreduced_builtin_call(&self, v: &Value) -> bool {
+        let functor = match v {
+            Value::Node(occ) => match occ.as_expr() {
+                Some(Expr::Apply { functor, .. }) => *functor,
+                _ => return false,
+            },
+            Value::Term { id, .. } => match self.get_term(*id) {
+                Term::Fn { functor, .. } => *functor,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        self.builtins.get(&functor).is_some()
+    }
+
+    /// WI-738: an operand that is an unevaluated CALL of EITHER kind — a bodied
+    /// op whose body did not fold ([`Self::is_unreduced_op_call`], WI-483) or a
+    /// builtin nested in operand position ([`Self::is_unreduced_builtin_call`]).
+    /// Both are un-ground: a call is not data, so no structural verdict may be
+    /// committed over one. The delay sites (`eq` / `unify` / `cmp` / `arith`) all
+    /// ask this; `op_call_as_occ`'s case-split asks the narrower bodied-op form.
+    fn operand_is_unevaluated_call(&self, v: &Value) -> bool {
+        self.is_unreduced_op_call(v) || self.is_unreduced_builtin_call(v)
     }
 
     /// The occurrence of a bodied (non-builtin) op-call operand, from EITHER
