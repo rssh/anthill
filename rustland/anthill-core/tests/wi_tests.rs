@@ -56,6 +56,9 @@ mod wi714_drain_test;
 #[path = "include/wi738_operand_call_delay_test.rs"]
 mod wi738_operand_call_delay_test;
 
+#[path = "include/wi737_floundered_relation_test.rs"]
+mod wi737_floundered_relation_test;
+
 #[path = "include/wi727_fix_test.rs"]
 mod wi727_fix_test;
 

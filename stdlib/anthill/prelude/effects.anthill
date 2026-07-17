@@ -129,6 +129,31 @@ namespace anthill.prelude
     entity empty_stream
   end
 
+  -- Payload for a FLOUNDERED relation drain (WI-737). Carried by `Error` on the
+  -- Relation face (proposal 052) when materializing an answer that the search
+  -- never DECIDED: a solution with a non-empty residual — goals that delayed
+  -- waiting on variables which never got bound. `goals` are those undischarged
+  -- goals, so a handler can report WHICH goal floundered.
+  --
+  -- Why this raises rather than yields, and why only here. A `Relation[T]`
+  -- promises rows of `T`; `T` has no room for a third "undecided" outcome, so
+  -- materializing a floundered answer would either put a logic VARIABLE in a
+  -- column the schema types (`Relation[(x: Int64, …)]` yielding `x = ?_1232`) or
+  -- read a residual as positive membership. `E ⊇ {Error}` on every relation
+  -- already, so this rides a channel the type declares — no signature changes.
+  --
+  -- THE SPLIT (WI-519): the RAW reflect / LogicalStream face keeps undecidedness
+  -- as DATA — `execute` yields `undecided(subst, residual)` and NEVER raises it,
+  -- so WI-010's self-hosted resolver can inspect which goals stayed pending. The
+  -- TYPED Relation face raises, because a typed row cannot carry that third
+  -- outcome. Same fact, two faces; see `Interpreter::make_solution_value` (the
+  -- data face) vs `materialize_solution` (this one) in `eval/mod.rs`.
+  sort RelationFloundered
+    import anthill.prelude.{List}
+    import anthill.reflect.{Term}
+    entity relation_floundered(goals: List[T = Term])
+  end
+
   -- Register as effects
   fact Effect[T = Modify[?]]
   fact Effect[T = Error[?]]

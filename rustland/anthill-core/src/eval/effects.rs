@@ -577,6 +577,28 @@ impl Interpreter {
         )
     }
 
+    /// Raise a floundered relation drain as an anthill `Error[RelationFloundered]`
+    /// effect (WI-737): payload `relation_floundered(goals)`, naming the
+    /// undischarged goals the search delayed and never decided. Routed so an
+    /// installed `Error` handler catches it; unhandled it is `EvalError::Raised`.
+    ///
+    /// `residual` rides carrier-faithfully (WI-348), exactly as
+    /// [`Self::make_solution_value`] surfaces it: a goal mentioning a
+    /// `Value::Node` keeps its source occurrence rather than being reified to a
+    /// bare `TermId`. Surfaced as `List[Term]` — a pending goal IS a term,
+    /// occurrence-carried or not.
+    pub fn raise_relation_floundered(&mut self, residual: Vec<Value>) -> EvalError {
+        let goals = match self.build_list_value(residual, &[]) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        self.raise_error_payload(
+            "anthill.prelude.RelationFloundered.relation_floundered",
+            "relation_floundered",
+            vec![("goals", goals)],
+        )
+    }
+
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
     /// access; tests usually skip this and inject buffered handlers) and

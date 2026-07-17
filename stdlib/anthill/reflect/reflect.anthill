@@ -696,6 +696,15 @@ namespace anthill.reflect
     -- reflect ops, not assuming a bare term handle. Each consumer DECIDES what
     -- this means — a prover reads it as "not proved"; the typer reads it as
     -- "constraints still to solve".
+    --
+    -- WI-737: and the TYPED `Relation` face (proposal 052) decides to RAISE. That
+    -- is the one consumer that cannot carry this arm: `Relation[T]` promises rows
+    -- of `T`, and `T` has no room for a third outcome, so materializing an
+    -- `undecided` answer would put a logic variable in a typed column (or read a
+    -- residual as positive membership). Raising is `Error[RelationFloundered]`,
+    -- already in every relation's `E`. So the split is: undecidedness stays DATA
+    -- here — never raised on `execute`'s `E` channel, which is what lets WI-010's
+    -- self-hosted resolver inspect it — and becomes an ERROR at the typed face.
     entity undecided(subst: Substitution, residual: List[T = Term])
   end
 

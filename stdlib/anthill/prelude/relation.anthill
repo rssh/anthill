@@ -34,6 +34,17 @@
 -- under SLD but do not evaluate — the interpreter has no equational-rewrite
 -- fallback. Reach the first solution through `splitFirst` instead.)
 --
+-- A FLOUNDERED answer RAISES rather than yielding a row (WI-737): if the search
+-- delayed a goal on variables that never got bound, it never DECIDED, and there is
+-- no honest `T` for that answer — a materialized row would hold a logic variable in
+-- a column this schema types, or (0 columns) read a residual as positive membership.
+-- The payload is `Error[RelationFloundered]`, naming the undischarged goals; `E ⊇
+-- {Error}` already, so it needs no signature change. This is the same hazard
+-- `negate` refuses its operand for, applied to the drain. Note the contrast with the
+-- RAW face: `reflect.Solution` keeps undecidedness as DATA (`undecided(subst,
+-- residual)`, never raised) because an enum HAS a third arm to carry it — `T` does
+-- not. Same fact, two faces, each as honest as its type allows.
+--
 -- T = the schema: the named tuple of the relation's free head parameters. Two
 --   degenerate arities collapse at the typer's schema boundary — one free variable
 --   presents as that element (`Relation[Board]`), zero free variables as `Unit`.

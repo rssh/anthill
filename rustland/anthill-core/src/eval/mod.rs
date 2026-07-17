@@ -1130,6 +1130,14 @@ impl Interpreter {
     /// stayed pending — keeping reflect a faithful description of the core.
     /// Undecidedness is a third logical outcome carried as DATA, never raised
     /// on `execute`'s `E = Error` channel.
+    ///
+    /// WI-737 — the DATA half of a deliberate split; the raising half is
+    /// [`Self::materialize_solution`]. This RAW face can afford a third outcome
+    /// because `Solution` is an enum with an `undecided` arm to carry it. The TYPED
+    /// Relation face cannot: `Relation[T]` promises rows of `T`, and `T` has no such
+    /// arm — so there a floundered answer RAISES rather than materializing a row
+    /// that would hold a logic variable in a typed column. Same fact, two faces, each
+    /// as honest as its type allows.
     fn make_solution_value(
         &mut self,
         sol: crate::kb::resolve::Solution,
@@ -1177,15 +1185,49 @@ impl Interpreter {
     /// carries as itself, a `Value::Var`). The row is a named-tuple `Value::Tuple`,
     /// keyed by column name (order-faithful, §4.6), 1-COLLAPSED to the element value
     /// for a single column and to `Value::Unit` for zero (a boolean/membership
-    /// relation — non-empty ⇔ provable). Definite and floundered (`undecided`)
-    /// answers materialize identically off `sol.subst`; NotFound is just the empty
-    /// stream, no bespoke nil arm.
+    /// relation — non-empty ⇔ provable). NotFound is just the empty stream, no
+    /// bespoke nil arm.
+    ///
+    /// WI-737 — a FLOUNDERED answer does not materialize: it RAISES. A `Relation[T]`
+    /// promises rows of `T`, and `T` has no room for a third "undecided" outcome, so
+    /// a solution the search never DECIDED has no honest row. Materializing it anyway
+    /// told two lies: a column typed `Int64` came back holding `Var(Global(…))` — a
+    /// type-level lie in the very face built to REPLACE raw `Substitution` walking
+    /// with typed rows — and a 0-column membership answer came back `unit`, reading a
+    /// floundered residual as a positive membership answer. Both are the hazard
+    /// [`relation_negate`](crate::eval::builtins) already refused to risk locally, and
+    /// the residual honesty (WI-519) that `make_solution_value` and anthill-todo's
+    /// hand-written `case undecided(_, _)` walk both keep — this face had silently
+    /// lost it. `E ⊇ {Error}` on every relation already, so the raise is in the type.
+    ///
+    /// THE SPLIT this settles: the RAW reflect / `LogicalStream` face keeps
+    /// undecidedness as DATA ([`Self::make_solution_value`] reifies `undecided(subst,
+    /// residual)`, never raised on `execute`'s `E` channel, so WI-010's self-hosted
+    /// resolver can inspect which goals stayed pending); the TYPED Relation face
+    /// raises. Same fact, two faces — the honest split, not a divergence. Mirrored on
+    /// `anthill.prelude.RelationFloundered` in `stdlib/anthill/prelude/effects.anthill`.
+    ///
+    /// The gate is on the SOLUTION (`is_definite`), and deliberately says nothing about
+    /// the stream-level WI-628 `truncated` flag: truncation is a property of the SEARCH,
+    /// not of this answer, and its danger point is stream EXHAUSTION (where "no more
+    /// rows" is the lie an `isEmpty` reads as refutation), not materialization. That is
+    /// the filed WI-628 eager-consumer hole — the same shape as a constraint guard
+    /// reading `is_empty()` as a refutation — and it belongs there, uniformly, rather
+    /// than bolted onto this message. (`split_first` consumes the stream on exhaustion
+    /// and drops `truncated` outright, so it is not a message-wording choice here but a
+    /// separate structural fix.)
     fn materialize_solution(
         &mut self,
         sol: crate::kb::resolve::Solution,
         columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
     ) -> Result<Value, EvalError> {
         use crate::kb::term::Var;
+        // WI-737: gate BEFORE the zero-column early return — a membership relation is
+        // exactly where a floundered residual would otherwise read as `unit`, a
+        // positive answer to a question the search never decided.
+        if !sol.is_definite() {
+            return Err(self.raise_relation_floundered(sol.residual));
+        }
         // Zero free variables → Unit (membership relation).
         if columns.is_empty() {
             return Ok(Value::Unit);
@@ -1199,7 +1241,16 @@ impl Interpreter {
             // hash-consed `Value::Term`; REIFY it to a native value (scalar const →
             // scalar Value, constructor → entity) so the column reads as its element
             // sort, not a raw Term handle — a `Relation[String]` yields `Value::Str`,
-            // a `Relation[Board]` an entity. An unbound free var carries as itself.
+            // a `Relation[Board]` an entity.
+            //
+            // An unbound free var still carries as itself. Post-WI-737 this is no
+            // longer the flounder path (that raised above) but the narrower DEFINITE-
+            // yet-unbound one: a head var no body goal constrains (`rule p(?x) :-
+            // num(v: 1)`) yields a residual-FREE answer that genuinely binds nothing —
+            // logically "for all x", a range-restriction violation Datalog rejects at
+            // load time. Still a var in a typed column, so still a lie; but it is a
+            // STATIC property of the rule, not an undecided search, so it wants a
+            // load-time check rather than this drain-time gate. Not WI-737's scope.
             let bound = match sol.subst.resolve_as_value(vid).cloned() {
                 Some(Value::Term { id, .. }) => crate::eval::builtins::term_to_value(self, id),
                 Some(v) => v,
