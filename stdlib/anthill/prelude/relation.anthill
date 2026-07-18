@@ -233,14 +233,26 @@ sort anthill.prelude.Relation
   -- (the set materialized into each answer row) to the kept/renamed set, leaving the
   -- query — and therefore the solutions — unchanged (bag projection, OQ6). No lambda,
   -- so — unlike where/join — NO compile-time macro: the typer synthesizes the
-  -- `project_run(r, <spec>)` call DIRECTLY off the dot form and stamps the projected
-  -- schema (single-column dot dispatch + the name-keyed-tuple pre-check).
+  -- `project_run(r, <spec>)` call DIRECTLY off the dot form (single-column dot dispatch +
+  -- the name-keyed-tuple pre-check).
+  --
+  -- The restricted schema is `Project[T = r.T, Keep = Keep]` (WI-732) — the third member of
+  -- join's `Concat` / fix's `Without` family, reducing at the SAME return-type normalization
+  -- boundary. So this signature is SELF-CORRECTING: re-typing a synthesized projection node
+  -- re-derives the projected schema from the declared return. It previously declared the
+  -- nominal `-> Relation[T = r.T]` — the UNPROJECTED schema — and relied on the typer
+  -- stamping the real one over it, which forced an idempotency hatch keyed on this
+  -- operation's own identity; that was the last such hatch, and the `join` → `Concat` "no
+  -- op-name-keyed typer code" discipline forbids them.
   --
   -- The RUNTIME back-end. `spec` is a compile-time recipe (a named tuple `result-key ↦
-  -- source-column-name`, spliced by the typer) — the projection map. Body-less; the
-  -- host builtin rebuilds `columns` as `[(result-key, r's column var of source-name)]`,
-  -- keeping `r.query`. A source name naming no column is a loud error, never a drop.
-  operation project_run(r: Relation, spec: Term) -> Relation[T = r.T, E = r.E]
+  -- source-column-name`, spliced by the typer) — the projection map. `Keep` is that SAME map
+  -- in type position (field name = result key, component = a `denoted` source name); the
+  -- typer builds both from one list, so they cannot disagree. Body-less; the host builtin
+  -- rebuilds `columns` as `[(result-key, r's column var of source-name)]`, keeping `r.query`.
+  -- A source name naming no column is a loud error, never a drop.
+  operation project_run[Keep](r: Relation, spec: Term)
+    -> Relation[T = Project[T = r.T, Keep = Keep], E = r.E]
 
   -- fix — RESTRICT relation columns to constants and DROP them (WI-714 / proposal 052
   -- §"`fix` is sugar"; the driving client of WI-727 / proposal 056 — variadic capture).

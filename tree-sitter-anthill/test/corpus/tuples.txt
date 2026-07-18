@@ -145,3 +145,127 @@ fact example((1, "hello"))
       (tuple_literal
         (integer_literal)
         (string_literal)))))
+
+=====================================
+Denoted named tuple type (keep spec)
+=====================================
+
+operation bar() -> Project[T = S, Keep = (person: "name", years: "age")]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier))))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (tuple_type
+          (denoted_field_decl
+            name: (identifier)
+            type: (string_literal))
+          (denoted_field_decl
+            name: (identifier)
+            type: (string_literal)))))))
+
+=====================================
+One-component denoted tuple type
+=====================================
+
+operation bar() -> Project[T = S, Keep = (who: "name")]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier))))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (tuple_type
+          (denoted_field_decl
+            name: (identifier)
+            type: (string_literal)))))))
+
+=====================================
+Denoted tuple type components mixed with a plain one
+=====================================
+
+operation bar() -> Project[T = S, Keep = (person: String, years: "age")]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier))))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (tuple_type
+          (field_decl
+            name: (identifier)
+            type: (simple_type
+              (name
+                (identifier))))
+          (denoted_field_decl
+            name: (identifier)
+            type: (string_literal)))))))
+
+=====================================
+Non-string denoted tuple type components
+=====================================
+
+operation bar() -> Spec[K = (n: 3, flag: true, ratio: 1.5)]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    return_type: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        param: (name
+          (identifier))
+        type: (tuple_type
+          (denoted_field_decl
+            name: (identifier)
+            type: (integer_literal))
+          (denoted_field_decl
+            name: (identifier)
+            type: (boolean_literal))
+          (denoted_field_decl
+            name: (identifier)
+            type: (float_literal)))))))

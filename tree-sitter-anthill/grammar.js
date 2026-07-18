@@ -155,14 +155,24 @@ module.exports = grammar({
     // and deferred until the typer has a reduction hook.
     _common_type_expr: $ => choice(
       $._type,
-      $.integer_literal,
-      $.float_literal,
-      $.string_literal,
-      $.boolean_literal,
+      $._type_literal,
       // WI-375: a WRITTEN effect-row in a type-argument value slot —
       // `Stream[E = {}]` / `Stream[E = {Modify[c]}]`. `{`-prefixed ⇒ disjoint
       // from every `_type`, so admitting it here is conflict-free.
       $.effect_row,
+    ),
+
+    // A constant standing in a type position. Stated ONCE because two places
+    // admit it — a type ARGUMENT (`_common_type_expr` above) and a named-tuple
+    // type COMPONENT (`denoted_field_decl`, WI-763) — and they must admit the
+    // same set: both lower through `convert_type`'s literal arm to
+    // `TypeExpr::Denoted`, the only channel a compile-time value reaches type
+    // position through (there are no singleton types).
+    _type_literal: $ => choice(
+      $.integer_literal,
+      $.float_literal,
+      $.string_literal,
+      $.boolean_literal,
     ),
 
     // WI-375 (proposal 045 §2): a braced effect-row written in the
@@ -1476,9 +1486,50 @@ module.exports = grammar({
     tuple_type: $ => choice(
       seq('(', ')'),
       seq('(', $._tuple_type_arg, ',', commaSep1($._tuple_type_arg), optional(','), ')'),
+      // WI-763: the ONE-component form, admitted only for the DENOTED shape —
+      // a one-entry keep spec (`Keep = (who: "name")`) is what a single-column
+      // projection's type needs. A general `(a: A)` is deliberately NOT added:
+      // that is exactly `arrow_params`' single form, and telling the two apart
+      // needs lookahead PAST the `)` for `->`, i.e. a GLR fork on every named
+      // arrow param list.
+      //
+      // `prec` and not a declared conflict: `( ident : <literal> )` overlaps
+      // `arrow_params`' single form (they share `_tuple_type_arg`), but that
+      // overlap is not a real ambiguity — a param's `: T` is a TYPE and a
+      // literal is not one, so the arrow reading is wrong for every input that
+      // reaches here. Deciding it statically costs nothing at parse time,
+      // where a declared conflict would fork the stack; and it makes the
+      // rejection of `(a: "x") -> B` a parse error at the arrow itself.
+      prec(1, seq('(', $.denoted_field_decl, ')')),
     ),
 
-    _tuple_type_arg: $ => choice($._type, $.field_decl),
+    // A component of a tuple TYPE — and, by sharing this symbol, of an
+    // `arrow_params` list. The sharing is load-bearing: `arrow_params` and
+    // `tuple_type` have a common prefix (`(`, component, `,`, …) and are told
+    // apart only by the `->` that may follow the `)`, so giving them two
+    // component symbols makes that prefix ambiguous at every `,` — a GLR fork
+    // on ordinary param lists, which the shared symbol avoids.
+    //
+    // WI-763: `denoted_field_decl` rides here for that reason, and is refused
+    // in an arrow param at CONVERSION (a param's `: T` is a type and a literal
+    // is not one) rather than by the grammar — a located "not a type" beats a
+    // bare syntax error. Note what is NOT widened: `field_decl` itself, which
+    // entity constructors use, so `entity person(name: "foo")` stays a parse
+    // error.
+    _tuple_type_arg: $ => choice($._type, $.field_decl, $.denoted_field_decl),
+
+    // WI-763: `person: "name"` — a named-tuple TYPE component whose component
+    // is a CONSTANT standing in type position. The motivating case is a
+    // projection's keep spec: `Project[T = …, Keep = (person: "name", years:
+    // "age")]` maps each RESULT key to its SOURCE column's name, and a name
+    // reaches type position only as a denoted (WI-732 / WI-759 — there are no
+    // singleton types). Its own production rather than a widened `field_decl`
+    // RHS, so the two are disjoint on the token after `:`.
+    denoted_field_decl: $ => seq(
+      field('name', $.identifier),
+      ':',
+      field('type', $._type_literal),
+    ),
 
     simple_type: $ => $.name,
 

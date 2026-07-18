@@ -2159,19 +2159,42 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "field_decl" => {
-                    let name_node = self.field(child, "name");
-                    let type_node = self.field(child, "type");
-                    if let (Some(n), Some(t)) = (name_node, type_node) {
-                        let sym = self.intern(self.text(n));
-                        let ty = self.convert_type(t);
-                        named.push((sym, ty));
+                // WI-763: `denoted_field_decl` (`person: "name"`) is the same
+                // named component with a CONSTANT for its type — it differs
+                // from `field_decl` only in the grammar, to keep a literal out
+                // of entity field declarations. `convert_type`'s literal arm
+                // turns the RHS into `TypeExpr::Denoted`, so both arrive here
+                // as an ordinary named component.
+                "field_decl" | "denoted_field_decl" => {
+                    match (self.field(child, "name"), self.field(child, "type")) {
+                        (Some(n), Some(t)) => {
+                            let sym = self.intern(self.text(n));
+                            let ty = self.convert_type(t);
+                            named.push((sym, ty));
+                        }
+                        // Both fields are mandatory in the grammar, so this is
+                        // reachable only under error recovery — where dropping
+                        // the component silently would shrink the tuple's ARITY
+                        // and report the mismatch somewhere else entirely.
+                        _ => self.err("tuple type component is missing its name or type", child),
                     }
                 }
-                "simple_type" | "application" | "variable_term" | "variable" | "tuple_type" => {
+                // Every remaining `_type` form is a POSITIONAL component.
+                // Listed rather than defaulted: a component this doesn't name
+                // would otherwise be dropped from the tuple with no error, so
+                // an unlisted node falls to the loud arm below. `arrow_type`
+                // was missing from this list and WAS being dropped — a
+                // positional `((A) -> B, C)` silently lost its first component.
+                "simple_type" | "application" | "variable_term" | "variable" | "tuple_type"
+                | "arrow_type" => {
                     positional.push(self.convert_type(child));
                 }
-                _ => {}
+                // Comments are `extras`, so they appear among the named
+                // children of any node — including here, between components.
+                "line_comment" | "block_comment" => {}
+                other => {
+                    self.err(format!("unexpected tuple type component: {other}"), child);
+                }
             }
         }
 
@@ -2197,6 +2220,12 @@ impl<'a> Converter<'a> {
         let params: Vec<(Option<Symbol>, TypeExpr)> = if let Some(pn) = params_node {
             let mut cursor = pn.walk();
             pn.named_children(&mut cursor)
+                // Comments are `extras` and so appear among the named children
+                // here too. The fallback below converts anything unlisted as a
+                // positional parameter TYPE, which turned a comment between
+                // parameters into `unexpected type node: line_comment` — a
+                // whole file failing to parse over a comment.
+                .filter(|child| !matches!(child.kind(), "line_comment" | "block_comment"))
                 .map(|child| match child.kind() {
                     "field_decl" => {
                         // Named param: (a: A) -> B — keep the name (spec §5.4)
@@ -2204,6 +2233,30 @@ impl<'a> Converter<'a> {
                         let name = self.field(child, "name").map(|n| self.intern(self.text(n)));
                         let type_node = self.field(child, "type").unwrap_or(child);
                         (name, self.convert_type(type_node))
+                    }
+                    // WI-763: a parameter's `: T` is a TYPE, and a literal is
+                    // not one (there are no singleton types) — so the denoted
+                    // component that tuple TYPES admit is refused here. It
+                    // reaches this far only because `arrow_params` and
+                    // `tuple_type` must share one component symbol to stay
+                    // fork-free; the one-parameter `(a: "x") -> B` is already a
+                    // parse error, so only the multi-parameter form lands here.
+                    "denoted_field_decl" => {
+                        let name = self
+                            .field(child, "name")
+                            .map(|n| self.text(n).to_string())
+                            .unwrap_or_default();
+                        self.err(
+                            format!(
+                                "parameter `{name}` is declared with a constant for its type; a \
+                                 constant stands in type position only as a type ARGUMENT \
+                                 (`Vec[N = 3]`) or a named-tuple type component (`Keep = (who: \
+                                 \"name\")`)"
+                            ),
+                            child,
+                        );
+                        let sym = self.intern("?");
+                        (None, TypeExpr::Simple(Name::simple(sym, self.span(child))))
                     }
                     _ => (None, self.convert_type(child)),
                 })

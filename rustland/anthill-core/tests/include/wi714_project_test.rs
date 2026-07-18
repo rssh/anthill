@@ -78,6 +78,14 @@ namespace test.wi714project
     let cols = filtered.(name, age)
     cols.takeN(9)
 
+  -- WI-732: the same projection over an INLINE computed receiver — the `where` result is
+  -- projected directly, with no intervening `let`. The declared return type is the projected
+  -- schema, so this annotation type-checking is what proves ONE relation restricted to two
+  -- columns rather than a tuple of two independent single-column relations.
+  operation inlineYoung() -> List[(name: String, age: Int64)] effects Error =
+    let cols = person_row.where(lambda c -> eq(c.age, 25)).(name, age)
+    cols.takeN(9)
+
   -- SINGLE-column projection over a NAMED-ARG-head relation.
   operation namedNames() -> List[String] effects Error =
     let rel = person_named
@@ -332,15 +340,55 @@ fn wi714_project_preserves_bag_multiplicity() {
     );
 }
 
-/// An INLINE computed-receiver projection `r.where(..).(f1,f2)` (no `let`) hits the WI-443
-/// multi-segment dot-chain limitation — a LOUD load error, NOT a silent reinterpretation as
-/// a tuple of independent single-column relations. The idiomatic `let f = r.where(..);
-/// f.(f1,f2)` form (tested above) works.
+/// WI-732 item (1): a MULTI-column projection over an INLINE COMPUTED receiver
+/// `r.where(..).(f1, f2)` — no `let` — projects. The declared return type IS the projected
+/// schema, so type-checking it proves ONE relation restricted to two columns.
+///
+/// Before WI-732 this silently typed as a TUPLE OF INDEPENDENT SINGLE-COLUMN RELATIONS
+/// (`(name: Relation[String], age: Relation[Int64])`) — see
+/// `wi714_project_inline_chain_is_not_a_tuple_of_relations`, which pins that directly. The
+/// ticket recorded it as "a LOUD error (the WI-443 chain limit)"; measured, it was neither
+/// loud nor a chain-limit error. `convert.rs` distributes ONE receiver over the members as a
+/// shared TermId, but that sharing does not survive as a shared `Rc`, so the receiver-identity
+/// test (leaf symbol only) failed and each member typed as its own single-column projection.
 #[test]
-fn wi714_project_inline_chain_receiver_errors() {
+fn wi714_project_inline_chain_computed_receiver() {
+    let mut interp = interp_for(SRC);
+    let r = interp.call("test.wi714project.inlineYoung", &[]).expect("inlineYoung runs");
+    let mut rows = 0usize;
+    let mut cur = r;
+    while let Value::Entity { named, .. } = &cur {
+        if named.is_empty() {
+            break;
+        }
+        let (mut tuple, mut tail) = (None, None);
+        for (_k, x) in named.iter() {
+            match x {
+                Value::Tuple { .. } => tuple = Some(()),
+                Value::Entity { .. } => tail = Some(x.clone()),
+                _ => {}
+            }
+        }
+        match (tuple, tail) {
+            (Some(()), Some(t)) => {
+                rows += 1;
+                cur = t;
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(rows, 1, "only bob (age 25) survives the inline filter, then projects to (name, age)");
+}
+
+/// WI-732 item (1), the NEGATIVE control that makes the test above non-vacuous: the inline
+/// chain must NOT type as a tuple of independent single-column relations. This is the exact
+/// shape it silently produced before WI-732 — it loaded CLEAN then — so this annotation
+/// failing to type-check is what proves the projection reading won.
+#[test]
+fn wi714_project_inline_chain_is_not_a_tuple_of_relations() {
     const INLINE: &str = r#"
 namespace test.wi714projinline
-  import anthill.prelude.{String, Int64, List, Bool, Option}
+  import anthill.prelude.{String, Int64, List, Bool, Option, Relation}
   import anthill.prelude.Relation.{where}
   import anthill.prelude.PartialEq.{eq}
   sort Person
@@ -348,15 +396,60 @@ namespace test.wi714projinline
   end
   fact person(name: "alice", age: 30)
   rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
-  operation inline() -> List[(name: String, age: Int64)] effects Error =
-    let cols = person_row.where(lambda c -> eq(c.age, 30)).(name, age)
+  operation inline() -> (name: Relation[T = String], age: Relation[T = Int64]) effects Error =
+    person_row.where(lambda c -> eq(c.age, 30)).(name, age)
+end
+"#;
+    let joined = match try_load_kb_with(INLINE) {
+        Ok(_) => panic!(
+            "the inline chain typed as a TUPLE OF RELATIONS — the pre-WI-732 silent \
+             mis-reading, in which each member is its own single-column projection"
+        ),
+        Err(e) => e.join("\n"),
+    };
+    assert!(
+        joined.contains("T = (name: String, age: Int64)"),
+        "expected the mismatch to report the PROJECTED relation as the actual type, got: {joined}"
+    );
+}
+
+/// A hand-written tuple of column accesses on TWO SEPARATE computed receivers keeps its
+/// tuple reading — the receiver-identity test is SOURCE-SPAN based, so it matches only ONE
+/// receiver duplicated by the distribute-dot desugaring, never two the user genuinely wrote.
+/// Without this distinction the span rung would collapse two independent expressions (and
+/// their two evaluations) into one.
+#[test]
+fn wi714_project_two_written_receivers_stay_a_tuple() {
+    const TWO: &str = r#"
+namespace test.wi714projtwo
+  import anthill.prelude.{String, Int64, List, Bool, Option, Relation}
+  import anthill.prelude.Relation.{where}
+  import anthill.prelude.PartialEq.{eq}
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+  operation two() -> List[(name: String, age: Int64)] effects Error =
+    let cols = (name: person_row.where(lambda c -> eq(c.age, 30)).name,
+                age: person_row.where(lambda c -> eq(c.age, 30)).age)
     cols.takeN(9)
 end
 "#;
-    match try_load_kb_with(INLINE) {
-        Ok(_) => panic!("inline computed-receiver projection should not silently succeed"),
-        Err(_) => {} // loud load error — the intended behavior (use a let)
-    }
+    // Same body shape as `inlineYoung`, which DOES project and therefore DOES answer
+    // `takeN` — so the two differ only in whether the receiver was written once or twice.
+    let joined = match try_load_kb_with(TWO) {
+        Ok(_) => panic!(
+            "two separately-written receivers collapsed into ONE projection — the span rung \
+             must match only a receiver duplicated by the distribute-dot desugaring"
+        ),
+        Err(e) => e.join("\n"),
+    };
+    assert!(
+        joined.contains("takeN"),
+        "expected the tuple reading to surface as `takeN` having no such member on a tuple, \
+         got: {joined}"
+    );
 }
 
 /// Projecting a column that is NOT in the relation's schema is a loud LOAD error (no such
