@@ -342,16 +342,22 @@ impl<'kb> CodegenContext<'kb> {
     /// overlay shadows the base. The base sentinel is always present, so a type
     /// with only a base entry still resolves.
     fn active_keys(&self, binding: Option<&str>) -> Vec<Option<String>> {
-        let mut keys = Vec::with_capacity(3);
-        if let Some(b) = binding {
-            keys.push(Some(b.to_string()));
-        }
-        if let Some(p) = &self.profile {
-            keys.push(Some(p.clone()));
-        }
-        keys.push(None);
-        keys
+        active_key_ladder(binding, self.profile.as_deref())
     }
+}
+
+/// WI-089(a): the priority ladder itself, most-specific-first —
+/// `[binding?, profile?, none]`. Free-standing (rather than only a
+/// `CodegenContext` method) because [`realizes_effect`] needs the same ordering
+/// but must not build a whole `CodegenContext` to get it: constructing one
+/// scans the KB twice for the carrier / op-impl tables, and `supported_effects`
+/// asks per candidate effect. ONE definition of the ladder, two entry points.
+fn active_key_ladder(binding: Option<&str>, profile: Option<&str>) -> Vec<Option<String>> {
+    let mut keys = Vec::with_capacity(3);
+    keys.extend(binding.map(|b| Some(b.to_string())));
+    keys.extend(profile.map(|p| Some(p.to_string())));
+    keys.push(None);
+    keys
 }
 
 impl<'kb> CodegenContext<'kb> {
@@ -1387,22 +1393,53 @@ fn operations_in_sort(
             });
         }
 
-        // Pull declared effects so we can wrap the return type for effects the
-        // cpp profile realizes as `ResultWrap`. WI-089(b): this decision is now
-        // FACT-DRIVEN — an effect wraps iff cpp's `EffectMapping` maps it to
-        // `ResultWrap` (the keyed query), not a hardcoded "Error" string-match.
-        // The cpp meaning of `ResultWrap` (`tl::expected<R, std::string>` + the
-        // `<tl/expected.hpp>` include) stays here, exactly as a `TypeMapping`
-        // host_type's template wrapping does. Effect labels are carrier-agnostic
-        // `Value`s; a realizable label is a ground `Value::Term` (a `denoted`
-        // label like `Modify[c]` is a `Value::Node`).
-        let wraps_result = rec.effects.iter().any(|eff| match eff {
-            anthill_core::eval::Value::Term { id: t, .. } => effect_kind_short(kb, *t)
-                .and_then(|name| cpp_effect_receiver(ctx, &name))
-                .as_deref()
-                == Some("ResultWrap"),
-            _ => false,
-        });
+        // WI-576 CAPABILITY GATE: the operation's residual required effect row
+        // must be a SUBSET of the target profile's supported-effect set. That
+        // set is exactly the effects `realizes_effect` resolves — the keys of
+        // the profile's effect_map, whichever representation carries it. An
+        // effect with no realization here is UNREALIZABLE on this target, so it
+        // fails LOUDLY instead of being folded away as "does not wrap".
+        //
+        // Handlers are not implemented yet (WI-329), so residual == declared;
+        // once handler discharge lands, `handle_K` narrows this row by the
+        // handled labels BEFORE the gate sees it, and this loop is unchanged.
+        //
+        // Resolving each effect ALSO drives return-type wrapping: an effect
+        // wraps iff the profile realizes it as `ResultWrap` (WI-089(b) made
+        // that decision fact-driven, replacing a hardcoded "Error" string
+        // match). The cpp meaning of `ResultWrap` — `tl::expected<R,
+        // std::string>` plus its include — stays here, exactly as a
+        // `TypeMapping` host_type's template wrapping does.
+        let mut wraps_result = false;
+        for eff in &rec.effects {
+            let kind = match classify_effect_label(kb, eff, &rec.type_params) {
+                EffectLabel::Kind(k) => k,
+                // Effect-polymorphic: nothing concrete to check here.
+                EffectLabel::RowParam => continue,
+                EffectLabel::Unreadable => {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "operation '{name}' declares an effect whose kind C++ codegen \
+                             cannot read (carrier {}), so {} cannot check it against its \
+                             supported effects",
+                            eff.type_name(),
+                            cpp_profile_label(ctx)
+                        ),
+                    })
+                }
+            };
+            let Some(receiver) = cpp_effect_receiver(ctx, &kind) else {
+                return Err(CppCodegenError {
+                    message: format!(
+                        "operation '{name}' requires effect '{kind}', which {} cannot \
+                         realize — no EffectMapping declares it. Supported effects: {}",
+                        cpp_profile_label(ctx),
+                        describe_supported_effects(ctx)
+                    ),
+                });
+            };
+            wraps_result |= receiver == "ResultWrap";
+        }
         let return_type_cpp = if wraps_result {
             ctx.requested_includes.borrow_mut()
                 .insert("#include <tl/expected.hpp>".to_string());
@@ -2771,6 +2808,63 @@ fn effect_kind_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     functor_or_ref_short(kb, term)
 }
 
+/// WI-576: what one declared effect label denotes to the capability gate.
+enum EffectLabel {
+    /// A concrete effect kind (`Error`; `Modify[self]` → `"Modify"`), checkable
+    /// against the target profile's supported-effect set.
+    Kind(String),
+    /// An effect ROW PARAMETER — the `EffP` of
+    /// `flatMap[A, B, EffP](…) effects {EffP}`. An effect-polymorphic operation
+    /// states no concrete requirement at its DECLARATION: the row is whatever a
+    /// call site instantiates, so the capability check belongs at that
+    /// instantiation. Not a silent skip — this is a recognised category, and it
+    /// is recognised narrowly (the label must BE one of this op's own declared
+    /// type params), so a free var from anywhere else still falls through to
+    /// `Unreadable`.
+    RowParam,
+    /// Neither of the above: the gate cannot decide realizability, and says so.
+    Unreadable,
+}
+
+/// Carrier-agnostic [`effect_kind_short`]: classify a declared effect label as
+/// `OperationInfo` stores it (`OpInfoRecord.effects`, WI-348). A ground label
+/// (`Error`) rides as `Value::Term`; a `denoted`-bearing one (`Modify[self]`)
+/// cannot hash-cons and rides as a `Value::Node` whose `TypeNode::Parameterized`
+/// base holds the effect sort — the ONLY part the gate needs, since a profile
+/// realizes an effect KIND, not a particular carrier binding.
+///
+/// Every other carrier — a `Value::Entity` label, a `Node` that is not a
+/// parameterized type — is `Unreadable` ON PURPOSE rather than given a best
+/// guess: the gate then reports the carrier it actually saw instead of passing
+/// an effect it never checked. No producer mints those shapes today; if one
+/// appears, the error names it.
+fn classify_effect_label(
+    kb: &KnowledgeBase,
+    eff: &Value,
+    type_params: &[(Symbol, TermId)],
+) -> EffectLabel {
+    use anthill_core::kb::node_occurrence::{NodeKind, TypeChild, TypeNode};
+    let kind_of = |t: TermId| match effect_kind_short(kb, t) {
+        Some(name) => EffectLabel::Kind(name),
+        // `OpInfoRecord.type_params` carries each param's own `Term::Var`
+        // TermId, and vars hash-cons like any other term — so `EffP` in the
+        // effect row IS the same TermId as `EffP` in the type-param list. The
+        // test is therefore by reference (WI-632), not a name-string match.
+        None if type_params.iter().any(|(_, tid)| *tid == t) => EffectLabel::RowParam,
+        None => EffectLabel::Unreadable,
+    };
+    match eff {
+        Value::Term { id, .. } => kind_of(*id),
+        Value::Node(occ) => match &occ.kind {
+            NodeKind::Type(TypeNode::Parameterized { base: TypeChild::Ground(t), .. }) => {
+                kind_of(*t)
+            }
+            _ => EffectLabel::Unreadable,
+        },
+        _ => EffectLabel::Unreadable,
+    }
+}
+
 /// Short name of a term that is a bare constructor reference: `Ref`/`Ident` for
 /// a nullary entity, `Fn` for a payload-bearing one. The common tail of
 /// `effect_kind_short` (after its sort_ref/parameterized unwrap) and the reader
@@ -3637,13 +3731,14 @@ fn select_keyed<T>(
 /// query bails (empty) if the functor or any field name isn't interned yet.
 /// Callers read the non-ground fields back from each head and apply their own
 /// post-filters (e.g. an `Option` `lang`). `functor_names` is tried in order
-/// (qualified first, then bare short name).
+/// (qualified first, then bare short name). `ground` is `None` for an
+/// ENUMERATION query — every field a placeholder, so every fact of that
+/// functor matches (WI-576 lists a profile's supported effects that way).
 fn query_realization_facts(
     kb: &KnowledgeBase,
     functor_names: &[&str],
     fields: &[&str],
-    ground_field: &str,
-    ground_value: &str,
+    ground: Option<(&str, &str)>,
 ) -> Vec<TermId> {
     let Some(functor) = functor_names.iter().find_map(|n| kb.try_resolve_symbol(n)) else {
         return Vec::new();
@@ -3653,8 +3748,8 @@ fn query_realization_facts(
         let Some(fsym) = kb.lookup_symbol(fname) else {
             return Vec::new();
         };
-        let val = if *fname == ground_field {
-            Value::Str(ground_value.to_string())
+        let val = if let Some((_, gv)) = ground.filter(|(gf, _)| gf == fname) {
+            Value::Str(gv.to_string())
         } else {
             // A distinct placeholder var per non-ground slot. Facts are ground,
             // so a synthetic high VarId cannot collide; results are read from the
@@ -3693,8 +3788,7 @@ fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Ve
         kb,
         &["anthill.realization.TypeMapping", "TypeMapping"],
         FIELDS,
-        "anthill_type",
-        anthill_type,
+        Some(("anthill_type", anthill_type)),
     ) {
         let fact_lang = named_optional_string(kb, head, "lang");
         if fact_lang.as_deref() != Some(lang) {
@@ -3789,8 +3883,7 @@ fn query_effect_mappings(kb: &KnowledgeBase, lang: &str, effect: &str) -> Vec<Ef
         kb,
         &["anthill.realization.EffectMapping", "EffectMapping"],
         FIELDS,
-        "effect",
-        effect,
+        Some(("effect", effect)),
     ) {
         let fact_lang = named_optional_string(kb, head, "lang");
         if fact_lang.as_deref() != Some(lang) {
@@ -3806,16 +3899,152 @@ fn query_effect_mappings(kb: &KnowledgeBase, lang: &str, effect: &str) -> Vec<Ef
     hits
 }
 
+/// WI-576: resolve `effect` against the NESTED representation — the
+/// `effect_map` list inside a `LanguageMapping` fact (rust_std / scala_std /
+/// scala_caps / rust_anthill). The flat keyed `EffectMapping` facts are cpp's
+/// form; every other language still groups its entries in the list, and a
+/// nested entry carries no `lang`/`key` of its own (the loader pads those
+/// fields with unbound vars), so the SELECTOR is the enclosing fact's
+/// `language` + `profile`. Returns one `(profile, receiver)` hit per
+/// `LanguageMapping` that maps `effect`, for the caller to prioritize —
+/// mirroring `query_effect_mappings`, whose hits are likewise effect-filtered
+/// before `select_keyed` picks by key.
+fn query_nested_effect_mappings(
+    kb: &KnowledgeBase,
+    lang: &str,
+    effect: &str,
+) -> Vec<EffectMappingHit> {
+    const FIELDS: &[&str] =
+        &["language", "profile", "effect_map", "receiver_map", "type_map", "trait_return"];
+    let mut hits = Vec::new();
+    for head in query_realization_facts(
+        kb,
+        &["anthill.realization.LanguageMapping", "LanguageMapping"],
+        FIELDS,
+        Some(("language", lang)),
+    ) {
+        let key = named_optional_string(kb, head, "profile");
+        let Some(effect_map) = named_arg(kb, head, "effect_map") else {
+            continue;
+        };
+        for entry in walk_list(kb, effect_map) {
+            if named_string(kb, entry, "effect").as_deref() != Some(effect) {
+                continue;
+            }
+            if let Some(receiver) =
+                named_arg(kb, entry, "receiver").and_then(|t| functor_or_ref_short(kb, t))
+            {
+                hits.push(EffectMappingHit { receiver, key: key.clone() });
+            }
+        }
+    }
+    hits
+}
+
+/// WI-576: THE uniform effect-realization accessor — the host `ReceiverForm`
+/// short name realizing `effect` for `lang` under `profile`, or `None` when
+/// nothing realizes it (the effect is outside that profile's supported set).
+/// The effect-side sibling of `cpp_host_type`.
+///
+/// Representation-agnostic by construction: the WI-089 pivot left cpp on FLAT
+/// keyed `EffectMapping` facts while rust/scala kept their entries NESTED in
+/// `LanguageMapping.effect_map`, so this projects BOTH into one hit list and
+/// applies the same `[profile?, none]` first-match priority to it. Callers —
+/// the capability gate below included — never see which form a language uses.
+/// A `lang`-generic accessor that silently answered `None` for the nested
+/// languages would report "unsupported" for effects those profiles do realize,
+/// which is precisely the silent-wrong-answer this gate exists to prevent.
+///
+/// CONTRACT — `profile` is REQUIRED for a nested-representation language. Only
+/// the flat form has a language BASE (`key: none`); every `LanguageMapping`
+/// fact in the stdlib declares a profile (`std` / `caps` / `anthill`) and NONE
+/// declares `profile: none`, so `realizes_effect(kb, "rust", None, "Modify")`
+/// resolves nothing even though rust plainly realizes `Modify`. That is
+/// deliberate — inventing a "sole mapping for this language wins" fallback
+/// would guess at the caller's profile, and the repo prefers a knowable miss to
+/// a fallback. cpp is unaffected: its facts carry `key: none` and cpp-gen
+/// always threads `ctx.profile`. Pinned by
+/// `realizes_effect_without_a_profile_resolves_no_nested_entry`.
+///
+/// Effects are profile-scoped, not binding-scoped: no foreign-binding key
+/// participates (unlike `resolve_type_mapping`, where a boundary overlay can
+/// shadow the profile).
+pub fn realizes_effect(
+    kb: &KnowledgeBase,
+    lang: &str,
+    profile: Option<&str>,
+    effect: &str,
+) -> Option<String> {
+    let mut hits = query_effect_mappings(kb, lang, effect);
+    hits.extend(query_nested_effect_mappings(kb, lang, effect));
+    select_keyed(hits, |h| &h.key, &active_key_ladder(None, profile)).map(|h| h.receiver)
+}
+
 /// WI-089(b): the cpp `ReceiverForm` short name realizing `effect` under the
-/// active-key priority — the effect_map analogue of declared-signature
-/// host-type resolution. Effects are profile-scoped (not binding-scoped), so
-/// the active keys are `[profile?, none]` (no binding prepended); a profile
-/// overlay shadows the language base. `None` means no active key realizes the
-/// effect — i.e. it is outside the profile's supported-effect set (the gate
-/// WI-571 reads).
+/// active compilation profile — the effect_map analogue of declared-signature
+/// host-type resolution. Thin `lang = "cpp"` binding of [`realizes_effect`].
 fn cpp_effect_receiver(ctx: &CodegenContext, effect: &str) -> Option<String> {
-    let hits = query_effect_mappings(ctx.kb, "cpp", effect);
-    select_keyed(hits, |h| &h.key, &ctx.active_keys(None)).map(|h| h.receiver)
+    realizes_effect(ctx.kb, "cpp", ctx.profile.as_deref(), effect)
+}
+
+/// WI-576: every effect `lang` realizes under `profile` — the profile's
+/// SUPPORTED-EFFECT SET, which the capability gate requires an operation's
+/// residual row to be a subset of.
+///
+/// Both representations are enumerated to gather CANDIDATE effect names, then
+/// [`realizes_effect`] decides membership per name. The flat query deliberately
+/// grounds nothing: `lang` there is an `Option` field (`some("cpp")`), which
+/// `query_realization_facts` cannot ground structurally — the same reason
+/// [`query_effect_mappings`] post-filters it. So the candidate list is
+/// over-broad (other languages' entries, other profiles' overlays) and the
+/// `realizes_effect` filter, not the query, is what makes the answer exact.
+/// Sorted + deduplicated for a deterministic diagnostic.
+fn supported_effects(kb: &KnowledgeBase, lang: &str, profile: Option<&str>) -> Vec<String> {
+    let flat = query_realization_facts(
+        kb,
+        &["anthill.realization.EffectMapping", "EffectMapping"],
+        &["effect", "receiver", "lang", "key"],
+        None,
+    );
+    let nested = query_realization_facts(
+        kb,
+        &["anthill.realization.LanguageMapping", "LanguageMapping"],
+        &["language", "profile", "effect_map", "receiver_map", "type_map", "trait_return"],
+        Some(("language", lang)),
+    )
+    .into_iter()
+    .filter_map(|head| named_arg(kb, head, "effect_map"))
+    .flat_map(|list| walk_list(kb, list));
+
+    let mut names: Vec<String> = flat
+        .into_iter()
+        .chain(nested)
+        .filter_map(|entry| named_string(kb, entry, "effect"))
+        .filter(|effect| realizes_effect(kb, lang, profile, effect).is_some())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// WI-576: name the codegen target in a diagnostic. `emit_traits_struct` and
+/// friends run with no profile selected (only `Generated.profile` threads one
+/// in), and "profile None" is not a useful thing to tell a user.
+fn cpp_profile_label(ctx: &CodegenContext) -> String {
+    match &ctx.profile {
+        Some(p) => format!("profile '{p}'"),
+        None => "the cpp language base (no profile selected)".to_string(),
+    }
+}
+
+/// WI-576: render [`supported_effects`] for the capability gate's error text.
+fn describe_supported_effects(ctx: &CodegenContext) -> String {
+    let names = supported_effects(ctx.kb, "cpp", ctx.profile.as_deref());
+    if names.is_empty() {
+        "(none declared — is the cpp realization profile loaded?)".to_string()
+    } else {
+        names.join(", ")
+    }
 }
 
 /// WI-089(c): the cpp `(host_type spelling, include directive)` probe pairs from
@@ -3827,8 +4056,7 @@ fn query_include_mappings(kb: &KnowledgeBase, lang: &str) -> Vec<(String, String
         kb,
         &["anthill.realization.IncludeMapping", "IncludeMapping"],
         &["host_type", "include", "lang"],
-        "lang",
-        lang,
+        Some(("lang", lang)),
     ) {
         let (Some(host_type), Some(include)) =
             (named_string(kb, head, "host_type"), named_string(kb, head, "include"))
@@ -3853,8 +4081,7 @@ fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> String {
         kb,
         &["anthill.realization.NamingConvention", "NamingConvention"],
         &["language", "method_case", "source_case"],
-        "language",
-        "cpp",
+        Some(("language", "cpp")),
     );
     // cpp_std supplies exactly one cpp NamingConvention. Zero (misconfigured or
     // unloaded profile) or >1 (an ambiguous overlay — per-op irregulars ride a

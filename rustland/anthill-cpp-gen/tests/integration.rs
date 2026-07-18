@@ -15,6 +15,7 @@ mod common;
 mod carrier_include_test;
 mod carrier_test;
 mod conversion_test;
+mod effect_gate_test;
 mod entity_struct_test;
 mod expr_body_b_test;
 mod expr_body_c_test;
