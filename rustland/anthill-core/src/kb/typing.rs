@@ -268,6 +268,11 @@ pub enum TypeErrorContext {
     /// inconsistently — the §3 parametricity tie, enforced:
     /// `append(intList, strList)` binds `List.T` to both elements.
     OperationTypeParams { op_name: Symbol },
+    /// WI-759: a dot projection `x.m` whose member RESOLVES but whose type does not — an
+    /// abstract field type with no readable interface, a variant-divergent field type. Kept
+    /// distinct from `DotDispatchNoMatch` ("no such member"): the member is right there, so
+    /// naming it as missing would point the user at the wrong thing.
+    DotProjection { member: Symbol },
 }
 
 impl TypeErrorContext {
@@ -284,6 +289,9 @@ impl TypeErrorContext {
             | TypeErrorContext::OperationTypeParams { op_name } => {
                 kb.resolve_sym(*op_name).to_string()
             }
+            // The receiver's identity is not carried — the member name is what locates the
+            // projection for the reader, and it rides in `field_name` below.
+            TypeErrorContext::DotProjection { .. } => "<dot projection>".to_string(),
         }
     }
 
@@ -303,6 +311,7 @@ impl TypeErrorContext {
             TypeErrorContext::LetBinding { .. } => "let-binding",
             TypeErrorContext::OperationAsFunctionValue { .. } => "op-as-fn-value",
             TypeErrorContext::OperationTypeParams { .. } => "op-type-params",
+            TypeErrorContext::DotProjection { .. } => "dot-projection",
         }
     }
 
@@ -317,6 +326,7 @@ impl TypeErrorContext {
             TypeErrorContext::LetBinding { .. } => "annotation".to_string(),
             TypeErrorContext::OperationAsFunctionValue { .. } => "function-value".to_string(),
             TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
+            TypeErrorContext::DotProjection { member } => kb.resolve_sym(*member).to_string(),
         }
     }
 }
@@ -1613,7 +1623,7 @@ fn concat_named_tuple_types(
     kb: &mut KnowledgeBase,
     a: &Value,
     b: &Value,
-    span: crate::span::SourceSpan,
+    site: &CtorReduceSite,
 ) -> Result<Value, String> {
     let fa = match extract_type(kb, a) {
         TypeExtractor::NamedTuple(f) => f,
@@ -1639,7 +1649,7 @@ fn concat_named_tuple_types(
         }
         merged.push((name, ty));
     }
-    Ok(named_tuple_value(kb, &merged, span, None))
+    Ok(named_tuple_value(kb, &merged, site.sp, None))
 }
 
 /// WI-714 / WI-727 — does a type mention the sort `sort_sym` as a HEAD ANYWHERE? The
@@ -1724,7 +1734,25 @@ struct BinaryTypeCtor {
     operands: [&'static str; 2],
     /// The reduction over the two resolved operands → the merged type (or an error message
     /// the caller wraps in a `TypeError`).
-    reduce: fn(&mut KnowledgeBase, &Value, &Value, crate::span::SourceSpan) -> Result<Value, String>,
+    reduce: fn(&mut KnowledgeBase, &Value, &Value, &CtorReduceSite) -> Result<Value, String>,
+}
+
+/// WI-759 — the SITE a binary type constructor reduces at. `Concat` / `Without` are purely
+/// STRUCTURAL — they merge and shrink named tuples and read nothing but `sp`. `FieldOf` is
+/// scope-SENSITIVE: an `internal` field is projectable only from inside its declaring scope
+/// (WI-369), so its reduction depends on WHERE it reduces, not only on its operands. Rather
+/// than let the one scope-sensitive member reach for an ambient env, the site travels with
+/// the reduction for the whole family.
+#[derive(Clone, Copy)]
+struct CtorReduceSite {
+    /// The reducing occurrence's source span — the span a constructed type carries.
+    sp: crate::span::SourceSpan,
+    /// The reducing occurrence's diagnostic span, for a nested resolution that raises.
+    span: Option<Span>,
+    /// The enclosing SORT of the code the reduction runs in (`TypingEnv::enclosing_sort`),
+    /// or `None` at top level / in a free operation — the lexical scope an `internal`
+    /// visibility check tests against. A structural reduction ignores it.
+    scope: Option<Symbol>,
 }
 
 const CONCAT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
@@ -1741,10 +1769,17 @@ const WITHOUT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
     reduce: without_named_tuple_types,
 };
 
+const FIELD_OF_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+    qn: "anthill.prelude.FieldOf",
+    label: "FieldOf",
+    operands: ["T", "Name"],
+    reduce: field_of_type,
+};
+
 /// WI-714 / WI-727 — every binary type constructor, as ONE family. The family's shared
 /// rules (the abstract-operand reading below, the operand-name lookup, the reduction
 /// boundary) are stated once here rather than per constructor.
-const BINARY_TYPE_CTORS: [&BinaryTypeCtor; 2] = [&CONCAT_CTOR, &WITHOUT_CTOR];
+const BINARY_TYPE_CTORS: [&BinaryTypeCtor; 3] = [&CONCAT_CTOR, &WITHOUT_CTOR, &FIELD_OF_CTOR];
 
 /// WI-734 — the family's constructor sorts, resolved once. Kept out of the per-operand
 /// path deliberately: [`operand_not_yet_known`] runs up to twice per reduction and
@@ -1825,10 +1860,10 @@ fn reduce_binary_type_ctor(
     kb: &mut KnowledgeBase,
     ty: &Value,
     ctx: &TypeErrorContext,
-    sp: crate::span::SourceSpan,
-    span: Option<Span>,
+    site: &CtorReduceSite,
     cfg: &BinaryTypeCtor,
 ) -> Result<Value, TypeError> {
+    let (sp, span) = (site.sp, site.span);
     let ctor_sym = match kb.try_resolve_symbol(cfg.qn) {
         Some(s) => s,
         None => return Ok(ty.clone()),
@@ -1839,7 +1874,7 @@ fn reduce_binary_type_ctor(
             // binding of `Relation[T = Ctor[..]]`), so descend before evaluating.
             let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
             for (p, v) in bindings {
-                reduced.push((p, reduce_binary_type_ctor(kb, &v, ctx, sp, span, cfg)?));
+                reduced.push((p, reduce_binary_type_ctor(kb, &v, ctx, site, cfg)?));
             }
             if base == ctor_sym {
                 // `Ctor[op0 = .., op1 = ..]` — read both operands by param name and merge.
@@ -1871,7 +1906,7 @@ fn reduce_binary_type_ctor(
                         let base_id = kb.make_sort_ref(base);
                         Ok(parameterized_value(kb, base_id, &reduced, sp, None))
                     }
-                    (Some(a), Some(b)) => (cfg.reduce)(kb, &a, &b, sp)
+                    (Some(a), Some(b)) => (cfg.reduce)(kb, &a, &b, site)
                         .map_err(|msg| projection_type_error(ctx, span, &msg)),
                     _ => Err(projection_type_error(
                         ctx,
@@ -1924,7 +1959,7 @@ fn without_named_tuple_types(
     kb: &mut KnowledgeBase,
     t: &Value,
     drop: &Value,
-    span: crate::span::SourceSpan,
+    site: &CtorReduceSite,
 ) -> Result<Value, String> {
     // The fields to drop — `drop` is the captured record type (a named tuple). An empty
     // capture (an empty named tuple, or `Unit`) drops nothing → the identity (OQ #6).
@@ -1990,7 +2025,249 @@ fn without_named_tuple_types(
     // relation schema does (0 → `Unit`, 1 → the element, ≥2 → the named tuple).
     let kept: Vec<(Symbol, Value)> =
         t_fields.into_iter().filter(|(tn, _)| !dropped.contains(tn)).collect();
-    Ok(collapse_schema(kb, &kept, span))
+    Ok(collapse_schema(kb, &kept, site.sp))
+}
+
+/// WI-759 — the member a field projection `x.f` selects: the projected TYPE plus the
+/// constructor that DECLARES it. The result of [`resolve_projected_member`], which is the
+/// ONE resolution both directions of the projection share.
+struct ProjectedMember {
+    /// The projected member's type.
+    ty: Value,
+    /// EVERY `(declaring constructor, field symbol)` that declares this member — the pairs
+    /// WI-369's `internal` visibility check needs. EMPTY for a receiver whose members have
+    /// no declaring constructor: a named tuple's components carry no `internal` marker, so
+    /// there is nothing to hide. That is the CORRECT answer there, not a missing arm.
+    ///
+    /// ALL of them, not the first: `field_constructors_of_sort` returns HashMap iteration
+    /// order, so a multi-variant sort declaring one field name across variants — one of them
+    /// `internal` — would otherwise get a RUN-DEPENDENT visibility verdict. The codebase
+    /// settles this the same way wherever it walks those constructors (load.rs's
+    /// continued-walk field resolve, and `resolve_field_type`, whose returned TYPE is
+    /// already order-independent): collect from every constructor, never break on the first.
+    owners: Vec<(Symbol, Symbol)>,
+}
+
+/// WI-759 — why [`resolve_projected_member`] did not produce a member, as the two answers
+/// its callers must treat DIFFERENTLY.
+enum MemberMiss {
+    /// The receiver has no member of that name — or has no members at all. NOT an error by
+    /// itself: the forward dot dispatch reads this as "not a field projection" and continues
+    /// to its remaining modes (a relation column, then `DotDispatchNoMatch`). Carries no
+    /// message precisely because the common path DISCARDS it — every relation column
+    /// projection `r.col` probes and misses here, and building a diagnostic string for each
+    /// one would be pure waste. The reducer, which has no next mode to try, formats its own
+    /// via [`no_such_member_message`].
+    NoSuchMember,
+    /// The member EXISTS but its type could not be resolved — a genuine diagnostic that both
+    /// directions must surface. Kept distinct from `NoSuchMember` so it is never swallowed
+    /// into a fall-through: reporting "no such member" for a field that plainly exists points
+    /// the user at the wrong thing.
+    Unresolvable(String),
+}
+
+/// WI-759 — the diagnostic for a member name that names nothing on `recv_ty`, built ONLY
+/// where it is actually reported (the reduction). Names what the receiver does offer, so a
+/// typo is a one-line fix rather than a hunt.
+fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str) -> String {
+    match extract_type(kb, recv_ty) {
+        TypeExtractor::NamedTuple(fields) => format!(
+            "`{field_name}` is not a component of the tuple ({})",
+            fields
+                .iter()
+                .map(|(f, _)| short_name_of(kb.resolve_sym(*f)).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => match sort_functor_of_view(kb, recv_ty) {
+            Some(s) => format!(
+                "`{}` has no field `{field_name}`",
+                short_name_of(kb.qualified_name_of(s))
+            ),
+            None => format!(
+                "cannot project the field `{field_name}` from a receiver with no concrete sort"
+            ),
+        },
+    }
+}
+
+/// WI-759 — the `internal` constructor hiding `m`'s field from `scope`, if any (WI-369).
+/// Shared by both directions so they cannot disagree about visibility.
+///
+/// The VERDICT is order-independent — it asks whether ANY declaring constructor is hidden,
+/// over the full `owners` list rather than one HashMap-ordered pick. (Which hidden
+/// constructor gets NAMED when several are, is a diagnostic detail.) Conservative by
+/// construction: a field reachable through an `internal` variant stays encapsulated even
+/// when a public sibling variant declares the same name.
+fn hidden_field_owner(
+    kb: &mut KnowledgeBase,
+    m: &ProjectedMember,
+    scope: Option<Symbol>,
+) -> Option<(Symbol, Symbol)> {
+    m.owners
+        .iter()
+        .find(|(ctor, _)| internal_field_hidden_from(kb, scope, *ctor))
+        .copied()
+}
+
+/// WI-759 — resolve `recv_ty`'s member named `field_name`: the projection lookup, stated
+/// ONCE. Both directions of the `x.f` rewrite go through it — the FORWARD dot dispatch (to
+/// decide that `f` names a member at all, and to reject an `internal` one at the dot's own
+/// span) and the REVERSE re-type ([`field_of_type`], reducing the `FieldOf` the rewritten
+/// node's declared return writes). That sharing is the point: the two used to be separate
+/// traversals and had already drifted — the forward one grew a named-tuple arm (WI-638) the
+/// reverse never got (WI-758), so a rewritten named-tuple projection failed on re-type
+/// against `field_access`'s own reflect signature.
+///
+/// TWO receivers declare members statically:
+///  1. a NAMED TUPLE — components matched by SHORT name. That is the convention every other
+///     named-tuple member lookup uses (`named_tuple_compatible`, `thread_expected_tuple_field`,
+///     the forward dot dispatch), and it is forced here anyway: a name-keyed constructor is
+///     keyed by a NAME, and there is no symbol to compare identities with.
+///     (`without_named_tuple_types` compares by symbol identity instead — correctly, because
+///     BOTH its operands are type-level named tuples whose symbols come from one producer.)
+///  2. an ENTITY / sort receiver — the field's declared type with the receiver's
+///     type-arguments substituted, plus EVERY constructor that declares it.
+///
+/// A `Term` receiver is deliberately NOT handled here. Its "fields" are a runtime term's
+/// named arguments rather than a declared schema, so ANY name projects — an answer that is
+/// right for the REDUCTION (a written `field_access(t, "x")` is genuine reflect
+/// metaprogramming) and wrong for the forward DOT DISPATCH, where it would make `t.typo`
+/// type-check silently instead of raising `DotDispatchNoMatch`. That case therefore lives in
+/// [`field_of_type`] alone, keeping this lookup about members a receiver actually DECLARES.
+fn resolve_projected_member(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    field_name: &str,
+    span: Option<Span>,
+) -> Result<ProjectedMember, MemberMiss> {
+    if let TypeExtractor::NamedTuple(fields) = extract_type(kb, recv_ty) {
+        return fields
+            .iter()
+            .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
+            .map(|(_, t)| ProjectedMember { ty: t.clone(), owners: Vec::new() })
+            .ok_or(MemberMiss::NoSuchMember);
+    }
+    let recv_sort = sort_functor_of_view(kb, recv_ty).ok_or(MemberMiss::NoSuchMember)?;
+    // EVERY declaring constructor — see `ProjectedMember::owners` for why not the first.
+    let owners: Vec<(Symbol, Symbol)> = kb
+        .field_constructors_of_sort(recv_sort)
+        .into_iter()
+        .filter_map(|c| {
+            kb.entity_field_types(c).and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
+                    .map(|(f, _)| (c, *f))
+            })
+        })
+        .collect();
+    // `resolve_field_type` matches the field by SYMBOL, and a given field name is the same
+    // symbol across a sort's constructors — so the variants differ in their `owners` entry,
+    // never in the field symbol itself.
+    let field_sym = owners.first().ok_or(MemberMiss::NoSuchMember)?.1;
+    let ctx = TypeErrorContext::EntityField { entity: recv_sort, field: field_sym };
+    // The field's DECLARED type with the receiver's type-arguments substituted — the
+    // `Option[T = String].value : String` step. Its own failure (an abstract field type with
+    // no interface to read, a divergent multi-variant type) is already a projection
+    // diagnostic; carry that message rather than restate it, and as `Unresolvable` rather
+    // than `NoSuchMember` so no caller can turn it into a silent fall-through.
+    let (ty, _) = resolve_field_type(kb, recv_ty, field_sym, &ctx, span)
+        .map_err(|e| MemberMiss::Unresolvable(type_error_detail(&e)))?;
+    Ok(ProjectedMember { ty, owners })
+}
+
+/// WI-759 — the INTERNAL type-level operation behind the `FieldOf[T, Name]` type
+/// constructor: the type of `T`'s member named `Name`. It is what makes
+/// `anthill.reflect.field_access`'s DECLARED signature self-correcting — re-typing a stored
+/// `field_access(recv, "f")` node re-derives the field's type from the signature instead of
+/// from a typer hatch keyed on `field_access`'s own identity.
+///
+/// `Name` is a compile-time NAME in TYPE position, i.e. a `denoted` value-in-type carrying a
+/// string. There are no singleton types — a field name in VALUE position types as plain
+/// `String` and loses the name — so the denoted type-argument channel is the only route that
+/// carries it, and this is its first string-valued use.
+///
+/// An operand that is not yet known never reaches here: the family's abstract-operand rule
+/// (WI-734) leaves the constructor symbolic instead, which is what lets `FieldOf` sit in a
+/// signature checked before the receiver's type is known — a rule body's
+/// `field_access(?t, f)` has no static receiver at all.
+fn field_of_type(
+    kb: &mut KnowledgeBase,
+    t: &Value,
+    name: &Value,
+    site: &CtorReduceSite,
+) -> Result<Value, String> {
+    let field_name = denoted_name(kb, name).ok_or_else(|| {
+        "`FieldOf` name operand must be a field NAME in type position (a string literal, or a \
+         type parameter bound to one through the type-argument channel)"
+            .to_string()
+    })?;
+    // The GENUINE reflect metaprogramming call: a `Term`'s fields are a runtime term's named
+    // arguments, not a declared schema, so any name projects and the result is a `Term`.
+    // Checked HERE rather than in `resolve_projected_member` on purpose — see that
+    // function's docs: shared with the forward dot dispatch it would make `t.typo`
+    // type-check silently, and `Term` is an opaque `sort Term = ?` that would otherwise
+    // resolve nothing.
+    if sort_functor_of_view(kb, t)
+        .zip(kb.try_resolve_symbol("anthill.reflect.Term"))
+        .is_some_and(|(recv, term)| recv == term)
+    {
+        return Ok(t.clone());
+    }
+    let member = match resolve_projected_member(kb, t, &field_name, site.span) {
+        Ok(m) => m,
+        Err(MemberMiss::Unresolvable(msg)) => return Err(msg),
+        Err(MemberMiss::NoSuchMember) => return Err(no_such_member_message(kb, t, &field_name)),
+    };
+    // WI-369: projecting a field whose owning constructor is `internal`, from outside its
+    // declaring scope, aliases encapsulated state. The check rides the SAME resolution that
+    // produced the type — one traversal, and no way for the two to disagree about which
+    // constructor owns the field. A source-level `x.f` is rejected earlier, at the dot's own
+    // span with the precise diagnostic; this closes the hand-written desugared form, which
+    // never passes through dot dispatch.
+    if let Some((ctor, field)) = hidden_field_owner(kb, &member, site.scope) {
+        return Err(format!(
+            "field `{}` is declared by the `internal` constructor `{}` and cannot be \
+             projected from outside its declaring scope",
+            short_name_of(kb.qualified_name_of(field)),
+            short_name_of(kb.qualified_name_of(ctor)),
+        ));
+    }
+    Ok(member.ty)
+}
+
+/// WI-759 — the human-readable detail of a nested `TypeError` raised while resolving a
+/// projected member, for re-reporting through the constructor family's `String` error
+/// channel. [`resolve_field_type`] fails as a [`projection_type_error`] — a
+/// `TypeError::Other` whose `actual` IS the message — so that message is carried through
+/// verbatim; any other shape is re-reported by its debug form rather than swallowed.
+fn type_error_detail(e: &TypeError) -> String {
+    match e {
+        TypeError::Other { actual, .. } => actual.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// WI-759 — the string a `denoted` value-in-type carries, or `None` for any other type form.
+/// Carrier-neutral: the denoted's inner value rides as an occurrence from the typer's own
+/// synthesis and as a hash-consed term from a written `[Name = "f"]` type argument.
+fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
+    let TypeExtractor::Denoted(inner) = extract_type(kb, v) else {
+        return None;
+    };
+    match &inner {
+        Value::Str(s) => Some(s.clone()),
+        Value::Term { id } => match kb.get_term(*id) {
+            Term::Const(Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        },
+        Value::Node(occ) => match occ.as_expr() {
+            Some(Expr::Const(Literal::String(s))) => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 
@@ -6185,44 +6462,57 @@ fn build_type(
                 return;
             }
 
-            // INC 1b: a zero-arg member naming a FIELD of the receiver's sort.
-            // The method fallback ran first (an operation of that name wins), so
-            // only a non-operation member reaches here. Synthesize
-            // `field_access(receiver, "field")` — the reflect field-access
-            // desugaring (reflect.anthill) whose eval-side twin reads the named
-            // field off the runtime `Value::Entity`. The result type is the
-            // field's type with the receiver's type-args substituted
-            // (`resolve_field_type`, the same projection pattern field types use).
-            // The synthesized call has no field-specific signature to re-type
-            // against, so the type is set DIRECTLY rather than via `push_visit`.
+            // WI-759 (was INC 1b + WI-638's separate THIRD mode): a zero-arg member
+            // naming a MEMBER of the receiver — an entity/sort FIELD, a NAMED-TUPLE
+            // component (`(x: A, y: B).x`, the positional `t._1`), or a runtime named arg
+            // of a `Term`. The method fallback ran first (an operation of that name wins),
+            // so only a non-operation member reaches here. Synthesize
+            // `field_access(receiver, "member")` — the reflect field-access desugaring
+            // (reflect.anthill) whose eval-side twin reads the named field off the runtime
+            // `Value::Entity` / `Value::Tuple`.
+            //
+            // The synth is RE-TYPED via `push_visit`, exactly as the method fallback above
+            // is: `field_access`'s declared return `FieldOf[T = R, Name = Name]` reduces to
+            // the member's type at the ordinary return-type normalization boundary, so this
+            // FORWARD direction and a later RE-TYPE of the stored node are ONE decision
+            // procedure. Until WI-759 this stamped the member's type directly and the
+            // reverse direction was a separate pair of typer hatches keyed on
+            // `field_access`'s own identity — which had already drifted apart exactly as a
+            // duplicated procedure does: the entity arm existed on both sides, the
+            // named-tuple arm only on this one (WI-758).
             if pos_nodes.is_empty() && named_nodes.is_empty() {
-                if let Some(rs) = recv_sort {
-                    // The surface `?o.value` interns `value` in the use-site
-                    // scope, which need not equal the declaring entity's field
-                    // symbol — `resolve_field_type` matches the field by symbol
-                    // identity. Resolve `member` to the receiver sort's actual
-                    // field symbol by SHORT name first. (Inherits
-                    // `resolve_field_type`'s contract that a given field name is
-                    // the same symbol across a sort's constructors; a multi-
-                    // variant short-name collision resolves via the first.)
-                    let member_short = short_name_of(kb.resolve_sym(member)).to_string();
-                    // WI-490: include `rs` itself when it is a free-standing entity
-                    // (its own constructor) so `(p).x` on an `entity Pose(x, y)`
-                    // receiver resolves the field instead of failing dot dispatch.
-                    let field_match = kb.field_constructors_of_sort(rs).into_iter().find_map(|ctor| {
-                        kb.entity_field_types(ctor).and_then(|fields| {
-                            fields.iter()
-                                .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == member_short)
-                                .map(|(f, _)| (ctor, *f))
-                        })
-                    });
-                    // WI-369: a cross-scope projection of a field whose owning
-                    // entity is `internal` would alias encapsulated state — reject
-                    // with a precise diagnostic. A read inside the declaring sort's
-                    // own ops stays clean (the enclosing-sort scope reaches the
-                    // entity's declaring scope).
-                    if let Some((ctor, fsym)) = field_match {
-                        if internal_field_hidden_from(kb, &env, ctor) {
+                // The surface `?o.value` interns `value` in the use-site scope, which need
+                // not equal the declaring entity's field symbol, so members resolve by SHORT
+                // name. (Inherits `resolve_field_type`'s contract that a given field name is
+                // the same symbol across a sort's constructors; a multi-variant short-name
+                // collision resolves via the first.)
+                let member_short = short_name_of(kb.resolve_sym(member)).to_string();
+                // The SAME resolution the `FieldOf` reduction runs — here only to decide
+                // that `member` names a member AT ALL. `NoSuchMember` falls through to the
+                // relation-projection mode below and then to `DotDispatchNoMatch`, exactly
+                // as before; `Unresolvable` means the member EXISTS but its type does not
+                // resolve, which is a real diagnostic and must never degrade into a
+                // fall-through reporting "no such member" for a field that is right there.
+                match resolve_projected_member(kb, &recv.ty, &member_short, dot_span) {
+                    Err(MemberMiss::NoSuchMember) => {}
+                    Err(MemberMiss::Unresolvable(msg)) => {
+                        results.push(Err(projection_type_error(
+                            &TypeErrorContext::DotProjection { member },
+                            dot_span,
+                            &msg,
+                        )));
+                        return;
+                    }
+                    Ok(m) => {
+                        // WI-369: a cross-scope projection of a field whose owning entity is
+                        // `internal` would alias encapsulated state — reject it HERE, at the
+                        // dot's own span and with the precise diagnostic, rather than let the
+                        // reduction report it against the rewritten node. (The reduction
+                        // checks too, off this same resolution, which is what closes the
+                        // hand-written desugared form that never passes through dot dispatch.)
+                        if let Some((ctor, fsym)) =
+                            hidden_field_owner(kb, &m, env.enclosing_sort())
+                        {
                             results.push(Err(TypeError::ForbiddenInternalField {
                                 span: dot_span,
                                 entity: ctor,
@@ -6230,94 +6520,24 @@ fn build_type(
                             }));
                             return;
                         }
-                    }
-                    let field_sym = field_match.map(|(_, f)| f);
-                    if let Some((field_ty, fa_sym)) = field_sym.and_then(|fsym| {
-                        let ctx = TypeErrorContext::EntityField { entity: rs, field: fsym };
-                        let field_ty = resolve_field_type(kb, &recv.ty, fsym, &ctx, dot_span).ok()?;
-                        let fa_sym = kb.try_resolve_symbol("anthill.reflect.field_access")?;
-                        Some((field_ty.0, fa_sym))
-                    }) {
-                        let field_name_node = NodeOccurrence::new_expr(
-                            Expr::Const(Literal::String(member_short)),
-                            occ.span,
-                            occ.owner,
-                        );
-                        let pass = super::simp_rewrite::simp_pass(kb);
-                        let synth = NodeOccurrence::synthesized_expr(
-                            Expr::Apply {
-                                functor: fa_sym,
-                                pos_args: vec![receiver_node, field_name_node],
-                                named_args: Vec::new(),
-                                type_args: Vec::new(),
-                            },
-                            Rc::clone(&occ),
-                            pass,
-                            occ.owner,
-                        );
-                        // The synth isn't re-typed (no field-specific signature
-                        // to re-type against), so stamp its inferred type here —
-                        // downstream passes shouldn't see an untyped node. Eval
-                        // dispatches the builtin via the functor with no
-                        // classification, so none is needed.
-                        synth.set_inferred_type(field_ty.clone());
-                        results.push(Ok(TypeResult {
-                            ty: field_ty,
-                            env: recv.env,
-                            effects: recv.effects.clone(),
-                            node: synth,
-                        }));
-                        return;
-                    }
-                }
-            }
-
-            // WI-638: THIRD dot-dispatch mode — a zero-arg member naming a
-            // COMPONENT of a NAMED-TUPLE receiver (`(x: A, y: B).x`, or the
-            // positional `t._1`). A named tuple's functor is `named_tuple`, not a
-            // sort, so `recv_sort` is `None` and neither the method fallback nor
-            // the entity/sort field access above (both keyed on `recv_sort`)
-            // reach it. Resolve `member` against the tuple type's
-            // (component-name, type) list directly and reuse the SAME
-            // `field_access` desugaring the entity path uses — its eval twin reads
-            // the component off the runtime `Value::Tuple` (named by short name,
-            // positional `_N` by index).
-            if pos_nodes.is_empty() && named_nodes.is_empty() {
-                if let TypeExtractor::NamedTuple(fields) = extract_type(kb, &recv.ty) {
-                    let member_short = short_name_of(kb.resolve_sym(member)).to_string();
-                    let comp_ty = fields.iter().find_map(|(f, t)| {
-                        (short_name_of(kb.resolve_sym(*f)) == member_short).then(|| t.clone())
-                    });
-                    if let (Some(comp_ty), Some(fa_sym)) =
-                        (comp_ty, kb.try_resolve_symbol("anthill.reflect.field_access"))
-                    {
-                        let field_name_node = NodeOccurrence::new_expr(
-                            Expr::Const(Literal::String(member_short)),
-                            occ.span,
-                            occ.owner,
-                        );
-                        let pass = super::simp_rewrite::simp_pass(kb);
-                        let synth = NodeOccurrence::synthesized_expr(
-                            Expr::Apply {
-                                functor: fa_sym,
-                                pos_args: vec![receiver_node, field_name_node],
-                                named_args: Vec::new(),
-                                type_args: Vec::new(),
-                            },
-                            Rc::clone(&occ),
-                            pass,
-                            occ.owner,
-                        );
-                        // No field-specific signature to re-type against, so stamp
-                        // the component's type directly (as INC 1b does).
-                        synth.set_inferred_type(comp_ty.clone());
-                        results.push(Ok(TypeResult {
-                            ty: comp_ty,
-                            env: recv.env,
-                            effects: recv.effects.clone(),
-                            node: synth,
-                        }));
-                        return;
+                        match synthesize_field_access(kb, &receiver_node, &member_short, &occ) {
+                            Ok(synth) => {
+                                push_visit(work, synth, env, expected, fuel.saturating_sub(1));
+                                return;
+                            }
+                            // Reflect is not loaded, so the desugaring does not exist —
+                            // fall through to the remaining modes, as before.
+                            Err(None) => {}
+                            // Reflect IS loaded but `field_access`'s declaration is
+                            // malformed. Loud: degrading to `DotDispatchNoMatch` would
+                            // report "no such member" for every projection in every
+                            // program, pointing at the user's code instead of the
+                            // declaration.
+                            Err(Some(e)) => {
+                                results.push(Err(e));
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -7100,66 +7320,107 @@ fn match_named_arg_param<'a>(
 /// (pre-computed by the iterative typer's Build phase) instead of
 /// calling `type_check_node` itself. This is the function the iterative
 /// `Build::Apply` arm calls.
-/// WI-509: the field's actual type for a desugared `field_access(receiver,
-/// "field")` call — the typer's `?x.field` rewrite. `Some(ty)` makes the
-/// rewritten `field_access` node round-trip through the typer (re-type to the
-/// field type, mirroring the DotApply INC-1b synthesis) instead of typing it as
-/// the generic `field_access(...) -> Term` op. `None` ⇒ not a resolvable field
-/// projection (functor isn't `field_access`, not the 2-arg form, a non-literal
-/// field name, an unresolved receiver sort, or no such field) — fall through to
-/// ordinary op typing, the only case a genuine `field_access` op call takes.
-fn field_access_projection_type(
+/// WI-759 — the `field_access(receiver, "name")` call a dot projection rewrites to, with
+/// the projected NAME supplied TWICE, once per channel:
+///
+///  - as the VALUE argument `field`, a `String` constant — the form eval, SLD resolution
+///    and both code generators already read (`field_access_parts`' P2 shape). Unchanged, so
+///    none of them are touched by this rewrite;
+///  - as the TYPE argument `Name`, a `denoted` value-in-type — which is what lets the
+///    node's DECLARED return type `FieldOf[T = R, Name = Name]` state the projection's
+///    result, making a re-type of the stored node re-derive the member's type instead of
+///    widening to `field_access`'s nominal `-> Term`.
+///
+/// The second channel is needed because there are no singleton types: the `String` constant
+/// in value position types as plain `String` and has LOST the name by the time the return
+/// type is assembled. The denoted type-argument channel is the only route that carries a
+/// compile-time name into type position.
+///
+/// Keyed by the callee's OWN `Name` type-param symbol, read off the declaration rather than
+/// re-interned here — `seed_op_type_args` matches type-argument labels by symbol IDENTITY,
+/// and an op-scoped param symbol is not the bare intern of its short name (WI-708).
+///
+/// Two failure modes, deliberately distinguished (CLAUDE.md: a case that cannot be handled
+/// is an explicit diagnostic, not a silent skip):
+///  - `Err(None)` — reflect is not loaded, so this desugaring does not exist. Quiet; the
+///    caller continues to its remaining dot-dispatch modes, as it did before WI-759 when the
+///    `field_access` symbol itself was missing.
+///  - `Err(Some(e))` — reflect IS loaded but `field_access` does not declare the `Name` type
+///    parameter this rewrite needs. LOUD: falling through would report `no such member` for
+///    every field projection in every program, naming the user's own code instead of the
+///    malformed declaration.
+fn synthesize_field_access(
     kb: &mut KnowledgeBase,
-    fn_sym: Symbol,
-    pos_args: &[Rc<NodeOccurrence>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Result<TypeResult, TypeError>],
-    span: Option<Span>,
-) -> Option<Value> {
-    let fa_sym = kb.try_resolve_symbol("anthill.reflect.field_access")?;
-    // The desugar emits exactly two positional args and no named args; a call
-    // carrying named args is not the projection form and must not bypass arg
-    // validation here — symmetric with the `stable_receiver_path` Apply arm.
-    if fn_sym != fa_sym || pos_args.len() != 2 || !named_args.is_empty() {
-        return None;
-    }
-    // The field NAME is a String literal (the desugaring's canonical form).
-    let field_name = match pos_args[1].as_expr() {
-        Some(Expr::Const(Literal::String(s))) => s.clone(),
-        _ => return None,
+    receiver_node: &Rc<NodeOccurrence>,
+    field_name: &str,
+    occ: &Rc<NodeOccurrence>,
+) -> Result<Rc<NodeOccurrence>, Option<TypeError>> {
+    let Some(fa_sym) = kb.try_resolve_symbol("anthill.reflect.field_access") else {
+        return Err(None);
     };
-    let recv_ty = pos_results.first()?.as_ref().ok().map(|r| r.ty.clone())?;
-    let recv_sort = sort_functor_of_view(kb, &recv_ty)?;
-    // Resolve the field symbol by SHORT name on the receiver sort's constructors
-    // — the same lookup the DotApply INC-1b synthesis uses.
-    let field_sym = kb.field_constructors_of_sort(recv_sort).into_iter().find_map(|ctor| {
-        kb.entity_field_types(ctor).and_then(|fields| {
-            fields.iter()
-                .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
-                .map(|(f, _)| *f)
+    let name_param = lookup_operation_info_full(kb, fa_sym)
+        .and_then(|op| {
+            op.type_params
+                .iter()
+                .find(|(n, _)| short_name_of(kb.resolve_sym(*n)) == FIELD_OF_CTOR.operands[1])
+                .map(|(n, _)| *n)
         })
-    })?;
-    let ctx = TypeErrorContext::EntityField { entity: recv_sort, field: field_sym };
-    resolve_field_type(kb, &recv_ty, field_sym, &ctx, span).ok().map(|t| t.0)
+        .ok_or_else(|| {
+            Some(projection_type_error(
+                &TypeErrorContext::OperationReturn { op_name: fa_sym },
+                Some(occ.span.span),
+                &format!(
+                    "`anthill.reflect.field_access` must declare a `{}` type parameter — the \
+                     channel a field projection's name travels to type position through",
+                    FIELD_OF_CTOR.operands[1]
+                ),
+            ))
+        })?;
+    let field_name_node = NodeOccurrence::new_expr(
+        Expr::Const(Literal::String(field_name.to_string())),
+        occ.span,
+        occ.owner,
+    );
+    // GROUND (hash-consed) rather than occurrence-carried. A denoted normally rides as a
+    // `Value::Node` because it can carry poison — a value occurrence referring to a
+    // parameter (`Modify[c]`). A field NAME carries none: it is a closed string constant,
+    // which is exactly the persistent, heavily-shared structure hash-consing is for (every
+    // projection of the same field shares one term). It also has to be ground to be usable:
+    // the return type is term-backed, so the type param binding is resolved by the
+    // `TermId` deep σ-walk, which STOPS at a non-`Term` binding (WI-394) and would leave
+    // `Name` an unresolved var — reducing `FieldOf` to a residual on every projection.
+    let name_term = kb.alloc(Term::Const(Literal::String(field_name.to_string())));
+    let name_denoted = Value::term(kb.make_denoted(name_term));
+    let pass = super::simp_rewrite::simp_pass(kb);
+    Ok(NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            functor: fa_sym,
+            pos_args: vec![Rc::clone(receiver_node), field_name_node],
+            named_args: Vec::new(),
+            type_args: vec![(Some(name_param), name_denoted)],
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    ))
 }
 
-/// WI-369: the `(owning entity, field)` a desugared `field_access(receiver,
-/// "field")` projects, or `None` if `fn_sym`/args aren't that form or the field
-/// doesn't resolve. Companion to [`field_access_projection_type`] used to
-/// enforce `internal` field visibility on the `?x.field` projection path.
-/// WI-369: whether projecting a field of `ctor` is forbidden from `env`'s
-/// enclosing scope — true when `ctor` is declared `internal` and the enclosing
-/// sort's body scope cannot see it (kernel-language.md §8.6). The enclosing
-/// sort's body scope is the hash-consed `Fn{sort}` term raw — the same scope id
-/// the loader recorded — so a projection inside the declaring sort's own ops
-/// (`s.rep` in `MutableStack.push`) is visible, while one from another sort is
+/// WI-369: whether projecting a field of `ctor` is forbidden from `scope` — true when
+/// `ctor` is declared `internal` and `scope`'s body scope cannot see it
+/// (kernel-language.md §8.6). The enclosing sort's body scope is the hash-consed `Fn{sort}`
+/// term raw — the same scope id the loader recorded — so a projection inside the declaring
+/// sort's own ops (`s.rep` in `MutableStack.push`) is visible, while one from another sort is
 /// not. With no enclosing sort (a free op / top-level), there is no lexical
 /// scope to test against, so enforcement is skipped (permissive).
-fn internal_field_hidden_from(kb: &mut KnowledgeBase, env: &TypingEnv, ctor: Symbol) -> bool {
+///
+/// WI-759: takes the enclosing SORT rather than the whole `TypingEnv` — that is all it ever
+/// read, and it is what a `FieldOf` reduction can carry to its site
+/// ([`CtorReduceSite::scope`]) without reaching for an ambient env.
+fn internal_field_hidden_from(kb: &mut KnowledgeBase, scope: Option<Symbol>, ctor: Symbol) -> bool {
     if !kb.symbols.is_internal(ctor) {
         return false;
     }
-    match env.enclosing_sort() {
+    match scope {
         Some(s) => {
             let scope = kb
                 .alloc(Term::Fn {
@@ -7172,32 +7433,6 @@ fn internal_field_hidden_from(kb: &mut KnowledgeBase, env: &TypingEnv, ctor: Sym
         }
         None => false,
     }
-}
-
-fn field_access_owning_ctor(
-    kb: &mut KnowledgeBase,
-    fn_sym: Symbol,
-    pos_args: &[Rc<NodeOccurrence>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Symbol, Symbol)> {
-    let fa_sym = kb.try_resolve_symbol("anthill.reflect.field_access")?;
-    if fn_sym != fa_sym || pos_args.len() != 2 || !named_args.is_empty() {
-        return None;
-    }
-    let field_name = match pos_args[1].as_expr() {
-        Some(Expr::Const(Literal::String(s))) => s.clone(),
-        _ => return None,
-    };
-    let recv_ty = pos_results.first()?.as_ref().ok().map(|r| r.ty.clone())?;
-    let recv_sort = sort_functor_of_view(kb, &recv_ty)?;
-    kb.field_constructors_of_sort(recv_sort).into_iter().find_map(|ctor| {
-        kb.entity_field_types(ctor).and_then(|fields| {
-            fields.iter()
-                .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
-                .map(|(f, _)| (ctor, *f))
-        })
-    })
 }
 
 /// WI-727 (proposal 056) — the rewritten call a variadic capture produces: the SAME
@@ -7372,40 +7607,19 @@ fn check_apply_iter(
         );
     }
 
-    // WI-509: a desugared `field_access(receiver, "field")` (the typer's
-    // `?x.field` rewrite, INC 1b in the DotApply frame) must re-type to the
-    // FIELD's actual type, not the generic `field_access(object, field) -> Term`
-    // op signature. The DotApply synthesis stamps the field type but is never
-    // re-typed at that site; a LATER pass DOES re-visit the stored, rewritten
-    // `field_access` Apply (the explicit stdlib re-type-check in
-    // `type_check_stdlib_no_spurious_errors`, or the free-op sweep over a
-    // non-`sort_terms` op). Typing it as the plain op loses the field type
-    // (`-> Term`) and checks the `Const(String)` name against `field: Symbol`,
-    // so re-typing a field-projection body (`Cell.set(s.rep, …)`) raised
-    // spurious errors. Resolving the field type here makes the rewrite
-    // idempotent (the effect re-key idempotency is handled in
-    // `stable_receiver_path`).
-    // WI-369: a desugared `field_access` projecting a field whose owning entity
-    // is `internal`, from outside its declaring scope, aliases encapsulated
-    // state — reject before typing it as the field projection. The access scope
-    // is the enclosing declaration (`occ.owner`); a projection inside the
-    // declaring sort's own ops stays clean (its scope reaches the entity's
-    // declaring scope by enclosing links). `owner == None` is left permissive.
-    if let Some((ctor, fsym)) =
-        field_access_owning_ctor(kb, fn_sym, pos_args, named_args, pos_results)
-    {
-        if internal_field_hidden_from(kb, env, ctor) {
-            return Err(TypeError::ForbiddenInternalField { span, entity: ctor, field: fsym });
-        }
-    }
-
-    if let Some(ty) = field_access_projection_type(kb, fn_sym, pos_args, named_args, pos_results, span) {
-        let effects = pos_results.first()
-            .and_then(|r| r.as_ref().ok())
-            .map(|r| r.effects.clone())
-            .unwrap_or_default();
-        return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
-    }
+    // WI-759 — a desugared `field_access(receiver, "field")` used to need TWO early returns
+    // HERE (`field_access_projection_type` re-deriving the field's type, and
+    // `field_access_owning_ctor` re-checking WI-369 `internal` visibility), both keyed on
+    // `field_access`'s own identity, because the reflect signature it was checked against
+    // contradicted the node in all three positions: the receiver is an entity or named tuple
+    // and `Term` is not a top type; the selector is a `String` constant, not a `Symbol`; the
+    // result is the FIELD's type, not `Term`. It now takes ORDINARY op typing below, because
+    // the signature no longer contradicts it — `field_access[R, Name](object: R, field:
+    // String) -> FieldOf[T = R, Name = Name]` states the projection, and `FieldOf` reduces
+    // at the same return-type normalization boundary `Concat` / `Without` reduce at. So the
+    // rewrite is idempotent by construction rather than by a hatch that shadowed the
+    // declaration. (The WI-506 effect re-key's own idempotency is in `stable_receiver_path`,
+    // unchanged.)
 
     // WI-714 (proposal 052) — idempotency guard for a synthesized `project_run(r, <spec>)`
     // PROJECTION call (the distribute-dot `r.(f1, f2)`): were it re-visited, re-derive its
@@ -8020,10 +8234,18 @@ fn check_apply_iter(
             // inspected), then apply each ctor the signature actually wrote, in family
             // order. WI-734: folded over `BINARY_TYPE_CTORS` rather than an if-chain per
             // constructor, so a new ctor reduces here by construction.
+            // WI-759: the reduction SITE — `FieldOf` reads its enclosing sort to decide
+            // whether an `internal` field is projectable here (WI-369); the structural
+            // members ignore it.
+            let site = CtorReduceSite {
+                sp: occ.span,
+                span,
+                scope: env.enclosing_sort(),
+            };
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
             for (cfg, wrote) in BINARY_TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
                 if *wrote {
-                    reduced = reduce_binary_type_ctor(kb, &reduced, &ret_ctx, occ.span, span, cfg)?;
+                    reduced = reduce_binary_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
                 }
             }
             reduced

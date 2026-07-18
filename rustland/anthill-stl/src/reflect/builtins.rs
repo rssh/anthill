@@ -186,7 +186,16 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
     register_if_present(interp, "anthill.reflect.term_as_sort",
         move |i, a| term_as_sort(i, a, &s))?;
 
-    register_if_present(interp, "anthill.reflect.field_access", field_access)?;
+    // NO `anthill.reflect.field_access` here — deliberately (WI-759). `anthill-core`'s
+    // `register_standard_builtins` already binds that QN to the production implementation
+    // (`eval::builtins::reflect_field_access`), the one every desugared `x.f` runs through.
+    // This module used to bind it too, to the DECLARED-but-never-live shape
+    // (`expect_term` + `expect_symbol`), which would reject every projection the typer
+    // synthesizes — a `Value::Entity` / `Value::Tuple` receiver and a `String` selector.
+    // `register_builtin` is a plain map insert, LAST WINS, and this module registers after
+    // the standard set, so wiring these reflect builtins into any real driver would have
+    // silently shadowed the working implementation with a broken one. It was harmless only
+    // because nothing but this file's own tests ever called `register_reflect_builtins`.
     register_if_present(interp, "anthill.reflect.resolve_sort_instantiation_param",
         resolve_sort_instantiation_param)?;
 
@@ -877,33 +886,6 @@ fn term_as_sort(
 
 // ── Field access / sort instantiation ────────────────────────────
 
-/// `field_access(object: Term, field: Symbol) -> Term` — extract a named
-/// field from an entity term. Errors if `object` isn't a `Fn` with the named
-/// arg present.
-fn field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [object, field] = expect_args::<2>("field_access", args)?;
-    let obj_tid = expect_term(object, "field_access")?;
-    let field_sym = expect_symbol(interp.kb(), field, "field_access")?;
-    let kb = interp.kb();
-    match kb.get_term(obj_tid) {
-        CoreTerm::Fn { named_args, .. } => {
-            named_args.iter()
-                .find(|(s, _)| *s == field_sym)
-                .map(|(_, tid)| Value::term(*tid))
-                .ok_or_else(|| EvalError::Internal(format!(
-                    "field_access: '{}' not found on entity '{}'",
-                    kb.resolve_sym(field_sym),
-                    match kb.get_term(obj_tid) {
-                        CoreTerm::Fn { functor, .. } => kb.resolve_sym(*functor),
-                        _ => "?",
-                    })))
-        }
-        _ => Err(EvalError::TypeMismatch {
-            expected: "entity Term", got: "other Term".into(),
-        }),
-    }
-}
-
 /// `resolve_sort_instantiation_param(inst: Term, param: Term) -> Term` —
 /// given a `SortView(sort, param1=val1, …)` term and a `Ref(param)` term,
 /// return the bound value. Currently implemented as a named-arg lookup
@@ -1324,8 +1306,16 @@ end
         assert!(matches!(g, Value::Bool(false)));
     }
 
+    /// WI-759 — this module must NOT re-register `anthill.reflect.field_access`.
+    /// `register_builtin` is a plain map insert (LAST WINS) and `register_reflect_builtins`
+    /// runs after the standard set, so a duplicate here silently shadows the production
+    /// implementation for any driver that installs both. This test installs both in that
+    /// order — the exact configuration that would have been shadowed — and asserts the
+    /// PRODUCTION contract still answers: a `Value::Entity` receiver and a `String`
+    /// selector, which the retired duplicate (`expect_term` + `expect_symbol`) rejected on
+    /// both counts.
     #[test]
-    fn field_access_extracts_named_arg() {
+    fn field_access_is_not_shadowed_by_this_module() {
         let mut interp = load_stdlib_and_source(r#"
 namespace test.reflect_field
   sort Point
@@ -1333,28 +1323,22 @@ namespace test.reflect_field
   end
 end
 "#);
-        // Build pt(x: 1, y: 2) manually and ask for .x.
         let pt_sym = interp.kb().try_resolve_symbol("test.reflect_field.Point.pt")
             .expect("pt symbol");
         let x_sym = interp.kb_mut().intern("x");
         let y_sym = interp.kb_mut().intern("y");
-        let one = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(1)));
-        let two = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(2)));
-        let pt_tid = interp.kb_mut().alloc(CoreTerm::Fn {
+        let pt = Value::Entity {
             functor: pt_sym,
-            pos_args: Default::default(),
-            named_args: vec![(x_sym, one), (y_sym, two)].into(),
-        });
-        let field_ref = interp.kb_mut().alloc(CoreTerm::Ref(x_sym));
-        let result = interp.call("anthill.reflect.field_access",
-            &[Value::term(pt_tid), Value::term(field_ref)])
-            .expect("field_access");
-        match result {
-            Value::Term { id: tid, .. } => {
-                assert_eq!(interp.kb().get_term(tid), &CoreTerm::Const(Literal::Int(1)));
-            }
-            other => panic!("expected Value::Term, got {other:?}"),
-        }
+            pos: Vec::new().into(),
+            named: vec![(x_sym, Value::Int(1)), (y_sym, Value::Int(2))].into(),
+        };
+        let result = interp
+            .call("anthill.reflect.field_access", &[pt, Value::Str("x".to_string())])
+            .expect("field_access must still route to the production implementation");
+        assert!(
+            matches!(result, Value::Int(1)),
+            "expected the projected field value 1, got {result:?}",
+        );
     }
 
     #[test]

@@ -113,6 +113,51 @@ sort anthill.prelude.Without
   sort Drop = ?
 end
 
+{< FieldOf[T, Name]: the TYPE-position surface of a FIELD PROJECTION (WI-759) — the type
+   `anthill.reflect.field_access(object, field)` returns. Where `Concat` / `Without` merge
+   and shrink SCHEMAS, `FieldOf` selects ONE member of a receiver by NAME, so
+   `field_access` states its own result type instead of the typer patching it afterwards:
+
+     operation field_access[R, Name](object: R, field: String) -> FieldOf[T = R, Name = Name]
+
+   That signature is SELF-CORRECTING — re-typing a stored `field_access` node re-derives
+   the field's type from the declared return, so the FORWARD direction (`x.f` ⟹ the field
+   type) and the REVERSE (re-typing the rewritten node) are ONE decision procedure and
+   cannot drift. Before WI-759 they were two: the reverse was a pair of typer hatches keyed
+   on `field_access`'s own identity, which the repo's "nothing in the typer keyed on an
+   operation's identity" discipline forbids, and which had already drifted — the forward
+   direction handled a named-tuple receiver and the reverse did not (WI-758).
+
+   `Name` is a compile-time NAME in TYPE position: a `denoted` value-in-type carrying a
+   string (`FieldOf[T = Person, Name = "age"]`). There are no singleton types, so a field
+   name in VALUE position types as plain `String` and LOSES the name; the denoted type-arg
+   channel is the only route that keeps it. `field_access`'s rewrite therefore supplies
+   `Name` through the call's `[Name = "age"]` type-argument channel while the VALUE
+   argument `field` stays the string it always was — eval, resolution and codegen read the
+   selector exactly as before.
+
+   REDUCTION covers the three receivers that HAVE members, from ONE lookup shared with the
+   forward `x.f` dispatch (`field_of_type` in kb/typing.rs):
+     - an ENTITY / sort receiver  ⟹ the declared field's type, with the receiver's
+       type-arguments substituted, and its OWNING constructor checked for `internal`
+       visibility (WI-369) at the projection site;
+     - a NAMED-TUPLE receiver     ⟹ the component's type, matched by SHORT name (the
+       convention every other named-tuple member lookup uses). A tuple component has no
+       owning constructor, so it has no `internal` marker to check — that is the correct
+       answer, not a missing arm;
+     - a `Term` receiver          ⟹ `Term`, the genuine reflect metaprogramming call.
+   A receiver that HAS no members (a scalar, an arrow), or a name that names no member of
+   one that does, is a LOUD error rather than a silent widening to `Term`.
+
+   ABSTRACT OPERANDS (WI-734): `FieldOf` follows the family rule stated on `Concat` above.
+   A receiver that is not yet known — a rule body's `field_access(?t, f)` has no static
+   receiver AT ALL — leaves the ctor symbolic to reduce once it grounds, which is what lets
+   a reducible ctor sit in a signature checked before the receiver's type is known. >}
+sort anthill.prelude.FieldOf
+  sort T = ?
+  sort Name = ?
+end
+
 {< EffectExpression: the effect-row carried by an arrow (proposal 045 §3, §6).
 
    The surface algebra a programmer writes — `present` / `absent` / `open`
