@@ -31,8 +31,8 @@ fn unrealizable_effect_rejected() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let err = emit_traits_struct(&kb, "test.wi576.gate.Logger")
+    let mut kb = load_kb_with(source);
+    let err = emit_traits_struct(&mut kb, "test.wi576.gate.Logger")
         .expect_err("an effect the cpp profile cannot realize must fail codegen");
 
     let msg = err.to_string();
@@ -61,9 +61,9 @@ fn unrealizable_effect_names_the_active_profile() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
+    let mut kb = load_kb_with(source);
     let err = emit_namespace_header_with_profile(
-        &kb,
+        &mut kb,
         "test.wi576.profiled",
         Some("cpp20-stl".to_string()),
     )
@@ -105,8 +105,8 @@ fn realized_effects_lower_fine() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.wi576.ok.Robot")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.wi576.ok.Robot")
         .expect("effects the profile realizes must lower");
 
     assert!(cpp.contains("bump"), "Modify-effect op should be emitted:\n{cpp}");
@@ -135,8 +135,8 @@ fn effect_row_parameter_is_not_gated() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.wi576.poly.Runner")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.wi576.poly.Runner")
         .expect("an effect-polymorphic op must not trip the capability gate");
     assert!(cpp.contains("run"), "the op should still be emitted:\n{cpp}");
 }
@@ -146,8 +146,8 @@ fn effect_row_parameter_is_not_gated() {
 /// unreadable label and a row parameter alike.
 #[test]
 fn stdlib_monad_effect_row_parameter_is_not_gated() {
-    let kb = load_kb_with("namespace test.wi576.monad\nend\n");
-    emit_traits_struct(&kb, "anthill.prelude.Monad")
+    let mut kb = load_kb_with("namespace test.wi576.monad\nend\n");
+    emit_traits_struct(&mut kb, "anthill.prelude.Monad")
         .expect("Monad's effect-polymorphic ops must not trip the capability gate");
 }
 

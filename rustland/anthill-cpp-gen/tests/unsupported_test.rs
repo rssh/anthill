@@ -40,8 +40,8 @@ fn recursive_anonymous_lambda_rejected() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.unsupported.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.unsupported.Calc")
         .expect("emit_traits_struct surfaces unsupported features as TODO comments");
 
     assert!(
@@ -70,8 +70,8 @@ fn non_recursive_let_lambda_still_works() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.unsupported_ok.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.unsupported_ok.Calc")
         .expect("non-recursive lambda must still lower");
     assert!(
         cpp.contains("[=](auto x) { return (x + 1); }"),
@@ -92,8 +92,8 @@ fn reflect_sort_in_signature_rejected() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let err = emit_traits_struct(&kb, "test.unsupported_reflect.Inspector")
+    let mut kb = load_kb_with(source);
+    let err = emit_traits_struct(&mut kb, "test.unsupported_reflect.Inspector")
         .expect_err("reflect sort in op signature must be rejected");
 
     let msg = err.to_string();
@@ -121,8 +121,8 @@ fn persistence_sort_in_signature_rejected() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let err = emit_traits_struct(&kb, "test.unsupported_persistence.Bridge")
+    let mut kb = load_kb_with(source);
+    let err = emit_traits_struct(&mut kb, "test.unsupported_persistence.Bridge")
         .expect_err("persistence sort in op signature must be rejected");
 
     let msg = err.to_string();

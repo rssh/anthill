@@ -21,8 +21,8 @@ fn nullary_sum_emits_variant_alias() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_sum(&kb, "test.sum_nullary.StepResult")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_sum(&mut kb, "test.sum_nullary.StepResult")
         .expect("emit StepResult sum");
 
     let expected = "\
@@ -48,8 +48,8 @@ fn sum_with_field_carrying_constructors() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_sum(&kb, "test.sum_fielded.Shape").expect("emit Shape sum");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_sum(&mut kb, "test.sum_fielded.Shape").expect("emit Shape sum");
 
     assert!(cpp.contains("struct Circle {\n    double radius;\n};"),
             "Circle struct missing or wrong:\n{cpp}");
@@ -67,10 +67,10 @@ fn missing_sum_returns_error() {
           entity Plain(x: Float)
         end
     "#;
-    let kb = load_kb_with(source);
+    let mut kb = load_kb_with(source);
     // Plain is an entity, not a sort with constructors — emit_sum
     // should error out.
-    let result = emit_sum(&kb, "test.no_sum.Plain");
+    let result = emit_sum(&mut kb, "test.no_sum.Plain");
     assert!(result.is_err(), "expected error for non-sum sort");
 }
 
@@ -95,8 +95,8 @@ fn namespace_header_with_sums_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.mixed")
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.mixed")
         .expect("emit test.mixed header");
 
     // Includes set

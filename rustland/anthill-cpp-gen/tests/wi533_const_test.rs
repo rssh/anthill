@@ -40,8 +40,8 @@ fn sort_body_const_emits_static_constexpr_member() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.wi533.Emitter").expect("emit Emitter");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.wi533.Emitter").expect("emit Emitter");
     assert!(
         cpp.contains("static constexpr int64_t BROADCAST_CHANNEL = -1;"),
         "expected the const as a static constexpr member:\n{cpp}"
@@ -54,8 +54,8 @@ fn lf1_emitter_emits_broadcast_channel_const() {
     let lf1_webots = rustland_root().join("examples/webots-modelling/lf1/webots");
     let lf1_files = collect_anthill_files(&lf1_webots);
     assert!(!lf1_files.is_empty(), "expected lf1 webots sources");
-    let kb = load_kb_with_extras("namespace test.lf1_const end", &lf1_files);
-    let cpp = emit_traits_struct(&kb, "anthill.examples.lf1.webots.Emitter")
+    let mut kb = load_kb_with_extras("namespace test.lf1_const end", &lf1_files);
+    let cpp = emit_traits_struct(&mut kb, "anthill.examples.lf1.webots.Emitter")
         .expect("emit lf1 Emitter");
     assert!(
         cpp.contains("static constexpr int64_t BROADCAST_CHANNEL = -1;"),
@@ -73,8 +73,8 @@ fn namespace_const_emits_inline_constexpr_and_compiles() {
           entity Packet(size: Int64)
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi533ns").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi533ns").expect("emit ns header");
     assert!(
         header.contains("inline constexpr int64_t MAX_RETRIES = 5;"),
         "expected a namespace-level inline constexpr:\n{header}"
@@ -95,8 +95,8 @@ fn const_referencing_infinity_lowers_to_numeric_limits_and_compiles() {
           entity Dummy(x: Float)
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi533inf").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi533inf").expect("emit ns header");
     assert!(
         header.contains(
             "inline constexpr double VELOCITY_MODE_POSITION = \
@@ -122,8 +122,8 @@ fn string_const_emits_string_view_and_compiles() {
           entity Box(n: Int64)
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi533str").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi533str").expect("emit ns header");
     assert!(
         header.contains("inline constexpr std::string_view GREETING = \"hi\";"),
         "String const must lower to string_view:\n{header}"
@@ -147,8 +147,8 @@ fn const_only_sort_emits_struct_member_and_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi533only").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi533only").expect("emit ns header");
     assert!(header.contains("struct Channels"), "const-only sort must emit a struct:\n{header}");
     assert!(
         header.contains("static constexpr int64_t BROADCAST = -1;"),
@@ -171,8 +171,8 @@ fn namespace_and_sort_body_consts_do_not_collide() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi533mix").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi533mix").expect("emit ns header");
     assert!(
         header.contains("inline constexpr int64_t NS_LEVEL = 7;"),
         "namespace const at namespace scope:\n{header}"

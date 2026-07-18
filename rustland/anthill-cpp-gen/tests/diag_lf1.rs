@@ -12,22 +12,22 @@ fn emit_lf1_leader_controller() {
         .join("../../examples/webots-modelling/lf1");
     let files = collect_anthill_files(&lf1_dir);
     let extras: Vec<PathBuf> = files;
-    let kb = load_kb_with_extras("namespace _anchor end", &extras);
+    let mut kb = load_kb_with_extras("namespace _anchor end", &extras);
 
     println!("\n=== LeaderController traits class ===\n");
-    match emit_traits_struct(&kb, "anthill.examples.lf1.LeaderController") {
+    match emit_traits_struct(&mut kb, "anthill.examples.lf1.LeaderController") {
         Ok(cpp) => println!("{cpp}"),
         Err(e) => println!("ERROR: {}", e.message),
     }
 
     println!("\n=== FollowerController traits class ===\n");
-    match emit_traits_struct(&kb, "anthill.examples.lf1.FollowerController") {
+    match emit_traits_struct(&mut kb, "anthill.examples.lf1.FollowerController") {
         Ok(cpp) => println!("{cpp}"),
         Err(e) => println!("ERROR: {}", e.message),
     }
 
     println!("\n=== Full namespace header ===\n");
-    match emit_namespace_header(&kb, "anthill.examples.lf1") {
+    match emit_namespace_header(&mut kb, "anthill.examples.lf1") {
         Ok(cpp) => println!("{cpp}"),
         Err(e) => println!("ERROR: {}", e.message),
     }

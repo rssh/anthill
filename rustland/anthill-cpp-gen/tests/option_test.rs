@@ -24,8 +24,8 @@ fn option_some_lowers_to_make_optional() {
     // Lenient loader: typer rejects `some(x): Option[T = Int64]`
     // because the bare-Option-vs-Option[T = Int64] check is overstrict.
     // The lowering itself is what we test here.
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.opt_some.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.opt_some.Calc")
         .expect("emit Calc");
     assert!(
         cpp.contains("return std::make_optional(x);"),
@@ -44,8 +44,8 @@ fn option_none_lowers_to_nullopt() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.opt_none.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.opt_none.Calc")
         .expect("emit Calc");
     assert!(
         cpp.contains("return std::nullopt;"),

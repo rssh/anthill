@@ -916,7 +916,8 @@ fn profile_for_namespace(kb: &KnowledgeBase, namespace: &str) -> Option<String> 
 }
 
 fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
-    let kb = load_kb_with_stdlib(&args.paths, false, true)?;
+    // WI-760: codegen threads `&mut` so realization lookups can run SLD.
+    let mut kb = load_kb_with_stdlib(&args.paths, false, true)?;
 
     // WI-089(a): the active compilation profile selects profile-keyed
     // TypeMapping / EffectMapping overlays. Read it from the namespace's
@@ -924,7 +925,7 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // nothing is declared, in which case only the language base applies.
     let profile = profile_for_namespace(&kb, &args.namespace);
 
-    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, &args.namespace, profile.clone())
+    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
         .map_err(|e| {
             eprintln!("error: {}", e.message);
             1
@@ -963,7 +964,7 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // anthill::geometry only emits if the namespace declared anything
     // there; ignore the error when the namespace is empty (carrier-
     // only / unrelated namespace).
-    if let Ok(geometry_header) = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, "anthill.geometry", profile) {
+    if let Ok(geometry_header) = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, "anthill.geometry", profile) {
         let geometry_path = args.output_dir.join("anthill_geometry.hpp");
         if let Err(e) = fs::write(&geometry_path, &geometry_header) {
             eprintln!("error: write {}: {e}", geometry_path.display());
@@ -978,7 +979,8 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
 // ── C++ project layout command ──────────────────────────────────────
 
 fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
-    let kb = load_kb_with_stdlib(&args.paths, false, true)?;
+    // WI-760: codegen threads `&mut` so realization lookups can run SLD.
+    let mut kb = load_kb_with_stdlib(&args.paths, false, true)?;
 
     // Source of truth: `fact Generated(kind: "controller", language: "cpp", ...)`
     // entries scoped to the requested namespace. Each fact names one
@@ -995,7 +997,7 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
         .filter(|t| t.source == args.namespace || t.source.starts_with(&ns_prefix))
         .collect();
     let controllers: Vec<String> = if declared.is_empty() {
-        anthill_cpp_gen::traits_classes_in_namespace(&kb, &args.namespace)
+        anthill_cpp_gen::traits_classes_in_namespace(&mut kb, &args.namespace)
     } else {
         declared.iter()
             .map(|t| t.source.rsplit('.').next().unwrap_or(&t.source).to_string())
@@ -1016,9 +1018,9 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     // helper as `run_codegen_cpp` so both entry points agree. None on the
     // traits-class fallback (no Generated facts declared).
     let profile = profile_for_namespace(&kb, &args.namespace);
-    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, &args.namespace, profile.clone())
+    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
         .map_err(|e| { eprintln!("error: {}", e.message); 1 })?;
-    let geometry = anthill_cpp_gen::emit_namespace_header_with_profile(&kb, "anthill.geometry", profile).ok();
+    let geometry = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, "anthill.geometry", profile).ok();
     let runtime = anthill_cpp_gen::emit_runtime_header();
 
     let cpp_files = match list_cpp_sources(&args.cpp_sources) {

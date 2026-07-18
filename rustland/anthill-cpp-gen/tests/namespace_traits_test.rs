@@ -20,8 +20,8 @@ fn namespace_header_includes_traits_class() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&kb, "test.ns_traits")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_namespace_header(&mut kb, "test.ns_traits")
         .expect("emit namespace header");
 
     assert!(
@@ -60,8 +60,8 @@ fn data_band_topologically_sorted_by_field_deps() {
           entity Outer(inner: Inner, n: Int64)
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&kb, "test.topo")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_namespace_header(&mut kb, "test.topo")
         .expect("emit header");
 
     let inner_pos = cpp.find("struct Inner").expect("Inner present");
@@ -85,8 +85,8 @@ fn data_band_chains_three_levels() {
           entity A(b: B)
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&kb, "test.chain")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_namespace_header(&mut kb, "test.chain")
         .expect("emit header");
 
     let c_pos = cpp.find("struct C").expect("C present");
@@ -107,8 +107,8 @@ fn namespace_with_only_traits_emits_traits() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&kb, "test.ns_traits_only")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_namespace_header(&mut kb, "test.ns_traits_only")
         .expect("emit traits-only namespace header");
 
     assert!(

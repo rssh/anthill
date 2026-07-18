@@ -22,8 +22,8 @@ fn namespace_header_emits_compilable_cpp() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.geom")
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.geom")
         .expect("emit test.geom header");
 
     // Sanity-check the structure before invoking the compiler.
@@ -96,11 +96,11 @@ int main() {{
 
 #[test]
 fn missing_namespace_returns_error() {
-    let kb = load_kb_with(r#"
+    let mut kb = load_kb_with(r#"
         namespace test.empty
           import anthill.prelude.{Float}
         end
     "#);
-    let result = emit_namespace_header(&kb, "test.empty");
+    let result = emit_namespace_header(&mut kb, "test.empty");
     assert!(result.is_err(), "expected error for empty namespace");
 }

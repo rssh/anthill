@@ -63,8 +63,8 @@ fn marshalled_lift_wraps_carrier_return() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.conv.Sensor")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.conv.Sensor")
         .expect("emit Sensor traits");
 
     // get_values: body lifts the carrier call via Vec3::from_array.
@@ -122,8 +122,8 @@ fn marshalled_lower_wraps_carrier_argument() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.lower.Actuator")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.lower.Actuator")
         .expect("emit Actuator traits");
 
     // set_target: the Vec3 argument is lowered via Vec3::to_array
@@ -175,8 +175,8 @@ fn marshalled_argument_without_lower_is_loud() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.nolower.Actuator")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.nolower.Actuator")
         .expect("emit Actuator traits");
 
     // The body must carry the loud TODO naming the offending parameter,
@@ -219,8 +219,8 @@ fn no_marshal_fact_keeps_decl_only_for_entity_returns() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.no_conv.Sensor")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.no_conv.Sensor")
         .expect("emit Sensor traits");
     assert!(
         traits.contains("static Vec3 get_values(::vendor::Sensor * self);"),
@@ -266,8 +266,8 @@ fn marshalled_lift_body_compiles() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.conv_compile.Sensor")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.conv_compile.Sensor")
         .expect("emit Sensor traits");
 
     let cxx = match find_cxx() {

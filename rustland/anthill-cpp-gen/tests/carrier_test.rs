@@ -76,8 +76,8 @@ fn entity_field_uses_carrier_type() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.carriers.Account").expect("emit Account");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.carriers.Account").expect("emit Account");
     let expected = "\
 struct Account {
     std::string name;
@@ -116,8 +116,8 @@ fn carrier_bound_sort_skipped_in_namespace_emission() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.carriers")
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.carriers")
         .expect("emit test.carriers namespace");
 
     assert!(header.contains("struct Account"), "expected Account struct:\n{header}");
@@ -160,8 +160,8 @@ fn carrier_overrides_primitive_default() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.carriers.Counter").expect("emit Counter");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.carriers.Counter").expect("emit Counter");
     // `value: SmallInt` → carrier int32_t; `total: Int64` → primitive int64_t.
     assert!(cpp.contains("int32_t value"), "expected int32_t for SmallInt:\n{cpp}");
     assert!(cpp.contains("int64_t total"), "expected int64_t for Int64:\n{cpp}");

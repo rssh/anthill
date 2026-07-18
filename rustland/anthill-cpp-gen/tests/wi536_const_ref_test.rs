@@ -47,8 +47,8 @@ fn carrier_bound_sort_const_emits_namespace_companion_and_compiles() {
         end
     "#
     );
-    let kb = load_kb_with(&source);
-    let header = emit_namespace_header(&kb, "test.wi536").expect("emit ns header");
+    let mut kb = load_kb_with(&source);
+    let header = emit_namespace_header(&mut kb, "test.wi536").expect("emit ns header");
     assert!(
         header.contains("inline constexpr int64_t Emitter_BROADCAST_CHANNEL = -1;"),
         "carrier-bound sort const must emit a namespace companion:\n{header}"
@@ -82,8 +82,8 @@ fn const_reference_in_body_lowers_to_companion() {
         end
     "#
     );
-    let kb = load_kb_with(&source);
-    let cpp = emit_traits_struct(&kb, "test.wi536.Emitter").expect("emit Emitter");
+    let mut kb = load_kb_with(&source);
+    let cpp = emit_traits_struct(&mut kb, "test.wi536.Emitter").expect("emit Emitter");
     assert!(
         cpp.contains("Emitter_BROADCAST_CHANNEL"),
         "a const reference must lower to the companion, not the bare name:\n{cpp}"
@@ -107,8 +107,8 @@ fn non_carrier_sort_const_reference_uses_struct_member_and_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi536nc").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi536nc").expect("emit ns header");
     assert!(
         header.contains("static constexpr int64_t LIMIT = 42;"),
         "non-carrier sort const stays a struct member:\n{header}"
@@ -146,9 +146,9 @@ fn const_reference_across_namespaces_is_fully_qualified_and_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let def_header = emit_namespace_header(&kb, "test.wi536def").expect("emit def header");
-    let use_header = emit_namespace_header(&kb, "test.wi536use").expect("emit use header");
+    let mut kb = load_kb_with(source);
+    let def_header = emit_namespace_header(&mut kb, "test.wi536def").expect("emit def header");
+    let use_header = emit_namespace_header(&mut kb, "test.wi536use").expect("emit use header");
     assert!(
         use_header.contains("::test::wi536def::Config::LIMIT"),
         "cross-namespace const reference must be fully qualified:\n{use_header}"
@@ -207,8 +207,8 @@ fn const_referencing_another_const_emits_in_dependency_order_and_compiles() {
           entity Marker(n: Int64)
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.wi536topo").expect("emit ns header");
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi536topo").expect("emit ns header");
     let z = header.find("int64_t ZEBRA =").expect("ZEBRA declaration");
     let a = header.find("int64_t ALPHA =").expect("ALPHA declaration");
     assert!(

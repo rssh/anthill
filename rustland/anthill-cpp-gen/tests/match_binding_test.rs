@@ -24,8 +24,8 @@ fn option_some_binding_lowers_to_value_iife() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.mb_opt.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.mb_opt.Calc")
         .expect("emit Calc");
 
     // tag check on the some-arm uses has_value()
@@ -64,8 +64,8 @@ fn variant_constructor_pattern_binds_fields() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.mb_var.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.mb_var.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -99,8 +99,8 @@ fn nested_let_inside_branch_body_works() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.mb_nested.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.mb_nested.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -131,8 +131,8 @@ fn wildcard_branch_after_constructor_works() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.mb_wild.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.mb_wild.Calc")
         .expect("emit Calc");
 
     assert!(

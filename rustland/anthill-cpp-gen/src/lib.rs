@@ -273,12 +273,19 @@ impl OpImplTable {
     }
 }
 
-/// Bundles the KB with a derived `CarrierTable` and `OpImplTable` so emit
-/// functions don't have to re-scan facts on every lookup. Construct once per
-/// codegen run; pass to every emit function. (Type/effect mappings are not
+/// Bundles a derived `CarrierTable` and `OpImplTable` so emit functions don't
+/// have to re-scan facts on every lookup. Construct once per codegen run; pass
+/// to every emit function alongside the KB. (Type/effect mappings are not
 /// prebuilt — they ride the keyed-`TypeMapping` query, WI-089.)
-pub struct CodegenContext<'kb> {
-    pub kb: &'kb KnowledgeBase,
+///
+/// WI-760: the context deliberately does NOT hold the `KnowledgeBase`. Codegen
+/// now threads `kb: &mut KnowledgeBase` as a separate parameter so realization
+/// lookups can run real SLD (`kb.resolve` needs `&mut`) instead of head-matching
+/// via `query_view`. Keeping the two apart is what makes that possible: the RAII
+/// scope guards below borrow the context *shared*, and if the KB lived here every
+/// live guard would block every nested `&mut` call. Split, they never conflict —
+/// and the context loses its lifetime parameter entirely.
+pub struct CodegenContext {
     pub carriers: CarrierTable,
     pub op_impls: OpImplTable,
     /// WI-089(a): the active compilation profile (e.g. "cpp20-stl"), threaded
@@ -310,19 +317,20 @@ pub struct CodegenContext<'kb> {
     pub emitting_namespace: std::cell::RefCell<Option<String>>,
 }
 
-impl<'kb> CodegenContext<'kb> {
+impl CodegenContext {
     /// Build a context with no active profile (language base only). Most
     /// callers; the profile-aware overlays are forward-looking.
-    pub fn new(kb: &'kb KnowledgeBase) -> Self {
+    pub fn new(kb: &KnowledgeBase) -> Self {
         Self::with_profile(kb, None)
     }
 
     /// WI-089(a): build a context for a specific compilation profile, so
     /// profile-keyed `TypeMapping` / `EffectMapping` overlays (e.g. a
     /// cpp20-stl-only rename) are selected ahead of the language base.
-    pub fn with_profile(kb: &'kb KnowledgeBase, profile: Option<String>) -> Self {
+    ///
+    /// Takes the KB only to derive the two tables; it is not retained (WI-760).
+    pub fn with_profile(kb: &KnowledgeBase, profile: Option<String>) -> Self {
         Self {
-            kb,
             carriers: CarrierTable::from_kb(kb),
             op_impls: OpImplTable::from_kb(kb),
             profile,
@@ -360,7 +368,7 @@ fn active_key_ladder(binding: Option<&str>, profile: Option<&str>) -> Vec<Option
     keys
 }
 
-impl<'kb> CodegenContext<'kb> {
+impl CodegenContext {
     /// Look up a type-parameter binding by source-level name. Walks
     /// the lexical stack top-down so inner declarations shadow outer
     /// ones with the same name.
@@ -377,7 +385,7 @@ impl<'kb> CodegenContext<'kb> {
     /// Push a fresh frame of type-param bindings onto the lexical
     /// stack. Returns a guard that pops the frame on drop, so the
     /// caller doesn't have to remember to restore by hand.
-    pub fn push_type_params(&self, frame: std::collections::HashMap<String, String>) -> TypeParamGuard<'_, 'kb> {
+    pub fn push_type_params(&self, frame: std::collections::HashMap<String, String>) -> TypeParamGuard<'_> {
         self.type_params.borrow_mut().push(frame);
         TypeParamGuard { ctx: self }
     }
@@ -398,7 +406,7 @@ impl<'kb> CodegenContext<'kb> {
     /// Push a fresh frame of value bindings. Returns a RAII guard
     /// that pops on drop so callers don't need to manage the stack
     /// by hand. Used by match-branch lowering.
-    pub fn push_value_bindings(&self, frame: std::collections::HashMap<String, String>) -> ValueBindingGuard<'_, 'kb> {
+    pub fn push_value_bindings(&self, frame: std::collections::HashMap<String, String>) -> ValueBindingGuard<'_> {
         self.value_bindings.borrow_mut().push(frame);
         ValueBindingGuard { ctx: self }
     }
@@ -408,7 +416,7 @@ impl<'kb> CodegenContext<'kb> {
     /// on drop, so early-returns through `?` don't leave the cell
     /// in the wrong state. Read by `qualify_cross_namespace` and
     /// `register_cross_namespace_include`.
-    pub fn enter_namespace(&self, namespace: &str) -> NamespaceGuard<'_, 'kb> {
+    pub fn enter_namespace(&self, namespace: &str) -> NamespaceGuard<'_> {
         let prev = self.emitting_namespace.borrow_mut().replace(namespace.to_string());
         NamespaceGuard { ctx: self, prev }
     }
@@ -417,11 +425,11 @@ impl<'kb> CodegenContext<'kb> {
 /// RAII guard that pops the top type-param frame on drop. Constructed
 /// by `CodegenContext::push_type_params`; the lifetime ties it to the
 /// context so nested calls compose naturally.
-pub struct TypeParamGuard<'g, 'kb> {
-    ctx: &'g CodegenContext<'kb>,
+pub struct TypeParamGuard<'g> {
+    ctx: &'g CodegenContext,
 }
 
-impl<'g, 'kb> Drop for TypeParamGuard<'g, 'kb> {
+impl<'g> Drop for TypeParamGuard<'g> {
     fn drop(&mut self) {
         self.ctx.type_params.borrow_mut().pop();
     }
@@ -429,11 +437,11 @@ impl<'g, 'kb> Drop for TypeParamGuard<'g, 'kb> {
 
 /// RAII guard that pops the top value-binding frame on drop.
 /// Constructed by `CodegenContext::push_value_bindings`.
-pub struct ValueBindingGuard<'g, 'kb> {
-    ctx: &'g CodegenContext<'kb>,
+pub struct ValueBindingGuard<'g> {
+    ctx: &'g CodegenContext,
 }
 
-impl<'g, 'kb> Drop for ValueBindingGuard<'g, 'kb> {
+impl<'g> Drop for ValueBindingGuard<'g> {
     fn drop(&mut self) {
         self.ctx.value_bindings.borrow_mut().pop();
     }
@@ -443,12 +451,12 @@ impl<'g, 'kb> Drop for ValueBindingGuard<'g, 'kb> {
 /// by `CodegenContext::enter_namespace`; `prev` holds whatever the
 /// cell contained before this guard was created (typically `None`
 /// for top-level emission, `Some(outer)` for a nested namespace).
-pub struct NamespaceGuard<'g, 'kb> {
-    ctx: &'g CodegenContext<'kb>,
+pub struct NamespaceGuard<'g> {
+    ctx: &'g CodegenContext,
     prev: Option<String>,
 }
 
-impl<'g, 'kb> Drop for NamespaceGuard<'g, 'kb> {
+impl<'g> Drop for NamespaceGuard<'g> {
     fn drop(&mut self) {
         *self.ctx.emitting_namespace.borrow_mut() = self.prev.take();
     }
@@ -606,7 +614,7 @@ fn walk_list(kb: &KnowledgeBase, list: TermId) -> Vec<TermId> {
 /// (which scans `Implementation` facts). For repeated calls in one
 /// codegen run, build the context once and use the by-symbol API.
 pub fn emit_entity_struct(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     entity_name: &str,
 ) -> Result<String, CppCodegenError> {
     let ctx = CodegenContext::new(kb);
@@ -615,7 +623,7 @@ pub fn emit_entity_struct(
             message: format!("entity '{entity_name}' not found in KB"),
         }
     })?;
-    emit_entity_struct_by_symbol(&ctx, sym)
+    emit_entity_struct_by_symbol(kb, &ctx, sym)
 }
 
 /// Emit a C++ struct for an entity given its functor Symbol.
@@ -623,20 +631,35 @@ pub fn emit_entity_struct(
 /// resolved qualified name, so callers cannot accidentally inject
 /// a dotted path as the struct identifier.
 pub fn emit_entity_struct_by_symbol(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     functor: Symbol,
 ) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
-    let qualified = kb.qualified_name_of(functor);
-    let display_name = short_name_of(qualified);
+    let qualified = kb.qualified_name_of(functor).to_string();
+    let display_name = short_name_of(&qualified);
 
-    let fields = kb.entity_field_types(functor).ok_or_else(|| {
+    // WI-760: own the field list. Lowering a field type now threads
+    // `&mut KnowledgeBase` (it may resolve a realization rule), so the loop
+    // below cannot hold a slice borrowed out of the KB across the call. Only
+    // the symbol and the type's TermId are needed, so project to those rather
+    // than cloning each `Value`.
+    //
+    // WI-342: field types are carrier-agnostic; codegen handles only ground
+    // types — a value-in-type / denoted field is not C++-representable and does
+    // not occur in codegen'd entities, so a non-`Term` carrier is dropped here.
+    let fields: Vec<(Symbol, TermId)> = kb.entity_field_types(functor).ok_or_else(|| {
         CppCodegenError {
             message: format!(
                 "'{qualified}' has no registered fields — is it really an entity?"
             ),
         }
-    })?;
+    })?
+        .iter()
+        .filter_map(|(sym, v)| match v {
+            Value::Term { id, .. } => Some((*sym, *id)),
+            _ => None,
+        })
+        .collect();
 
     // Templates: an entity declared inside `sort S { sort T = ?; … }`
     // takes its parent sort's type parameters. We emit the template
@@ -652,12 +675,8 @@ pub fn emit_entity_struct_by_symbol(
     let _guard = ctx.push_type_params(type_params);
 
     let mut fields_text = String::new();
-    for (field_sym, type_term) in fields {
-        // WI-342: field types are carrier-agnostic; codegen handles only ground
-        // types (a value-in-type / denoted field is not C++-representable and
-        // does not occur in codegen'd entities).
-        let Value::Term { id: type_tid, .. } = type_term else { continue };
-        let cpp_type = lower_type(ctx, *type_tid)?;
+    for (field_sym, type_tid) in &fields {
+        let cpp_type = lower_type(kb, ctx, *type_tid)?;
         let field_name = kb.resolve_sym(*field_sym);
         fields_text.push_str(
             &TEMPLATE_FIELD
@@ -700,10 +719,10 @@ struct ConstSig {
 /// A const whose declared type or value can't be lowered is a loud error, never
 /// a silent drop (repo rule).
 fn consts_in_scope(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     scope_qualified: &str,
 ) -> Result<Vec<ConstSig>, CppCodegenError> {
-    let kb = ctx.kb;
     let mut syms: Vec<Symbol> = kb
         .const_types_iter()
         .filter(|(sym, _)| parent_qualified_name(kb, *sym).as_deref() == Some(scope_qualified))
@@ -714,7 +733,7 @@ fn consts_in_scope(
     let mut out = Vec::with_capacity(syms.len());
     for sym in syms {
         let name = short_name_of(kb.qualified_name_of(sym)).to_string();
-        let (cpp_type, cpp_value) = lower_one_const(ctx, sym)?;
+        let (cpp_type, cpp_value) = lower_one_const(kb, ctx, sym)?;
         out.push(ConstSig { name, cpp_type, cpp_value });
     }
     Ok(out)
@@ -723,15 +742,20 @@ fn consts_in_scope(
 /// Lower a single const's declared type and value to C++. Shared by
 /// `consts_in_scope` (struct/namespace members) and
 /// `carrier_bound_const_companions` (WI-536 namespace companions).
-fn lower_one_const(ctx: &CodegenContext, sym: Symbol) -> Result<(String, String), CppCodegenError> {
-    let kb = ctx.kb;
+fn lower_one_const(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> Result<(String, String), CppCodegenError> {
     let qn = kb.qualified_name_of(sym).to_string();
 
     // Declared type: `const_type` is a `Value`; a simple sort type (the
     // common case — `Int64`, `Float`) lowers as a ground `Value::Term`.
+    //
+    // WI-760: this matches the KB borrow directly while the body path below
+    // must `.cloned()` first. The difference is what each arm carries out: here
+    // the only value used past the borrow is a `Copy` `TermId`, so the borrow
+    // ends at `*tid`; there the arm hands a `&Rc<NodeOccurrence>` to a `&mut`
+    // call, which would keep the KB borrowed across it.
     let cpp_type = match kb.const_type(sym) {
         Some(anthill_core::eval::value::Value::Term { id: tid, .. }) => {
-            let t = lower_type(ctx, *tid)?;
+            let t = lower_type(kb, ctx, *tid)?;
             // A `String` const cannot be `constexpr std::string` — std::string
             // is not a literal type before C++20. `std::string_view` is literal
             // and binds a string literal directly, so it works under C++17.
@@ -755,8 +779,11 @@ fn lower_one_const(ctx: &CodegenContext, sym: Symbol) -> Result<(String, String)
 
     // Value: lower the anthill body when present; a bodyless host-supplied
     // const (WI-532) maps to its target expression (the Float IEEE specials).
-    let cpp_value = match kb.const_body_node(sym) {
-        Some(body) => lower_node(ctx, body)?,
+    // WI-760: bind before matching — the scrutinee's borrow would otherwise
+    // span the arms, and lowering the body needs `&mut` on the KB.
+    let body_node = kb.const_body_node(sym).cloned();
+    let cpp_value = match &body_node {
+        Some(body) => lower_node(kb, ctx, body)?,
         None => render_as_float_special(&qn).ok_or_else(|| CppCodegenError {
             message: format!(
                 "const '{qn}': bodyless host-supplied const has no C++ value mapping \
@@ -776,10 +803,10 @@ fn lower_one_const(ctx: &CodegenContext, sym: Symbol) -> Result<(String, String)
 /// qualified name for determinism. `const_ref_cpp` produces the matching
 /// reference form.
 fn carrier_bound_const_companions(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     namespace: &str,
 ) -> Result<Vec<ConstSig>, CppCodegenError> {
-    let kb = ctx.kb;
     let prefix = format!("{namespace}.");
     let mut syms: Vec<Symbol> = kb
         .const_types_iter()
@@ -800,7 +827,7 @@ fn carrier_bound_const_companions(
     let mut out = Vec::with_capacity(syms.len());
     for sym in syms {
         let name = companion_name(kb, sym);
-        let (cpp_type, cpp_value) = lower_one_const(ctx, sym)?;
+        let (cpp_type, cpp_value) = lower_one_const(kb, ctx, sym)?;
         out.push(ConstSig { name, cpp_type, cpp_value });
     }
     Ok(out)
@@ -823,8 +850,7 @@ fn companion_name(kb: &KnowledgeBase, const_sym: Symbol) -> String {
 /// struct member `Sort::NAME`; a namespace-level const uses `NAME`. References
 /// from another namespace are fully qualified and pull in the declaring
 /// namespace's header.
-fn const_ref_cpp(ctx: &CodegenContext, sym: Symbol) -> String {
-    let kb = ctx.kb;
+fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> String {
     let qn = kb.qualified_name_of(sym).to_string();
     let name = short_name_of(&qn);
     let Some(parent) = parent_qualified_name(kb, sym) else {
@@ -936,7 +962,7 @@ fn value_references_token(haystack: &str, name: &str) -> bool {
 }
 
 pub fn emit_traits_struct(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     sort_name: &str,
 ) -> Result<String, CppCodegenError> {
     let ctx = CodegenContext::new(kb);
@@ -945,7 +971,7 @@ pub fn emit_traits_struct(
             message: format!("sort '{sort_name}' not found in KB"),
         }
     })?;
-    emit_traits_struct_by_symbol(&ctx, sym)
+    emit_traits_struct_by_symbol(kb, &ctx, sym)
 }
 
 /// Emit a traits-class struct for a sort given its functor Symbol.
@@ -953,12 +979,12 @@ pub fn emit_traits_struct(
 /// struct name. Returns an error if the sort has no operations in
 /// its scope.
 pub fn emit_traits_struct_by_symbol(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     sort_sym: Symbol,
 ) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
-    let qualified = kb.qualified_name_of(sort_sym);
-    let display_name = short_name_of(qualified);
+    let qualified = kb.qualified_name_of(sort_sym).to_string();
+    let display_name = short_name_of(&qualified);
 
     // Push the sort's type params onto the lexical scope stack for
     // the duration of operation signature lowering — `lower_type`
@@ -971,8 +997,8 @@ pub fn emit_traits_struct_by_symbol(
         type_params.values().cloned().collect();
     let _guard = ctx.push_type_params(type_params);
 
-    let ops = operations_in_sort(ctx, sort_sym, &sort_param_cpp)?;
-    let consts = consts_in_scope(ctx, qualified)?;
+    let ops = operations_in_sort(kb, ctx, sort_sym, &sort_param_cpp)?;
+    let consts = consts_in_scope(kb, ctx, &qualified)?;
     if ops.is_empty() && consts.is_empty() {
         return Err(CppCodegenError {
             message: format!(
@@ -1058,27 +1084,26 @@ struct ParamInfo {
 /// False for project-local entities (we don't know what the carrier
 /// method returns — a Vec3-from-`const double *` shape needs WI-088
 /// marshalling) and for anything else exotic.
-fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
-    let kb = ctx.kb;
+fn is_body_emittable(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId) -> bool {
     if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
-        let qualified = kb.qualified_name_of(sym);
-        if ctx.carriers.lookup(qualified).is_some() {
+        let qualified = kb.qualified_name_of(sym).to_string();
+        if ctx.carriers.lookup(&qualified).is_some() {
             return true;
         }
-        let short = short_name_of(qualified);
-        return resolve_type_mapping(ctx, &[short], None).is_some();
+        let short = short_name_of(&qualified);
+        return resolve_type_mapping(kb, ctx, &[short], None).is_some();
     }
     let Some((base_sym, binding_values)) = unpack_parameterized(kb, type_term) else {
         return false;
     };
-    let base_qn = kb.qualified_name_of(base_sym);
-    let base_short = short_name_of(base_qn);
-    let base_known = ctx.carriers.lookup(base_qn).is_some()
-        || resolve_type_mapping(ctx, &[base_short], None).is_some();
+    let base_qn = kb.qualified_name_of(base_sym).to_string();
+    let base_short = short_name_of(&base_qn);
+    let base_known = ctx.carriers.lookup(&base_qn).is_some()
+        || resolve_type_mapping(kb, ctx, &[base_short], None).is_some();
     if !base_known {
         return false;
     }
-    binding_values.iter().all(|(_, v)| is_body_emittable(ctx, *v))
+    binding_values.iter().all(|(_, v)| is_body_emittable(kb, ctx, *v))
 }
 
 /// If `type_term` is a `parameterized(base: sort_ref(<sort>), bindings:
@@ -1140,17 +1165,16 @@ fn snake_to_camel(snake: &str) -> String {
 /// binding key active) never sees it. A hit that carries no adapter (`lift` and
 /// `lower` both absent) is a plain rename, not a marshalled rep, so it returns
 /// `None`: the value passes through bare.
-fn marshal_for_type(ctx: &CodegenContext, type_term: TermId, binding: Option<&str>) -> Option<Marshal> {
-    let kb = ctx.kb;
+fn marshal_for_type(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId, binding: Option<&str>) -> Option<Marshal> {
     let sym = extract_sort_ref_sym(kb, &TermIdView(type_term)).or_else(|| {
         match kb.get_term(type_term) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),
             _ => None,
         }
     })?;
-    let qualified = kb.qualified_name_of(sym);
-    let short = short_name_of(qualified);
-    let hit = resolve_type_mapping(ctx, &[qualified, short], binding)?;
+    let qualified = kb.qualified_name_of(sym).to_string();
+    let short = short_name_of(&qualified);
+    let hit = resolve_type_mapping(kb, ctx, &[&qualified, short], binding)?;
     if hit.lift.is_none() && hit.lower.is_none() {
         return None;
     }
@@ -1170,6 +1194,7 @@ fn marshal_for_type(ctx: &CodegenContext, type_term: TermId, binding: Option<&st
 ///      (`return Vec3::from_array(self->getValues());`).
 ///   3. **None** — fall back to a declaration-only signature.
 fn synthesise_body_for(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     op_sym: Symbol,
     name: &str,
@@ -1180,7 +1205,7 @@ fn synthesise_body_for(
     // (1) Expression body via OperationImpl — sourced from
     // `kb.op_body_node` as a NodeOccurrence tree after WI-249.
     if let Some(body_node) = ctx.op_impls.lookup(op_sym) {
-        match lower_node(ctx, &body_node) {
+        match lower_node(kb, ctx, &body_node) {
             Ok(expr) => return Some(if return_type == "void" {
                 format!("{expr};")
             } else {
@@ -1206,7 +1231,7 @@ fn synthesise_body_for(
         return None;
     }
     let arrow = if self_param.cpp_type.contains('*') { "->" } else { "." };
-    let cpp_method = cpp_method_name(ctx.kb, name);
+    let cpp_method = cpp_method_name(kb, name);
 
     // WI-089(a): the carrier we dispatch onto is the operation's parent sort;
     // its `Implementation.binding` (if any) names the marshalling overlay
@@ -1214,7 +1239,7 @@ fn synthesise_body_for(
     // binding-keyed `TypeMapping` (webots `Vec3 -> const double *`) is selected
     // for the arguments and return below, while declared-signature lowering
     // (no binding key) leaves `Vec3` its generated struct.
-    let binding = parent_qualified_name(ctx.kb, op_sym)
+    let binding = parent_qualified_name(kb, op_sym)
         .and_then(|qn| ctx.carriers.binding(&qn).map(str::to_string));
     let binding = binding.as_deref();
 
@@ -1226,7 +1251,7 @@ fn synthesise_body_for(
     // through bare; only the "marshalled, but no anthill->foreign adapter"
     // case is the unhandleable one.
     for p in params.iter().skip(1) {
-        if matches!(marshal_for_type(ctx, p.type_term, binding), Some(m) if m.lower.is_none()) {
+        if matches!(marshal_for_type(kb, ctx, p.type_term, binding), Some(m) if m.lower.is_none()) {
             let tail = if return_type == "void" { "" } else { "\n        return {};" };
             return Some(format!(
                 "// TODO: WI-088: parameter '{}' has a marshalled type with no `lower` adapter — \
@@ -1243,7 +1268,7 @@ fn synthesise_body_for(
     // guard above, a `None` here means the type is not marshalled at all,
     // so the argument passes through bare.
     let non_self_args = params.iter().skip(1)
-        .map(|p| match marshal_for_type(ctx, p.type_term, binding).and_then(|m| m.lower) {
+        .map(|p| match marshal_for_type(kb, ctx, p.type_term, binding).and_then(|m| m.lower) {
             Some(lower) => format!("{lower}({})", p.name),
             None => p.name.clone(),
         })
@@ -1256,7 +1281,7 @@ fn synthesise_body_for(
     // to lift it back to the anthill type (`const double * -> Vec3`).
     // Takes precedence over plain dispatch — the lift applies even when
     // the return would otherwise have been body-emittable.
-    if let Some(lift) = marshal_for_type(ctx, return_term, binding).and_then(|m| m.lift) {
+    if let Some(lift) = marshal_for_type(kb, ctx, return_term, binding).and_then(|m| m.lift) {
         if return_type == "void" {
             // Nothing to lift from a void return — a `lift` here is a
             // spec error. Surface it loudly rather than emitting
@@ -1271,7 +1296,7 @@ fn synthesise_body_for(
     }
 
     // (3) Plain carrier dispatch (no return marshalling).
-    if !is_body_emittable(ctx, return_term) {
+    if !is_body_emittable(kb, ctx, return_term) {
         return None;
     }
     Some(if return_type == "void" {
@@ -1288,11 +1313,11 @@ fn synthesise_body_for(
 /// canonicaliser so a per-operation type param never collides with a class
 /// template param.
 fn operations_in_sort(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     sort_sym: Symbol,
     sort_param_cpp: &std::collections::HashSet<String>,
 ) -> Result<Vec<OperationSig>, CppCodegenError> {
-    let kb = ctx.kb;
     let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
         Some(s) => s,
         None => return Ok(Vec::new()),
@@ -1366,7 +1391,7 @@ fn operations_in_sort(
                 })
             }
         };
-        let return_type_cpp = lower_type(ctx, return_term)?;
+        let return_type_cpp = lower_type(kb, ctx, return_term)?;
 
         let mut params = Vec::new();
         for (p_name_sym, p_type) in &rec.params {
@@ -1385,7 +1410,7 @@ fn operations_in_sort(
                     })
                 }
             };
-            let cpp_type = lower_type(ctx, p_term)?;
+            let cpp_type = lower_type(kb, ctx, p_term)?;
             params.push(ParamInfo {
                 name: kb.resolve_sym(*p_name_sym).to_string(),
                 cpp_type,
@@ -1428,13 +1453,13 @@ fn operations_in_sort(
                     })
                 }
             };
-            let Some(receiver) = cpp_effect_receiver(ctx, &kind) else {
+            let Some(receiver) = cpp_effect_receiver(kb, ctx, &kind) else {
                 return Err(CppCodegenError {
                     message: format!(
                         "operation '{name}' requires effect '{kind}', which {} cannot \
                          realize — no EffectMapping declares it. Supported effects: {}",
                         cpp_profile_label(ctx),
-                        describe_supported_effects(ctx)
+                        describe_supported_effects(kb, ctx)
                     ),
                 });
             };
@@ -1447,7 +1472,7 @@ fn operations_in_sort(
         } else {
             return_type_cpp
         };
-        let body = synthesise_body_for(ctx, op_sym, &name, &params, &return_type_cpp, return_term);
+        let body = synthesise_body_for(kb, ctx, op_sym, &name, &params, &return_type_cpp, return_term);
         let template_prefix =
             member_template_prefix(&op_param_decls, &params, &return_type_cpp, &body);
         out.push(OperationSig { name, params, return_type_cpp, body, template_prefix });
@@ -1477,9 +1502,9 @@ fn operations_in_sort(
 /// callers driving project-layout scaffolding (one controller per
 /// traits class) can iterate the targets without re-implementing the
 /// classification.
-pub fn traits_classes_in_namespace(kb: &KnowledgeBase, namespace: &str) -> Vec<String> {
+pub fn traits_classes_in_namespace(kb: &mut KnowledgeBase, namespace: &str) -> Vec<String> {
     let ctx = CodegenContext::new(kb);
-    let (_, _, traits) = classify_namespace(&ctx, namespace);
+    let (_, _, traits) = classify_namespace(kb, &ctx, namespace);
     traits.iter()
         .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string())
         .collect()
@@ -1570,11 +1595,11 @@ pub fn emit_runtime_header() -> &'static str {
 }
 
 pub fn emit_namespace_header(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     namespace: &str,
 ) -> Result<String, CppCodegenError> {
     let ctx = CodegenContext::new(kb);
-    emit_namespace_header_in(&ctx, namespace)
+    emit_namespace_header_in(kb, &ctx, namespace)
 }
 
 /// WI-089(a): like `emit_namespace_header`, but for a specific compilation
@@ -1582,12 +1607,12 @@ pub fn emit_namespace_header(
 /// selected ahead of the language base. The CLI passes the profile from the
 /// namespace's `Generated` / `Implementation` fact.
 pub fn emit_namespace_header_with_profile(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     namespace: &str,
     profile: Option<String>,
 ) -> Result<String, CppCodegenError> {
     let ctx = CodegenContext::with_profile(kb, profile);
-    emit_namespace_header_in(&ctx, namespace)
+    emit_namespace_header_in(kb, &ctx, namespace)
 }
 
 /// Like `emit_namespace_header` but reuses an existing context.
@@ -1599,6 +1624,7 @@ pub fn emit_namespace_header_with_profile(
 /// alias). Items are emitted in qualified-name order, so the layout
 /// is deterministic across runs.
 pub fn emit_namespace_header_in(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     namespace: &str,
 ) -> Result<String, CppCodegenError> {
@@ -1608,14 +1634,14 @@ pub fn emit_namespace_header_in(
     // entity must render as `::anthill::geometry::Vec3`). The guard
     // restores the previous value on every exit path.
     let _ns_guard = ctx.enter_namespace(namespace);
-    let (entities, sums, traits) = classify_namespace(ctx, namespace);
+    let (entities, sums, traits) = classify_namespace(kb, ctx, namespace);
     // Namespace-level term-level constants (WI-533) declared directly under
     // this namespace (not inside a sort body — those emit as struct members),
     // plus the WI-536 `Sort_NAME` companions for consts inside carrier-bound
     // sorts (excluded from struct emission). One band, topologically ordered so
     // a const that references another is declared after it.
-    let mut const_band = consts_in_scope(ctx, namespace)?;
-    const_band.extend(carrier_bound_const_companions(ctx, namespace)?);
+    let mut const_band = consts_in_scope(kb, ctx, namespace)?;
+    const_band.extend(carrier_bound_const_companions(kb, ctx, namespace)?);
     let const_band = topo_sort_const_likes(const_band)?;
 
     if entities.is_empty() && sums.is_empty() && traits.is_empty() && const_band.is_empty()
@@ -1647,13 +1673,13 @@ pub fn emit_namespace_header_in(
     for (sort_sym, ctors) in sums {
         data_items.insert(sort_sym, Item::Sum(sort_sym, ctors));
     }
-    let data_order = topo_sort_data_items(ctx, &data_items);
+    let data_order = topo_sort_data_items(kb, &data_items);
 
     let mut traits_band: Vec<Symbol> = traits;
-    traits_band.sort_by(|a, b| ctx.kb.qualified_name_of(*a).cmp(ctx.kb.qualified_name_of(*b)));
+    traits_band.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
 
     let mut items = String::new();
-    let mut needs = Includes::from_kb(ctx.kb);
+    let mut needs = Includes::from_kb(kb);
     // Namespace-scope constants (incl. companions) first, so any later struct
     // or method body that references one sees its declaration (a const of a
     // primitive type carries no forward dependency on a same-namespace struct).
@@ -1671,15 +1697,15 @@ pub fn emit_namespace_header_in(
     for sym in data_order {
         let item = data_items.remove(&sym).expect("topo result must be in data_items");
         let block = match item {
-            Item::Flat(sym) => emit_entity_struct_by_symbol(ctx, sym)?,
-            Item::Sum(sort_sym, ctors) => emit_sum_in(ctx, sort_sym, &ctors)?,
+            Item::Flat(sym) => emit_entity_struct_by_symbol(kb, ctx, sym)?,
+            Item::Sum(sort_sym, ctors) => emit_sum_in(kb, ctx, sort_sym, &ctors)?,
         };
         needs.scan(&block);
         items.push_str(&block);
         items.push('\n');
     }
     for sym in traits_band {
-        let block = emit_traits_struct_by_symbol(ctx, sym)?;
+        let block = emit_traits_struct_by_symbol(kb, ctx, sym)?;
         needs.scan(&block);
         items.push_str(&block);
         items.push('\n');
@@ -1706,7 +1732,7 @@ pub fn emit_namespace_header_in(
 /// with fields produce structs with those fields; zero-field
 /// constructors produce empty structs.
 pub fn emit_sum(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     sort_name: &str,
 ) -> Result<String, CppCodegenError> {
     let ctx = CodegenContext::new(kb);
@@ -1715,7 +1741,7 @@ pub fn emit_sum(
             message: format!("sort '{sort_name}' not found in KB"),
         }
     })?;
-    let ctors = constructors_of(&ctx, sort_sym);
+    let ctors = constructors_of(kb, sort_sym);
     if ctors.is_empty() {
         return Err(CppCodegenError {
             message: format!(
@@ -1724,17 +1750,17 @@ pub fn emit_sum(
             ),
         });
     }
-    emit_sum_in(&ctx, sort_sym, &ctors)
+    emit_sum_in(kb, &ctx, sort_sym, &ctors)
 }
 
 fn emit_sum_in(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     sort_sym: Symbol,
     ctors: &[Symbol],
 ) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
-    let sort_qualified = kb.qualified_name_of(sort_sym);
-    let sort_short = short_name_of(sort_qualified);
+    let sort_qualified = kb.qualified_name_of(sort_sym).to_string();
+    let sort_short = short_name_of(&sort_qualified);
 
     // Generic-sort header: `template<typename T>` if the sum sort
     // declares any `sort T = ?` parameters. Each constructor that
@@ -1759,7 +1785,7 @@ fn emit_sum_in(
 
     let mut out = String::new();
     for ctor_sym in ctors {
-        out.push_str(&emit_entity_struct_by_symbol(ctx, *ctor_sym)?);
+        out.push_str(&emit_entity_struct_by_symbol(kb, ctx, *ctor_sym)?);
         out.push('\n');
     }
 
@@ -1841,10 +1867,10 @@ fn term_references_param(
 /// emitting a fresh struct would shadow it. Sums are preferred over
 /// traits when a sort qualifies as both.
 fn classify_namespace(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     namespace: &str,
 ) -> (Vec<Symbol>, Vec<(Symbol, Vec<Symbol>)>, Vec<Symbol>) {
-    let kb = ctx.kb;
     let prefix = format!("{namespace}.");
     let mut flat: Vec<Symbol> = Vec::new();
     let mut by_parent: HashMap<String, Vec<Symbol>> = HashMap::new();
@@ -1941,11 +1967,10 @@ fn classify_namespace(
 /// reaches into (anything in the data band that isn't a constructor
 /// of this sum).
 fn topo_sort_data_items(
-    ctx: &CodegenContext,
+    kb: &mut KnowledgeBase,
     items: &std::collections::HashMap<Symbol, Item>,
 ) -> Vec<Symbol> {
     use std::collections::{HashMap, HashSet};
-    let kb = ctx.kb;
     let in_band: HashSet<Symbol> = items.keys().copied().collect();
     let mut deps: HashMap<Symbol, HashSet<Symbol>> = HashMap::new();
     for (sym, item) in items.iter() {
@@ -2046,8 +2071,7 @@ fn collect_type_term_refs(
 /// sort's qualified name as a prefix (one component deeper). Sorted.
 /// Used by the public `emit_sum` wrapper when called outside the
 /// namespace-walk path.
-fn constructors_of(ctx: &CodegenContext, sort_sym: Symbol) -> Vec<Symbol> {
-    let kb = ctx.kb;
+fn constructors_of(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
     let sort_qn = kb.qualified_name_of(sort_sym).to_string();
     let prefix = format!("{sort_qn}.");
     let mut out: Vec<Symbol> = kb
@@ -2146,11 +2170,11 @@ impl Includes {
 /// String literals are escaped with the same convention the printer
 /// uses (\" \\ \n \r \t).
 fn lower_node(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
 ) -> Result<String, CppCodegenError> {
     use anthill_core::kb::node_occurrence::{Expr, NodeKind};
-    let kb = ctx.kb;
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
         NodeKind::RuleHead { .. } => return Err(CppCodegenError {
@@ -2187,7 +2211,7 @@ fn lower_node(
             // constant (struct member or namespace companion), not the bare
             // short name (which would not be in scope at the C++ use site).
             if kb.kind_of(*sym) == Some(SymbolKind::Const) {
-                return Ok(const_ref_cpp(ctx, *sym));
+                return Ok(const_ref_cpp(kb, ctx, *sym));
             }
             Ok(short_name_of(qn).to_string())
         }
@@ -2209,7 +2233,7 @@ fn lower_node(
             }
             // WI-536: otherwise a const reference resolves to its named constant.
             if kb.kind_of(*name) == Some(SymbolKind::Const) {
-                return Ok(const_ref_cpp(ctx, *name));
+                return Ok(const_ref_cpp(kb, ctx, *name));
             }
             Ok(short.to_string())
         }
@@ -2230,7 +2254,7 @@ fn lower_node(
                         ),
                     });
                 }
-                let object = lower_node(ctx, combined[0])?;
+                let object = lower_node(kb, ctx, combined[0])?;
                 let field = field_name_from_node(kb, combined[1])?;
                 return Ok(format!("{object}.{field}"));
             }
@@ -2251,13 +2275,13 @@ fn lower_node(
                 }
                 ctx.requested_includes.borrow_mut()
                     .insert("#include <tl/expected.hpp>".to_string());
-                let payload = lower_node(ctx, combined[0])?;
+                let payload = lower_node(kb, ctx, combined[0])?;
                 return Ok(format!("tl::make_unexpected({payload})"));
             }
             // Stdlib wrapper constructors that don't map 1:1 to a C++
             // struct (Option/Result) — handled before the generic
             // entity-literal path below.
-            if let Some(rendered) = lower_stdlib_wrapper_node(ctx, &fn_qn, pos_args, named_args)? {
+            if let Some(rendered) = lower_stdlib_wrapper_node(kb, ctx, &fn_qn, pos_args, named_args)? {
                 return Ok(rendered);
             }
             // Entity-constructor case: when the loader didn't wrap an
@@ -2265,11 +2289,11 @@ fn lower_node(
             // `entity X` name clash), the apply still points at an
             // entity functor — emit brace-init instead of a call.
             if kb.entity_field_types(*functor).is_some() {
-                return lower_constructor_literal_node(ctx, *functor, pos_args, named_args);
+                return lower_constructor_literal_node(kb, ctx, *functor, pos_args, named_args);
             }
             let mut args = Vec::new();
             for a in combined_args(pos_args, named_args) {
-                args.push(lower_node(ctx, a)?);
+                args.push(lower_node(kb, ctx, a)?);
             }
             if let Some(rendered) = render_as_operator(&fn_qn, &args) {
                 return Ok(rendered);
@@ -2297,15 +2321,15 @@ fn lower_node(
             {
                 let mut parts = Vec::new();
                 for a in combined_args(pos_args, named_args) {
-                    parts.push(lower_node(ctx, a)?);
+                    parts.push(lower_node(kb, ctx, a)?);
                 }
                 return Ok(format!("{{{}}}", parts.join(", ")));
             }
-            if let Some(rendered) = lower_stdlib_wrapper_node(ctx, &name_qn, pos_args, named_args)? {
+            if let Some(rendered) = lower_stdlib_wrapper_node(kb, ctx, &name_qn, pos_args, named_args)? {
                 return Ok(rendered);
             }
             if kb.entity_field_types(*name).is_some() {
-                return lower_constructor_literal_node(ctx, *name, pos_args, named_args);
+                return lower_constructor_literal_node(kb, ctx, *name, pos_args, named_args);
             }
             Err(CppCodegenError {
                 message: format!(
@@ -2315,53 +2339,53 @@ fn lower_node(
             })
         }
         Expr::Match { scrutinee, branches } => {
-            let scrutinee_s = lower_node(ctx, scrutinee)?;
+            let scrutinee_s = lower_node(kb, ctx, scrutinee)?;
             if branches.is_empty() {
                 return Err(CppCodegenError {
                     message: "match_expr with no branches".into(),
                 });
             }
-            lower_match_branches_node(ctx, &scrutinee_s, branches)
+            lower_match_branches_node(kb, ctx, &scrutinee_s, branches)
         }
         Expr::If { condition, then_branch, else_branch } => {
-            let cond_s = lower_node(ctx, condition)?;
-            let then_s = lower_node(ctx, then_branch)?;
-            let else_s = lower_node(ctx, else_branch)?;
+            let cond_s = lower_node(kb, ctx, condition)?;
+            let then_s = lower_node(kb, ctx, then_branch)?;
+            let else_s = lower_node(kb, ctx, else_branch)?;
             Ok(format!("({cond_s} ? {then_s} : {else_s})"))
         }
-        Expr::Let { .. } => lower_let_chain_node(ctx, occ),
+        Expr::Let { .. } => lower_let_chain_node(kb, ctx, occ),
         Expr::Lambda { param, body } => {
             // WI-318: param is now a Pattern-kind occurrence.
             let pname = pattern_var_name_occ(kb, param)?;
-            let body_s = lower_node(ctx, body)?;
+            let body_s = lower_node(kb, ctx, body)?;
             Ok(format!("[=](auto {pname}) {{ return {body_s}; }}"))
         }
         Expr::Proof { body, .. } => {
             // WI-538: an in-body proof is a type-level construct with no
             // runtime effect — lower to just the continuation.
-            lower_node(ctx, body)
+            lower_node(kb, ctx, body)
         }
         Expr::ListLit(elems) => {
             let mut parts = Vec::new();
             for e in elems.iter() {
-                parts.push(lower_node(ctx, e)?);
+                parts.push(lower_node(kb, ctx, e)?);
             }
             Ok(format!("{{{}}}", parts.join(", ")))
         }
         Expr::SetLit(elems) => {
             let mut parts = Vec::new();
             for e in elems.iter() {
-                parts.push(lower_node(ctx, e)?);
+                parts.push(lower_node(kb, ctx, e)?);
             }
             Ok(format!("{{{}}}", parts.join(", ")))
         }
         Expr::TupleLit { positional, named } => {
             let mut parts = Vec::new();
             for e in positional.iter() {
-                parts.push(lower_node(ctx, e)?);
+                parts.push(lower_node(kb, ctx, e)?);
             }
             for (_, e) in named.iter() {
-                parts.push(lower_node(ctx, e)?);
+                parts.push(lower_node(kb, ctx, e)?);
             }
             Ok(format!("{{{}}}", parts.join(", ")))
         }
@@ -2444,6 +2468,7 @@ fn combined_args<'a>(
 /// (`Modify[…]`, `Console.println`, …) that return Unit, since
 /// `auto _ = expr;` would not compile when expr is `void`.
 fn lower_let_chain_node(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     root: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
 ) -> Result<String, CppCodegenError> {
@@ -2452,7 +2477,6 @@ fn lower_let_chain_node(
         Bind(String, String),
         Discard(String),
     }
-    let kb = ctx.kb;
     let mut slots: Vec<Slot> = Vec::new();
     let mut current = root.clone();
     let body_node = loop {
@@ -2464,10 +2488,10 @@ fn lower_let_chain_node(
                 if !is_wildcard {
                     let bind_name = pattern_var_name_occ(kb, pattern)?;
                     check_recursive_lambda_node(kb, value, &bind_name)?;
-                    let val_s = lower_node(ctx, value)?;
+                    let val_s = lower_node(kb, ctx, value)?;
                     slots.push(Slot::Bind(bind_name, val_s));
                 } else {
-                    let val_s = lower_node(ctx, value)?;
+                    let val_s = lower_node(kb, ctx, value)?;
                     slots.push(Slot::Discard(val_s));
                 }
                 body.clone()
@@ -2476,7 +2500,7 @@ fn lower_let_chain_node(
         };
         current = next_body;
     };
-    let body_s = lower_node(ctx, &body_node)?;
+    let body_s = lower_node(kb, ctx, &body_node)?;
     let mut out = String::from("[&]() { ");
     for slot in &slots {
         match slot {
@@ -3044,6 +3068,7 @@ fn lower_stdlib_constant(fn_qn: &str) -> Option<String> {
 /// `Ok(None)` when the functor is not one we recognise. Today:
 /// `Option.{some, none}`.
 fn lower_stdlib_wrapper_node(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     fn_qn: &str,
     pos_args: &[std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
@@ -3056,7 +3081,7 @@ fn lower_stdlib_wrapper_node(
     if stripped == "Option.some" || fn_qn == "some" {
         let mut parts = Vec::new();
         for a in combined_args(pos_args, named_args) {
-            parts.push(lower_node(ctx, a)?);
+            parts.push(lower_node(kb, ctx, a)?);
         }
         if parts.len() != 1 {
             return Err(CppCodegenError {
@@ -3074,28 +3099,30 @@ fn lower_stdlib_wrapper_node(
 /// entity's field declaration order so the resulting C++ matches the
 /// struct layout emitted by `emit_entity_struct_by_symbol`.
 fn lower_constructor_literal_node(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     entity_sym: Symbol,
     pos_args: &[std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
     named_args: &[(Symbol, std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>)],
 ) -> Result<String, CppCodegenError> {
     use std::collections::HashMap;
-    let kb = ctx.kb;
-    let qn = kb.qualified_name_of(entity_sym);
-    let short = short_name_of(qn);
-    let short_name = qualify_cross_namespace(ctx, qn, short);
+    let qn = kb.qualified_name_of(entity_sym).to_string();
+    let short = short_name_of(&qn);
+    let short_name = qualify_cross_namespace(ctx, &qn, short);
+    // WI-760: own the field list — lowering each argument threads `&mut` on
+    // the KB, so a borrowed slice can't stay live across the loops below.
     let fields = kb.entity_field_types(entity_sym).ok_or_else(|| {
         CppCodegenError { message: format!("'{qn}' has no registered fields") }
-    })?;
+    })?.to_vec();
 
     let mut named_values: HashMap<String, String> = HashMap::new();
     let mut positional: Vec<String> = Vec::new();
     for arg in pos_args.iter() {
-        positional.push(lower_node(ctx, arg)?);
+        positional.push(lower_node(kb, ctx, arg)?);
     }
     for (name_sym, arg) in named_args.iter() {
         let n = kb.resolve_sym(*name_sym).to_string();
-        named_values.insert(n, lower_node(ctx, arg)?);
+        named_values.insert(n, lower_node(kb, ctx, arg)?);
     }
 
     let mut vals = Vec::with_capacity(fields.len());
@@ -3128,11 +3155,11 @@ fn lower_constructor_literal_node(
 /// `o.has_value()` / `o.value()` instead of the variant primitives,
 /// since Option lowers to `std::optional<T>` rather than a variant.
 fn lower_match_branches_node(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     scrutinee: &str,
     branches: &[anthill_core::kb::node_occurrence::MatchBranch],
 ) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
     struct Compiled {
         tag_check: Option<String>, // None = catch-all (wildcard)
         body: String,
@@ -3150,7 +3177,7 @@ fn lower_match_branches_node(
             frame.insert(name.clone(), name.clone());
         }
         let _guard = ctx.push_value_bindings(frame);
-        let body_s = lower_node(ctx, &branch.body)?;
+        let body_s = lower_node(kb, ctx, &branch.body)?;
         let body_with_bindings = if info.decls.is_empty() {
             body_s
         } else {
@@ -3376,15 +3403,14 @@ fn lower_literal(lit: &Literal) -> String {
     }
 }
 
-fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
+fn lower_type(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCodegenError> {
     if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
-        return sort_to_cpp(ctx, sym);
+        return sort_to_cpp(kb, ctx, sym);
     }
 
     let term = kb.get_term(type_term);
     match term {
-        Term::Ref(sym) | Term::Ident(sym) => sort_to_cpp(ctx, *sym),
+        Term::Ref(sym) | Term::Ident(sym) => sort_to_cpp(kb, ctx, *sym),
         // Logic variable in a type position — references to a sort's
         // declared type parameter (`?T`) lower to the C++ template
         // parameter name. The Var's `name` symbol matches the
@@ -3422,12 +3448,12 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
             // §"Effect Subtyping"); a `named_tuple` → `std::tuple<…>`.
             match extract_type(kb, &TermIdView(type_term)) {
                 TypeExtractor::Arrow { param, result, .. } => {
-                    return lower_arrow_type(ctx, &param, &result);
+                    return lower_arrow_type(kb, ctx, &param, &result);
                 }
                 TypeExtractor::NamedTuple(fields) => {
                     ctx.requested_includes.borrow_mut()
                         .insert("#include <tuple>".to_string());
-                    let elems = lower_tuple_elem_types(ctx, &fields)?;
+                    let elems = lower_tuple_elem_types(kb, ctx, &fields)?;
                     return Ok(format!("std::tuple<{}>", elems.join(", ")));
                 }
                 _ => {}
@@ -3437,7 +3463,7 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
             // `unpack_parameterized` reads both; a non-parameterized Fn (e.g.
             // an unrecognised structural type) falls through to error.
             if unpack_parameterized(kb, type_term).is_some() {
-                return lower_parameterized(ctx, type_term);
+                return lower_parameterized(kb, ctx, type_term);
             }
             let qualified = kb.qualified_name_of(*functor);
             Err(CppCodegenError {
@@ -3460,12 +3486,12 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
 /// child is intentionally dropped: an arrow's effect row has no C++ type
 /// witness (the host realizes effects in the value, not the type).
 fn lower_arrow_type(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     param: &Value,
     result: &Value,
 ) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
-    let r = lower_type_value(ctx, result)?;
+    let r = lower_type_value(kb, ctx, result)?;
 
     // A multi-param / nullary arrow carries its params as a `named_tuple`; a
     // unary arrow carries the single param type directly. Decode through the
@@ -3478,10 +3504,10 @@ fn lower_arrow_type(
     // case), at the cost of flattening that rare single-tuple-parameter form.
     let args: Vec<String> = match param {
         Value::Term { id: t, .. } => match extract_type(kb, &TermIdView(*t)) {
-            TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(ctx, &fields)?,
-            _ => vec![lower_type(ctx, *t)?],
+            TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
+            _ => vec![lower_type(kb, ctx, *t)?],
         },
-        _ => vec![lower_type_value(ctx, param)?],
+        _ => vec![lower_type_value(kb, ctx, param)?],
     };
 
     ctx.requested_includes.borrow_mut()
@@ -3493,9 +3519,9 @@ fn lower_arrow_type(
 /// a denoted-bearing (`Value::Node`) type — a callback arrow whose effect
 /// carries a value like `Modify[c]` — has no C++ type witness and is a loud
 /// error here, matching how op param / return lowering rejects the same shape.
-fn lower_type_value(ctx: &CodegenContext, v: &Value) -> Result<String, CppCodegenError> {
+fn lower_type_value(kb: &mut KnowledgeBase, ctx: &CodegenContext, v: &Value) -> Result<String, CppCodegenError> {
     match v {
-        Value::Term { id: t, .. } => lower_type(ctx, *t),
+        Value::Term { id: t, .. } => lower_type(kb, ctx, *t),
         _ => Err(CppCodegenError {
             message: "denoted-bearing type carrier is unsupported by C++ codegen".into(),
         }),
@@ -3507,10 +3533,11 @@ fn lower_type_value(ctx: &CodegenContext, v: &Value) -> Result<String, CppCodege
 /// parameters are positional. Shared by the standalone-tuple arm of
 /// `lower_type` and the multi-param arrow's parameter list.
 fn lower_tuple_elem_types(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     fields: &[(Symbol, Value)],
 ) -> Result<Vec<String>, CppCodegenError> {
-    fields.iter().map(|(_, v)| lower_type_value(ctx, v)).collect()
+    fields.iter().map(|(_, v)| lower_type_value(kb, ctx, v)).collect()
 }
 
 /// Lower a `parameterized(base: sort_ref(...), bindings: [...])` term
@@ -3519,18 +3546,18 @@ fn lower_tuple_elem_types(
 /// each binding's `value` is recursively lowered into the angle-bracket
 /// arg list, in TypeBinding declaration order.
 fn lower_parameterized(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     type_term: TermId,
 ) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
     let (base_sym, binding_pairs) = unpack_parameterized(kb, type_term).ok_or_else(|| {
         CppCodegenError {
             message: "expected a parameterized(base: ..., bindings: [...]) term".into(),
         }
     })?;
 
-    let qualified = kb.qualified_name_of(base_sym);
-    let short = short_name_of(qualified);
+    let qualified = kb.qualified_name_of(base_sym).to_string();
+    let short = short_name_of(&qualified);
     // WI-575 (f): a parameterized type whose base is a higher-kinded type
     // parameter (`F[T = A]`, where `F` is the carrier of `sort Spec[F[T]]`)
     // lowers to the template-template parameter applied — `F<A>`. Checked
@@ -3542,17 +3569,26 @@ fn lower_parameterized(
     // arity leaves that ill-kinded case to fall through to the loud
     // "no C++ mapping" error below rather than silently emitting invalid C++.
     let base_is_hk_param = !kb.type_params_of_sort(base_sym).is_empty();
-    let template_name = ctx.lookup_type_param(short)
+    // WI-760: the `TypeMapping` arm can no longer ride an `or_else` closure —
+    // it takes `&mut` on the KB, which the closure would capture uniquely while
+    // the earlier arms still borrow it. Matching preserves both the fallback
+    // ORDER and its laziness: the mapping is queried only if neither earlier
+    // arm hit.
+    let template_name = match ctx.lookup_type_param(short)
         .filter(|_| base_is_hk_param)
-        .or_else(|| ctx.carriers.lookup(qualified).map(str::to_string))
-        .or_else(|| resolve_type_mapping(ctx, &[short], None).map(|h| h.host_type))
-        .ok_or_else(|| CppCodegenError {
-            message: format!(
-                "no C++ mapping for parameterized sort '{qualified}' — add a \
-                 CarrierBinding, or a `fact TypeMapping(lang: some(\"cpp\"), \
-                 anthill_type: \"{short}\", host_type: ...)`"
-            ),
-        })?;
+        .or_else(|| ctx.carriers.lookup(&qualified).map(str::to_string))
+    {
+        Some(name) => name,
+        None => resolve_type_mapping(kb, ctx, &[short], None)
+            .map(|h| h.host_type)
+            .ok_or_else(|| CppCodegenError {
+                message: format!(
+                    "no C++ mapping for parameterized sort '{qualified}' — add a \
+                     CarrierBinding, or a `fact TypeMapping(lang: some(\"cpp\"), \
+                     anthill_type: \"{short}\", host_type: ...)`"
+                ),
+            })?,
+    };
 
     // C++ template args follow the sort's DECLARATION order (`template<K, V>`),
     // but `binding_pairs` are stored in canonical symbol-interning order (WI-361
@@ -3583,7 +3619,7 @@ fn lower_parameterized(
 
     let mut args = Vec::with_capacity(ordered.len());
     for value in ordered {
-        args.push(lower_type(ctx, value)?);
+        args.push(lower_type(kb, ctx, value)?);
     }
 
     if args.is_empty() {
@@ -3608,9 +3644,9 @@ fn lower_parameterized(
 /// the default `Int → int64_t` mapping. The keyed `TypeMapping` base is
 /// the fallback, not a constraint, and is itself project-extensible
 /// (assert another `fact TypeMapping(lang: some("cpp"), ...)`).
-fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenError> {
-    let qualified = ctx.kb.qualified_name_of(sym);
-    let short = short_name_of(qualified);
+fn sort_to_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenError> {
+    let qualified = kb.qualified_name_of(sym).to_string();
+    let short = short_name_of(&qualified);
     // Type parameter of any enclosing sort (set via push_type_params
     // by emit_traits / emit_entity). Checked before carriers and
     // primitives so a `?T` reference inside `Box[T = ?]` lowers to
@@ -3619,11 +3655,11 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
     if let Some(cpp) = ctx.lookup_type_param(short) {
         return Ok(cpp);
     }
-    if let Some(host) = ctx.carriers.lookup(qualified) {
+    if let Some(host) = ctx.carriers.lookup(&qualified) {
         // Register the header that declares this carrier's host type
         // so the surrounding namespace header gains a matching
         // `#include` (e.g. `webots::GPS *` → `#include <webots/GPS.hpp>`).
-        if let Some(artifact) = ctx.carriers.artifact(qualified) {
+        if let Some(artifact) = ctx.carriers.artifact(&qualified) {
             ctx.requested_includes.borrow_mut()
                 .insert(format!("#include <{artifact}>"));
         }
@@ -3633,7 +3669,7 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
     // `[profile?, none]` selects a profile overlay or the language base (never
     // a binding's marshalling overlay). `cpp_base_host_type` (base-only) is the
     // profile-agnostic special case of this.
-    if let Some(hit) = resolve_type_mapping(ctx, &[short], None) {
+    if let Some(hit) = resolve_type_mapping(kb, ctx, &[short], None) {
         return Ok(hit.host_type);
     }
     // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
@@ -3642,7 +3678,7 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
     // on the host side, so these can't be lowered to value-typed C++.
     // A future `cpp-meta` profile (or an explicit CarrierBinding) can
     // opt in by mapping the sort to a host type.
-    if let Some(profile) = unsupported_runtime_profile(qualified) {
+    if let Some(profile) = unsupported_runtime_profile(&qualified) {
         return Err(CppCodegenError {
             message: format!(
                 "profile cpp17-stl does not support runtime {profile} (sort '{qualified}') — \
@@ -3659,13 +3695,13 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
     // sits (e.g. `anthill.geometry.Vec3` referenced from inside an
     // `anthill.examples.lf1` entity must render as
     // `::anthill::geometry::Vec3`).
-    if ctx.kb.entity_field_types(sym).is_some() {
-        register_cross_namespace_include(ctx, qualified);
-        return Ok(qualify_cross_namespace(ctx, qualified, short));
+    if kb.entity_field_types(sym).is_some() {
+        register_cross_namespace_include(ctx, &qualified);
+        return Ok(qualify_cross_namespace(ctx, &qualified, short));
     }
-    if !constructors_of(ctx, sym).is_empty() {
-        register_cross_namespace_include(ctx, qualified);
-        return Ok(qualify_cross_namespace(ctx, qualified, short));
+    if !constructors_of(kb, sym).is_empty() {
+        register_cross_namespace_include(ctx, &qualified);
+        return Ok(qualify_cross_namespace(ctx, &qualified, short));
     }
     Err(CppCodegenError {
         message: format!(
@@ -3724,9 +3760,13 @@ fn select_keyed<T>(
 /// EffectMapping, NamingConvention). Builds an allocation-free `Value::Entity`
 /// pattern that grounds `ground_field` to `ground_value` and leaves every other
 /// field a fresh placeholder var, then returns the head `TermId` of each
-/// matching top-level fact. cpp-gen holds an immutable `&KnowledgeBase`, so it
-/// can neither `kb.resolve` (needs `&mut`) nor hash-cons a pattern term; it
-/// matches structurally via `kb.query_view`, which keys named args by Symbol —
+/// matching top-level fact. This is a HEAD MATCH: `query_view` returns the head
+/// of every structurally-matching rule and never evaluates a body, so a bodied
+/// realization rule read through here would have its guards silently skipped
+/// (WI-760). Since WI-760 codegen threads `&mut KnowledgeBase` and CAN
+/// `kb.resolve`, so a predicate that needs body evaluation belongs on the
+/// resolution path, not here. It matches structurally rather than hash-consing a
+/// pattern term; `query_view` keys named args by Symbol —
 /// hence the pattern carries the facts' exact field symbols, and the whole
 /// query bails (empty) if the functor or any field name isn't interned yet.
 /// Callers read the non-ground fields back from each head and apply their own
@@ -3815,6 +3855,7 @@ fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Ve
 /// lowering (reads `host_type`) and value-level marshalling (reads `lift` /
 /// `lower`).
 fn resolve_type_mapping(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     names: &[&str],
     binding: Option<&str>,
@@ -3829,7 +3870,7 @@ fn resolve_type_mapping(
             continue;
         }
         queried.push(name);
-        hits.extend(query_type_mappings(ctx.kb, "cpp", name));
+        hits.extend(query_type_mappings(kb, "cpp", name));
     }
     select_keyed(hits, |h| &h.key, &ctx.active_keys(binding))
 }
@@ -3857,13 +3898,13 @@ pub fn cpp_base_host_type(kb: &KnowledgeBase, anthill_type: &str) -> Option<Stri
 /// ask "what does X map to under profile P at binding B?". `cpp_base_host_type`
 /// is the `profile = None, binding = None` special case.
 pub fn cpp_host_type(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     anthill_type: &str,
     profile: Option<&str>,
     binding: Option<&str>,
 ) -> Option<String> {
     let ctx = CodegenContext::with_profile(kb, profile.map(str::to_string));
-    resolve_type_mapping(&ctx, &[anthill_type], binding).map(|h| h.host_type)
+    resolve_type_mapping(kb, &ctx, &[anthill_type], binding).map(|h| h.host_type)
 }
 
 struct EffectMappingHit {
@@ -3983,8 +4024,8 @@ pub fn realizes_effect(
 /// WI-089(b): the cpp `ReceiverForm` short name realizing `effect` under the
 /// active compilation profile — the effect_map analogue of declared-signature
 /// host-type resolution. Thin `lang = "cpp"` binding of [`realizes_effect`].
-fn cpp_effect_receiver(ctx: &CodegenContext, effect: &str) -> Option<String> {
-    realizes_effect(ctx.kb, "cpp", ctx.profile.as_deref(), effect)
+fn cpp_effect_receiver(kb: &mut KnowledgeBase, ctx: &CodegenContext, effect: &str) -> Option<String> {
+    realizes_effect(kb, "cpp", ctx.profile.as_deref(), effect)
 }
 
 /// WI-576: every effect `lang` realizes under `profile` — the profile's
@@ -4038,8 +4079,8 @@ fn cpp_profile_label(ctx: &CodegenContext) -> String {
 }
 
 /// WI-576: render [`supported_effects`] for the capability gate's error text.
-fn describe_supported_effects(ctx: &CodegenContext) -> String {
-    let names = supported_effects(ctx.kb, "cpp", ctx.profile.as_deref());
+fn describe_supported_effects(kb: &mut KnowledgeBase, ctx: &CodegenContext) -> String {
+    let names = supported_effects(kb, "cpp", ctx.profile.as_deref());
     if names.is_empty() {
         "(none declared — is the cpp realization profile loaded?)".to_string()
     } else {

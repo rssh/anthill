@@ -27,8 +27,8 @@ fn if_then_else_literal_branches() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_b.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc")
         .expect("emit Calc traits");
 
     assert!(
@@ -50,8 +50,8 @@ fn if_then_else_with_call_in_condition() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_b.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc")
         .expect("emit Calc");
 
     // Phase E rewrites `gt(n, 0)` to `(n > 0)` because gt is the
@@ -75,8 +75,8 @@ fn nested_if_then_else() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_b.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -104,8 +104,8 @@ fn field_access_emits_dot_syntax() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_b_field.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b_field.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -128,8 +128,8 @@ fn field_access_in_expression_position() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_b_field2.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b_field2.Calc")
         .expect("emit Calc");
 
     // Phase E rewrites `add(p.x, p.y)` to `(p.x + p.y)` since add is

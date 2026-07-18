@@ -27,8 +27,8 @@ fn generic_sum_emits_templated_alias() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_sum(&kb, "test.gen_opt.Option")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_sum(&mut kb, "test.gen_opt.Option")
         .expect("emit Option sum");
 
     // Constructor structs:
@@ -61,8 +61,8 @@ fn generic_sum_with_two_params_emits_two_arg_template() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_sum(&kb, "test.gen_either.Either")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_sum(&mut kb, "test.gen_either.Either")
         .expect("emit Either sum");
 
     // Each constructor templated independently — Left only mentions L,
@@ -90,8 +90,8 @@ fn nullary_sum_unchanged_by_generic_machinery() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_sum(&kb, "test.gen_nullary.StepResult")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_sum(&mut kb, "test.gen_nullary.StepResult")
         .expect("emit StepResult");
 
     assert!(

@@ -15,9 +15,9 @@ fn lf1_vec3_and_euler_emit_correctly() {
     assert!(!lf1_files.is_empty(), "expected lf1 webots sources");
 
     // Empty user source — lf1 binding files come in via extras.
-    let kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
+    let mut kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
 
-    let cpp = emit_entity_struct(&kb, "anthill.geometry.Vec3").expect("emit Vec3");
+    let cpp = emit_entity_struct(&mut kb, "anthill.geometry.Vec3").expect("emit Vec3");
     let expected = "\
 struct Vec3 {
     double x;
@@ -29,7 +29,7 @@ struct Vec3 {
 
     // EulerAngles exercises declaration-order emission: roll/pitch/yaw
     // is the C++ field order, distinct from alphabetical pitch/roll/yaw.
-    let cpp_euler = emit_entity_struct(&kb, "anthill.geometry.EulerAngles").expect("emit EulerAngles");
+    let cpp_euler = emit_entity_struct(&mut kb, "anthill.geometry.EulerAngles").expect("emit EulerAngles");
     let expected_euler = "\
 struct EulerAngles {
     double roll;
@@ -48,9 +48,9 @@ fn lf1_types_namespace_emits_compilable_header() {
     // instead of carrying a project-local copy.
     let lf1_webots = rustland_root().join("examples/webots-modelling/lf1/webots");
     let lf1_files = collect_anthill_files(&lf1_webots);
-    let kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
+    let mut kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
 
-    let header = emit_namespace_header(&kb, "anthill.geometry")
+    let header = emit_namespace_header(&mut kb, "anthill.geometry")
         .expect("emit anthill.geometry header");
 
     assert!(header.contains("namespace anthill::geometry {"));
