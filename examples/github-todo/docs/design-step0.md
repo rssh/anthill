@@ -63,7 +63,7 @@ The developer interacts through **commands**, not by editing files. The tool rea
 | `decompose "desc"` | Break a description into Draft tasks |
 | `accept` | Review and accept Draft → Open |
 | `reject "reason"` | Reject Draft → ProposalRejected |
-| `list [--status=X]` | Show tasks, optionally filtered by status |
+| `list [--status X]` | Show tasks, optionally filtered by status |
 | `status` | Summary: N open, N claimed, N verified, N blocked |
 | `next` | Show the next claimable task (Open, all deps Verified) |
 | `claim <id>` | Take a task → Claimed |

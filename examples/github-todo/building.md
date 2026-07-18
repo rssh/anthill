@@ -71,7 +71,7 @@ No Rust code is written by the project developer. The `.anthill` files define *w
 |---------|-------------|-------------|
 | `status` | Count facts by WorkStatus functor | Print summary |
 | `next` | `resolve(claimable(?id, ?desc))` | Print next claimable item |
-| `list [--status=open]` | `resolve(open_item(?id, ?desc))` | Print table |
+| `list [--status Open]` | `resolve(open_item(?id, ?desc))` | Print table |
 | `show <id>` | `query(WorkItem(id: "<id>"))` | Print details + feedback |
 | `graph` | Walk all WorkItem facts, extract depends_on | Print ASCII DAG |
 | `claim <id>` | Assert WorkItem with status: Claimed | Persist to .anthill file |
