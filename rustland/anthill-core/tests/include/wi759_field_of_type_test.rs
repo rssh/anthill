@@ -24,7 +24,7 @@
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, LoadResult, NullResolver};
-use anthill_core::kb::typing::type_check_sorts;
+use anthill_core::kb::typing::{sort_functor_of_view, type_check_sorts};
 use anthill_core::parse;
 
 use crate::common::try_load_kb_with;
@@ -64,6 +64,36 @@ fn retype_errors(source: &str) -> Vec<String> {
     type_check_sorts(&mut kb, &[]).iter().map(|e| e.to_string()).collect()
 }
 
+/// Re-type as above, then read the SHORT sort name the re-typed body node actually carries.
+/// WI-758's acceptance asks for the field's TYPE, not merely the absence of errors — this
+/// reads the `inferred_type` the `Stamp` frame pushed onto the stored (already-rewritten)
+/// `field_access` node during the SECOND pass, so a re-type that widened to the reflect
+/// signature would read back `Term`, and one that left the constructor unreduced `FieldOf`.
+fn retyped_body_sort(source: &str, op_qn: &str) -> String {
+    let (mut kb, result) = load_with_result(source);
+    let first = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(first.is_empty(), "first type-check must be clean, got: {first:?}");
+    let second = type_check_sorts(&mut kb, &[]);
+    assert!(second.is_empty(), "re-type-check must be clean, got: {second:?}");
+    let op = kb
+        .try_resolve_symbol(op_qn)
+        .unwrap_or_else(|| panic!("no symbol for {op_qn}"));
+    let body = kb
+        .op_body_node(op)
+        .cloned()
+        .unwrap_or_else(|| panic!("{op_qn} has no stored body node"));
+    let ty = body
+        .inferred_type()
+        .unwrap_or_else(|| panic!("{op_qn}'s body carries no inferred type after the re-type"));
+    let head = sort_functor_of_view(&kb, &ty)
+        .unwrap_or_else(|| panic!("{op_qn}'s re-typed body type has no sort head"));
+    short_of(kb.qualified_name_of(head))
+}
+
+fn short_of(qn: &str) -> String {
+    qn.rsplit('.').next().unwrap_or(qn).to_string()
+}
+
 // ── WI-758's acceptance: the drift the shared lookup makes impossible ──────────────
 
 /// THE WI-758 shape: a NAMED-TUPLE projection survives a re-type round-trip.
@@ -81,20 +111,38 @@ fn retype_errors(source: &str) -> Vec<String> {
 /// missing from.
 #[test]
 fn wi759_named_tuple_projection_survives_retype() {
-    let errs = retype_errors(
-        r#"
+    const SRC: &str = r#"
 namespace test.wi759nt
   import anthill.prelude.{Int64, String}
   operation pick_name(t: (name: String, age: Int64)) -> String = t.name
   operation pick_age(t: (name: String, age: Int64)) -> Int64 = t.age
   operation pick_pos(t: (Int64, Int64)) -> Int64 = t._2
 end
-"#,
-    );
+"#;
+    let errs = retype_errors(SRC);
     assert!(
         errs.is_empty(),
         "re-typing a named-tuple projection must resolve the component, not check the \
          rewritten node against `field_access`'s reflect signature; got: {errs:?}",
+    );
+    // WI-758's acceptance names the TYPE, not just the absence of errors. Read what the
+    // re-typed node actually carries: `Term` would mean the reflect signature won, `FieldOf`
+    // that the constructor never reduced. Two DIFFERENT component types (and a positional
+    // `_2`) so this cannot pass by every projection collapsing to one type.
+    assert_eq!(
+        retyped_body_sort(SRC, "test.wi759nt.pick_name"),
+        "String",
+        "`t.name` must re-type to the component's type",
+    );
+    assert_eq!(
+        retyped_body_sort(SRC, "test.wi759nt.pick_age"),
+        "Int64",
+        "`t.age` must re-type to the component's type",
+    );
+    assert_eq!(
+        retyped_body_sort(SRC, "test.wi759nt.pick_pos"),
+        "Int64",
+        "a positional `t._2` must re-type to the component's type",
     );
 }
 
