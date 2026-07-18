@@ -7930,16 +7930,13 @@ impl<'a> Loader<'a> {
     /// converter flattens `args.find(...)` into the single dotted functor
     /// name `"args.find"` — at parse time it is indistinguishable from a
     /// sort-companion call like `Stream.find(...)`. Here the scope IS known:
-    /// when the head segment names a local binding — a let/lambda/match
-    /// binder or an op param — the call becomes the same `Expr::DotApply`
+    /// when the name before the member segment denotes a VALUE place
+    /// ([`Self::dot_call_receiver`]), the call becomes the same `Expr::DotApply`
     /// the `?x.m(...)` form produces (typer dot-dispatch on the receiver's
     /// sort, WI-279), with a synthesized `var_ref` receiver (there is no
-    /// parse node to Visit). Locals are checked before scope resolution, so
-    /// a binder shadows a same-named sort. A head naming a sort/namespace —
-    /// or nothing in scope — keeps qualified-name flattening (and its
-    /// existing loud unknown-functor diagnostic). Multi-segment tails
-    /// (`p.x.m(...)`) are conservatively NOT re-routed (kept flattening,
-    /// loud) until chained-receiver synthesis is wanted.
+    /// parse node to Visit). A receiver naming a sort/namespace — or nothing
+    /// in scope — keeps qualified-name flattening (and its existing loud
+    /// unknown-functor diagnostic).
     fn try_identifier_dot_call(
         &mut self,
         parse_id: TermId,
@@ -7949,33 +7946,20 @@ impl<'a> Loader<'a> {
         work: &mut Vec<LoadWorkOp>,
         results: &mut Vec<TermId>,
     ) -> bool {
-        let Some((head, member)) = functor_name.split_once('.') else {
+        // The member is the FINAL segment (a member name is never itself dotted), so
+        // the receiver is everything before the last dot — one segment for a local
+        // binder, any number for a bare-qualified rule reference (WI-729).
+        let Some((receiver_name, member)) = functor_name.rsplit_once('.') else {
             return false;
         };
-        if member.contains('.') {
-            return false;
-        }
-        // The receiver head names a VALUE place: a local binder / op param
-        // (`dot_receiver_binder`), OR — WI-723 (proposal 052) — a RULE, whose bare
-        // reference IS a `Relation[T]` value (WI-714). `person_row.where(λ)` is then a
-        // method call on that relation value (dispatched on the `Relation` sort), NOT a
-        // qualified name applied: the receiver becomes the same `var_ref(Ref(rule))` the
-        // bare-unqualified rule reference lowers to, so `where`'s row-lambda param
-        // (`(c: r.T) -> Bool`) hints the lambda binder at the relation's schema — the
-        // typer prerequisite the qualified-name flattening denied it. A sort/namespace
-        // head still resolves to `None` here (only Goal/Rule pass), keeping the applied
-        // `Sort.rule(args)` form on the qualified-name path.
-        let Some(head_sym) = self
-            .dot_receiver_binder(head)
-            .or_else(|| self.resolve_qualified_rule_readonly(head))
-        else {
+        let Some(receiver_sym) = self.dot_call_receiver(receiver_name) else {
             return false;
         };
         // Synthesized receiver: the `var_ref(name: Ref(binder))` shape
         // `load_var_ref` builds for a bare identifier reference, plus its
         // leaf occurrence — pushed BEFORE the arg Visits so it lands in the
         // DotApply build frame's receiver slot (`results[drain_start]`).
-        let receiver_kb = self.mk_var_ref(head_sym);
+        let receiver_kb = self.mk_var_ref(receiver_sym);
         results.push(receiver_kb);
         self.push_leaf_occ(receiver_kb);
         let member_sym = self.remap_name_str(member, self.parsed.terms.span(parse_id));
@@ -7997,13 +7981,47 @@ impl<'a> Loader<'a> {
         true
     }
 
+    /// The symbol a dot-call RECEIVER name denotes, if it names a VALUE place — the
+    /// discriminator that re-routes a flattened dotted call to a `DotApply`. Two
+    /// admissible receivers, probed in this order:
+    ///
+    ///  - WI-443: a LOCAL value — a let/lambda/match binder or an op param. A local
+    ///    ROOT wins outright (it shadows a same-named sort/namespace, as it does on the
+    ///    `field_access` path via [`Self::field_access_root_is_value`]), but only an
+    ///    UNCHAINED one re-routes: a local value CHAIN (`p.x.m(...)`) would need
+    ///    chained-receiver synthesis, deliberately deferred, so it keeps the loud
+    ///    qualified-name flattening rather than silently resolving `p.x` some other way.
+    ///  - WI-723/729 (proposal 052): a RULE, whose reference IS a `Relation[T]` value
+    ///    (WI-714). `person_row.where(λ)` / `Queen.find.where(λ)` is then a method call
+    ///    on that relation value (dispatched on the `Relation` sort), NOT a qualified
+    ///    name applied: the receiver becomes the same `var_ref(Ref(rule))` the bare
+    ///    rule reference lowers to, so `where`'s row-lambda param (`(c: r.T) -> Bool`)
+    ///    hints the lambda binder at the relation's schema — the typer prerequisite the
+    ///    qualified-name flattening denied it. The receiver may be bare-QUALIFIED over
+    ///    any number of segments (`Queen.find`, `ns.data.person_row`, WI-729); it
+    ///    resolves through the read-only probe the bare ([`Self::try_qualified_rule_ref`])
+    ///    and applied ([`Self::remap_name_str_inner`]) citation forms share, so the
+    ///    three halves of `Sort.rule` cannot drift. Its `Goal`/`Rule` kind gate is what
+    ///    keeps a sort/namespace receiver — the APPLIED `Sort.rule(args)` form — on the
+    ///    qualified-name path.
+    fn dot_call_receiver(&self, receiver_name: &str) -> Option<Symbol> {
+        let (root, chained) = match receiver_name.split_once('.') {
+            Some((root, _)) => (root, true),
+            None => (receiver_name, false),
+        };
+        if let Some(local) = self.dot_receiver_binder(root) {
+            return (!chained).then_some(local);
+        }
+        self.resolve_qualified_rule_readonly(receiver_name)
+    }
+
     /// The binder a dot-receiver HEAD identifier names, IF it denotes a local
     /// VALUE: a let/lambda/match binder (local-name scope) or an op parameter.
     /// Returns `None` for a sort/namespace head or an unbound name — the
     /// discriminator that keeps those on the qualified-name / `field_access`
     /// path. Locals are consulted first, so a binder shadows a same-named sort.
-    /// Shared by the WI-443 method-call re-route ([`Self::try_identifier_dot_call`])
-    /// and the WI-280 field-access re-route ([`Self::try_identifier_dot_field`]).
+    /// Shared by the WI-443 method-call re-route ([`Self::dot_call_receiver`])
+    /// and the WI-280 field-access re-route ([`Self::field_access_root_is_value`]).
     fn dot_receiver_binder(&self, head: &str) -> Option<Symbol> {
         self.lookup_local_name(head).or_else(|| {
             match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {

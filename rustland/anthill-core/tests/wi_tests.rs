@@ -672,3 +672,5 @@ mod wi662_carrier_agnostic_requires_test;
 #[path = "include/wi698_row_param_refinement_test.rs"]
 mod wi698_row_param_refinement_test;
 
+#[path = "include/wi729_qualified_rule_method_call_test.rs"]
+mod wi729_qualified_rule_method_call_test;
