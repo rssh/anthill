@@ -133,7 +133,8 @@ fn parse_user_files(paths: &[PathBuf]) -> (Vec<ParsedFile>, Vec<String>) {
             }
         };
         match parse::parse(&source) {
-            Ok(p) => files.push(p),
+            // WI-745: stamp the path so a load error renders `path:line:col`.
+            Ok(p) => files.push(p.with_path(path.clone())),
             Err(parse_errors) => {
                 for pe in &parse_errors {
                     errors.push(format!("{}: {pe}", path.display()));

@@ -1302,7 +1302,7 @@ fn wi295_cross_namespace_rule_predicate_import_resolves() {
     let parsed = parse::parse(source).expect("parse wi295 source");
     let errs = load::load(&mut kb, &parsed, &NullResolver).err().unwrap_or_default();
     let has_unresolved = errs.iter().any(|e|
-        matches!(e, anthill_core::kb::load::LoadError::UnresolvedImport { .. }));
+        matches!(e.peel(), anthill_core::kb::load::LoadError::UnresolvedImport { .. }));
     assert!(
         !has_unresolved,
         "cross-namespace rule-predicate import should resolve via the post-pass-3 \
@@ -1876,7 +1876,7 @@ fact Thing(name: 42)
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int64 where String expected");
     let err = &errors[0];
-    match err {
+    match err.peel() {
         load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
             assert_eq!(field_name, "name");
             assert!(expected_type.contains("String"), "expected String, got: {expected_type}");
@@ -1898,7 +1898,7 @@ fact Thing(count: "hello")
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect String where Int64 expected");
-    match &errors[0] {
+    match errors[0].peel() {
         load::LoadError::TypeMismatch { field_name, actual_type, .. } => {
             assert_eq!(field_name, "count");
             assert_eq!(actual_type, "String");
@@ -1929,7 +1929,7 @@ fact Box(color: Square)
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Shape entity where Color expected, got: {:?}", errors);
-    match &errors[0] {
+    match errors[0].peel() {
         load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
             assert_eq!(field_name, "color");
             assert!(expected_type.contains("Color"), "expected Color, got: {expected_type}");
@@ -1963,6 +1963,31 @@ fn type_check_error_reports_line_number() {
     assert!(formatted.contains("type mismatch"), "should say type mismatch: {formatted}");
     assert!(formatted.contains("Thing"), "should mention entity name: {formatted}");
     assert!(formatted.starts_with("5:"), "error should point to line 5, got: {formatted}");
+}
+
+/// WI-745: a whole-KB typer error (entity-field / op-body `TypeMismatch`) is
+/// file-stamped by `type_check_sorts` — it carries the `source_id` of the file
+/// its span indexes into — so `Display` renders `line:col: …` (or
+/// `path:line:col`) instead of a raw byte offset that named nothing once files
+/// merged into one KB. Pins the `SourceRegistry` provenance + per-op/fact source
+/// tagging.
+#[test]
+fn typer_error_is_file_located() {
+    let source = "sort Item\n  entity Thing(count: Int64)\nend\n\nfact Thing(count: \"hello\")\n";
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let tm = errors
+        .iter()
+        .find(|e| matches!(e.peel(), load::LoadError::TypeMismatch { .. }))
+        .expect("expected a TypeMismatch");
+    assert!(matches!(tm, load::LoadError::Located { .. }),
+        "the typer error must be file-stamped (Located), got: {tm:?}");
+    // Display renders line:col (line 5), not a raw byte-offset range.
+    let rendered = tm.to_string();
+    assert!(rendered.contains("5:") && rendered.contains("type mismatch"),
+        "should render line:col for the fact on line 5: {rendered}");
+    assert!(!rendered.contains(" at "),
+        "the raw byte-offset Display must be retired for an attributed error: {rendered}");
 }
 
 #[test]
@@ -2025,7 +2050,7 @@ end
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int64 body vs String return type");
-    match &errors[0] {
+    match errors[0].peel() {
         load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
             assert!(entity_name.contains("one"), "should mention operation name: {entity_name}");
             assert_eq!(field_name, "return");

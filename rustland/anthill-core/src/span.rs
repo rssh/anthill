@@ -96,31 +96,75 @@ impl SourceSpan {
     }
 }
 
-/// Registry mapping SourceId → file path/name.
+/// A registered source: its display name plus (WI-745) the on-disk path and full
+/// text, so a `SourceId` carried by a span can be rendered as `path:line:col`.
+struct SourceEntry {
+    name: String,
+    /// The file's source text. Empty for sources registered by name only
+    /// (`register`), in which case span rendering degrades to `1:1`.
+    source: std::sync::Arc<str>,
+    /// The on-disk path, if known. `None` for embedded / synthetic sources.
+    path: Option<std::sync::Arc<std::path::Path>>,
+}
+
+/// Registry mapping SourceId → file name + (WI-745) path + source text.
 pub struct SourceRegistry {
-    names: Vec<String>,
+    entries: Vec<SourceEntry>,
 }
 
 impl SourceRegistry {
     pub fn new() -> Self {
-        Self { names: Vec::new() }
+        Self { entries: Vec::new() }
     }
 
+    /// Register a source by name only (no text/path). Span rendering against
+    /// this source degrades to `1:1`.
     pub fn register(&mut self, name: String) -> SourceId {
-        let id = SourceId(self.names.len() as u32);
-        self.names.push(name);
+        let id = SourceId(self.entries.len() as u32);
+        self.entries.push(SourceEntry {
+            name,
+            source: std::sync::Arc::from(""),
+            path: None,
+        });
+        id
+    }
+
+    /// WI-745: register a source WITH its on-disk path and full text, so a load
+    /// error carrying the returned `SourceId` renders `path:line:col: message`.
+    pub fn register_file(
+        &mut self,
+        name: String,
+        source: std::sync::Arc<str>,
+        path: Option<std::sync::Arc<std::path::Path>>,
+    ) -> SourceId {
+        let id = SourceId(self.entries.len() as u32);
+        self.entries.push(SourceEntry { name, source, path });
         id
     }
 
     pub fn name(&self, id: SourceId) -> &str {
-        &self.names[id.index()]
+        &self.entries[id.index()].name
+    }
+
+    /// WI-745: the `(path, source text)` provenance of a source, for rendering a
+    /// span as `path:line:col`. Returns `None` if the id is out of range or the
+    /// source carries no text (registered by name only).
+    pub fn provenance(
+        &self,
+        id: SourceId,
+    ) -> Option<(Option<std::sync::Arc<std::path::Path>>, std::sync::Arc<str>)> {
+        let e = self.entries.get(id.index())?;
+        if e.source.is_empty() {
+            return None;
+        }
+        Some((e.path.clone(), e.source.clone()))
     }
 
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.entries.is_empty()
     }
 }

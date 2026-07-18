@@ -26628,8 +26628,21 @@ use super::load::LoadError;
 /// the load pipeline. Use [`type_check_sorts_typed`] when structured
 /// `TypeError` values are needed (programmatic access, IDE diagnostics).
 pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<LoadError> {
-    let typed = type_check_sorts_typed(kb, sort_terms);
-    typed.iter().map(|e| e.to_load_error(kb)).collect()
+    let (typed, sources) = type_check_sorts_collect(kb, sort_terms);
+    typed
+        .iter()
+        .zip(sources.iter())
+        .map(|(e, src)| {
+            let le = e.to_load_error(kb);
+            // WI-745: attribute to the file the error's span indexes into (an
+            // entity-fact / op-body error carries its file's `source_id`), so it
+            // renders `path:line:col` instead of a byte offset naming nothing.
+            match src.and_then(|sid| kb.sources.provenance(sid)) {
+                Some((path, source)) => le.located_in_source(path, source),
+                None => le,
+            }
+        })
+        .collect()
 }
 
 /// Structured form of [`type_check_sorts`]: returns `Vec<TypeError>`,
@@ -26651,7 +26664,23 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 const TYPECHECK_FREE_OPS: bool = true;
 
 pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
+    type_check_sorts_collect(kb, sort_terms).0
+}
+
+/// WI-745: like [`type_check_sorts_typed`], but also returns, parallel to the
+/// errors, the `SourceId` of the file each error's span indexes into — `None`
+/// for a whole-KB pass whose error isn't tied to one file. Entity-fact and
+/// operation-body errors are tagged (all of one fact's / one body's occurrences
+/// carry that file's `source_id`), so `type_check_sorts` can render them
+/// `path:line:col` instead of a bare byte offset. Passes after the sort loop
+/// (signature/rule-body/provider checks) leave `None`.
+fn type_check_sorts_collect(
+    kb: &mut KnowledgeBase,
+    sort_terms: &[TermId],
+) -> (Vec<TypeError>, Vec<Option<crate::span::SourceId>>) {
     let mut errors: Vec<TypeError> = Vec::new();
+    // Parallel to `errors`: the file each error belongs to, where known.
+    let mut sources: Vec<Option<crate::span::SourceId>> = Vec::new();
     // WI-656 — build the O(1) operation-signature index once, up front: the per-op
     // and per-node passes below make `lookup_operation_info` the typer's hottest
     // call, and without this index each call linearly scans every `OperationInfo`
@@ -26702,8 +26731,8 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
                 None => continue,
             };
 
-            check_entity_facts(kb, &ctor_syms, &mut errors);
-            check_operation_bodies(kb, &op_syms, &mut errors);
+            check_entity_facts(kb, &ctor_syms, &mut errors, &mut sources);
+            check_operation_bodies(kb, &op_syms, &mut errors, &mut sources);
             if TYPECHECK_FREE_OPS {
                 sort_owned_ops.extend(op_syms.iter().copied());
             }
@@ -26732,7 +26761,7 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
             .filter(|s| !sort_owned_ops.contains(s))
             .collect();
         if !free_ops.is_empty() {
-            check_operation_bodies(kb, &free_ops, &mut errors);
+            check_operation_bodies(kb, &free_ops, &mut errors, &mut sources);
         }
     }
 
@@ -26795,7 +26824,11 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
     // op-body Stamp frame), so every operand carries its inferred sort.
     errors.extend(check_eq_override_backing(kb));
 
-    errors
+    // WI-745: the passes after the sort loop (signature/rule-body/provider/eq
+    // checks) push untagged errors — pad `sources` with `None` so it stays
+    // parallel to `errors`.
+    sources.resize(errors.len(), None);
+    (errors, sources)
 }
 
 /// WI-398: reject a CYCLIC cross-parameter type projection (`f(a: b.T, b: a.T)`, or the
@@ -27408,7 +27441,17 @@ fn spec_resolves_at_bindings(
 }
 
 /// Check all facts for the given entity constructors against their declared field types.
-fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec<TypeError>) {
+fn check_entity_facts(
+    kb: &mut KnowledgeBase,
+    ctor_syms: &[Symbol],
+    errors: &mut Vec<TypeError>,
+    // WI-745: parallel to `errors`; each error is tagged with the `source_id` of
+    // the fact it came from. On entry `sources` is parallel to `errors`; restored
+    // on exit. See `check_operation_bodies` for the lazy-tag rationale.
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    // The file whose fact the current errors come from (lazily flushed).
+    let mut cur_src: Option<crate::span::SourceId> = None;
     for &ctor_sym in ctor_syms {
         let field_types = match kb.entity_field_types(ctor_sym) {
             Some(ft) => ft.to_vec(),
@@ -27433,9 +27476,14 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
                 _ => continue,
             };
 
-            let span: Option<Span> = kb.term_span(head)
-                .or_else(|| kb.functor_span(ctor_sym))
-                .map(|s| s.span);
+            let head_ss = kb.term_span(head).or_else(|| kb.functor_span(ctor_sym));
+            let span: Option<Span> = head_ss.map(|s| s.span);
+            // WI-745: flush the previous fact's errors, then adopt this fact's
+            // file for the errors its field checks below push.
+            while sources.len() < errors.len() {
+                sources.push(cur_src);
+            }
+            cur_src = head_ss.map(|s| s.source);
 
             for (field_sym, declared_type) in &field_types {
                 let field_sym = *field_sym;
@@ -27455,6 +27503,10 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
                 }
             }
         }
+    }
+    // WI-745: flush the last fact's errors and restore the parallel invariant.
+    while sources.len() < errors.len() {
+        sources.push(cur_src);
     }
 }
 
@@ -27648,7 +27700,16 @@ fn refine_self_receiver_body_type(
 }
 
 /// Check operation bodies against their declared return types.
-fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<TypeError>) {
+fn check_operation_bodies(
+    kb: &mut KnowledgeBase,
+    op_syms: &[Symbol],
+    errors: &mut Vec<TypeError>,
+    // WI-745: parallel to `errors`; each error this pass pushes is tagged with
+    // the `source_id` of the body it came from (every occurrence in one op body
+    // carries that body's file). On entry `sources` is parallel to `errors`
+    // (each tagging pass restores that on exit); it is restored here too.
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
     struct OpInfo {
         op_sym: Symbol,
         return_type: Value,  // WI-341 carrier-agnostic
@@ -27790,7 +27851,15 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
     let simp_rids: Vec<RuleId> =
         if simp_enabled { kb.simp_equation_rids() } else { Vec::new() };
 
+    // WI-745: the file whose occurrences the CURRENT op's errors come from. Tag
+    // lazily — errors pushed during op K are stamped at the top of iteration K+1
+    // (and the final flush), which is robust to the loop's early `continue`s.
+    let mut cur_src: Option<crate::span::SourceId> = None;
     for op in &ops_to_check {
+        while sources.len() < errors.len() {
+            sources.push(cur_src);
+        }
+        cur_src = Some(op.body_node.span.source);
         let mut env = TypingEnv::empty();
         // WI-221: snapshot the enclosing sort + its requires chain so
         // defer-to-requirement detection in `check_apply` runs from a
@@ -28116,6 +28185,11 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 }
             }
         }
+    }
+    // WI-745: flush the last op's errors and restore the `sources`/`errors`
+    // parallel invariant for the next pass.
+    while sources.len() < errors.len() {
+        sources.push(cur_src);
     }
 }
 

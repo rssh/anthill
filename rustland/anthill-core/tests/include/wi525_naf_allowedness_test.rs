@@ -43,11 +43,12 @@ fn errors_text(errs: &[LoadError]) -> String {
 }
 
 fn naf_errors(errs: &[LoadError]) -> Vec<&LoadError> {
-    errs.iter().filter(|e| matches!(e, LoadError::UnsafeNegatedUnify { .. })).collect()
+    // WI-745: peel the file-provenance wrapper before matching on the variant.
+    errs.iter().filter(|e| matches!(e.peel(), LoadError::UnsafeNegatedUnify { .. })).collect()
 }
 
 fn contract_errors(errs: &[LoadError]) -> Vec<&LoadError> {
-    errs.iter().filter(|e| matches!(e, LoadError::BindingInContract { .. })).collect()
+    errs.iter().filter(|e| matches!(e.peel(), LoadError::BindingInContract { .. })).collect()
 }
 
 // ── Part A: negated unify under `not` ───────────────────────────────────
@@ -70,7 +71,7 @@ fn negated_unify_with_unbound_var_errors() {
         errors_text(&errs),
     );
     assert!(
-        naf.iter().any(|e| matches!(e, LoadError::UnsafeNegatedUnify { var_name, .. } if var_name == "y")),
+        naf.iter().any(|e| matches!(e.peel(), LoadError::UnsafeNegatedUnify { var_name, .. } if var_name == "y")),
         "the offending variable should be named `y`; got:\n{}",
         errors_text(&errs),
     );
@@ -166,7 +167,7 @@ fn binding_unify_in_ensures_errors() {
     let (_kb, errs) = load_capturing_errors(src);
     let contract = contract_errors(&errs);
     assert!(
-        contract.iter().any(|e| matches!(e, LoadError::BindingInContract { position, .. } if position == "ensures")),
+        contract.iter().any(|e| matches!(e.peel(), LoadError::BindingInContract { position, .. } if position == "ensures")),
         "expected a BindingInContract(ensures) error for `ensures result <=> x`; got:\n{}",
         errors_text(&errs),
     );
@@ -204,7 +205,7 @@ fn binding_unify_in_requires_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     assert!(
-        contract_errors(&errs).iter().any(|e| matches!(e, LoadError::BindingInContract { position, .. } if position == "requires")),
+        contract_errors(&errs).iter().any(|e| matches!(e.peel(), LoadError::BindingInContract { position, .. } if position == "requires")),
         "expected a BindingInContract(requires) error for `requires ?z <=> x`; got:\n{}",
         errors_text(&errs),
     );
@@ -220,7 +221,7 @@ fn binding_unify_in_constraint_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     assert!(
-        contract_errors(&errs).iter().any(|e| matches!(e, LoadError::BindingInContract { position, .. } if position == "constraint")),
+        contract_errors(&errs).iter().any(|e| matches!(e.peel(), LoadError::BindingInContract { position, .. } if position == "constraint")),
         "expected a BindingInContract(constraint) error for a `<=>` in a constraint body; got:\n{}",
         errors_text(&errs),
     );

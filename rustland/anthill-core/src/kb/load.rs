@@ -10,8 +10,9 @@
 /// provides a real FS implementation; tests use `NullResolver`.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use smallvec::SmallVec;
 
@@ -522,12 +523,121 @@ pub enum LoadError {
         position: String,
         span: Span,
     },
+    /// WI-745: a per-file error stamped with the source it came from, so its byte
+    /// span renders as `path:line:col: message` instead of the raw offset that
+    /// named nothing once N files merged into one KB. Wraps exactly one inner
+    /// error (never itself); produced at the per-file load boundary where the
+    /// `ParsedFile`'s provenance ([`ParsedFile::source`] / [`ParsedFile::path`])
+    /// is in hand. `path` is `None` for embedded / synthetic sources — those
+    /// still resolve `line:col` from `source`, they just carry no path prefix.
+    Located {
+        path: Option<Arc<Path>>,
+        source: Arc<str>,
+        inner: Box<LoadError>,
+    },
 }
 
 impl LoadError {
+    /// WI-745: stamp this error with the file it came from (see
+    /// [`LoadError::Located`]). Idempotent — an already-`Located` error is
+    /// returned unchanged, so wrapping at more than one boundary cannot double
+    /// a path prefix.
+    pub fn located_in(self, parsed: &ParsedFile) -> LoadError {
+        if matches!(self, LoadError::Located { .. }) {
+            return self;
+        }
+        LoadError::Located {
+            path: parsed.path.clone(),
+            source: parsed.source.clone(),
+            inner: Box::new(self),
+        }
+    }
+
+    /// WI-745: stamp with a file's provenance given directly as `(path, source)`
+    /// — for a whole-KB-pass error (typer `TypeMismatch` etc.) whose file is
+    /// resolved from its span's `SourceId` via the `SourceRegistry`, not from a
+    /// `&ParsedFile`. Idempotent, like [`LoadError::located_in`].
+    pub fn located_in_source(self, path: Option<Arc<Path>>, source: Arc<str>) -> LoadError {
+        if matches!(self, LoadError::Located { .. }) {
+            return self;
+        }
+        LoadError::Located { path, source, inner: Box::new(self) }
+    }
+
+    /// WI-745: unwrap the file-provenance wrapper ([`LoadError::Located`]) to
+    /// inspect the underlying error's variant and fields. A non-`Located` error
+    /// is returned unchanged. Consumers that match on the error's SHAPE (rather
+    /// than render it) peel first — rendering (`Display` / `format_with_source`)
+    /// does not, so the file prefix is preserved in user-facing output.
+    pub fn peel(&self) -> &LoadError {
+        match self {
+            LoadError::Located { inner, .. } => inner.peel(),
+            other => other,
+        }
+    }
+
+    /// WI-745: the primary source span this error points at, if any. Drives the
+    /// `Located` rendering (span-bearing → `line:col`; span-less → bare) and the
+    /// span-insensitive dedup key. A `Located` reports its inner's span.
+    pub fn user_span(&self) -> Option<Span> {
+        match self {
+            LoadError::UnresolvedName { span, .. }
+            | LoadError::UnresolvedImport { span, .. }
+            | LoadError::AmbiguousSymbol { span, .. }
+            | LoadError::ArrowTermInExprPosition { span }
+            | LoadError::BareArrowInLogicPosition { span, .. }
+            | LoadError::AggregationConstraintUnsupported { span, .. }
+            | LoadError::UnsupportedConstraintForm { span, .. }
+            | LoadError::UnresolvedTypeName { span, .. }
+            | LoadError::InvalidFieldProjection { span, .. }
+            | LoadError::ForbiddenInternalAccess { span, .. }
+            | LoadError::UnsafeNegatedUnify { span, .. }
+            | LoadError::BindingInContract { span, .. } => Some(*span),
+            LoadError::TypeMismatch { span, .. }
+            | LoadError::BareMemberCall { span, .. }
+            | LoadError::InvalidTypeArgument { span, .. } => *span,
+            LoadError::Located { inner, .. } => inner.user_span(),
+            _ => None,
+        }
+    }
+
+    /// WI-745: an INJECTIVE identity for dedup — the error's full rendering,
+    /// INCLUDING its span (the byte-offset `Display`). Two errors collapse only
+    /// when they render identically, i.e. are the same diagnostic at the same
+    /// location; genuinely-distinct errors (different span, scope, or message —
+    /// including two references to one bad name in same-short-named but distinct
+    /// scopes) are always kept. The one real duplicate — a head functor resolved
+    /// for owner-tracking AND for the term build — is eliminated at the producer
+    /// (`resolve_owner_symbol`), NOT by keying span-insensitively (which would
+    /// over-collapse, dropping a diagnostic; the short scope name is not a unique
+    /// identity — see `no-short-name-comparison`). A `Located` keys on its inner
+    /// (the path is the same file for every error deduped together).
+    pub(crate) fn dedup_key(&self) -> String {
+        self.peel().to_string()
+    }
+
+    /// WI-745: the `Located` rendering, shared by `Display` and
+    /// `format_with_source` so the two cannot drift. `path:line:col: msg` when
+    /// the inner carries a span, `path: msg` when it does not (a locationless
+    /// diagnostic still names its file); with no path, the bare
+    /// `inner.format_with_source` (`line:col: msg` or `msg`).
+    fn located_render(path: &Option<Arc<Path>>, source: &str, inner: &LoadError) -> String {
+        let body = inner.format_with_source(source);
+        match path {
+            Some(p) if inner.user_span().is_some() => format!("{}:{}", p.display(), body),
+            Some(p) => format!("{}: {}", p.display(), body),
+            None => body,
+        }
+    }
+
     /// Format with line:col using source text, like ParseError::format_with_source.
     pub fn format_with_source(&self, source: &str) -> String {
         match self {
+            // WI-745: a `Located` renders from its OWN source — the `source`
+            // argument (a caller's guess) is ignored.
+            LoadError::Located { path, source: own, inner } => {
+                LoadError::located_render(path, own, inner)
+            }
             LoadError::UnresolvedName { name, span, scope_name } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: unresolved name '{}' in scope '{}'", line, col, name, scope_name)
@@ -837,6 +947,12 @@ fn unsupported_quantifier_form(body: &ConstraintBody) -> Option<String> {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // WI-745: a `Located` renders `path:line:col: message` from its own
+            // source (the raw byte offset the bare variants print names nothing
+            // once files merge — a `Located` is what the CLIs actually emit).
+            LoadError::Located { path, source, inner } => {
+                write!(f, "{}", LoadError::located_render(path, source, inner))
+            }
             LoadError::UnresolvedName { name, span, scope_name } => {
                 write!(f, "unresolved name '{}' in scope '{}' at {}..{}", name, scope_name, span.start, span.end)
             }
@@ -1080,8 +1196,12 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // deferred into `pending` and retried below (WI-295).
     let mut errors = Vec::new();
     let mut pending: Vec<PendingImport> = Vec::new();
-    for file in files {
-        scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut errors, &mut pending);
+    for (file_idx, file) in files.iter().enumerate() {
+        // WI-745: collect this file's pass-2 errors on their own so each is
+        // stamped with the file it came from before merging into the flat list.
+        let mut file_errors = Vec::new();
+        scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut file_errors, &mut pending, file_idx);
+        errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
     }
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
@@ -1097,7 +1217,12 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     for p in pending {
         match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
             Some(sym) => kb.symbols.add_import(p.scope_raw, &p.short, sym),
-            None => errors.push(LoadError::UnresolvedImport { path: p.qualified, span: p.span }),
+            // WI-745: stamp with the file the import was written in (sub-pass 4
+            // runs outside the per-file loop, so `p` carries its own provenance).
+            None => errors.push(
+                LoadError::UnresolvedImport { path: p.qualified, span: p.span }
+                    .located_in(files[p.file_idx]),
+            ),
         }
     }
 
@@ -1858,6 +1983,7 @@ fn scan_items_pass2(
     prefix: &str,
     errors: &mut Vec<LoadError>,
     pending: &mut Vec<PendingImport>,
+    file_idx: usize,
 ) {
     for item in items {
         match item {
@@ -1865,8 +1991,8 @@ fn scan_items_pass2(
                 let name = join_segments(parse_sym, &s.name.segments);
                 let qualified = make_qualified(prefix, &name);
                 if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
-                    process_imports(kb, parse_sym, &s.imports, sort_term, errors, pending);
-                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors, pending);
+                    process_imports(kb, parse_sym, &s.imports, sort_term, errors, pending, file_idx);
+                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors, pending, file_idx);
                 }
             }
             Item::Namespace(n) => {
@@ -1874,9 +2000,9 @@ fn scan_items_pass2(
                 let qualified = make_qualified(prefix, &name);
                 if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
                     // Process namespace-level imports
-                    process_imports(kb, parse_sym, &n.imports, ns_term, errors, pending);
+                    process_imports(kb, parse_sym, &n.imports, ns_term, errors, pending, file_idx);
                     // Recurse
-                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified, errors, pending);
+                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified, errors, pending, file_idx);
                 }
             }
             Item::RequiresDecl(r) => {
@@ -2170,6 +2296,11 @@ struct PendingImport {
     short: String,
     qualified: String,
     span: Span,
+    /// WI-745: index into `scan_definitions`'s `files` slice — the source file
+    /// this import was written in. A pending import is resolved in sub-pass 4,
+    /// outside the per-file loop, so it must carry its own provenance to render
+    /// `path:line:col` if it stays unresolved.
+    file_idx: usize,
 }
 
 /// WI-369: reject importing an `internal` name into a scope that cannot see it.
@@ -2221,6 +2352,7 @@ fn process_imports(
     scope: TermId,
     errors: &mut Vec<LoadError>,
     pending: &mut Vec<PendingImport>,
+    file_idx: usize,
 ) {
     for imp in imports {
         let raw_path = join_segments(parse_sym, &imp.path.segments);
@@ -2324,6 +2456,7 @@ fn process_imports(
                             short,
                             qualified,
                             span: name.span,
+                            file_idx,
                         });
                     }
                 }
@@ -3591,8 +3724,26 @@ fn load_with_visited(
     if loader.errors.is_empty() {
         Ok(result)
     } else {
-        Err(loader.errors)
+        // WI-745: every error from this loader belongs to THIS file, so stamp
+        // its provenance in one place (the loader itself resolves names deep in
+        // recursion with no `&ParsedFile` to hand). Then dedup — a name resolved
+        // on two passes reports the same defect twice (defect 3).
+        Err(dedup_load_errors(
+            loader.errors.into_iter().map(|e| e.located_in(parsed)).collect(),
+        ))
     }
+}
+
+/// WI-745: drop duplicate load errors, preserving source order and the first
+/// occurrence. Keyed span-insensitively ([`LoadError::dedup_key`]) so one bad
+/// name resolved at two byte offsets — a fact functor resolved for owner
+/// tracking and again for the term build — is reported once.
+fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
+    let mut seen = HashSet::new();
+    errors
+        .into_iter()
+        .filter(|e| seen.insert(e.dedup_key()))
+        .collect()
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -5941,7 +6092,15 @@ impl<'a> Loader<'a> {
         loaded_paths: &'a mut HashSet<String>,
         global_scope: TermId,
     ) -> Self {
-        let source_id = kb.sources.register("<unknown>".to_string());
+        // WI-745: register this file's real path + text so a whole-KB-pass error
+        // (typer TypeMismatch etc.) whose span carries this `source_id` can be
+        // rendered `path:line:col`. The display name is the path if known.
+        let name = parsed
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let source_id = kb.sources.register_file(name, parsed.source.clone(), parsed.path.clone());
         let expr_syms = ExprBuilderSyms::new(kb);
         Self {
             kb,
@@ -6390,17 +6549,43 @@ impl<'a> Loader<'a> {
     /// first. A pattern-bound name in scope shadows any same-short-name
     /// rule / op / param / etc., so a body's reference to a let-bound
     /// `y` resolves to the binder, not an unrelated definition elsewhere.
-    fn remap_symbol(&mut self, sym: Symbol) -> Symbol {
+    fn remap_symbol(&mut self, sym: Symbol, span: Span) -> Symbol {
         let name = self.parsed.symbols.name(sym).to_owned();
-        self.remap_name_str(&name)
+        self.remap_name_str(&name, span)
+    }
+
+    /// WI-745: resolve a head functor for OWNER-TRACKING bookkeeping (which
+    /// definition encloses nested items) WITHOUT re-reporting a resolution
+    /// error. The same functor is resolved again by the term build, which is the
+    /// ONE place its diagnostic belongs; resolving loudly here too double-emitted
+    /// (an ambiguous `fact widget(…)` printed twice — defect 3). Reuses the full
+    /// resolution (success + dotted/implicit fallbacks) so a valid owner is
+    /// unchanged, then discards any diagnostic THIS resolution pushed — the
+    /// build's identical one stands. Fixing it at the producer (not by a
+    /// span-insensitive dedup) keeps dedup injective, so genuinely-distinct
+    /// same-name errors are never collapsed.
+    ///
+    /// INVARIANT (no silent skip): discarding here is sound ONLY because the
+    /// fact's term build re-resolves the SAME `parse_functor` through the same
+    /// `remap_symbol`, so any diagnostic dropped here is re-pushed there — see
+    /// the `Term::Fn` build arm (`kb_functor = self.remap_symbol(parse_functor,
+    /// …)`, marked "authoritative fact-head diagnostic site"). If a future build
+    /// path ever stops re-resolving the head, MOVE the truncate to that path (or
+    /// drop it) rather than let this quietly swallow the only report — a
+    /// suppressed resolution error is exactly the silent skip the repo forbids.
+    fn resolve_owner_symbol(&mut self, sym: Symbol, span: Span) -> Symbol {
+        let mark = self.errors.len();
+        let resolved = self.remap_symbol(sym, span);
+        self.errors.truncate(mark);
+        resolved
     }
 
     /// [`remap_symbol`] on a raw name string. WI-443 needs the string form:
     /// the dot member of an identifier-receiver call exists only as a
     /// segment of the flattened functor name, never as a parse `Symbol`.
     /// (Distinct from `remap_name`, which takes the structured parse `Name`.)
-    fn remap_name_str(&mut self, name: &str) -> Symbol {
-        let sym = self.remap_name_str_inner(name);
+    fn remap_name_str(&mut self, name: &str, span: Span) -> Symbol {
+        let sym = self.remap_name_str_inner(name, span);
         // WI-529: an operation body is value/eval context, so the boolean operators
         // `not`/`or` mean the dispatched Bool VALUE ops, NEVER the resolver primitives
         // (`reflect.not` NAF / `kernel.or` disjunction — neither has an eval builtin).
@@ -6433,7 +6618,10 @@ impl<'a> Loader<'a> {
     }
 
     /// `remap_name_str` without the op-body boolean redirect (the resolution itself).
-    fn remap_name_str_inner(&mut self, name: &str) -> Symbol {
+    /// WI-745: `span` is the source location of the reference being resolved, so
+    /// an `AmbiguousSymbol` / `ForbiddenInternalAccess` raised here points at the
+    /// use site instead of `Span::default()` (byte 0).
+    fn remap_name_str_inner(&mut self, name: &str, span: Span) -> Symbol {
         if let Some(local) = self.lookup_local_name(name) {
             return local;
         }
@@ -6444,7 +6632,7 @@ impl<'a> Loader<'a> {
                 self.errors.push(LoadError::AmbiguousSymbol {
                     name: name.to_owned(),
                     candidates: self.candidate_names(&candidates),
-                    span: Span::default(),
+                    span,
                     scope_name: self.scope_display_name(),
                 });
                 self.kb.symbols.intern(name)
@@ -6464,7 +6652,7 @@ impl<'a> Loader<'a> {
                     if self.qualified_visible(q_sym) {
                         return q_sym;
                     }
-                    return self.push_forbidden_internal(q_sym, name, Span::default());
+                    return self.push_forbidden_internal(q_sym, name, span);
                 }
                 // WI-040 / WI-521: reserved kernel desugaring vocab (synthesized
                 // `match_expr` / `field_access` / `ListLiteral` / …) and the
@@ -6480,7 +6668,7 @@ impl<'a> Loader<'a> {
                 }
                 // WI-369: distinguish a forbidden cross-scope reference to an
                 // `internal` name from a genuinely-unknown one before falling back.
-                if let Some(sym) = self.forbid_if_internal(name, Span::default()) {
+                if let Some(sym) = self.forbid_if_internal(name, span) {
                     return sym;
                 }
                 // WI-476: name not resolvable in the local environment. A
@@ -6521,7 +6709,10 @@ impl<'a> Loader<'a> {
     /// Strict scope-aware symbol resolution: errors on unresolved names.
     /// Used for positions where a symbol *must* be defined (functor names,
     /// explicit references). Unlike `remap_symbol`, does not silently intern.
-    fn remap_symbol_strict(&mut self, sym: Symbol) -> Symbol {
+    /// WI-745: `span` is the source location of the reference, so an
+    /// `UnresolvedName` / `AmbiguousSymbol` / `ForbiddenInternalAccess` raised
+    /// here points at the use site instead of `Span::default()` (byte 0).
+    fn remap_symbol_strict(&mut self, sym: Symbol, span: Span) -> Symbol {
         let name = self.parsed.symbols.name(sym);
         let scope = self.current_scope.raw();
         match self.kb.symbols.resolve_in_scope(name, scope) {
@@ -6530,7 +6721,7 @@ impl<'a> Loader<'a> {
                 self.errors.push(LoadError::AmbiguousSymbol {
                     name: name.to_owned(),
                     candidates: self.candidate_names(&candidates),
-                    span: Span::default(),
+                    span,
                     scope_name: self.scope_display_name(),
                 });
                 self.kb.symbols.intern(name)
@@ -6538,13 +6729,13 @@ impl<'a> Loader<'a> {
             ResolveResult::NotFound => {
                 // WI-369: a forbidden cross-scope `internal` reference gets a
                 // precise diagnostic rather than a misleading "unresolved name".
-                if let Some(sym) = self.forbid_if_internal(name, Span::default()) {
+                if let Some(sym) = self.forbid_if_internal(name, span) {
                     return sym;
                 }
                 let sym = self.kb.symbols.intern(name);
                 self.errors.push(LoadError::UnresolvedName {
                     name: name.to_owned(),
-                    span: Span::default(),
+                    span,
                     scope_name: self.scope_display_name(),
                 });
                 sym
@@ -6926,7 +7117,7 @@ impl<'a> Loader<'a> {
                     // to a Ref, don't recurse it as a child.
                     let name_term = self.parsed.terms.get(pos_args[1]).clone();
                     let name_ref = if let Term::Ident(sym) = name_term {
-                        let kb_sym = self.remap_symbol(sym);
+                        let kb_sym = self.remap_symbol(sym, self.parsed.terms.span(pos_args[1]));
                         self.kb.alloc(Term::Ref(kb_sym))
                     } else {
                         self.convert_term(pos_args[1])
@@ -6962,7 +7153,7 @@ impl<'a> Loader<'a> {
                     return kb_id;
                 }
 
-                let new_functor = self.remap_symbol(functor);
+                let new_functor = self.remap_symbol(functor, self.parsed.terms.span(parse_id));
 
                 // WI-007 context-aware ListLiteral desugaring: only rewrite
                 // `ListLiteral → cons/nil` when the surrounding field type is
@@ -7244,12 +7435,13 @@ impl<'a> Loader<'a> {
                 Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }
             }
             Term::Ref(sym) => {
-                let new_sym = self.remap_symbol_strict(sym);
+                let span = self.parsed.terms.span(parse_id);
+                let new_sym = self.remap_symbol_strict(sym, span);
                 Term::Ref(new_sym)
             }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
-                let new_sym = self.remap_symbol(sym);
+                let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
                 // Promote to Ref if the symbol resolved to a defined name
                 if self.kb.symbols.is_resolved(new_sym) {
                     Term::Ref(new_sym)
@@ -7540,7 +7732,7 @@ impl<'a> Loader<'a> {
                         // it now so the Build frame can drain only the sub-pattern children.
                         let name_term = self.parsed.terms.get(pos_args[0]).clone();
                         let name_ref = if let Term::Ident(sym) = name_term {
-                            let kb_sym = self.remap_symbol(sym);
+                            let kb_sym = self.remap_symbol(sym, self.parsed.terms.span(pos_args[0]));
                             self.kb.alloc(Term::Ref(kb_sym))
                         } else {
                             self.convert_term(pos_args[0])
@@ -7581,7 +7773,7 @@ impl<'a> Loader<'a> {
                         // receiver + args are children.
                         let name_term = self.parsed.terms.get(pos_args[1]).clone();
                         let name_ref = if let Term::Ident(sym) = name_term {
-                            let kb_sym = self.remap_symbol(sym);
+                            let kb_sym = self.remap_symbol(sym, self.parsed.terms.span(pos_args[1]));
                             self.kb.alloc(Term::Ref(kb_sym))
                         } else {
                             self.convert_term(pos_args[1])
@@ -7786,7 +7978,7 @@ impl<'a> Loader<'a> {
         let receiver_kb = self.mk_var_ref(head_sym);
         results.push(receiver_kb);
         self.push_leaf_occ(receiver_kb);
-        let member_sym = self.remap_name_str(member);
+        let member_sym = self.remap_name_str(member, self.parsed.terms.span(parse_id));
         let name_ref = self.kb.alloc(Term::Ref(member_sym));
         let named_keys: SmallVec<[Symbol; 2]> =
             visible_named.iter().map(|&(sym, _)| sym).collect();
@@ -7856,8 +8048,9 @@ impl<'a> Loader<'a> {
         }
         // The member is field metadata — resolve to a `Ref` (the field is keyed
         // by short name against the receiver's sort at the typer, not in scope),
-        // matching the `dot_apply` arm's name handling.
-        let kb_member = self.remap_symbol(member);
+        // matching the `dot_apply` arm's name handling — including its span
+        // (the member `Ident` itself, `pos_args[1]`), not the whole access term.
+        let kb_member = self.remap_symbol(member, self.parsed.terms.span(pos_args[1]));
         let name_ref = self.kb.alloc(Term::Ref(kb_member));
         work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
             outer_parse_id: parse_id,
@@ -8314,7 +8507,13 @@ impl<'a> Loader<'a> {
                 let total = pos_count + named_keys.len();
                 let drain_start = results.len() - total;
 
-                let kb_functor = self.remap_symbol(parse_functor);
+                // WI-745: authoritative fact-head diagnostic site. `load_fact`
+                // resolves this same functor QUIETLY for owner-tracking
+                // (`resolve_owner_symbol`, which truncates its copy); this build
+                // re-resolution is where an unresolved/ambiguous/forbidden head
+                // is actually reported. The two must stay paired — see the
+                // no-silent-skip invariant on `resolve_owner_symbol`.
+                let kb_functor = self.remap_symbol(parse_functor, self.parsed.terms.span(outer_parse_id));
                 let is_entity = matches!(
                     self.kb.symbols.get(kb_functor),
                     SymbolDef::Resolved { kind: SymbolKind::Entity, .. }
@@ -8745,9 +8944,9 @@ impl<'a> Loader<'a> {
             }
             Term::Var(Var::DeBruijn(n)) => Expr::Var(Var::DeBruijn(n)),
             Term::Var(Var::Rigid(_)) => unreachable!("Var::Rigid in stored parse term"),
-            Term::Ref(sym) => Expr::Ref(self.remap_symbol_strict(sym)),
+            Term::Ref(sym) => Expr::Ref(self.remap_symbol_strict(sym, self.parsed.terms.span(parse_id))),
             Term::Ident(sym) => {
-                let new_sym = self.remap_symbol(sym);
+                let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
                 if self.kb.symbols.is_resolved(new_sym) {
@@ -8762,7 +8961,7 @@ impl<'a> Loader<'a> {
                  (or its non-ParseAux child) is never a parse-only payload",
             ),
             Term::Fn { functor, pos_args, named_args } => {
-                let new_functor = self.remap_symbol(functor);
+                let new_functor = self.remap_symbol(functor, self.parsed.terms.span(parse_id));
                 if self.kb.entity_field_names(new_functor).is_some()
                     || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
@@ -8835,7 +9034,7 @@ impl<'a> Loader<'a> {
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         if let Term::Ident(sym) = parse_term {
-            let kb_sym = self.remap_symbol(sym);
+            let kb_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
             self.mk_var_ref(kb_sym)
         } else {
             let name_ref = self.convert_term(parse_id);
@@ -11262,10 +11461,13 @@ impl<'a> Loader<'a> {
         let sort_name = f.sort.as_deref().unwrap_or("Fact");
         let fact_sort = self.kb.make_name_term(sort_name);
 
-        // Set owner: use the fact's head functor symbol if available
+        // Set owner: use the fact's head functor symbol if available. WI-745:
+        // resolve it QUIETLY — the term build below resolves the same functor and
+        // owns its diagnostic; a loud resolve here double-reported it.
         let prev_owner = self.current_owner;
         if let Term::Fn { functor, .. } = self.parsed.terms.get(f.term) {
-            self.current_owner = Some(self.remap_symbol(*functor));
+            let functor = *functor;
+            self.current_owner = Some(self.resolve_owner_symbol(functor, self.parsed.terms.span(f.term)));
         }
 
         // WI-618: facts are rules with empty bodies — a keyword-less lambda
@@ -11725,7 +11927,7 @@ impl<'a> Loader<'a> {
                                 folded_guard_ids.insert(gtid.raw());
                                 continue;
                             }
-                            let kb_sym = self.remap_symbol(spec_sym);
+                            let kb_sym = self.remap_symbol(spec_sym, self.parsed.terms.span(gtid));
                             let bound = self.kb.make_sort_ref(kb_sym);
                             self.rule_tvar_bounds.insert(tvar, bound);
                             folded_guard_ids.insert(gtid.raw());

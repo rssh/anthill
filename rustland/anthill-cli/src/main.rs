@@ -492,7 +492,8 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
             }
         };
         match parse::parse(&source) {
-            Ok(p) => parsed_files.push(p),
+            // WI-745: stamp the path so a load error renders `path:line:col`.
+            Ok(p) => parsed_files.push(p.with_path(file.clone())),
             Err(parse_errors) => {
                 for pe in &parse_errors {
                     errors.push(format!("{}: {pe}", file.display()));

@@ -37,6 +37,11 @@ pub fn parse(source: &str) -> Result<ParsedFile, Vec<ParseError>> {
             items: converter.items,
             symbols: converter.symbols,
             terms: converter.terms,
+            // WI-745: keep the source so a load error's byte span can render as
+            // `line:col`. The path is unknown here — the caller stamps it via
+            // `ParsedFile::with_path`.
+            source: std::sync::Arc::from(source),
+            path: None,
         })
     } else {
         errors.sort_by_key(|e| e.span.start);

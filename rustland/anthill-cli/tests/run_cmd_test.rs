@@ -93,8 +93,14 @@ fn unresolved_name_blocks_the_run() {
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2, "an unresolved name must block the run; stderr:\n{}", out.stderr);
     assert_eq!(out.stdout, "", "the program must NOT run; it printed to stdout");
-    assert!(out.stderr.contains("error: unresolved name 'NoSuchSortXyz'"),
-            "expected a loud `error:`; got:\n{}", out.stderr);
+    assert!(out.stderr.contains("error:") && out.stderr.contains("unresolved name 'NoSuchSortXyz'"),
+            "expected a loud `error:` for the unresolved name; got:\n{}", out.stderr);
+    // WI-745: the diagnostic names the FILE and a line:col (`path:line:col: …`),
+    // not a raw byte offset that identifies nothing once files merge into one KB.
+    assert!(out.stderr.contains("unresolved-name.anthill:"),
+            "the error must name the source file with a line:col; got:\n{}", out.stderr);
+    assert!(!out.stderr.contains(" at "),
+            "the raw byte-offset Display (`… at N..M`) must be retired; got:\n{}", out.stderr);
     assert!(!out.stderr.contains("warning: unresolved name"),
             "the error must not be demoted to a warning:\n{}", out.stderr);
 }
@@ -108,13 +114,12 @@ fn catch_all_load_error_blocks_the_run() {
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2, "a LoadError::Other must block the run; stderr:\n{}", out.stderr);
     assert_eq!(out.stdout, "", "the program must NOT run; it printed to stdout");
-    assert!(out.stderr.contains("error: operation 'my.app.Lib.f'"),
+    assert!(out.stderr.lines().any(|l| l.starts_with("error:") && l.contains("operation 'my.app.Lib.f'")),
             "expected a loud `error:` naming the guard; got:\n{}", out.stderr);
-    // The positive assert is anchored on the CLI's own `error: ` prefix, not a
-    // bare `contains("error:")`: `Other` used to render its message as "load
-    // error: …", so a substring test matched its own text and passed even under
-    // `warning:` — vacuous against the very regression this pins.
-    //
+    // WI-745: even a span-less `Other` names its FILE now (`path: message`), so
+    // the user knows which of the merged sources raised the guard.
+    assert!(out.stderr.contains("load-error-other.anthill:"),
+            "the error must name the source file; got:\n{}", out.stderr);
     // The negative is line-wise and names the guard, so it cannot be satisfied
     // by the incidental absence of unrelated advisories on this stderr.
     assert!(!out.stderr.lines().any(|l| l.starts_with("warning:") && l.contains("my.app.Lib.f")),
@@ -124,21 +129,27 @@ fn catch_all_load_error_blocks_the_run() {
 /// The third promoted variant. An ambiguous name used to demote to `warning:`
 /// and run — silently picking a referent the user never chose.
 ///
-/// Known gap (pre-existing, surfaced by the promotion): the span reads `0..0`
-/// because two of the three producers push `Span::default()`
-/// (`remap_name_str_inner`, `remap_symbol_strict` — neither takes a span). The
-/// candidate list is what makes it locatable today, so that is what this pins.
+/// WI-745 closed the gap this test used to document: the span was `0..0`
+/// (`remap_symbol_strict` pushed `Span::default()`) AND the error printed twice
+/// (the fact functor is resolved once for owner-tracking and again for the term
+/// build). It now names the FILE at a real line:col and prints exactly once.
 #[test]
 fn ambiguous_symbol_blocks_the_run() {
     let path = fixtures_dir().join("ambiguous-symbol.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2, "an ambiguous symbol must block the run; stderr:\n{}", out.stderr);
     assert_eq!(out.stdout, "", "the program must NOT run; it printed to stdout");
-    assert!(out.stderr.contains("error: ambiguous symbol 'widget'"),
-            "expected a loud `error:`; got:\n{}", out.stderr);
+    assert!(out.stderr.contains("error:") && out.stderr.contains("ambiguous symbol 'widget'"),
+            "expected a loud `error:` for the ambiguous symbol; got:\n{}", out.stderr);
     assert!(out.stderr.contains("lib.one.Thing.widget")
             && out.stderr.contains("lib.two.Gadget.widget"),
             "the diagnostic must name both candidates; got:\n{}", out.stderr);
+    // WI-745 defect 2: a real span, not `0..0` (`remap_symbol_strict` now takes one).
+    assert!(out.stderr.contains("ambiguous-symbol.anthill:") && !out.stderr.contains("0..0"),
+            "the error must name the file at a real line:col, not `0..0`; got:\n{}", out.stderr);
+    // WI-745 defect 3: printed exactly once (the double-resolution is deduped).
+    assert_eq!(out.stderr.matches("ambiguous symbol 'widget'").count(), 1,
+            "the ambiguous symbol must be reported once, not per resolution; got:\n{}", out.stderr);
     assert!(!out.stderr.contains("warning: ambiguous"),
             "the error must not be demoted to a warning:\n{}", out.stderr);
 }

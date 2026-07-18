@@ -8,6 +8,8 @@
 /// into the hash-consed store.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::Arc;
 
 use smallvec::SmallVec;
 
@@ -127,9 +129,28 @@ pub struct ParsedFile {
     pub items: Vec<Item>,
     pub symbols: SymbolTable,
     pub terms: SimpleTermStore,
+    /// WI-745: the file's own source text, so a load error's byte span can be
+    /// rendered as `line:col`. Filled by [`crate::parse::parse`]; a file
+    /// constructed by other means (a test that hand-builds IR) leaves it empty,
+    /// in which case span rendering degrades to `1:1` rather than failing.
+    pub source: Arc<str>,
+    /// WI-745: the on-disk path this file was read from, so a load error can
+    /// name the FILE (`path:line:col: message`). The parser does not know the
+    /// path, so it is `None` after [`crate::parse::parse`]; the caller that read
+    /// the file stamps it via [`ParsedFile::with_path`]. `None` for embedded /
+    /// synthetic sources (stdlib, bundle) — those render `line:col` with no path.
+    pub path: Option<Arc<Path>>,
 }
 
 impl ParsedFile {
+    /// WI-745: stamp the on-disk path this file was read from, so load errors it
+    /// produces render `path:line:col: message`. Chainable after
+    /// [`crate::parse::parse`].
+    pub fn with_path(mut self, path: impl Into<Arc<Path>>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
     /// Source spans of every `Item::Fact` in this file, in source order.
     /// Persistence backends zip this with the loader's
     /// `LoadResult.fact_rule_ids` to record per-fact source locations for

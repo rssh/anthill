@@ -1437,7 +1437,7 @@ fn stdlib_load_all_into_kb() {
         // Print diagnostics before asserting so they're visible on failure
         let mut unresolved: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
         for e in errors {
-            if let load::LoadError::UnresolvedName { name, scope_name, .. } = e {
+            if let load::LoadError::UnresolvedName { name, scope_name, .. } = e.peel() {
                 *unresolved.entry(format!("{name} (in {scope_name})")).or_default() += 1;
             }
         }
@@ -1961,7 +1961,7 @@ end
     let errors = result.expect_err("expected load errors for unresolved import");
 
     let import_errors: Vec<_> = errors.iter().filter(|e| {
-        matches!(e, load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path.Foo")
+        matches!(e.peel(), load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path.Foo")
     }).collect();
     assert!(!import_errors.is_empty(),
         "should report UnresolvedImport for 'nonexistent.path.Foo', got: {:?}", errors);
@@ -1981,7 +1981,7 @@ end
     let errors = result.expect_err("expected load errors for unresolved wildcard import");
 
     let import_errors: Vec<_> = errors.iter().filter(|e| {
-        matches!(e, load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path")
+        matches!(e.peel(), load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path")
     }).collect();
     assert!(!import_errors.is_empty(),
         "should report UnresolvedImport for 'nonexistent.path', got: {:?}", errors);
@@ -2011,7 +2011,7 @@ end
 
     if let Err(errors) = &result {
         let import_errors: Vec<_> = errors.iter()
-            .filter(|e| matches!(e, load::LoadError::UnresolvedImport { .. }))
+            .filter(|e| matches!(e.peel(), load::LoadError::UnresolvedImport { .. }))
             .collect();
         assert!(import_errors.is_empty(),
             "selective import of enum entities should resolve; got: {:?}", import_errors);
@@ -2040,7 +2040,7 @@ end
     let errors = result.expect_err("expected load errors for unresolved selective import");
 
     let import_errors: Vec<_> = errors.iter().filter(|e| {
-        matches!(e, load::LoadError::UnresolvedImport { .. })
+        matches!(e.peel(), load::LoadError::UnresolvedImport { .. })
     }).collect();
     assert!(!import_errors.is_empty(),
         "should report UnresolvedImport errors, got: {:?}", errors);
@@ -2059,18 +2059,42 @@ fn unresolved_name_is_hard_error() {
 
     // Should have UnresolvedName errors for "Nonexistent"
     let unresolved: Vec<_> = errors.iter().filter(|e| {
-        matches!(e, load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
+        matches!(e.peel(), load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
     }).collect();
     assert!(!unresolved.is_empty(),
         "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);
 
     // Verify span is non-default (the name has a real source location)
     for err in &unresolved {
-        if let load::LoadError::UnresolvedName { span, .. } = err {
+        if let load::LoadError::UnresolvedName { span, .. } = err.peel() {
             assert!(span.end > span.start,
                 "span should be non-empty for unresolved name");
         }
     }
+}
+
+/// WI-745: the dedup that makes a single name's double-resolution print once
+/// (defect 3) must not collapse two GENUINELY-DISTINCT references to the same
+/// undefined name in scopes that merely share a SHORT name. Here `app.Item` and
+/// `lib.Item` each declare `operation describe(x: GhostType)`; both scopes render
+/// as short name `describe`, but the two `GhostType` sites are distinct and both
+/// must be reported. Pins the fix for keying dedup injectively (span-inclusive)
+/// rather than on the non-unique short scope name (`no-short-name-comparison`).
+#[test]
+fn distinct_scopes_sharing_a_short_name_both_report() {
+    let source = "namespace app\n  sort Item\n    operation describe(x: GhostType) -> Int64 = 0\n  end\nend\n\
+                  namespace lib\n  sort Item\n    operation describe(y: GhostType) -> Int64 = 0\n  end\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    let errors = load::load(&mut kb, &parsed, &NullResolver)
+        .expect_err("expected unresolved-name errors for GhostType");
+    let count = errors
+        .iter()
+        .filter(|e| matches!(e.peel(), load::LoadError::UnresolvedName { name, .. } if name == "GhostType"))
+        .count();
+    assert_eq!(count, 2,
+        "both distinct-scope GhostType sites must be reported, not collapsed by a shared short scope name; got: {:?}",
+        errors);
 }
 
 #[test]
@@ -4553,7 +4577,7 @@ fn incorrect_program_error_includes_line_number() {
     let errors = result.expect_err("expected load errors for unresolved type");
 
     let unresolved: Vec<_> = errors.iter().filter(|e| {
-        matches!(e, load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
+        matches!(e.peel(), load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
     }).collect();
     assert!(!unresolved.is_empty(),
         "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);

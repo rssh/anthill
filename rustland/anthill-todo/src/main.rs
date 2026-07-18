@@ -612,6 +612,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 // bundled definitions.
                 if is_bundled_domain_or_rules(&parsed) { continue; }
                 assign_default_namespace(&mut parsed);
+                // WI-745: stamp the path so a load error names the FILE
+                // (`path:line:col`) — the todo CLI merges embedded stdlib +
+                // bundle + N project files, so a bare byte offset identified none.
+                let parsed = parsed.with_path(file.clone());
                 project_items.push(ProjectFile { path: file.clone(), parsed });
             }
             Err(errs) => {
@@ -650,9 +654,12 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // attributable — the read arm above is too, and it BLOCKS — but WI-505:
         // the skipped file is a stale `domain.anthill` whose definitions the
         // bundle already supplies, so dropping it loses nothing. A load error has
-        // no such redundancy guarantee, and `load_all_per_file` returns a FLAT
-        // error vec with no file identity, so "skip just the offending file" is
-        // not even available here. WI-745 tracks the missing identity.
+        // no such redundancy guarantee, so it BLOCKS. WI-745 gave each error its
+        // file identity (the `path:line:col` below now names the offending
+        // project file among the merged embedded stdlib + bundle + N files), so
+        // "skip just the offending file" is now *available* — but it stays
+        // unimplemented on purpose: a load error is not the redundant duplicate
+        // the parse arm skips, and WI-744 requires it to block.
         Err(errs) => {
             for e in &errs {
                 eprintln!("error: {e}");
