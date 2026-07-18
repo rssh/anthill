@@ -18,6 +18,7 @@ namespace anthill.reflect
   import anthill.prelude.{Type}
   import anthill.prelude.{TypeExtractor}
   import anthill.prelude.{Modifiable}
+  import anthill.prelude.{FieldOf}
 
   -- ================================================================
   -- Opaque kernel handles (abstract — implementation-defined)
@@ -150,12 +151,27 @@ namespace anthill.reflect
   -- Symbol → kind string ("Sort", "Entity", "Operation", "Field", etc.)
   operation kind(s: Symbol) -> String
 
-  -- Field access (dot projection): extract a field from a term.
-  -- ?x.y desugars to field_access(?x, y).
-  -- Two dispatch modes:
-  --   1. Entity instance: extract named field from entity constructor args.
-  --   2. Sort component: look up field in sort's scope (e.g., Monoid.Carrier).
-  operation field_access(object: Term, field: Symbol) -> Term
+  -- Field access (dot projection): extract a field from a value.
+  -- `?x.y` desugars to `field_access[Name = "y"](?x, "y")`.
+  --
+  -- SELF-CORRECTING RETURN (WI-759): the result is `FieldOf[T, Name]` — the
+  -- type-level projection of `T`'s member named `Name` — so re-typing an
+  -- already-desugared node re-derives the field's type from THIS signature.
+  -- The typer holds no rule keyed on `field_access`'s identity; `FieldOf`
+  -- reduces at the same boundary `Concat` / `Without` do, over the three
+  -- receivers that have members:
+  --   1. Entity instance — the named field of an entity constructor, with the
+  --      receiver's type arguments substituted; `internal` visibility enforced.
+  --   2. Named tuple — the component of that name (or positional `_N`).
+  --   3. Term — a runtime term's named argument (the reflect metaprogramming
+  --      call), which projects to `Term` for any name.
+  --
+  -- `Name` is a compile-time NAME in TYPE position (a string literal). It is
+  -- passed IN ADDITION to the `field` value argument, not instead of it: there
+  -- are no singleton types, so the value argument types as plain `String` and
+  -- cannot carry the name into the return type. Evaluation, resolution and code
+  -- generation read only `field`.
+  operation field_access[R, Name](object: R, field: String) -> FieldOf[T = R, Name = Name]
 
   -- Inspect a term's structure by name. These bypass `field_access` /
   -- `lookup_symbol` (which require Symbol values that anthill code can't

@@ -57,3 +57,13 @@ impl Type {
 /// in the excluded free op `extract`, so it need only exist as a host type.
 #[derive(Clone, Debug)]
 pub struct TypeExtractor;
+
+/// Opaque host stub for the kernel `FieldOf[T, Name]` type constructor (WI-759),
+/// the sibling of `TypeExtractor` above and for the same reason: `reflect.anthill`
+/// imports it, so the codegen emits `use crate::prelude::{FieldOf}`, but it appears
+/// only in the excluded free op `field_access` — so it need only EXIST as a host
+/// type, never carry anything. `FieldOf` is inert by construction: it is reduced by
+/// the typer (to the type of `T`'s member named `Name`) and never reaches a runtime
+/// value, exactly as `Concat` / `Without` never do.
+#[derive(Clone, Debug)]
+pub struct FieldOf;

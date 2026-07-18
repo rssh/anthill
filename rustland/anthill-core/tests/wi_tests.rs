@@ -71,6 +71,9 @@ mod wi739_guard_generator_delay_test;
 #[path = "include/wi727_fix_test.rs"]
 mod wi727_fix_test;
 
+#[path = "include/wi734_abstract_operand_test.rs"]
+mod wi734_abstract_operand_test;
+
 #[path = "include/wi725_self_carried_spec_simp_test.rs"]
 mod wi725_self_carried_spec_simp_test;
 
@@ -689,6 +692,9 @@ mod wi751_namespace_root_shadow_test;
 
 #[path = "include/wi752_dotted_ladder_test.rs"]
 mod wi752_dotted_ladder_test;
+
+#[path = "include/wi759_field_of_type_test.rs"]
+mod wi759_field_of_type_test;
 
 #[path = "include/wi458_head_span_occurrence_test.rs"]
 mod wi458_head_span_occurrence_test;

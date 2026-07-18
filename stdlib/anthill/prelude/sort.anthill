@@ -50,13 +50,30 @@ end
    `ExprCarried` is a type FORM, `project_type_member` its internal reduction; `Concat`
    is the form, the merge its reduction.
 
-   FIRST-INCREMENT scope (WI-714 join): `Concat` reduces only as a DIRECT type argument
-   (the schema position `Relation[T = Concat[A = .., B = ..]]`) over two CONCRETE named
-   tuples with DISJOINT field names. Each of the following is a LOUD error — deferred to a
-   follow-up, never a silent skip: a field-name collision; a non-named-tuple operand (a
-   1-collapse / membership schema); an ABSTRACT operand (an un-instantiated schema type
-   param — so a generic wrapper over abstract relation schemas is not yet expressible); and
-   a `Concat` nested in any other carrier (a tuple field, an arrow, an effect row). >}
+   SCOPE: `Concat` reduces only as a DIRECT type argument (the schema position
+   `Relation[T = Concat[A = .., B = ..]]`). Each of the following is a LOUD error —
+   deferred to a follow-up, never a silent skip: a field-name collision; a non-named-tuple
+   operand (a 1-collapse / membership schema); and a `Concat` nested in any other carrier
+   (a tuple field, an arrow, an effect row).
+
+   ABSTRACT OPERANDS (WI-734) — settled once for the whole ctor family (`Concat`,
+   `Without`, and any later member): an operand that is NOT YET KNOWN leaves the ctor
+   SYMBOLIC rather than raising, to reduce later once the operand grounds. "Not yet known"
+   means a logic VARIABLE — the skolem an enclosing generic op's `[S]` becomes, or an
+   unsolved inference var — or an unreduced residual one level down. So a generic wrapper
+   over abstract relation schemas IS expressible: `merge(a, b)` inside
+   `[L, R](a: Relation[T = L], b: Relation[T = R]) -> Relation[T = Concat[A = L, B = R]]`
+   type-checks, and the residual reduces at the concrete call. An operand that IS known but
+   cannot be merged stays a LOUD error — "cannot reduce yet" and "cannot reduce ever" are
+   different answers and no longer share one diagnostic.
+
+   CONFLUENCE: a residual exists only over an un-instantiated operand, so a fully concrete
+   type is always fully reduced — there are never two comparable forms of one concrete
+   type. CAVEAT: the reduction gate reads an op's DECLARED return type, so a generic
+   wrapper must PROPAGATE the ctor in its own signature (as `join` / `fix` do); widening to
+   a bare `Relation` lets the residual escape unreduced. That escape is SAFE rather than a
+   silent wrong schema — an unreduced ctor offers no named-tuple schema, so any column use
+   on it fails LOUDLY at dot dispatch. Widening costs usability, never correctness. >}
 sort anthill.prelude.Concat
   sort A = ?
   sort B = ?
@@ -80,14 +97,65 @@ end
    naming no `T` field, or one whose (captured) type mismatches its column, is a LOAD error
    in the reduction (§2.2). An empty `Drop` (`r.fix()`, an empty capture) is the identity.
 
-   FIRST-INCREMENT scope (WI-727 fix): `Without` reduces only as a DIRECT type argument
-   (the schema position `Relation[T = Without[T = .., Drop = ..]]`) over a CONCRETE named
-   tuple `T`. A `Drop` naming no column, a type mismatch, a non-named-tuple `T` (a
-   1-collapse / membership schema, which has no named column to drop by), and a `Without`
-   nested in any other carrier are each a LOUD error — deferred, never a silent skip. >}
+   SCOPE: `Without` reduces only as a DIRECT type argument (the schema position
+   `Relation[T = Without[T = .., Drop = ..]]`) over a CONCRETE named tuple `T`. A `Drop`
+   naming no column, a type mismatch, a non-named-tuple `T` (a 1-collapse / membership
+   schema, which has no named column to drop by), and a `Without` nested in any other
+   carrier are each a LOUD error — deferred, never a silent skip.
+
+   ABSTRACT OPERANDS (WI-734): `Without` follows the family rule stated on `Concat` above
+   — an operand that is not yet known (a logic variable, or an unreduced residual) leaves
+   the ctor symbolic to reduce once it grounds, while a KNOWN but undroppable operand
+   stays loud. `p.fix(name: "a")` on a `p: Relation[T = S]` with `S` abstract therefore
+   type-checks instead of reporting the 1-collapse diagnostic against a type parameter. >}
 sort anthill.prelude.Without
   sort T = ?
   sort Drop = ?
+end
+
+{< FieldOf[T, Name]: the TYPE-position surface of a FIELD PROJECTION (WI-759) — the type
+   `anthill.reflect.field_access(object, field)` returns. Where `Concat` / `Without` merge
+   and shrink SCHEMAS, `FieldOf` selects ONE member of a receiver by NAME, so
+   `field_access` states its own result type instead of the typer patching it afterwards:
+
+     operation field_access[R, Name](object: R, field: String) -> FieldOf[T = R, Name = Name]
+
+   That signature is SELF-CORRECTING — re-typing a stored `field_access` node re-derives
+   the field's type from the declared return, so the FORWARD direction (`x.f` ⟹ the field
+   type) and the REVERSE (re-typing the rewritten node) are ONE decision procedure and
+   cannot drift. Before WI-759 they were two: the reverse was a pair of typer hatches keyed
+   on `field_access`'s own identity, which the repo's "nothing in the typer keyed on an
+   operation's identity" discipline forbids, and which had already drifted — the forward
+   direction handled a named-tuple receiver and the reverse did not (WI-758).
+
+   `Name` is a compile-time NAME in TYPE position: a `denoted` value-in-type carrying a
+   string (`FieldOf[T = Person, Name = "age"]`). There are no singleton types, so a field
+   name in VALUE position types as plain `String` and LOSES the name; the denoted type-arg
+   channel is the only route that keeps it. `field_access`'s rewrite therefore supplies
+   `Name` through the call's `[Name = "age"]` type-argument channel while the VALUE
+   argument `field` stays the string it always was — eval, resolution and codegen read the
+   selector exactly as before.
+
+   REDUCTION covers the three receivers that HAVE members, from ONE lookup shared with the
+   forward `x.f` dispatch (`field_of_type` in kb/typing.rs):
+     - an ENTITY / sort receiver  ⟹ the declared field's type, with the receiver's
+       type-arguments substituted, and its OWNING constructor checked for `internal`
+       visibility (WI-369) at the projection site;
+     - a NAMED-TUPLE receiver     ⟹ the component's type, matched by SHORT name (the
+       convention every other named-tuple member lookup uses). A tuple component has no
+       owning constructor, so it has no `internal` marker to check — that is the correct
+       answer, not a missing arm;
+     - a `Term` receiver          ⟹ `Term`, the genuine reflect metaprogramming call.
+   A receiver that HAS no members (a scalar, an arrow), or a name that names no member of
+   one that does, is a LOUD error rather than a silent widening to `Term`.
+
+   ABSTRACT OPERANDS (WI-734): `FieldOf` follows the family rule stated on `Concat` above.
+   A receiver that is not yet known — a rule body's `field_access(?t, f)` has no static
+   receiver AT ALL — leaves the ctor symbolic to reduce once it grounds, which is what lets
+   a reducible ctor sit in a signature checked before the receiver's type is known. >}
+sort anthill.prelude.FieldOf
+  sort T = ?
+  sort Name = ?
 end
 
 {< EffectExpression: the effect-row carried by an arrow (proposal 045 §3, §6).
