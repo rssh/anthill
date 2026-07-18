@@ -1,7 +1,9 @@
--- WI-744: this directory holds ordinary non-anthill files. They must be ignored
--- outright — not loaded, not warned about — exactly as a .md or .rs beside a
--- program is. Before the `meta`+`data` envelope sniff, `collect_data_files`
--- claimed every .toml/.json under a path, so these hard-failed the load.
+-- WI-744 / WI-746: this directory holds ordinary non-anthill files. They must be
+-- ignored outright — not loaded, not warned about — exactly as a .md or .rs
+-- beside a program is. `collect_data_files` once claimed every .toml/.json under
+-- a path, so these hard-failed the load; WI-744 dismissed them by sniffing for a
+-- `meta`+`data` envelope, and WI-746 stopped reading them at all, since none
+-- bears the conventional `anthill.toml` / `anthill.json` name.
 namespace data.foreign
   import anthill.prelude.{Int64, String}
   sort Person

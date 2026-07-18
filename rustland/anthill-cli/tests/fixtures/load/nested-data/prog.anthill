@@ -1,0 +1,9 @@
+-- WI-746: the lookup for `anthill.toml` is NOT recursive. This directory has no
+-- data file of its own; `sub/anthill.toml` would hard-fail the load if it were
+-- reached, so a clean load is what proves the walk is gone.
+namespace data.nested
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity mk(name: String, age: Int64)
+  end
+end

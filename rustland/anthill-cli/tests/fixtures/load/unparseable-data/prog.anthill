@@ -1,0 +1,8 @@
+-- WI-746: paired with this directory's `anthill.toml`, which does not parse.
+-- The .anthill is fine; the declared data file is not, and that must block.
+namespace data.unparseable
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity mk(name: String, age: Int64)
+  end
+end

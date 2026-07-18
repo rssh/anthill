@@ -1,0 +1,8 @@
+-- WI-746: paired with this directory's `anthill.toml`, which parses but carries
+-- no `meta.entity`. The .anthill is fine; the declared data file is not.
+namespace data.envelopeless
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity mk(name: String, age: Int64)
+  end
+end

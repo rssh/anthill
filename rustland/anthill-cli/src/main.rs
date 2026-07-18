@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -402,36 +403,84 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
     Ok(files)
 }
 
-/// Collect `.toml` and `.json` data files from paths (directories or individual files).
+/// The conventional data-file stem. A directory's `anthill.toml` / `anthill.json`
+/// — and nothing else on disk — is read as anthill data (proposal 021 names this
+/// file; see [`conventional_data_files`]).
+const DATA_STEM: &str = "anthill";
+
+/// The data files of the named paths: `<dir>/anthill.{toml,json}` for each path
+/// that is a DIRECTORY. Not recursive, and no other name qualifies.
 ///
-/// WI-744: returns `Err` rather than swallowing an unreadable directory. A path
-/// that is neither a directory nor a data file is NOT an error — the same paths
-/// are handed to [`collect_anthill_files`], so a `.anthill` file here is simply
-/// not data. Non-existent paths are likewise left to that function, which runs
-/// first and reports them.
-fn collect_data_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>> {
+/// WI-746 — data is OPT-IN, by convention rather than by discovery. This used to
+/// walk each directory recursively and claim EVERY `.toml`/`.json` under it,
+/// which conflated "in the directory" with "addressed to us": pointing `anthill
+/// load` at this repo's root read and parsed 1620 files, 1588 of them Cargo
+/// build-cache fingerprints, to find zero data files. Worse, intent was
+/// unobservable — a `Cargo.toml` and a genuine-but-malformed data file are
+/// indistinguishable once you are guessing from shape — so WI-744 had to sniff
+/// for a `meta.entity` envelope and SILENTLY skip anything without one. That
+/// bought quiet at the cost of dropping two things it should have shouted about:
+/// a data file with a syntax error (no parse ⇒ no envelope ⇒ "not ours"), and one
+/// whose author forgot the envelope.
+///
+/// A fixed name dissolves both. `anthill.toml` is not a name a foreign project
+/// picks by accident, so a file sitting at one IS a declaration — and every fault
+/// in it is reported loudly (see the load site in [`load_kb_with_stdlib`]). The
+/// envelope sniff is gone with the walk that needed it; there is no longer
+/// anything to guess.
+///
+/// Data files elsewhere, or under other names, are not a CLI concern: they are
+/// tool output (proposal 021), and `term_ser::load_toml` / `load_json` load them
+/// programmatically.
+///
+/// ON THE NAME. Proposal 028 §"Non-goals" reserves `anthill.toml` for a future
+/// PROJECT MANIFEST, which reads like a collision and is not one: 021 §"Stage 0:
+/// anthill.toml (config)" already spends this name on precisely what loads here,
+/// a file of `Project` / `ToolDef` FACTS. A manifest in this system is data — the
+/// sibling `project.anthill` is the same content in `.anthill` syntax — so if 028
+/// ever wants one, it wants this file, arriving through this path, and gets it
+/// for free. What must NOT happen is `anthill.toml` growing a second, non-fact
+/// schema (build settings, dependency resolution) parsed somewhere else; that
+/// would put two readers on one name.
+///
+/// A path that is a plain FILE contributes no data — `anthill load prog.anthill`
+/// names one source and means it. Non-existent paths are left to
+/// [`collect_anthill_files`], which runs first and reports them.
+fn conventional_data_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let mut errors = Vec::new();
     for path in paths {
-        if !path.exists() {
+        if !path.is_dir() {
             continue;
         }
-        if path.is_dir() {
-            if let Err(e) =
-                fs_util::collect_files_recursive(path, &term_ser::DATA_EXTENSIONS, &mut files)
-            {
-                errors.push(e);
+        // Keyed off the reader's own extension list, so a format we can read is
+        // never one we fail to look for (and vice versa). BOTH are collected when
+        // both exist: each is equally a declaration, so loading one and ignoring
+        // the other would be the silent skip in a new place.
+        for ext in term_ser::DATA_EXTENSIONS {
+            let candidate = path.join(format!("{DATA_STEM}.{ext}"));
+            // ABSENT vs UNREADABLE, and only `NotFound` means absent. An
+            // `is_file()` probe conflates the two — it answers false for a
+            // dangling symlink, a directory wearing the name, and any stat
+            // failure — which would drop a DECLARED data file without a word,
+            // the exact silent skip this function exists to end. (`fs_util`
+            // tolerates the same gap in its walk, but its reason inverts here:
+            // there a dangling symlink was never ours to claim; at a
+            // conventional name it is ours by definition.)
+            //
+            // So anything that is not provably absent is collected, and the
+            // load site's `read_to_string` reports what is actually wrong with
+            // it. `symlink_metadata` rather than `metadata` because it must not
+            // follow the link — resolving it would turn a dangling symlink back
+            // into `NotFound` and re-open the hole.
+            match fs::symlink_metadata(&candidate) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                _ => files.push(candidate),
             }
-        } else if fs_util::has_extension(path, &term_ser::DATA_EXTENSIONS) {
-            files.push(path.clone());
         }
-    }
-    if !errors.is_empty() {
-        return Err(errors);
     }
     files.sort();
     files.dedup();
-    Ok(files)
+    files
 }
 
 // ── Output naming ───────────────────────────────────────────────────
@@ -552,22 +601,18 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
         }
     }
 
-    // Load .toml and .json data files (after entity definitions are available).
+    // Load the conventional data files (after entity definitions are available,
+    // since the deserializer reads each entity's schema to interpret its fields).
     //
-    // WI-744: a data file that cannot be read or loaded is an ERROR. These used
-    // to warn and `continue`, so the facts never landed and the KB silently
-    // answered from data the user had supplied but which was never there — a
-    // confident wrong answer, which is worse than not answering. Errors are
-    // accumulated so one run reports every bad file, not just the first.
-    let data_files = match collect_data_files(paths) {
-        Ok(f) => f,
-        Err(errs) => {
-            for e in &errs {
-                eprintln!("error: {e}");
-            }
-            return Err(1);
-        }
-    };
+    // EVERY fault here is an error — unreadable, unparseable, or rejected by the
+    // deserializer. WI-744: these used to warn and `continue`, so the facts never
+    // landed and the KB answered from data the user had supplied but which was
+    // never there — a confident wrong answer, worse than not answering. WI-746 is
+    // what makes the *parse* arm loud too: a file at `anthill.toml` was put there
+    // to be loaded, so a syntax error in it is a fault to report, not evidence
+    // that the file was never ours. Errors are accumulated so one run reports
+    // every bad file, not just the first.
+    let data_files = conventional_data_files(paths);
     if !data_files.is_empty() {
         let domain = kb.make_name_term("_data");
         let mut data_errors: Vec<String> = Vec::new();
@@ -579,13 +624,23 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
                     continue;
                 }
             };
-            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-            match term_ser::load_data_file(&mut kb, &source, ext, domain) {
-                // Not anthill data — an ordinary Cargo.toml / package.json that
-                // happens to sit under a path we were pointed at. Not ours, so
-                // neither loaded nor complained about.
-                Ok(None) => {}
-                Ok(Some(n)) => {
+            let loaded = match file.extension().and_then(|e| e.to_str()) {
+                Some("toml") => term_ser::load_toml(&mut kb, &source, domain),
+                Some("json") => term_ser::load_json(&mut kb, &source, domain),
+                // Unreachable: `conventional_data_files` builds these names from
+                // `DATA_EXTENSIONS`, the reader's own list. Loud rather than
+                // skipped, so the two cannot drift apart in silence.
+                other => {
+                    data_errors.push(format!(
+                        "{}: no reader for extension {:?}",
+                        file.display(),
+                        other.unwrap_or("")
+                    ));
+                    continue;
+                }
+            };
+            match loaded {
+                Ok(n) => {
                     if verbose {
                         eprintln!("loaded {} fact(s) from {}", n, file.display());
                     }

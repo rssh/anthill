@@ -1,0 +1,3 @@
+[people]
+meta = { entity = "data.both.Person" }
+data = [ { name = "from-toml", age = 1 } ]

@@ -1,0 +1,15 @@
+# WI-746: syntactically invalid TOML — the `[people` table header is unclosed.
+#
+# Under WI-744's discovery model this was SKIPPED WITHOUT A WORD: data files were
+# found by walking the directory, so intent was unobservable, and a file that
+# will not parse yields no `meta`+`data` envelope — hence no evidence it was ever
+# ours, hence indistinguishable from a foreign `tsconfig.json`. Erroring on it
+# was tried and was untenable: it killed `anthill load` over JSONC files the tool
+# had merely FOUND.
+#
+# The name is the evidence. This file is at `anthill.toml`, so it was put here to
+# be loaded, and failing to parse it is a fault to report — not a reason to
+# conclude it was never addressed to us.
+[people
+meta = { entity = "data.unparseable.Person" }
+data = [ { name = "abe", age = 42 } ]

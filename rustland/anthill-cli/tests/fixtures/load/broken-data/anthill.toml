@@ -1,0 +1,9 @@
+# WI-746: at the conventional data-file name, so this IS this directory's
+# declared data. It parses and carries the `meta`+`data` envelope, but names an
+# entity that does not exist — the deserializer rejects it, and that must block.
+#
+# Sibling fixtures cover the two faults WI-744 could only skip silently:
+# `unparseable-data/` (no parse) and `envelope-less-data/` (no meta.entity).
+[people]
+meta = { entity = "data.broken.NoSuchEntityAnywhere" }
+data = [ { name = "abe", age = 42 } ]

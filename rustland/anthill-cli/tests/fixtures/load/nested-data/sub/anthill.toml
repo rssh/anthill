@@ -1,0 +1,11 @@
+# WI-746: bears the conventional NAME but sits one level down, so it is not this
+# project's data file — the convention is `<dir>/anthill.toml` for a directory
+# named on the command line, not "any anthill.toml anywhere beneath it".
+#
+# It is deliberately BROKEN (unknown entity, the `broken-data/` fault). If the
+# recursive walk ever comes back, this stops being ignored and starts failing the
+# load — so `the_lookup_is_not_recursive` catches the regression loudly instead
+# of silently passing on a file that is no longer read for a different reason.
+[people]
+meta = { entity = "data.nested.NoSuchEntityAnywhere" }
+data = [ { name = "abe", age = 42 } ]

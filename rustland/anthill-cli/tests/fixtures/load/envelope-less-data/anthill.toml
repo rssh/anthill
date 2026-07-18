@@ -1,0 +1,16 @@
+# WI-746: valid TOML with `[meta]` and `[data]` sections but no `meta.entity`
+# string — the author forgot the envelope.
+#
+# The two data-bearing lines are IDENTICAL to `foreign-files/config.toml`, and
+# that is the whole point: there is the same file, correctly ignored, and here it
+# is, correctly an error. Nothing about the CONTENT distinguishes them — only the
+# NAME does. Under WI-744's sniff, shape was the only evidence available, so this
+# shape had to be read as "not ours" and skipped in silence; `meta.entity` was
+# picked as the discriminator precisely because a config file like config.toml
+# never carries one.
+[meta]
+name = "some-tool"
+version = 2
+
+[data]
+path = "/somewhere"

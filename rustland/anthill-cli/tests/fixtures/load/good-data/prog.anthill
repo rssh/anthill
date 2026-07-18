@@ -1,0 +1,9 @@
+-- WI-746: the happy path. Paired with this directory's `anthill.toml`, whose
+-- facts must actually reach the KB — every other fixture here pins a REFUSAL
+-- (blocked, or not-read), so without this one nothing proves the channel works.
+namespace data.good
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity Person(name: String, age: Int64)
+  end
+end

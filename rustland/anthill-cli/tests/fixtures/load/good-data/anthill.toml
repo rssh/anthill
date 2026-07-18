@@ -1,0 +1,4 @@
+# WI-746: valid, declared data. Its two facts must be queryable after the load.
+[people]
+meta = { entity = "data.good.Person" }
+data = [ { name = "abe", age = 42 }, { name = "bea", age = 37 } ]

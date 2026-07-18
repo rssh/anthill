@@ -1,0 +1,9 @@
+-- WI-746: `anthill.toml` here is a DIRECTORY, not a file. The name is still a
+-- declaration, so the load must fail loudly rather than shrug — see the fixture
+-- note in `anthill.toml/README.md`.
+namespace data.dirnamed
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity Person(name: String, age: Int64)
+  end
+end

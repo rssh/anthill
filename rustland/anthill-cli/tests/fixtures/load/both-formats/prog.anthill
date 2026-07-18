@@ -1,0 +1,9 @@
+-- WI-746: this directory declares data in BOTH conventional formats. Each is
+-- equally a declaration, so both must load — ignoring one would reintroduce the
+-- silent skip in a new place.
+namespace data.both
+  import anthill.prelude.{Int64, String}
+  sort Person
+    entity Person(name: String, age: Int64)
+  end
+end

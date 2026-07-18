@@ -1,0 +1,2 @@
+{ "meta": { "entity": "data.both.Person" },
+  "data": [ { "name": "from-json", "age": 2 } ] }

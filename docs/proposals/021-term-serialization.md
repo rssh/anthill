@@ -283,6 +283,22 @@ TOML is preferred for files (human-readable config). JSON is preferred for machi
 
 Both formats produce the same KB facts. The loader detects the format by extension and dispatches accordingly.
 
+### How the CLI finds data files (WI-746)
+
+Data is **opt-in by convention**, never by discovery. For each *directory* named on the command line, `anthill load` / `check` / `query` / `prove` / `codegen` read:
+
+| Path | Read as data |
+|---|---|
+| `<dir>/anthill.toml`, `<dir>/anthill.json` | yes |
+| any other `.toml` / `.json`, at any depth | no |
+| `<dir>/sub/anthill.toml` | no — the lookup is not recursive |
+
+Every fault in a file found this way is a **hard error**: unreadable, unparseable, or missing its `meta.entity` envelope. The name is the declaration, so a malformed file is a fault to report rather than grounds to conclude it was never ours.
+
+Data under other names or locations is tool output and is loaded programmatically via `term_ser::load_toml` / `load_json`; the CLI has no channel for it.
+
+> Extension alone used to be the whole rule — every `.toml`/`.json` under a named path was claimed recursively. That conflated *in the directory* with *addressed to us*: pointing `anthill load` at the anthill repo read 1620 files, 1588 of them Cargo build-cache fingerprints, to find zero data files, and an ordinary `Cargo.toml` failed the load outright. Sniffing content for the envelope (WI-744) suppressed the noise but could not recover intent — a data file with a syntax error yields no envelope, so it was indistinguishable from a foreign file and skipped in silence. A fixed name supplies the intent that sniffing could only guess at.
+
 ## Implementation
 
 1. **Serializer** (`kb::serialize`): `Term → TOML Value` / `Term → JSON Value`, using entity schema for field names and types
