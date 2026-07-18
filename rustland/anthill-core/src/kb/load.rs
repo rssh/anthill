@@ -5784,6 +5784,27 @@ enum LoadBuildFrame {
     },
 }
 
+/// Which receiver disposition a [`Loader::try_identifier_dot_field`] pass admits.
+/// The two are SEPARATE passes rather than one widened gate because the bare-qualified
+/// citation ([`Loader::try_qualified_rule_ref`]) has to run BETWEEN them — see the
+/// precedence ladder in `visit_load`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DotFieldPass<'n> {
+    /// WI-280: the receiver's syntactic ROOT names a local value (a let/lambda/match
+    /// binder or an op param). Runs FIRST — a binder shadows a same-named rule, so a
+    /// local root must beat even a whole-chain rule citation.
+    LocalRoot,
+    /// WI-749: some PREFIX of the receiver's dotted name resolves to a rule, whose
+    /// reference IS the `Relation[T]` value. Runs LAST, so the more specific
+    /// whole-chain citation gets first refusal.
+    ///
+    /// Carries the receiver's dotted NAME rather than re-deriving it: it is a borrowed
+    /// slice of the chain name `visit_load` already built for the citation pass (the
+    /// receiver is that name minus its last segment), so the prefix scan costs no walk
+    /// and no allocation of its own.
+    RulePrefix(&'n str),
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -7840,28 +7861,67 @@ impl<'a> Loader<'a> {
                         {
                             return;
                         }
-                        // WI-280: a bare-identifier value-receiver FIELD access
-                        // (`p.x`) reaches the loader as `field_access(p, Ident(x))`
-                        // — the no-call sibling of the WI-443 method-call re-route.
-                        // Routed to a zero-arg DotApply when `p`'s root names a
-                        // local value; otherwise it keeps the `field_access` path.
-                        if name == "field_access"
-                            && self.try_identifier_dot_field(parse_id, &pos_args, work)
-                        {
-                            return;
-                        }
-                        // WI-714 (proposal 052) — the BARE-QUALIFIED citation
-                        // position: a rule cited by a dotted name with NO trailing
-                        // `(…)` (`ns.rule` / `Sort.rule`) parses (§6.7) as a
-                        // `field_access` chain, not a call. When that chain spells a
-                        // name resolving to a RULE, it is the `Relation[T]` value —
-                        // collapse it to the SAME reference form the bare UNQUALIFIED
-                        // rule name lowers to. AFTER the value-receiver re-route, so a
-                        // rule cannot shadow a genuine field access on a local value.
-                        if name == "field_access"
-                            && self.try_qualified_rule_ref(parse_id, results)
-                        {
-                            return;
+                        // The three `field_access` re-routes, in PRECEDENCE order. A
+                        // `field_access` chain (`p.x`, `Queen.find`, the no-call
+                        // sibling of the WI-443 method-call re-route) is a static NAME
+                        // path until something proves a prefix of it denotes a VALUE;
+                        // these differ only in what counts as proof, so the order is
+                        // load-bearing — MOST SPECIFIC binding first:
+                        //  1. WI-280: the receiver's ROOT names a local value (`p.x`).
+                        //     A binder shadows everything, so this wins outright.
+                        //  2. WI-714: the WHOLE chain names a rule (`Queen.find`) —
+                        //     the bare-qualified CITATION, i.e. the relation itself.
+                        //  3. WI-749: a PREFIX of the receiver names a rule
+                        //     (`person_row.isEmpty`) — a zero-arg member ON that
+                        //     relation.
+                        // (3) MUST come after (2), and that is not decorative: a rule
+                        // LABEL may itself be dotted (`rule a.b: …` — `scan_rule`
+                        // defines the joined name, so it resolves in scope as one
+                        // symbol), so with rules `a` AND `a.b` both defined, the
+                        // citation `a.b` has to win over reading it as member `b` of
+                        // relation `a`. Ordering (2) first decides that structurally,
+                        // at every level of a chain, instead of resting on an
+                        // invariant about which names can collide.
+                        // Proving nothing keeps the ordinary `field_access` path.
+                        //
+                        // NAMED ARGS disqualify the whole ladder. The converter emits
+                        // this builtin with an empty `named_args` on both of its paths
+                        // (`push_field_access` and the dotted-`name` folding arm), so a
+                        // `field_access` carrying them is NOT an accessor — it is a
+                        // user-written call to a functor that happens to be named
+                        // `field_access`. Re-routing it would build a zero-arg
+                        // `DotApply` and SILENTLY drop those argument subtrees
+                        // unvisited; the ordinary path below visits them and reports
+                        // whatever is wrong with them. (`try_identifier_dot_call` makes
+                        // the same call for the same reason.) A dot CALL's named args
+                        // are unaffected — `p.m(a: 1)` is a call, not a field access,
+                        // and that path threads them into the `DotApply` frame.
+                        if name == "field_access" && named_args.is_empty() {
+                            if self.try_identifier_dot_field(
+                                parse_id, &pos_args, work, DotFieldPass::LocalRoot,
+                            ) {
+                                return;
+                            }
+                            // The chain's dotted name, built ONCE and shared by both
+                            // remaining passes: the citation needs the WHOLE name, the
+                            // prefix pass everything before the last dot — a slice of
+                            // the same String rather than a second walk of the same
+                            // chain re-allocating a strict prefix of it.
+                            if let Some(chain) = self.field_access_dotted_name(parse_id) {
+                                if self.try_qualified_rule_ref(parse_id, &chain, results) {
+                                    return;
+                                }
+                                if let Some((receiver, _member)) = chain.rsplit_once('.') {
+                                    if self.try_identifier_dot_field(
+                                        parse_id,
+                                        &pos_args,
+                                        work,
+                                        DotFieldPass::RulePrefix(receiver),
+                                    ) {
+                                        return;
+                                    }
+                                }
+                            }
                         }
                         work.push(LoadWorkOp::Build(LoadBuildFrame::ApplyOrConstructor {
                             outer_parse_id: parse_id,
@@ -8038,19 +8098,27 @@ impl<'a> Loader<'a> {
     /// scope-blind converter lowers `p.x` — a NAME-rooted receiver, since the
     /// `?x.field` VALUE form already became `dot_apply` — to
     /// `field_access(receiver, Ident(x))`. Here the scope IS known: when the
-    /// receiver's syntactic ROOT identifier names a local value (a let/lambda/
-    /// match binder or an op param), the access becomes the same zero-arg
+    /// receiver LOWERS TO A VALUE, the access becomes the same zero-arg
     /// `Expr::DotApply` the `?x.field` form produces — dispatched by the typer's
-    /// field-fallback on the receiver's sort (WI-279). A head naming a
+    /// field-fallback on the receiver's sort (WI-279). A receiver naming a
     /// sort/namespace — or an `application` receiver (`Map[K=..].x`) — keeps the
     /// `field_access` path (`false`). The receiver (the parse `field_access`
     /// object) is Visited rather than synthesized, so a chained `p.x.y`
     /// re-routes level by level (each inner `field_access` revisits this arm).
+    ///
+    /// `pass` selects WHICH way the receiver may lower to a value — a local root
+    /// (WI-280) or a rule-reference prefix (WI-749). The two are deliberately NOT one
+    /// widened gate: `visit_load` runs them as separate passes with
+    /// [`Self::try_qualified_rule_ref`] interposed, so the bare-qualified citation
+    /// outranks the prefix reading. Widening this into a single condition would
+    /// reintroduce that ordering bug — add a new admission as a new
+    /// [`DotFieldPass`] variant placed explicitly in that ladder instead.
     fn try_identifier_dot_field(
         &mut self,
         parse_id: TermId,
         pos_args: &[TermId],
         work: &mut Vec<LoadWorkOp>,
+        pass: DotFieldPass,
     ) -> bool {
         // The converter shape is exactly `field_access(object, Ident(field))`.
         if pos_args.len() != 2 {
@@ -8059,9 +8127,18 @@ impl<'a> Loader<'a> {
         let Term::Ident(member) = self.parsed.terms.get(pos_args[1]).clone() else {
             return false;
         };
-        // Decide by the receiver's root identifier (walk down the `field_access`
-        // object chain): re-route iff it names a local value place.
-        if self.field_access_root_is_value(pos_args[0]).is_none() {
+        // Re-route iff the receiver lowers to a VALUE the way THIS pass admits. Note
+        // what the two passes do NOT differ in: both then Visit the receiver, so
+        // neither decides which SYMBOL it denotes — a `let person_row = …` binder
+        // shadowing a same-named rule is settled downstream, when the receiver leaf
+        // is lowered by `load_var_ref` → `remap_symbol` (locals first). What the
+        // pass order buys is the step BETWEEN them: a local root re-routes before
+        // `try_qualified_rule_ref` can collapse the whole chain to a rule.
+        let admitted = match pass {
+            DotFieldPass::LocalRoot => self.field_access_root_is_value(pos_args[0]).is_some(),
+            DotFieldPass::RulePrefix(receiver_name) => self.name_has_rule_prefix(receiver_name),
+        };
+        if !admitted {
             return false;
         }
         // The member is field metadata — resolve to a `Ref` (the field is keyed
@@ -8106,6 +8183,47 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-749: does some PREFIX of this receiver's dotted name resolve to a RULE?
+    /// A rule reference IS the `Relation[T]` value (WI-714), so a `.member` on it
+    /// is a zero-arg dot call on that value — `person_row.isEmpty` /
+    /// `Person.rows.isEmpty` — not one more segment of a static name path. The
+    /// zero-arg dual of the method-call receiver probe ([`Self::dot_call_receiver`]),
+    /// which reached a rule receiver at WI-723/729 while this path did not.
+    ///
+    /// The receiver is VISITED, never synthesized: at the level where the prefix is
+    /// EXACT the receiver collapses to `var_ref(Ref(rule))` on its own — by
+    /// `load_var_ref` for the bare UNQUALIFIED name, by [`Self::try_qualified_rule_ref`]
+    /// for the bare-QUALIFIED chain — so the segments above the rule re-route level by
+    /// level exactly as a local root's do, and all three citation positions keep
+    /// resolving one name through one probe. Visiting rather than synthesizing is also
+    /// what preserves local shadowing (see [`Self::try_identifier_dot_field`]); this
+    /// probe must not be hoisted into a synthesized receiver, because
+    /// [`Self::resolve_qualified_rule_readonly`] deliberately does NOT consult
+    /// `lookup_local_name`, so on its own it would answer for a shadowed binder.
+    ///
+    /// Prefixes of the RECEIVER only — the whole chain is the bare-qualified CITATION
+    /// and is tried FIRST, by the ladder in `visit_load`, not by an argument here about
+    /// which names can collide. That ordering is what makes `Queen.find` the relation
+    /// itself rather than member `find` of a relation `Queen`, and it holds even for a
+    /// DOTTED rule label (`rule a.b: …`), where a prefix and the whole name really can
+    /// both be rules.
+    ///
+    /// Answering only yes/no is sufficient BECAUSE of that Visit: each level re-decides
+    /// with its own prefixes, so which prefix matched here never has to be carried.
+    ///
+    /// Takes the receiver's already-built dotted NAME (a slice of the chain name
+    /// `visit_load` built for the citation pass), so this neither walks the parse chain
+    /// nor allocates.
+    fn name_has_rule_prefix(&self, name: &str) -> bool {
+        // Shortest prefix first — a cost heuristic only (the shortest is the cheapest
+        // probe, a single `resolve_in_scope` with no head-qualification step); the
+        // ANSWER cannot depend on the order, since this is an existence check.
+        name.match_indices('.')
+            .map(|(i, _)| &name[..i])
+            .chain(std::iter::once(name))
+            .any(|prefix| self.resolve_qualified_rule_readonly(prefix).is_some())
+    }
+
     /// WI-714 (proposal 052) — the BARE-QUALIFIED citation position. A rule cited by
     /// a dotted name with NO trailing `(…)` (`ns.rule`, `Sort.rule` — e.g.
     /// `test.data.person_row`) parses (§6.7) as a `field_access` chain, NOT a call: a
@@ -8119,16 +8237,28 @@ impl<'a> Loader<'a> {
     ///
     /// A value-rooted receiver never reaches here (the converter made it `dot_apply`),
     /// and a LOCAL-value-rooted chain was already re-routed by
-    /// [`Self::try_identifier_dot_field`] — so a surviving chain is name-rooted
-    /// (sort / namespace), the proposal's §6.7 mode-2 gate implicit in a successful
-    /// rule resolution. Resolution is read-only ([`Self::resolve_qualified_rule_readonly`]),
+    /// [`Self::try_identifier_dot_field`]'s [`DotFieldPass::LocalRoot`] pass — so a
+    /// surviving chain is name-rooted, the proposal's §6.7 mode-2 gate implicit in a
+    /// successful rule resolution.
+    ///
+    /// Its position in the ladder is load-bearing in BOTH directions (see `visit_load`):
+    /// after the local pass, so a binder shadows a rule; but BEFORE
+    /// [`DotFieldPass::RulePrefix`], so THIS form gets first refusal on the whole chain.
+    /// That is what makes `Queen.find` the relation itself rather than member `find` of
+    /// a relation `Queen` — and, where a rule LABEL is dotted (`rule a.b: …`, which
+    /// `scan_rule` defines as the joined name), what keeps the citation `a.b` pointing
+    /// at that rule even when `a` is separately a rule too. So a rule-prefixed chain
+    /// DOES reach this function; it is declined here on the whole name and only then
+    /// re-routed. Resolution is read-only ([`Self::resolve_qualified_rule_readonly`]),
     /// so a chain that is a genuine projection falls through to the ordinary path
     /// untouched.
-    fn try_qualified_rule_ref(&mut self, parse_id: TermId, results: &mut Vec<TermId>) -> bool {
-        let Some(name) = self.field_access_dotted_name(parse_id) else {
-            return false;
-        };
-        let Some(sym) = self.resolve_qualified_rule_readonly(&name) else {
+    fn try_qualified_rule_ref(
+        &mut self,
+        parse_id: TermId,
+        name: &str,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = self.resolve_qualified_rule_readonly(name) else {
             return false;
         };
         // Emit the bare-unqualified rule-reference form + its leaf occurrence —
@@ -8145,12 +8275,15 @@ impl<'a> Loader<'a> {
     /// Ident(field))` shape bottoming out in a root `Ident` (i.e. a call / value /
     /// instantiation sits in the chain, so it is not a static name path).
     fn field_access_dotted_name(&self, parse_id: TermId) -> Option<String> {
-        let mut segments: Vec<String> = Vec::new();
+        // Segments BORROW from `self.parsed` (only the join allocates) — this runs on
+        // every name-rooted dotted path in every op body, and WI-749 added a second
+        // caller per node ([`Self::field_access_names_rule_prefix`] on the receiver).
+        let mut segments: Vec<&str> = Vec::new();
         let mut cur = parse_id;
         loop {
             match self.parsed.terms.get(cur) {
                 Term::Ident(sym) => {
-                    segments.push(self.parsed.symbols.name(*sym).to_owned());
+                    segments.push(self.parsed.symbols.name(*sym));
                     break;
                 }
                 Term::Fn { functor, pos_args, named_args }
@@ -8161,7 +8294,7 @@ impl<'a> Loader<'a> {
                     let Term::Ident(field) = self.parsed.terms.get(pos_args[1]) else {
                         return None;
                     };
-                    segments.push(self.parsed.symbols.name(*field).to_owned());
+                    segments.push(self.parsed.symbols.name(*field));
                     cur = pos_args[0];
                 }
                 _ => return None,

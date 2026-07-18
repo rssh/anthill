@@ -674,3 +674,6 @@ mod wi698_row_param_refinement_test;
 
 #[path = "include/wi729_qualified_rule_method_call_test.rs"]
 mod wi729_qualified_rule_method_call_test;
+
+#[path = "include/wi749_rule_ref_zero_arg_member_test.rs"]
+mod wi749_rule_ref_zero_arg_member_test;
