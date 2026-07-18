@@ -683,3 +683,6 @@ mod wi750_chained_receiver_method_call_test;
 
 #[path = "include/wi751_namespace_root_shadow_test.rs"]
 mod wi751_namespace_root_shadow_test;
+
+#[path = "include/wi752_dotted_ladder_test.rs"]
+mod wi752_dotted_ladder_test;

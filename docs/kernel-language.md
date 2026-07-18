@@ -1634,10 +1634,36 @@ Rung 1 outranks rung 2: a scope-relative reading beats a bare global path, so a
 nearer same-rooted namespace is never displaced by a top-level one. Rung 2
 exists because a `sort`, `operation`, or labelled `rule` sharing a namespace
 root's spelling otherwise captures the head slot and disables every path under
-that root (WI-751). Both rungs apply the `internal` gate explicitly, since the
-qualified index bypasses step 3's filter. Neither rung admits a name without a
-dot — a short name is not a path, and resolving one that way would reinstate the
-global short-name scan removed in WI-476.
+that root (WI-751). Neither rung admits a name without a dot — a short name is
+not a path, and resolving one that way would reinstate the global short-name
+scan removed in WI-476.
+
+**The `internal` gate applies to the ladder, not to a rung.** The qualified index
+bypasses step 3's filter, so visibility is checked explicitly on each hit — but a
+hit hidden by `internal` **skips to the next rung** rather than ending the
+descent. A path therefore keeps whatever reading it has: a shadowing declaration
+carrying a hidden member of the right name does not break an otherwise-valid
+absolute path. Only when *no* rung has a visible answer is the hidden one
+reported, as the (load-blocking) forbidden-internal access — a precise diagnostic
+that outranks the generic unresolved-name error it replaces.
+
+**The ladder is position-independent.** The same two rungs, in the same order,
+resolve a dotted name wherever one is written — a term functor, a type or sort
+reference, a rule citation, a proof target, and a query pattern all consult one
+definition (WI-752). A name that denotes something in one position denotes the
+same thing in every other; before this was unified, `util.f()` resolved by
+head-qualification while `util.T` in the same scope reported an unresolved type
+name, and `anthill query` could bind a dotted text to a different symbol than the
+program it queried.
+
+There is **one deliberate exception**, and it is a different question rather than
+a different answer. The dot-call re-route asks *"does this path have an
+answer?"* — not *"which symbol does it denote?"* — before deciding whether to
+peel a name apart into a member chain. It therefore counts a hidden-`internal`
+hit, and an ambiguity, as resolving: both are real findings with precise
+diagnostics, and decomposing the name would bury them under an invented member
+miss. Any future deviation belongs in this list, with its reason stated at the
+deviating site.
 
 **Import forms.** `import` introduces visibility into the current scope; it does
 not by itself add a sort's contents (use `requires` or wildcard for that):
