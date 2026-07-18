@@ -4296,7 +4296,43 @@ fn try_relation_projection_tuple(
         projections.push((*label, source));
     }
     let receiver = receiver?;
-    let recv_ty = projection_receiver_type(kb, env, &receiver)?;
+    // WI-732 hardening. Reaching here means the loop above matched: ≥2 named fields, EVERY
+    // one a bare column access, ALL on one receiver. That is the syntactic signature of a
+    // projection — it is what `convert.rs` emits for `R.(c1, c2)` — so failing to resolve the
+    // receiver's TYPE is not "this is not a projection". Returning `None` would re-read the
+    // very same source as a tuple of INDEPENDENT single-column relations, which is the silent
+    // mis-typing this ticket exists to remove: the shape would be recognized and then quietly
+    // abandoned. CLAUDE.md: a case that cannot be handled is a diagnostic, not a silent skip.
+    //
+    // GATED on every field having TYPED, and that gate is load-bearing rather than defensive.
+    // When a field failed, its OWN error is the better diagnostic and the caller's
+    // `collect_arg_errors` reports it; raising here would mask a real error with a vaguer one.
+    //
+    // Measured before being made loud: across the whole `anthill-core` corpus this path is
+    // reached 59 times and resolves the receiver EVERY time (all with 2 fields, all with every
+    // field typed) — 0 fall-throughs. So no existing shape depends on the retreat, and the
+    // raise changes no current behavior. It exists for the shapes nobody has written yet.
+    let Some(recv_ty) = projection_receiver_type(kb, env, &receiver) else {
+        if !named_results.iter().all(|r| r.is_ok()) {
+            return None;
+        }
+        let columns = projections
+            .iter()
+            .map(|(_, src)| src.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(Err(projection_type_error(
+            &TypeErrorContext::DotProjection { member: projections[0].0 },
+            Some(occ.span.span),
+            &format!(
+                "this is a column projection `({columns})` over ONE receiver, but the \
+                 receiver's type cannot be resolved here, so the projected schema cannot be \
+                 computed. Bind the receiver with a `let` first (`let r = …; r.({columns})`). \
+                 Reported rather than silently re-read as a tuple of independent \
+                 single-column relations."
+            ),
+        )));
+    };
     // Splice the LOWERED receiver, not the raw one. A leaf receiver needs no lowering, but a
     // COMPUTED one does — `r.where(..)` reaches eval only as the WI-722 macro's `where_run`
     // rewrite, which lives on the typer's rewritten twin. Handing eval the raw occurrence
@@ -17329,10 +17365,17 @@ fn check_tuple_literal_constructor(
 
     // WI-714 (proposal 052) — a name-keyed row tuple all of whose fields are single-
     // column accesses `rel.c` on the SAME relation IS a PROJECTION `r.(f1, f2)` (the
-    // distribute-dot desugars to this tuple). Recognize it BEFORE arg-error aggregation:
-    // each `rel.c` field FAILS ordinary dot dispatch (a `Relation` has no member `c`),
-    // so `collect_arg_errors` would otherwise report those failures instead. A tuple
-    // that is NOT such a projection falls through to ordinary tuple typing unchanged.
+    // distribute-dot desugars to this tuple). A tuple that is NOT such a projection falls
+    // through to ordinary tuple typing unchanged.
+    //
+    // Runs BEFORE arg-error aggregation. The original reason given was that each `rel.c`
+    // field FAILS ordinary dot dispatch, so `collect_arg_errors` would report those failures
+    // instead — that is now STALE, and measuring says so: across the whole corpus this
+    // recognizer fires 59 times and every field typed cleanly in every one. WI-714's own
+    // FOURTH dot-dispatch mode is why — each `rel.c` now succeeds on its own as a
+    // single-column projection. So the ordering earns its keep for the opposite reason: the
+    // fields succeed INDIVIDUALLY, as independent single-column relations, and running after
+    // them would accept that tuple-of-relations reading rather than the projection.
     if let Some(r) =
         try_relation_projection_tuple(kb, env, flow, pos_results.len(), named_args, named_results, occ)
     {
