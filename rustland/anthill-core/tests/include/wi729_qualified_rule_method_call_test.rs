@@ -210,12 +210,17 @@ end
 
 /// NO SILENT FALLBACK: a receiver naming neither a local value nor a rule keeps the
 /// qualified-name flattening and its loud unknown-functor diagnostic — the widened
-/// probe must not turn a miss into a quietly-unbound dot-call receiver. Three misses,
+/// probe must not turn a miss into a quietly-unbound dot-call receiver. Two misses,
 /// each still naming the flattened path it failed to resolve:
 ///   - a real sort with no such member (`Queen.nosuch`),
-///   - a receiver nothing in scope answers at all,
-///   - a LOCAL value CHAIN (`p.inner.abs()`) — WI-443 defers chained-receiver
-///     synthesis, and a local ROOT must not fall through to the rule probe either.
+///   - a receiver nothing in scope answers at all.
+///
+/// A third case lived here until WI-750: a LOCAL value CHAIN (`p.inner.abs()`), loud
+/// only because WI-443 deferred chained-receiver synthesis. That deferral is lifted —
+/// the chain now re-routes level by level like its `field_access` twin — so the case
+/// moved to the WI-750 suite as a POSITIVE pin. What still belongs here is the part
+/// that was never about chaining: a local ROOT must not fall through to the rule probe,
+/// which `wi750_local_root_is_not_reinterpreted_as_a_rule` pins directly.
 #[test]
 fn wi729_unresolvable_receiver_stays_loud() {
     const NO_SUCH_MEMBER: &str = r#"
@@ -237,21 +242,9 @@ namespace test.wi729loud2
     nosuchns.nosuchrule.takeN(5)
 end
 "#;
-    const LOCAL_CHAIN: &str = r#"
-namespace test.wi729loud3
-  import anthill.prelude.{Int64}
-  sort Box
-    entity box(inner: Int64)
-  end
-  operation bad() -> Int64 effects Error =
-    let p = box(inner: 3)
-    p.inner.abs()
-end
-"#;
     for (src, flattened) in [
         (NO_SUCH_MEMBER, "Queen.nosuch.takeN"),
         (NOTHING_IN_SCOPE, "nosuchns.nosuchrule.takeN"),
-        (LOCAL_CHAIN, "p.inner.abs"),
     ] {
         let errs = try_load_kb_with(src).err().unwrap_or_default();
         assert!(

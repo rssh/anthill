@@ -5185,15 +5185,39 @@ fn visit_type(
                         });
                         if let Some(a) = arg {
                             // A sibling callback param may project this arg's schema
-                            // (`join`'s `cond: (c: r1.T, q: r2.T) -> Bool`). The env / stamp
-                            // covers a receiver (WI-723); a bare RULE-reference arg
+                            // (`join`'s `cond: (c: r1.T, q: r2.T) -> Bool`). The env
+                            // covers a let-bound receiver (WI-723); a bare RULE-reference arg
                             // (`join(r1, r2, …)`'s `r2`) is a `Relation[T]` value never bound
                             // in the env, so compute its schema directly (WI-714) — else
                             // `r2.T` cannot be eliminated at hint time and the two-row
                             // lambda's binder stays an unresolved projection.
-                            if let Some(t) = varref_arg_env_type(&env, a)
-                                .or_else(|| relation_ref_arg_type(kb, a))
-                            {
+                            //
+                            // WI-750: the third reader (the node's STAMPED type) is what
+                            // covers a COMPUTED receiver — `r.where(λ).where(λ)`, whose inner
+                            // call is an `Expr::Apply` that neither of the first two match, so
+                            // both answered `None` and the outer row lambda bound at the raw
+                            // projection `r.T`, leaving `d.name` with no sort to dispatch on.
+                            // The stamp is already there: the dot-call Build frame runs AFTER
+                            // its receiver's Visit+Stamp, so the receiver it splices in as
+                            // arg 0 carries a concrete `Relation[T = …]`.
+                            //
+                            // SCOPE, stated as the code actually behaves: this reads the stamp
+                            // of ANY arg in ANY `Expr::Apply` carrying a HOF arg — there is no
+                            // receiver gate, and it would be wrong to claim one. What bounds it
+                            // is that a stamp is only present where a pass already typed the
+                            // node, which for the shape this fixes is the spliced dot-call
+                            // receiver. On a RE-typed tree other args carry stamps too and may
+                            // now contribute a binding; that is a widening, deliberate — a
+                            // computed `join(r1, mk().where(λ), cond)` operand needs exactly
+                            // the same reading — but it means the bound is empirical, not
+                            // structural, so do not rely on "receiver only" when editing here.
+                            // Leaf args are unaffected either way: `varref_arg_env_type`
+                            // already consulted the stamp for them.
+                            //
+                            // `env` stays FIRST: a still-flexible env binding is the live one,
+                            // a stamp only a fallback. This is [`projection_receiver_type`],
+                            // the reader the WI-714 projection path already composes.
+                            if let Some(t) = projection_receiver_type(kb, &env, a) {
                                 m.insert(*psym, t);
                             }
                         }

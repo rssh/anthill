@@ -7991,7 +7991,7 @@ impl<'a> Loader<'a> {
     /// name `"args.find"` — at parse time it is indistinguishable from a
     /// sort-companion call like `Stream.find(...)`. Here the scope IS known:
     /// when the name before the member segment denotes a VALUE place
-    /// ([`Self::dot_call_receiver`]), the call becomes the same `Expr::DotApply`
+    /// ([`Self::dot_call_receiver_chain`]), the call becomes the same `Expr::DotApply`
     /// the `?x.m(...)` form produces (typer dot-dispatch on the receiver's
     /// sort, WI-279), with a synthesized `var_ref` receiver (there is no
     /// parse node to Visit). A receiver naming a sort/namespace — or nothing
@@ -8012,14 +8012,16 @@ impl<'a> Loader<'a> {
         let Some((receiver_name, member)) = functor_name.rsplit_once('.') else {
             return false;
         };
-        let Some(receiver_sym) = self.dot_call_receiver(receiver_name) else {
+        let Some((root_sym, trailing)) =
+            self.dot_call_receiver_chain(receiver_name, functor_name)
+        else {
             return false;
         };
-        // Synthesized receiver: the `var_ref(name: Ref(binder))` shape
+        // Synthesized receiver ROOT: the `var_ref(name: Ref(binder))` shape
         // `load_var_ref` builds for a bare identifier reference, plus its
         // leaf occurrence — pushed BEFORE the arg Visits so it lands in the
         // DotApply build frame's receiver slot (`results[drain_start]`).
-        let receiver_kb = self.mk_var_ref(receiver_sym);
+        let receiver_kb = self.mk_var_ref(root_sym);
         results.push(receiver_kb);
         self.push_leaf_occ(receiver_kb);
         let member_sym = self.remap_name_str(member, self.parsed.terms.span(parse_id));
@@ -8038,41 +8040,175 @@ impl<'a> Loader<'a> {
         for &tid in pos_args.iter().rev() {
             work.push(LoadWorkOp::Visit(tid));
         }
+        // WI-750: a CHAINED receiver (`person_row.negate` in
+        // `person_row.negate.takeN(5)`) — its trailing segments are zero-arg members
+        // ON the root value, the same shape the `field_access` path builds by peeling
+        // one member per level. Each becomes a zero-arg `DotApply` over the running
+        // receiver, reusing the ordinary build frame so the occurrence bookkeeping
+        // (one popped, one pushed) stays balanced instead of hand-rolling a term.
+        //
+        // Pushed LAST and in REVERSE so the work stack (LIFO) runs them FIRST and
+        // innermost-first: the chain has collapsed to a single receiver TermId before
+        // the arg Visits append, so the outer frame drains its slots unchanged.
+        // SPAN: every synthesized level takes the WHOLE call's span. The field path
+        // deliberately uses the member `Ident`'s own span, but this path has no member
+        // parse node to point at — the converter flattened the callee — so the whole
+        // call is the narrowest honest extent, not an oversight.
+        //
+        // `split_terminator` rather than `split`: `"".split('.')` yields ONE EMPTY item,
+        // so a plain `split` would need an is-empty guard and would synthesize a member
+        // named `""` the day anyone dropped it.
+        {
+            let span = self.parsed.terms.span(parse_id);
+            for segment in trailing.split_terminator('.').rev() {
+                let segment_sym = self.remap_name_str(segment, span);
+                let segment_ref = self.kb.alloc(Term::Ref(segment_sym));
+                work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
+                    outer_parse_id: parse_id,
+                    name_ref: segment_ref,
+                    pos_count: 0,
+                    named_keys: SmallVec::new(),
+                }));
+            }
+        }
         true
     }
 
-    /// The symbol a dot-call RECEIVER name denotes, if it names a VALUE place — the
-    /// discriminator that re-routes a flattened dotted call to a `DotApply`. Two
-    /// admissible receivers, probed in this order:
+    /// A dot-call RECEIVER name decomposed into the VALUE place it is ROOTED at plus
+    /// the zero-arg member segments applied to that root — the discriminator that
+    /// re-routes a flattened dotted call to a `DotApply`. `None` when the name is
+    /// rooted at no value at all (a sort/namespace receiver, or nothing in scope),
+    /// which is what keeps the APPLIED `Sort.rule(args)` form and every genuine
+    /// qualified call on the qualified-name path with its loud unknown-functor miss.
     ///
-    ///  - WI-443: a LOCAL value — a let/lambda/match binder or an op param. A local
-    ///    ROOT wins outright (it shadows a same-named sort/namespace, as it does on the
-    ///    `field_access` path via [`Self::field_access_root_is_value`]), but only an
-    ///    UNCHAINED one re-routes: a local value CHAIN (`p.x.m(...)`) would need
-    ///    chained-receiver synthesis, deliberately deferred, so it keeps the loud
-    ///    qualified-name flattening rather than silently resolving `p.x` some other way.
-    ///  - WI-723/729 (proposal 052): a RULE, whose reference IS a `Relation[T]` value
-    ///    (WI-714). `person_row.where(λ)` / `Queen.find.where(λ)` is then a method call
-    ///    on that relation value (dispatched on the `Relation` sort), NOT a qualified
-    ///    name applied: the receiver becomes the same `var_ref(Ref(rule))` the bare
-    ///    rule reference lowers to, so `where`'s row-lambda param (`(c: r.T) -> Bool`)
-    ///    hints the lambda binder at the relation's schema — the typer prerequisite the
-    ///    qualified-name flattening denied it. The receiver may be bare-QUALIFIED over
-    ///    any number of segments (`Queen.find`, `ns.data.person_row`, WI-729); it
-    ///    resolves through the read-only probe the bare ([`Self::try_qualified_rule_ref`])
-    ///    and applied ([`Self::remap_name_str_inner`]) citation forms share, so the
-    ///    three halves of `Sort.rule` cannot drift. Its `Goal`/`Rule` kind gate is what
-    ///    keeps a sort/namespace receiver — the APPLIED `Sort.rule(args)` form — on the
-    ///    qualified-name path.
-    fn dot_call_receiver(&self, receiver_name: &str) -> Option<Symbol> {
-        let (root, chained) = match receiver_name.split_once('.') {
-            Some((root, _)) => (root, true),
-            None => (receiver_name, false),
-        };
-        if let Some(local) = self.dot_receiver_binder(root) {
-            return (!chained).then_some(local);
+    /// The returned trailing segments are EMPTY for the common depth-1 receiver;
+    /// `try_identifier_dot_call` folds any it does get into zero-arg `DotApply`s, so
+    /// `person_row.negate.takeN(5)` lowers exactly as the let-bound spelling beside it
+    /// (WI-750). The decomposition is what the `field_access` path gets for free by
+    /// Visiting its receiver and re-deciding per level; the call path has no receiver
+    /// parse node to Visit (the converter flattened the callee to one dotted symbol),
+    /// so it recovers the same chain from the NAME here.
+    ///
+    /// PRECEDENCE — deliberately the same ladder `visit_load` runs for `field_access`
+    /// ([`DotFieldPass`]), because the two must agree on what a receiver denotes:
+    ///
+    ///  1. WI-443: a LOCAL ROOT — a let/lambda/match binder or an op param — wins
+    ///     OUTRIGHT, ahead of even a whole-chain rule citation: a binder shadows a
+    ///     same-named rule/sort (the `LocalRoot` pass runs first for the same reason,
+    ///     pinned by `wi749_local_root_beats_the_whole_chain_citation`). A local value
+    ///     CHAIN (`p.x.m(...)`) now re-routes too, which is WI-443's deferred
+    ///     chained-receiver case (WI-750).
+    ///  2. WI-723/729 (proposal 052): a RULE, whose reference IS a `Relation[T]` value
+    ///     (WI-714). `person_row.where(λ)` / `Queen.find.where(λ)` is then a method call
+    ///     on that relation value (dispatched on the `Relation` sort), NOT a qualified
+    ///     name applied: the receiver becomes the same `var_ref(Ref(rule))` the bare
+    ///     rule reference lowers to, so `where`'s row-lambda param (`(c: r.T) -> Bool`)
+    ///     hints the lambda binder at the relation's schema — the typer prerequisite the
+    ///     qualified-name flattening denied it. The receiver may be bare-QUALIFIED over
+    ///     any number of segments (`Queen.find`, `ns.data.person_row`, WI-729); it
+    ///     resolves through the read-only probe the bare ([`Self::try_qualified_rule_ref`])
+    ///     and applied ([`Self::remap_name_str_inner`]) citation forms share, so the
+    ///     three halves of `Sort.rule` cannot drift. Its `Goal`/`Rule` kind gate is what
+    ///     keeps a sort/namespace receiver on the qualified-name path.
+    ///
+    /// Rung 2 is what makes this the SAME ladder rather than merely a similar one, and
+    /// it is the rung the first cut of WI-750 omitted. The field path interposes
+    /// [`Self::try_qualified_rule_ref`] between its local and prefix passes, so the
+    /// WHOLE chain gets first refusal; without the peer rung here, `a.b.c(2)` — the
+    /// APPLIED citation of a dotted-label rule — was peeled into member `c` of member
+    /// `b` of relation `a` the moment an unrelated `rule a` came into scope, while the
+    /// BARE `a.b.c` still read as the rule. Same name, two meanings, decided by a
+    /// declaration the expression never mentions.
+    ///
+    /// Within rung 3 prefixes are probed LONGEST-FIRST for the same "most specific
+    /// wins" reason: with rules `a` AND `a.b`, the receiver `a.b` is the relation
+    /// labelled `a.b`, not member `b` of relation `a`.
+    fn dot_call_receiver_chain<'n>(
+        &self,
+        receiver_name: &'n str,
+        functor_name: &str,
+    ) -> Option<(Symbol, &'n str)> {
+        // 1. The QUALIFIED NAME ITSELF gets first refusal — the rung the field ladder
+        // spells as `try_qualified_rule_ref`, and the one this probe exists to serve.
+        // The re-route is a RESCUE for names the qualified path cannot resolve; when it
+        // CAN, there is nothing to rescue, and decomposing anyway replaces a working
+        // resolution with a member chain over a prefix. Three verified regressions, all
+        // this one rung: `a.b.c(2)` (a dotted rule LABEL, applied) peeled apart by an
+        // inert `rule a`; `let app = 1; app.helpers.Helper.twice(2)` captured by a
+        // binder that merely shares the path's ROOT SEGMENT; and `rule anthill` in scope
+        // disabling EVERY `anthill.prelude.…` call in the file. In each the whole name
+        // resolves and no decomposition was ever wanted.
+        //
+        // It must precede the local rung too: a binder named `app` does not shadow
+        // `app.helpers.Helper.twice`, which is one NAME, not a projection off `app`.
+        // Shadowing compares whole names, and the local's is a strict prefix.
+        if self.qualified_name_resolves(functor_name) {
+            return None;
         }
-        self.resolve_qualified_rule_readonly(receiver_name)
+        let (root, trailing) = match receiver_name.split_once('.') {
+            Some((root, trailing)) => (root, trailing),
+            None => (receiver_name, ""),
+        };
+        // 2. LOCAL ROOT — a binder shadows a same-named sort or rule, chained or not.
+        if let Some(local) = self.dot_receiver_binder(root) {
+            return Some((local, trailing));
+        }
+        // 3. The longest rule PREFIX, the receiver's remaining segments trailing it.
+        self.rule_prefix_split(receiver_name)
+    }
+
+    /// Does this dotted name resolve to a symbol AS WRITTEN — the read-only, kind-blind
+    /// sibling of [`Self::resolve_qualified_rule_readonly`], reusing the same two-step
+    /// resolution (`resolve_in_scope`, then head-qualification behind the
+    /// `qualified_visible` gate) so the two cannot disagree about what "resolves" means.
+    ///
+    /// Kind-BLIND on purpose: the question is not "is this a rule?" but "does the
+    /// qualified-name path have an answer?". A name resolving to a sort or namespace is
+    /// still that path's business, and its diagnostic (`not callable`) is the honest one
+    /// — a member miss invented by decomposing it is not. `Ambiguous` counts as
+    /// resolving for the same reason: an ambiguity is a real finding with a real error
+    /// to emit, and peeling the name apart would bury it.
+    fn qualified_name_resolves(&self, name: &str) -> bool {
+        // An ABSOLUTE name, checked first because head-qualification cannot see it: with
+        // `rule anthill` in scope, the head `anthill` resolves to that RULE, so
+        // `resolve_dotted_by_head` looks up `<ns>.anthill.prelude.List.nil` and misses —
+        // which is precisely how one user rule named after a root segment disabled every
+        // `anthill.prelude.…` call in its file. The name is a symbol's own qualified
+        // name; nothing about a same-spelled rule makes it stop being one.
+        if self.kb.symbols.by_qualified_name.contains_key(name) {
+            return true;
+        }
+        let scope = self.current_scope.raw();
+        match self.kb.symbols.resolve_in_scope(name, scope) {
+            ResolveResult::Found(_) | ResolveResult::Ambiguous(_) => true,
+            ResolveResult::NotFound => self
+                .resolve_dotted_by_head(name, scope)
+                .is_some_and(|sym| self.qualified_visible(sym)),
+        }
+    }
+
+    /// The LONGEST prefix of a dotted name that resolves to a RULE, paired with the
+    /// segments trailing it (empty when the whole name is the rule). Longest-first is
+    /// "most specific citation wins" — with rules `a` and `a.b` in scope, `a.b` is the
+    /// relation labelled `a.b`, not member `b` of relation `a`.
+    ///
+    /// [`Self::name_has_rule_prefix`] is this predicate's existence half; both are
+    /// defined here so the field and call ladders cannot answer the same question two
+    /// ways. Order does not affect the BOOLEAN, but it decides WHICH prefix a caller
+    /// gets — so the shared scan runs longest-first and the boolean simply discards it.
+    fn rule_prefix_split<'n>(&self, name: &'n str) -> Option<(Symbol, &'n str)> {
+        let mut end = name.len();
+        loop {
+            if let Some(rule) = self.resolve_qualified_rule_readonly(&name[..end]) {
+                // `end` is either `name.len()` or the byte index of a `.`, so the split
+                // is always on a char boundary and the tail carries at most that one dot.
+                return Some((rule, name[end..].strip_prefix('.').unwrap_or("")));
+            }
+            match name[..end].rfind('.') {
+                Some(dot) => end = dot,
+                None => return None,
+            }
+        }
     }
 
     /// The binder a dot-receiver HEAD identifier names, IF it denotes a local
@@ -8080,7 +8216,7 @@ impl<'a> Loader<'a> {
     /// Returns `None` for a sort/namespace head or an unbound name — the
     /// discriminator that keeps those on the qualified-name / `field_access`
     /// path. Locals are consulted first, so a binder shadows a same-named sort.
-    /// Shared by the WI-443 method-call re-route ([`Self::dot_call_receiver`])
+    /// Shared by the WI-443 method-call re-route ([`Self::dot_call_receiver_chain`])
     /// and the WI-280 field-access re-route ([`Self::field_access_root_is_value`]).
     fn dot_receiver_binder(&self, head: &str) -> Option<Symbol> {
         self.lookup_local_name(head).or_else(|| {
@@ -8187,7 +8323,7 @@ impl<'a> Loader<'a> {
     /// A rule reference IS the `Relation[T]` value (WI-714), so a `.member` on it
     /// is a zero-arg dot call on that value — `person_row.isEmpty` /
     /// `Person.rows.isEmpty` — not one more segment of a static name path. The
-    /// zero-arg dual of the method-call receiver probe ([`Self::dot_call_receiver`]),
+    /// zero-arg dual of the method-call receiver probe ([`Self::dot_call_receiver_chain`]),
     /// which reached a rule receiver at WI-723/729 while this path did not.
     ///
     /// The receiver is VISITED, never synthesized: at the level where the prefix is
@@ -8215,13 +8351,13 @@ impl<'a> Loader<'a> {
     /// `visit_load` built for the citation pass), so this neither walks the parse chain
     /// nor allocates.
     fn name_has_rule_prefix(&self, name: &str) -> bool {
-        // Shortest prefix first — a cost heuristic only (the shortest is the cheapest
-        // probe, a single `resolve_in_scope` with no head-qualification step); the
-        // ANSWER cannot depend on the order, since this is an existence check.
-        name.match_indices('.')
-            .map(|(i, _)| &name[..i])
-            .chain(std::iter::once(name))
-            .any(|prefix| self.resolve_qualified_rule_readonly(prefix).is_some())
+        // The existence half of [`Self::rule_prefix_split`]. Defined in terms of it so
+        // the field and call ladders cannot answer "does a prefix name a rule?" two
+        // ways: the ANSWER is order-independent here (this is an existence check, and
+        // the receiver is re-decided per level on Visit), but the call path needs WHICH
+        // prefix matched, and a second scan written in the opposite order is exactly how
+        // the two paths drift apart — the drift that produced WI-729, WI-749, WI-750.
+        self.rule_prefix_split(name).is_some()
     }
 
     /// WI-714 (proposal 052) — the BARE-QUALIFIED citation position. A rule cited by
