@@ -680,3 +680,6 @@ mod wi749_rule_ref_zero_arg_member_test;
 
 #[path = "include/wi750_chained_receiver_method_call_test.rs"]
 mod wi750_chained_receiver_method_call_test;
+
+#[path = "include/wi751_namespace_root_shadow_test.rs"]
+mod wi751_namespace_root_shadow_test;

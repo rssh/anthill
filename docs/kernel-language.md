@@ -1614,6 +1614,31 @@ model) were removed in WI-291.
 4. collect and de-duplicate by symbol: zero matches → unresolved, one →
    resolved, two or more distinct symbols → **ambiguous** (a load/query error).
 
+**Dotted names — the fallback ladder.** When `resolve_in_scope` leaves a name
+containing a `.` unresolved, it is a *path* and two further rungs apply, in this
+order (Rust; `scaland` does not yet implement either):
+
+1. **head-qualification** (scope-relative) — resolve the *first* segment in
+   scope, append the remaining segments to its `qualified_name`, look that up in
+   `by_qualified_name`. This is what makes `Map.empty` work for an imported
+   `Map`. A hit whose kind is **`Field`** is refused: entity fields are indexed
+   under their constructor's path, and a field is reached by dot dispatch on a
+   value, never by a path.
+2. **absolute** — the name *is* some symbol's own `qualified_name`. Skipped
+   entirely when the path's head resolves in scope to a **namespace** (it owns
+   every path beneath it, so a missing member is a member miss, not a licence to
+   re-root the path elsewhere) or resolves **ambiguously** (a reportable
+   finding).
+
+Rung 1 outranks rung 2: a scope-relative reading beats a bare global path, so a
+nearer same-rooted namespace is never displaced by a top-level one. Rung 2
+exists because a `sort`, `operation`, or labelled `rule` sharing a namespace
+root's spelling otherwise captures the head slot and disables every path under
+that root (WI-751). Both rungs apply the `internal` gate explicitly, since the
+qualified index bypasses step 3's filter. Neither rung admits a name without a
+dot — a short name is not a path, and resolving one that way would reinstate the
+global short-name scan removed in WI-476.
+
 **Import forms.** `import` introduces visibility into the current scope; it does
 not by itself add a sort's contents (use `requires` or wildcard for that):
 

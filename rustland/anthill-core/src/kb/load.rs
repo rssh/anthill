@@ -6667,13 +6667,39 @@ impl<'a> Loader<'a> {
                 // both of which produce a single joined Symbol "Map.empty"
                 // that doesn't appear in any scope's locals/imports.
                 if let Some(q_sym) = self.resolve_dotted_by_head(name, scope) {
-                    // WI-369: the qualified path bypasses the `internal`
-                    // filter. Return the hit if visible here; otherwise
-                    // it is a forbidden cross-scope internal reference.
-                    if self.qualified_visible(q_sym) {
-                        return q_sym;
-                    }
-                    return self.push_forbidden_internal(q_sym, name, span);
+                    return self.accept_qualified_hit(q_sym, name, span);
+                }
+                // WI-751: the ABSOLUTE rung — `name` IS some symbol's own
+                // fully-qualified name. Head-qualification above resolves the head
+                // segment IN SCOPE, so a scope-local declaration spelled like a
+                // namespace ROOT captures the head slot and sends the whole path
+                // somewhere it cannot exist: with `sort myroot` / `operation myroot` /
+                // `rule myroot:` in scope, `myroot.inner.helper` was looked up as
+                // `<ns>.myroot.inner.helper`, missed, and fell through to the bare
+                // intern below — one unrelated declaration silently disabling every
+                // qualified reference under that root, and the resulting `unknown
+                // functor` naming the CALL rather than the collision. Nothing about a
+                // same-spelled local makes a fully-qualified name stop being one.
+                //
+                // PRECEDENCE — deliberately BELOW head-qualification. Both rungs can
+                // hit for one name and only their order decides the answer:
+                // head-qualification is SCOPE-RELATIVE (it resolves the head where the
+                // reference is written), and a scope-relative reading must outrank a
+                // bare global path, or the fix installs the same disease in the
+                // opposite direction. `wi751_scope_relative_root_beats_a_top_level_
+                // namespace` pins that: inverting these two rungs silently re-points a
+                // sibling namespace's path at a same-rooted top-level one.
+                //
+                // The rung is NOT "purely additive" — head-qualification MISSING is not
+                // the same as the name resolving to nothing, and an earlier cut of this
+                // fix shipped that mistake: on a PARTIAL miss (the head resolving
+                // correctly to a nearer namespace, only a later segment absent) it
+                // silently re-rooted the path at a same-spelled top-level namespace the
+                // author never named. `head_owns_path` is the guard that keeps such a
+                // path loud; the two halves of the ladder are `absolute_qualified`'s
+                // gate and this position, and neither alone is sufficient.
+                if let Some(q_sym) = self.absolute_qualified(name) {
+                    return self.accept_qualified_hit(q_sym, name, span);
                 }
                 // WI-040 / WI-521: reserved kernel desugaring vocab (synthesized
                 // `match_expr` / `field_access` / `ListLiteral` / …) and the
@@ -6711,10 +6737,10 @@ impl<'a> Loader<'a> {
     /// (the `Map.empty` / proposal-035 `Map[…].empty` / `ns.rule` shape a single
     /// joined Symbol takes — one that appears in no scope's locals/imports). Purely
     /// read-only: NO interning, NO visibility gate, NO error push — a caller layers
-    /// its own policy (`remap_name_str_inner` applies `qualified_visible` /
-    /// `push_forbidden_internal`; [`Self::resolve_qualified_rule_readonly`] applies
-    /// the visibility gate + a `Goal`/`Rule` kind filter). Shared so the bare and
-    /// applied `Sort.rule` citation forms resolve the SAME name identically.
+    /// its own policy ([`Self::remap_name_str_inner`] applies
+    /// [`Self::accept_qualified_hit`]; [`Self::resolve_qualified_rule_readonly`]
+    /// applies the visibility gate + a `Goal`/`Rule` kind filter). Shared so the bare
+    /// and applied `Sort.rule` citation forms resolve the SAME name identically.
     fn resolve_dotted_by_head(&self, name: &str, scope: u32) -> Option<Symbol> {
         let (head, tail) = name.split_once('.')?;
         let ResolveResult::Found(head_sym) = self.kb.symbols.resolve_in_scope(head, scope) else {
@@ -6724,7 +6750,90 @@ impl<'a> Loader<'a> {
             SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
             SymbolDef::Unresolved { name } => name.clone(),
         };
-        self.kb.symbols.by_qualified_name.get(&format!("{head_qualified}.{tail}")).copied()
+        let hit =
+            self.kb.symbols.by_qualified_name.get(&format!("{head_qualified}.{tail}")).copied()?;
+        // WI-751: a FIELD is not nameable by PATH. Entity fields are registered under
+        // the constructor's qualified name (`<ns>.Sort.entity.field`), so a local
+        // `sort data { entity user(name: Int64) }` supplies a complete
+        // `<ns>.data.user.name` for the head `data` to land on — and head-qualification
+        // then HITS, wrongly, capturing `data.user.name()` from the namespace
+        // `data.user` and reporting `unknown functor` at the call. A field is reached by
+        // dot DISPATCH on a value (`field_access`), never by a qualified name, so the
+        // hit is a category error rather than a competing reading: refusing it here lets
+        // the name fall through to the absolute rung, which has the real answer.
+        //
+        // This is the HIT half of the root-shadowing defect — the MISS half is what the
+        // absolute rung alone fixes. Filtered in the shared probe, not at one call site,
+        // because "a path does not name a field" is a property of the resolution.
+        (!matches!(self.kb.kind_of(hit), Some(SymbolKind::Field))).then_some(hit)
+    }
+
+    /// WI-751: the symbol whose OWN fully-qualified name is `name` — the ABSOLUTE
+    /// sibling of [`Self::resolve_dotted_by_head`], and the rung
+    /// [`Self::qualified_name_resolves`] already had while the main resolver did not.
+    /// Restricted to DOTTED names: the justification is that a spelled-out PATH
+    /// identifies itself, whereas admitting short names would reinstate the WI-476
+    /// global short-name scan. Purely read-only — the caller layers the visibility
+    /// policy ([`Self::accept_qualified_hit`]).
+    fn absolute_qualified(&self, name: &str) -> Option<Symbol> {
+        if !name.contains('.') {
+            return None;
+        }
+        if self.head_owns_path(name) {
+            return None;
+        }
+        self.kb.symbols.by_qualified_name.get(name).copied()
+    }
+
+    /// WI-751: does the path's HEAD segment name something in scope that OWNS every
+    /// path beneath it — in which case the absolute rung must STAY OUT, because a
+    /// missing member under an owning root is a genuine member miss and not a licence
+    /// to re-root the name somewhere else?
+    ///
+    /// A NAMESPACE owns its paths: qualified paths are exactly what namespaces are
+    /// traversed by, so if `util` names one in scope, `util.f` means "member `f` of
+    /// THAT namespace" and its absence must stay the loud `unknown functor`. Without
+    /// this guard the absolute rung fires on a PARTIAL miss — the head resolving
+    /// correctly and only a later segment being absent — and silently re-roots the
+    /// whole path at a same-spelled TOP-LEVEL namespace the author never named. That
+    /// is WI-751's own disease in the opposite direction, and it is why the rung's
+    /// "purely additive" framing was wrong: head-qualification MISSING is not the same
+    /// as the name resolving to nothing. Verified both ways by
+    /// `wi751_partial_miss_under_an_owning_root_stays_loud`.
+    ///
+    /// An AMBIGUOUS head owns the path for the same reason `qualified_name_resolves`
+    /// counts `Ambiguous` as resolving: an ambiguity is a real finding with a real
+    /// error to emit, and resolving past it silently picks one reading of a name the
+    /// loader is on record as unable to choose.
+    ///
+    /// A head that resolves to a NON-namespace (the `sort` / `operation` / labelled
+    /// `rule` that merely SHARES a namespace root's spelling) owns nothing here — that
+    /// is precisely the WI-751 collision, and the rung exists for it.
+    fn head_owns_path(&self, name: &str) -> bool {
+        let Some((head, _)) = name.split_once('.') else {
+            return false;
+        };
+        match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {
+            ResolveResult::Found(sym) => {
+                matches!(self.kb.kind_of(sym), Some(SymbolKind::Namespace))
+            }
+            ResolveResult::Ambiguous(_) => true,
+            ResolveResult::NotFound => false,
+        }
+    }
+
+    /// WI-369: the visibility policy a `by_qualified_name` hit needs. The qualified
+    /// path bypasses `resolve_in_scope`'s `internal` filter, so the gate is applied
+    /// explicitly here: a visible hit resolves, a hidden one is a forbidden
+    /// cross-scope internal reference and gets that precise (load-blocking)
+    /// diagnostic instead of falling through to a misleading unknown-name error.
+    /// WI-751: shared by BOTH dotted rungs, so head-qualified and absolute hits
+    /// cannot drift apart on what an `internal` symbol means.
+    fn accept_qualified_hit(&mut self, q_sym: Symbol, name: &str, span: Span) -> Symbol {
+        if self.qualified_visible(q_sym) {
+            return q_sym;
+        }
+        self.push_forbidden_internal(q_sym, name, span)
     }
 
     /// Strict scope-aware symbol resolution: errors on unresolved names.
@@ -8135,9 +8244,15 @@ impl<'a> Loader<'a> {
         // resolution with a member chain over a prefix. Three verified regressions, all
         // this one rung: `a.b.c(2)` (a dotted rule LABEL, applied) peeled apart by an
         // inert `rule a`; `let app = 1; app.helpers.Helper.twice(2)` captured by a
-        // binder that merely shares the path's ROOT SEGMENT; and `rule anthill` in scope
-        // disabling EVERY `anthill.prelude.…` call in the file. In each the whole name
-        // resolves and no decomposition was ever wanted.
+        // binder that merely shares the path's ROOT SEGMENT; and a declaration named
+        // after a namespace ROOT disabling EVERY path under it in the file. In each the
+        // whole name resolves and no decomposition was ever wanted.
+        //
+        // WI-751 correction: the third regression was originally written up as `rule
+        // anthill`, which does NOT reproduce — a head-predicate rule only mints its
+        // Goal when the name is not already in scope (`scan_rule_goal`), so the head
+        // keeps resolving to the namespace. The shapes that DO take the head slot are a
+        // `sort`, an `operation`, and a LABELLED rule.
         //
         // It must precede the local rung too: a binder named `app` does not shadow
         // `app.helpers.Helper.twice`, which is one NAME, not a projection off `app`.
@@ -8170,12 +8285,21 @@ impl<'a> Loader<'a> {
     /// to emit, and peeling the name apart would bury it.
     fn qualified_name_resolves(&self, name: &str) -> bool {
         // An ABSOLUTE name, checked first because head-qualification cannot see it: with
-        // `rule anthill` in scope, the head `anthill` resolves to that RULE, so
-        // `resolve_dotted_by_head` looks up `<ns>.anthill.prelude.List.nil` and misses —
-        // which is precisely how one user rule named after a root segment disabled every
-        // `anthill.prelude.…` call in its file. The name is a symbol's own qualified
-        // name; nothing about a same-spelled rule makes it stop being one.
-        if self.kb.symbols.by_qualified_name.contains_key(name) {
+        // a `sort`/`operation`/labelled `rule` named after a namespace ROOT in scope,
+        // the head resolves to THAT, so `resolve_dotted_by_head` looks up
+        // `<ns>.anthill.prelude.List.nil` and misses — which is precisely how one such
+        // declaration disabled every `anthill.prelude.…` call in its file. The name is a
+        // symbol's own qualified name; nothing about a same-spelled local changes that.
+        //
+        // NOT visibility-gated, unlike the same rung in [`Self::remap_name_str_inner`]:
+        // the question here is whether the qualified path has an ANSWER, and a forbidden
+        // `internal` reference is an answer — with a precise diagnostic that peeling the
+        // name into a member chain would bury. Same reason `Ambiguous` counts below.
+        //
+        // WI-751 gave the main resolver this rung too; both read it from
+        // [`Self::absolute_qualified`] so they cannot disagree about what an absolute
+        // name is.
+        if self.absolute_qualified(name).is_some() {
             return true;
         }
         let scope = self.current_scope.raw();
@@ -8442,8 +8566,11 @@ impl<'a> Loader<'a> {
 
     /// Read-only resolution of a dotted `name` to a RULE symbol (`Goal` head functor
     /// or `Rule` label), else `None`. Resolves the SAME way the applied `Sort.rule`
-    /// form does (via [`Self::remap_name_str_inner`], sharing the
-    /// [`Self::resolve_dotted_by_head`] probe so the two citation forms cannot drift)
+    /// form does (via [`Self::remap_name_str_inner`], sharing BOTH its dotted rungs in
+    /// the same order — [`Self::resolve_dotted_by_head`], then
+    /// [`Self::absolute_qualified`] — so the two citation forms cannot drift; WI-751
+    /// added the second rung here after shipping it only in the applied form left the
+    /// BARE citation broken under a shadowed root)
     /// but WITHOUT its mutation — no unresolved-name interning, no error push — so a
     /// non-rule name leaves loader state untouched for the ordinary `field_access`
     /// projection path. The three `resolve_in_scope` outcomes are handled explicitly:
@@ -8461,7 +8588,19 @@ impl<'a> Loader<'a> {
         let sym = match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(s) => s,
             ResolveResult::NotFound => {
-                let s = self.resolve_dotted_by_head(name, scope)?;
+                // WI-751: the SAME two dotted rungs, in the same order, as
+                // [`Self::remap_name_str_inner`] — scope-relative head-qualification
+                // first, the absolute qualified name second (that ladder carries the
+                // rationale for the order). Sharing them is what this function's doc
+                // promises: without the absolute rung a root-shadowing declaration
+                // suppressed the RULE-REFERENCE citation forms
+                // (`myroot.inner.rel.isEmpty`, `myroot.inner.rel.takeN(1)`) even after
+                // the applied-call path was fixed — the same defect one resolver over.
+                // An `or_else` is right HERE, unlike there: both rungs feed one
+                // visibility gate and one kind filter, with no per-rung policy.
+                let s = self
+                    .resolve_dotted_by_head(name, scope)
+                    .or_else(|| self.absolute_qualified(name))?;
                 if !self.qualified_visible(s) {
                     return None;
                 }
