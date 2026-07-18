@@ -285,7 +285,7 @@ Both formats produce the same KB facts. The loader detects the format by extensi
 
 ### How the CLI finds data files (WI-746)
 
-Data is **opt-in by convention**, never by discovery. For each *directory* named on the command line, `anthill load` / `check` / `query` / `prove` / `codegen` read:
+Data is **opt-in by convention**, never by discovery. For each *directory* named on the command line, `anthill load` / `check` / `query` / `run` / `codegen cpp` read:
 
 | Path | Read as data |
 |---|---|
@@ -296,6 +296,13 @@ Data is **opt-in by convention**, never by discovery. For each *directory* named
 Every fault in a file found this way is a **hard error**: unreadable, unparseable, or missing its `meta.entity` envelope. The name is the declaration, so a malformed file is a fault to report rather than grounds to conclude it was never ours.
 
 Data under other names or locations is tool output and is loaded programmatically via `term_ser::load_toml` / `load_json`; the CLI has no channel for it.
+
+Two commands deliberately do **not** read data files, for reasons specific to each:
+
+- **`codegen rust`** generates Rust types per parsed file (`generate_rust(&ParsedFile)`) and never builds a KB. It emits structs and enums from *sort/entity declarations*; facts play no part, so there is nothing for it to read.
+- **`codegen bundle`** vendors the program's `.anthill` *source text* into a standalone crate. Data is the program's *input*, not its code, and baking `anthill.toml` in at bundle time would **freeze** it — the point of the `.toml`/`.json` channel is that tool-written data changes without touching the logic. A bundled binary that needs data should read it at *its own* runtime; that is a separate capability, not a gap in bundling.
+
+`anthill run` is the opposite case and does read: it re-reads on every invocation, so nothing is frozen, and a program querying facts its own project declared is the ordinary use. It assembles its own KB in `run::build_kb` rather than going through `load_kb_with_stdlib`, which is exactly why it shipped blind to data files at first — both now call the shared `load_conventional_data`.
 
 > Extension alone used to be the whole rule — every `.toml`/`.json` under a named path was claimed recursively. That conflated *in the directory* with *addressed to us*: pointing `anthill load` at the anthill repo read 1620 files, 1588 of them Cargo build-cache fingerprints, to find zero data files, and an ordinary `Cargo.toml` failed the load outright. Sniffing content for the envelope (WI-744) suppressed the noise but could not recover intent — a data file with a syntax error yields no envelope, so it was indistinguishable from a foreign file and skipped in silence. A fixed name supplies the intent that sniffing could only guess at.
 

@@ -186,6 +186,20 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
         }
     }
 
+    // WI-746: the project's conventional data files, after `load_all` so the
+    // entity schemas the deserializer reads are in the KB. `anthill run` shipped
+    // blind to these — it assembles its own KB rather than going through
+    // `load_kb_with_stdlib` — so `anthill query <dir>` saw a project's declared
+    // facts and `anthill run <dir>` did not, for the same directory. A running
+    // program querying its own project's data is the ordinary case, and unlike a
+    // bundled binary it re-reads on every invocation, so nothing is frozen.
+    if let Err(errs) = crate::load_conventional_data(&mut kb, paths, false) {
+        for e in &errs {
+            eprintln!("error: {e}");
+        }
+        return Err(runner::EXIT_COMPILE);
+    }
+
     Ok(kb)
 }
 

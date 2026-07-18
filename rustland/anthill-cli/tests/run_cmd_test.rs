@@ -173,3 +173,45 @@ fn advisory_warnings_print_but_do_not_block() {
     assert!(!out.stderr.contains("error:"),
             "an advisory must not be reported as an error:\n{}", out.stderr);
 }
+
+// ── WI-746: `anthill run` sees the project's conventional data files ──
+
+/// `anthill run <dir>` must load `<dir>/anthill.toml`, exactly as `anthill load`
+/// and `anthill query` do.
+///
+/// It did not. `run` assembles its own KB in `run::build_kb` rather than going
+/// through `load_kb_with_stdlib`, so it never reached the data path: the same
+/// project directory answered one way under `anthill query` and another under
+/// `anthill run`, and a program could not see facts its own project declared.
+/// Both now call the shared `load_conventional_data`.
+///
+/// Broken data is the probe because it is decisive about the WIRING: if `run`
+/// stops reading data files, this fixture is ignored and the program runs to
+/// completion, exit 0. What the facts DO once loaded is pinned once, against the
+/// shared helper, by `load_cmd_test::declared_data_reaches_the_kb` — no reason to
+/// rebuild `pattern_query` machinery here to re-test the same function.
+#[test]
+fn broken_data_blocks_the_run() {
+    let path = fixtures_dir().join("with-broken-data");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 2, "broken declared data must block the run; stderr:\n{}", out.stderr);
+    assert!(out.stdout.is_empty(),
+            "the program must not run; got stdout:\n{}", out.stdout);
+    assert!(out.has_diagnostic("error:", "anthill.toml")
+            && out.stderr.contains("unknown entity"),
+            "expected a loud `error:` naming the data file and the fault; got:\n{}", out.stderr);
+}
+
+/// The control, and the guard against the opposite regression: wiring data into
+/// `run` must not break runs that HAVE valid data. Without this, deleting the
+/// data load entirely would still pass `broken_data_blocks_the_run`'s sibling
+/// only by accident.
+#[test]
+fn valid_data_does_not_disturb_the_run() {
+    let path = fixtures_dir().join("with-data");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "valid data must not block the run; stderr:\n{}", out.stderr);
+    assert_eq!(out.stdout, "ran\n");
+    assert!(!out.has_diagnostic("error:", "anthill.toml"),
+            "valid data must not produce an error:\n{}", out.stderr);
+}

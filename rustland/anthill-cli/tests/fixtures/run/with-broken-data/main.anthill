@@ -1,0 +1,19 @@
+namespace my.with_broken_data
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List}
+
+  -- The entity the sibling anthill.toml supplies facts for.
+  sort Person
+    entity Person(name: String, age: Int64)
+  end
+
+  sort P
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "ran")
+      0
+  end
+end

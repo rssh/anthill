@@ -1,0 +1,4 @@
+# WI-746: valid declared data. `anthill run` must load it without complaint.
+[people]
+meta = { entity = "my.with_data.Person" }
+data = [ { name = "abe", age = 42 } ]

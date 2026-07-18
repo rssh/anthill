@@ -1,0 +1,7 @@
+# WI-746: declared data naming an entity that does not exist. `anthill run` must
+# BLOCK on it. Before the fix `run` never reached the data path at all, so this
+# file was ignored and the program ran to completion, exit 0 — the same project
+# directory answering differently under `anthill query` and `anthill run`.
+[people]
+meta = { entity = "my.with_broken_data.NoSuchEntityAnywhere" }
+data = [ { name = "abe", age = 42 } ]

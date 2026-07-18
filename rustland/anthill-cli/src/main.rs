@@ -601,64 +601,89 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
         }
     }
 
-    // Load the conventional data files (after entity definitions are available,
-    // since the deserializer reads each entity's schema to interpret its fields).
-    //
-    // EVERY fault here is an error — unreadable, unparseable, or rejected by the
-    // deserializer. WI-744: these used to warn and `continue`, so the facts never
-    // landed and the KB answered from data the user had supplied but which was
-    // never there — a confident wrong answer, worse than not answering. WI-746 is
-    // what makes the *parse* arm loud too: a file at `anthill.toml` was put there
-    // to be loaded, so a syntax error in it is a fault to report, not evidence
-    // that the file was never ours. Errors are accumulated so one run reports
-    // every bad file, not just the first.
-    let data_files = conventional_data_files(paths);
-    if !data_files.is_empty() {
-        let domain = kb.make_name_term("_data");
-        let mut data_errors: Vec<String> = Vec::new();
-        for file in &data_files {
-            let source = match fs::read_to_string(file) {
-                Ok(s) => s,
-                Err(e) => {
-                    data_errors.push(format!("{}: read error: {e}", file.display()));
-                    continue;
-                }
-            };
-            let loaded = match file.extension().and_then(|e| e.to_str()) {
-                Some("toml") => term_ser::load_toml(&mut kb, &source, domain),
-                Some("json") => term_ser::load_json(&mut kb, &source, domain),
-                // Unreachable: `conventional_data_files` builds these names from
-                // `DATA_EXTENSIONS`, the reader's own list. Loud rather than
-                // skipped, so the two cannot drift apart in silence.
-                other => {
-                    data_errors.push(format!(
-                        "{}: no reader for extension {:?}",
-                        file.display(),
-                        other.unwrap_or("")
-                    ));
-                    continue;
-                }
-            };
-            match loaded {
-                Ok(n) => {
-                    if verbose {
-                        eprintln!("loaded {} fact(s) from {}", n, file.display());
-                    }
-                }
-                Err(errs) => {
-                    data_errors.extend(errs.iter().map(|e| format!("{}: {e}", file.display())));
-                }
-            }
+    if let Err(errs) = load_conventional_data(&mut kb, paths, verbose) {
+        for e in &errs {
+            eprintln!("error: {e}");
         }
-        if !data_errors.is_empty() {
-            for e in &data_errors {
-                eprintln!("error: {e}");
-            }
-            return Err(1);
-        }
+        return Err(1);
     }
 
     Ok(kb)
+}
+
+/// Load the conventional data files of `paths` into `kb`, returning every fault
+/// found rather than the first.
+///
+/// Call this only AFTER the `.anthill` sources are loaded: the deserializer reads
+/// each entity's schema from the KB to interpret its fields, so a data file loaded
+/// first would fail with `unknown entity` for entities that are merely not defined
+/// yet.
+///
+/// EVERY fault is an error — unreadable, unparseable, or rejected by the
+/// deserializer. WI-744: these used to warn and `continue`, so the facts never
+/// landed and the KB answered from data the user had supplied but which was never
+/// there — a confident wrong answer, worse than not answering. WI-746 makes the
+/// *parse* arm loud too: a file at `anthill.toml` was put there to be loaded, so a
+/// syntax error in it is a fault to report, not evidence that the file was never
+/// ours.
+///
+/// SHARED between `load_kb_with_stdlib` (load/check/query/codegen-cpp) and
+/// `run::build_kb`, which builds its own KB and would otherwise need a second
+/// copy. That copy is the whole reason this is a function: `anthill run` shipped
+/// blind to data files precisely because its KB was assembled somewhere else, so
+/// `anthill query <dir>` and `anthill run <dir>` disagreed about the same
+/// project's facts. Returns the faults instead of printing and exiting, because
+/// the two callers use different exit codes (1 vs `runner::EXIT_COMPILE`).
+fn load_conventional_data(
+    kb: &mut KnowledgeBase,
+    paths: &[PathBuf],
+    verbose: bool,
+) -> Result<(), Vec<String>> {
+    let data_files = conventional_data_files(paths);
+    if data_files.is_empty() {
+        return Ok(());
+    }
+    let domain = kb.make_name_term("_data");
+    let mut data_errors: Vec<String> = Vec::new();
+    for file in &data_files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                data_errors.push(format!("{}: read error: {e}", file.display()));
+                continue;
+            }
+        };
+        let loaded = match file.extension().and_then(|e| e.to_str()) {
+            Some("toml") => term_ser::load_toml(kb, &source, domain),
+            Some("json") => term_ser::load_json(kb, &source, domain),
+            // Unreachable: `conventional_data_files` builds these names from
+            // `DATA_EXTENSIONS`, the reader's own list. Loud rather than
+            // skipped, so the two cannot drift apart in silence.
+            other => {
+                data_errors.push(format!(
+                    "{}: no reader for extension {:?}",
+                    file.display(),
+                    other.unwrap_or("")
+                ));
+                continue;
+            }
+        };
+        match loaded {
+            Ok(n) => {
+                if verbose {
+                    eprintln!("loaded {} fact(s) from {}", n, file.display());
+                }
+            }
+            Err(errs) => {
+                data_errors.extend(errs.iter().map(|e| format!("{}: {e}", file.display())));
+            }
+        }
+    }
+    if data_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(data_errors)
+    }
 }
 
 // ── Codegen driver ──────────────────────────────────────────────────
