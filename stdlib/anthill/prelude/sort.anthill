@@ -50,13 +50,30 @@ end
    `ExprCarried` is a type FORM, `project_type_member` its internal reduction; `Concat`
    is the form, the merge its reduction.
 
-   FIRST-INCREMENT scope (WI-714 join): `Concat` reduces only as a DIRECT type argument
-   (the schema position `Relation[T = Concat[A = .., B = ..]]`) over two CONCRETE named
-   tuples with DISJOINT field names. Each of the following is a LOUD error — deferred to a
-   follow-up, never a silent skip: a field-name collision; a non-named-tuple operand (a
-   1-collapse / membership schema); an ABSTRACT operand (an un-instantiated schema type
-   param — so a generic wrapper over abstract relation schemas is not yet expressible); and
-   a `Concat` nested in any other carrier (a tuple field, an arrow, an effect row). >}
+   SCOPE: `Concat` reduces only as a DIRECT type argument (the schema position
+   `Relation[T = Concat[A = .., B = ..]]`). Each of the following is a LOUD error —
+   deferred to a follow-up, never a silent skip: a field-name collision; a non-named-tuple
+   operand (a 1-collapse / membership schema); and a `Concat` nested in any other carrier
+   (a tuple field, an arrow, an effect row).
+
+   ABSTRACT OPERANDS (WI-734) — settled once for the whole ctor family (`Concat`,
+   `Without`, and any later member): an operand that is NOT YET KNOWN leaves the ctor
+   SYMBOLIC rather than raising, to reduce later once the operand grounds. "Not yet known"
+   means a logic VARIABLE — the skolem an enclosing generic op's `[S]` becomes, or an
+   unsolved inference var — or an unreduced residual one level down. So a generic wrapper
+   over abstract relation schemas IS expressible: `merge(a, b)` inside
+   `[L, R](a: Relation[T = L], b: Relation[T = R]) -> Relation[T = Concat[A = L, B = R]]`
+   type-checks, and the residual reduces at the concrete call. An operand that IS known but
+   cannot be merged stays a LOUD error — "cannot reduce yet" and "cannot reduce ever" are
+   different answers and no longer share one diagnostic.
+
+   CONFLUENCE: a residual exists only over an un-instantiated operand, so a fully concrete
+   type is always fully reduced — there are never two comparable forms of one concrete
+   type. CAVEAT: the reduction gate reads an op's DECLARED return type, so a generic
+   wrapper must PROPAGATE the ctor in its own signature (as `join` / `fix` do); widening to
+   a bare `Relation` lets the residual escape unreduced. That escape is SAFE rather than a
+   silent wrong schema — an unreduced ctor offers no named-tuple schema, so any column use
+   on it fails LOUDLY at dot dispatch. Widening costs usability, never correctness. >}
 sort anthill.prelude.Concat
   sort A = ?
   sort B = ?
@@ -80,11 +97,17 @@ end
    naming no `T` field, or one whose (captured) type mismatches its column, is a LOAD error
    in the reduction (§2.2). An empty `Drop` (`r.fix()`, an empty capture) is the identity.
 
-   FIRST-INCREMENT scope (WI-727 fix): `Without` reduces only as a DIRECT type argument
-   (the schema position `Relation[T = Without[T = .., Drop = ..]]`) over a CONCRETE named
-   tuple `T`. A `Drop` naming no column, a type mismatch, a non-named-tuple `T` (a
-   1-collapse / membership schema, which has no named column to drop by), and a `Without`
-   nested in any other carrier are each a LOUD error — deferred, never a silent skip. >}
+   SCOPE: `Without` reduces only as a DIRECT type argument (the schema position
+   `Relation[T = Without[T = .., Drop = ..]]`) over a CONCRETE named tuple `T`. A `Drop`
+   naming no column, a type mismatch, a non-named-tuple `T` (a 1-collapse / membership
+   schema, which has no named column to drop by), and a `Without` nested in any other
+   carrier are each a LOUD error — deferred, never a silent skip.
+
+   ABSTRACT OPERANDS (WI-734): `Without` follows the family rule stated on `Concat` above
+   — an operand that is not yet known (a logic variable, or an unreduced residual) leaves
+   the ctor symbolic to reduce once it grounds, while a KNOWN but undroppable operand
+   stays loud. `p.fix(name: "a")` on a `p: Relation[T = S]` with `S` abstract therefore
+   type-checks instead of reporting the 1-collapse diagnostic against a type parameter. >}
 sort anthill.prelude.Without
   sort T = ?
   sort Drop = ?

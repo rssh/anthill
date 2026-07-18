@@ -1665,44 +1665,49 @@ fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool 
     }
 }
 
-/// WI-714 / WI-727 — the per-op reduction gate: which binary type constructors (`Concat`,
-/// `Without`) a return type writes, in a SINGLE traversal, so the >99% of ops that write
-/// neither skip [`reduce_binary_type_ctor`]'s descent entirely. Returns `(has_concat,
-/// has_without)`; an op writes at most one.
-fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> (bool, bool) {
-    let concat = kb.try_resolve_symbol(CONCAT_CTOR.qn);
-    let without = kb.try_resolve_symbol(WITHOUT_CTOR.qn);
+/// WI-714 / WI-727 — the per-op reduction gate: which binary type constructors a return
+/// type writes, in a SINGLE traversal, so the >99% of ops that write none skip
+/// [`reduce_binary_type_ctor`]'s descent entirely. Returns one flag per
+/// [`BINARY_TYPE_CTORS`] entry, positionally. A return type may write more than one, and
+/// the reduction boundary applies each flagged ctor in turn.
+///
+/// WI-734 — indexed by the family slice rather than a hardcoded tuple, so adding a ctor is
+/// one line in [`BINARY_TYPE_CTORS`]: previously the family was enumerated independently
+/// here and at the reduction boundary, and a new ctor added to one but not the other would
+/// silently never reduce instead of failing to compile.
+fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_CTORS.len()] {
+    let syms = resolved_ctor_family(kb);
     fn walk(
         kb: &KnowledgeBase,
         ty: &Value,
-        concat: Option<Symbol>,
-        without: Option<Symbol>,
-        out: &mut (bool, bool),
+        syms: &[Option<Symbol>; BINARY_TYPE_CTORS.len()],
+        out: &mut [bool; BINARY_TYPE_CTORS.len()],
     ) {
         match extract_type(kb, ty) {
             TypeExtractor::Parameterized { base, bindings } => {
-                out.0 |= Some(base) == concat;
-                out.1 |= Some(base) == without;
+                for (i, s) in syms.iter().enumerate() {
+                    out[i] |= Some(base) == *s;
+                }
                 for (_, v) in &bindings {
-                    walk(kb, v, concat, without, out);
+                    walk(kb, v, syms, out);
                 }
             }
             TypeExtractor::Arrow { param, result, effects } => {
-                walk(kb, &param, concat, without, out);
-                walk(kb, &result, concat, without, out);
-                walk(kb, &effects, concat, without, out);
+                walk(kb, &param, syms, out);
+                walk(kb, &result, syms, out);
+                walk(kb, &effects, syms, out);
             }
             TypeExtractor::NamedTuple(fields) => {
                 for (_, v) in &fields {
-                    walk(kb, v, concat, without, out);
+                    walk(kb, v, syms, out);
                 }
             }
-            TypeExtractor::EffectsRows(e) => walk(kb, &e, concat, without, out),
+            TypeExtractor::EffectsRows(e) => walk(kb, &e, syms, out),
             _ => {}
         }
     }
-    let mut out = (false, false);
-    walk(kb, ty, concat, without, &mut out);
+    let mut out = [false; BINARY_TYPE_CTORS.len()];
+    walk(kb, ty, &syms, &mut out);
     out
 }
 
@@ -1736,17 +1741,86 @@ const WITHOUT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
     reduce: without_named_tuple_types,
 };
 
+/// WI-714 / WI-727 — every binary type constructor, as ONE family. The family's shared
+/// rules (the abstract-operand reading below, the operand-name lookup, the reduction
+/// boundary) are stated once here rather than per constructor.
+const BINARY_TYPE_CTORS: [&BinaryTypeCtor; 2] = [&CONCAT_CTOR, &WITHOUT_CTOR];
+
+/// WI-734 — the family's constructor sorts, resolved once. Kept out of the per-operand
+/// path deliberately: [`operand_not_yet_known`] runs up to twice per reduction and
+/// `try_resolve_symbol` is a string-keyed lookup, which the gated boundary
+/// ([`return_reducible_ctors`]) exists specifically to keep off the common path.
+/// `None` for a ctor whose sort is not loaded — the same "then it cannot appear" reading
+/// [`reduce_binary_type_ctor`] takes at its own resolve.
+fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTORS.len()] {
+    let mut out = [None; BINARY_TYPE_CTORS.len()];
+    for (i, c) in BINARY_TYPE_CTORS.iter().enumerate() {
+        out[i] = kb.try_resolve_symbol(c.qn);
+    }
+    out
+}
+
+/// WI-734 — is a ctor operand NOT YET KNOWN, i.e. is the reduction merely *deferred*
+/// rather than *impossible*? Two shapes qualify:
+///
+/// 1. The operand is a logic VARIABLE (`ViewHead::Var`) — an un-instantiated type
+///    parameter (`Var::Rigid`, the skolem a generic op's `[S]` becomes) or an unsolved
+///    inference var (`Var::Global`). It may ground at an outer call site.
+/// 2. The operand is itself an UNREDUCED ctor — a residual this same rule produced one
+///    level down (`Concat[A = Without[..], B = ..]`). Reducing the outer one is equally
+///    deferred, so the family stays internally consistent instead of the inner residual
+///    tripping the outer reducer's concrete-operand check.
+///
+/// Deliberately a SHALLOW head test: a variable nested *inside* an otherwise concrete
+/// operand (a named-tuple field type) does not block the merge, which copies field types
+/// verbatim. And deliberately NOT keyed on `TypeExtractor::Error` — that is a total-ness
+/// catch-all covering genuinely malformed types too, so keying on it would silently
+/// convert real errors into residuals.
+fn operand_not_yet_known(
+    kb: &KnowledgeBase,
+    v: &Value,
+    family: &[Option<Symbol>; BINARY_TYPE_CTORS.len()],
+) -> bool {
+    if matches!(v.head(kb), ViewHead::Var(_)) {
+        return true;
+    }
+    matches!(
+        extract_type(kb, v),
+        TypeExtractor::Parameterized { base, .. } if family.contains(&Some(base))
+    )
+}
+
 /// WI-714 / WI-727 — evaluate a binary type constructor (`cfg`) wherever it appears in a
 /// type: `Ctor[op0 = <a>, op1 = <b>]` reduces to `cfg.reduce(a, b)`. The INTERNAL type-level
 /// operation behind the `Concat` / `Without` FORMS — keyed on the constructor's sort symbol
 /// and evaluated at the SAME return-type normalization boundary the `s.T` projection is, so
 /// ANY signature may write it; never keyed on a domain operation's identity. Recurses through
 /// parameterized BINDINGS (where a schema-producing ctor sits — the `T` binding of
-/// `Relation[T = Ctor[..]]`). FIRST-INCREMENT scope: reduces only as a DIRECT parameterized
-/// type argument, over CONCRETE operands. A malformed reduction (a collision / a
-/// non-named-tuple operand) and a ctor nested in any other carrier (a named-tuple field,
-/// arrow, effect row) are LOUD errors via `ctx` — never a silent pass-through. A carrier that
-/// mentions no `cfg` ctor returns unchanged.
+/// `Relation[T = Ctor[..]]`).
+///
+/// WI-734 — the family's ABSTRACT-OPERAND rule, settled once for `Concat` / `Without` and
+/// any future member: an operand that is NOT YET KNOWN ([`operand_not_yet_known`]) leaves
+/// the ctor SYMBOLIC (returned unreduced) so it can reduce later, once the operand grounds;
+/// an operand that IS known but cannot be merged (a collision, a 1-collapse / scalar
+/// schema) stays a LOUD error. "Cannot reduce yet" and "cannot reduce ever" are different
+/// answers and no longer share the concrete-malformation diagnostic.
+///
+/// CONFLUENCE: a residual can only exist over an un-instantiated operand, so a fully
+/// CONCRETE type is always fully reduced — there are never two comparable forms of one
+/// concrete type.
+///
+/// CAVEAT: a residual reduces later only where the reduction gate fires, and
+/// [`return_reducible_ctors`] reads an op's DECLARED return type — so a generic wrapper
+/// must PROPAGATE the ctor in its own signature (as `join` / `fix` do); widening to a bare
+/// `Relation` lets the residual escape unreduced. That escape is SAFE, not a silent wrong
+/// schema: A/B-verified, a column use on an escaped residual — dropped or kept alike —
+/// fails LOUDLY at dot dispatch (`<unresolved receiver>.<col>`), because an unreduced ctor
+/// offers no named-tuple schema to resolve against. The cost of widening is that the
+/// result is unusable columnwise, never that it answers wrongly.
+///
+/// A ctor nested in a non-parameterized-argument carrier (a named-tuple field, arrow,
+/// effect row) remains a LOUD error — never a silent pass-through. A carrier that mentions
+/// no `cfg` ctor returns unchanged.
 fn reduce_binary_type_ctor(
     kb: &mut KnowledgeBase,
     ty: &Value,
@@ -1780,6 +1854,23 @@ fn reduce_binary_type_ctor(
                     }
                 }
                 match (a, b) {
+                    // WI-734 — an operand that is NOT YET KNOWN leaves the ctor SYMBOLIC
+                    // rather than raising: reduction is deferred to the boundary where the
+                    // operand grounds. Distinguishing this from a CONCRETE operand the
+                    // reducer genuinely cannot merge is the whole point — handing an
+                    // unknown to `cfg.reduce` made it report the concrete-malformation
+                    // message ("must be a named-tuple type"), blaming a 1-collapse schema
+                    // for what is really an un-instantiated type parameter.
+                    (Some(a), Some(b))
+                        if {
+                            let family = resolved_ctor_family(kb);
+                            operand_not_yet_known(kb, &a, &family)
+                                || operand_not_yet_known(kb, &b, &family)
+                        } =>
+                    {
+                        let base_id = kb.make_sort_ref(base);
+                        Ok(parameterized_value(kb, base_id, &reduced, sp, None))
+                    }
                     (Some(a), Some(b)) => (cfg.reduce)(kb, &a, &b, sp)
                         .map_err(|msg| projection_type_error(ctx, span, &msg)),
                     _ => Err(projection_type_error(
@@ -4184,6 +4275,19 @@ fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Valu
 /// so the two-row lambda's binder types at the concrete schema. Only fires for a
 /// reference whose resolved symbol is a `Goal`/`Rule`; any other arg yields `None` (the
 /// env/stamp path already covers a receiver and ordinary values).
+///
+/// WI-734 asked whether this recompute could be retired in favour of the `inferred_type`
+/// stamp the RECEIVER path already uses, so a bare rule-ref argument and a bare rule-ref
+/// receiver share one mechanism. IT CANNOT — and the reason is ORDERING, not oversight.
+/// A/B-verified: dropping this rung from [`projection_receiver_type`] fails all five
+/// `wi714_join` tests with `<unresolved receiver>.name` / `.who` / `.dept`.
+///
+/// The consumer is the row-lambda's callback param HINT. At the `DotApply` frame only the
+/// RECEIVER is pre-typed (WI-443) — a callback argument is deliberately not — so when
+/// `join(r1, lambda (c, q) -> …)` hints `q` with `r2`'s schema, `r2` has not been typed
+/// yet and carries NO stamp to read. A stamp cannot satisfy a reader that runs before the
+/// producer. Retiring this would require pre-typing sibling args at the DotApply frame,
+/// which is the very thing WI-443 removed.
 fn relation_ref_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Value> {
     let name = match &arg.kind {
         NodeKind::Expr { expr: Expr::VarRef { name }, .. }
@@ -7509,8 +7613,7 @@ fn check_apply_iter(
         // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
         // declared signature, like `op_has_projection`) — ONE traversal for both — so only a
         // signature that actually reduces a schema pays for the reduction at each call.
-        let (op_return_has_concat, op_return_has_without) =
-            return_reducible_ctors(kb, &op.return_type);
+        let op_return_ctors = return_reducible_ctors(kb, &op.return_type);
         // Each param symbol → the inferred type of the argument bound to it, so a
         // projection `param.M` in the return / effects / a LATER param can read the
         // receiver's actual per-call type (the synthesis-time discharge point).
@@ -7910,19 +8013,20 @@ fn check_apply_iter(
         // record — into the type before the operands are inspected), then apply whichever
         // reduction the signature actually wrote. Each is universal (keyed on the sort, not
         // the op) and gated per-op on the declared return type.
-        let proj_return_type = if op_return_has_concat || op_return_has_without {
+        let proj_return_type = if op_return_ctors.iter().any(|f| *f) {
             let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
-            let walked = walk_type_deep_value(kb, &subst, &proj_return_type);
-            let reduced = if op_return_has_concat {
-                reduce_binary_type_ctor(kb, &walked, &ret_ctx, occ.span, span, &CONCAT_CTOR)?
-            } else {
-                walked
-            };
-            if op_return_has_without {
-                reduce_binary_type_ctor(kb, &reduced, &ret_ctx, occ.span, span, &WITHOUT_CTOR)?
-            } else {
-                reduced
+            // Share the single `subst`-walk (which substitutes the bound type params —
+            // `Drop = R`, the captured record — into the type before the operands are
+            // inspected), then apply each ctor the signature actually wrote, in family
+            // order. WI-734: folded over `BINARY_TYPE_CTORS` rather than an if-chain per
+            // constructor, so a new ctor reduces here by construction.
+            let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
+            for (cfg, wrote) in BINARY_TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
+                if *wrote {
+                    reduced = reduce_binary_type_ctor(kb, &reduced, &ret_ctx, occ.span, span, cfg)?;
+                }
             }
+            reduced
         } else {
             proj_return_type
         };

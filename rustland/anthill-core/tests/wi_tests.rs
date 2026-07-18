@@ -71,6 +71,9 @@ mod wi739_guard_generator_delay_test;
 #[path = "include/wi727_fix_test.rs"]
 mod wi727_fix_test;
 
+#[path = "include/wi734_abstract_operand_test.rs"]
+mod wi734_abstract_operand_test;
+
 #[path = "include/wi725_self_carried_spec_simp_test.rs"]
 mod wi725_self_carried_spec_simp_test;
 
