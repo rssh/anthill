@@ -164,3 +164,44 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
         anthill_core::eval::effects::default_modify_handler())
         .expect("register Modify handler");
 }
+
+/// The stdlib-only KB the re-type suites build on: parse + `register_prelude` +
+/// `register_standard_builtins` + `load_stdlib`, with NO user source. WI-732 lifted this here
+/// after finding six verbatim copies across the test tree (typing_test, incremental_load_test,
+/// wi211, wi219, wi759, and its own) — a change to the load sequence otherwise has to land in
+/// every one, and the copy that misses it fails as though the code under test were broken.
+///
+/// Distinct from [`try_load_kb_with`], which loads the stdlib AND a user source in one shot and
+/// returns only errors. A caller needing the `LoadResult` (to type-check the user file's OWN
+/// sorts, then RE-type-check to exercise the free-op sweep) needs the two steps split, which
+/// is what this and [`load_stdlib_kb_with_source`] provide.
+#[allow(dead_code)]
+pub fn load_stdlib_kb() -> KnowledgeBase {
+    let files = collect_anthill_files(&stdlib_dir());
+    assert!(!files.is_empty(), "no stdlib files found");
+    let parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {p:?}: {e}"));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {p:?}: {e:?}"))
+        })
+        .collect();
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("stdlib load");
+    kb
+}
+
+/// [`load_stdlib_kb`] plus ONE user source, returning the `LoadResult` too — the split-step
+/// form a re-type test needs (`type_check_sorts(&result.defined_sorts)`, then
+/// `type_check_sorts(&[])`). Parse and load failures panic: both are test-authoring bugs here,
+/// since a test asserting a LOAD error uses [`try_load_kb_with`] instead.
+#[allow(dead_code)]
+pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
+    let mut kb = load_stdlib_kb();
+    let parsed = parse::parse(source).expect("parse failed");
+    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    (kb, result)
+}

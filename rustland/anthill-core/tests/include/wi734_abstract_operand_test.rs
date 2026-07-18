@@ -37,11 +37,18 @@ const GENERIC: &str = r#"
   rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
   rule member_row(?who, ?dept) :- member(who: ?who, dept: ?dept)
 
+  -- Both thread the operands' ACCESS-EFFECT rows, as `join` does. Declaring `E` is not
+  -- incidental: a `Relation[T = ..]` written with no `E` is under-specified, and CONSUMING
+  -- one — `m.isEmpty`, with no projection anywhere — already fails with `undeclared effect:
+  -- m.E`. Until WI-732 a projection was the one step that hid this, because it re-pinned the
+  -- schema through a typer stamp that FLOORED a missing `E` to `{Error}`, laundering the
+  -- unresolved row. `project_run`'s signature now threads `E = r.E` exactly as
+  -- `where_run` / `join_run` do, so the row propagates instead.
   operation merge[L, R](a: Relation[T = L], b: Relation[T = R])
-    -> Relation[T = Concat[A = L, B = R]]
+    -> Relation[T = Concat[A = L, B = R], E = {a.E, b.E}]
 
   operation mergeWrap[L2, R2](a: Relation[T = L2], b: Relation[T = R2])
-    -> Relation[T = Concat[A = L2, B = R2]] = merge(a, b)
+    -> Relation[T = Concat[A = L2, B = R2], E = {a.E, b.E}] = merge(a, b)
 "#;
 
 /// DIRECTION 1 (`Concat`) — an abstract operand stays SYMBOLIC. `merge(a, b)` inside the

@@ -158,6 +158,60 @@ sort anthill.prelude.FieldOf
   sort Name = ?
 end
 
+{< Project[T, Keep]: the TYPE-position surface of a schema KEEP (WI-732 / proposal 052 —
+   `project`'s restricted schema `T = Project[T = r.T, Keep = Keep]`). The third schema
+   member of the family: `Concat` MERGES two schemas, `Without` SHRINKS one by a drop-set,
+   `Project` RESTRICTS one to a keep-set (and renames while doing it). Prior art: TypeScript
+   `Pick<T, K>`, the dual of the `Omit<T, K>` that `Without` mirrors.
+
+   The surface is the distribute-dot `r.(f1, f2)` (bare) / `r.(a: f1, b: f2)` (rename); a
+   single member 1-collapses to `r.f`. That desugars (WI-639) to a name-keyed row tuple, and
+   the typer recognizes it and synthesizes `project_run(r, <spec>)` — so unlike `where` /
+   `join` there is no compile-time macro, because there is no lambda to read.
+
+   `Keep` is the projection MAP in type position: a named-tuple TYPE whose FIELD NAME is each
+   result key and whose COMPONENT is a `denoted` carrying the source column's name —
+   `Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]` reduces to
+   `(person: String, years: Int64)`. A named tuple is the natural carrier because a keep spec
+   IS a map from result key to source name. The component must be a denoted rather than the
+   name itself because there are no singleton types (WI-759): a name in VALUE position types
+   as plain `String` and loses the name, so the denoted type-argument channel is the only route
+   that carries it. `Without` needs no denoted for the same job — it reads only its `Drop`
+   record's FIELD NAMES, and a projection cannot, because a rename has a source AND a result.
+
+   That is what makes `project_run`'s signature SELF-CORRECTING:
+
+     operation project_run[Keep](r: Relation, spec: Term)
+       -> Relation[T = Project[T = r.T, Keep = Keep], E = r.E]
+
+   Before WI-732 it declared the nominal `-> Relation[T = r.T]` — the UNPROJECTED schema — and
+   the typer stamped the real one over it, which meant a later re-type had to be intercepted by
+   a hatch keyed on `project_run`'s own identity (the last such hatch in the typer; the
+   `join` → `Concat` discipline forbids them). Now the forward direction and a re-type are ONE
+   decision procedure over one lookup, so they cannot drift.
+
+   The spec travels on BOTH channels, built from one list at one place so they cannot
+   disagree: the VALUE argument `spec` stays the runtime recipe the host builtin reads to
+   rebuild `columns`, and `Keep` carries the same map to type position.
+
+   SCOPE: like the rest of the family, `Project` reduces only as a DIRECT type argument (the
+   schema position `Relation[T = Project[T = .., Keep = ..]]`). A `Keep` naming no column of
+   `T`, a non-named-tuple `T` (a 1-collapse / membership schema, which has no named column to
+   select by name), a `Keep` component that is not a denoted name, and a `Project` nested in
+   any other carrier are each a LOUD error — never a silent skip. Duplicate RESULT keys are
+   rejected earlier, at parse (`validate_projection_labels`).
+
+   ABSTRACT OPERANDS (WI-734): `Project` follows the family rule stated on `Concat` above — an
+   operand that is not yet known leaves the ctor symbolic to reduce once it grounds. A
+   hand-written `project_run(r, spec)` that supplies no `Keep` therefore leaves an unreduced
+   residual rather than raising; that escape is SAFE, not a silent wrong schema, because an
+   unreduced ctor offers no named-tuple schema and any column use on it fails loudly at dot
+   dispatch. >}
+sort anthill.prelude.Project
+  sort T = ?
+  sort Keep = ?
+end
+
 {< EffectExpression: the effect-row carried by an arrow (proposal 045 §3, §6).
 
    The surface algebra a programmer writes — `present` / `absent` / `open`
