@@ -6845,14 +6845,19 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// This file's `SourceSpan` for a parse-IR term — the parse span tagged with
+    /// the loader's `source_id` (fixed for the whole file, set in `Loader::new`).
+    fn source_span_of(&self, parse_id: TermId) -> SourceSpan {
+        SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id))
+    }
+
     /// Record a stored term's source span on the KB's
     /// `term_spans` / `functor_spans` side-tables — typing.rs and
     /// other passes read these for error-reporting spans.
     /// First-write-wins on both keys mirrors the legacy
     /// `the legacy occurrence by-term index/rules_by_functor.first()` semantics.
     fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) {
-        let span = self.parsed.terms.span(parse_id);
-        let source_span = SourceSpan::from_span(self.source_id, span);
+        let source_span = self.source_span_of(parse_id);
         self.kb.term_spans.entry(kb_id).or_insert(source_span);
         if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
             let functor = *functor;
@@ -11774,6 +11779,13 @@ impl<'a> Loader<'a> {
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         let rule_id = self.kb.assert_fact(term, fact_sort, domain, meta);
+        // WI-458: record the head's span on the RULE, not (only) under the
+        // hash-consed head TermId. Two facts whose heads intern to the SAME
+        // TermId but differ in sort/domain are not deduped (they get distinct
+        // RuleIds) yet share one `term_spans` entry — so a head error about the
+        // later fact would misreport the earlier file's location.
+        let head_span = self.source_span_of(f.term);
+        self.kb.set_rule_head_span(rule_id, head_span);
         self.fact_rule_ids.push(rule_id);
 
         // WI-210: when `fact Spec[bindings]` appears inside a sort body
@@ -12260,6 +12272,10 @@ impl<'a> Loader<'a> {
         // `self.rule_head_type_bounds` while `in_rule_head` is set; drained here
         // and installed on each head's RuleEntry below.
         let mut head_type_bounds: Vec<Vec<(VarId, TermId)>> = Vec::with_capacity(r.heads.len());
+        // WI-458: each positive head's source span, parallel to `positive_heads`,
+        // so the head-error paths can key on the head OCCURRENCE (its RuleId)
+        // rather than the hash-consed head TermId.
+        let mut positive_head_spans: Vec<SourceSpan> = Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
         for h in &r.heads {
             match h {
@@ -12280,6 +12296,7 @@ impl<'a> Loader<'a> {
                     self.in_value_position = false;
                     self.in_rule_head = false;
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
+                    positive_head_spans.push(self.source_span_of(*tid));
                     positive_heads.push(head);
                 }
                 RuleHead::Bottom => has_bottom = true,
@@ -12359,6 +12376,15 @@ impl<'a> Loader<'a> {
                 kb_head, body_nodes.clone(), rule_sort, domain, meta);
             if let Some(label) = label_sym {
                 self.kb.set_rule_label(rid, label);
+            }
+            // WI-458: key the head span on this rule's RuleId (per-occurrence),
+            // not the hash-consed head TermId. A `⊥` denial head has no source
+            // term (`positive_head_spans` is empty; the guard above rejects
+            // combining `⊥` with positive heads), so it records nothing — a
+            // denial error reports off its body goals, which carry their own
+            // spans.
+            if let Some(&span) = positive_head_spans.get(head_idx) {
+                self.kb.set_rule_head_span(rid, span);
             }
             // WI-582: install this head's typed-pattern bounds (if any) on the
             // RuleEntry, mapping each head variable to its DeBruijn index. A

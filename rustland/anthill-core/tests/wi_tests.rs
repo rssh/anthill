@@ -680,3 +680,6 @@ mod wi749_rule_ref_zero_arg_member_test;
 
 #[path = "include/wi750_chained_receiver_method_call_test.rs"]
 mod wi750_chained_receiver_method_call_test;
+
+#[path = "include/wi458_head_span_occurrence_test.rs"]
+mod wi458_head_span_occurrence_test;

@@ -257,6 +257,17 @@ struct RuleEntry {
     /// its head vars per match instead of raw-binding their persistent VarIds
     /// into aliasing goals (the arity-0 remnant of the WI-624 leak).
     head_vars: Vec<VarId>,
+    /// WI-458 — this head's own source span, or `None` when the loader recorded
+    /// none (a synthesized head has no source text). Keyed HERE, on the rule
+    /// itself, rather than read back from the `term_spans` side-table: that table
+    /// keys on the hash-consed head `TermId`, which two DIFFERENT rules can
+    /// share — identical head structure interns once, and `assert_fact` only
+    /// dedups when `(term, sort, domain)` ALL match, so same-head/different-domain
+    /// facts become distinct rules aliased onto one span (first-write-wins). A
+    /// `RuleId` is unique per stored rule, so this cannot cross-file-alias. Set by
+    /// the loader right after assert (see `set_rule_head_span`), read by the
+    /// typing.rs head-error paths.
+    head_span: Option<crate::span::SourceSpan>,
     /// WI-472: the hash-consed `TermId` this ground fact is keyed under in
     /// `fact_dedup`, for a `Node`/`Entity`-carrier head whose key is *derived*
     /// (not the head itself). `Some` only for a deduped value fact — a `Value::Term`
@@ -1058,6 +1069,22 @@ impl KnowledgeBase {
         self.functor_spans.get(&functor).copied()
     }
 
+    /// WI-458 — this rule/fact head's OWN source span, if the loader recorded
+    /// one. Unlike [`Self::term_span`] it is keyed by `RuleId`, so a head whose
+    /// `TermId` is hash-cons-shared with another rule's head still resolves to
+    /// THIS rule's source location. The head-error paths in typing.rs read this.
+    pub fn rule_head_span(&self, id: RuleId) -> Option<crate::span::SourceSpan> {
+        self.rules[id.index()].head_span
+    }
+
+    /// WI-458 — record a fact/rule head's own source span. First-write-wins: an
+    /// `assert_fact` dedup hit hands back an EXISTING RuleId, and the surviving
+    /// entry keeps its original (first-loaded) span — the one `RuleEntry` the
+    /// duplicates collapsed onto.
+    pub fn set_rule_head_span(&mut self, id: RuleId, span: crate::span::SourceSpan) {
+        self.rules[id.index()].head_span.get_or_insert(span);
+    }
+
     /// WI-251 — iterate every operation's `(symbol, body NodeOccurrence)`.
     /// Passes (e.g. `req_insertion::run`) that need to scan all bodies
     /// consume this; the iteration order is unspecified.
@@ -1460,6 +1487,9 @@ impl KnowledgeBase {
             label: None,
             type_bounds: Vec::new(),
             head_vars,
+            // WI-458: filled by the loader via `set_rule_head_span` once it has
+            // this rule's RuleId; a synthesized head keeps `None`.
+            head_span: None,
             // WI-472: set by `assert_fact_value` after this push, for a deduped
             // Node/Entity fact head. Every other head (rule, un-deduped, or a
             // `Value::Term` fact whose key is the head itself) leaves it `None`.
