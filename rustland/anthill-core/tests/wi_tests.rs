@@ -686,3 +686,6 @@ mod wi751_namespace_root_shadow_test;
 
 #[path = "include/wi752_dotted_ladder_test.rs"]
 mod wi752_dotted_ladder_test;
+
+#[path = "include/wi458_head_span_occurrence_test.rs"]
+mod wi458_head_span_occurrence_test;

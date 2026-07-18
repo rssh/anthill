@@ -27500,7 +27500,19 @@ fn check_entity_facts(
                 _ => continue,
             };
 
-            let head_ss = kb.term_span(head).or_else(|| kb.functor_span(ctor_sym));
+            // WI-458: this fact's OWN head span, keyed by RuleId. The dropped
+            // `term_span(head)` step keyed on the hash-consed head TermId, which
+            // a same-head/different-domain fact in ANOTHER file shares (they are
+            // distinct rules — `assert_fact` dedups only when term+sort+domain all
+            // match — but alias onto one first-write-wins span). That aliasing hit
+            // WI-745's `cur_src` too: the file an error is ATTRIBUTED to came from
+            // the same lookup, so a cross-file alias mislabelled the file, not just
+            // the offsets. Every source-written fact records a head span here, so
+            // the dropped step only ever fired for a synthesized head, where it
+            // could only alias. The `functor_span` fallback stays: it is the
+            // constructor's own declaration site, a documented representative
+            // span, not an alias.
+            let head_ss = kb.rule_head_span(rid).or_else(|| kb.functor_span(ctor_sym));
             let span: Option<Span> = head_ss.map(|s| s.span);
             // WI-745: flush the previous fact's errors, then adopt this fact's
             // file for the errors its field checks below push.
@@ -28280,7 +28292,13 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
             Term::Fn { functor, .. } => *functor,
             _ => continue,
         };
-        let span = kb.term_span(head).map(|s| s.span);
+        // WI-458: the rule's OWN head span, keyed by RuleId. Deliberately no
+        // `term_span(head)` fallback: the loader records a `term_spans` entry only
+        // for op-body subterms and FACT heads, never for a rule head — so a hit
+        // there could only be another construct that happened to intern the same
+        // head TermId, i.e. exactly the cross-file span this WI removes. `None`
+        // (no location) beats a confidently wrong file:line.
+        let span = kb.rule_head_span(rid).map(|s| s.span);
 
         // Rule 1: head must not contain ho_apply (no predicate variables in head)
         if term_contains_functor(kb, head, ho_apply_sym) {
@@ -28530,7 +28548,9 @@ fn type_rule_bodies(
             if reportable.contains(&rid) {
                 if let Term::Fn { functor: head_sym, .. } = kb.get_term(head) {
                     let head_sym = *head_sym;
-                    let span = kb.term_span(head).map(|s| s.span);
+                    // WI-458: the rule's own head span, keyed by RuleId — no
+                    // `term_span` fallback (see `check_pattern_fragment`).
+                    let span = kb.rule_head_span(rid).map(|s| s.span);
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
                         span,
