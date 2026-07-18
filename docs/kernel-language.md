@@ -390,8 +390,9 @@ Additional types are introduced via `sort` declarations (unspecified, type alias
 -- Tuple types (in type position)
 TupleType ::= '(' ')'                                              -- unit
             | '(' TupleTypeArg ',' TupleTypeArg (',' TupleTypeArg)* ')'  -- 2+ elements
+            | '(' Name ':' Literal ')'                             -- 1 denoted element
 
-TupleTypeArg ::= Type | Name ':' Type
+TupleTypeArg ::= Type | Name ':' Type | Name ':' Literal
 
 -- Tuple literals (in term position)
 TupleLiteral ::= '(' ')'                                           -- unit value
@@ -399,6 +400,11 @@ TupleLiteral ::= '(' ')'                                           -- unit value
 ```
 
 **Disambiguation:** `(a)` with no comma is a parenthesized expression (grouping). `(a, b)` with a comma is a tuple. `Name(...)` preceded by a name is function application. No lookahead needed.
+
+**Denoted components** (`Name ':' Literal`, WI-763) — a component may be a *constant standing in type position*, which lowers to a `denoted` exactly as a literal type **argument** does (`Vector[Int64, 3]`; see "value-in-type" below). This is what makes a projection's keep spec writable: `Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]` maps each result key to its source column's *name*, and a name reaches type position only as a denoted, since there are no singleton types. Two asymmetries follow from the surface grammar rather than from the type system, and are deliberate:
+
+- A **one-component** tuple type is written only in this denoted form. A general `(a: A)` is exactly an arrow parameter list, distinguishable only by lookahead past the `)` for `->`; `(a: "x")` is not, since no parameter's declared type is a literal.
+- A literal is **not** admissible where a component is always a type: an entity field declaration (`entity person(name: "foo")`) or an arrow parameter (`(a: "x") -> B`) is an error.
 
 **All-or-nothing naming:** either all elements have explicit names or none do. Mixing `(a: Int64, String)` is an error.
 

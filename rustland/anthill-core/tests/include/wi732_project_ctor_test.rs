@@ -181,14 +181,11 @@ end
 /// the SORT is declared and `Project[..]` PARSES and LOADS in a signature over type
 /// parameters — the writability half — not that the abstract-operand path is what spared it.
 ///
-/// LIMITATION this test cannot cover, and why: a CONCRETE keep spec — `Keep = (who: "name")` —
-/// does not PARSE. Type-argument position admits a literal (`_common_type_expr`, the channel
-/// `FieldOf[Name = "age"]` uses), but a named-tuple type COMPONENT does not
-/// (`_tuple_type_arg` is `choice($._type, $.field_decl)`), and a keep spec needs a literal per
-/// component. So `Project` is today reducible-when-synthesized and writable-only-abstractly.
-/// Widening the grammar there is a separate change with its own GLR risk, recorded as WI-732
-/// feedback rather than smuggled in here; the reduction itself is exercised on EVERY
-/// projection, through the tests above and the `wi714_project` suite.
+/// The ABSTRACT half of writability. WI-763 added the concrete half — a keep spec
+/// (`Keep = (who: "name")`) needs a literal per component, which a named-tuple type component
+/// did not admit when this test was written, so `Project` was then reducible-when-synthesized
+/// and writable-only-abstractly. `wi763_written_keep_spec_test` covers the concrete form and
+/// the malformation diagnostics that only a written keep spec can reach.
 #[test]
 fn wi732_project_is_writable_and_stays_symbolic_while_abstract() {
     let src = format!(

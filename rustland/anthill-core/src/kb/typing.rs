@@ -3962,7 +3962,7 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
                     key to its source column name (`Keep = (person: \"name\")`)"
             .to_string());
     };
-    fields
+    let projections: Vec<(Symbol, String)> = fields
         .iter()
         .map(|(result_key, source)| {
             denoted_name(kb, source).map(|s| (*result_key, s)).ok_or_else(|| {
@@ -3974,7 +3974,27 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
                 )
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    // WI-763 — a duplicate RESULT key. The dot surface rejects this at parse
+    // (`validate_projection_labels` on `r.(a: f1, a: f2)`), but a WRITTEN `Keep` does not pass
+    // through that check, and a named-tuple TYPE carries duplicate field names without
+    // complaint — so the two keys would silently reach `collapse_schema` and build a schema
+    // with two `a` columns, which no field lookup can then answer unambiguously. Checked here
+    // so the invariant holds for BOTH surfaces of the same spec rather than only the one that
+    // happens to route through the parser.
+    // Compared by SHORT name for the same reason `projection_columns` resolves source columns
+    // that way: these are one tuple's own field labels, so this is a within-schema field
+    // comparison (WI-638 mode 3), not a cross-scope symbol identity (WI-672).
+    for (i, (key, _)) in projections.iter().enumerate() {
+        let key_name = short_name_of(kb.resolve_sym(*key));
+        if projections[..i].iter().any(|(k, _)| short_name_of(kb.resolve_sym(*k)) == key_name) {
+            return Err(format!(
+                "`Project` keep spec names the result key `{key_name}` twice; each key is a \
+                 distinct column of the projected schema, so it must appear once"
+            ));
+        }
+    }
+    Ok(projections)
 }
 
 /// WI-732 — the INTERNAL type-level operation behind the `Project[T, Keep]` type constructor:

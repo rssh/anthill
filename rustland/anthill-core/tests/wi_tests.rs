@@ -699,5 +699,8 @@ mod wi759_field_of_type_test;
 #[path = "include/wi732_project_ctor_test.rs"]
 mod wi732_project_ctor_test;
 
+#[path = "include/wi763_written_keep_spec_test.rs"]
+mod wi763_written_keep_spec_test;
+
 #[path = "include/wi458_head_span_occurrence_test.rs"]
 mod wi458_head_span_occurrence_test;
