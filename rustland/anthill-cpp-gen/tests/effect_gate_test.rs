@@ -154,15 +154,15 @@ fn stdlib_monad_effect_row_parameter_is_not_gated() {
 /// The accessor over cpp's FLAT keyed `EffectMapping` facts (WI-089(b)).
 #[test]
 fn realizes_effect_reads_flat_keyed_facts() {
-    let kb = load_kb_with("namespace test.wi576.flat\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.flat\nend\n");
 
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Error").as_deref(), Some("ResultWrap"));
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Error").as_deref(), Some("ResultWrap"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
     // Outside the supported set — the answer the gate turns into an error.
-    assert_eq!(realizes_effect(&kb, "cpp", None, "ConsoleOutput"), None);
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "ConsoleOutput"), None);
     // An unknown profile still sees the language base (`key: none`).
     assert_eq!(
-        realizes_effect(&kb, "cpp", Some("cpp20-stl"), "Error").as_deref(),
+        realizes_effect(&mut kb, "cpp", Some("cpp20-stl"), "Error").as_deref(),
         Some("ResultWrap")
     );
 }
@@ -174,23 +174,23 @@ fn realizes_effect_reads_flat_keyed_facts() {
 /// `None` here and report effects these profiles DO realize as unsupported.
 #[test]
 fn realizes_effect_reads_nested_language_mapping() {
-    let kb = load_kb_with("namespace test.wi576.nested\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.nested\nend\n");
 
     // scala_std: Modify is by-value (immutable update), Error is Either.
-    assert_eq!(realizes_effect(&kb, "scala", Some("std"), "Modify").as_deref(), Some("ByValue"));
+    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Modify").as_deref(), Some("ByValue"));
     assert_eq!(
-        realizes_effect(&kb, "scala", Some("std"), "Error").as_deref(),
+        realizes_effect(&mut kb, "scala", Some("std"), "Error").as_deref(),
         Some("ResultWrap")
     );
     // rust_std: Modify is `&mut self` — same effect, different host realization,
     // read through one accessor.
-    assert_eq!(realizes_effect(&kb, "rust", Some("std"), "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "rust", Some("std"), "Modify").as_deref(), Some("MutRef"));
 
     // scala_caps declares Console; scala_std does not. The profile selects.
-    assert_eq!(realizes_effect(&kb, "scala", Some("std"), "Console"), None);
+    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Console"), None);
 
     // The gap WI-576's description names: no scala profile realizes `Async`.
-    assert_eq!(realizes_effect(&kb, "scala", Some("std"), "Async"), None);
+    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Async"), None);
 }
 
 /// Pins the accessor's CONTRACT for the nested representation: the profile is
@@ -204,16 +204,16 @@ fn realizes_effect_reads_nested_language_mapping() {
 /// its facts DO carry a base, so the same call succeeds.
 #[test]
 fn realizes_effect_without_a_profile_resolves_no_nested_entry() {
-    let kb = load_kb_with("namespace test.wi576.nobase\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.nobase\nend\n");
 
     assert_eq!(
-        realizes_effect(&kb, "rust", None, "Modify"),
+        realizes_effect(&mut kb, "rust", None, "Modify"),
         None,
         "no rust LanguageMapping declares profile: none, so there is no base to hit"
     );
-    assert_eq!(realizes_effect(&kb, "scala", None, "Modify"), None);
+    assert_eq!(realizes_effect(&mut kb, "scala", None, "Modify"), None);
     // Contrast: cpp's flat facts carry `key: none`, so the base resolves.
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
 }
 
 /// A cpp `EffectMapping` must not be answered from another language's entries,
@@ -221,11 +221,11 @@ fn realizes_effect_without_a_profile_resolves_no_nested_entry() {
 /// the language filter has to survive that merge.
 #[test]
 fn realizes_effect_does_not_leak_across_languages() {
-    let kb = load_kb_with("namespace test.wi576.iso\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.iso\nend\n");
 
     // scala_std maps Modify to ByValue; cpp must still answer MutRef.
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
     // No `LanguageMapping(language: "cpp")` and no flat rust facts exist, so a
     // language with neither representation present resolves nothing.
-    assert_eq!(realizes_effect(&kb, "python", None, "Modify"), None);
+    assert_eq!(realizes_effect(&mut kb, "python", None, "Modify"), None);
 }

@@ -6,7 +6,9 @@
 namespace anthill.realization
   import anthill.prelude.{List, Option}
   import anthill.prelude.Meta.{ProofResult}
-  import anthill.reflect.{Term, Symbol}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.List.{cons}
+  import anthill.reflect.{Term, Symbol, not}
 
   -- Links host-language code to an anthill algebra spec.
   --
@@ -321,4 +323,67 @@ namespace anthill.realization
     abstract_sort : String,                         -- e.g. "T"
     requires      : List[T = String]                -- spec QNs ambient over this sort
   )
+
+  -- ── Effect realization (WI-760) ────────────────────────────────────
+  --
+  -- `realizes_effect(lang, profile, effect, receiver)` — the host receiver
+  -- form that `lang` uses to realize `effect` under `profile`, or no solution
+  -- when that profile cannot realize it at all. Codegen's capability gate
+  -- reads this BY RESOLUTION (WI-760), so the selection logic lives here in
+  -- the rule bodies rather than caller-side in Rust — what WI-089's addendum
+  -- asked for: the discrimination tree IS the table, the rule IS the overlay.
+  --
+  -- WHY A NEGATION GUARD, NOT RULE ORDER. The WI-089(a) ladder is
+  -- most-specific-first (`[profile?, none]`, first match wins), which reads
+  -- like ordered rules. It cannot be: candidate rules come back through the
+  -- discrimination tree, which is HashMap-backed, so their order is not the
+  -- source order and is not even stable across runs. Encoding priority as rule
+  -- order would work by luck and break on a rehash. Instead the base arm is
+  -- guarded by `not(flat_effect_overlay(...))`, making the two arms MUTUALLY
+  -- EXCLUSIVE — exactly one answer, whatever order they are tried in.
+  --
+  -- TWO REPRESENTATIONS, one predicate (the WI-576 contract). cpp keeps the
+  -- FLAT keyed `EffectMapping` facts; rust/scala kept their entries NESTED in
+  -- `LanguageMapping.effect_map` after the WI-089 pivot. A reader that knew
+  -- only the flat form would answer "unrealizable" for effects rust/scala do
+  -- realize, so both are covered here. Note the asymmetry is REAL, not an
+  -- oversight: only the flat form has a language base (`key: none`), so a
+  -- nested-representation language REQUIRES a profile.
+
+  -- Flat: a profile overlay shadows the base.
+  rule realizes_effect(?lang, some(?p), ?effect, ?receiver)
+    :- EffectMapping(effect: ?effect, receiver: ?receiver, lang: some(?lang), key: some(?p))
+
+  -- Flat: the language base, guarded so it cannot co-fire with an overlay.
+  rule realizes_effect(?lang, ?prof, ?effect, ?receiver)
+    :- EffectMapping(effect: ?effect, receiver: ?receiver, lang: some(?lang), key: none()),
+       not(effect_overlay(?lang, ?prof, ?effect))
+
+  -- Existence of a profile-keyed overlay in EITHER representation. Guarding
+  -- only the FLAT form would be wrong: the pre-WI-760 reader merged flat and
+  -- nested hits into ONE list before applying the ladder, so a nested profile
+  -- entry outranked the flat base just as a flat overlay did. Guard both and a
+  -- language carrying both representations still answers exactly once.
+  -- Only ever asked with all three arguments ground (the caller supplies
+  -- them), so the NAF cannot flounder.
+  rule effect_overlay(?lang, some(?p), ?effect)
+    :- EffectMapping(effect: ?effect, receiver: ?, lang: some(?lang), key: some(?p))
+
+  rule effect_overlay(?lang, some(?p), ?effect)
+    :- LanguageMapping(language: ?lang, profile: some(?p), effect_map: ?em),
+       effect_map_entry(?em, ?effect, ?)
+
+  -- Nested: `LanguageMapping.effect_map`. The profile is required — there is
+  -- no `profile: none` LanguageMapping to serve as a base.
+  rule realizes_effect(?lang, some(?p), ?effect, ?receiver)
+    :- LanguageMapping(language: ?lang, profile: some(?p), effect_map: ?em),
+       effect_map_entry(?em, ?effect, ?receiver)
+
+  -- Membership in an `effect_map` cons-list. Written as explicit cons/nil
+  -- recursion rather than `List.member`: that one is a Bool-valued operation
+  -- and decides ground membership, where this must ENUMERATE the entry
+  -- matching `?effect` and hand back its receiver.
+  rule effect_map_entry(cons(head: EffectMapping(effect: ?e, receiver: ?r), tail: ?), ?e, ?r)
+  rule effect_map_entry(cons(head: ?, tail: ?t), ?e, ?r)
+    :- effect_map_entry(?t, ?e, ?r)
 end

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
+use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term_view::TermIdView;
 use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use anthill_core::eval::Value;
@@ -3907,94 +3908,21 @@ pub fn cpp_host_type(
     resolve_type_mapping(kb, &ctx, &[anthill_type], binding).map(|h| h.host_type)
 }
 
-struct EffectMappingHit {
-    /// Short name of the `ReceiverForm` variant (e.g. `"ResultWrap"`, `"MutRef"`).
-    receiver: String,
-    key: Option<String>,
-}
-
-/// WI-089(b): resolve cpp effect realizations over the keyed `EffectMapping`
-/// facts — the effect_map analogue of `query_type_mappings`. Grounds `effect`
-/// and post-filters the `Option` `lang`; `receiver` is read as the short name of
-/// its `ReceiverForm` constructor.
-fn query_effect_mappings(kb: &KnowledgeBase, lang: &str, effect: &str) -> Vec<EffectMappingHit> {
-    const FIELDS: &[&str] = &["effect", "receiver", "lang", "key"];
-    let mut hits = Vec::new();
-    for head in query_realization_facts(
-        kb,
-        &["anthill.realization.EffectMapping", "EffectMapping"],
-        FIELDS,
-        Some(("effect", effect)),
-    ) {
-        let fact_lang = named_optional_string(kb, head, "lang");
-        if fact_lang.as_deref() != Some(lang) {
-            continue;
-        }
-        let Some(receiver) = named_arg(kb, head, "receiver").and_then(|t| functor_or_ref_short(kb, t))
-        else {
-            continue;
-        };
-        let key = named_optional_string(kb, head, "key");
-        hits.push(EffectMappingHit { receiver, key });
-    }
-    hits
-}
-
-/// WI-576: resolve `effect` against the NESTED representation — the
-/// `effect_map` list inside a `LanguageMapping` fact (rust_std / scala_std /
-/// scala_caps / rust_anthill). The flat keyed `EffectMapping` facts are cpp's
-/// form; every other language still groups its entries in the list, and a
-/// nested entry carries no `lang`/`key` of its own (the loader pads those
-/// fields with unbound vars), so the SELECTOR is the enclosing fact's
-/// `language` + `profile`. Returns one `(profile, receiver)` hit per
-/// `LanguageMapping` that maps `effect`, for the caller to prioritize —
-/// mirroring `query_effect_mappings`, whose hits are likewise effect-filtered
-/// before `select_keyed` picks by key.
-fn query_nested_effect_mappings(
-    kb: &KnowledgeBase,
-    lang: &str,
-    effect: &str,
-) -> Vec<EffectMappingHit> {
-    const FIELDS: &[&str] =
-        &["language", "profile", "effect_map", "receiver_map", "type_map", "trait_return"];
-    let mut hits = Vec::new();
-    for head in query_realization_facts(
-        kb,
-        &["anthill.realization.LanguageMapping", "LanguageMapping"],
-        FIELDS,
-        Some(("language", lang)),
-    ) {
-        let key = named_optional_string(kb, head, "profile");
-        let Some(effect_map) = named_arg(kb, head, "effect_map") else {
-            continue;
-        };
-        for entry in walk_list(kb, effect_map) {
-            if named_string(kb, entry, "effect").as_deref() != Some(effect) {
-                continue;
-            }
-            if let Some(receiver) =
-                named_arg(kb, entry, "receiver").and_then(|t| functor_or_ref_short(kb, t))
-            {
-                hits.push(EffectMappingHit { receiver, key: key.clone() });
-            }
-        }
-    }
-    hits
-}
 
 /// WI-576: THE uniform effect-realization accessor — the host `ReceiverForm`
 /// short name realizing `effect` for `lang` under `profile`, or `None` when
 /// nothing realizes it (the effect is outside that profile's supported set).
 /// The effect-side sibling of `cpp_host_type`.
 ///
-/// Representation-agnostic by construction: the WI-089 pivot left cpp on FLAT
-/// keyed `EffectMapping` facts while rust/scala kept their entries NESTED in
-/// `LanguageMapping.effect_map`, so this projects BOTH into one hit list and
-/// applies the same `[profile?, none]` first-match priority to it. Callers —
-/// the capability gate below included — never see which form a language uses.
-/// A `lang`-generic accessor that silently answered `None` for the nested
-/// languages would report "unsupported" for effects those profiles do realize,
-/// which is precisely the silent-wrong-answer this gate exists to prevent.
+/// WI-760: this is READ BY RESOLUTION. The selection logic is not here — it is
+/// the `anthill.realization.realizes_effect` rule set, resolved by SLD. Both
+/// representations (cpp's FLAT keyed `EffectMapping` facts; rust/scala's NESTED
+/// `LanguageMapping.effect_map` entries) and the `[profile?, none]` priority
+/// live in those rule bodies, so callers never see which form a language uses
+/// and no `select_keyed` merge happens caller-side. This is what WI-089's
+/// addendum specified and what the old head-match path could not do: the
+/// priority arms are mutually exclusive via a negation guard, which a
+/// `query_view` head match would have skipped silently.
 ///
 /// CONTRACT — `profile` is REQUIRED for a nested-representation language. Only
 /// the flat form has a language BASE (`key: none`); every `LanguageMapping`
@@ -4011,14 +3939,99 @@ fn query_nested_effect_mappings(
 /// participates (unlike `resolve_type_mapping`, where a boundary overlay can
 /// shadow the profile).
 pub fn realizes_effect(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     lang: &str,
     profile: Option<&str>,
     effect: &str,
 ) -> Option<String> {
-    let mut hits = query_effect_mappings(kb, lang, effect);
-    hits.extend(query_nested_effect_mappings(kb, lang, effect));
-    select_keyed(hits, |h| &h.key, &active_key_ladder(None, profile)).map(|h| h.receiver)
+    let Some(functor) = kb.try_resolve_symbol("anthill.realization.realizes_effect") else {
+        // No rule symbol — two very different situations, and conflating them
+        // is exactly the silent-wrong-answer this accessor exists to prevent:
+        //   * No realization stdlib at all. `None` is honest, and the capability
+        //     gate turns it into an accurate "nothing realizes this effect"
+        //     error naming the effect — the same diagnostic as before WI-760.
+        //   * `EffectMapping` IS loaded but the rules are not (half-loaded or
+        //     renamed stdlib). Answering `None` would mark every effect
+        //     unrealizable while blaming the FACTS, so fail loudly instead.
+        assert!(
+            kb.try_resolve_symbol("anthill.realization.EffectMapping").is_none(),
+            "anthill.realization.EffectMapping is loaded but the `realizes_effect` \
+             rule set is not — effect realization cannot be decided"
+        );
+        return None;
+    };
+    let receiver_sym = kb.intern("receiver");
+    let vid = kb.fresh_var(receiver_sym);
+    let profile_val = option_value(kb, profile);
+    let goal = Value::Entity {
+        functor,
+        pos: std::rc::Rc::from(vec![
+            Value::Str(lang.to_string()),
+            profile_val,
+            Value::Str(effect.to_string()),
+            Value::Var(Var::Global(vid)),
+        ]),
+        named: std::rc::Rc::from(Vec::new()),
+    };
+
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    // A floundered solution binds nothing and proves nothing — drop it rather
+    // than read an unbound receiver out of it.
+    let mut receivers: Vec<String> = solutions
+        .iter()
+        .filter(|s| s.residual.is_empty())
+        .filter_map(|s| s.subst.resolve_as_value(vid))
+        .filter_map(|v| receiver_short_name(kb, &v))
+        .collect();
+    // Sort BEFORE dedup: `dedup` only drops ADJACENT repeats, and solution
+    // order is not deterministic (the discrimination tree is HashMap-backed),
+    // so the same receiver derived twice could arrive non-adjacent and trip the
+    // uniqueness check below.
+    receivers.sort();
+    receivers.dedup();
+
+    // The rule set is written so the priority arms are mutually exclusive; two
+    // DISTINCT receivers means a malformed overlay (or a rule regression), not
+    // a choice to make silently. A `debug_assert` would compile out and let a
+    // release build pick one arbitrarily — emitting C++ with the wrong receiver
+    // form — so this is loud in every build (repo rule: error over silent skip).
+    assert!(
+        receivers.len() <= 1,
+        "realizes_effect({lang}, {profile:?}, {effect}) resolved to multiple \
+         distinct receivers {receivers:?} — the overlay arms must be mutually \
+         exclusive; a profile-keyed entry should have suppressed the base"
+    );
+    receivers.into_iter().next()
+}
+
+/// `some(x)` / `none()` as a goal value. `Option.some` carries its payload in a
+/// NAMED `value` field, so a positional build would not unify with the facts.
+fn option_value(kb: &mut KnowledgeBase, v: Option<&str>) -> Value {
+    let (qn, named) = match v {
+        Some(s) => {
+            let value_sym = kb.intern("value");
+            ("anthill.prelude.Option.some", vec![(value_sym, Value::Str(s.to_string()))])
+        }
+        None => ("anthill.prelude.Option.none", Vec::new()),
+    };
+    let functor = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("{qn} is not loaded — the prelude is required"));
+    Value::Entity {
+        functor,
+        pos: std::rc::Rc::from(Vec::new()),
+        named: std::rc::Rc::from(named),
+    }
+}
+
+/// Read a bound `?receiver` back as its `ReceiverForm` SHORT name. A nullary
+/// form (`MutRef`) rides as a symbol ref; a payload-bearing one
+/// (`ResultTyped(error: …)`) as an `Fn` — `functor_or_ref_short` answers both
+/// with the constructor name, which is what the caller matches on. Only the
+/// `Value` → `TermId` unwrap is local; the naming rule stays in one place.
+fn receiver_short_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
+    let Value::Term { id, .. } = v else { return None };
+    functor_or_ref_short(kb, *id)
 }
 
 /// WI-089(b): the cpp `ReceiverForm` short name realizing `effect` under the
@@ -4033,38 +4046,45 @@ fn cpp_effect_receiver(kb: &mut KnowledgeBase, ctx: &CodegenContext, effect: &st
 /// residual row to be a subset of.
 ///
 /// Both representations are enumerated to gather CANDIDATE effect names, then
-/// [`realizes_effect`] decides membership per name. The flat query deliberately
-/// grounds nothing: `lang` there is an `Option` field (`some("cpp")`), which
-/// `query_realization_facts` cannot ground structurally — the same reason
-/// [`query_effect_mappings`] post-filters it. So the candidate list is
-/// over-broad (other languages' entries, other profiles' overlays) and the
-/// `realizes_effect` filter, not the query, is what makes the answer exact.
-/// Sorted + deduplicated for a deterministic diagnostic.
-fn supported_effects(kb: &KnowledgeBase, lang: &str, profile: Option<&str>) -> Vec<String> {
-    let flat = query_realization_facts(
-        kb,
-        &["anthill.realization.EffectMapping", "EffectMapping"],
-        &["effect", "receiver", "lang", "key"],
-        None,
-    );
-    let nested = query_realization_facts(
-        kb,
-        &["anthill.realization.LanguageMapping", "LanguageMapping"],
-        &["language", "profile", "effect_map", "receiver_map", "type_map", "trait_return"],
-        Some(("language", lang)),
-    )
-    .into_iter()
-    .filter_map(|head| named_arg(kb, head, "effect_map"))
-    .flat_map(|list| walk_list(kb, list));
-
-    let mut names: Vec<String> = flat
+/// [`realizes_effect`] decides membership per name. Enumeration stays a head
+/// match: it asks "which effect names appear at all", a question with no
+/// overlay logic to get wrong, so it needs no resolution. The flat query
+/// deliberately grounds nothing — `lang` there is an `Option` field
+/// (`some("cpp")`), which `query_realization_facts` cannot ground structurally.
+/// So the candidate list is over-broad (other languages' entries, other
+/// profiles' overlays) and the `realizes_effect` filter, not the query, is what
+/// makes the answer exact. Sorted + deduplicated for a deterministic diagnostic.
+fn supported_effects(kb: &mut KnowledgeBase, lang: &str, profile: Option<&str>) -> Vec<String> {
+    // WI-760: gather the candidate NAMES first, under a shared borrow, and
+    // materialize them. Membership is decided by `realizes_effect`, which now
+    // resolves and so needs `&mut` — it cannot run inside a lazy chain still
+    // borrowing the KB.
+    let mut names: Vec<String> = {
+        let flat = query_realization_facts(
+            kb,
+            &["anthill.realization.EffectMapping", "EffectMapping"],
+            &["effect", "receiver", "lang", "key"],
+            None,
+        );
+        let nested = query_realization_facts(
+            kb,
+            &["anthill.realization.LanguageMapping", "LanguageMapping"],
+            &["language", "profile", "effect_map", "receiver_map", "type_map", "trait_return"],
+            Some(("language", lang)),
+        )
         .into_iter()
-        .chain(nested)
-        .filter_map(|entry| named_string(kb, entry, "effect"))
-        .filter(|effect| realizes_effect(kb, lang, profile, effect).is_some())
-        .collect();
+        .filter_map(|head| named_arg(kb, head, "effect_map"))
+        .flat_map(|list| walk_list(kb, list))
+        .collect::<Vec<_>>();
+
+        flat.into_iter()
+            .chain(nested)
+            .filter_map(|entry| named_string(kb, entry, "effect"))
+            .collect()
+    };
     names.sort();
     names.dedup();
+    names.retain(|effect| realizes_effect(kb, lang, profile, effect).is_some());
     names
 }
 
