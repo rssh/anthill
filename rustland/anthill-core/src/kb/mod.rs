@@ -5506,11 +5506,17 @@ impl KnowledgeBase {
     /// `Value::Node` occurrence goal (WI-246) is dispatched without lowering.
     pub fn get_builtin_view<V: term_view::TermView>(&self, goal: &V) -> Option<BuiltinTag> {
         match goal.head(self) {
-            term_view::ViewHead::Functor { functor: Some(sym), .. } => {
-                self.builtins.get(&sym).copied()
-            }
+            term_view::ViewHead::Functor { functor: Some(sym), .. } => self.builtin_of(sym),
             _ => None,
         }
+    }
+
+    /// The builtin tag registered for `functor`, read by SYMBOL — the functor-keyed
+    /// face of [`Self::get_builtin_view`], for a caller that holds a head symbol and
+    /// no goal to view (WI-730's row-lambda compiler classifies a candidate predicate
+    /// head before it builds the atom). One table, read in one place.
+    pub fn builtin_of(&self, functor: Symbol) -> Option<BuiltinTag> {
+        self.builtins.get(&functor).copied()
     }
 }
 

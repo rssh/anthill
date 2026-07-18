@@ -54,7 +54,7 @@
 --   edge threads it so every inherited Stream op types at {Error}, not {}.
 sort anthill.prelude.Relation
   import anthill.prelude.{LogicalStream, Option, Pair, Unit, Concat, Without}
-  import anthill.reflect.{NodeOccurrence, Term}
+  import anthill.reflect.{NodeOccurrence, Term, LogicalQuery}
 
   sort T = ?              -- schema: named tuple of the free head parameters
   -- E is threaded abstractly (like FiniteStream/Stream) so the `provides` override
@@ -131,16 +131,24 @@ sort anthill.prelude.Relation
   -- The condition is a ROW LAMBDA: its binder `c` names the row, so a column is
   -- reached as a TYPED field access `c.x` (WI-638) resolved against `r`'s schema —
   -- NOT a free logic variable. The lambda is NEVER APPLIED; it is compiled, as
-  -- syntax, into a `guarded` LogicalQuery (`eq`/`lt`/… → a goal atom, `c.x` → the
-  -- column's logic variable BY schema position, a literal → a term constant).
+  -- syntax, into a LogicalQuery (`eq`/`lt`/… → a goal atom, `c.x` → the column's
+  -- logic variable BY schema position, a literal → a term constant, and `and`/`or`/
+  -- `not` → conjunction/disjunction/negation of the same, WI-730).
   -- Anything not goal-expressible is a compile error (LINQ's "cannot translate").
+  --
+  -- A DISJUNCTIVE condition explores BOTH branches, so a row satisfying both is
+  -- PROVED twice; the resolver's choice-point dedup then collapses those repeats
+  -- (they differ only in which branch proved them), so `or` normally filters rather
+  -- than multiplies. That dedup is an optimization, not a semantic guarantee — a
+  -- Relation is a BAG (`union` does duplicate; see also `project`'s note on OQ6) —
+  -- so do not RELY on `or` collapsing rows an earlier step already duplicated.
   --
   -- Two-stage lowering (compile-time recipe, runtime fill):
   --   * `where(?r, ?cond) <=> guarded_of(?r, ?cond) [simp]` fires at COMPILE time;
   --     `guarded_of` is a MACRO (occurrence→occurrence, WI-722/043.1) that reads the
-  --     lambda + `r`'s schema and splices `where_run(r, <goal recipe>)`.
+  --     lambda + `r`'s schema and splices `where_run(r, <query recipe>)`.
   --   * `where_run` is the RUNTIME back-end: it fills the recipe's column HOLES with
-  --     `r`'s real column variables and wraps `guarded(r.query, <goal>)` — the same
+  --     `r`'s real column variables and conjoins it onto `r.query` — the same
   --     query-combining step `negate`/`union` perform.
   operation where(r: Relation, cond: (c: r.T) -> Bool) -> Relation[T = r.T, E = r.E]
 
@@ -154,11 +162,11 @@ sort anthill.prelude.Relation
   operation guarded_of(r: NodeOccurrence, cond: NodeOccurrence) -> NodeOccurrence
 
   -- The RUNTIME back-end — a query combinator like `negate`/`union`. Given `r` and
-  -- the compiled goal recipe (whose column holes are placeholder variables), align
-  -- the holes to `r`'s real column variables and wrap `guarded(r.query, <goal>)`: a
+  -- the compiled query recipe (whose column holes are placeholder variables), align
+  -- the holes to `r`'s real column variables and conjoin the recipe onto `r.query`: a
   -- new LogicalQuery, so the result stays a composable Relation over `r`'s schema.
   -- Body-less; the host builtin does the wrap.
-  operation where_run(r: Relation, cond: Term) -> Relation[T = r.T, E = r.E]
+  operation where_run(r: Relation, cond: LogicalQuery) -> Relation[T = r.T, E = r.E]
 
   -- join — combine two relations by a condition over BOTH rows (WI-714 / proposal
   -- 052 §"Conditional join"). `join(r1, r2, (c, q) -> eq(c.x, q.y))` keeps the pairs
@@ -168,21 +176,21 @@ sort anthill.prelude.Relation
   -- The condition is a TWO-ROW lambda: its tuple binder `(c, q)` names the two rows,
   -- so a column is reached as a TYPED field access `c.x` / `q.y` (WI-638) resolved
   -- against each row's schema — NOT a free logic variable. The lambda is NEVER
-  -- APPLIED; it is compiled, as syntax, into a `guarded(conjunction(r1.query,
-  -- r2.query), <goal>)` LogicalQuery. Conjoining the two queries is the cartesian
+  -- APPLIED; it is compiled, as syntax, into a LogicalQuery conjoined onto
+  -- `conjunction(r1.query, r2.query)`. Conjoining the two queries is the cartesian
   -- product (shared logic variables in the same substitution frame form a natural
-  -- join); the compiled condition is the join predicate (a `guarded` goal).
+  -- join); the compiled condition is the join predicate.
   --
-  -- FIRST increment (like `where`): a single atomic predicate `pred(c.x, q.y)` over
-  -- two MULTI-COLUMN relations with DISJOINT column names. A shared column name
-  -- across the two rows (`eq(c.x, q.x)` when both have `x`) and a 1-collapsed /
-  -- membership operand are deferred — a loud error — because the merged schema would
-  -- need to qualify/rename the clashing column, or recover a name a 1-collapse dropped
-  -- (a follow-up). `&&`/`||`/`!` nesting is a later increment too.
+  -- Increment scope: any `and`/`or`/`not` nesting of atomic predicates `pred(c.x,
+  -- q.y)` (WI-730, the same compiler `where` uses) over two MULTI-COLUMN relations
+  -- with DISJOINT column names. A shared column name across the two rows (`eq(c.x,
+  -- q.x)` when both have `x`) and a 1-collapsed / membership operand are deferred — a
+  -- loud error — because the merged schema would need to qualify/rename the clashing
+  -- column, or recover a name a 1-collapse dropped (a follow-up).
   --
   -- Two-stage lowering, exactly as `where`: `join(?r1, ?r2, ?cond) <=> conjoin_of(?r1,
   -- ?r2, ?cond) [simp]` fires at COMPILE time; `conjoin_of` is a MACRO that reads the
-  -- lambda + both schemas and splices `join_run(r1, r2, <goal recipe>)`; `join_run`
+  -- lambda + both schemas and splices `join_run(r1, r2, <query recipe>)`; `join_run`
   -- is the RUNTIME back-end that fills the recipe's column holes and wraps the query.
   -- Distinct schema type parameters `L`, `R` (NOT the two bare `Relation` params that
   -- `union` uses): a Relation-member operation's bare `Relation` params ride the sort's
@@ -205,13 +213,13 @@ sort anthill.prelude.Relation
 
   -- The RUNTIME back-end — a query combinator like `union`. Fills the recipe's column
   -- holes with r1's and r2's real column variables (by name — disjoint across the two
-  -- rows in this increment) and wraps `guarded(conjunction(r1.query, r2.query),
-  -- <goal>)`, a new LogicalQuery, so the result stays a composable Relation over the
+  -- rows in this increment) and conjoins the recipe onto `conjunction(r1.query,
+  -- r2.query)`, a new LogicalQuery, so the result stays a composable Relation over the
   -- merged schema. r2's column variables are freshened first (like `union`) so a
   -- self-join `r.join(r, …)` does not accidentally unify the two copies. Body-less;
   -- the host builtin does the wrap. T is the merged schema, computed by the typer (a
   -- tuple concatenation, not expressible as a projection).
-  operation join_run[L, R](r1: Relation[T = L], r2: Relation[T = R], cond: Term)
+  operation join_run[L, R](r1: Relation[T = L], r2: Relation[T = R], cond: LogicalQuery)
     -> Relation[T = Concat[A = L, B = R], E = {r1.E, r2.E}]
 
   -- project — SELECT columns of a relation (WI-714 / proposal 052 §"Projection").

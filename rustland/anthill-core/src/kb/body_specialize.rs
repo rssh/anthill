@@ -673,8 +673,10 @@ fn ctor_field_occs(
 /// (same QN check, same three selector shapes) for its own lowering — the two
 /// are independent copies of one desugaring contract across the crate boundary;
 /// a new selector form must be mirrored in both. `pub(crate)` so the WI-714
-/// `where` row-lambda→goal compiler (`eval::builtins::compile_operand`) reads a
-/// column reference `c.x` through this SAME contract rather than a third copy.
+/// `where` row-lambda→query compiler (`eval::builtins::compile_operand`) reads a
+/// column reference `c.x` through this SAME contract rather than a third copy —
+/// and so `compile_condition` can refuse a projection in CONDITION position by the
+/// same recognizer (WI-730).
 pub(crate) fn field_access_parts(
     kb: &KnowledgeBase,
     functor: Symbol,

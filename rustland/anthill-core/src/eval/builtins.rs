@@ -1226,26 +1226,36 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 }
 
 /// `Relation.where_run` (WI-714 / proposal 052) — the RUNTIME back-end of `where`.
-/// The `guarded_of` macro has already compiled the row lambda into `cond`, a goal
-/// recipe whose column references are HOLES: `Var::Global` variables named by the
-/// schema field symbol (`c.x` → a var named `x`). Fill each hole with `r`'s real
-/// column variable of that name and wrap `guarded(query: r.query, condition:
-/// <goal>)` — a new LogicalQuery (the resolver lowers it to `[r.query's goals…,
-/// <goal>]`), so the result stays a composable Relation over `r`'s UNCHANGED
-/// schema. Same query-combining shape as `negate`/`union`; the hole-fill is the
-/// `where`-specific seam.
+/// The `guarded_of` macro has already compiled the row lambda into `cond`, a
+/// `LogicalQuery` recipe whose column references are HOLES: `Var::Global` variables
+/// named by the schema field symbol (`c.x` → a var named `x`). Fill each hole with
+/// `r`'s real column variable of that name and CONJOIN the filled condition onto
+/// `r`'s query — a new LogicalQuery, so the result stays a composable Relation over
+/// `r`'s UNCHANGED schema. Same query-combining shape as `negate`/`union`; the
+/// hole-fill is the `where`-specific seam.
+///
+/// `conjunction(left: r.query, right: <condition>)` rather than `guarded(query,
+/// condition)`: a `guarded`'s condition is a single goal LEAF, which is all the atomic
+/// first increment produced. A WI-730 condition is a query TREE (the `&&`/`||`/`!`
+/// spine maps onto conjunction/disjunction/negation), so it composes at the QUERY
+/// level. The two coincide on that atomic case — `conjunction(q, pattern_query(a))`
+/// and `guarded(q, a)` both lower to `lower(q) ++ [a]` (kb/execute.rs) — so this is
+/// the same query it always built, generalized. `left` FIRST is load-bearing: the
+/// lowered goal list keeps `r`'s goals ahead of the condition, so every column is
+/// BOUND before a guard reads it — which is what keeps a `!` (negation-as-failure)
+/// from floundering on a free column variable.
 fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r, cond] = expect_args::<2>("Relation.where_run", args)?;
     let (query, columns) = expect_relation(r)?;
     // The whole-row sentinel symbol (if `compile_operand` ever minted one) — resolved
     // ONCE here, not per `Var::Global` node in the recipe walk.
     let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
-    let goal = fill_column_holes(&interp.kb, &cond, &columns, whole_row)?;
-    let guarded = interp.build_logical_query_value(
-        "guarded",
-        vec![("query", (*query).clone()), ("condition", goal)],
+    let condition = fill_column_holes(&interp.kb, &cond, &columns, whole_row)?;
+    let filtered = interp.build_logical_query_value(
+        "conjunction",
+        vec![("left", (*query).clone()), ("right", condition)],
     )?;
-    Ok(Value::Relation { query: std::rc::Rc::new(guarded), columns })
+    Ok(Value::Relation { query: std::rc::Rc::new(filtered), columns })
 }
 
 /// Reserved hole name for a bare-binder (WHOLE-ROW) reference `c` in a `where`
@@ -1254,9 +1264,11 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// field (column names are head-variable names, never dunders).
 const WHOLE_ROW_HOLE: &str = "__anthill_where_whole_row__";
 
-/// Replace each column HOLE in a goal-recipe `Value` — a `Var::Global` variable
-/// whose NAME is a schema field symbol (`guarded_of` mints it from `c.x`) — with
-/// `r`'s real column variable of that name (WI-714 `where_run`). Matching is by the
+/// Replace each column HOLE in a `LogicalQuery` recipe `Value` — a `Var::Global`
+/// variable whose NAME is a schema field symbol (`guarded_of` mints it from `c.x`) —
+/// with `r`'s real column variable of that name (WI-714 `where_run`). The walk is over
+/// the whole recipe, so it reaches the atoms nested under a WI-730 `&&`/`||`/`!` spine
+/// exactly as it reached the lone atom of the first increment. Matching is by the
 /// interned field/column `Symbol`: the SAME symbol names the lambda's field access
 /// and the relation's column, so this is exact canonical equality, NOT a
 /// cross-scope short-name compare (WI-672). Every `Var::Global` in a `guarded_of`
@@ -1320,16 +1332,15 @@ fn fill_column_holes(
 /// `Relation.guarded_of` (WI-714 / proposal 052) — the compile-time MACRO behind
 /// `where` (occurrence→occurrence, so the `[simp]` engine fires it at compile time,
 /// WI-722). It reads the row lambda `cond` and compiles its body — AS SYNTAX, never
-/// applied — into a goal recipe, then splices `where_run(r, <recipe>)`.
+/// applied — into a `LogicalQuery` recipe, then splices `where_run(r, <recipe>)`.
 ///
-/// First increment: a single atomic predicate `pred(c.x, <lit>)` (e.g.
-/// `eq(c.x, 1)`). The predicate FUNCTOR is kept verbatim — the lambda's `eq`
-/// (`PartialEq.eq`) IS the resolver's eq connective, so there is no value→goal
-/// mapping. A field access `c.x` on the binder becomes a column HOLE: a fresh var
-/// NAMED by the field symbol `x`, which `where_run` fills with `r`'s real column of
-/// that name (canonical `Symbol` match, not a short-name compare). A literal becomes
-/// its value. Anything else is a loud compile error (LINQ's "cannot translate").
-/// `&&`/`||`/`!` nesting and `join` are later increments.
+/// The condition is any nesting of atomic predicates under `and`/`or`/`not`
+/// (WI-730; the first increment took the single atom alone) — see
+/// [`compile_condition`] for the tree→query mapping. A field access `c.x` on the
+/// binder becomes a column HOLE: a fresh var NAMED by the field symbol `x`, which
+/// `where_run` fills with `r`'s real column of that name (canonical `Symbol` match,
+/// not a short-name compare). A literal becomes its value. Anything else is a loud
+/// compile error (LINQ's "cannot translate").
 fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::{Expr, Pattern};
     use std::rc::Rc;
@@ -1367,23 +1378,23 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         }
     };
 
-    // Compile the lambda body, as syntax, into a goal recipe (column refs → holes),
+    // Compile the lambda body, as syntax, into a query recipe (column refs → holes),
     // then splice `where_run(r, <recipe>)` — the runtime back-end.
-    let goal = compile_condition(interp, &body, &[binder])?;
-    splice_query_runner(interp, "anthill.prelude.Relation.where_run", &[r_occ], goal)
+    let recipe = compile_condition(interp, &body, &[binder])?;
+    splice_query_runner(interp, "anthill.prelude.Relation.where_run", &[r_occ], recipe)
 }
 
-/// Splice a `<runner>(<relation…>, <goal>)` call for a row-lambda macro — the shared
+/// Splice a `<runner>(<relation…>, <recipe>)` call for a row-lambda macro — the shared
 /// tail of `guarded_of` → `where_run` (one row) and `conjoin_of` → `join_run` (two
-/// rows). The compiled `goal` rides an `Expr::Spliced` leaf STAMPED
-/// `anthill.reflect.Term` (the `runner`'s `cond: Term` slot); the relation
-/// occurrences pass through positionally ahead of it. The result is a normal runtime
-/// call the typer re-types (via the macro-expand splice) and eval runs.
+/// rows). The compiled `recipe` rides an `Expr::Spliced` leaf STAMPED
+/// `anthill.reflect.LogicalQuery` (the `runner`'s `cond: LogicalQuery` slot); the
+/// relation occurrences pass through positionally ahead of it. The result is a normal
+/// runtime call the typer re-types (via the macro-expand splice) and eval runs.
 fn splice_query_runner(
     interp: &mut Interpreter,
     runner_qn: &str,
     relations: &[std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>],
-    goal: Value,
+    recipe: Value,
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::{Expr, NodeOccurrence};
     use std::rc::Rc;
@@ -1393,25 +1404,26 @@ fn splice_query_runner(
     })?;
     let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
     let owner = anchor.owner;
-    let spliced = NodeOccurrence::synthesized_expr(Expr::Spliced(goal), Rc::clone(anchor), pass, owner);
+    let spliced =
+        NodeOccurrence::synthesized_expr(Expr::Spliced(recipe), Rc::clone(anchor), pass, owner);
     // STAMP the spliced leaf's type. The `Expr::Spliced` typer arm reads a synthesized
     // leaf's type from `inferred_type` else the position's `expected` — and errors
     // `BottomExpr` when both are absent. `synthesized_expr` resets `inferred_type` to
     // None, so the constructor (this macro) supplies it: the recipe fills the runner's
-    // `cond: Term` slot, so its type is the reflect `Term` sort (the carrier design's
-    // "type from the constructor", WI-714 / carrier leaf).
+    // `cond: LogicalQuery` slot, so its type is the reflect `LogicalQuery` sort (the
+    // carrier design's "type from the constructor", WI-714 / carrier leaf).
     // `make_sort_ref_by_name` SILENTLY interns an Unresolved sort if the name is
     // missing (kb/mod.rs), and the `Expr::Spliced` typer arm reads `inferred_type`
-    // OVER `expected` — so a phantom `Term` would override the runner's real `cond:
-    // Term` hint. Resolve loudly instead. (reflect.anthill always loads before user
-    // code types, so this never fires — a belt for a hostile load order.)
-    if interp.kb.try_resolve_symbol("anthill.reflect.Term").is_none() {
+    // OVER `expected` — so a phantom sort would override the runner's real `cond:
+    // LogicalQuery` hint. Resolve loudly instead. (reflect.anthill always loads before
+    // user code types, so this never fires — a belt for a hostile load order.)
+    if interp.kb.try_resolve_symbol("anthill.reflect.LogicalQuery").is_none() {
         return Err(EvalError::Internal(format!(
-            "WI-714 {runner_qn} lowering: anthill.reflect.Term is not resolvable"
+            "WI-714 {runner_qn} lowering: anthill.reflect.LogicalQuery is not resolvable"
         )));
     }
-    let term_ty = Value::term(interp.kb.make_sort_ref_by_name("anthill.reflect.Term"));
-    spliced.set_inferred_type(term_ty);
+    let query_ty = Value::term(interp.kb.make_sort_ref_by_name("anthill.reflect.LogicalQuery"));
+    spliced.set_inferred_type(query_ty);
     let runner = interp
         .kb
         .try_resolve_symbol(runner_qn)
@@ -1436,8 +1448,9 @@ fn splice_query_runner(
 /// sub-binders name the two rows. A field access `c.x` / `q.y` on either binder becomes
 /// a column HOLE named by the field symbol (the same `compile_condition` the single-row
 /// `where` uses, given both binders); `join_run` fills each hole from the merged column
-/// set, whose names are disjoint across the two rows in this increment. First increment:
-/// a single atomic predicate `pred(c.x, q.y)`, exactly as `where`.
+/// set, whose names are disjoint across the two rows in this increment. The condition
+/// admits the same `and`/`or`/`not` nesting `where` does (WI-730), for the same reason:
+/// one shared compiler.
 fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::{Expr, Pattern};
     use std::rc::Rc;
@@ -1495,8 +1508,8 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
             got: format!("a join row lambda binding {} rows", binders.len()),
         });
     }
-    let goal = compile_condition(interp, &body, &binders)?;
-    splice_query_runner(interp, "anthill.prelude.Relation.join_run", &[r1_occ, r2_occ], goal)
+    let recipe = compile_condition(interp, &body, &binders)?;
+    splice_query_runner(interp, "anthill.prelude.Relation.join_run", &[r1_occ, r2_occ], recipe)
 }
 
 /// `Relation.join_run` (WI-714 / proposal 052) — the RUNTIME back-end of `join`, a
@@ -1555,17 +1568,22 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     }
     let merged: std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]> = merged.into();
 
-    // Fill the recipe's column holes over the merged set, then wrap
-    // `guarded(conjunction(q1, q2'), <goal>)`.
+    // Fill the recipe's column holes over the merged set, then conjoin: the two rows'
+    // queries (the cartesian product) and then the join condition — a query TREE since
+    // WI-730, conjoined exactly as `where_run` conjoins its own (see the note there on
+    // why this is `conjunction` and not `guarded`). Condition LAST, so both rows'
+    // columns are bound before it runs.
     let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
-    let goal = fill_column_holes(&interp.kb, &cond, &merged, whole_row)?;
-    let conj = interp.build_logical_query_value(
+    let condition = fill_column_holes(&interp.kb, &cond, &merged, whole_row)?;
+    let product = interp.build_logical_query_value(
         "conjunction",
         vec![("left", (*q1).clone()), ("right", q2_fresh)],
     )?;
-    let guarded =
-        interp.build_logical_query_value("guarded", vec![("query", conj), ("condition", goal)])?;
-    Ok(Value::Relation { query: std::rc::Rc::new(guarded), columns: merged })
+    let joined = interp.build_logical_query_value(
+        "conjunction",
+        vec![("left", product), ("right", condition)],
+    )?;
+    Ok(Value::Relation { query: std::rc::Rc::new(joined), columns: merged })
 }
 
 /// `Relation.project_run` (WI-714 / proposal 052) — the RUNTIME back-end of `project`
@@ -1707,32 +1725,130 @@ fn find_column(
     columns.iter().find(|(cn, _)| *cn == sym).map(|(_, v)| *v)
 }
 
-/// Compile a row-lambda condition body into a goal recipe `Value`, as syntax (never
-/// applied). First increment: one atomic predicate application `pred(args…)` — the
-/// functor is kept verbatim (the value predicate is the goal connective).
+/// The `LogicalQuery` constructor each boolean CONNECTIVE lowers to, with that
+/// constructor's field names in operand order — proposal 052's tree→query table
+/// (`&&`/`||`/`!` ⇒ conjunction/disjunction/negation), WI-730. Matched by CANONICAL
+/// operation name, never a short name (WI-672); a user operation that merely shares
+/// the short name `and` is a different symbol and falls through to the atom path.
+const BOOLEAN_CONNECTIVES: [(&str, &str, &[&str]); 3] = [
+    ("anthill.prelude.Bool.and", "conjunction", &["left", "right"]),
+    ("anthill.prelude.Bool.or", "disjunction", &["left", "right"]),
+    ("anthill.prelude.Bool.not", "negation", &["query"]),
+];
+
+/// Compile a row-lambda condition body into a `LogicalQuery` goal recipe `Value`, as
+/// syntax (never applied) — proposal 052 §"Compiling a row lambda into a query", the
+/// LINQ `IQueryable` expression-tree translation with the `LogicalQuery` ADT as the
+/// backend. Each node of the `Bool`-valued tree maps to one query constructor:
+///
+/// | lambda expression                | `LogicalQuery`                     |
+/// |----------------------------------|------------------------------------|
+/// | atomic predicate `eq(c.x, 1)`    | `pattern_query(term: <goal atom>)` |
+/// | `and(a, b)`                      | `conjunction(left, right)`         |
+/// | `or(a, b)`                       | `disjunction(left, right)`         |
+/// | `not(a)`                         | `negation(query)`                  |
+///
+/// All four are already wired in the `kb/execute.rs` lowerer, which is what makes
+/// nesting free: it flattens a conjunction into a goal LIST and lifts a MULTI-goal
+/// `or`/`not` branch through a synthesized conjunction rule (`_synth_N(?vars) :-
+/// goals`, proposal 033 §M4). So `or(and(a, b), c)` needs no new machinery here — only
+/// the tree walk. (WI-730; the first `where`/`join` increments compiled the atom
+/// alone.)
+///
+/// The recursion is bounded by the SOURCE nesting of a hand-written condition, the
+/// same bound the operand walk below already runs under.
 fn compile_condition(
     interp: &mut Interpreter,
     body: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
     binders: &[crate::intern::Symbol],
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
-    match body.as_expr() {
-        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-            let mut pos = Vec::with_capacity(pos_args.len());
-            for a in pos_args {
-                pos.push(compile_operand(interp, a, binders)?);
-            }
-            let mut named = Vec::with_capacity(named_args.len());
-            for (k, a) in named_args {
-                named.push((*k, compile_operand(interp, a, binders)?));
-            }
-            Ok(Value::Entity { functor: *functor, pos: pos.into(), named: named.into() })
+    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = body.as_expr() else {
+        return Err(EvalError::TypeMismatch {
+            expected: "a goal-expressible row-lambda condition — a predicate \
+                       (`eq(c.x, …)`) or an `and`/`or`/`not` of them",
+            got: "a condition that does not translate to a query goal (an `if`, a \
+                  `match`, a literal — compute it with `.map` on the stream instead)"
+                .to_string(),
+        });
+    };
+    // A boolean CONNECTIVE — recurse over the spine into the matching query
+    // constructor. Its operands are conditions in their own right, so any depth of
+    // `&&`/`||`/`!` nesting composes with no extra case.
+    if let Some((op_qn, ctor, fields)) = BOOLEAN_CONNECTIVES
+        .iter()
+        .find(|(op_qn, _, _)| interp.kb.try_resolve_symbol(op_qn) == Some(*functor))
+    {
+        // The connectives are declared with POSITIONAL parameters; a call spelled with
+        // labels (`and(a: p, b: q)`) would have to be matched to them by name, which is
+        // not wired. Refuse it loudly rather than read the operands in the wrong order.
+        if pos_args.len() != fields.len() || !named_args.is_empty() {
+            return Err(EvalError::TypeMismatch {
+                expected: "a boolean connective applied to positional operands \
+                           (`and(p, q)` / `or(p, q)` / `not(p)`)",
+                got: format!(
+                    "`{op_qn}` applied to {} positional and {} named argument(s)",
+                    pos_args.len(),
+                    named_args.len()
+                ),
+            });
         }
-        _ => Err(EvalError::TypeMismatch {
-            expected: "a goal-expressible predicate (`eq(c.x, …)`) as the row-lambda condition",
-            got: "a condition that does not translate to a query goal".to_string(),
-        }),
+        let mut operands = Vec::with_capacity(fields.len());
+        for (field, arg) in fields.iter().zip(pos_args) {
+            operands.push((*field, compile_condition(interp, arg, binders)?));
+        }
+        return interp.build_logical_query_value(ctor, operands);
     }
+    // A FIELD ACCESS is an OPERAND form, never a condition: `c.ok` NAMES a column, it
+    // does not state a predicate ABOUT one. It reaches condition position as a bare
+    // `Bool` column (`where(λ c -> c.ok)`) or a nested projection (`c.a.b`), both of
+    // which type-check — and `anthill.reflect.field_access` is itself a registered
+    // builtin, so the head check below would wave it through and compile a projection
+    // into GOAL position, where it means nothing. Refuse, and name the spelling that
+    // works. Recognized through the shared `field_access_parts` contract, the same one
+    // `compile_operand` reads a column reference by (no second copy of the desugaring).
+    if crate::kb::body_specialize::field_access_parts(&interp.kb, *functor, pos_args).is_some() {
+        return Err(EvalError::TypeMismatch {
+            expected: "a predicate as a row-lambda condition — COMPARE the column \
+                       (`eq(c.ok, true)`), do not merely name it",
+            got: "a bare column projection in condition position".to_string(),
+        });
+    }
+    // An ATOM. The predicate FUNCTOR is kept verbatim — the lambda's `eq`
+    // (`PartialEq.eq`) IS the resolver's eq connective, so there is no value→goal
+    // mapping — but it must actually BE a goal the resolver can run: a registered
+    // builtin (`eq`/`neq`/`lt`/…) or a RULE cited as a predicate (`adult(c.age)`).
+    // Any other `Bool`-valued call — `ite(…)`, an ordinary operation — would compile
+    // to an atom nothing can prove, and the filtered relation would come back
+    // silently EMPTY. Reject it here instead: 052's "cannot translate to SQL".
+    // Checked BEFORE the operands so the diagnostic names the untranslatable head
+    // rather than whatever it was applied to.
+    if interp.kb.builtin_of(*functor).is_none()
+        && !matches!(
+            interp.kb.kind_of(*functor),
+            Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
+        )
+    {
+        return Err(EvalError::TypeMismatch {
+            expected: "a goal-expressible predicate (a builtin such as `eq`/`neq`/`lt`, \
+                       or a rule) as a row-lambda condition atom",
+            got: format!(
+                "`{}`, which is neither — it has no meaning as a query goal \
+                 (compute it with `.map` on the stream instead)",
+                interp.kb.qualified_name_of(*functor)
+            ),
+        });
+    }
+    let mut pos = Vec::with_capacity(pos_args.len());
+    for a in pos_args {
+        pos.push(compile_operand(interp, a, binders)?);
+    }
+    let mut named = Vec::with_capacity(named_args.len());
+    for (k, a) in named_args {
+        named.push((*k, compile_operand(interp, a, binders)?));
+    }
+    let atom = Value::Entity { functor: *functor, pos: pos.into(), named: named.into() };
+    interp.build_logical_query_value("pattern_query", vec![("term", atom)])
 }
 
 /// Compile one predicate operand: a column field-access `c.x` on a binder becomes a

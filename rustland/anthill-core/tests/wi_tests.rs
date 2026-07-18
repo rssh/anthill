@@ -47,6 +47,9 @@ mod wi714_where_test;
 #[path = "include/wi714_join_test.rs"]
 mod wi714_join_test;
 
+#[path = "include/wi730_boolean_condition_test.rs"]
+mod wi730_boolean_condition_test;
+
 #[path = "include/wi714_project_test.rs"]
 mod wi714_project_test;
 
