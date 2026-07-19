@@ -31,8 +31,8 @@ fn unrealizable_effect_rejected() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let err = emit_traits_struct(&kb, "test.wi576.gate.Logger")
+    let mut kb = load_kb_with(source);
+    let err = emit_traits_struct(&mut kb, "test.wi576.gate.Logger")
         .expect_err("an effect the cpp profile cannot realize must fail codegen");
 
     let msg = err.to_string();
@@ -61,9 +61,9 @@ fn unrealizable_effect_names_the_active_profile() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
+    let mut kb = load_kb_with(source);
     let err = emit_namespace_header_with_profile(
-        &kb,
+        &mut kb,
         "test.wi576.profiled",
         Some("cpp20-stl".to_string()),
     )
@@ -105,8 +105,8 @@ fn realized_effects_lower_fine() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.wi576.ok.Robot")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.wi576.ok.Robot")
         .expect("effects the profile realizes must lower");
 
     assert!(cpp.contains("bump"), "Modify-effect op should be emitted:\n{cpp}");
@@ -135,8 +135,8 @@ fn effect_row_parameter_is_not_gated() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.wi576.poly.Runner")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.wi576.poly.Runner")
         .expect("an effect-polymorphic op must not trip the capability gate");
     assert!(cpp.contains("run"), "the op should still be emitted:\n{cpp}");
 }
@@ -146,23 +146,23 @@ fn effect_row_parameter_is_not_gated() {
 /// unreadable label and a row parameter alike.
 #[test]
 fn stdlib_monad_effect_row_parameter_is_not_gated() {
-    let kb = load_kb_with("namespace test.wi576.monad\nend\n");
-    emit_traits_struct(&kb, "anthill.prelude.Monad")
+    let mut kb = load_kb_with("namespace test.wi576.monad\nend\n");
+    emit_traits_struct(&mut kb, "anthill.prelude.Monad")
         .expect("Monad's effect-polymorphic ops must not trip the capability gate");
 }
 
 /// The accessor over cpp's FLAT keyed `EffectMapping` facts (WI-089(b)).
 #[test]
 fn realizes_effect_reads_flat_keyed_facts() {
-    let kb = load_kb_with("namespace test.wi576.flat\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.flat\nend\n");
 
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Error").as_deref(), Some("ResultWrap"));
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Error").as_deref(), Some("ResultWrap"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
     // Outside the supported set — the answer the gate turns into an error.
-    assert_eq!(realizes_effect(&kb, "cpp", None, "ConsoleOutput"), None);
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "ConsoleOutput"), None);
     // An unknown profile still sees the language base (`key: none`).
     assert_eq!(
-        realizes_effect(&kb, "cpp", Some("cpp20-stl"), "Error").as_deref(),
+        realizes_effect(&mut kb, "cpp", Some("cpp20-stl"), "Error").as_deref(),
         Some("ResultWrap")
     );
 }
@@ -174,23 +174,23 @@ fn realizes_effect_reads_flat_keyed_facts() {
 /// `None` here and report effects these profiles DO realize as unsupported.
 #[test]
 fn realizes_effect_reads_nested_language_mapping() {
-    let kb = load_kb_with("namespace test.wi576.nested\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.nested\nend\n");
 
     // scala_std: Modify is by-value (immutable update), Error is Either.
-    assert_eq!(realizes_effect(&kb, "scala", Some("std"), "Modify").as_deref(), Some("ByValue"));
+    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Modify").as_deref(), Some("ByValue"));
     assert_eq!(
-        realizes_effect(&kb, "scala", Some("std"), "Error").as_deref(),
+        realizes_effect(&mut kb, "scala", Some("std"), "Error").as_deref(),
         Some("ResultWrap")
     );
     // rust_std: Modify is `&mut self` — same effect, different host realization,
     // read through one accessor.
-    assert_eq!(realizes_effect(&kb, "rust", Some("std"), "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "rust", Some("std"), "Modify").as_deref(), Some("MutRef"));
 
     // scala_caps declares Console; scala_std does not. The profile selects.
-    assert_eq!(realizes_effect(&kb, "scala", Some("std"), "Console"), None);
+    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Console"), None);
 
     // The gap WI-576's description names: no scala profile realizes `Async`.
-    assert_eq!(realizes_effect(&kb, "scala", Some("std"), "Async"), None);
+    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Async"), None);
 }
 
 /// Pins the accessor's CONTRACT for the nested representation: the profile is
@@ -204,16 +204,16 @@ fn realizes_effect_reads_nested_language_mapping() {
 /// its facts DO carry a base, so the same call succeeds.
 #[test]
 fn realizes_effect_without_a_profile_resolves_no_nested_entry() {
-    let kb = load_kb_with("namespace test.wi576.nobase\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.nobase\nend\n");
 
     assert_eq!(
-        realizes_effect(&kb, "rust", None, "Modify"),
+        realizes_effect(&mut kb, "rust", None, "Modify"),
         None,
         "no rust LanguageMapping declares profile: none, so there is no base to hit"
     );
-    assert_eq!(realizes_effect(&kb, "scala", None, "Modify"), None);
+    assert_eq!(realizes_effect(&mut kb, "scala", None, "Modify"), None);
     // Contrast: cpp's flat facts carry `key: none`, so the base resolves.
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
 }
 
 /// A cpp `EffectMapping` must not be answered from another language's entries,
@@ -221,11 +221,11 @@ fn realizes_effect_without_a_profile_resolves_no_nested_entry() {
 /// the language filter has to survive that merge.
 #[test]
 fn realizes_effect_does_not_leak_across_languages() {
-    let kb = load_kb_with("namespace test.wi576.iso\nend\n");
+    let mut kb = load_kb_with("namespace test.wi576.iso\nend\n");
 
     // scala_std maps Modify to ByValue; cpp must still answer MutRef.
-    assert_eq!(realizes_effect(&kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
     // No `LanguageMapping(language: "cpp")` and no flat rust facts exist, so a
     // language with neither representation present resolves nothing.
-    assert_eq!(realizes_effect(&kb, "python", None, "Modify"), None);
+    assert_eq!(realizes_effect(&mut kb, "python", None, "Modify"), None);
 }

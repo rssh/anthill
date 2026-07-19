@@ -23,8 +23,8 @@ fn float_trig_calls_lower_to_std() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.math_trig.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.math_trig.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return std::sin(x);"),       "sin:\n{cpp}");
     assert!(cpp.contains("return std::cos(x);"),       "cos:\n{cpp}");
@@ -45,8 +45,8 @@ fn float_misc_math_calls_lower_to_std() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.math_misc.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.math_misc.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return std::sqrt(x);"),       "sqrt:\n{cpp}");
     assert!(cpp.contains("return std::hypot(a, b);"),   "hypot:\n{cpp}");
@@ -65,8 +65,8 @@ fn pi_constant_lowers_to_literal() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.math_pi.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.math_pi.Calc")
         .expect("emit Calc");
     assert!(
         cpp.contains("return 3.141592653589793;"),
@@ -87,8 +87,8 @@ fn cmath_include_added_to_header() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&kb, "test.math_inc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_namespace_header(&mut kb, "test.math_inc")
         .expect("emit header");
     assert!(
         cpp.contains("#include <cmath>"),

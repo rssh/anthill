@@ -28,8 +28,8 @@ fn generic_entity_emits_template_prefix() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_entity_struct(&kb, "test.gen_box.Box.Box")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_entity_struct(&mut kb, "test.gen_box.Box.Box")
         .expect("emit Box");
 
     assert!(
@@ -49,8 +49,8 @@ fn multi_param_entity_emits_template_with_two_args() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_entity_struct(&kb, "test.gen_pair.Pair.Pair")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_entity_struct(&mut kb, "test.gen_pair.Pair.Pair")
         .expect("emit Pair");
 
     assert!(
@@ -72,8 +72,8 @@ fn non_generic_entity_keeps_no_prefix() {
           entity Pose(x: Int64, y: Int64)
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.plain.Pose")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.plain.Pose")
         .expect("emit Pose");
 
     assert!(
@@ -95,8 +95,8 @@ fn generic_traits_class_emits_template_prefix() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.gen_id.Identity")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.gen_id.Identity")
         .expect("emit Identity");
 
     assert!(
@@ -122,8 +122,8 @@ fn keyword_clash_gets_suffixed() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_entity_struct(&kb, "test.gen_kw.Holder.Holder")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_entity_struct(&mut kb, "test.gen_kw.Holder.Holder")
         .expect("emit Holder");
 
     assert!(

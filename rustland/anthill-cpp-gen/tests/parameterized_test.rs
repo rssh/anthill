@@ -18,8 +18,8 @@ fn entity_with_list_field() {
           entity Polyline(points: List[T = Float])
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.params.Polyline").expect("emit Polyline");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.Polyline").expect("emit Polyline");
     let expected = "\
 struct Polyline {
     std::vector<double> points;
@@ -36,8 +36,8 @@ fn entity_with_option_field() {
           entity User(name: String, age: Option[T = Int64])
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.params.User").expect("emit User");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.User").expect("emit User");
     let expected = "\
 struct User {
     std::string name;
@@ -65,8 +65,8 @@ fn two_param_field_lowers_in_declaration_order() {
           entity Holder(p: Pair[Z = Int64, A = String])
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.params.Holder").expect("emit Holder");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.Holder").expect("emit Holder");
     assert!(
         cpp.contains("std::pair<int64_t, std::string>"),
         "2-param type must lower in declaration order (Z=Int64 then A=String); got:\n{cpp}"
@@ -82,8 +82,8 @@ fn nested_parameterization() {
           entity OptionalSamples(samples: Option[T = List[T = Float]])
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.params.OptionalSamples")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.OptionalSamples")
         .expect("emit OptionalSamples");
     assert!(
         cpp.contains("std::optional<std::vector<double>> samples"),
@@ -104,8 +104,8 @@ fn namespace_header_with_parameterized_emits_includes() {
           entity User(name: String, age: Option[T = Int64])
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.params")
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.params")
         .expect("emit test.params header");
 
     assert!(header.contains("#include <cstdint>"), "<cstdint> missing:\n{header}");
@@ -181,8 +181,8 @@ fn carrier_overrides_parameterized_default() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.params.Polyline").expect("emit Polyline");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.Polyline").expect("emit Polyline");
     assert!(
         cpp.contains("::small::Vec<double> points"),
         "carrier override should produce ::small::Vec<double>:\n{cpp}"

@@ -29,8 +29,8 @@ fn hk_monad_traits_lowers_arrow_and_template_template() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.hk_monad.Monad").expect("emit Monad");
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.hk_monad.Monad").expect("emit Monad");
 
     // (f) higher-kinded carrier → template-template parameter; first-order
     // params stay `typename`.
@@ -65,8 +65,8 @@ fn pure_arrow_param_lowers_to_std_function() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.fmap.Functor").expect("emit Functor");
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.fmap.Functor").expect("emit Functor");
 
     assert!(
         cpp.contains("std::function<B(A)> f"),
@@ -86,8 +86,8 @@ fn multi_param_and_effectful_arrow_lower() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.binop.Calc").expect("emit Calc");
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.binop.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("std::function<int64_t(int64_t, std::string)> f"),
@@ -107,8 +107,8 @@ fn non_hk_param_stays_typename() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.box1.Box").expect("emit Box");
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.box1.Box").expect("emit Box");
 
     assert!(
         cpp.contains("template<typename T>"),
@@ -125,8 +125,8 @@ fn non_hk_param_stays_typename() {
 /// EffP]`). The stdlib is always loaded by the test harness, so a trivial
 /// user source suffices to build the KB.
 fn emit_stdlib_monad() -> String {
-    let kb = load_kb_with_lenient("namespace test.use_monad\nend\n");
-    emit_traits_struct(&kb, "anthill.prelude.Monad").expect("emit anthill.prelude.Monad")
+    let mut kb = load_kb_with_lenient("namespace test.use_monad\nend\n");
+    emit_traits_struct(&mut kb, "anthill.prelude.Monad").expect("emit anthill.prelude.Monad")
 }
 
 #[test]
@@ -223,8 +223,8 @@ fn first_order_param_applied_is_a_loud_error() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let result = emit_traits_struct(&kb, "test.kind_err.Bad");
+    let mut kb = load_kb_with_lenient(source);
+    let result = emit_traits_struct(&mut kb, "test.kind_err.Bad");
     match result {
         Err(e) => assert!(
             e.message.contains("no C++ mapping"),
@@ -252,8 +252,8 @@ fn hk_monad_traits_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let traits = emit_traits_struct(&kb, "test.hk_compile.Monad").expect("emit Monad");
+    let mut kb = load_kb_with_lenient(source);
+    let traits = emit_traits_struct(&mut kb, "test.hk_compile.Monad").expect("emit Monad");
 
     let cxx = match find_cxx() {
         Some(c) => c,

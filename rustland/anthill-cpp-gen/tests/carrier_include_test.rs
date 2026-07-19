@@ -37,8 +37,8 @@ fn carrier_artifact_becomes_include_directive() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let header = emit_namespace_header(&kb, "test.car_inc")
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.car_inc")
         .expect("emit Sensors namespace");
 
     assert!(

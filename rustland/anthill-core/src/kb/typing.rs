@@ -20259,11 +20259,11 @@ impl BindingKeyMatch {
 /// binding lookup), each left alone because enrolling it is a behavior change in a subsystem
 /// WI-764 had no failing case for. Both are filed, with the measurements that placed them:
 ///
-/// * `match_candidate_against_goal` (WI-767) — dispatch. On a key miss it drops the
+/// * `match_candidate_against_goal` (WI-768) — dispatch. On a key miss it drops the
 ///   candidate, so the typer and dispatch now DISAGREE about the canonical-vs-bare pair:
 ///   a call can type-check here and then fail to dispatch. Not free to enrol — the
 ///   `specificity` bump beside it means enrolling moves overload ORDERING too.
-/// * `combine_parameterized_same_base` (WI-768) — the LUB/GLB lattice. On a key miss it
+/// * `combine_parameterized_same_base` (WI-769) — the LUB/GLB lattice. On a key miss it
 ///   returns the bare sort / `Nothing`, silently dropping the schema. Measured INERT rather
 ///   than live: five if-join probes could not demonstrate it (branch typing checks each arm
 ///   against the declared return instead of joining), and instrumentation shows its binding

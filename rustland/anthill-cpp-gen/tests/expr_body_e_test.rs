@@ -32,8 +32,8 @@ fn numeric_add_emits_plus() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_e_add.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_e_add.Calc")
         .expect("emit Calc");
     assert!(
         cpp.contains("return (x + 1);"),
@@ -52,8 +52,8 @@ fn numeric_sub_mul_emit_operators() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_e_arith.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_e_arith.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return (a - b);"), "sub:\n{cpp}");
     assert!(cpp.contains("return (a * b);"), "mul:\n{cpp}");
@@ -72,8 +72,8 @@ fn ordered_comparators_emit_relational_ops() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_e_cmp.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_e_cmp.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return (a > b);"),  "gt:\n{cpp}");
     assert!(cpp.contains("return (a < b);"),  "lt:\n{cpp}");
@@ -93,8 +93,8 @@ fn eq_neq_emit_double_equals() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_e_eq.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_e_eq.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return (a == b);"), "eq:\n{cpp}");
     assert!(cpp.contains("return (a != b);"), "neq:\n{cpp}");
@@ -113,8 +113,8 @@ fn bool_logical_ops_emit_and_or_not() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_e_bool.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_e_bool.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return (a && b);"), "and:\n{cpp}");
     assert!(cpp.contains("return (a || b);"), "or:\n{cpp}");
@@ -136,8 +136,8 @@ fn user_named_add_does_not_get_rewritten() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_e_user.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_e_user.Calc")
         .expect("emit Calc");
     assert!(
         cpp.contains("return add(a, b);"),
@@ -156,8 +156,8 @@ fn arithmetic_in_if_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.expr_e_compile.Calc")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.expr_e_compile.Calc")
         .expect("emit Calc");
 
     let cxx = match find_cxx() {

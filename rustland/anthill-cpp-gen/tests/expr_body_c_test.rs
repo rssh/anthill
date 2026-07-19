@@ -28,8 +28,8 @@ fn single_let_emits_iife() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_c.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_c.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -54,8 +54,8 @@ fn nested_let_chain_flattened() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_c.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_c.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -78,8 +78,8 @@ fn let_with_if_in_body() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_c.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_c.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -105,8 +105,8 @@ fn lambda_emits_generic_lambda() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_c.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_c.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -130,8 +130,8 @@ fn let_iife_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.expr_c_compile.Calc")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.expr_c_compile.Calc")
         .expect("emit Calc");
 
     let cxx = match find_cxx() {

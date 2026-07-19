@@ -22,8 +22,8 @@ fn literal_int_body() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_a.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Calc")
         .expect("emit Calc traits");
 
     assert!(
@@ -43,8 +43,8 @@ fn literal_float_and_string_bodies() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_a.Constants")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Constants")
         .expect("emit Constants");
 
     assert!(
@@ -69,8 +69,8 @@ fn parameter_reference_body() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_a.Identity")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Identity")
         .expect("emit Identity");
 
     assert!(
@@ -93,8 +93,8 @@ fn simple_function_call_body() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_a.Counter")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Counter")
         .expect("emit Counter");
 
     assert!(
@@ -116,8 +116,8 @@ fn nested_call_body() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_a.NestedCalls")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.NestedCalls")
         .expect("emit NestedCalls");
 
     assert!(
@@ -151,8 +151,8 @@ fn expression_body_takes_precedence_over_carrier_dispatch() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_a.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Calc")
         .expect("emit Calc");
 
     // Body is the literal 99 (expression body wins) — not self->get().
@@ -177,8 +177,8 @@ fn literal_int_body_compiles() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.expr_a_compile.Calc")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.expr_a_compile.Calc")
         .expect("emit Calc");
 
     let cxx = match find_cxx() {

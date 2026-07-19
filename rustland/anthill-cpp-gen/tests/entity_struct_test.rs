@@ -18,8 +18,8 @@ fn vec3_entity_emits_cpp_struct() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.geom.Vec3").expect("emit Vec3 struct");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.geom.Vec3").expect("emit Vec3 struct");
 
     let expected = "\
 struct Vec3 {
@@ -42,8 +42,8 @@ fn entity_with_int_and_string_fields() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "test.account.Account").expect("emit Account struct");
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.account.Account").expect("emit Account struct");
 
     let expected = "\
 struct Account {
@@ -56,7 +56,7 @@ struct Account {
 
 #[test]
 fn missing_entity_returns_error() {
-    let kb = load_kb_with("namespace test.empty end");
-    let result = emit_entity_struct(&kb, "DoesNotExist");
+    let mut kb = load_kb_with("namespace test.empty end");
+    let result = emit_entity_struct(&mut kb, "DoesNotExist");
     assert!(result.is_err(), "expected error for missing entity");
 }

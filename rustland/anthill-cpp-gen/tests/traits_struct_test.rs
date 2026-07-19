@@ -35,8 +35,8 @@ fn simple_sort_with_two_operations() {
         end
     "#;
 
-    let kb2 = load_kb_with(source_with_carrier);
-    let cpp2 = emit_traits_struct(&kb2, "test.simple.Greeter")
+    let mut kb2 = load_kb_with(source_with_carrier);
+    let cpp2 = emit_traits_struct(&mut kb2, "test.simple.Greeter")
         .expect("emit Greeter (carrier)");
 
     // Bodies are emitted because Greeter has a carrier AND every op
@@ -89,8 +89,8 @@ fn emitted_bodies_actually_compile() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.bodies.Counter")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.bodies.Counter")
         .expect("emit Counter traits");
 
     // Bodies for all four ops (Counter is a pointer carrier, all
@@ -209,8 +209,8 @@ fn parameterized_return_bodies_compile() {
           )
         end
     "#;
-    let kb = load_kb_with(source);
-    let traits = emit_traits_struct(&kb, "test.params_compile.Sensor")
+    let mut kb = load_kb_with(source);
+    let traits = emit_traits_struct(&mut kb, "test.params_compile.Sensor")
         .expect("emit Sensor traits");
 
     let cxx = match find_cxx() {
@@ -303,8 +303,8 @@ fn parameterized_return_types_emit_bodies() {
         end
     "#;
 
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.params_in_ops.Sensor")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.params_in_ops.Sensor")
         .expect("emit Sensor traits");
 
     // Body emitted for List[T = Float] — base + binding both primitive.
@@ -343,9 +343,9 @@ fn sort_with_no_operations_errors() {
           entity Vec3(x: Float, y: Float, z: Float)
         end
     "#;
-    let kb = load_kb_with(source);
+    let mut kb = load_kb_with(source);
     // Vec3 is an entity, not a sort-with-ops; the emitter should error.
-    let result = emit_traits_struct(&kb, "Vec3");
+    let result = emit_traits_struct(&mut kb, "Vec3");
     assert!(result.is_err(), "expected error for entity-only Vec3");
 }
 
@@ -355,9 +355,9 @@ fn lf1_gps_traits_struct_emits_correctly() {
     // carrier-bound types. This exercises the realization-fact path
     // end-to-end against real project sources.
     let lf1 = rustland_root().join("examples/webots-modelling/lf1/webots");
-    let kb = load_kb_with_extras("namespace test.lf1_traits end", &collect_anthill_files(&lf1));
+    let mut kb = load_kb_with_extras("namespace test.lf1_traits end", &collect_anthill_files(&lf1));
 
-    let cpp = emit_traits_struct(&kb, "anthill.examples.lf1.webots.GPS")
+    let cpp = emit_traits_struct(&mut kb, "anthill.examples.lf1.webots.GPS")
         .expect("emit GPS traits struct");
 
     // Operations sorted alphabetically: disable, enable, get_sampling_period,

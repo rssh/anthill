@@ -24,8 +24,8 @@ fn error_effect_wraps_return_in_tl_expected() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_f_err.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_err.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -51,8 +51,8 @@ fn raise_lowers_to_make_unexpected() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_f_raise.Calc")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_raise.Calc")
         .expect("emit Calc");
 
     assert!(
@@ -78,8 +78,8 @@ fn error_effect_in_effects_set_still_wraps() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_f_multi.CalcOps")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_multi.CalcOps")
         .expect("emit CalcOps");
 
     assert!(
@@ -100,8 +100,8 @@ fn no_error_effect_keeps_plain_return_type() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_f_modify_only.CalcOps")
+    let mut kb = load_kb_with_lenient(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_modify_only.CalcOps")
         .expect("emit CalcOps");
 
     assert!(
@@ -130,8 +130,8 @@ fn wildcard_let_emits_discard_statement() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_f_void.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_void.Calc")
         .expect("emit Calc");
 
     // Discard slot prints `expr; ` (no `auto _ = `).
@@ -156,8 +156,8 @@ fn wildcard_let_followed_by_named_let_composes() {
           end
         end
     "#;
-    let kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&kb, "test.expr_f_mix.Calc")
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_mix.Calc")
         .expect("emit Calc");
 
     assert!(
