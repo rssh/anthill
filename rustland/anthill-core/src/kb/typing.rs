@@ -6375,7 +6375,21 @@ fn unroll_annotation_with_inferred(
     }
     let mut changed = false;
     for (p, v) in &v_bindings {
-        match merged.iter_mut().find(|(q, _)| q == p) {
+        // WI-764: locate the annotation's slot for this param by the shared key rule, NOT
+        // by raw identity. The two sides are the SAME sort (checked just above) but key one
+        // slot differently — the annotation writes a BARE `E`, the value carries the
+        // canonical `anthill.prelude.Relation.E`. Raw identity missed, so the value's
+        // binding fell to the `None` arm and was PUSHED: `let r : Relation[E = {Error}] =
+        // person_row` built `Relation[T = .., E = .., E = ..]`, one slot bound twice, in
+        // ordinary source. Measured, not hypothesised. A duplicate-label type then makes
+        // every later lookup for that slot depend on which copy interned first.
+        // Derived via `for_bases` rather than hard-coded `Label`: the two are the same sort
+        // only because of the early return above, and this function's own doc contemplates
+        // relaxing that for the cross-sort provider case — deriving the mode keeps it
+        // tracking the gate instead of silently becoming a cross-sort label match.
+        let mode = BindingKeyMatch::for_bases(kb, ann_base, v_base);
+        let slot = binding_index_for_param(kb, &merged, *p, mode).map(|i| &mut merged[i]);
+        match slot {
             // A written ANONYMOUS wildcard (`Stream[T = ?]`) pins nothing —
             // the value's inferred binding replaces it instead of being
             // erased under it (the wildcard already passed conformance
@@ -20177,6 +20191,104 @@ fn parameterized_base_term(kb: &mut KnowledgeBase, base: Symbol) -> TermId {
     var.unwrap_or_else(|| kb.alloc(Term::Ref(base)))
 }
 
+/// How [`binding_for_param`] compares two parameterized types' binding KEYS — chosen from
+/// the two bases via [`BindingKeyMatch::for_bases`] rather than passed as a bare flag,
+/// because the two modes have opposite failure modes and nothing else distinguishes them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingKeyMatch {
+    /// Both types are instances of ONE sort: match by LABEL. Within a single sort, short
+    /// name IS the canonical param identity (a sort's params have distinct labels), so
+    /// [`same_label`] is exact — and it is required, because the two producers key the same
+    /// slot differently (see [`binding_for_param`]).
+    Label,
+    /// The bases are DIFFERENT sorts: do not add a label match. Both callers' base checks
+    /// deliberately accept different bases related by provider admissibility (`List provides
+    /// Stream`, WI-344), and pairing a bare `T` with a foreign sort's QUALIFIED `Stream.T`
+    /// would be a guess; cross-sort callers translate through an explicitly aligned provider
+    /// view instead.
+    ///
+    /// This mode is NOT a barrier between two sorts' slots, and must not be read as one.
+    /// Identity is tried first regardless of mode, and a WRITTEN key is `reintern(p.last())`
+    /// — the bare symbol `T`, ONE globally-interned symbol shared by every sort. So two
+    /// different sorts' bare-written `T` slots already pair by raw identity, exactly as they
+    /// did before WI-764. Measured over the `wi_tests` corpus: of 47,432 calls, 19,463 have
+    /// different-sort bases and 16,681 of those share an exact key symbol — chiefly
+    /// `MappedStream`/`Stream` and `List`/`Stream` on `T`. That pairing is CORRECT there
+    /// only by convention: `stdlib/anthill/prelude/combinators.anthill` deliberately names
+    /// each carrier's params to match `Stream`'s. What this mode withholds is the
+    /// *additional* bare↔foreign-qualified match, nothing more.
+    ///
+    /// And nothing catches a misuse at runtime: [`same_label`]'s `debug_assert` fires only
+    /// when BOTH names are dotted, while the characteristic input here is a bare key whose
+    /// qualified name is just `"T"`. Do not weaken this gate expecting CI to notice.
+    Identity,
+}
+
+impl BindingKeyMatch {
+    fn for_bases(kb: &KnowledgeBase, a_base: Symbol, b_base: Symbol) -> Self {
+        if same_sort_canonical(kb, a_base, b_base) {
+            BindingKeyMatch::Label
+        } else {
+            BindingKeyMatch::Identity
+        }
+    }
+}
+
+/// WI-726 / WI-764 — look a parameterized type's binding up by its PARAM KEY.
+///
+/// The two producers key the SAME slot with DIFFERENT symbols: a `Relation[T = (name,
+/// age)]` VALUE (built via [`assemble_relation_type`] → [`sort_type_params_as_pairs`]) keys
+/// `T` with the sort's CANONICAL param symbol `anthill.prelude.Relation.T`, while a WRITTEN
+/// signature type `Relation[T = L]` keys it with a BARE last-segment `T` (the loader lowers
+/// via `reintern(p.last())`). Raw `p == param` misses that pair, so the slot does not match
+/// and the two sides disagree about a type they both describe.
+///
+/// IDENTITY IS TRIED FIRST across the whole slice, and a label match only on miss. That
+/// keeps the common case at one integer compare per binding (identity is what nearly every
+/// call resolves on), keeps [`same_label`] — and its `debug_assert` — off the typer's hot
+/// conformance path, and makes an exact key win over a merely same-labelled one should a
+/// bindings list ever carry both spellings of one slot.
+///
+/// Shared by the UNIFY ([`unify_parameterized_view`]) and SUBTYPE
+/// ([`parameterized_compatible_view`]) directions: WI-726 fixed this in unify only, and the
+/// subtype twin kept raw identity — which is exactly the WI-764 bug (a written `Relation[T
+/// = .., E = ..]` op-return annotation did not conform against the same relation cited from
+/// a rule). Those two now share one rule.
+///
+/// NOT yet enrolled — same shape (a same-base guard, then a raw-identity binding lookup),
+/// left alone because each is a behavior change in a subsystem this ticket has no failing
+/// case for: `combine_parameterized_same_base` (the type LATTICE — on a key miss it returns
+/// the bare sort / `Nothing`, silently dropping the schema) and `match_candidate_against_goal`
+/// (dispatch specificity — on a key miss it drops the candidate). Both are reachable by the
+/// same producer split; see the WI-764 delivery note.
+fn binding_for_param<'a, T>(
+    kb: &KnowledgeBase,
+    bindings: &'a [(Symbol, T)],
+    param: Symbol,
+    mode: BindingKeyMatch,
+) -> Option<&'a T> {
+    binding_index_for_param(kb, bindings, param, mode).map(|i| &bindings[i].1)
+}
+
+/// [`binding_for_param`] by INDEX — the actual rule. Separate so a caller needing MUTABLE
+/// access to the slot (`unroll_annotation_with_inferred`, which merges an annotation's
+/// bindings with the value's) shares this one definition instead of hand-rolling a third
+/// spelling of it; a `&mut` borrow cannot be handed back through the by-reference form.
+fn binding_index_for_param<T>(
+    kb: &KnowledgeBase,
+    bindings: &[(Symbol, T)],
+    param: Symbol,
+    mode: BindingKeyMatch,
+) -> Option<usize> {
+    if let Some(i) = bindings.iter().position(|(p, _)| *p == param) {
+        return Some(i);
+    }
+    match mode {
+        BindingKeyMatch::Identity => None,
+        BindingKeyMatch::Label => bindings.iter().position(|(p, _)| same_label(kb, *p, param)),
+    }
+}
+
 fn unify_parameterized_view<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -20208,29 +20320,16 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     if !unify_types(kb, subst, &TermIdView(a_base_ty), &TermIdView(b_base_ty)) {
         return false;
     }
-    // WI-726: match each binding param by LABEL, but ONLY within one base sort. A
-    // parameterized type's binding key can arrive either as the sort's CANONICAL param
-    // symbol (`anthill.prelude.Relation.T`, a `Relation[T]` VALUE built via
-    // `sort_type_params_as_pairs`) or as a BARE last-segment `T` (a signature type
-    // `Relation[T = L]`, lowered via `reintern(p.last())`). Raw `p == param` misses the
-    // canonical-vs-bare pair, so a `Relation[T = (name,age)]` argument silently did NOT
-    // unify its `T` slot against a `Relation[T = L]` parameter — leaving the op type param
-    // `L` unbound. Within one sort, short-name IS the canonical param identity (params have
-    // distinct labels), so `same_label` is exact and safe.
-    //
-    // But the base check above deliberately accepts DIFFERENT bases related by provider
-    // admissibility / subtyping (`List provides Stream`, WI-344). Across two DISTINCT
-    // sorts, `same_label` would pair `List.T` with `Stream.T` by short name — tripping its
-    // own cross-qualified-name `debug_assert` AND wrongly cross-unifying two unrelated
-    // slots. So gate on `same_sort_canonical`: label-match within one sort, plain identity
-    // across sorts — mirroring the subtype sibling `parameterized_compatible_view`, which
-    // crosses sorts only through an explicitly aligned provider view, never a bare label.
-    let same_base = same_sort_canonical(kb, a_base, b_base);
+    // WI-726: key comparison via [`binding_for_param`] — the two producers spell one slot's
+    // key either canonically or bare. An a-side param the b-side does not bind is WIDTH-
+    // ignored (unify is width-tolerant here by design; the subtype twin is the direction
+    // that rejects) — which is exactly why the key match must be right: before WI-726 a
+    // key MISS was indistinguishable from a genuinely absent binding, so the slot was
+    // skipped, `unify_types` returned true without binding it, and the op type param
+    // surfaced later as `UnconstrainedTypeParam` far from the cause.
+    let key_match = BindingKeyMatch::for_bases(kb, a_base, b_base);
     for (param, av) in &a_bindings {
-        let found = b_bindings
-            .iter()
-            .find(|(p, _)| if same_base { same_label(kb, *p, *param) } else { *p == *param });
-        if let Some((_, bv)) = found {
+        if let Some(bv) = binding_for_param(kb, &b_bindings, *param, key_match) {
             if !unify_types(kb, subst, av, bv) {
                 return false;
             }
@@ -23973,10 +24072,18 @@ fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param:
         let sort_ok = get_named_arg(kb, &named, "sort")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
             .is_some_and(|s| same_sort_canonical(kb, s, sort));
-        let param_ok = get_named_arg(kb, &named, "param")
-            .and_then(|t| super::load::sort_ref_functor(kb, t))
-            .is_some_and(|p| same_label(kb, p, param));
-        sort_ok && param_ok
+        // WI-764: the param label is compared ONLY for a fact whose sort already matched.
+        // `same_label` is a within-one-sort matcher — comparing this fact's param against
+        // an unrelated sort's is exactly the cross-sort misuse its `debug_assert` exists to
+        // catch. Previously both sides were computed eagerly and `&&`-ed, so every variance
+        // fact's param was label-compared regardless of sort; harmless while every stdlib
+        // variance fact keys its param BARE, but WI-764 newly routes QUALIFIED param
+        // symbols in here (a canonical `Relation.T` now reaches `declared_variance`), so
+        // the short-circuit stops being cosmetic.
+        sort_ok
+            && get_named_arg(kb, &named, "param")
+                .and_then(|t| super::load::sort_ref_functor(kb, t))
+                .is_some_and(|p| same_label(kb, p, param))
     })
 }
 
@@ -24060,12 +24167,19 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         return false;
     }
 
+    // WI-764: how to compare the two sides' binding KEYS — see [`binding_for_param`].
+    let key_match = BindingKeyMatch::for_bases(kb, actual_base, expected_base);
     // WI-387 FIX 2: the actual's cross-sort provider view (`List` provides
     // `Stream`) — loop-invariant (`actual_base`/`expected_base` are fixed for the
     // whole check), so resolve it ONCE rather than per missing expected param
     // (mirrors FIX 3's hoist of `provider_bindings`; `provider_spec_view_bindings`
     // is a full scan of every `SortProvidesInfo` fact). `None` for a same-base
-    // check (no cross-sort translation) or a non-provider actual.
+    // check (no cross-sort translation) or a non-provider actual. Deliberately still
+    // keyed on RAW base inequality, not on `key_match`: the two ask different questions
+    // (is a cross-SORT translation needed, vs how to spell one sort's param keys), and
+    // widening this one to `same_sort_canonical` would be an untestable behavior change
+    // — it could only ever differ for two interned copies of ONE sort, where the key
+    // match below already resolves the bindings directly.
     let cross_sort_provider = if actual_base != expected_base {
         provider_spec_view_bindings(kb, actual_base, expected_base)
     } else {
@@ -24107,8 +24221,10 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         // or a SAME-base actual genuinely missing the param (`cross_sort_provider`
         // is `None`), still rejects: this LOOSENS the cross-sort case only and
         // cannot newly-reject existing code.
-        let ok = match actual_bindings.iter().find(|(p, _)| p == param) {
-            Some((_, av)) => check_binding_by_variance(kb, subst, expected_base, *param, av, ev),
+        // WI-764: keyed via [`binding_for_param`] — raw identity here rejected a WRITTEN
+        // `Relation[T = .., E = ..]` annotation against the very relation it describes.
+        let ok = match binding_for_param(kb, &actual_bindings, *param, key_match) {
+            Some(av) => check_binding_by_variance(kb, subst, expected_base, *param, av, ev),
             None => {
                 let short = short_name_of(kb.resolve_sym(*param));
                 let pv = cross_sort_provider.as_ref().and_then(|view| {

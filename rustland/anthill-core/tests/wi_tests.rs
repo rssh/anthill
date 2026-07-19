@@ -704,3 +704,6 @@ mod wi763_written_keep_spec_test;
 
 #[path = "include/wi458_head_span_occurrence_test.rs"]
 mod wi458_head_span_occurrence_test;
+
+#[path = "include/wi764_relation_binding_order_test.rs"]
+mod wi764_relation_binding_order_test;

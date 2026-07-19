@@ -813,6 +813,19 @@ pub enum TypeArgProblem {
     /// More positional type arguments than there are declared params left to bind —
     /// `Cell[Int64, String]`, or any argument at all on a non-parametric sort.
     ExcessPositional { given: usize, free: usize },
+    /// WI-764: one param bound TWICE — `Relation[T = A, T = B]`. A type application binds
+    /// each param once; two bindings for one slot are two contradictory claims about the
+    /// same type, and nothing downstream can pick between them. Caught at the gate that
+    /// already validates a type application's named arguments, because every consumer that
+    /// later reads bindings by param key resolves one of the two silently: `binding_for_param`
+    /// takes the first, so `Relation[T = <right>, T = <wrong>]` checked clean while the
+    /// reverse order rejected — a wrong schema accepted, order-dependently.
+    ///
+    /// Scoped to a `Sort` head, like the rest of this check: a non-Sort head (a type-param
+    /// carrier `F` of a `sort Spec[F[T]]`, an entity head) returns early and is NOT covered,
+    /// so this is a gate on the common path rather than a universal guarantee — consumers
+    /// still must not depend on a bindings list being duplicate-free.
+    DuplicateParam { param: String },
 }
 
 impl TypeArgProblem {
@@ -829,6 +842,11 @@ impl TypeArgProblem {
             TypeArgProblem::UndeclaredParam { param } => {
                 format!("`{sort}` has no type parameter named '{param}' — it {declares}")
             }
+            TypeArgProblem::DuplicateParam { param } => format!(
+                "`{sort}` binds the type parameter '{param}' more than once — a type \
+                 application binds each parameter once, and two bindings for one slot are \
+                 two contradictory claims about the same type"
+            ),
             TypeArgProblem::ExcessPositional { given, free } => format!(
                 "`{sort}` is over-applied: {given} positional type argument(s) but only \
                  {free} declared type parameter(s) left to bind — it {declares}"
@@ -1271,10 +1289,16 @@ impl KnowledgeBase {
         if self.kind_of(sort_sym) != Some(crate::intern::SymbolKind::Sort) {
             return Ok(());
         }
-        for n in named {
+        for (i, n) in named.iter().enumerate() {
             let short = self.resolve_sym(*n);
             if !declared.iter().any(|d| d == short) {
                 return Err(TypeArgProblem::UndeclaredParam { param: short.to_owned() });
+            }
+            // WI-764: reject a param bound twice. Compared by the SHORT name the argument
+            // was written with (the same key `declared` is matched on just above), so the
+            // two spellings one slot can arrive under never read as two distinct params.
+            if named[..i].iter().any(|p| self.resolve_sym(*p) == short) {
+                return Err(TypeArgProblem::DuplicateParam { param: short.to_owned() });
             }
         }
         // Each positional binds the next declared param NOT already given by name, so
