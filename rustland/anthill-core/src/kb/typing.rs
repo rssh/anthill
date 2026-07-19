@@ -2284,7 +2284,11 @@ fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
 /// name matches `field_name`, unify the component's inferred `ty` against it (binding a free
 /// element var — `h : ?_` ⟹ `xs.T`) and return the σ-walked result; otherwise return `ty`
 /// unchanged. Matched by short name so the `_1`/`_2` positional convention and any declared
-/// names line up regardless of symbol identity (mirrors `named_tuple_compatible`).
+/// names line up regardless of symbol identity. NOTE (WI-775): this is a hint-threading
+/// no-op on a miss, NOT a type relation, so it stays short-name-keyed across BOTH
+/// conventions — do not read it as evidence that `_1`/`_2` and declared names line up in
+/// the RELATIONS. They no longer do: `named_tuple_compatible` aligns data tuples strictly
+/// by name, and the positional lineup lives only in [`arrow_params_compatible`].
 fn thread_expected_tuple_field(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -16738,6 +16742,10 @@ fn validate_arrow_param_result(
         actual: actual.clone(),
     };
     // Contravariant param: `declared.param <: actual.param`.
+    // WI-775: BY NAME. `arrow_parts` decomposes a `Function[A = …]` too, so a
+    // positional bridge here would reopen the hole on that surface (see
+    // `arrow_function_compatible`); the genuine arrow-vs-arrow param relation
+    // is `arrow_compatible_view`'s, which does align positionally.
     if resolved_type_is_ground(kb, &d_param)
         && resolved_type_is_ground(kb, &a_param)
         && !types_compatible(kb, subst, &d_param, &a_param)
@@ -20430,7 +20438,9 @@ fn unify_arrow_view<A: TermView, B: TermView>(
 
     match (named_child_value(kb, a, param_sym), named_child_value(kb, b, param_sym)) {
         (Some(x), Some(y)) => {
-            if !unify_types(kb, subst, &x, &y) {
+            // WI-775: a PARAMETER LIST, not a data tuple — positional alignment
+            // is admissible here (and only here).
+            if !unify_arrow_params(kb, subst, &x, &y) {
                 return false;
             }
         }
@@ -23577,8 +23587,10 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// tuple-arrow lowering and the [`operation_as_function_value`] eta arrow mint
 /// for an UNNAMED arrow param / multi-param op (spec §4.5). Detecting it lets
 /// [`align_named_tuple_fields`] relate such a tuple to a NAMED-binder arrow
-/// (`(acc, x)`) by position rather than by name. The index check requires the
-/// field at position `i` to be named `_{i+1}`, so it (and the zip in
+/// (`(acc, x)`) by position rather than by name — in [`TupleAlign::ParamList`]
+/// mode only, since only a parameter list is applied positionally (WI-775).
+/// The index check requires the field at position `i` to be named `_{i+1}`, so
+/// it (and the zip in
 /// `align_named_tuple_fields`) relies on [`named_tuple_fields`] yielding fields
 /// in construction/declaration order — which it does (it reads the `fields`
 /// list spine in order; only the per-element record args are name-sorted, not
@@ -23594,22 +23606,41 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
         })
 }
 
+/// WI-775: which correspondence [`align_named_tuple_fields`] may use between two
+/// named-tuple field lists. The two positions look identical as TYPES — WI-766
+/// made an arrow's parameter list and a tuple type literally the same surface —
+/// but they are not interchangeable, so the caller states which one it is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TupleAlign {
+    /// A DATA tuple. Align by NAME only. A component's name IS its access path:
+    /// `t.x` reads `Value::Tuple.named`, `t._N` reads `.pos`, and a tuple has
+    /// exactly one of those populated. So relating `(a: Int64)` to `(_1: Int64)`
+    /// licenses a read with no value behind it — the program loads clean and
+    /// traps at eval with `field_access: tuple has no component '_1'` (WI-775).
+    ByName,
+    /// An ARROW'S PARAMETER LIST. Align by name, else by POSITION (the WI-442
+    /// fallback) when the arities are equal and one side is the canonical
+    /// `_1.._n` convention. Sound HERE and only here: a parameter list is
+    /// applied positionally, so its binder names need not agree — which is what
+    /// lets a named-binder callback `(acc: Acc, x: Elem)` accept a multi-param
+    /// op's eta arrow `(_1, _2)`.
+    ParamList,
+}
+
 /// WI-442: align two named-tuple field lists into the `(a_type, b_type)` pairs a
 /// field-wise relation (unify / subtype) should relate, or `None` when the shapes
 /// are incompatible.
 ///
-/// * By NAME (the default, width subtyping): every `b` field must have a
+/// * By NAME (always tried first, width subtyping): every `b` field must have a
 ///   same-named `a` field; extra `a` fields are ignored. Returns those pairs in
 ///   `b` order. This is the original [`unify_named_tuple`] /
 ///   [`named_tuple_compatible`] behavior.
-/// * By POSITION (WI-442 fallback): when the names don't line up but the arities
-///   are equal and ONE side is the canonical `_1.._n` positional convention
-///   (a WI-355 tuple-arrow / eta-arrow param), align by index instead — so a
-///   named-binder callback arrow `(acc: Acc, x: Elem)` relates to a multi-param
-///   op's eta arrow `(_1, _2)`, binding the callback's row var at the call site
-///   (the bug this ticket closes). Both field lists are in declaration /
-///   positional order (the `named_tuple` builders preserve list order), so a
-///   straight index zip is the correct correspondence.
+/// * By POSITION (the WI-442 fallback, `TupleAlign::ParamList` ONLY): when the
+///   names don't line up but the arities are equal and ONE side is the canonical
+///   `_1.._n` positional convention (a WI-355 tuple-arrow / eta-arrow param),
+///   align by index instead. Both field lists are in declaration / positional
+///   order (the `named_tuple` builders preserve list order), so a straight index
+///   zip is the correct correspondence.
 ///
 /// A genuine mismatch — two DIFFERENTLY-named tuples, neither positional — fails
 /// by name and is rejected (no silent positional coercion).
@@ -23617,6 +23648,7 @@ fn align_named_tuple_fields(
     kb: &KnowledgeBase,
     a_fields: &[(Symbol, Value)],
     b_fields: &[(Symbol, Value)],
+    mode: TupleAlign,
 ) -> Option<Vec<(Value, Value)>> {
     let by_name: Option<Vec<(Value, Value)>> = b_fields
         .iter()
@@ -23630,7 +23662,8 @@ fn align_named_tuple_fields(
     if by_name.is_some() {
         return by_name;
     }
-    if a_fields.len() == b_fields.len()
+    if mode == TupleAlign::ParamList
+        && a_fields.len() == b_fields.len()
         && (is_positional_tuple_names(kb, a_fields) || is_positional_tuple_names(kb, b_fields))
     {
         return Some(
@@ -23647,20 +23680,69 @@ fn align_named_tuple_fields(
 /// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
 /// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
 /// here). Fields are read by name via [`named_tuple_fields`] on each carrier;
-/// every `b` field must have a matching `a` field whose type unifies — or, when
-/// one side is the WI-442 positional `_1.._n` convention, by position.
+/// every `b` field must have a matching `a` field whose type unifies. Alignment
+/// is BY NAME: these are data tuples, whose component names are their access
+/// paths. The WI-442 positional fallback belongs to [`unify_arrow_params`]
+/// (WI-775).
 fn unify_named_tuple<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a: &A,
     b: &B,
 ) -> bool {
+    unify_named_tuple_as(kb, subst, a, b, TupleAlign::ByName)
+}
+
+/// [`unify_named_tuple`] with the alignment stated explicitly — `ParamList` only
+/// from [`unify_arrow_params`], where the tuples are an arrow's parameter lists.
+fn unify_named_tuple_as<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+    mode: TupleAlign,
+) -> bool {
     let a_fields = named_tuple_fields(kb, a);
     let b_fields = named_tuple_fields(kb, b);
-    match align_named_tuple_fields(kb, &a_fields, &b_fields) {
+    match align_named_tuple_fields(kb, &a_fields, &b_fields, mode) {
         Some(pairs) => pairs.iter().all(|(a_type, b_type)| unify_types(kb, subst, a_type, b_type)),
         None => false,
     }
+}
+
+/// WI-775: unify an arrow's two PARAMETER LISTS. Identical to [`unify_types`]
+/// except that two named-tuple param lists align in [`TupleAlign::ParamList`]
+/// mode, so a named-binder callback `(acc, x)` still unifies against a
+/// multi-param op's eta arrow `(_1, _2)` (WI-442). Everything the param list
+/// CONTAINS is an ordinary type again — a nested tuple component is data, and
+/// recursing through `unify_types` re-imposes name alignment on it.
+fn unify_arrow_params<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+) -> bool {
+    // WALK FIRST, then classify. A param slot routinely holds a bound var —
+    // `unify_types` opens with the same two `walk_view`s for exactly that reason
+    // (see its head). Classifying the RAW carrier would read `type_var`, miss the
+    // arm, and fall through to `unify_types`, which walks, sees `named_tuple`,
+    // and dispatches to the ByName `unify_named_tuple` — silently downgrading
+    // the mode on the one path that most needs it.
+    let (aw, bw) = (walk_view(kb, subst, a), walk_view(kb, subst, b));
+    if both_named_tuples(kb, &aw, &bw) {
+        return unify_named_tuple_as(kb, subst, &aw, &bw, TupleAlign::ParamList);
+    }
+    unify_types(kb, subst, &aw, &bw)
+}
+
+/// WI-775: do both carriers head as `named_tuple`? The shared head test behind
+/// [`unify_arrow_params`] and [`arrow_params_compatible`] — kept in one place so
+/// the two param-list entry points cannot drift apart.
+fn both_named_tuples<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B) -> bool {
+    matches!(
+        (type_dispatch_name_view(kb, a), type_dispatch_name_view(kb, b)),
+        (Some("named_tuple"), Some("named_tuple"))
+    )
 }
 
 // ── Type compatibility (subtyping) ─────────────────────────────
@@ -24067,7 +24149,8 @@ fn arrow_compatible_view<A: TermView, B: TermView>(
         named_child_value(kb, expected, param_sym),
     ) {
         (Some(ap), Some(ep)) => {
-            if !types_compatible(kb, subst, &ep, &ap) {
+            // WI-775: a PARAMETER LIST, not a data tuple — see `unify_arrow_params`.
+            if !arrow_params_compatible(kb, subst, &ep, &ap) {
                 return false;
             }
         }
@@ -24378,6 +24461,13 @@ fn arrow_function_compatible<A: TermView, E: TermView>(
     // covariant — matching `arrow_compatible`. A missing param on either side
     // (a bare `Function` without an `A` binding, polymorphic) is unconstrained.
     let params_ok = match (&a_param, &b_param) {
+        // WI-775: BY NAME, deliberately — NOT `arrow_params_compatible`. A
+        // `Function[A = …]`'s `A` is the argument's DATA type (it is what flows
+        // to `apply(f, x: A)`), not an applied-positionally parameter list, so
+        // bridging `(acc, x)` to `(_1, _2)` here is the very unsoundness this
+        // ticket closes: measured on the pre-WI-775 tree, `apply2(add2)` with
+        // `f: Function[A = (acc: Int64, x: Int64), B = Int64]` loaded clean and
+        // trapped at eval with `ArityMismatch { expected: 2, got: 1 }`.
         (Some(ap), Some(bp)) => types_compatible(kb, subst, bp, ap),
         _ => true,
     };
@@ -25174,8 +25264,9 @@ fn abstracting_return_error(
     // used to load clean. Recurse into the components, re-applying the SAME
     // bare-vs-manifest-vs-ensures gate per component: an abstracting tuple
     // element is the §5 escape exactly as a bare top-level return is. Components
-    // are aligned the SAME way conformance aligned them — by NAME, with the
-    // WI-442 positional `_1.._n` fallback ([`align_named_tuple_fields`], passing
+    // are aligned the SAME way conformance aligned them — by NAME
+    // ([`align_named_tuple_fields`] in `ByName` mode, since a return type is a
+    // data tuple, not a parameter list — WI-775; passing
     // body as `actual` so each pair is `(body_component, ret_component)`). A raw
     // positional `zip` would mispair a NAMED tuple whose body/return field orders
     // differ (`(a: m, b: true)` vs `-> (b: Bool, a: KVStore)`) and let the escape
@@ -25185,16 +25276,29 @@ fn abstracting_return_error(
     // them. Tuple components are the only gap here: a NOMINAL parameterized return
     // abstracting a type-arg (`-> Box[T = KVStore]` from a body `Box[T = MemStore]`)
     // is rejected even earlier, as an invariant-param TYPE MISMATCH.
+    //
+    // WI-775, on the `None` arm below: `align_named_tuple_fields` returning `None`
+    // (shapes don't align) collapses through `.and_then` into `None`, which this
+    // function's contract reads as "no escape found" — a fail-open. It cannot fire,
+    // and the reason is worth stating because it is NOT local: return CONFORMANCE
+    // runs first and is `named_tuple_compatible(actual = body, expected = ret)` —
+    // the SAME alignment, SAME `ByName` mode, SAME argument order — so any pair
+    // this gate could not align was already rejected. The `ByName` narrowing makes
+    // the arm strictly more reachable than before, so if conformance ever widens
+    // (or stops sharing this alignment), the `None` arm must be split into
+    // "aligned, no escape" vs "could not align" rather than left silent.
     if named_tuple_field_types(kb, body_ty).is_some()
         && named_tuple_field_types(kb, ret_ty).is_some()
     {
         let body_fields = named_tuple_fields(kb, body_ty);
         let ret_fields = named_tuple_fields(kb, ret_ty);
-        return align_named_tuple_fields(kb, &body_fields, &ret_fields).and_then(|pairs| {
-            pairs
-                .iter()
-                .find_map(|(bc, rc)| abstracting_return_error(kb, bc, rc, op_sym))
-        });
+        // WI-775: a RETURN type is a data tuple — align by NAME.
+        return align_named_tuple_fields(kb, &body_fields, &ret_fields, TupleAlign::ByName)
+            .and_then(|pairs| {
+                pairs
+                    .iter()
+                    .find_map(|(bc, rc)| abstracting_return_error(kb, bc, rc, op_sym))
+            });
     }
 
     let body_sort = sort_functor_of_view(kb, body_ty)?;
@@ -27495,23 +27599,64 @@ pub(crate) fn typed_pattern_bounds_hold(
 /// WI-342: the sole `named_tuple` subtyping, carrier-agnostic over [`TermView`].
 /// Width subtyping: every `expected` field must have a matching `actual` field
 /// whose type is compatible. Fields are read by name via [`named_tuple_fields`]
-/// — or, when one side is the WI-442 positional `_1.._n` convention, by position
-/// (so a named-binder callback arrow's contravariant param check accepts a
-/// multi-param op's eta arrow).
+/// and aligned BY NAME: these are data tuples. The WI-442 positional fallback —
+/// which lets a named-binder callback arrow's contravariant param check accept a
+/// multi-param op's eta arrow — belongs to [`arrow_params_compatible`] (WI-775).
 fn named_tuple_compatible<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     actual: &A,
     expected: &B,
 ) -> bool {
+    named_tuple_compatible_as(kb, subst, actual, expected, TupleAlign::ByName)
+}
+
+/// [`named_tuple_compatible`] with the alignment stated explicitly — `ParamList`
+/// only from [`arrow_params_compatible`], where the tuples are parameter lists.
+fn named_tuple_compatible_as<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &A,
+    expected: &B,
+    mode: TupleAlign,
+) -> bool {
     let actual_fields = named_tuple_fields(kb, actual);
     let expected_fields = named_tuple_fields(kb, expected);
-    match align_named_tuple_fields(kb, &actual_fields, &expected_fields) {
+    match align_named_tuple_fields(kb, &actual_fields, &expected_fields, mode) {
         Some(pairs) => {
             pairs.iter().all(|(act_type, exp_type)| types_compatible(kb, subst, act_type, exp_type))
         }
         None => false,
     }
+}
+
+/// WI-775: the subtyping twin of [`unify_arrow_params`] — a `<:` between two
+/// arrow PARAMETER LISTS, aligning positionally when one side is the `_1.._n`
+/// eta convention.
+///
+/// Argument order is `sub <: super`, exactly as [`types_compatible`] takes it,
+/// and this function does NOT perform the contravariant swap — the CALLER does,
+/// passing the expected arrow's param list as `sub`. Hence the neutral names:
+/// at the two arrow call sites `sub` is bound to the EXPECTED arrow's params.
+/// Do not "fix" that by swapping the forwarded arguments; it would invert arrow
+/// subtyping silently.
+fn arrow_params_compatible<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    sub: &A,
+    sup: &B,
+) -> bool {
+    // NOTE the deliberate asymmetry with [`unify_arrow_params`], which walks
+    // before classifying: there, a bound-var param slot would fall through to
+    // `unify_types` and be REJECTED under name alignment, so walking restores
+    // the pre-WI-775 verdict. Here the fallthrough is `types_compatible`, whose
+    // `type_var` arm is a wildcard returning `true` — the pre-WI-775 verdict
+    // already. Walking would make this path STRICTER than it has ever been, on
+    // inputs no measurement covers, so it stays unwalked.
+    if both_named_tuples(kb, sub, sup) {
+        return named_tuple_compatible_as(kb, subst, sub, sup, TupleAlign::ParamList);
+    }
+    types_compatible(kb, subst, sub, sup)
 }
 
 // ── Unified type checking ──────────────────────────────────────
