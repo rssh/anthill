@@ -20255,12 +20255,19 @@ impl BindingKeyMatch {
 /// = .., E = ..]` op-return annotation did not conform against the same relation cited from
 /// a rule). Those two now share one rule.
 ///
-/// NOT yet enrolled — same shape (a same-base guard, then a raw-identity binding lookup),
-/// left alone because each is a behavior change in a subsystem this ticket has no failing
-/// case for: `combine_parameterized_same_base` (the type LATTICE — on a key miss it returns
-/// the bare sort / `Nothing`, silently dropping the schema) and `match_candidate_against_goal`
-/// (dispatch specificity — on a key miss it drops the candidate). Both are reachable by the
-/// same producer split; see the WI-764 delivery note.
+/// NOT yet enrolled — two sites of the same shape (a same-base guard, then a raw-identity
+/// binding lookup), each left alone because enrolling it is a behavior change in a subsystem
+/// WI-764 had no failing case for. Both are filed, with the measurements that placed them:
+///
+/// * `match_candidate_against_goal` (WI-767) — dispatch. On a key miss it drops the
+///   candidate, so the typer and dispatch now DISAGREE about the canonical-vs-bare pair:
+///   a call can type-check here and then fail to dispatch. Not free to enrol — the
+///   `specificity` bump beside it means enrolling moves overload ORDERING too.
+/// * `combine_parameterized_same_base` (WI-768) — the LUB/GLB lattice. On a key miss it
+///   returns the bare sort / `Nothing`, silently dropping the schema. Measured INERT rather
+///   than live: five if-join probes could not demonstrate it (branch typing checks each arm
+///   against the declared return instead of joining), and instrumentation shows its binding
+///   matcher is executed by ZERO tests in the corpus.
 fn binding_for_param<'a, T>(
     kb: &KnowledgeBase,
     bindings: &'a [(Symbol, T)],
