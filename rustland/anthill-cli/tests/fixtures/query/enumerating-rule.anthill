@@ -1,0 +1,18 @@
+-- WI-767: a rule whose body must ENUMERATE an unbound variable — `loc(?n)`
+-- binds ?n only by running its body against the Local facts. The pre-fix
+-- default query path head-matched the rule and reported the unification
+-- `loc(?#0)  [?n = ?#0]` as "1 result(s)" — ?n unbound — while the same goal
+-- through `KnowledgeBase::resolve` answers ?n = "a" definitively.
+namespace probe.wi767
+  import anthill.prelude.String
+
+  sort LocalSort
+    entity Local(name: String, val: String)
+  end
+
+  fact Local(name: "a", val: "one")
+  fact Local(name: "b", val: "two")
+
+  rule loc(?n)
+    :- Local(name: ?n, val: "one")
+end

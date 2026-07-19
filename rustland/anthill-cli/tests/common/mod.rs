@@ -32,6 +32,12 @@ impl Output {
     pub fn has_diagnostic(&self, kind: &str, needle: &str) -> bool {
         self.diagnostics(kind).any(|l| l.contains(needle))
     }
+
+    /// Whole-line stdout match for count/summary lines — `"12 solution(s)"`
+    /// contains `"2 solution(s)"`, so a substring check cannot pin a count.
+    pub fn has_stdout_line(&self, needle: &str) -> bool {
+        self.stdout.lines().any(|l| l.trim() == needle)
+    }
 }
 
 pub fn bin() -> PathBuf {

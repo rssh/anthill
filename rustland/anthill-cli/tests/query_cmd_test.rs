@@ -8,7 +8,7 @@
 //!
 //! It matters because an unresolved import leaves the pattern's short names to
 //! resolve by accidental scope walk or not at all: the user gets a confident
-//! wrong answer, or a silent `0 result(s)`, in place of a diagnostic.
+//! wrong answer, or a silent `no solutions`, in place of a diagnostic.
 
 mod common;
 
@@ -32,7 +32,7 @@ fn a_well_formed_query_file_answers() {
     let path = dir.join("good-query.anthill");
     let out = q(&["--query-file", path.to_str().unwrap()]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("2 result(s)"),
+    assert!(out.has_stdout_line("2 solution(s)"),
             "expected both facts; got stdout:\n{}", out.stdout);
 }
 
@@ -44,7 +44,7 @@ fn a_well_formed_query_file_answers() {
 fn a_bare_pattern_answers() {
     let out = q(&["probe.db.Person.mk(name: ?n, age: ?a)"]);
     assert_eq!(out.code, 0, "a plain pattern must not trip the scan; stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("2 result(s)"),
+    assert!(out.has_stdout_line("2 solution(s)"),
             "expected both facts; got stdout:\n{}", out.stdout);
 }
 
@@ -57,7 +57,10 @@ fn unresolved_import_in_a_query_blocks() {
     let path = dir.join("bad-import-query.anthill");
     let out = q(&["--query-file", path.to_str().unwrap()]);
     assert_eq!(out.code, 1, "a load error in the query must block; stderr:\n{}", out.stderr);
-    assert!(!out.stdout.contains("result(s)"),
+    // "no solutions" included: the resolve path's EMPTY answer has no count
+    // line, so a blocked-but-ran query would slip past the count checks alone.
+    assert!(!out.stdout.contains("solution(s)") && !out.stdout.contains("result(s)")
+                && !out.stdout.contains("no solutions"),
             "the query must not answer; got stdout:\n{}", out.stdout);
     assert!(out.has_diagnostic("error:", "no.such.module.Nope"),
             "expected a loud `error:` naming the import; got stderr:\n{}", out.stderr);

@@ -293,18 +293,28 @@ struct QueryArgs {
     #[arg(long, default_value = "100")]
     max_results: usize,
 
-    /// Use SLD resolution instead of pattern matching
+    /// SLD resolution (the default since WI-767; flag kept for compatibility)
     #[arg(long)]
     resolve: bool,
 
-    /// Maximum resolution depth (for --resolve)
-    #[arg(long, default_value = "100")]
-    max_depth: usize,
+    /// Match KB fact/rule heads structurally instead of resolving. A rule is
+    /// listed as its head with fresh variables — its body is NOT evaluated.
+    #[arg(long = "match", conflicts_with = "resolve")]
+    match_heads: bool,
+
+    /// Maximum resolution depth (default 100). Resolution-only, so an
+    /// explicit value is refused — not silently dropped — under --match
+    /// or a listing mode; `Option` keeps "user passed it" detectable.
+    #[arg(long)]
+    max_depth: Option<usize>,
 }
+
+/// Default SLD depth budget for `query` (the pre-WI-767 `--max-depth` default).
+const DEFAULT_QUERY_DEPTH: usize = 100;
 
 #[derive(Clone, ValueEnum)]
 enum QueryMode {
-    /// Pattern matching against KB facts
+    /// Resolve a goal pattern via SLD (or head-match it under --match)
     Pattern,
     /// List facts of a given sort
     Sort,
@@ -1245,6 +1255,19 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         return Err(1);
     }
 
+    // --match / --resolve select the PATTERN answering strategy and
+    // --max-depth budgets resolution; where they cannot apply they are
+    // refused, not silently dropped (WI-767 review).
+    let listing_mode = !matches!(args.mode, QueryMode::Pattern);
+    if listing_mode && (args.match_heads || args.resolve) {
+        eprintln!("error: --match/--resolve apply only to --mode pattern");
+        return Err(1);
+    }
+    if (listing_mode || args.match_heads) && args.max_depth.is_some() {
+        eprintln!("error: --max-depth applies only to resolution (--mode pattern, without --match)");
+        return Err(1);
+    }
+
     let mut kb = load_kb(&args.paths, false)?;
 
     // Dispatch on mode
@@ -1292,10 +1315,25 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 }
 
                 for &qt in query_terms {
-                    if args.resolve {
+                    if args.match_heads {
+                        // Structural browse: which facts / rule heads unify
+                        // with the pattern, no body evaluation.
+                        let results = kb.query(qt);
+                        print_query_results(&kb, &results, args.max_results);
+                    } else {
+                        // WI-767: SLD resolution is the default — the old
+                        // head-match default reported a rule-head unification
+                        // (variables unbound) as an answer.
+                        let cap = args.max_results;
                         let config = ResolveConfig {
-                            max_depth: args.max_depth,
-                            max_solutions: args.max_results,
+                            max_depth: args.max_depth.unwrap_or(DEFAULT_QUERY_DEPTH),
+                            // One PAST the display cap: a solution beyond `cap`
+                            // proves the cap cut the answer set, so the summary
+                            // can say so rather than pass a capped count off as
+                            // a complete enumeration (0 stays "unlimited";
+                            // saturating: `--max-results usize::MAX` must not
+                            // wrap the sentinel back to 0 = unlimited).
+                            max_solutions: if cap == 0 { 0 } else { cap.saturating_add(1) },
                             simplify: false,
                             // Interactive query: keep residual solutions so
                             // `print_solutions` can DISPLAY the `residual:` line
@@ -1305,11 +1343,11 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             // fills it without naming that crate-private type here.
                             ..Default::default()
                         };
-                        let solutions = kb.resolve(&[qt], &config);
-                        print_solutions(&kb, &solutions, qt, args.max_results);
-                    } else {
-                        let results = kb.query(qt);
-                        print_query_results(&kb, &results, args.max_results);
+                        // Not `resolve`: that drops `stats.truncated`, and a
+                        // depth-truncated "no solutions" is UNDECIDED, not a
+                        // refutation (WI-628).
+                        let (solutions, stats) = kb.resolve_with_stats(&[qt], &config);
+                        print_solutions(&kb, &solutions, qt, cap, stats.truncated);
                     }
                 }
 
@@ -1584,6 +1622,15 @@ fn print_query_results(
     for (rid, subst) in &results[..limit] {
         // WI-348: read the head as a Value (may be a Node-carrying value fact).
         print!("  {}", render_value(&printer, kb, kb.rule_head_value(*rid)));
+        // A bodied rule's head match is NOT an answer — show the body so the
+        // row reads as the rule it is, not as bindings that failed to ground
+        // (the WI-767 misread).
+        let body = kb.rule_body_nodes(*rid);
+        if !body.is_empty() {
+            let body_strs: Vec<String> =
+                body.iter().map(|atom| printer.print_occurrence(atom)).collect();
+            print!(" :- {}", body_strs.join(", "));
+        }
         // Print bindings if any — carrier-agnostic (a binding may be a Node).
         let bindings: Vec<String> = subst
             .iter()
@@ -1610,12 +1657,23 @@ fn print_solutions(
     solutions: &[Solution],
     query_term: anthill_core::kb::term::TermId,
     max: usize,
+    truncated: bool,
 ) {
+    // A depth-truncated search abandoned branches, so an absent answer is
+    // UNDECIDED — without this line "no solutions" reads as a refutation
+    // (WI-628 / WI-767 review).
+    let depth_note = || {
+        if truncated {
+            println!("note: search truncated at --max-depth; a missing answer is UNDECIDED, not refuted");
+        }
+    };
+
     let printer = TermPrinter::new(kb);
     let limit = if max == 0 { solutions.len() } else { max.min(solutions.len()) };
 
     if solutions.is_empty() {
         println!("  no solutions");
+        depth_note();
         return;
     }
 
@@ -1633,8 +1691,10 @@ fn print_solutions(
                 })
             })
             .collect();
+        // A floundered solution proved nothing — saying "true" would present
+        // an undischarged proof as an answer (WI-519's is_definite split).
         if bindings.is_empty() {
-            println!("  true");
+            println!("  {}", if sol.residual.is_empty() { "true" } else { "conditional" });
         } else {
             println!("  {}", bindings.join(", "));
         }
@@ -1648,11 +1708,21 @@ fn print_solutions(
     }
 
     let total = solutions.len();
-    if max > 0 && total > max {
-        println!("  ... ({} more, {} total)", total - max, total);
+    let conditional = solutions[..limit].iter().filter(|s| !s.residual.is_empty()).count();
+    let cond_suffix = if conditional > 0 {
+        format!(", {conditional} conditional (residual goals undischarged)")
     } else {
-        println!("{total} solution(s)");
+        String::new()
+    };
+    if max > 0 && total > max {
+        // The resolver was asked for one solution PAST the cap (run_query), so
+        // landing here means the cap cut the answer set — an exact "(N more,
+        // M total)" would misstate a total the search never finished counting.
+        println!("{limit} solution(s) shown{cond_suffix} — more exist, raise --max-results");
+    } else {
+        println!("{total} solution(s){cond_suffix}");
     }
+    depth_note();
 }
 
 // ── Entry point ─────────────────────────────────────────────────────

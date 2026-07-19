@@ -85,7 +85,7 @@ fn declared_data_reaches_the_kb() {
         assert!(out.stdout.contains(expected),
                 "expected {expected} among the answers; got stdout:\n{}", out.stdout);
     }
-    assert!(out.stdout.contains("2 result(s)"),
+    assert!(out.has_stdout_line("2 solution(s)"),
             "expected exactly the 2 facts from anthill.toml; got stdout:\n{}", out.stdout);
 }
 

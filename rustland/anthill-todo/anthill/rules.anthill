@@ -2,7 +2,7 @@
 --
 -- These rules define the logic for status transitions,
 -- dependency checking, and work item queries.
--- Query them via: anthill query '<goal>' --resolve -p stdlib/anthill -p examples/github-todo/
+-- Query them via: anthill query '<goal>' -p stdlib/anthill -p rustland/anthill-todo/anthill/
 
 namespace anthill.stage0.workflow
   import anthill.prelude.{List, Option}
