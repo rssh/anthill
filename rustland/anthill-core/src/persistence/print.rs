@@ -903,9 +903,19 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// WI-173: `arrow(param, result, effects)` → `(<param>) -> <result>` with an
     /// optional `@ <effects>`. When `param` is itself a `named_tuple` its own
     /// parenthesised form is used directly (avoids double-wrapping `((a: T)) ->`).
+    ///
+    /// WI-766: that direct form is AMBIGUOUS at arity one, and only there. The
+    /// loader reads a single arrow parameter by its TYPE and drops the label, so
+    /// `(a: T) -> R` loads as `arrow(param = T)` — meaning a genuine one-component
+    /// tuple parameter, `arrow(param = (a: T))`, would print to that same text and
+    /// read back as the scalar. Arity one therefore keeps the outer parens. Arity
+    /// two and up cannot collide (a multi-parameter list IS the named tuple), so
+    /// they keep the direct form and their output is unchanged.
     fn write_arrow_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
         match self.named_arg(named, "param") {
-            Some(p) if self.is_named_tuple_term(p) => self.write_type_term(p, buf),
+            Some(p) if self.is_named_tuple_term(p) && self.named_tuple_arity(p) != 1 => {
+                self.write_type_term(p, buf)
+            }
             Some(p) => {
                 buf.push('(');
                 self.write_type_term(p, buf);
@@ -992,6 +1002,16 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         matches!(self.view.term(id),
             Term::Fn { functor, .. }
             if self.view.qualified_name(*functor) == "anthill.prelude.TypeExtractor.NamedTuple")
+    }
+
+    /// Component count of a `NamedTuple` term. Only the arity-one case is acted on
+    /// (see `write_arrow_type`); a shape this cannot read returns 0, which routes to
+    /// the unchanged pre-WI-766 behaviour rather than inventing parens.
+    fn named_tuple_arity(&self, id: TermId) -> usize {
+        let Term::Fn { named_args, .. } = self.view.term(id) else { return 0 };
+        self.named_arg(named_args, "fields")
+            .and_then(|f| self.unwrap_list_spine(f))
+            .map_or(0, |elems| elems.len())
     }
 
     /// WI-173: render a whole effect row (the `EffectsRows.effects_expr` tree) as a

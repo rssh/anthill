@@ -534,7 +534,14 @@ impl<'a> RustCodegen<'a> {
                 let parts: Vec<String> = fields.iter()
                     .map(|(_, ty)| self.type_to_rust(ty))
                     .collect();
-                format!("({})", parts.join(", "))
+                // A 1-tuple needs the trailing comma: Rust reads `(T)` as plain `T`,
+                // which silently DROPS the tuple. Reachable since WI-766 made a
+                // one-component named tuple type writable (`-> (a: Int64)`).
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);
@@ -603,7 +610,14 @@ impl<'a> RustCodegen<'a> {
                 let parts: Vec<String> = fields.iter()
                     .map(|(_, ty)| self.type_to_rust_in_sort(ty, sort_name, type_params, collapse_type_params))
                     .collect();
-                format!("({})", parts.join(", "))
+                // A 1-tuple needs the trailing comma: Rust reads `(T)` as plain `T`,
+                // which silently DROPS the tuple. Reachable since WI-766 made a
+                // one-component named tuple type writable (`-> (a: Int64)`).
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);

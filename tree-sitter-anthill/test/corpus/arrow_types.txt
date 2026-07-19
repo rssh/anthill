@@ -13,7 +13,7 @@ operation map(f: (A) -> B, l: List) -> List
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier))))
@@ -44,7 +44,7 @@ operation fold(f: (A, B) -> A, init: A, l: List) -> A
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier)))
@@ -83,7 +83,7 @@ operation delay(f: () -> A) -> A
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params)
+        params: (tuple_type)
         return_type: (simple_type
           (name
             (identifier)))))
@@ -106,7 +106,7 @@ operation run(f: (A) -> B @ Modifies) -> B
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier))))
@@ -135,7 +135,7 @@ operation run(f: (A) -> B @ {Modifies, Reads}) -> B
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier))))
@@ -167,7 +167,7 @@ operation run(f: (A) -> B @ {Modifies}) -> B
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier))))
@@ -196,7 +196,7 @@ operation run(f: (A) -> B @ {Modifies[kb], Reads[grid]}) -> B
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier))))
@@ -242,7 +242,7 @@ operation run(f: Box[T = (A) -> B @ {E1, E2}]) -> B
           param: (name
             (identifier))
           type: (arrow_type
-            params: (arrow_params
+            params: (tuple_type
               (simple_type
                 (name
                   (identifier))))
@@ -274,7 +274,7 @@ operation flatMap(f: (A) -> List[T = B]) -> List[T = B]
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (simple_type
             (name
               (identifier))))
@@ -312,7 +312,7 @@ operation fold(f: (acc: A, elem: B) -> A) -> A
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (field_decl
             name: (identifier)
             type: (simple_type
@@ -345,7 +345,7 @@ operation findp(p: (x: Int) -> Bool) -> Bool
     (param
       name: (identifier)
       type: (arrow_type
-        params: (arrow_params
+        params: (tuple_type
           (field_decl
             name: (identifier)
             type: (simple_type

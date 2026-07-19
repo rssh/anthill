@@ -20308,16 +20308,19 @@ impl BindingKeyMatch {
 /// no candidate at all. Two providers of one spec for one carrier — the shape where a
 /// changed score could flip a winner — is separately refused as an ambiguous witness.
 ///
-/// STILL NOT enrolled — two sites. Enumerated in full deliberately: WI-726 and WI-764
+/// WI-769 enrolled the LUB/GLB lattice (`combine_parameterized_same_base`): its raw-identity
+/// key miss silently dropped the WHOLE schema (bare base sort for the LUB, `nothing` for the
+/// GLB), which a downstream check then accepted against any parameterization (a bare `S`
+/// conforms to `S[anything]`). Its base guard is canonical for the same reason. NOTE the
+/// ticket's "binding matcher executed by ZERO tests" measurement was an artifact of scoping
+/// to the `wi_tests` binary: at workspace scope the WI-464 lattice unit tests drive the
+/// matcher directly (4 hits, all bare/bare keys — which is why the miss stayed invisible).
+///
+/// STILL NOT enrolled — one site. Enumerated deliberately: WI-726 and WI-764
 /// diverged precisely because `0f31beb2` had consolidated that pair *to keep them in
 /// lockstep* and the doc then claimed a lockstep that no longer held. Keep this list
 /// honest, or the rule drifts again.
 ///
-/// * `combine_parameterized_same_base` (WI-769) — the LUB/GLB lattice. On a key miss it
-///   returns the bare sort / `Nothing`, silently dropping the schema. Measured INERT rather
-///   than live: five if-join probes could not demonstrate it (branch typing checks each arm
-///   against the declared return instead of joining), and instrumentation shows its binding
-///   matcher is executed by ZERO tests in the corpus.
 /// * `goals_equal` — cycle detection over two `SortGoal`s. This one does NOT carry the
 ///   WI-768 bug (it already matches by `same_label`, so it bridges the bare-vs-canonical
 ///   pair), but it is a fourth hand-rolled spelling of this rule and DIFFERS from it: it is
@@ -20327,6 +20330,12 @@ impl BindingKeyMatch {
 ///   establishes `Label`, so enrolling it is `binding_for_param(kb, &b.bindings, *k,
 ///   BindingKeyMatch::Label)` — left alone here only because changing its tie-breaking is a
 ///   behavior change outside WI-768's demonstrated defect.
+///
+/// Related, kept in situ: `matches_variance_fact` bridges a variance fact's bare-written
+/// `param` against either key spelling via sort-gated [`same_label`] (WI-764-annotated).
+/// It is a fact-arg matcher, not a bindings-list lookup, so it does not enroll — but a
+/// change to the key rule must visit it too, or variance lookup diverges from binding
+/// lookup and a covariant param silently reads as invariant.
 fn binding_for_param<'a, T>(
     kb: &KnowledgeBase,
     bindings: &'a [(Symbol, T)],
@@ -24685,11 +24694,20 @@ fn types_equivalent(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
 /// commutative representative.
 ///
 /// Returns `None` when the two are NOT same-base parameterized (the caller then
-/// widens for a join, or bottoms-out for a meet). When a binding cannot be combined
-/// — a covariant/contravariant sub-combine has no result, an invariant param's
-/// values differ, or param sets don't line up — it returns the CONSERVATIVE
-/// whole-type bound: the bare base sort `S` for the LUB (every `S[..] <: S`), the
-/// bottom type for the GLB. Construction stays on the hash-consed term path (the
+/// widens for a join, or bottoms-out for a meet). WI-769: "same base" is CANONICAL
+/// sort identity; each binding's key is looked up by the one shared binding-key
+/// rule ([`binding_for_param`] — a citation keys `T` canonically, a written
+/// signature bare; raw identity missed the pair and silently dropped the whole
+/// schema); and the result is CONSTRUCTED on the sort's canonical base and param
+/// symbols, keeping the callers' documented commutativity STRUCTURAL for declared
+/// plain params (an undeclared/foreign-spelled key and an invariant binding's kept
+/// value still follow the a-side). When a binding
+/// cannot be combined — a covariant/contravariant sub-combine has no result, an
+/// invariant param's values differ, the two sides bind different param subsets, or
+/// a duplicate-keyed side double-consumes one slot — it returns the CONSERVATIVE
+/// whole-type bound: the
+/// bare base sort `S` for the LUB (every `S[..] <: S`), the bottom type for the GLB.
+/// Construction stays on the hash-consed term path (the
 /// nominal, heavily-shared structure that should remain a `TermId`); a `Value::Node`
 /// combined binding (an arrow / denoted type — exotic for a branch join) falls back
 /// to the conservative bound rather than minting a Node-carried type.
@@ -24707,15 +24725,31 @@ fn combine_parameterized_same_base(
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return None,
     };
-    // Different base sorts: not a same-base combine — let the caller widen (LUB)
-    // or bottom-out (GLB).
-    if a_base != b_base {
+    // WI-769: ONE canonical comparison derives both the same-base gate and the
+    // per-binding key-match mode (the dispatch arm-(2) idiom, `match_candidate_
+    // against_goal`) — canonical sort identity, not raw symbol identity: a sort
+    // interns under multiple Symbol copies (WI-617), and a raw `!=` read a twin
+    // pair as different sorts, turning a same-sort combine into a spurious
+    // no-join. A different SORT is not a same-base combine — the caller widens
+    // (LUB) or bottoms out (GLB).
+    let key_match = BindingKeyMatch::for_bases(kb, a_base, b_base);
+    if key_match != BindingKeyMatch::Label {
         return None;
     }
+    // The combine CONSTRUCTS a type — build base AND binding keys on the sort's
+    // canonical symbols (canonicalize at the producer, WI-581), whichever
+    // copies/spellings the inputs carried: a-side key spellings would make the
+    // result depend on argument order, against the callers' documented
+    // commutativity (`join_types(a, b) == join_types(b, a)`). The commutativity
+    // is structural for DECLARED plain params; a constrained param (filtered
+    // from `sort_type_params_as_pairs`), a foreign-spelled key, and an
+    // invariant binding's kept value still follow the a-side.
+    let base = kb.canonical_sort_sym(a_base);
+    let declared = sort_type_params_as_pairs(kb, base);
     // The conservative whole-type bound when a binding can't be combined.
     let fallback = |kb: &mut KnowledgeBase| -> Value {
         match dir {
-            LatticeDir::Lub => Value::term(kb.make_sort_ref(a_base)),
+            LatticeDir::Lub => Value::term(kb.make_sort_ref(base)),
             LatticeDir::Glb => Value::term(kb.make_nothing_type()),
         }
     };
@@ -24723,12 +24757,27 @@ fn combine_parameterized_same_base(
     if a_binds.len() != b_binds.len() {
         return Some(fallback(kb));
     }
+    let mut used = vec![false; b_binds.len()];
     let mut result: Vec<(Symbol, TermId)> = Vec::with_capacity(a_binds.len());
     for (param, av) in &a_binds {
-        let Some((_, bv)) = b_binds.iter().find(|(q, _)| q == param) else {
+        // WI-769: key lookup by the one shared rule ([`binding_for_param`]) —
+        // the sides may spell one slot canonically vs bare (the WI-726/764/768
+        // producer split), which raw `q == param` missed, silently dropping the
+        // whole schema. A residual miss means the sides bind DIFFERENT param
+        // subsets (partial instantiations): no per-param combine exists, so the
+        // conservative bound, as for an uncombinable binding below. A DOUBLE-
+        // consumed b slot (a duplicate-keyed a side — the recorded WI-764
+        // producer defect) also bows out conservatively: label-bridging is not
+        // injective, and constructing from it would mint a duplicate-keyed type
+        // that silently drops one of b's bindings.
+        let Some(bi) = binding_index_for_param(kb, &b_binds, *param, key_match) else {
             return Some(fallback(kb));
         };
-        let combined: Value = match declared_variance(kb, a_base, *param) {
+        if std::mem::replace(&mut used[bi], true) {
+            return Some(fallback(kb));
+        }
+        let bv = &b_binds[bi].1;
+        let combined: Value = match declared_variance(kb, base, *param) {
             Variance::Covariant | Variance::Bivariant => {
                 match combine_binding(kb, dir, av.clone(), bv.clone()) {
                     Some(v) => v,
@@ -24749,13 +24798,35 @@ fn combine_parameterized_same_base(
                 }
             }
         };
+        // Result key: the sort's DECLARED canonical param symbol. Only an
+        // UNDOTTED (bare-written) key re-keys by label — a dotted key either IS
+        // a declared param (identity) or is FOREIGN (another sort's / an
+        // op-scoped `T`, WI-708) and keeps its spelling: re-keying it by short
+        // name would be a guess, and `same_label`'s both-dotted debug_assert
+        // polices exactly that comparison. A re-key COLLISION (both sides
+        // symmetrically duplicate-keyed, invisible to the used-guard above)
+        // bows out conservatively too — the result never carries duplicate keys.
+        let canon_key = if let Some(i) =
+            binding_index_for_param(kb, declared.as_slice(), *param, BindingKeyMatch::Identity)
+        {
+            declared[i].0
+        } else if !kb.qualified_name_of(*param).contains('.') {
+            binding_index_for_param(kb, declared.as_slice(), *param, BindingKeyMatch::Label)
+                .map(|i| declared[i].0)
+                .unwrap_or(*param)
+        } else {
+            *param
+        };
+        if result.iter().any(|(k, _)| *k == canon_key) {
+            return Some(fallback(kb));
+        }
         match combined {
-            Value::Term { id: t, .. } => result.push((*param, t)),
+            Value::Term { id: t, .. } => result.push((canon_key, t)),
             // A Node-carried combined binding: stay off the Node path; bail.
             _ => return Some(fallback(kb)),
         }
     }
-    let base_ref = kb.make_sort_ref(a_base);
+    let base_ref = kb.make_sort_ref(base);
     Some(Value::term(kb.make_parameterized_type(base_ref, &result)))
 }
 
@@ -26930,7 +27001,16 @@ fn var_type_term(kb: &mut KnowledgeBase, subst: &Substitution, vid: VarId, depth
                         continue;
                     }
                     let refined = meet_types(kb, value_ty.clone(), c);
-                    if sort_functor_of_view(kb, &refined) == value_head {
+                    // WI-769: head equality CANONICALLY — the parameterized
+                    // meet constructs on the canonical base Symbol, so a raw
+                    // `==` against a twin-copy value head (WI-617) would read
+                    // the SAME sort as a changed head and silently skip the
+                    // sharpen. A genuinely different sort still refuses.
+                    let same_head = match (sort_functor_of_view(kb, &refined), value_head) {
+                        (Some(r), Some(v)) => same_sort_canonical(kb, r, v),
+                        _ => false,
+                    };
+                    if same_head {
                         value_ty = refined;
                     }
                 }
@@ -32093,15 +32173,26 @@ end
     }
 
     /// A parameterized Value `Base[param = arg, …]`, each arg a bare sort named by qn.
+    /// Keys are interned BARE (`"T"` → the bare `T` symbol) — the spelling a written
+    /// annotation lowers to.
     fn param(kb: &mut KnowledgeBase, base_qn: &str, binds: &[(&str, &str)]) -> Value {
         let base_sym = sym(kb, base_qn);
-        let base_ref = kb.make_sort_ref(base_sym);
+        let keyed: Vec<(Symbol, &str)> = binds.iter().map(|(p, a)| (kb.intern(p), *a)).collect();
+        param_keyed(kb, base_sym, &keyed)
+    }
+
+    /// [`param`] with explicit base and binding-key SYMBOLS. WI-769: the two producers
+    /// spell one slot's key differently — a rule citation keys `T` with the sort's
+    /// CANONICAL param symbol (`anthill.prelude.Option.T`), a written annotation with
+    /// the BARE last segment (`T`) — and a sort's base itself interns under multiple
+    /// Symbol copies; this builder lets a test pick each spelling exactly.
+    fn param_keyed(kb: &mut KnowledgeBase, base: Symbol, binds: &[(Symbol, &str)]) -> Value {
+        let base_ref = kb.make_sort_ref(base);
         let term_binds: Vec<(Symbol, TermId)> = binds
             .iter()
             .map(|(p, arg_qn)| {
-                let p_sym = kb.intern(p);
                 let arg_sym = sym(kb, arg_qn);
-                (p_sym, kb.make_sort_ref(arg_sym))
+                (*p, kb.make_sort_ref(arg_sym))
             })
             .collect();
         Value::term(kb.make_parameterized_type(base_ref, &term_binds))
@@ -32204,6 +32295,182 @@ end
         let (base, binds) = as_param(&kb, &m3);
         assert_eq!(base, option, "meet base sort is Option");
         assert!(is_nothing(&kb, binding(&kb, &binds, "T")), "covariant T meets cat/dog to nothing");
+    }
+
+    /// WI-769 — the binding-key rule ([`binding_for_param`]) in the LUB. One side keys
+    /// `T` with Option's CANONICAL param symbol (the spelling a rule citation's
+    /// `sort_type_params_as_pairs` produces), the other with the BARE `T` (the spelling
+    /// a written annotation lowers to — [`param`] builds it). Raw `q == param` missed
+    /// the pair, so the join silently dropped the whole schema to the bare base sort —
+    /// which a downstream check then accepted against ANY parameterization (a bare `S`
+    /// conforms to `S[anything]`), with no diagnostic. The join must bridge the
+    /// spellings and keep `T = Animal` in BOTH argument orders, and the result must
+    /// carry the CANONICAL key in both — the producer-canonicalized construction that
+    /// keeps `join_types`' documented commutativity structural.
+    #[test]
+    fn wi769_join_bridges_canonical_vs_bare_param_keys() {
+        let mut kb = load_kb();
+        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let canon_t = sym(&kb, "anthill.prelude.Option.T");
+        assert_ne!(canon_t, kb.intern("T"), "the two key spellings must be distinct symbols");
+        let a = param_keyed(&mut kb, option, &[(canon_t, "test.wi464.Animal.cat")]);
+        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        for (x, y) in [(a.clone(), b.clone()), (b, a)] {
+            let j = join_types(&mut kb, x, y)
+                .expect("cross-spelled Option[cat] / Option[dog] must still join");
+            let (base, binds) = as_param(&kb, &j);
+            assert_eq!(base, option, "join base sort is Option");
+            assert!(
+                is_sort(&kb, binding(&kb, &binds, "T"), animal),
+                "T must join cat/dog to Animal across the two key spellings — not be \
+                 dropped to the bare base sort",
+            );
+            assert_eq!(
+                binds[0].0, canon_t,
+                "the result key is the canonical param symbol in both orders \
+                 (structural commutativity)",
+            );
+        }
+    }
+
+    /// WI-769 — the same cross-spelled pair through the GLB. Pre-fix the key miss
+    /// dropped the meet to the WHOLE-type bottom (`nothing`); it must instead keep the
+    /// parameterized shape and meet per-binding (`Option[T = meet(cat, dog)]` =
+    /// `Option[T = nothing]`), canonically keyed, in both argument orders.
+    #[test]
+    fn wi769_meet_bridges_canonical_vs_bare_param_keys() {
+        let mut kb = load_kb();
+        let option = sym(&kb, "anthill.prelude.Option");
+        let canon_t = sym(&kb, "anthill.prelude.Option.T");
+        assert_ne!(canon_t, kb.intern("T"), "the two key spellings must be distinct symbols");
+        let a = param_keyed(&mut kb, option, &[(canon_t, "test.wi464.Animal.cat")]);
+        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        for (x, y) in [(a.clone(), b.clone()), (b, a)] {
+            let m = meet_types(&mut kb, x, y);
+            let (base, binds) = as_param(&kb, &m);
+            assert_eq!(base, option, "meet base sort is Option");
+            assert!(
+                is_nothing(&kb, binding(&kb, &binds, "T")),
+                "the meet must keep the parameterized shape (T meets to nothing), not \
+                 bottom out the whole type",
+            );
+            assert_eq!(binds[0].0, canon_t, "canonical result key in both orders");
+        }
+    }
+
+    /// WI-769 — the BASE guard: canonical sort identity, not raw symbol identity. A
+    /// sort interns under multiple Symbol copies (a scan-time unresolved copy vs the
+    /// resolved canonical — the wi617 twin pattern); the enrolled unify/subtype twins
+    /// compare bases through the full type relation, which canonicalizes, but the raw
+    /// `a_base != b_base` guard here read a twin pair as different sorts and turned a
+    /// same-sort combine into a spurious no-join. Both argument orders, because the
+    /// construction must land on the CANONICAL base (canonicalize at the producer,
+    /// WI-581) whichever side carries the twin — a regression routing construction
+    /// through either side's RAW symbol fails exactly one of the two orders.
+    #[test]
+    fn wi769_join_matches_base_sorts_canonically() {
+        let mut kb = load_kb();
+        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let canon_t = sym(&kb, "anthill.prelude.Option.T");
+        let twin = kb.intern("anthill.prelude.Option");
+        assert_ne!(twin, option, "the twin must be a distinct Symbol copy");
+        assert_eq!(kb.canonical_sort_sym(twin), option, "…that canonicalizes to Option");
+        let bare_t = kb.intern("T");
+        let a = param_keyed(&mut kb, twin, &[(bare_t, "test.wi464.Animal.cat")]);
+        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        for (x, y) in [(a.clone(), b.clone()), (b, a)] {
+            let j = join_types(&mut kb, x, y)
+                .expect("Option under a twin base Symbol must still join with Option");
+            let (base, binds) = as_param(&kb, &j);
+            assert_eq!(base, option, "the combine constructs on the CANONICAL base");
+            assert!(is_sort(&kb, binding(&kb, &binds, "T"), animal), "T joins cat/dog to Animal");
+            assert_eq!(binds[0].0, canon_t, "…and on the canonical param key");
+        }
+    }
+
+    /// WI-769 (review) — label-bridging is not injective: a DUPLICATE-keyed side (the
+    /// duplicate-slot producer defect class WI-764 recorded) resolves BOTH its entries
+    /// to b's single `A` slot and never consults b's `B` — a constructed result would
+    /// be a duplicate-keyed type that silently drops `B`, not even a bound of `b`. The
+    /// combine must bow out to the conservative whole-type bound (the bare base sort).
+    /// (The duplicate is built value-equal deliberately: `extract_type` reads named
+    /// args BY KEY, so a duplicate-keyed term always PRESENTS as its first value
+    /// repeated — a values-differing duplicate cannot reach the lattice as such. And
+    /// `b`'s `A` must be a SIBLING of `a`'s, else `b <: a` holds and `join_types`
+    /// returns `a` before the same-base combine runs at all.)
+    #[test]
+    fn wi769_duplicate_keyed_side_falls_back_conservatively() {
+        let mut kb = load_kb();
+        let function = sym(&kb, "anthill.prelude.Function");
+        let canon_a = sym(&kb, "anthill.prelude.Function.A");
+        let a = param_keyed(
+            &mut kb,
+            function,
+            &[(canon_a, "test.wi464.Animal.cat"), (canon_a, "test.wi464.Animal.cat")],
+        );
+        let b = param(
+            &mut kb,
+            "anthill.prelude.Function",
+            &[("A", "test.wi464.Animal.dog"), ("B", "anthill.prelude.Int64")],
+        );
+        let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
+        assert!(
+            is_sort(&kb, &j, function),
+            "a duplicate-keyed side must fall back to the bare base sort, not mint a \
+             duplicate-keyed type that drops B, got {j:?}",
+        );
+    }
+
+    /// WI-769 (review sweep) — BOTH sides carrying both spellings of one slot: each
+    /// a-key identity-hits its own b slot (the used-guard can't see it), and both
+    /// re-key to the same declared symbol. The re-key COLLISION check must bow out
+    /// to the conservative bound rather than mint `Option[Option.T = .., Option.T
+    /// = ..]` — a duplicate-keyed type whose by-key reads silently drop the second
+    /// value.
+    #[test]
+    fn wi769_symmetric_mixed_spelling_duplicates_fall_back() {
+        let mut kb = load_kb();
+        let option = sym(&kb, "anthill.prelude.Option");
+        let canon_t = sym(&kb, "anthill.prelude.Option.T");
+        let bare_t = kb.intern("T");
+        let a = param_keyed(
+            &mut kb,
+            option,
+            &[(canon_t, "test.wi464.Animal.cat"), (bare_t, "anthill.prelude.Int64")],
+        );
+        let b = param_keyed(
+            &mut kb,
+            option,
+            &[(canon_t, "test.wi464.Animal.dog"), (bare_t, "anthill.prelude.Int64")],
+        );
+        let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
+        assert!(
+            is_sort(&kb, &j, option),
+            "symmetric mixed-spelling duplicates must fall back to the bare base \
+             sort, not mint a duplicate-keyed result, got {j:?}",
+        );
+    }
+
+    /// WI-769 (review sweep) — a FOREIGN dotted key (another sort's `T`: here
+    /// `Box.T` riding an `Option`) must keep its spelling: re-keying it to
+    /// `Option.T` by short name would be a guess (the Identity-mode doc calls that
+    /// pairing out), and the declared-scan gate keeps `same_label`'s both-dotted
+    /// `debug_assert` off this path — pre-gate, this input PANICKED debug builds.
+    #[test]
+    fn wi769_foreign_dotted_key_keeps_its_spelling() {
+        let mut kb = load_kb();
+        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let box_t = sym(&kb, "test.wi464.Box.T");
+        let a = param_keyed(&mut kb, option, &[(box_t, "test.wi464.Animal.cat")]);
+        let b = param_keyed(&mut kb, option, &[(box_t, "test.wi464.Animal.dog")]);
+        let j = join_types(&mut kb, a, b).expect("same-keyed Option[cat]/Option[dog] joins");
+        let (base, binds) = as_param(&kb, &j);
+        assert_eq!(base, option, "join base sort is Option");
+        assert!(is_sort(&kb, binding(&kb, &binds, "T"), animal), "T joins cat/dog to Animal");
+        assert_eq!(
+            binds[0].0, box_t,
+            "a foreign dotted key keeps its spelling — no short-name re-key hijack",
+        );
     }
 }
 

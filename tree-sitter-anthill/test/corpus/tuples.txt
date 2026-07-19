@@ -269,3 +269,45 @@ operation bar() -> Spec[K = (n: 3, flag: true, ratio: 1.5)]
           (denoted_field_decl
             name: (identifier)
             type: (float_literal)))))))
+
+=====================================
+One-component named tuple type
+=====================================
+
+operation bar() -> (a: Int64)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    return_type: (tuple_type
+      (field_decl
+        name: (identifier)
+        type: (simple_type
+          (name
+            (identifier)))))))
+
+=====================================
+One-component named tuple type is not an arrow param list
+=====================================
+
+operation bar() -> (a: Int64) -> String
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    return_type: (arrow_type
+      params: (tuple_type
+        (field_decl
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier)))))
+      return_type: (simple_type
+        (name
+          (identifier))))))
