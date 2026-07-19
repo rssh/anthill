@@ -50,6 +50,35 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         buf
     }
 
+    /// Render a stored rule as `head :- body` source-ish text (a fact prints
+    /// as just its head). Diagnostic-quality, not persistence-canonical —
+    /// used by the bodied-rule refusal messages (WI-770/WI-772) that must
+    /// name the offending rule. A WI-348 value-carrier head (`Node`/`Entity`,
+    /// not loader-producible for a bodied rule today) still names the rule
+    /// rather than trading the diagnostic for `rule_head`'s carrier panic,
+    /// which would misattribute the failure.
+    pub fn print_rule(&self, rid: crate::kb::RuleId) -> String {
+        let head = match self.view.rule_head_value(rid) {
+            Value::Term { id, .. } => self.print_term(*id),
+            Value::Node(occ) => self.print_occurrence(occ),
+            Value::Entity { functor, .. } => {
+                format!("{}(…)", self.view.resolve_sym(*functor))
+            }
+            other => format!("<{} head>", other.type_name()),
+        };
+        let body: Vec<String> = self
+            .view
+            .rule_body_nodes(rid)
+            .iter()
+            .map(|atom| self.print_occurrence(atom))
+            .collect();
+        if body.is_empty() {
+            head
+        } else {
+            format!("{head} :- {}", body.join(", "))
+        }
+    }
+
     /// WI-318: render a Pattern-kind occurrence in surface form.
     /// Recurses into sub-patterns (Constructor.pos_args /
     /// Tuple.positional). Var-pattern's optional `type_ann` is rendered

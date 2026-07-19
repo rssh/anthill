@@ -1,7 +1,10 @@
 //! Per-predicate translation policy lookup (proposal 030 phase δ).
 //!
 //! Reads `TranslationPolicy(predicate, backend, policy)` facts from
-//! the KB and resolves them at codegen time. Per-backend defaults
+//! the KB and resolves them at codegen time. A BODIED
+//! `TranslationPolicy` rule anywhere in the KB is a hard error
+//! (WI-772): this reader never evaluates guards, so lookups are
+//! fallible rather than silently falling back. Per-backend defaults
 //! kick in when no fact is present:
 //!   - `LiftedAxiom` for predicates appearing in any `using` clause
 //!     (mechanical: a citing proof needs the predicate's claim
@@ -19,6 +22,8 @@
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
+
+use crate::{refuse_if_bodied, SmtGenError};
 
 /// One of the four lowering strategies the kernel currently
 /// distinguishes (proposal 030 §Per-predicate translation policy).
@@ -39,34 +44,54 @@ pub enum PredicatePolicy {
 /// the LiftedAxiom default. The caller is responsible for
 /// collecting this set; for the v0 prove driver it equals the
 /// union of every `ProofRecord.using` field.
+///
+/// Errs on any BODIED `TranslationPolicy` rule in the KB (WI-772):
+/// this reader head-matches facts and never evaluates a body, so a
+/// guarded policy would otherwise silently fall back to the default.
 pub fn policy_for(
     kb: &KnowledgeBase,
     predicate: &str,
     backend: &str,
     cited_predicates: &std::collections::BTreeSet<String>,
-) -> PredicatePolicy {
-    if let Some(p) = lookup_explicit_policy(kb, predicate, backend) {
-        return p;
+) -> Result<PredicatePolicy, SmtGenError> {
+    if let Some(p) = lookup_explicit_policy(kb, predicate, backend)? {
+        return Ok(p);
     }
     if cited_predicates.contains(predicate) {
-        return PredicatePolicy::LiftedAxiom;
+        return Ok(PredicatePolicy::LiftedAxiom);
     }
-    PredicatePolicy::Inline
+    Ok(PredicatePolicy::Inline)
 }
 
 /// Walk `TranslationPolicy` facts looking for an exact (predicate,
 /// backend) match. Returns the first found policy, or None if no
-/// such fact exists.
+/// such fact exists. Any bodied candidate is refused loudly (WI-772)
+/// in a pre-scan over ALL candidates — before predicate/backend
+/// matching, since a bodied rule's head fields may be variables that
+/// would match anything, and before the match walk's early return, so
+/// a matching fact sitting ahead of the bodied rule in the candidate
+/// list (insertion order — source/file-load order) cannot hide it.
 fn lookup_explicit_policy(
     kb: &KnowledgeBase,
     predicate: &str,
     backend: &str,
-) -> Option<PredicatePolicy> {
-    let policy_sym = kb.try_resolve_symbol(
+) -> Result<Option<PredicatePolicy>, SmtGenError> {
+    let Some(policy_sym) = kb.try_resolve_symbol(
         "anthill.realization.policy.TranslationPolicy"
-    )?;
-    for rid in kb.rules_by_functor(policy_sym) {
-        if !kb.is_fact(rid) { continue; }
+    ) else {
+        return Ok(None);
+    };
+    let candidates = kb.rules_by_functor(policy_sym);
+    for &rid in &candidates {
+        refuse_if_bodied(
+            kb,
+            rid,
+            "TranslationPolicy rule",
+            "a guarded policy would silently fall back to the \
+             per-backend default",
+        )?;
+    }
+    for rid in candidates {
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -87,10 +112,10 @@ fn lookup_explicit_policy(
             Some(t) => t, None => continue,
         };
         if let Some(p) = decode_policy_term(kb, policy_tid) {
-            return Some(p);
+            return Ok(Some(p));
         }
     }
-    None
+    Ok(None)
 }
 
 fn decode_policy_term(kb: &KnowledgeBase, tid: TermId) -> Option<PredicatePolicy> {

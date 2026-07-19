@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use anthill_core::intern::{Symbol, SymbolKind};
-use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 use anthill_core::kb::resolve::ResolveConfig;
@@ -3822,29 +3822,11 @@ fn query_realization_facts(
                  realization (`anthill.realization.realizes_effect`, WI-760) \
                  — no resolve seam reads a bodied rule for the other \
                  realization functors.",
-                render_rule(kb, rid),
+                TermPrinter::new(kb).print_rule(rid),
             );
             kb.rule_head(rid)
         })
         .collect()
-}
-
-/// Render a rule as `head :- body` source-ish text for the WI-770 refusal
-/// diagnostic. A parsed rule head is a `Term`; the WI-348 value carriers
-/// (`Node`/`Entity`, not loader-producible for a bodied rule today) still
-/// name the rule rather than trading this diagnostic for `rule_head`'s
-/// carrier panic, which would misattribute the failure.
-fn render_rule(kb: &KnowledgeBase, rid: RuleId) -> String {
-    let printer = TermPrinter::new(kb);
-    let head = match kb.rule_head_value(rid) {
-        Value::Term { id, .. } => printer.print_term(*id),
-        Value::Node(occ) => printer.print_occurrence(occ),
-        Value::Entity { functor, .. } => format!("{}(…)", kb.resolve_sym(*functor)),
-        other => format!("<{} head>", other.type_name()),
-    };
-    let body: Vec<String> =
-        kb.rule_body_nodes(rid).iter().map(|atom| printer.print_occurrence(atom)).collect();
-    format!("{head} :- {}", body.join(", "))
 }
 
 /// WI-089: resolve host-type mappings for `anthill_type` under `lang` over the

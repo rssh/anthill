@@ -25,8 +25,9 @@ use std::rc::Rc;
 
 use anthill_core::intern::Symbol;
 use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
+use anthill_core::persistence::print::TermPrinter;
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -37,6 +38,35 @@ impl SmtGenError {
     fn new(s: impl Into<String>) -> Self {
         Self { message: s.into() }
     }
+}
+
+/// Refuse `rid` if it is a bodied rule (WI-772). smt-gen's fact readers
+/// head-match rule heads and never evaluate bodies, so a guarded rule
+/// reaching one of them must be a loud error, not a silent skip.
+/// `subject` names what is being read ("TranslationPolicy rule", "rule
+/// for referenced entity `X`"); `consequence` states what the silent
+/// skip would have done at that site. Callers pre-scan ALL candidates
+/// through this BEFORE acting on any of them, so whether the refusal
+/// fires cannot depend on where the bodied rule sits in the candidate
+/// list relative to a matching fact (`rules_by_functor` enumerates in
+/// insertion order — source/file-load order, an authoring accident no
+/// refusal should hang on).
+pub(crate) fn refuse_if_bodied(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    subject: &str,
+    consequence: &str,
+) -> Result<(), SmtGenError> {
+    if kb.is_fact(rid) {
+        return Ok(());
+    }
+    Err(SmtGenError::new(format!(
+        "bodied {subject} refused: `{}` — the reader head-matches facts \
+         and never evaluates the rule body (guard), so {consequence} \
+         (WI-772). Assert the entries as facts; guarded/derived \
+         selection is unsupported.",
+        TermPrinter::new(kb).print_rule(rid),
+    )))
 }
 
 /// Caller-supplied overrides forwarded to the SMT preamble.
@@ -116,7 +146,7 @@ pub fn emit_obligation_with(
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
     emitter.collect_rule(&obligation.rule_qn)?;
-    emitter.collect_facts_for_referenced_entities();
+    emitter.collect_facts_for_referenced_entities()?;
     Ok(emitter.render_upper_bound_with(obligation, config))
 }
 
@@ -146,7 +176,7 @@ pub fn emit_satisfiability_check_with(
     let mut emitter = Emitter::new(kb);
     emitter.abstract_mode = config.abstract_body;
     emitter.collect_rule(rule_qn)?;
-    emitter.collect_facts_for_referenced_entities();
+    emitter.collect_facts_for_referenced_entities()?;
     Ok(emitter.render_satisfiability_with(rule_qn, config))
 }
 
@@ -161,7 +191,7 @@ pub fn emit_satisfiability_check_with_deps(
     let mut emitter = Emitter::new(kb);
     emitter.abstract_mode = config.abstract_body;
     emitter.collect_rule(rule_qn)?;
-    emitter.collect_facts_for_referenced_entities();
+    emitter.collect_facts_for_referenced_entities()?;
     let smt = emitter.render_satisfiability_with(rule_qn, config);
     let deps: Vec<String> = emitter.visited_rules.into_iter().collect();
     Ok((smt, deps))
@@ -225,7 +255,7 @@ fn lift_one_rid(
     // drag in transitive nonlinearity that breaks LRA discharges.
     emitter.abstract_mode = true;
     emitter.collect_rule_for_rid(rule_qn, rid)?;
-    emitter.collect_facts_for_referenced_entities();
+    emitter.collect_facts_for_referenced_entities()?;
 
     if emitter.conclusion_assertions.is_empty() {
         return Err(SmtGenError::new(format!(
@@ -1523,16 +1553,36 @@ impl<'kb> Emitter<'kb> {
     /// For each entity referenced in the rule body, find its
     /// (single) ground fact in the KB and resolve every field to a
     /// Real value. Multi-fact handling is a v1 concern.
-    fn collect_facts_for_referenced_entities(&mut self) {
+    ///
+    /// Errs on any BODIED rule whose head is a referenced entity
+    /// (WI-772): this reader head-matches facts and never evaluates a
+    /// body, so `rule LinkParameters(mass: 2.0, …) :- heavy_variant()`
+    /// would feed mass=2.0 into the encoding whether or not the guard
+    /// holds — a proof discharged from a guarded premise is unsound.
+    /// The refusal fires even when a ground fact ALSO exists for the
+    /// entity: candidate order (insertion order — source/file-load
+    /// order) would otherwise decide which head the harvest picks.
+    fn collect_facts_for_referenced_entities(&mut self) -> Result<(), SmtGenError> {
         for entity_qn in self.referenced_entities.clone() {
             let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else { continue };
-            // Walk every `rules_by_functor(sym)` rule and accept the
-            // first one whose named_args resolve to numeric literals —
-            // that's a ground fact. (WI-515: only data facts remain;
-            // the entity-declaration row with abstract field types is
-            // no longer asserted.) Multi-fact disambiguation is a v1
-            // concern; for v0 we expect at most one fact per entity.
-            for rid in self.kb.rules_by_functor(sym) {
+            let candidates = self.kb.rules_by_functor(sym);
+            for &rid in &candidates {
+                refuse_if_bodied(
+                    self.kb,
+                    rid,
+                    &format!("rule for referenced entity `{entity_qn}`"),
+                    "guarded field values would enter the SMT encoding \
+                     unconditionally — a proof could be discharged from a \
+                     premise the source guarded",
+                )?;
+            }
+            // Accept the first fact whose named_args resolve to numeric
+            // literals — that's a ground data fact. (WI-515: only data
+            // facts remain; the entity-declaration row with abstract
+            // field types is no longer asserted.) Multi-fact
+            // disambiguation is a v1 concern; for v0 we expect at most
+            // one fact per entity.
+            for rid in candidates {
                 let head = self.kb.rule_head(rid);
                 let Term::Fn { named_args, .. } = self.kb.get_term(head) else { continue };
                 let any_concrete = named_args.iter().any(|(_, t)|
@@ -1549,6 +1599,7 @@ impl<'kb> Emitter<'kb> {
                 break;
             }
         }
+        Ok(())
     }
 
     fn render_upper_bound_with(&self, obligation: &Obligation, config: &ProofConfig) -> String {
