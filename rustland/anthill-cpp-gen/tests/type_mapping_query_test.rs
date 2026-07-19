@@ -36,6 +36,31 @@ fn base_renames_resolve_via_query() {
     assert_eq!(cpp_base_host_type(&kb, "NoSuchType"), None);
 }
 
+/// WI-770: a BODIED TypeMapping rule must never be silently head-matched —
+/// the query reads facts only and cannot evaluate the guard, so an author
+/// following WI-089's guarded-overlay direction would otherwise get the
+/// guard's host type emitted unconditionally with no diagnostic. The reader
+/// refuses the candidate loudly, naming the rule and the WI-760 resolve seam.
+#[test]
+#[should_panic(expected = "bodied realization rule refused: `TypeMapping(anthill_type: \"Money\"")]
+fn bodied_type_mapping_rule_is_refused_not_head_matched() {
+    let source = r#"
+        namespace test.bodiedguard
+          import anthill.realization.{TypeMapping}
+          import anthill.prelude.Option.{some, none}
+
+          sort Toggle
+            entity fast_math_on
+          end
+
+          rule TypeMapping(lang: some("cpp"), anthill_type: "Money", host_type: "float")
+            :- fast_math_on()
+        end
+    "#;
+    let kb = load_kb_with(source);
+    cpp_base_host_type(&kb, "Money");
+}
+
 #[test]
 fn project_fact_participates_in_query() {
     // A project asserting its own keyed entry is picked up by the same

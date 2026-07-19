@@ -14,7 +14,8 @@
 use std::collections::HashMap;
 
 use anthill_core::intern::{Symbol, SymbolKind};
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::persistence::print::TermPrinter;
 use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term_view::TermIdView;
@@ -3763,10 +3764,12 @@ fn select_keyed<T>(
 /// field a fresh placeholder var, then returns the head `TermId` of each
 /// matching top-level fact. This is a HEAD MATCH: `query_view` returns the head
 /// of every structurally-matching rule and never evaluates a body, so a bodied
-/// realization rule read through here would have its guards silently skipped
-/// (WI-760). Since WI-760 codegen threads `&mut KnowledgeBase` and CAN
-/// `kb.resolve`, so a predicate that needs body evaluation belongs on the
-/// resolution path, not here. It matches structurally rather than hash-consing a
+/// realization rule read through here would have its guards silently skipped —
+/// hence any bodied candidate is REFUSED with a loud panic (WI-770), in every
+/// build, naming the rule. Since WI-760 codegen threads `&mut KnowledgeBase`
+/// and CAN `kb.resolve`, so a predicate that needs body evaluation belongs on
+/// the resolution path (the `realizes_effect` rule set is the model), not
+/// here. It matches structurally rather than hash-consing a
 /// pattern term; `query_view` keys named args by Symbol —
 /// hence the pattern carries the facts' exact field symbols, and the whole
 /// query bails (empty) if the functor or any field name isn't interned yet.
@@ -3806,8 +3809,42 @@ fn query_realization_facts(
     };
     kb.query_view(&pattern)
         .into_iter()
-        .map(|(rid, _)| kb.rule_head(rid))
+        .map(|(rid, _)| {
+            // WI-770. `assert!`, not `debug_assert!`: compiled out, a release
+            // build would emit C++ a guard should have withheld.
+            assert!(
+                kb.is_fact(rid),
+                "bodied realization rule refused: `{}` — this reader \
+                 head-matches facts and never evaluates a rule body, so the \
+                 guard would be silently skipped (WI-770). Realization \
+                 entries must be asserted as facts; guarded selection is \
+                 honored only where codegen RESOLVES, which today is effect \
+                 realization (`anthill.realization.realizes_effect`, WI-760) \
+                 — no resolve seam reads a bodied rule for the other \
+                 realization functors.",
+                render_rule(kb, rid),
+            );
+            kb.rule_head(rid)
+        })
         .collect()
+}
+
+/// Render a rule as `head :- body` source-ish text for the WI-770 refusal
+/// diagnostic. A parsed rule head is a `Term`; the WI-348 value carriers
+/// (`Node`/`Entity`, not loader-producible for a bodied rule today) still
+/// name the rule rather than trading this diagnostic for `rule_head`'s
+/// carrier panic, which would misattribute the failure.
+fn render_rule(kb: &KnowledgeBase, rid: RuleId) -> String {
+    let printer = TermPrinter::new(kb);
+    let head = match kb.rule_head_value(rid) {
+        Value::Term { id, .. } => printer.print_term(*id),
+        Value::Node(occ) => printer.print_occurrence(occ),
+        Value::Entity { functor, .. } => format!("{}(…)", kb.resolve_sym(*functor)),
+        other => format!("<{} head>", other.type_name()),
+    };
+    let body: Vec<String> =
+        kb.rule_body_nodes(rid).iter().map(|atom| printer.print_occurrence(atom)).collect();
+    format!("{head} :- {}", body.join(", "))
 }
 
 /// WI-089: resolve host-type mappings for `anthill_type` under `lang` over the
