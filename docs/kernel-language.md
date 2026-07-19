@@ -1740,6 +1740,22 @@ are different sorts even though they share a short name. Short-name matching in 
 kernel therefore survives only for name resolution against a scoped set, never as a
 test of whether two sorts are the same.
 
+**Named arguments to a function value.** Where the callee is not a named operation
+but a **variable of arrow type**, the label resolves against that *arrow type's*
+declared binder names: with `f: (acc: Int64, x: Int64) -> Int64`, both `f(x: 10,
+acc: 3)` and `f(acc: 3, x: 10)` bind `acc` to the first parameter and `x` to the
+second. The **declared** names govern, not those of whichever function is finally
+passed — an arrow's parameter list is applied positionally, so an operation whose
+own binders read `(a, b)` remains a legal argument for `(acc, x)` (§ arrow
+conformance) and declared slot *i* is that callee's slot *i*. An unknown or
+duplicated label is a load error, as for an operation call.
+
+Two arrow types record **no** binder names, and a label there is rejected with a
+located error rather than resolved: a **one-parameter** arrow, whose binder name the
+type does not retain (`(v: Int64) -> Int64` is `Int64 -> Int64`), and
+`Function[A, B]`, whose `A` is one tuple-typed *argument* rather than a parameter
+list. Both take positional arguments.
+
 **Inherited operations.** When a sort gains an operation through `requires`
 (spec auto-binding, §8.7), a derived rule it supplies for that operation binds
 to the **inherited** operation symbol — it does not mint a new shadowing symbol.

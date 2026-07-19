@@ -8316,38 +8316,11 @@ fn check_apply_iter(
                 }
             }
         }
-        // WI-426: named-argument COVERAGE. Each label must name a DISTINCT param
-        // not already filled positionally. An unknown label (typo) or one that
-        // duplicates a positionally-bound param must be a LOUD error — without
-        // this the label is silently dropped here and `reorder_named_args_in_apply`
-        // sorts it last, so eval (which binds positionally) rebinds an omitted
-        // param to the stray value. Missing params are NOT checked here (partial
-        // application is legal — WI-374); only unknown/duplicate labels.
-        if !named_args.is_empty() {
-            let mut covered = vec![false; op.params.len()];
-            for slot in covered.iter_mut().take(pos_args.len()) {
-                *slot = true;
-            }
-            for (arg_name, _) in named_args.iter() {
-                let err = match op.params.iter().position(|(s, _)| same_label(kb, *s, *arg_name)) {
-                    None => Some("names no parameter of this operation"),
-                    Some(idx) if covered[idx] => Some("binds a parameter already given"),
-                    Some(idx) => {
-                        covered[idx] = true;
-                        None
-                    }
-                };
-                if let Some(reason) = err {
-                    arg_type_errors.push(TypeError::Other {
-                        site: TypeError::here(),
-                        span,
-                        context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: *arg_name },
-                        expected: "a named argument matching a distinct unbound parameter".to_string(),
-                        actual: format!("named argument '{}' {}", short_name_of(kb.resolve_sym(*arg_name)), reason),
-                    });
-                }
-            }
-        }
+        // WI-426: named-argument COVERAGE (see `named_arg_coverage_errors`, which
+        // WI-783 shares with the function-VALUE call path so the two cannot drift).
+        arg_type_errors.extend(named_arg_coverage_errors(
+            kb, &op.params, pos_args.len(), named_args, fn_sym, "this operation", span,
+        ));
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
         }
@@ -9618,6 +9591,99 @@ fn check_apply_iter(
             for r in pos_results.iter().chain(named_results.iter()).flatten() {
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
+            // WI-783: resolve NAMED arguments against the arrow's declared binder
+            // names — the job Path 1 does for a named operation via its
+            // `op.params` (coverage check + `reorder_named_args_in_apply`), and
+            // which this path used to skip entirely. Skipping it was silently
+            // WRONG, not merely unchecked: eval's `start_apply` DISCARDS the
+            // labels and binds what is left positionally, so `f(x: 10, acc: 3)`
+            // and `f(acc: 3, x: 10)` on `(acc: Int64, x: Int64) -> Int64` bound
+            // opposite ways and a `sub`-like callee returned 7 and -7 — a
+            // plausible wrong number, with the binder names inert and even an
+            // unknown label accepted. Binding by the DECLARED names is sound
+            // despite WI-775 letting the actual callee's own binder names differ
+            // (`sub2(a, b)` may be passed for `(acc, x)`): an arrow's parameter
+            // list is applied POSITIONALLY, so declared slot i is the callee's
+            // slot i, and resolving label → slot against the static type before
+            // handing eval a positional call composes exactly.
+            let named_node;
+            let occ = if named_args.is_empty() {
+                occ
+            } else {
+                let params = arrow_declared_param_list(kb, &fn_type).ok_or_else(|| {
+                    // No declared names to bind to (a 1-param arrow, whose binder
+                    // name the arrow type drops; a `Function[A, B]`, whose `A` is
+                    // one tuple argument; an abstract param). The label can be
+                    // neither ordered nor validated, so it must not be silently
+                    // ignored — reject and point at the positional form.
+                    aggregate_errors(
+                        named_args
+                            .iter()
+                            .map(|(arg_name, _)| TypeError::Other {
+                                site: TypeError::here(),
+                                span,
+                                context: TypeErrorContext::OperationArgument {
+                                    op_name: fn_sym,
+                                    param: *arg_name,
+                                },
+                                expected: "positional arguments — the type of this function \
+                                           value records no parameter names to bind a label to"
+                                    .to_string(),
+                                actual: format!(
+                                    "named argument '{}'",
+                                    short_name_of(kb.resolve_sym(*arg_name))
+                                ),
+                            })
+                            .collect(),
+                    )
+                })?;
+                // The same WI-426 coverage rule the named-operation path applies,
+                // via the shared checker so the two cannot drift.
+                let label_errors = named_arg_coverage_errors(
+                    kb, &params, pos_args.len(), named_args, fn_sym,
+                    "this function value's type", span,
+                );
+                if !label_errors.is_empty() {
+                    return Err(aggregate_errors(label_errors));
+                }
+                // Every label resolved: hand eval a positionally-correct call.
+                // `check_apply_iter` bailed on any ill-typed child up front
+                // (`collect_arg_errors`), so the reorder's Ok-child expectation
+                // holds. No some-wraps here — Path 2 runs no per-argument
+                // coercion (WI-408 is Path 1's).
+                match reorder_named_args_in_apply(
+                    kb, occ, &params, pos_args.len(), &[], pos_results, named_results,
+                ) {
+                    Some(r) => {
+                        named_node = r;
+                        &named_node
+                    }
+                    // Unreachable: the reorder declines only a non-`Apply`
+                    // occurrence, and both `check_apply_iter` call sites pass an
+                    // `Expr::Apply`. Kept LOUD rather than falling back to `occ`
+                    // — that fallback would hand eval the labels in WRITTEN order
+                    // and silently restore the very mis-binding this path exists
+                    // to prevent, which is precisely the "reads as handled when
+                    // it isn't" failure the repo's loud-error rule targets.
+                    None => {
+                        debug_assert!(false, "named-arg reorder declined a non-Apply occurrence");
+                        return Err(TypeError::Other {
+                            site: TypeError::here(),
+                            span,
+                            context: TypeErrorContext::OperationArgument {
+                                op_name: fn_sym,
+                                param: named_args[0].0,
+                            },
+                            expected: "an application occurrence whose named arguments can be \
+                                       bound to the callee's declared parameters"
+                                .to_string(),
+                            actual: "an occurrence this typer cannot reorder; pass the arguments \
+                                     positionally"
+                                .to_string(),
+                        });
+                    }
+                }
+            };
             return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
         }
     }
@@ -16815,6 +16881,69 @@ fn wrap_some_children(
     super::simp_rewrite::reassemble(occ, &children)
 }
 
+/// WI-426 / WI-783: named-argument COVERAGE against a callee's parameter list —
+/// every label must name a DISTINCT parameter that no positional argument has
+/// already filled. Yields one [`TypeError`] per offending label; empty = clean.
+///
+/// This is a PRECONDITION of [`reorder_named_args_in_apply`], not a courtesy
+/// check: that reorder sorts an UNMATCHED label last, and eval binds what it is
+/// handed positionally (`start_apply` having discarded the labels), so a typo'd
+/// or duplicated label would otherwise slide into whichever slot was left over
+/// and bind a parameter the caller never named.
+///
+/// Shared by both callee kinds so their diagnostics cannot drift apart — a named
+/// operation (`op.params`) and a function VALUE whose arrow type declares binder
+/// names ([`arrow_declared_param_list`]) — with `subject` naming the kind in the
+/// message. MISSING parameters are deliberately NOT checked: partial application
+/// is legal (WI-374). `#[track_caller]` so `site` still records the CALLING path
+/// rather than this one shared body.
+#[track_caller]
+fn named_arg_coverage_errors(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_count: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    callee: Symbol,
+    subject: &str,
+    span: Option<Span>,
+) -> Vec<TypeError> {
+    // Most calls pass no labels at all; keep the common path allocation-free
+    // (the pre-WI-783 inline version was guarded by the same emptiness test).
+    if named_args.is_empty() {
+        return Vec::new();
+    }
+    let site = std::panic::Location::caller();
+    let mut covered = vec![false; params.len()];
+    for slot in covered.iter_mut().take(pos_count) {
+        *slot = true;
+    }
+    let mut errors = Vec::new();
+    for (arg_name, _) in named_args.iter() {
+        let reason = match params.iter().position(|(s, _)| same_label(kb, *s, *arg_name)) {
+            None => Some(format!("names no parameter of {subject}")),
+            Some(idx) if covered[idx] => Some("binds a parameter already given".to_string()),
+            Some(idx) => {
+                covered[idx] = true;
+                None
+            }
+        };
+        if let Some(reason) = reason {
+            errors.push(TypeError::Other {
+                site,
+                span,
+                context: TypeErrorContext::OperationArgument { op_name: callee, param: *arg_name },
+                expected: "a named argument matching a distinct unbound parameter".to_string(),
+                actual: format!(
+                    "named argument '{}' {}",
+                    short_name_of(kb.resolve_sym(*arg_name)),
+                    reason
+                ),
+            });
+        }
+    }
+    errors
+}
+
 /// WI-426: rebuild an operation-call `Apply` with its NAMED arguments reordered
 /// into the callee's PARAMETER declaration order. Eval binds arguments
 /// positionally — `start_apply` discards the labels and appends the named args
@@ -18260,6 +18389,53 @@ fn extract_function_type_parts<V: TermView>(
     let (_, result, eff) = arrow_parts(kb, fn_type)?;
     let effects = eff.map(|row| effect_row_present_values(kb, &row)).unwrap_or_default();
     Some((result, effects))
+}
+
+/// WI-783: the DECLARED PARAMETER LIST of a callable type — `(acc: T, x: U)` of
+/// `(acc: T, x: U) -> R` — as `(binder-name, type)` pairs in declaration order.
+/// This is what resolves a NAMED argument at a function-VALUE application
+/// (`f(x: 10, acc: 3)`) to a parameter slot, the way a named operation's
+/// `op.params` does for a direct call.
+///
+/// `None` means "this callee's type records no parameter names", which is NOT
+/// the same as "no parameters" (`Some(vec![])`) — the caller must then reject
+/// named arguments rather than guess, since it can neither order them nor tell a
+/// valid label from a typo. Three shapes deliberately yield `None`:
+///
+///  - A ONE-parameter arrow. `(v: Int64) -> Int64` extracts its param as the
+///    bare `Int64`: the binder name `v` is dropped when the arrow type is built,
+///    so it is simply not recoverable here (measured — this is a property of the
+///    arrow representation, not of this function).
+///  - `Function[A, B, E]`. WI-775 settled that `A` is the ARGUMENT's data type —
+///    what flows to `apply(f, x: A)` — so a named-tuple `A` is ONE tuple-typed
+///    argument, not a two-slot parameter list. Reading binder names off it would
+///    re-conflate the two positions WI-775 split apart.
+///  - A param that is not a named tuple at all (a type variable, a projection).
+///
+/// Gating on [`TypeExtractor::Arrow`] — not on [`arrow_parts`], which maps both
+/// spellings onto one `param` — is what keeps the `Function` case out.
+///
+/// KNOWN AMBIGUITY (pre-existing, not introduced here): an arrow taking ONE
+/// tuple-typed parameter carries the same `named_tuple` param as an arrow taking
+/// that tuple's components as a parameter LIST, so this reads the former as an
+/// n-slot list. Such a call was already ill-formed — eval hands the callee n
+/// arguments where it takes 1 and raises an arity mismatch — so the misreading
+/// changes the ORDER of a call that fails either way, never the result of one
+/// that succeeds. Distinguishing them needs the arrow representation to record
+/// its parameter list separately from its parameter's type; the `Function[A, B]`
+/// spelling of the same shape is already unambiguous and is excluded above.
+fn arrow_declared_param_list<V: TermView>(
+    kb: &KnowledgeBase,
+    fn_type: &V,
+) -> Option<Vec<(Symbol, Value)>> {
+    let param = match extract_type(kb, fn_type) {
+        TypeExtractor::Arrow { param, .. } => param,
+        _ => return None,
+    };
+    match extract_type(kb, &param) {
+        TypeExtractor::NamedTuple(fields) => Some(fields),
+        _ => None,
+    }
 }
 
 /// The param type of a callable (`arrow` or `Function[A, B, E]`), used to type a
