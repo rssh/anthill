@@ -12640,14 +12640,36 @@ fn match_candidate_against_goal(
                 return false;
             }
         };
-        if c_base != p_base {
+        // WI-768: this arm requires ONE base, and that is exactly the question
+        // [`BindingKeyMatch::for_bases`] answers — so derive the guard and the key-match
+        // mode from a single canonical comparison. `Label` here means "same sort", which
+        // arm (2) demands; `Identity` means the bases are different sorts, which it
+        // rejects. Reading the mode rather than hardcoding `Label` keeps the gate in the
+        // one place that owns it (a caller must not pick a mode by hand).
+        //
+        // This also WIDENS the old raw `c_base != p_base`: the same sort interned under
+        // two copies is one base, as arm (2.5) just below already reads it
+        // (`canonical_sort_sym`), so raw `!=` had the two arms disagreeing about sort
+        // identity inside one function. MEASURED INERT on the corpus — of 265 arm-(2)
+        // calls, 235 differ in base and EVERY one is `same_sort_canonical == false`
+        // (`MutableStack` vs `List`, …), i.e. genuinely different sorts. Nothing in the
+        // corpus discriminates the widening; it ships on consistency with the
+        // sort-identity rule (WI-672), NOT on a failing case, and no test covers it.
+        let key_match = BindingKeyMatch::for_bases(kb, c_base, p_base);
+        if key_match != BindingKeyMatch::Label {
             return false;
         }
         *specificity = specificity.saturating_add(1);
+        // WI-768: one base ⟹ compare binding KEYS by the shared rule. The two producers
+        // spell one slot differently — a WRITTEN `provides Spec[T = Relation[T = .., E =
+        // ..]]` keys `T`/`E` BARE (loader `reintern(p.last())`), a relation VALUE from a
+        // rule citation keys them CANONICALLY (`anthill.prelude.Relation.T`) — and raw
+        // identity missed that pair and DROPPED the provider, so dispatch disagreed with
+        // the typer that WI-764 had already taught to accept it.
         // Each candidate binding must find a matching per-call binding.
         for (k, c_val) in &c_bindings {
-            let p_val = match p_bindings.iter().find(|(kk, _)| kk == k).map(|(_, v)| *v) {
-                Some(v) => v,
+            let p_val = match binding_for_param(kb, &p_bindings, *k, key_match) {
+                Some(v) => *v,
                 None => return false,
             };
             if !match_candidate_against_goal(
@@ -12809,14 +12831,30 @@ fn values_structurally_equal(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
         (Some(x), Some(y)) if x == y => {
             // Check nested bindings if parametric.
             match (parametric_value_parts(kb, a), parametric_value_parts(kb, b)) {
-                (Some((_, ab)), Some((_, bb))) => {
+                (Some((ab_base, ab)), Some((bb_base, bb))) => {
                     if ab.len() != bb.len() {
                         return false;
                     }
+                    // WI-768: the second raw-identity binding lookup of the same defect
+                    // class as arm (2) above — enrolled in the shared rule so the two
+                    // cannot drift apart the way `unify_parameterized_view` and
+                    // `parameterized_compatible_view` did between WI-726 and WI-764.
+                    //
+                    // UNDEMONSTRATED, unlike arm (2), and deliberately shipped without a
+                    // test rather than with one that passes for another reason. Both sides
+                    // here are PER-CALL values (`impl_subst` only ever stores the per-call
+                    // side), so they normally share a producer and therefore a spelling.
+                    // The obvious probe — an impl param bound twice, meeting a
+                    // citation-typed argument at one occurrence and an annotation-typed one
+                    // at the other — was built and did NOT discriminate: it dispatches
+                    // identically with this lookup reverted to raw identity (the two values
+                    // reach the `a == b` fast path above). If a case is ever found, it
+                    // presents as arm (2) did — a key miss reads as "these two bindings of
+                    // one param disagree" and drops the candidate.
+                    let key_match = BindingKeyMatch::for_bases(kb, ab_base, bb_base);
                     ab.iter().all(|(k, av)| {
-                        bb.iter()
-                            .find(|(kk, _)| kk == k)
-                            .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
+                        binding_for_param(kb, &bb, *k, key_match)
+                            .is_some_and(|bv| values_structurally_equal(kb, *av, *bv))
                     })
                 }
                 _ => true,
@@ -20255,19 +20293,40 @@ impl BindingKeyMatch {
 /// = .., E = ..]` op-return annotation did not conform against the same relation cited from
 /// a rule). Those two now share one rule.
 ///
-/// NOT yet enrolled — two sites of the same shape (a same-base guard, then a raw-identity
-/// binding lookup), each left alone because enrolling it is a behavior change in a subsystem
-/// WI-764 had no failing case for. Both are filed, with the measurements that placed them:
+/// WI-768 enrolled DISPATCH into this same rule — `match_candidate_against_goal`'s arm-(2)
+/// binding lookup and `values_structurally_equal`'s nested one. Before that, dispatch and
+/// the typer DISAGREED about the canonical-vs-bare pair: a spec-op call on a rule citation
+/// type-checked (WI-764 taught conformance to accept it) and then silently failed to
+/// dispatch — the provider was dropped, so the call was never pinned to it.
 ///
-/// * `match_candidate_against_goal` (WI-768) — dispatch. On a key miss it drops the
-///   candidate, so the typer and dispatch now DISAGREE about the canonical-vs-bare pair:
-///   a call can type-check here and then fail to dispatch. Not free to enrol — the
-///   `specificity` bump beside it means enrolling moves overload ORDERING too.
+/// The `specificity` bump beside that lookup meant enrolling could move overload ORDERING
+/// as well as acceptance, so WI-764 deferred it. MEASURED rather than assumed: over the
+/// `wi_tests` corpus all 116 arm-(2) binding lookups already resolved on RAW identity
+/// (`raw=true label=true`, every one), so no candidate changes from dropped to kept and
+/// every candidate's specificity score is unchanged. The ordering effect is nil for
+/// existing code; it appears only for the newly-accepted pair, where the alternative was
+/// no candidate at all. Two providers of one spec for one carrier — the shape where a
+/// changed score could flip a winner — is separately refused as an ambiguous witness.
+///
+/// STILL NOT enrolled — two sites. Enumerated in full deliberately: WI-726 and WI-764
+/// diverged precisely because `0f31beb2` had consolidated that pair *to keep them in
+/// lockstep* and the doc then claimed a lockstep that no longer held. Keep this list
+/// honest, or the rule drifts again.
+///
 /// * `combine_parameterized_same_base` (WI-769) — the LUB/GLB lattice. On a key miss it
 ///   returns the bare sort / `Nothing`, silently dropping the schema. Measured INERT rather
 ///   than live: five if-join probes could not demonstrate it (branch typing checks each arm
 ///   against the declared return instead of joining), and instrumentation shows its binding
 ///   matcher is executed by ZERO tests in the corpus.
+/// * `goals_equal` — cycle detection over two `SortGoal`s. This one does NOT carry the
+///   WI-768 bug (it already matches by `same_label`, so it bridges the bare-vs-canonical
+///   pair), but it is a fourth hand-rolled spelling of this rule and DIFFERS from it: it is
+///   label-ONLY, so it lacks the identity-first pass that makes an exact key beat a merely
+///   same-labelled one, and it puts `same_label`'s `debug_assert` on the path
+///   unconditionally instead of only after an identity miss. Its `spec_sort` guard already
+///   establishes `Label`, so enrolling it is `binding_for_param(kb, &b.bindings, *k,
+///   BindingKeyMatch::Label)` — left alone here only because changing its tie-breaking is a
+///   behavior change outside WI-768's demonstrated defect.
 fn binding_for_param<'a, T>(
     kb: &KnowledgeBase,
     bindings: &'a [(Symbol, T)],

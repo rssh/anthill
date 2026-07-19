@@ -707,3 +707,6 @@ mod wi458_head_span_occurrence_test;
 
 #[path = "include/wi764_relation_binding_order_test.rs"]
 mod wi764_relation_binding_order_test;
+
+#[path = "include/wi768_dispatch_binding_key_test.rs"]
+mod wi768_dispatch_binding_key_test;
