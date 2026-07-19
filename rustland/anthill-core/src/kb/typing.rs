@@ -2284,7 +2284,11 @@ fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
 /// name matches `field_name`, unify the component's inferred `ty` against it (binding a free
 /// element var — `h : ?_` ⟹ `xs.T`) and return the σ-walked result; otherwise return `ty`
 /// unchanged. Matched by short name so the `_1`/`_2` positional convention and any declared
-/// names line up regardless of symbol identity (mirrors `named_tuple_compatible`).
+/// names line up regardless of symbol identity. NOTE (WI-775): this is a hint-threading
+/// no-op on a miss, NOT a type relation, so it stays short-name-keyed across BOTH
+/// conventions — do not read it as evidence that `_1`/`_2` and declared names line up in
+/// the RELATIONS. They no longer do: `named_tuple_compatible` aligns data tuples strictly
+/// by name, and the positional lineup lives only in [`arrow_params_compatible`].
 fn thread_expected_tuple_field(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -25272,6 +25276,17 @@ fn abstracting_return_error(
     // them. Tuple components are the only gap here: a NOMINAL parameterized return
     // abstracting a type-arg (`-> Box[T = KVStore]` from a body `Box[T = MemStore]`)
     // is rejected even earlier, as an invariant-param TYPE MISMATCH.
+    //
+    // WI-775, on the `None` arm below: `align_named_tuple_fields` returning `None`
+    // (shapes don't align) collapses through `.and_then` into `None`, which this
+    // function's contract reads as "no escape found" — a fail-open. It cannot fire,
+    // and the reason is worth stating because it is NOT local: return CONFORMANCE
+    // runs first and is `named_tuple_compatible(actual = body, expected = ret)` —
+    // the SAME alignment, SAME `ByName` mode, SAME argument order — so any pair
+    // this gate could not align was already rejected. The `ByName` narrowing makes
+    // the arm strictly more reachable than before, so if conformance ever widens
+    // (or stops sharing this alignment), the `None` arm must be split into
+    // "aligned, no escape" vs "could not align" rather than left silent.
     if named_tuple_field_types(kb, body_ty).is_some()
         && named_tuple_field_types(kb, ret_ty).is_some()
     {
