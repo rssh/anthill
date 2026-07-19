@@ -2203,6 +2203,24 @@ impl<'a> Converter<'a> {
             self.err("tuple type cannot mix positional and named fields", node);
         }
 
+        // WI-766: a lone POSITIONAL component is `(A)`, which is not a type — a
+        // single parenthesised type is neither grouping nor a 1-tuple (spec §4.5).
+        // The grammar admits it because one production now serves both tuple types
+        // and arrow parameter lists, where `(A) -> B` is legitimate; that list is
+        // walked by `convert_arrow_type` and never reaches here, so rejecting it in
+        // this function scopes the rule to TYPE position exactly.
+        //
+        // Named is the writable one-component form: `(a: A)` says something `A`
+        // does not, because the name is the field label.
+        if positional.len() == 1 && named.is_empty() {
+            self.err(
+                "a single parenthesized type is not a type: `(A)` is neither grouping nor a \
+                 one-component tuple — write the type itself as `A`, or name the component \
+                 as `(a: A)` if a one-component tuple is intended",
+                node,
+            );
+        }
+
         if !positional.is_empty() {
             // Desugar positional to _1, _2, _3, ...
             for (i, ty) in positional.into_iter().enumerate() {
@@ -2215,7 +2233,12 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_arrow_type(&mut self, node: Node) -> TypeExpr {
-        // Params are inside the arrow_params node (via "params" field)
+        // WI-766: the "params" field is a `tuple_type` node — an arrow's parameter
+        // list and a tuple type are one production. Walking it here rather than
+        // calling `convert_tuple_type` is what keeps the two readings apart after
+        // the grammar stopped distinguishing them: a lone positional component is
+        // a legitimate parameter list (`(A) -> B`) but not a type (`(A)`), and only
+        // the type reading is rejected, in `convert_tuple_type`.
         let params_node = self.field(node, "params");
         let params: Vec<(Option<Symbol>, TypeExpr)> = if let Some(pn) = params_node {
             let mut cursor = pn.walk();
@@ -2236,11 +2259,15 @@ impl<'a> Converter<'a> {
                     }
                     // WI-763: a parameter's `: T` is a TYPE, and a literal is
                     // not one (there are no singleton types) — so the denoted
-                    // component that tuple TYPES admit is refused here. It
-                    // reaches this far only because `arrow_params` and
-                    // `tuple_type` must share one component symbol to stay
-                    // fork-free; the one-parameter `(a: "x") -> B` is already a
-                    // parse error, so only the multi-parameter form lands here.
+                    // component that tuple TYPES admit is refused here.
+                    //
+                    // WI-766: this arm now carries the WHOLE rejection. It used to
+                    // see only multi-parameter lists, because a `prec`'d one-
+                    // component denoted arm made `(a: "x") -> B` a parse error; that
+                    // arm is gone with the ambiguity it resolved, so single-parameter
+                    // denoted lists arrive here too and get the located message
+                    // instead of a bare syntax error — which is what WI-763 wanted
+                    // for this case in the first place.
                     "denoted_field_decl" => {
                         let name = self
                             .field(child, "name")

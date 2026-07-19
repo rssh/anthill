@@ -150,3 +150,47 @@ end
          `Arrow(param: …, effects: EffectsRows(…))` blob",
     );
 }
+
+// ── WI-766: a one-component tuple parameter must survive the round trip ──────
+
+/// An arrow whose parameter is a ONE-component named tuple has to keep its own
+/// parens, or it prints to text that reads back as a different type.
+///
+/// The loader reads a single arrow parameter by its TYPE and drops the label, so
+/// the source `(a: Int64) -> Bool` is `arrow(param = Int64)`. Printing
+/// `arrow(param = (a: Int64))` without the outer parens yields that same text —
+/// two distinct types collapsing onto one spelling. WI-766 made this reachable by
+/// admitting `(a: A)` as a written type, so `((a: Int64)) -> Bool` now parses.
+#[test]
+fn wi766_one_component_tuple_param_keeps_its_parens() {
+    let mut kb = fresh_kb();
+    let int = kb.make_sort_ref_by_name("Int64");
+    let b = kb.make_sort_ref_by_name("Bool");
+    let a_sym = kb.intern("a");
+    let one = kb.make_named_tuple_type(&[(a_sym, int)]);
+    let arrow = kb.make_arrow_type(one, b, &[]);
+    assert_eq!(
+        TermPrinter::new(&kb).print_term(arrow),
+        "((a: Int64)) -> Bool",
+        "a 1-component tuple param must print double-parenthesised; the single-paren \
+         form re-parses as the scalar-param arrow `(a: Int64) -> Bool`",
+    );
+}
+
+/// CONTROL for the above: arity two is NOT ambiguous — a multi-parameter list *is*
+/// the named tuple — so its output must be unchanged by the WI-766 special case.
+/// Without this, a fix that parenthesised every tuple param would pass silently.
+#[test]
+fn wi766_multi_param_arrow_printing_is_unchanged() {
+    let mut kb = fresh_kb();
+    let int = kb.make_sort_ref_by_name("Int64");
+    let b = kb.make_sort_ref_by_name("Bool");
+    let a_sym = kb.intern("a");
+    let bb_sym = kb.intern("b");
+    let two = kb.make_named_tuple_type(&[(a_sym, int), (bb_sym, b)]);
+    let arrow = kb.make_arrow_type(two, b, &[]);
+    assert_eq!(
+        TermPrinter::new(&kb).print_term(arrow),
+        "(a: Int64, b: Bool) -> Bool",
+    );
+}

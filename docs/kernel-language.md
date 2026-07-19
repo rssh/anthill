@@ -322,10 +322,11 @@ Type ::= Name                                        -- simple type reference
        | TupleType                                    -- tuple type: (Int64, String), (a: Int64, b: String), ()
        | ArrowType                                    -- arrow type (function sort)
 
-ArrowType ::= '(' ArrowParams ')' '->' Type              -- pure function
-            | '(' ArrowParams ')' '->' Type '@' Type      -- effectful function
+ArrowType ::= TupleType '->' Type                        -- pure function
+            | TupleType '->' Type '@' Type               -- effectful function
 
-ArrowParams ::= (TupleTypeArg (',' TupleTypeArg)*)?       -- reuses TupleTypeArg: Type or Name ':' Type
+-- The parameter list IS a TupleType (WI-766) -- one production, so `->` never
+-- has to be predicted at the closing paren.
 ```
 
 **Arrow types** describe function-sorted values. `(A) -> B` is the sort of pure functions from `A` to `B`. The parameter list is always parenthesized, disambiguating `->` in type position from `->` in operation return type position. Parameters can be named (using the same syntax as named tuple elements):
@@ -389,8 +390,8 @@ Additional types are introduced via `sort` declarations (unspecified, type alias
 ```
 -- Tuple types (in type position)
 TupleType ::= '(' ')'                                              -- unit
-            | '(' TupleTypeArg ',' TupleTypeArg (',' TupleTypeArg)* ')'  -- 2+ elements
-            | '(' Name ':' Literal ')'                             -- 1 denoted element
+            | '(' TupleTypeArg ')'                                 -- 1 element (named, as a type)
+            | '(' TupleTypeArg ',' TupleTypeArg (',' TupleTypeArg)* [','] ')'  -- 2+ elements
 
 TupleTypeArg ::= Type | Name ':' Type | Name ':' Literal
 
@@ -399,11 +400,23 @@ TupleLiteral ::= '(' ')'                                           -- unit value
                | '(' FnArg ',' FnArg (',' FnArg)* ')'              -- 2+ elements
 ```
 
-**Disambiguation:** `(a)` with no comma is a parenthesized expression (grouping). `(a, b)` with a comma is a tuple. `Name(...)` preceded by a name is function application. No lookahead needed.
+**Disambiguation (term position):** `(a)` with no comma is a parenthesized expression (grouping). `(a, b)` with a comma is a tuple. `Name(...)` preceded by a name is function application. No lookahead needed.
 
-**Denoted components** (`Name ':' Literal`, WI-763) — a component may be a *constant standing in type position*, which lowers to a `denoted` exactly as a literal type **argument** does (`Vector[Int64, 3]`; see "value-in-type" below). This is what makes a projection's keep spec writable: `Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]` maps each result key to its source column's *name*, and a name reaches type position only as a denoted, since there are no singleton types. Two asymmetries follow from the surface grammar rather than from the type system, and are deliberate:
+**Disambiguation (type position)** needs no lookahead either, because a parenthesized type list is *one* construct: `TupleType` is also an arrow's parameter list (WI-766). `( … )` is read as a tuple type unconditionally, and a following `->` simply makes it the parameter list of an arrow. Nothing has to be decided at the `)`.
 
-- A **one-component** tuple type is written only in this denoted form. A general `(a: A)` is exactly an arrow parameter list, distinguishable only by lookahead past the `)` for `->`; `(a: "x")` is not, since no parameter's declared type is a literal.
+Which readings are *valid* is then a separate question from how they parse, and two forms parse but are not types:
+
+- A bare `(A)` is a parameter list (`(A) -> B`) but **not** a type. A single parenthesized type is neither grouping nor a 1-tuple; written where a type is expected it is an error.
+- A denoted component is a tuple component but **not** a parameter: `(a: "x") -> B` is an error, since a parameter's declared type is a type and a literal is not one.
+
+Both are reported where they occur, with the offending construct named — a located error rather than a syntax error, which is the reason the grammar admits them at all.
+
+A one-component tuple type must therefore name its component: `(a: A)` is a 1-tuple, and the name is what carries the field label, so the named form is the only one that says something a bare `A` does not.
+
+Note the surface is **not** symmetric between types and terms here: `TupleLiteral` has no one-element form, since `(a: 1)` in term position is grouping applied to a named argument. So a one-component tuple type has no arity-matching literal; its inhabitants arrive by width subtyping from a wider tuple (`(a: 1, b: 2)` conforms to `(a: Int64)`).
+
+**Denoted components** (`Name ':' Literal`, WI-763) — a component may be a *constant standing in type position*, which lowers to a `denoted` exactly as a literal type **argument** does (`Vector[Int64, 3]`; see "value-in-type" below). This is what makes a projection's keep spec writable: `Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]` maps each result key to its source column's *name*, and a name reaches type position only as a denoted, since there are no singleton types. One asymmetry follows from the surface grammar rather than from the type system, and is deliberate:
+
 - A literal is **not** admissible where a component is always a type: an entity field declaration (`entity person(name: "foo")`) or an arrow parameter (`(a: "x") -> B`) is an error.
 
 **All-or-nothing naming:** either all elements have explicit names or none do. Mixing `(a: Int64, String)` is an error.
@@ -1341,8 +1354,12 @@ Two properties are load-bearing:
 
 **1-collapse.** A single-member projection yields the scalar `x.m` (not a
 1-field tuple) — arity-based, so a single *rename* `x.(a: f)` also collapses to
-`x.f` (the label has no multi-column tuple to key, and is dropped). Write a
-1-field record directly as `(a: x.f)` if you need one.
+`x.f` (the label has no multi-column tuple to key, and is dropped). Note there is
+no one-element tuple *literal* to fall back on (§4.5): the one-component **type**
+`(a: A)` is writable, but no term spells a matching value directly, so a computed
+one-column result is always the bare scalar. Projections and the tuple type
+therefore disagree at arity one — a `Without`/`Project` residual with one column
+left has type `A`, not `(a: A)`.
 
 **Grammar note.** The opener is a single fused `.(` token (a `.` immediately
 followed by `(`, no interior space). `.(` is otherwise-free syntax, so the
@@ -2110,9 +2127,16 @@ Field       ::= Name ':' Type
 Type        ::= Name                                           -- simple: Account, Int64
               | Name '[' SortBinding (',' SortBinding)* ']'    -- inline instantiation: List[T=Int64]
               | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}+ ?
-              | '(' ArrowParams ')' '->' Type                    -- arrow type: (A) -> B
-              | '(' ArrowParams ')' '->' Type '@' Type          -- effectful arrow: (A) -> B @ E
-ArrowParams ::= (TupleTypeArg (',' TupleTypeArg)*)?             -- Type or Name ':' Type
+              | TupleType                                        -- tuple type: (), (a: A), (A, B)
+              | TupleType '->' Type                              -- arrow type: (A) -> B
+              | TupleType '->' Type '@' Type                     -- effectful arrow: (A) -> B @ E
+TupleType   ::= '(' ')'                                          -- unit
+              | '(' TupleTypeArg ')'                             -- 1 element
+              | '(' TupleTypeArg ',' TupleTypeArg (',' TupleTypeArg)* [','] ')'  -- 2+ elements
+TupleTypeArg ::= Type | Name ':' Type | Name ':' Literal
+-- An arrow's parameter list IS a TupleType (WI-766); there is no separate
+-- ArrowParams production. A lone positional element `(A)` parses, but is a
+-- parameter list only -- as a TYPE it is an error.
 
 Rule        ::= DescriptionBlock*
                   'rule' [Name ':'] Head [':-' RuleBody]

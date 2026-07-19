@@ -567,3 +567,39 @@ end
     assert!(all.contains("enum Keep") && all.contains("enum Drop"),
         "default (None) emits all:\n{all}");
 }
+
+// ── One-component tuple type keeps its arity (WI-766) ────────────
+
+/// Rust reads `(T)` as plain `T`, so rendering a 1-tuple without the trailing comma
+/// SILENTLY drops the tuple. WI-766 made a one-component named tuple type writable
+/// (`-> (a: Int64)`), which is what makes this reachable from source.
+///
+/// The controls are the point: arity 0 and arity 2 must be unchanged, so a fix that
+/// blanket-appended a comma would fail here rather than pass quietly.
+#[test]
+fn wi766_one_component_tuple_type_keeps_its_arity() {
+    let out = gen(r#"sort S {
+  operation one() -> (a: Int64)
+}
+"#);
+    assert!(
+        out.contains("(i64,)"),
+        "a one-component tuple must render as the Rust 1-tuple `(i64,)`; `(i64)` is just \
+         `i64` and loses the tuple. output:\n{out}"
+    );
+
+    let unit = gen(r#"sort S {
+  operation nil_op() -> ()
+}
+"#);
+    assert!(unit.contains("()"), "control: unit stays `()`. output:\n{unit}");
+
+    let pair = gen(r#"sort S {
+  operation two() -> (a: Int64, b: String)
+}
+"#);
+    assert!(
+        pair.contains("(i64, String)"),
+        "control: a 2-tuple must be unchanged. output:\n{pair}"
+    );
+}

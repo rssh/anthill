@@ -107,8 +107,10 @@ end
 }
 
 /// The ONE-component keep spec — `Keep = (who: "name")` — the ticket's verbatim acceptance
-/// shape, and the form the grammar admits as its own `tuple_type` alternative (a general
-/// one-component `(a: A)` stays unwritable: it is `arrow_params`' single form).
+/// shape, and the form the grammar admits as its own `tuple_type` alternative. (At the time
+/// this was written the general one-component `(a: A)` stayed unwritable, being
+/// the arrow parameter list's single form; WI-766 later admitted that too, by merging the
+/// parameter list and the tuple type into one production so the ambiguity disappeared.)
 ///
 /// A single kept column 1-COLLAPSES to its element type, exactly as any relation schema does,
 /// so this reduces to `String` and not to a one-field tuple. That collapse is why the declared
@@ -260,7 +262,7 @@ end
     );
 }
 
-/// The other context that shares the component symbol. `arrow_params` and `tuple_type` have a
+/// The other context that shares the component symbol. The arrow parameter list and `tuple_type` have a
 /// common prefix and are told apart only by the `->` after the `)`, so they must share ONE
 /// component symbol or every named param list becomes a GLR fork. The denoted component
 /// therefore rides into arrow params syntactically, and is refused at CONVERSION — with a
@@ -317,7 +319,7 @@ end
     );
 }
 
-/// The same comment hazard in the sibling walk: `arrow_params`. Its fallback converts any
+/// The same comment hazard in the sibling walk: the arrow parameter list. Its fallback converts any
 /// unlisted child as a positional parameter type, so a comment inside a parameter list becomes
 /// a bogus parameter.
 #[test]
@@ -336,20 +338,30 @@ end
     );
 }
 
-/// …and the one-parameter form of the same mistake, which the grammar settles on its own: the
-/// `prec` that picks `tuple_type` for `( ident : <literal> )` leaves `(a: "x") -> Int64` with
-/// no arrow-params reading at all. Pinned because that precedence is the one place this change
-/// resolves an overlap statically rather than by keeping both readings alive.
+/// …and the one-parameter form of the same mistake. WI-763 settled this in the GRAMMAR, with
+/// a `prec` that picked `tuple_type` for `( ident : <literal> )` and so left `(a: "x") -> Int64`
+/// with no arrow-params reading at all. WI-766 unified the parameter list and the tuple type
+/// into one production, which dissolved the overlap that precedence existed to resolve — so it
+/// is gone, and this now takes the SAME route as the multi-parameter case above: a located
+/// diagnostic from `convert_arrow_type`.
+///
+/// That is the outcome WI-763 wanted here and could not get; its own note called a located
+/// "not a type" better than a bare syntax error, and the one-parameter case was the exception.
+/// Asserting the message rather than `is_err()` is what pins the improvement — both mechanisms
+/// reject, only one of them explains.
 #[test]
-fn wi763_one_parameter_arrow_with_a_literal_is_a_parse_error() {
+fn wi763_one_parameter_arrow_with_a_literal_is_rejected_with_a_located_message() {
     let src = r#"
 namespace test.wi763arrowone
   import anthill.prelude.Int64
   operation takes_fn(f: (a: "x") -> Int64) -> Int64
 end
 "#;
+    let errs = parse::parse(src)
+        .expect_err("`(a: \"x\") -> Int64` has no valid reading — a param's type is never a literal");
     assert!(
-        parse::parse(src).is_err(),
-        "`(a: \"x\") -> Int64` has no valid reading — a param's type is never a literal",
+        errs.iter().any(|e| e.message.contains("declared with a constant for its type")),
+        "the one-parameter case must get the same explanatory diagnostic as the multi-parameter \
+         one, not a bare syntax error; got: {errs:?}",
     );
 }

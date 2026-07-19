@@ -1469,53 +1469,58 @@ module.exports = grammar({
     // Arrow type: (A) -> B  or  (a: A, b: B) -> C  or  () -> A
     //   or  (A) -> B @ E         (single effect)
     //   or  (A) -> B @ {E1, E2}  (effect set, mirrors operation `effects`)
-    // Uses arrow_params (named, not hidden) to avoid field-bleeding on parens.
+    //
+    // WI-766: the parameter list IS a `tuple_type` — there is no separate
+    // `arrow_params`. A parameter list and a tuple type are the same surface, and
+    // giving them two productions is what used to make `( name : Type )` ambiguous:
+    // the parser had to pick a production at the `)`, one token before the `->`
+    // that distinguishes them, which is outside LR(1) and forced a declared GLR
+    // conflict. Sharing ONE production defers the choice entirely — `( … )` reduces
+    // to `tuple_type` unconditionally, and a following `->` is then an ordinary
+    // shift. MEASURED against the two-production form with its conflict: 3514 parse
+    // states vs 3523, a parser.c smaller than the pre-WI-766 baseline, and ZERO
+    // forks on every shape (the conflict version added 24 forked steps corpus-wide).
+    //
+    // What this moves rather than removes: a bare `(A)` now PARSES, as a
+    // one-positional-component tuple. It is not a type (spec §4.5), and
+    // `convert_tuple_type` rejects it with a located message — the same
+    // parse-permissive / convert-strict split WI-763 chose for a literal in an
+    // arrow parameter, where a located "not a type" beats a bare syntax error.
     arrow_type: $ => prec.right(seq(
-      field('params', $.arrow_params),
+      field('params', $.tuple_type),
       '->',
       field('return_type', $._type),
       optional(seq('@', field('effect', $._effect_set))),
     )),
 
-    arrow_params: $ => choice(
-      seq('(', ')'),                                                // () -> A
-      seq('(', $._tuple_type_arg, ')'),                             // (A) -> B  /  (a: A) -> B
-      seq('(', $._tuple_type_arg, ',', commaSep1($._tuple_type_arg), ')'),  // (A, B) -> C
-    ),
-
+    // A parenthesised type list. This is BOTH the tuple type and (per
+    // `arrow_type`) an arrow's parameter list — one production, so nothing has to
+    // be decided at the `)`.
+    //
+    // The single-component arm is therefore fully general: `(A)`, `(a: A)` and
+    // `(a: "x")` all reduce here. WI-763's separately-`prec`'d denoted arm is gone
+    // with the ambiguity that motivated it — with one production there is no rival
+    // reading to out-rank, so no precedence is needed and none is scoped.
+    //
+    // Two of these are not TYPES, and both are refused with a located message
+    // rather than by the grammar (see `convert_tuple_type` / `convert_arrow_type`):
+    // a lone positional `(A)` is grouping-shaped and means nothing in type
+    // position, and a denoted component is a value where a parameter needs a type.
     tuple_type: $ => choice(
       seq('(', ')'),
+      seq('(', $._tuple_type_arg, ')'),
       seq('(', $._tuple_type_arg, ',', commaSep1($._tuple_type_arg), optional(','), ')'),
-      // WI-763: the ONE-component form, admitted only for the DENOTED shape —
-      // a one-entry keep spec (`Keep = (who: "name")`) is what a single-column
-      // projection's type needs. A general `(a: A)` is deliberately NOT added:
-      // that is exactly `arrow_params`' single form, and telling the two apart
-      // needs lookahead PAST the `)` for `->`, i.e. a GLR fork on every named
-      // arrow param list.
-      //
-      // `prec` and not a declared conflict: `( ident : <literal> )` overlaps
-      // `arrow_params`' single form (they share `_tuple_type_arg`), but that
-      // overlap is not a real ambiguity — a param's `: T` is a TYPE and a
-      // literal is not one, so the arrow reading is wrong for every input that
-      // reaches here. Deciding it statically costs nothing at parse time,
-      // where a declared conflict would fork the stack; and it makes the
-      // rejection of `(a: "x") -> B` a parse error at the arrow itself.
-      prec(1, seq('(', $.denoted_field_decl, ')')),
     ),
 
-    // A component of a tuple TYPE — and, by sharing this symbol, of an
-    // `arrow_params` list. The sharing is load-bearing: `arrow_params` and
-    // `tuple_type` have a common prefix (`(`, component, `,`, …) and are told
-    // apart only by the `->` that may follow the `)`, so giving them two
-    // component symbols makes that prefix ambiguous at every `,` — a GLR fork
-    // on ordinary param lists, which the shared symbol avoids.
+    // A component of a `tuple_type`, and so of an arrow parameter list too — they
+    // are the same production since WI-766, which is why this symbol no longer has
+    // to be shared deliberately: there is only one consumer.
     //
-    // WI-763: `denoted_field_decl` rides here for that reason, and is refused
-    // in an arrow param at CONVERSION (a param's `: T` is a type and a literal
-    // is not one) rather than by the grammar — a located "not a type" beats a
-    // bare syntax error. Note what is NOT widened: `field_decl` itself, which
-    // entity constructors use, so `entity person(name: "foo")` stays a parse
-    // error.
+    // WI-763: `denoted_field_decl` rides here, and is refused in an arrow param at
+    // CONVERSION (a param's `: T` is a type and a literal is not one) rather than
+    // by the grammar — a located "not a type" beats a bare syntax error. Note what
+    // is NOT widened: `field_decl` itself, which entity constructors use, so
+    // `entity person(name: "foo")` stays a parse error.
     _tuple_type_arg: $ => choice($._type, $.field_decl, $.denoted_field_decl),
 
     // WI-763: `person: "name"` — a named-tuple TYPE component whose component
