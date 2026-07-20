@@ -371,6 +371,11 @@ end
 /// hole in the arity child: the same program written non-generically
 /// (`positionally_spelled_two_parameter_callback_is_refused`) IS refused.
 ///
+/// TRACKED AS WI-792, as a second locus of the same family — that ticket's own
+/// case is the APPLICATION site (calling a function value), this one is the
+/// ARGUMENT-PASSING site. When it closes, this test SHOULD fail; replace it with
+/// a load-rejection assertion.
+///
 /// ROOT CAUSE, for whoever closes it: `validate_arg_against_param`
 /// (`kb/typing.rs`) gates on `resolved_type_is_ground` for BOTH sides, and a
 /// declared `(x: T, y: T) -> Int64` is non-ground while `T` is free, so the full
@@ -380,9 +385,13 @@ end
 ///
 /// Arity is the one component that check could always decide: it is a ground
 /// `Const(Int)` no matter how polymorphic the types are, so the groundness
-/// discipline that defers the rest does not apply to it. That is deliberately not
-/// done here — it also rejects programs that work today by eval's tuple spread,
-/// which is WI-784's and WI-792's territory, not this ticket's.
+/// discipline that defers the rest does not apply to it. It is deliberately not
+/// done here because it also refuses the DUAL — a 2-parameter op into a generic
+/// `(x: T) -> R` slot — which works today only because eval spreads a single
+/// POSITIONAL tuple argument. That is the same trade
+/// `two_parameter_operation_is_refused_for_a_tuple_argument_arrow` takes at the
+/// conformance rung, and it should be a stated decision there rather than a side
+/// effect here.
 #[test]
 fn known_gap_generic_callback_arrow_is_not_conformance_checked() {
     let src = r#"
