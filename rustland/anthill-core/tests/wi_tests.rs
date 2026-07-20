@@ -708,6 +708,9 @@ mod wi766_one_component_tuple_type_test;
 #[path = "include/wi775_positional_tuple_bridge_test.rs"]
 mod wi775_positional_tuple_bridge_test;
 
+#[path = "include/wi782_param_list_alignment_test.rs"]
+mod wi782_param_list_alignment_test;
+
 #[path = "include/wi783_function_value_named_args_test.rs"]
 mod wi783_function_value_named_args_test;
 

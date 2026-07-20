@@ -342,6 +342,28 @@ ArrowType ::= TupleType '->' Type                        -- pure function
 
 Arrow sorts associate to the right: `(A) -> (B) -> C` is `(A) -> ((B) -> C)`.
 
+**Parameter lists correspond slot by slot** (WI-782). A parameter list is
+*applied positionally*, so one arrow conforms to another only when the two lists
+have the **same arity** and their slots correspond by **position**. Binder names
+label slots and take no part in the correspondence: `(acc: A, x: B) -> R` accepts
+a value typed `(_1: A, _2: B) -> R` (which is what lets a named-binder callback
+take an operation's eta-expanded arrow) and equally one typed `(p: A, q: B) -> R`.
+Consequently a permuted list is compared slot-for-slot rather than matched up by
+name, so `(y: Bool, x: Int64) -> R` fails against `(x: Int64, y: Bool) -> R` on
+the component types; and a two-parameter value does not conform to a
+three-parameter one. Permutation and width are subtyping rules for *data* tuples
+whose components are read by NAME (§Field access, mode 3) — a positionally
+consumed list admits neither. (Note that a data tuple read by *destructuring* is
+also positional, per §"Destructuring is POSITIONAL, unlike access"; aligning such
+a reader by name is a known open defect.)
+
+> **Known gap.** The parameter list `(t: (a: A, b: B))` — one tuple-typed
+> parameter — and the parameter list `(a: A, b: B)` — two parameters — currently
+> build the *same* arrow type, because an arity-1 list is represented by its
+> parameter's type alone. Each is therefore accepted where the other is required,
+> and the mismatch surfaces as a run-time trap rather than a load error. Tracked
+> as WI-791.
+
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
 The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned positionally to the argument's own parameters (`Modify[c]` on the argument's param 0 matches `Modify[x]`/`-Modify[x]` on the callback's param 0); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous).
