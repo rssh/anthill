@@ -102,7 +102,11 @@ namespace anthill.reflect.typing_pass
   -- migrates this rule (and the synth/check arrow arms below) onto
   -- the EffectExpression row algebra. Kept here so the proposed
   -- structure stays documented until the migration lands.
-  rule wf_type(?G, arrow(param: ?P, result: ?R, effects: ?Es))
+  -- WI-791: `arity` is the parameter-list LENGTH, a ground count sibling of
+  -- `param`. It says how to read `param` (arity 1 ⇒ the sole parameter's type;
+  -- otherwise ⇒ a `named_tuple` of exactly `arity` slots) and is matched, not
+  -- checked, here — it carries no type to be well-formed.
+  rule wf_type(?G, arrow(param: ?P, result: ?R, effects: ?Es, arity: ?))
     :- wf_type(?G, ?P), wf_type(?G, ?R), wf_type_list(?G, ?Es)
   rule wf_type(?G, named_tuple(fields: ?Fs)) :- wf_type_fields(?G, ?Fs)
   rule wf_type(?, type_var(name: ?))    -- inference variable
@@ -170,7 +174,8 @@ namespace anthill.reflect.typing_pass
 
   -- LAM-SYNTH: annotated parameter only (unannotated ⇒ use LAM-CHECK).
   -- Building a lambda is pure; the body's effects sit in the arrow row.
-  rule synth(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb), nil)
+  -- Arity 1 (WI-791): the rule matches a lambda with ONE `var_pattern` binder.
+  rule synth(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb, arity: 1), nil)
     :- occurrence_term(?e, lambda_expr(param: var_pattern(name: ?x, type_ann: some(value: ?A)), body: ?body)),
        synth(var_bind(name: ?x, type: ?A, rest: ?G), ?body, ?B, ?Eb)
 
@@ -205,7 +210,7 @@ namespace anthill.reflect.typing_pass
 
   -- LAM-CHECK: check a lambda against an arrow type; ?A comes from the
   -- expected type, so an unannotated parameter is fine.
-  rule check(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb), nil)
+  rule check(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb, arity: 1), nil)
     :- occurrence_term(?e, lambda_expr(param: var_pattern(name: ?x, type_ann: ?), body: ?body)),
        check(var_bind(name: ?x, type: ?A, rest: ?G), ?body, ?B, ?Eb)
 

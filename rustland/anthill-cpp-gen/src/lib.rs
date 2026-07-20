@@ -3449,8 +3449,8 @@ fn lower_type(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId) -
             // spec-side concern with no C++ type witness, per proposal 002
             // §"Effect Subtyping"); a `named_tuple` → `std::tuple<…>`.
             match extract_type(kb, &TermIdView(type_term)) {
-                TypeExtractor::Arrow { param, result, .. } => {
-                    return lower_arrow_type(kb, ctx, &param, &result);
+                TypeExtractor::Arrow { param, result, arity, .. } => {
+                    return lower_arrow_type(kb, ctx, &param, &result, arity);
                 }
                 TypeExtractor::NamedTuple(fields) => {
                     ctx.requested_includes.borrow_mut()
@@ -3492,6 +3492,7 @@ fn lower_arrow_type(
     ctx: &CodegenContext,
     param: &Value,
     result: &Value,
+    arity: usize,
 ) -> Result<String, CppCodegenError> {
     let r = lower_type_value(kb, ctx, result)?;
 
@@ -3499,17 +3500,24 @@ fn lower_arrow_type(
     // unary arrow carries the single param type directly. Decode through the
     // same typed extractor so both forms (and both carriers) read uniformly.
     // A `named_tuple` param is taken to BE the parameter list (this is the
-    // WI-575 contract: "the param named_tuple becomes Args..."). Note the
-    // loader builds `(a: A, b: B) -> R` and a single tuple-typed parameter
-    // `((A, B)) -> R` into the identical `named_tuple([A, B])` param, so the
-    // two are indistinguishable here; the multi-arg reading wins (the common
-    // case), at the cost of flattening that rare single-tuple-parameter form.
-    let args: Vec<String> = match param {
-        Value::Term { id: t, .. } => match extract_type(kb, &TermIdView(*t)) {
-            TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
-            _ => vec![lower_type(kb, ctx, *t)?],
-        },
-        _ => vec![lower_type_value(kb, ctx, param)?],
+    // WI-575 contract: "the param named_tuple becomes Args...").
+    //
+    // WI-791: WHICH form this is is now read off the arrow's `arity` child
+    // rather than guessed. The loader used to build `(a: A, b: B) -> R` and the
+    // single tuple-typed parameter `((A, B)) -> R` into the identical
+    // `named_tuple([A, B])` param, so the multi-arg reading won and silently
+    // flattened the latter into a two-argument `std::function` the anthill side
+    // calls with one `std::tuple`. Arity one now lowers as ONE argument.
+    let args: Vec<String> = if arity == 1 {
+        vec![lower_type_value(kb, ctx, param)?]
+    } else {
+        match param {
+            Value::Term { id: t, .. } => match extract_type(kb, &TermIdView(*t)) {
+                TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
+                _ => vec![lower_type(kb, ctx, *t)?],
+            },
+            _ => vec![lower_type_value(kb, ctx, param)?],
+        }
     };
 
     ctx.requested_includes.borrow_mut()

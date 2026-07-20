@@ -1662,7 +1662,8 @@ fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool 
         TypeExtractor::Parameterized { base, bindings } => {
             base == sort_sym || bindings.iter().any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
         }
-        TypeExtractor::Arrow { param, result, effects } => {
+        // WI-791: `arity` is a COUNT, not a type — no sort can hide in it.
+        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
             type_mentions_sort(kb, &param, sort_sym)
                 || type_mentions_sort(kb, &result, sort_sym)
                 || type_mentions_sort(kb, &effects, sort_sym)
@@ -1702,7 +1703,7 @@ fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_
                     walk(kb, v, syms, out);
                 }
             }
-            TypeExtractor::Arrow { param, result, effects } => {
+            TypeExtractor::Arrow { param, result, effects, arity: _ } => {
                 walk(kb, &param, syms, out);
                 walk(kb, &result, syms, out);
                 walk(kb, &effects, syms, out);
@@ -2326,6 +2327,7 @@ fn make_arrow_value(
     param: &Value,
     result: &Value,
     effects: &[Value],
+    arity: usize,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
@@ -2368,7 +2370,10 @@ fn make_arrow_value(
         TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
     let param_child = value_to_type_child(kb, param);
     let result_child = value_to_type_child(kb, result);
-    let arrow = kb.make_arrow_occ(param_child, result_child, effects_child, span, owner);
+    // WI-791: `arity` is passed in, never read back off `param` — the caller is the
+    // only one that still knows whether a `named_tuple` param is a parameter LIST
+    // or one tuple-typed parameter.
+    let arrow = kb.make_arrow_occ(param_child, result_child, effects_child, arity, span, owner);
     Value::Node(arrow)
 }
 
@@ -2556,13 +2561,21 @@ fn rewrite_type_occ_deep(
     let mut changed = false;
     let rebuilt: Option<NodeKind> = match &occ.kind {
         NodeKind::Type(node) => match node {
-            TypeNode::Arrow { param, result, effects } => {
+            TypeNode::Arrow { param, result, effects, arity } => {
                 let (p, r, e) = (
                     child(kb, subst, param, ground, &mut changed),
                     child(kb, subst, result, ground, &mut changed),
                     child(kb, subst, effects, ground, &mut changed),
                 );
-                Some(NodeKind::Type(TypeNode::Arrow { param: p, result: r, effects: e }))
+                // WI-791: arity is TRANSPLANTED, not rewritten — it is a count, not a
+                // type, so σ / rigidify / δ-ground have nothing to say about it. This
+                // is the property the reverted in-slot encoding lacked.
+                Some(NodeKind::Type(TypeNode::Arrow {
+                    param: p,
+                    result: r,
+                    effects: e,
+                    arity: arity.clone(),
+                }))
             }
             TypeNode::Parameterized { base, bindings } => {
                 let b = child(kb, subst, base, ground, &mut changed);
@@ -2802,11 +2815,24 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         NodeKind::Type(TypeNode::EffectsRows { effects_expr }) => {
             format!("{{{}}}", type_child_display_name(kb, effects_expr))
         }
-        NodeKind::Type(TypeNode::Arrow { param, result, .. }) => format!(
-            "{} -> {}",
-            type_child_display_name(kb, param),
-            type_child_display_name(kb, result)
-        ),
+        // WI-791: carrier-paired with `type_display_name`'s `Arrow` arm, including
+        // the arity-1 param wrap — a declared arrow and an inferred one must render
+        // to the SAME string or a cross-carrier diagnostic reads as a mismatch.
+        NodeKind::Type(TypeNode::Arrow { param, result, arity, .. }) => {
+            let arity = match arity {
+                TypeChild::Ground(t) => const_usize_of(kb, *t),
+                TypeChild::Node(_) => None,
+            };
+            format!(
+                "{} -> {}",
+                display_arrow_param(
+                    type_child_display_name(kb, param),
+                    arity,
+                    type_child_is_named_tuple(kb, param),
+                ),
+                type_child_display_name(kb, result)
+            )
+        }
         // Mirrors `type_display_name`'s `named_tuple` arm: `(f: T, n: U)`. WI-361:
         // decode the `Value`-carried `List[TypeField]` and display each field type.
         NodeKind::Type(TypeNode::NamedTuple { fields }) => {
@@ -2863,6 +2889,46 @@ fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild) -> String {
     }
 }
 
+/// WI-791: decode a non-negative `Const(Int)` term — the arrow `arity` child's
+/// carrier. `None` for any other shape, which the display path treats as "arity
+/// not stated" (a `Function[A, B]`, or a term this cannot read).
+fn const_usize_of(kb: &KnowledgeBase, t: TermId) -> Option<usize> {
+    match kb.get_term(t) {
+        Term::Const(Literal::Int(n)) if *n >= 0 => Some(*n as usize),
+        _ => None,
+    }
+}
+
+/// WI-791: render an arrow's param slot for a DIAGNOSTIC. At arity one the slot
+/// holds the sole parameter's TYPE, so a TUPLE there needs its own
+/// parameter-list parens: without them `(t: (a: A, b: B)) -> R` and
+/// `(a: A, b: B) -> R` render to the same text, and a rejection reading
+/// `expected (p: A, q: B) -> R, got (a: A, b: B) -> R` restates the very
+/// confusion it is reporting.
+///
+/// `param_is_tuple` is a STRUCTURAL test, not "does the rendering start with a
+/// paren": a nested arrow param renders `((a: A, b: B)) -> R`, which also opens
+/// with `(`, and wrapping that would print `(((a: A, b: B)) -> R) -> S` where
+/// every other non-tuple arity-1 param takes no parens at all (`Int64 -> R`).
+fn display_arrow_param(rendered: String, arity: Option<usize>, param_is_tuple: bool) -> String {
+    if arity == Some(1) && param_is_tuple {
+        format!("({rendered})")
+    } else {
+        rendered
+    }
+}
+
+/// WI-791: is this type a `named_tuple`? The structural test
+/// [`display_arrow_param`] needs, carrier-agnostic over a [`TypeChild`].
+fn type_child_is_named_tuple(kb: &KnowledgeBase, child: &TypeChild) -> bool {
+    match child {
+        TypeChild::Ground(t) => matches!(type_head(kb, &TermIdView(*t)), TypeHead::NamedTuple),
+        TypeChild::Node(occ) => {
+            matches!(&occ.kind, NodeKind::Type(TypeNode::NamedTuple { .. }))
+        }
+    }
+}
+
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
     match kb.get_term(ty) {
         Term::Fn { functor, named_args, .. } => {
@@ -2882,7 +2948,13 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     let r = get_named_arg(kb, named_args, "result")
                         .map(|t| type_display_name(kb, t))
                         .unwrap_or_else(|| "?".to_string());
-                    format!("{} -> {}", p, r)
+                    // WI-791: an arity-1 tuple param is ONE parameter, not a list.
+                    let arity =
+                        get_named_arg(kb, named_args, "arity").and_then(|t| const_usize_of(kb, t));
+                    let param_is_tuple = get_named_arg(kb, named_args, "param").is_some_and(|t| {
+                        matches!(type_head(kb, &TermIdView(t)), TypeHead::NamedTuple)
+                    });
+                    format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
                 }
                 "TypeVar" => {
                     extract_ref_field(kb, named_args, "name")
@@ -4639,7 +4711,11 @@ fn operation_as_function_value(
             .collect();
         named_tuple_value(kb, &fields, span, owner)
     };
-    Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, span, owner))
+    // WI-791: the op's OWN parameter count — the arrow's arity is the operation's
+    // arity, whatever its sole parameter's type happens to look like. `get_a(t: (a,
+    // b))` mints arity 1 even though `param` is a 2-field `named_tuple`, so it no
+    // longer passes for the genuinely 2-parameter `(p: A, q: B) -> R`.
+    Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, op.params.len(), span, owner))
 }
 
 /// WI-700: is `sym` a NULLARY (zero-parameter) operation? Only a nullary op has both
@@ -7242,7 +7318,13 @@ fn build_type(
             // `Modify[c]` body effect) is CARRIED as a poisoned child rather than
             // re-grounded; a ground child rides as `TypeChild::Ground`. The
             // op-boundary return check compares it cross-carrier via `TermView`.
-            let fn_ty = make_arrow_value(kb, &param_type, &body_ty, &body_effects, occ.span, occ.owner);
+            // WI-791: the lambda's arity is its WRITTEN binder count, read from the
+            // param pattern — `param_type` cannot supply it (an unannotated lambda's
+            // is a fresh type var, and a tuple-typed one is indistinguishable from a
+            // binder list). See `lambda_written_arity`.
+            let arity = lambda_written_arity(&occ);
+            let fn_ty =
+                make_arrow_value(kb, &param_type, &body_ty, &body_effects, arity, occ.span, occ.owner);
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -16481,8 +16563,14 @@ fn node_type_is_ground(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
                 child_ground(base) && bindings.iter().all(|(_, c)| child_ground(c))
             }
             TypeNode::EffectsRows { effects_expr } => child_ground(effects_expr),
-            TypeNode::Arrow { param, result, effects } => {
-                child_ground(param) && child_ground(result) && child_ground(effects)
+            // WI-791: `arity` is a ground `Const(Int)` by construction and so cannot
+            // change this verdict; it is checked anyway so the walk stays total over
+            // the node's children.
+            TypeNode::Arrow { param, result, effects, arity } => {
+                child_ground(param)
+                    && child_ground(result)
+                    && child_ground(effects)
+                    && child_ground(arity)
             }
             TypeNode::ExprCarried { value, member } => child_ground(value) && child_ground(member),
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
@@ -18163,11 +18251,16 @@ fn arrow_parts<V: TermView>(
     // `Function`'s A/B/E bindings carrier-agnostically. Pre-intern the child
     // keys so a `Value::Node` carrier's named-child lookups resolve even in a
     // minimal KB (the term builders intern them; cf. WI-361 slice 4's `base`).
-    for key in ["param", "result", "effects", "base"] {
+    for key in ["param", "result", "effects", "arity", "base"] {
         kb.intern(key);
     }
     match extract_type(kb, ty) {
-        TypeExtractor::Arrow { param, result, effects } => {
+        // WI-791: `arity` is deliberately NOT returned here. This decomposition is
+        // shared with `Function[A, B, E]`, which states no arity, so a caller that
+        // needs one is asking a question only an `arrow` can answer and must ask it
+        // separately via [`arrow_arity`]. Folding it into this tuple would hand
+        // every `Function` consumer an absence to invent a default for.
+        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
             Some((Some(param), result, Some(effects)))
         }
         TypeExtractor::Parameterized { base, bindings }
@@ -18182,6 +18275,32 @@ fn arrow_parts<V: TermView>(
             let result = find("B")?;
             Some((find("A"), result, find("E")))
         }
+        _ => None,
+    }
+}
+
+/// WI-791: an arrow's declared PARAMETER-LIST LENGTH, carrier-agnostic. `None`
+/// when the type states none — which is NOT a defensive fallback but the one
+/// meaningful absence in the system:
+///
+///   * a `Function[A, B, E]` (the stdlib surface spelling [`arrow_parts`] also
+///     decomposes) carries no arity binding and cannot: its `A` is the ONE
+///     argument `apply(f, x: A)` passes, so `Function[(T, T), Bool]` denotes both
+///     the single-tuple-argument reading and the eta arrow of a 2-parameter op,
+///     and has denoted both since WI-775. An arrow-vs-`Function` check therefore
+///     compares parameter DATA types by name and asks nothing about arity;
+///   * anything that is not a callable type at all.
+///
+/// Every `arrow` the engine mints states its arity — the three producers that
+/// know it ([`operation_as_function_value`], the loader's `TypeExpr::Arrow` arm,
+/// the `LambdaBody` frame) all pass it, and the rebuild sites transplant it — so
+/// a `None` from an `arrow` head means the term is malformed, and the callers
+/// below treat that as "not comparable" rather than inventing a count.
+/// `arity_key` is passed in already interned: the sole caller reads two arrows in
+/// a row on the hot conformance path and should pay one symbol lookup, not two.
+fn arrow_arity<V: TermView>(kb: &KnowledgeBase, ty: &V, arity_key: Symbol) -> Option<usize> {
+    match named_child_value(kb, ty, arity_key)? {
+        Value::Term { id, .. } => const_usize_of(kb, id),
         _ => None,
     }
 }
@@ -18415,24 +18534,31 @@ fn extract_function_type_parts<V: TermView>(
 /// Gating on [`TypeExtractor::Arrow`] — not on [`arrow_parts`], which maps both
 /// spellings onto one `param` — is what keeps the `Function` case out.
 ///
-/// KNOWN AMBIGUITY (pre-existing, not introduced here): an arrow taking ONE
-/// tuple-typed parameter carries the same `named_tuple` param as an arrow taking
-/// that tuple's components as a parameter LIST, so this reads the former as an
-/// n-slot list. Such a call was already ill-formed — eval hands the callee n
-/// arguments where it takes 1 and raises an arity mismatch — so the misreading
-/// changes the ORDER of a call that fails either way, never the result of one
-/// that succeeds. Distinguishing them needs the arrow representation to record
-/// its parameter list separately from its parameter's type; the `Function[A, B]`
-/// spelling of the same shape is already unambiguous and is excluded above.
+/// The former KNOWN AMBIGUITY here is CLOSED by WI-791: an arrow taking ONE
+/// tuple-typed parameter used to carry the same `named_tuple` param an
+/// n-parameter list does, so this read the former as an n-slot list and resolved
+/// `f(a: 1, b: 2)` against a DATA tuple's component names. The arrow now records
+/// its `arity`, and arity one lands on the first `None` case above — those names
+/// are the tuple's components, reachable as `f((a: 1, b: 2))`, and are not
+/// parameter labels.
 fn arrow_declared_param_list<V: TermView>(
     kb: &KnowledgeBase,
     fn_type: &V,
 ) -> Option<Vec<(Symbol, Value)>> {
-    let param = match extract_type(kb, fn_type) {
-        TypeExtractor::Arrow { param, .. } => param,
+    let (param, arity) = match extract_type(kb, fn_type) {
+        TypeExtractor::Arrow { param, arity, .. } => (param, arity),
         _ => return None,
     };
+    // WI-791: only a real parameter LIST carries binder names to resolve against.
+    if arity == 1 {
+        return None;
+    }
     match extract_type(kb, &param) {
+        // The list holds exactly `arity` slots by construction at every producer.
+        // It is not re-checked here: this reader only needs the binder NAMES, and
+        // a disagreement means an ill-formed arrow, which the conformance relation
+        // rejects on its own — asserting it here would turn that type error into a
+        // panic.
         TypeExtractor::NamedTuple(fields) => Some(fields),
         _ => None,
     }
@@ -18503,7 +18629,7 @@ fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
         TypeExtractor::Parameterized { bindings, .. } => {
             bindings.iter().any(|(_, v)| value_contains_projection(kb, v))
         }
-        TypeExtractor::Arrow { param, result, effects } => {
+        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
             value_contains_projection(kb, &param)
                 || value_contains_projection(kb, &result)
                 || value_contains_projection(kb, &effects)
@@ -18685,7 +18811,7 @@ fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Sy
                 collect_projection_receivers(kb, v, out);
             }
         }
-        TypeExtractor::Arrow { param, result, effects } => {
+        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
             collect_projection_receivers(kb, &param, out);
             collect_projection_receivers(kb, &result, out);
             collect_projection_receivers(kb, &effects, out);
@@ -18891,11 +19017,18 @@ fn eliminate_node_projections(
     let owner = occ.owner;
     match &occ.kind {
         NodeKind::Type(node) => match node {
-            TypeNode::Arrow { param, result, effects } => {
+            TypeNode::Arrow { param, result, effects, arity } => {
                 let p = elim_child(kb, param, arg_types, arg_syms, ctx, span)?;
                 let r = elim_child(kb, result, arg_types, arg_syms, ctx, span)?;
                 let e = elim_child(kb, effects, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_arrow_occ(p, r, e, sp, owner)))
+                // WI-791: projection elimination REBUILDS the arrow, so it carries
+                // the same arity across. This is the path the ticket named as the
+                // reverted wrapper's unconfirmed leak (c): `(x: T) -> R` whose slot
+                // BECOMES a tuple once `T`/`xs.T` is projected away. It is a
+                // non-event now — eliminating a projection rewrites the param TYPE
+                // and never the parameter COUNT.
+                let arity = arity.clone();
+                Ok(Value::Node(kb.make_arrow_occ_child(p, r, e, arity, sp, owner)))
             }
             TypeNode::Parameterized { base, bindings } => {
                 let b = elim_child(kb, base, arg_types, arg_syms, ctx, span)?;
@@ -20148,6 +20281,35 @@ fn extract_pattern_type_ann(pattern: &Rc<NodeOccurrence>) -> Option<&Rc<NodeOccu
     }
 }
 
+/// WI-791: how many PARAMETERS a lambda writes — the arity its arrow type
+/// records. A lambda holds ONE param occurrence, so the count lives in that
+/// pattern's shape: `lambda (a, b) -> …` is a `Pattern::Tuple` of two, and
+/// everything else (`lambda x -> …`, `lambda (u: (a: A, b: B)) -> …`) is one.
+///
+/// This is the WRITTEN arity, which is deliberately not the same thing as the
+/// runtime's: `enter_closure` is strictly unary and destructures the tuple, so a
+/// multi-binder lambda handed to a genuinely n-parameter callback still traps at
+/// eval (WI-784, open). Minting 1 here would turn that trap into a load rejection
+/// — a bigger change than this ticket's, and the wrong place for it: the defect
+/// is the runtime's missing spread, not the program's. Reporting the written
+/// count keeps every load verdict a multi-binder lambda gets today, and leaves
+/// WI-784 the single place to fix.
+///
+/// Grouping is transparent (WI-620: `(p)` unwraps to `p` at conversion), so
+/// `lambda ((a, b)) -> …` is the same two-binder lambda as `lambda (a, b) -> …`
+/// — the surface has no spelling for "one tuple-shaped binder" other than naming
+/// it (`lambda (u: (a: A, b: B)) -> …`), which lands on the arity-1 arm here.
+fn lambda_written_arity(lambda_occ: &Rc<NodeOccurrence>) -> usize {
+    let param = match lambda_occ.as_expr() {
+        Some(Expr::Lambda { param, .. }) | Some(Expr::LambdaWithin { param, .. }) => param,
+        _ => return 1,
+    };
+    match param.as_pattern() {
+        Some(Pattern::Tuple { positional, named }) => positional.len() + named.len(),
+        _ => 1,
+    }
+}
+
 // ── Operation info lookup ──────────────────────────────────────
 
 fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<TermId> {
@@ -20612,11 +20774,15 @@ fn unify_arrow_view<A: TermView, B: TermView>(
     let result_sym = kb.intern("result");
     let effects_sym = kb.intern("effects");
 
+    // WI-791: two arrows relate only if they take the SAME NUMBER of parameters,
+    // and the count also says how to read the param slot below.
+    let Some(arity) = agreed_arrow_arity(kb, a, b) else { return false };
+
     match (named_child_value(kb, a, param_sym), named_child_value(kb, b, param_sym)) {
         (Some(x), Some(y)) => {
             // WI-775: a PARAMETER LIST, not a data tuple — positional alignment
             // is admissible here (and only here).
-            if !unify_arrow_params(kb, subst, &x, &y) {
+            if !unify_arrow_params(kb, subst, &x, &y, arity) {
                 return false;
             }
         }
@@ -21005,8 +21171,10 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
                 child(kb, base) || bindings.iter().any(|(_, c)| child(kb, c))
             }
             TypeNode::EffectsRows { effects_expr } => child(kb, effects_expr),
-            TypeNode::Arrow { param, result, effects } => {
-                child(kb, param) || child(kb, result) || child(kb, effects)
+            // WI-791: a ground `Const(Int)` `arity` can hold no var; walked for
+            // totality over the node's children.
+            TypeNode::Arrow { param, result, effects, arity } => {
+                child(kb, param) || child(kb, result) || child(kb, effects) || child(kb, arity)
             }
             // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
             // view-walking `occurs_in_view` descends its cons cells + records and
@@ -23768,32 +23936,38 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// only a parameter list is applied positionally (WI-775).
 ///
 /// WI-782 first RETIRED this gate (letting any two equal-arity lists zip) and
-/// then restored it VERBATIM — the body below is byte-identical to the pre-WI-782
-/// one. Dropping it made `operation get_a(t: (a: Int64, b: Int64))` satisfy a
-/// genuinely 2-parameter `(p: Int64, q: Int64) -> Int64`, because a lone
-/// tuple-typed parameter collapses to the tuple's own 2-field term (WI-791). That
-/// program had been a load error and became load-clean-then-`ArityMismatch` at
-/// eval — converting a static rejection into the very load-clean-then-trap shape
-/// WI-782 exists to remove.
+/// then restored it, because dropping it made `operation get_a(t: (a: Int64, b:
+/// Int64))` satisfy a genuinely 2-parameter `(p: Int64, q: Int64) -> Int64` — a
+/// lone tuple-typed parameter collapsed to the tuple's own 2-field term, and no
+/// name test could tell the two apart.
 ///
-/// The gate is PARTIAL, and where it stops matters more than where it fires. It
-/// separates a collapsed tuple parameter from a real parameter list only when the
-/// tuple's own component names are not themselves `_1.._n`. So it does NOT fire
-/// for either of these, both MEASURED to load clean and then trap
-/// `ArityMismatch{expected: 1, got: 2}` at eval:
+/// WI-791 TOOK THAT JOB AWAY, and this gate is better for it. Arity is now a
+/// child of the arrow, so a collapsed tuple parameter never reaches
+/// [`TupleAlign::ParamList`] at all — [`unify_arrow_params`] routes arity one to
+/// the ordinary type relation. The gate no longer stands between a data tuple and
+/// a parameter list; it is asked only about two genuine parameter LISTS of equal
+/// length, where its question — do these agree on which slot is which? — is the
+/// only one it was ever sound to answer.
+///
+/// That also closes the two spellings it demonstrably could NOT catch, both
+/// MEASURED to load clean and then trap `ArityMismatch` at eval, and both
+/// PRE-EXISTING rather than WI-782 regressions:
 ///
 ///   * the POSITIONAL spelling `(t: (Int64, Int64))`, whose components are minted
-///     `_1, _2` by `intern_positional_label` — i.e. the idiomatic spelling is the
-///     one that slips through; and
+///     `_1, _2` by `intern_positional_label` — the idiomatic spelling was the one
+///     that slipped through; and
 ///   * a LEADING-ZERO spelling `(t: (_01: Int64, _02: Int64))`, because
-///     `parse::<usize>()` accepts leading zeros. That also puts this recognizer at
-///     odds with eval's `is_synthetic_positional_label`, which rejects them — see
-///     WI-786's `leading_zero_label_is_not_synthetic`.
+///     `parse::<usize>()` accepts leading zeros.
 ///
-/// Both holes are PRE-EXISTING (identical on the pre-WI-782 tree), not regressions
-/// of WI-782; they are WI-791's to close, and the divergent `_N` spellings are
-/// WI-789/WI-790's. What this gate actually buys is the NAME-DISJOINT case, which
-/// WI-782 had briefly widened. Do not read it as closing WI-791.
+/// Neither is refused by a better name test — each is refused because 1 ≠ 2.
+///
+/// The leading-zero READING below is still at odds with eval's
+/// `is_synthetic_positional_label`, which rejects `_01` (WI-786's
+/// `leading_zero_label_is_not_synthetic`). That divergence is WI-789/WI-790's and
+/// is left alone deliberately: it no longer decides whether a tuple is a
+/// parameter list, only whether two same-length lists may zip when one spells its
+/// binders `_01, _02` — and there, admitting them agrees with the surface
+/// intent.
 ///
 /// The index check requires the field at position `i` to be named `_{i+1}`, so it
 /// (and the zip in `align_named_tuple_fields`) relies on [`named_tuple_fields`]
@@ -23830,11 +24004,15 @@ enum TupleAlign {
     /// Names take no part in the CORRESPONDENCE — the zip is by index — but they
     /// do gate its ADMISSIBILITY: the two lists must agree on which slot is which,
     /// meaning the names line up in order or one side is the synthetic `_1.._n`
-    /// convention (WI-442). That admissibility gate is what lets a named-binder
-    /// callback `(acc: Acc, x: Elem)` accept a multi-param op's eta arrow
-    /// `(_1, _2)` while keeping a lone tuple-typed parameter from passing as an
-    /// n-parameter list; see [`is_positional_tuple_names`], which also records the
-    /// two spellings it does NOT catch.
+    /// convention (WI-442). That is what lets a named-binder callback
+    /// `(acc: Acc, x: Elem)` accept a multi-param op's eta arrow `(_1, _2)`.
+    ///
+    /// WI-791: this mode is now selected by the arrow's own `arity` child, never
+    /// by the param slot's shape, so it is reached ONLY for a real parameter list
+    /// (arity ≠ 1). A lone tuple-typed parameter is a DATA tuple and takes the
+    /// [`TupleAlign::ByName`] road with everything else at arity one. The
+    /// admissibility gate is correspondingly no longer load-bearing for
+    /// soundness — see [`is_positional_tuple_names`].
     ///
     /// WI-782: this mode has NO by-name rung, which is why a permutation is not
     /// admitted by matching names up — the runtime performs no such reordering, so
@@ -23954,17 +24132,68 @@ fn unify_named_tuple_as<A: TermView, B: TermView>(
     }
 }
 
-/// WI-775: unify an arrow's two PARAMETER LISTS. Identical to [`unify_types`]
-/// except that two named-tuple param lists align in [`TupleAlign::ParamList`]
-/// mode, so a named-binder callback `(acc, x)` still unifies against a
-/// multi-param op's eta arrow `(_1, _2)` (WI-442). Everything the param list
-/// CONTAINS is an ordinary type again — a nested tuple component is data, and
-/// recursing through `unify_types` re-imposes name alignment on it.
+/// WI-791: the parameter count two arrows AGREE on, or `None` when they do not
+/// (or when either fails to state one) — in which case they are unrelatable and
+/// both the unify and the subtype path refuse.
+///
+/// This is the whole of the ticket's fix, and it is one equality because the
+/// count is a ground child rather than something inferred from the param slot's
+/// shape: `operation get_a(t: (a: Int64, b: Int64))` mints arity 1 and a declared
+/// `(p: Int64, q: Int64) -> R` mints arity 2, so the two stop being the same term
+/// and stop standing in for each other. Every spelling that used to slip past the
+/// name-shape gate — the positional `(Int64, Int64)`, whose components are minted
+/// `_1, _2`, and the leading-zero `(_01: …, _02: …)`, which `parse::<usize>()`
+/// accepted — fails here instead, because none of them is a question about names.
+/// Both callers reach this only from an `(arrow, arrow)` dispatch arm, so a side
+/// that states NO arity is a MALFORMED arrow, not a legitimate absence — the two
+/// are folded into one `None` here because the relation has no diagnostic channel
+/// (it returns `bool`), but they are not the same thing, and a malformed arrow
+/// silently comparing as "not conformant" hides real defects: WI-791 shipped a
+/// first draft in which two hand-built test arrows lost their `arity` child, and
+/// both tests kept passing while covering nothing. The `debug_assert` makes that
+/// loud where it can be — under test, which is the only place a hand-built arrow
+/// term exists.
+fn agreed_arrow_arity<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> Option<usize> {
+    // Intern once, not once per side — this runs on every arrow comparison.
+    let arity_key = kb.intern("arity");
+    let (na, nb) = (arrow_arity(kb, a, arity_key), arrow_arity(kb, b, arity_key));
+    debug_assert!(
+        na.is_some() && nb.is_some(),
+        "WI-791: an `arrow` must state its parameter-list arity; \
+         a term reaching the arrow-vs-arrow relation without one is malformed \
+         (build it with `make_arrow_type` / `make_arrow_occ`, or add the `arity` \
+         child explicitly via `make_arity_term`)",
+    );
+    (na? == nb?).then_some(na?)
+}
+
+/// WI-775: relate an arrow's two param slots, at an arity both sides agree on
+/// (WI-791 established it in the caller). Identical to [`unify_types`] except
+/// that two named-tuple PARAMETER LISTS align in [`TupleAlign::ParamList`] mode,
+/// so a named-binder callback `(acc, x)` still unifies against a multi-param op's
+/// eta arrow `(_1, _2)` (WI-442). Everything the param list CONTAINS is an
+/// ordinary type again — a nested tuple component is data, and recursing through
+/// `unify_types` re-imposes name alignment on it.
+///
+/// WI-791: `arity` selects WHICH relation applies, which is the second half of
+/// the fix. At arity ONE the slot is not a list at all — it is the sole
+/// parameter's TYPE — so it relates as an ordinary type, and a tuple there is
+/// DATA, aligned by name with width subtyping. WI-782 had to route a lone
+/// tuple-typed parameter through `ParamList` (it could not tell one from a list)
+/// and knowingly paid for it by false-rejecting correct programs:
+/// `get_x(t: (x: Int64, y: Bool))` handed to a `(u: (y: Bool, x: Int64)) -> R`
+/// callback, and the narrower `(a: Int64)` against `(a: Int64, b: Int64)`. Both
+/// load again, and for the right reason: the consumer reads `t.x` by NAME.
 fn unify_arrow_params<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a: &A,
     b: &B,
+    arity: usize,
 ) -> bool {
     // WALK FIRST, then classify. A param slot routinely holds a bound var —
     // `unify_types` opens with the same two `walk_view`s for exactly that reason
@@ -23973,7 +24202,7 @@ fn unify_arrow_params<A: TermView, B: TermView>(
     // and dispatches to the ByName `unify_named_tuple` — silently downgrading
     // the mode on the one path that most needs it.
     let (aw, bw) = (walk_view(kb, subst, a), walk_view(kb, subst, b));
-    if both_named_tuples(kb, &aw, &bw) {
+    if arity != 1 && both_named_tuples(kb, &aw, &bw) {
         return unify_named_tuple_as(kb, subst, &aw, &bw, TupleAlign::ParamList);
     }
     unify_types(kb, subst, &aw, &bw)
@@ -24387,6 +24616,12 @@ fn arrow_compatible_view<A: TermView, B: TermView>(
     let result_sym = kb.intern("result");
     let effects_sym = kb.intern("effects");
 
+    // WI-791: parameter COUNT is invariant — a function of a different arity is
+    // neither a subtype nor a supertype, it is uncallable in the other's place.
+    // (Width subtyping over a parameter list was already refused by WI-782; this
+    // is the same statement made where the count is actually recorded.)
+    let Some(arity) = agreed_arrow_arity(kb, actual, expected) else { return false };
+
     // Contravariant param: expected.param <: actual.param.
     match (
         named_child_value(kb, actual, param_sym),
@@ -24394,7 +24629,7 @@ fn arrow_compatible_view<A: TermView, B: TermView>(
     ) {
         (Some(ap), Some(ep)) => {
             // WI-775: a PARAMETER LIST, not a data tuple — see `unify_arrow_params`.
-            if !arrow_params_compatible(kb, subst, &ep, &ap) {
+            if !arrow_params_compatible(kb, subst, &ep, &ap, arity) {
                 return false;
             }
         }
@@ -24701,6 +24936,15 @@ fn arrow_function_compatible<A: TermView, E: TermView>(
         None => return false,
     };
 
+    // WI-791: NO arity check on this arm, and that is a decision rather than an
+    // omission. A `Function[A, B, E]` states no arity and cannot: its `A` is the
+    // ONE argument `apply(f, x: A)` passes, so `Function[(T, T), Bool]` has
+    // denoted both the single-tuple-argument reading and the eta arrow of a
+    // 2-parameter op since WI-775. Demanding arity 1 of the arrow side would break
+    // the latter; demanding a match would need a count `Function` does not have.
+    // What DOES hold here is the by-name param comparison below, which is what
+    // WI-775 installed to keep `(acc, x)` from bridging to `(_1, _2)`.
+    //
     // Param is contravariant (expected param <: actual param), result
     // covariant — matching `arrow_compatible`. A missing param on either side
     // (a bare `Function` without an `A` binding, polymorphic) is unconstrained.
@@ -26630,8 +26874,17 @@ pub enum TypeExtractor {
     /// A type application `S[p = v, …]` — term-backed `Fn{S, named}` or deep
     /// `parameterized(base, bindings)`. `bindings` are `(param, value-type)`.
     Parameterized { base: Symbol, bindings: Vec<(Symbol, Value)> },
-    /// An arrow type — `arrow(param, result, effects)`.
-    Arrow { param: Value, result: Value, effects: Value },
+    /// An arrow type — `arrow(param, result, effects, arity)`. WI-791: `arity` is
+    /// the parameter-list LENGTH as written, and is what says how to read `param`
+    /// (arity 1 ⇒ the sole parameter's type; otherwise ⇒ the parameter list, a
+    /// `named_tuple` of exactly `arity` fields).
+    ///
+    /// DECODED here, like the sibling `Symbol` fields, rather than handed on as a
+    /// raw `Value`: this is the boundary whose job is to turn a term's children
+    /// into Rust values, and leaving arity undecoded made every consumer write its
+    /// own `Const(Int)` reader. An arrow whose child is missing or unreadable is
+    /// [`TypeExtractor::Error`], not an arrow with a guessed count.
+    Arrow { param: Value, result: Value, effects: Value, arity: usize },
     /// A value standing in a type-argument position (`Modify[c]`) —
     /// `denoted(value)`; carries the value occurrence.
     Denoted(Value),
@@ -26815,9 +27068,13 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
             view_child_value(kb, ty, "param"),
             view_child_value(kb, ty, "result"),
             view_child_value(kb, ty, "effects"),
+            view_child_value(kb, ty, "arity").and_then(|a| match a {
+                Value::Term { id, .. } => const_usize_of(kb, id),
+                _ => None,
+            }),
         ) {
-            (Some(param), Some(result), Some(effects)) => {
-                TypeExtractor::Arrow { param, result, effects }
+            (Some(param), Some(result), Some(effects), Some(arity)) => {
+                TypeExtractor::Arrow { param, result, effects, arity }
             }
             _ => TypeExtractor::Error,
         },
@@ -27891,6 +28148,7 @@ fn arrow_params_compatible<A: TermView, B: TermView>(
     subst: &mut Substitution,
     sub: &A,
     sup: &B,
+    arity: usize,
 ) -> bool {
     // NOTE the deliberate asymmetry with [`unify_arrow_params`], which walks
     // before classifying: there, a bound-var param slot would fall through to
@@ -27899,7 +28157,11 @@ fn arrow_params_compatible<A: TermView, B: TermView>(
     // `type_var` arm is a wildcard returning `true` — the pre-WI-775 verdict
     // already. Walking would make this path STRICTER than it has ever been, on
     // inputs no measurement covers, so it stays unwalked.
-    if both_named_tuples(kb, sub, sup) {
+    // WI-791: at arity one the slot is the sole parameter's TYPE, not a list —
+    // fall through to `types_compatible`, which relates a tuple there as the DATA
+    // it is (by name, width-subtyping). See `unify_arrow_params` for the two
+    // measured programs this restores.
+    if arity != 1 && both_named_tuples(kb, sub, sup) {
         return named_tuple_compatible_as(kb, subst, sub, sup, TupleAlign::ParamList);
     }
     types_compatible(kb, subst, sub, sup)
@@ -31912,7 +32174,7 @@ mod wi361_reader_tests {
         // A structural variant (arrow) has no sort head.
         let unit = kb.intern("Unit");
         let unit_ref = kb.make_sort_ref(unit);
-        let arrow = kb.make_arrow_type(unit_ref, unit_ref, &[]);
+        let arrow = kb.make_arrow_type(unit_ref, unit_ref, &[], 1);
         assert_eq!(sort_functor_of(&kb, arrow), None, "arrow has no sort head");
     }
 
@@ -32094,6 +32356,7 @@ mod p4_tests {
             &int,
             &int,
             &[Value::term(label_t), Value::term(tail_t)],
+            1,
             span(),
             None,
         );
@@ -32300,6 +32563,7 @@ mod p4_tests {
             TypeChild::Ground(unit_ref),
             TypeChild::Ground(unit_ref),
             TypeChild::Node(rows),
+            1,
             span(),
             None,
         )
@@ -32378,6 +32642,7 @@ mod p4_tests {
             TypeChild::Ground(v_term),
             TypeChild::Ground(unit_ref),
             TypeChild::Node(rows),
+            1,
             span(),
             None,
         );

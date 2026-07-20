@@ -32,7 +32,7 @@ fn arrow_pure_prints_surface() {
     let mut kb = fresh_kb();
     let int = kb.make_sort_ref_by_name("Int64");
     let b = kb.make_sort_ref_by_name("Bool");
-    let arrow = kb.make_arrow_type(int, b, &[]);
+    let arrow = kb.make_arrow_type(int, b, &[], 1);
     assert_eq!(TermPrinter::new(&kb).print_term(arrow), "(Int64) -> Bool");
 }
 
@@ -42,7 +42,7 @@ fn arrow_single_effect_prints_unbraced() {
     let int = kb.make_sort_ref_by_name("Int64");
     let b = kb.make_sort_ref_by_name("Bool");
     let eff = kb.make_sort_ref_by_name("Error");
-    let arrow = kb.make_arrow_type(int, b, &[eff]);
+    let arrow = kb.make_arrow_type(int, b, &[eff], 1);
     assert_eq!(TermPrinter::new(&kb).print_term(arrow), "(Int64) -> Bool @ Error");
 }
 
@@ -54,7 +54,7 @@ fn arrow_effect_set_prints_braced() {
     // Two distinct effect labels → a braced, canonically-sorted set.
     let e1 = kb.make_sort_ref_by_name("Aeff");
     let e2 = kb.make_sort_ref_by_name("Beff");
-    let arrow = kb.make_arrow_type(int, b, &[e1, e2]);
+    let arrow = kb.make_arrow_type(int, b, &[e1, e2], 1);
     assert_eq!(
         TermPrinter::new(&kb).print_term(arrow),
         "(Int64) -> Bool @ {Aeff, Beff}",
@@ -93,7 +93,7 @@ fn nested_parameterized_in_arrow_recovers_bracket_form() {
     let list_int = kb.make_parameterized_type(list, &[(t_sym, int)]);
     // Inside the arrow (a known type context) the parameterized param recovers
     // its `[T = Int64]` bracket form, not the data `List(T: Int64)`.
-    let arrow = kb.make_arrow_type(list_int, b, &[]);
+    let arrow = kb.make_arrow_type(list_int, b, &[], 1);
     assert_eq!(
         TermPrinter::new(&kb).print_term(arrow),
         "(List[T = Int64]) -> Bool",
@@ -108,7 +108,7 @@ fn multi_param_arrow_param_not_double_wrapped() {
     let x = kb.intern("x");
     let y = kb.intern("y");
     let params = kb.make_named_tuple_type(&[(x, int), (y, b)]);
-    let arrow = kb.make_arrow_type(params, b, &[]);
+    let arrow = kb.make_arrow_type(params, b, &[], 2);
     // The named-tuple param uses its own parens directly — no `((x: …))`.
     assert_eq!(
         TermPrinter::new(&kb).print_term(arrow),
@@ -168,7 +168,7 @@ fn wi766_one_component_tuple_param_keeps_its_parens() {
     let b = kb.make_sort_ref_by_name("Bool");
     let a_sym = kb.intern("a");
     let one = kb.make_named_tuple_type(&[(a_sym, int)]);
-    let arrow = kb.make_arrow_type(one, b, &[]);
+    let arrow = kb.make_arrow_type(one, b, &[], 1);
     assert_eq!(
         TermPrinter::new(&kb).print_term(arrow),
         "((a: Int64)) -> Bool",
@@ -188,7 +188,7 @@ fn wi766_multi_param_arrow_printing_is_unchanged() {
     let a_sym = kb.intern("a");
     let bb_sym = kb.intern("b");
     let two = kb.make_named_tuple_type(&[(a_sym, int), (bb_sym, b)]);
-    let arrow = kb.make_arrow_type(two, b, &[]);
+    let arrow = kb.make_arrow_type(two, b, &[], 2);
     assert_eq!(
         TermPrinter::new(&kb).print_term(arrow),
         "(a: Int64, b: Bool) -> Bool",

@@ -33,14 +33,19 @@
 //! exercise the per-slot type check. `same_named_slots_still_fail_on_the_types`
 //! covers that rung directly — it clears the gate and must be refused on TYPES.
 //!
-//! STILL OPEN, deliberately: WI-782's third case, where the param slot does not
-//! record parameter-list ARITY, so a one-tuple-parameter operation is the same
-//! term as an n-parameter one. `known_gap_*` below pins its current behavior. It
-//! is deferred to WI-791 with a measured reason: the obvious fix (wrap the
-//! arity-1 tuple-typed list at the mint) was implemented and REVERTED, because
-//! the wrap is decided from the spelling at mint time but read back after
-//! substitution — it leaked into a type variable and broke
-//! `apply1(get_a, (a: 1, b: 2))`, a program that works today.
+//! WI-782's third case — the param slot not recording parameter-list ARITY, so a
+//! one-tuple-parameter operation was the same term as an n-parameter one — was
+//! deferred and is now CLOSED by WI-791, which put the count on the arrow as its
+//! own ground child. Its rejections live in `wi791_arrow_arity_test.rs`.
+//!
+//! Two tests here changed as a direct consequence, and they are the point of this
+//! note. WI-782 shipped `ParamList` alignment for a lone tuple-typed parameter
+//! because it could not tell one from a parameter list, and knowingly paid for it
+//! by FALSE-REJECTING correct programs — a permuted and a narrower tuple
+//! parameter, both of which had loaded and evaluated on its parent commit. Those
+//! two now load again (`permuted_/narrower_tuple_typed_parameter_still_applies`),
+//! and for the reason WI-782 recorded as the only possible one: arity one means
+//! the slot holds a DATA tuple, read by name.
 
 use crate::common::{interp_for, try_load_kb_with};
 
@@ -176,13 +181,18 @@ end
     );
 }
 
-/// THE case that forced the gate back. A lone TUPLE-typed parameter collapses to
-/// the tuple's own term (WI-791), so `get_a(t: (a: Int64, b: Int64))` presents a
-/// 2-field slot indistinguishable from a genuine 2-parameter list. With names
-/// ignored it satisfied `(p: Int64, q: Int64) -> Int64` and then trapped
+/// THE case that forced the gate back. A lone TUPLE-typed parameter collapsed to
+/// the tuple's own term, so `get_a(t: (a: Int64, b: Int64))` presented a 2-field
+/// slot indistinguishable from a genuine 2-parameter list. With names ignored it
+/// satisfied `(p: Int64, q: Int64) -> Int64` and then trapped
 /// `ArityMismatch{expected:1, got:2}` at eval — a load error converted into
-/// exactly the load-clean-then-trap shape WI-782 exists to remove. Measured on
-/// both trees.
+/// exactly the load-clean-then-trap shape WI-782 exists to remove.
+///
+/// It is still refused, but the REASON moved: WI-791 records arity on the arrow,
+/// so this is 1 ≠ 2 rather than a question about names, and the gate that used to
+/// carry it is no longer asked. That shows in the message — the actual now reads
+/// `((a: Int64, b: Int64)) -> Int64`, the one-tuple-parameter spelling, where the
+/// two spellings used to render identically.
 #[test]
 fn tuple_typed_parameter_does_not_satisfy_a_name_disjoint_two_parameter_list() {
     assert_refused_naming(
@@ -198,7 +208,7 @@ namespace test.wi782.collapsedisjoint
 end
 "#,
         "(p: Int64, q: Int64) -> Int64",
-        "(a: Int64, b: Int64) -> Int64",
+        "((a: Int64, b: Int64)) -> Int64",
     );
 }
 
@@ -331,26 +341,25 @@ end
     assert_eq!(run_int(&mut interp, "test.wi782.scalarparam.drive"), 42);
 }
 
-// ── the KNOWN GAP, pinned so it stays visible ──────────────────
+// ── the cost WI-782 paid, repaid by WI-791 ─────────────────────
 
-/// WI-791, the FALSE-REJECT direction — the cost this fix knowingly pays.
+/// A lone tuple-typed parameter used to collapse to the tuple's own term, so a
+/// DATA tuple arrived in `TupleAlign::ParamList` and was aligned POSITIONALLY.
+/// But a data tuple's components are read by NAME (`t.x`), so a permuted one is a
+/// CORRECT program — it loaded and evaluated to 7 on WI-782's parent, was
+/// FALSE-REJECTED by WI-782, and loads again now.
 ///
-/// A lone tuple-typed parameter collapses to the tuple's own term, so a DATA
-/// tuple arrives in `TupleAlign::ParamList` and is aligned POSITIONALLY. But a
-/// data tuple's components are read by NAME (`t.a`), so a permuted or narrower
-/// one is a CORRECT program — measured on the parent commit, both of these
-/// loaded and evaluated to 7. They are now refused at load.
-///
-/// This is not fixable at the alignment rung: a permuted PARAMETER LIST (the
-/// WI-782 bug, a silent wrong-typed value) and a permuted TUPLE PARAMETER (these,
-/// correct) are the same term once the slot collapses. Only WI-791 — making the
-/// slot report arity faithfully — can tell them apart. The trade taken here is a
-/// LOUD load error in this narrow shape in exchange for removing a SILENT
-/// wrong-typed value in the other; when WI-791 lands these should load again.
+/// WI-782 recorded that this was not fixable at the alignment rung, because a
+/// permuted PARAMETER LIST (its bug — a silent wrong-typed value) and a permuted
+/// TUPLE PARAMETER (this — correct) were the same term once the slot collapsed.
+/// They are different terms now: this arrow says arity 1, so its param is one
+/// tuple-typed argument and relates by name. Its sibling
+/// `permuted_parameter_list_is_refused` above still refuses the genuine
+/// 2-parameter permutation, which is what makes this pair discriminating rather
+/// than a blanket loosening.
 #[test]
-fn known_gap_permuted_tuple_typed_parameter_is_falsely_refused() {
-    let errs = try_load_kb_with(
-        r#"
+fn permuted_tuple_typed_parameter_still_applies() {
+    let src = r#"
 namespace test.wi782.falseperm
   import anthill.prelude.{Int64, Bool}
   operation get_x(t: (x: Int64, y: Bool)) -> Int64
@@ -360,23 +369,19 @@ namespace test.wi782.falseperm
   operation drive() -> Int64
     = take(get_x)
 end
-"#,
-    )
-    .err()
-    .expect("WI-791 not yet fixed: this correct program is still expected to be REFUSED");
-    assert!(
-        errs.iter().any(|e| e.contains("type mismatch")),
-        "the false rejection should still be a type mismatch; got: {errs:?}",
-    );
+"#;
+    let mut interp = interp_for(src);
+    assert_eq!(run_int(&mut interp, "test.wi782.falseperm.drive"), 7);
 }
 
-/// The same cost in the WIDTH direction: a narrower tuple parameter. `get_a`
-/// reads only `t.a`, so passing it a wider tuple is correct — and was accepted
-/// and evaluated to 7 on the parent commit.
+/// The same in the WIDTH direction: a narrower tuple parameter. `get_a` reads only
+/// `t.a`, so passing it a wider tuple is correct — accepted and evaluated to 7 on
+/// WI-782's parent, false-rejected by WI-782, and accepted again now. Its sibling
+/// `narrower_parameter_list_is_refused` keeps width subtyping OUT of a real
+/// parameter list, where eval passes exactly as many arguments as the type says.
 #[test]
-fn known_gap_narrower_tuple_typed_parameter_is_falsely_refused() {
-    let errs = try_load_kb_with(
-        r#"
+fn narrower_tuple_typed_parameter_still_applies() {
+    let src = r#"
 namespace test.wi782.falsewidth
   import anthill.prelude.{Int64}
   operation get_a(t: (a: Int64)) -> Int64
@@ -386,48 +391,7 @@ namespace test.wi782.falsewidth
   operation drive() -> Int64
     = take(get_a)
 end
-"#,
-    )
-    .err()
-    .expect("WI-791 not yet fixed: this correct program is still expected to be REFUSED");
-    assert!(
-        errs.iter().any(|e| e.contains("type mismatch")),
-        "the false rejection should still be a type mismatch; got: {errs:?}",
-    );
-}
-
-/// WI-791 (WI-782 case 3): the param slot does not record parameter-list ARITY.
-/// An arity-1 list collapses to its parameter's bare type, so a ONE-tuple-
-/// parameter operation and a TWO-parameter one build the identical term and each
-/// is accepted for the other — then traps at eval.
-///
-/// This test asserts the CURRENT, WRONG behavior on purpose, so the gap is
-/// visible in the suite rather than merely written down. It is a LOUD trap, not
-/// a silent wrong answer, which is why WI-782 shipped without it. When WI-791
-/// lands, this test SHOULD fail — replace it with a load-rejection assertion.
-#[test]
-fn known_gap_tuple_typed_parameter_is_not_distinguished_from_a_two_parameter_list() {
-    let src = r#"
-namespace test.wi782.knowngap
-  import anthill.prelude.{Int64}
-  operation get_a(t: (a: Int64, b: Int64)) -> Int64
-    = t.a
-  operation drive() -> Int64
-    = let f: (_1: Int64, _2: Int64) -> Int64 = get_a
-      f((7, 8))
-end
 "#;
-    assert!(
-        try_load_kb_with(src).is_ok(),
-        "WI-791 not yet fixed: this program is still expected to LOAD (wrongly)",
-    );
     let mut interp = interp_for(src);
-    let err = interp
-        .call("test.wi782.knowngap.drive", &[])
-        .expect_err("WI-791 not yet fixed: this program is still expected to TRAP at eval");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("tuple has no component 'a'"),
-        "the known gap should still surface as the WI-791 component miss; got: {msg}",
-    );
+    assert_eq!(run_int(&mut interp, "test.wi782.falsewidth.drive"), 7);
 }

@@ -2050,6 +2050,7 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let param_key = interp.kb.intern("param");
     let result_key = interp.kb.intern("result");
     let effects_key = interp.kb.intern("effects");
+    let arity_key = interp.kb.intern("arity");
     let effects_expr_key = interp.kb.intern("effects_expr");
     let term_key = interp.kb.intern("term");
     let base_key = interp.kb.intern("base");
@@ -2091,11 +2092,27 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 vec![(sort_key, sort_val), (var_key, subject), (member_key, member_val)],
             )
         }
-        TypeExtractor::Arrow { param, result, effects } => ti_entity(
-            interp,
-            "Arrow",
-            vec![(param_key, param), (result_key, result), (effects_key, effects)],
-        ),
+        // WI-791: `arity` reifies alongside the other three. A program that
+        // `case`s over an `Arrow` needs it to tell a one-tuple-parameter arrow
+        // from an n-parameter one — the same distinction the typer needs — and
+        // dropping it here would make `extract` lossy against the stdlib
+        // `entity Arrow(param, result, effects, arity)` it is defined to mirror.
+        TypeExtractor::Arrow { param, result, effects, arity } => {
+            // `arity` arrives decoded; re-mint the `Const(Int)` the stdlib entity's
+            // `arity: Int64` field holds, through the same builder the typer uses so
+            // a reified arrow is structurally identical to the one it came from.
+            let arity_val = Value::term(interp.kb.make_arity_term(arity));
+            ti_entity(
+                interp,
+                "Arrow",
+                vec![
+                    (param_key, param),
+                    (result_key, result),
+                    (effects_key, effects),
+                    (arity_key, arity_val),
+                ],
+            )
+        }
         TypeExtractor::EffectsRows(e) => ti_entity(interp, "EffectsRows", vec![(effects_expr_key, e)]),
         TypeExtractor::Parameterized { base, bindings } => {
             let base_val = sym_ref(interp, base);

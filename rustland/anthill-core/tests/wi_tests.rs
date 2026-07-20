@@ -711,6 +711,9 @@ mod wi775_positional_tuple_bridge_test;
 #[path = "include/wi782_param_list_alignment_test.rs"]
 mod wi782_param_list_alignment_test;
 
+#[path = "include/wi791_arrow_arity_test.rs"]
+mod wi791_arrow_arity_test;
+
 #[path = "include/wi783_function_value_named_args_test.rs"]
 mod wi783_function_value_named_args_test;
 

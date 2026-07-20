@@ -308,7 +308,15 @@ enum anthill.prelude.TypeExtractor
   entity SortRef(name: Symbol)
   entity TypeVar(name: Symbol)
   entity Parameterized(base: Symbol, bindings: List[TypeBinding])
-  entity Arrow(param: Term, result: Term, effects: Term)
+  {< WI-791: `arity` is the arrow's PARAMETER-LIST LENGTH as written. It is what
+     says how to read `param`: at arity one `param` is the sole parameter's TYPE
+     (the list collapses and the binder name is dropped), at any other arity it is
+     the parameter LIST — a `NamedTuple` of exactly `arity` components. Without it
+     `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` are the same term, and each
+     is accepted where the other is required. It sits OUTSIDE `param` because an
+     encoding a type variable can bind to is one substitution can introduce and
+     erase; a ground count sibling is not. >}
+  entity Arrow(param: Term, result: Term, effects: Term, arity: Int64)
   entity Denoted(value: NodeOccurrence)
   {< WI-376: an expression-carried type projection `s.T` / `s.Sort`. `value` is the
      RECEIVER occurrence (a param/local ref, or any typed expression); `member` is the

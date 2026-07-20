@@ -2584,7 +2584,8 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     // isn't yet registered — keeping `type_node_keys` consistent with the
     // `named_arity` `type_node_head` reports. A full load interns these via the
     // reflect entity defs; this makes lighter `register_prelude` setups agree.
-    for &k in &["value", "param", "result", "effects", "effects_expr", "fields"] {
+    // WI-791 added `Arrow.arity`; it is read through the same walk, so it interns here too.
+    for &k in &["value", "param", "result", "effects", "arity", "effects_expr", "fields"] {
         kb.intern(k);
     }
     // WI-320 (proposal 045 §2.0.1) — emit the EffectsRuntime ↔ effects_rows
@@ -10674,6 +10675,13 @@ impl<'a> Loader<'a> {
                 // the param/return TYPE positions (mirror `type_expr_to_child`),
                 // restore it for the effects.
                 let saved = std::mem::take(&mut self.arrow_binder_scope);
+                // WI-791: the written parameter-list LENGTH, carried on the arrow as
+                // its own child. It is read off the parse IR here — the only place a
+                // declared signature still HAS the list — because the `param` child
+                // built just below collapses at arity one and cannot report it back:
+                // `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` produce the same
+                // `named_tuple` param.
+                let arity = params.len();
                 let param_child = if params.len() == 1 {
                     self.type_expr_to_child(&params[0].1, span, owner)
                 } else {
@@ -10732,7 +10740,9 @@ impl<'a> Loader<'a> {
                     let param_t = ground(param_child);
                     let result_t = ground(result_child);
                     let effect_ts: Vec<TermId> = effect_children.into_iter().map(ground).collect();
-                    return TypeChild::Ground(self.kb.make_arrow_type(param_t, result_t, &effect_ts));
+                    return TypeChild::Ground(
+                        self.kb.make_arrow_type(param_t, result_t, &effect_ts, arity),
+                    );
                 }
                 // WI-377: fold the effect children into an `effects_rows`
                 // occurrence via the shared absent-aware helper. The earlier
@@ -10741,10 +10751,14 @@ impl<'a> Loader<'a> {
                 // from the `EffectAbsent` arm) into `present(absent(E))`; the
                 // helper keeps absent atoms bare.
                 let effects_child = self.fold_effect_row_occ(effects, effect_children, span, owner);
-                TypeChild::Node(
-                    self.kb
-                        .make_arrow_occ(param_child, result_child, effects_child, span, owner),
-                )
+                TypeChild::Node(self.kb.make_arrow_occ(
+                    param_child,
+                    result_child,
+                    effects_child,
+                    arity,
+                    span,
+                    owner,
+                ))
             }
             TypeExpr::Tuple(fields) => {
                 use node_occurrence::TypeChild;

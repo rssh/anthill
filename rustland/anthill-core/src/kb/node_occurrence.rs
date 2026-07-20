@@ -134,10 +134,11 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             }
         }
         TypeNode::EffectsRows { effects_expr } => drain_type_child(effects_expr, stack),
-        TypeNode::Arrow { param, result, effects } => {
+        TypeNode::Arrow { param, result, effects, arity } => {
             drain_type_child(param, stack);
             drain_type_child(result, stack);
             drain_type_child(effects, stack);
+            drain_type_child(arity, stack);
         }
         TypeNode::ExprCarried { value, member } => {
             drain_type_child(value, stack);
@@ -896,11 +897,25 @@ pub enum TypeNode {
     /// `EffectExpression` sort into a `Type` slot; `effects_expr` wraps a
     /// `NodeKind::EffectExpr` child.
     EffectsRows { effects_expr: TypeChild },
-    /// `arrow(param, result, effects)`.
+    /// `arrow(param, result, effects, arity)`.
+    ///
+    /// WI-791: `arity` is the PARAMETER-LIST LENGTH as written, carried as a
+    /// ground `Const(Int)` child. It is what says HOW TO READ `param`: at arity
+    /// one `param` is the sole parameter's TYPE (the list collapses — an arity-1
+    /// binder name is dropped), at any other arity it is the parameter LIST, a
+    /// `named_tuple` of exactly `arity` fields. Without it `(t: (a: A, b: B)) -> R`
+    /// and `(a: A, b: B) -> R` are the SAME term.
+    ///
+    /// It lives OUTSIDE `param` deliberately. WI-782 tried the encoding INSIDE the
+    /// slot (wrap an arity-1 list whose parameter is itself a tuple) and reverted
+    /// it: a type variable bound to the slot picked the wrapper up, so σ could both
+    /// introduce and erase the encoding. A ground `Const` sibling is not a type σ
+    /// acts on, so arity is a structural fact substitution cannot touch.
     Arrow {
         param: TypeChild,
         result: TypeChild,
         effects: TypeChild,
+        arity: TypeChild,
     },
     /// `named_tuple(fields: List[TypeField])` — a tuple type whose fields are
     /// `TypeField(name, type)` records. WI-342: minted when a tuple literal has a
@@ -1685,11 +1700,19 @@ fn map_type_node<R: TypeChildRewrite>(
             let (ne, ch) = map_type_child(r, kb, effects_expr);
             (TypeNode::EffectsRows { effects_expr: ne }, ch)
         }
-        TypeNode::Arrow { param, result, effects } => {
+        TypeNode::Arrow { param, result, effects, arity } => {
             let (np, c1) = map_type_child(r, kb, param);
             let (nr, c2) = map_type_child(r, kb, result);
             let (nf, c3) = map_type_child(r, kb, effects);
-            (TypeNode::Arrow { param: np, result: nr, effects: nf }, c1 || c2 || c3)
+            // WI-791: `arity` is a ground `Const(Int)`, so the rewrite is an
+            // identity — it is mapped anyway rather than copied so this stays one
+            // uniform walk over every child (the WI-378 map/collect/close/open
+            // lockstep) instead of a slot the next rewrite kind has to remember.
+            let (na, c4) = map_type_child(r, kb, arity);
+            (
+                TypeNode::Arrow { param: np, result: nr, effects: nf, arity: na },
+                c1 || c2 || c3 || c4,
+            )
         }
         TypeNode::ExprCarried { value, member } => {
             let (nv, c1) = map_type_child(r, kb, value);
@@ -2157,10 +2180,12 @@ fn collect_type_node_vars(
             }
         }
         TypeNode::EffectsRows { effects_expr } => collect_type_child(kb, effects_expr, vars, seen),
-        TypeNode::Arrow { param, result, effects } => {
+        TypeNode::Arrow { param, result, effects, arity } => {
             collect_type_child(kb, param, vars, seen);
             collect_type_child(kb, result, vars, seen);
             collect_type_child(kb, effects, vars, seen);
+            // Ground `Const(Int)` — contributes no vars, walked for lockstep.
+            collect_type_child(kb, arity, vars, seen);
         }
         TypeNode::ExprCarried { value, member } => {
             collect_type_child(kb, value, vars, seen);
@@ -2506,11 +2531,15 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             let e = type_child_to_term(kb, effects_expr);
             kb.make_effects_rows_type(e)
         }
-        TypeNode::Arrow { param, result, effects } => {
+        TypeNode::Arrow { param, result, effects, arity } => {
             let p = type_child_to_term(kb, param);
             let r = type_child_to_term(kb, result);
             let e = type_child_to_term(kb, effects);
-            kb.make_arrow_from_effects_rows(p, r, e)
+            // WI-791: the arity child crosses to the term twin as-is (a ground
+            // `Const(Int)`), so the two carriers stay structurally identical —
+            // `cached_term` identity and discrim keys both depend on that.
+            let a = type_child_to_term(kb, arity);
+            kb.make_arrow_from_effects_rows_arity_term(p, r, e, a)
         }
         TypeNode::ExprCarried { value, member } => {
             // A compound-receiver projection is ELIMINATED to a concrete type before
@@ -3374,10 +3403,11 @@ pub(crate) fn substitute_ref_syms_occ(
                 TypeNode::EffectsRows { effects_expr } => TypeNode::EffectsRows {
                     effects_expr: rewrite_ref_child(effects_expr, map),
                 },
-                TypeNode::Arrow { param, result, effects } => TypeNode::Arrow {
+                TypeNode::Arrow { param, result, effects, arity } => TypeNode::Arrow {
                     param: rewrite_ref_child(param, map),
                     result: rewrite_ref_child(result, map),
                     effects: rewrite_ref_child(effects, map),
+                    arity: rewrite_ref_child(arity, map),
                 },
                 TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
                     fields: rewrite_ref_value(fields, map),

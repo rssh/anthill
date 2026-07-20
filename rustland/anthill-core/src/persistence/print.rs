@@ -9,7 +9,9 @@ use std::rc::Rc;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
-use crate::kb::node_occurrence::{EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
+use crate::kb::node_occurrence::{
+    EffectExprNode, Expr, NodeKind, NodeOccurrence, TypeChild, TypeNode,
+};
 use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
 
 /// Append `s` quoted with `.anthill`-syntax escapes for `"`, `\`, `\n`,
@@ -181,8 +183,30 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_type_child(effects_expr, buf);
                 buf.push(')');
             }
-            TypeNode::Arrow { param, result, effects } => {
+            TypeNode::Arrow { param, result, effects, arity } => {
+                // WI-791: at arity one the `param` child is the sole parameter's
+                // TYPE, so a tuple there is that parameter's type and needs its own
+                // parens — without them `((a: A, b: B)) -> R` renders as the
+                // two-parameter `(a: A, b: B) -> R`. Mirrors `write_arrow_type`,
+                // which had to guess this from the param's shape (WI-766) and can
+                // now read it. An unreadable arity keeps the pre-WI-791 rendering.
+                // Carrier-agnostic: a tuple param with a denoted-bearing component
+                // rides as `TypeChild::Node`, and a Ground-only test would leave
+                // exactly that arrow printing as an n-parameter list.
+                let param_is_tuple = match param {
+                    TypeChild::Ground(t) => self.is_named_tuple_term(*t),
+                    TypeChild::Node(occ) => {
+                        matches!(&occ.kind, NodeKind::Type(TypeNode::NamedTuple { .. }))
+                    }
+                };
+                let wrap = self.type_child_arity(arity) == Some(1) && param_is_tuple;
+                if wrap {
+                    buf.push('(');
+                }
                 self.write_type_child(param, buf);
+                if wrap {
+                    buf.push(')');
+                }
                 buf.push_str(" -> ");
                 self.write_type_child(result, buf);
                 buf.push_str(" ! ");
@@ -908,20 +932,45 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// loader reads a single arrow parameter by its TYPE and drops the label, so
     /// `(a: T) -> R` loads as `arrow(param = T)` — meaning a genuine one-component
     /// tuple parameter, `arrow(param = (a: T))`, would print to that same text and
-    /// read back as the scalar. Arity one therefore keeps the outer parens. Arity
-    /// two and up cannot collide (a multi-parameter list IS the named tuple), so
-    /// they keep the direct form and their output is unchanged.
+    /// read back as the scalar. Arity one therefore keeps the outer parens.
+    ///
+    /// WI-791: which case this IS is now read from the arrow's own `arity` child
+    /// instead of guessed from the param's component count. That distinction is
+    /// what makes the round trip FAITHFUL rather than merely stable: the two
+    /// spellings that used to print alike — `(t: (a: A, b: B)) -> R` (arity 1) and
+    /// `(a: A, b: B) -> R` (arity 2) — now print as `((a: A, b: B)) -> R` and
+    /// `(a: A, b: B) -> R`, each reparsing to the arrow it came from. It is also
+    /// stable under re-printing: wrapping is decided by arity, and reparsing
+    /// `((a: A, b: B)) -> R` yields a ONE-parameter list again, so no layer
+    /// accumulates (the failure mode of the reverted in-slot encoding, whose third
+    /// print/reparse generation no longer parsed).
     fn write_arrow_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
+        let arity = self
+            .named_arg(named, "arity")
+            .and_then(|a| self.type_child_arity(&TypeChild::Ground(a)));
         match self.named_arg(named, "param") {
-            Some(p) if self.is_named_tuple_term(p) && self.named_tuple_arity(p) != 1 => {
-                self.write_type_term(p, buf)
-            }
-            Some(p) => {
-                buf.push('(');
-                self.write_type_term(p, buf);
-                buf.push(')');
-            }
             None => buf.push_str("()"),
+            Some(p) => {
+                // Does the `param` slot ALREADY render as the parameter list? Only
+                // a named tuple can, and only when the arrow says it is one.
+                let slot_is_the_list = self.is_named_tuple_term(p)
+                    && match arity {
+                        Some(n) => n != 1,
+                        // A count this cannot read falls back to the pre-WI-791
+                        // shape heuristic rather than inventing a parenthesisation.
+                        None => self.named_tuple_arity(p) != 1,
+                    };
+                if slot_is_the_list {
+                    // Its own parens are the list's (arity 0 renders `()`).
+                    self.write_type_term(p, buf);
+                } else {
+                    // The slot is the sole parameter's TYPE — wrap a one-slot
+                    // parameter list around it.
+                    buf.push('(');
+                    self.write_type_term(p, buf);
+                    buf.push(')');
+                }
+            }
         }
         buf.push_str(" -> ");
         match self.named_arg(named, "result") {
@@ -995,6 +1044,17 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             n.strip_prefix('_').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
         } else {
             false
+        }
+    }
+
+    /// WI-791: decode an arrow's `arity` child (a ground `Const(Int)`). `None` for
+    /// any other shape — the caller then keeps the pre-WI-791 rendering rather
+    /// than inventing a parenthesisation.
+    fn type_child_arity(&self, child: &TypeChild) -> Option<usize> {
+        let TypeChild::Ground(t) = child else { return None };
+        match self.view.term(*t) {
+            Term::Const(crate::kb::term::Literal::Int(n)) if *n >= 0 => Some(*n as usize),
+            _ => None,
         }
     }
 

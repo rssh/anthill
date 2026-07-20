@@ -363,26 +363,27 @@ agree on which slot is which — the names line up, or one side carries the
 synthetic `_1.._n` convention. Two equal-arity lists with unrelated names do not
 conform.
 
-> **Known gap.** The parameter list `(t: (a: A, b: B))` — one tuple-typed
-> parameter — and the parameter list `(a: A, b: B)` — two parameters — currently
-> build the *same* arrow type, because an arity-1 list is represented by its
-> parameter's type alone. This cuts BOTH ways. Each is accepted where the other
-> is required, surfacing as a run-time trap rather than a load error. And,
-> conversely, a lone tuple-typed parameter is aligned as though it were a
-> parameter list, so a *permuted* or *narrower* one is **refused at load** even
-> though it is correct — its components are read by name at run time. The two
-> cannot be told apart at the conformance rung: a permuted parameter list and a
-> permuted tuple parameter are the same type. Tracked as WI-791; the arrow
-> spelling and the `Function[A, B]` spelling of such a callback consequently
-> disagree, since `A` is one tuple-typed argument and is still related by name.
->
-> The admissibility gate above narrows the accepting direction but does **not**
-> close it, and the residue is the *idiomatic* spelling: a tuple parameter written
-> positionally, `(t: (A, B))`, has components named `_1, _2`, which is exactly the
-> synthetic shape that admits a zip. So `(t: (A, B))` still satisfies a genuine
-> two-parameter list and traps at run time, where `(t: (a: A, b: B))` is refused
-> at load. A component spelled with a leading zero (`_01`) behaves the same way.
-> Both are WI-791's to close.
+**An arrow records its parameter ARITY** (WI-791), and that count — not the shape
+of the parameter type — decides which of the two relations applies:
+
+* **arity ≠ 1** — the parameter position *is* the list, and the rules above hold:
+  same arity, slot-by-slot, no permutation and no width.
+* **arity 1** — the parameter position is the sole parameter's TYPE. A tuple there
+  is *data*, whose components are read by name (§Field access, mode 3), so it is
+  related by name with width subtyping like any other tuple. `(t: (x: A, y: B)) ->
+  R` therefore accepts a callback declared `(u: (y: B, x: A)) -> R`, and a callback
+  reading only `(a: A)` accepts a wider `(a: A, b: B)`.
+
+Arity is thus what tells `(t: (a: A, b: B))` — one tuple-typed parameter — from
+`(a: A, b: B)` — two parameters. They are different types: neither conforms to the
+other, and the mismatch is a **load error**, not a run-time trap. Write the
+one-parameter form as `((a: A, b: B)) -> R` when there is no binder to name it;
+that is also how it prints.
+
+> An arity-1 parameter list still **drops its binder name** — `(v: A) -> R` and
+> `(w: A) -> R` are the same type — so a named argument cannot be resolved
+> against a single-parameter arrow. Arity is recorded; the arity-1 binder name is
+> not.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
@@ -390,12 +391,15 @@ The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels
 
 The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib (with empty effect set). The effectful arrow `(A) -> B @ E` is equivalent to `Function[A, B, E]`. `Function` is the unified sort for all callable values — pure and effectful. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`Function[A, B] <: Function[A, B, E]` for any `E`).
 
-> The equivalence is not currently exact for a **single tuple-typed parameter**.
-> `A` in `Function[A, B]` is one ARGUMENT and is related by name, whereas the
-> arrow spelling of the same callback collapses to a parameter list and is
-> related positionally — so a permuted or narrower tuple parameter conforms under
-> the `Function` spelling and is refused under the arrow spelling. See the Known
-> Gap under §Arrow types; tracked as WI-791.
+> The equivalence is not exact in one remaining respect: **`Function` states no
+> arity.** `A` is the one argument `apply(f, x: A)` passes, so `Function[(A, B),
+> R]` denotes both a single-tuple-argument callback *and* — by the run-time
+> convention that spreads one tuple argument across a multi-parameter operation —
+> a two-parameter one. The arrow spelling now distinguishes those, so
+> `((A, B)) -> R` accepts only the former while `Function[(A, B), R]` accepts
+> either. (Before WI-791 the two disagreed the other way round, on permutation and
+> width of a tuple parameter; that half is resolved — both relate a lone tuple
+> parameter by name.)
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 
