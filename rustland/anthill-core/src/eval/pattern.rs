@@ -54,8 +54,8 @@ pub fn match_pattern(
         Pattern::Constructor { name, pos_args, named_args } => {
             match_constructor_pattern(interp, *name, pos_args, named_args, scrutinee)
         }
-        Pattern::Tuple { positional, .. } => {
-            match_tuple_pattern(interp, positional, scrutinee)
+        Pattern::Tuple { positional, named } => {
+            match_tuple_pattern(interp, positional, named, scrutinee)
         }
     }
 }
@@ -118,19 +118,67 @@ fn match_constructor_pattern(
     Some(bindings)
 }
 
+/// Match a tuple pattern, binding each binder to the component in the same
+/// position — for a positionally-keyed AND a name-keyed tuple alike.
+///
+/// Reading only `Value::Tuple.pos` (as this did) meant a NAME-keyed tuple showed
+/// up as zero components, so a destructuring binder never matched one:
+/// `lambda (acc, x) -> …` applied to `(acc: 3, x: 10)` failed the arity test and
+/// raised, while the same lambda over the positional `(3, 10)` bound fine and an
+/// operation taking one `(acc: Int64, x: Int64)` parameter worked too. Only the
+/// destructuring-lambda-over-named-tuple corner was broken.
+///
+/// Binding by POSITION rather than by matching binder names to labels is forced:
+/// a tuple pattern has no way to spell a label (the grammar's tuple-pattern
+/// element is a pattern or a WI-517 `name: Type` TYPED BINDER, never a
+/// `named_pattern_field` — that production is constructor-only), so a binder
+/// name is a fresh binder, not a selector. By-name would break `lambda (a, b)`
+/// over `(acc: …, x: …)` outright. It also agrees with the typer, which aligns
+/// an arrow's parameter list positionally (WI-775 `TupleAlign::ParamList`).
+///
+/// ## Why `pos ++ named` is source order
+///
+/// A tuple's components are split across `pos` and `named` by `classify_ctor_arg`
+/// (eval/eval.rs), which unwraps the parser's synthetic `_N` labels for positional
+/// syntax back into `pos`. WI-786 made that unwrap exact — the label must be the
+/// synthetic name for its own source index, and nothing may already have gone to
+/// `named` — so `pos` is always a source-order PREFIX and `named` the remainder in
+/// order. Concatenating them therefore reproduces the components as written.
+///
+/// That invariant is load-bearing here, and it is young: before WI-786 the unwrap
+/// was a bare `_`-prefix test, which also caught user labels like `_b` and
+/// silently scrambled the order — `lambda (p, q) -> p - q` over `(a: 3, _b: 10)`
+/// yielded 7 instead of -7, and an operation declared `-> Int64` returned a
+/// `String`. If that unwrap is ever widened again, this walk is what breaks.
 fn match_tuple_pattern(
     interp: &Interpreter,
     positional: &[Rc<NodeOccurrence>],
+    named: &[(Symbol, Rc<NodeOccurrence>)],
     scrutinee: &Value,
 ) -> Option<Bindings> {
-    let pos = match scrutinee {
-        Value::Tuple { pos, .. } => pos,
+    let (val_pos, val_named) = match scrutinee {
+        Value::Tuple { pos, named } => (pos, named),
         _ => return None,
     };
-    if pos.len() != positional.len() { return None; }
+    // Nothing mints a labelled tuple sub-pattern: the grammar has no production
+    // for one, the parser emits `pattern_tuple` with positional elements only,
+    // and the sole `Pattern::Tuple` producer hardcodes `named: Vec::new()`.
+    // Refuse rather than carry untestable code for a shape that cannot occur —
+    // and note a future label rule would have to agree with `field_access`'
+    // short-name lookup (eval/builtins.rs), not raw symbol identity.
+    debug_assert!(named.is_empty(), "no producer mints a labelled tuple sub-pattern");
+    if !named.is_empty() {
+        return None;
+    }
+    if positional.len() != val_pos.len() + val_named.len() {
+        return None;
+    }
+    // Source order, per the invariant above. Same idiom the Tuple/Entity walk in
+    // eval/effects.rs uses, and allocation-free as the old `pos`-only zip was.
+    let components = val_pos.iter().chain(val_named.iter().map(|(_, v)| v));
 
     let mut bindings = SmallVec::new();
-    for (sub_pat, sub_val) in positional.iter().zip(pos.iter()) {
+    for (sub_pat, sub_val) in positional.iter().zip(components) {
         let mut sub_b = match_pattern(interp, sub_pat, sub_val)?;
         bindings.append(&mut sub_b);
     }

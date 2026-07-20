@@ -103,7 +103,14 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
 - **Discrimination tree**: structural term matching index for fast rule/fact lookup
 - **SLD resolution**: depth-first search with negation-as-failure, delay/rotation for unbound vars
 - **Facts are rules**: a fact is a rule with empty body; constraints are integrity guards
-- **Named args**: always sorted by field name for canonical ordering
+- **Named args**: canonicalized to a stable order so a record hash-conses and
+  discrim-matches regardless of source order — by DECLARED field order when the
+  functor has a field schema, else by interning order
+  (`canonicalize_record_named_args`, `kb/resolve.rs`). **Not** alphabetical, and
+  **not** universal: it returns early for an ORDERED PRODUCT (a named tuple),
+  whose source order IS its identity. Load-bearing — a named tuple's components
+  are read positionally in source order (see `match_tuple_pattern`), so
+  canonicalizing one would silently re-bind destructured components.
 
 # Repository rules
 

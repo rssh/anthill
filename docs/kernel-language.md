@@ -1317,6 +1317,19 @@ f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
 
 3. **Named-tuple component access** (WI-638): if the object types as a **named tuple** (its functor is `named_tuple`, so the receiver sort is `None` and modes 1–2 never reach it), resolve the identifier against the tuple's `(name, type)` components — by short name (`t.x`) or by positional `_N` (`t._1`, 1-based, since positional tuples desugar to `_N` names). Access is name-keyed on both the type and the runtime `Value::Tuple`, hence **order-independent**. E.g., `(x: 10, y: 20).x` evaluates to `10`; `t.x` on a param typed `(x: Int64, y: Int64)` type-checks and evaluates.
 
+**Destructuring is POSITIONAL, unlike access** (WI-785). Component *access* is
+name-keyed and order-independent, as above. A destructuring binder list is not:
+`lambda (p, q) -> …` and `case (p, q) ->` bind `p` to the **first** component as
+written and `q` to the second, whatever the components are labelled — including
+against a name-keyed tuple, so `lambda (p, q) -> p - q` applied to
+`(x: 3, acc: 10)` computes `3 - 10`. The two rules differ because a tuple pattern
+has no way to *spell* a label: its elements are patterns or `name: Type` typed
+binders, so a binder name is a fresh binder rather than a selector, and matching
+binder names against labels would leave `lambda (a, b)` no meaning at all over a
+named tuple. It also agrees with an arrow's parameter list, which is applied
+positionally, so binder names there need not match the callee's either. A binder
+list whose length differs from the component count does not match.
+
 **Disambiguation from qualified names.** At parse time, `a.b` in term position is parsed as `field_access(a, b)` — a variable or identifier followed by `.identifier`. Qualified names (`Namespace.Sort`) continue to be parsed as `name` nodes within `fn_term` and `instantiation_term`, which require `(...)` or `{...}` to follow the name. There is no ambiguity: `A.B(x)` parses as `fn_term(name: A.B, args: [x])`, while `A.B` alone in term position parses as `field_access(A, B)`.
 
 **Well-formedness rules:**

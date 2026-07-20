@@ -2565,10 +2565,43 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     }
 }
 
+/// Is `label` the parser's synthetic positional name for source index `index`?
+///
+/// Mirrors `intern_positional_label` (parse/convert.rs), which emits exactly
+/// `_{index + 1}` — so `_01` is a USER label, not a synthetic one, and stays
+/// named.
+fn is_synthetic_positional_label(label: &str, index: usize) -> bool {
+    match label.strip_prefix('_') {
+        Some(digits) if !digits.starts_with('0') => {
+            matches!(digits.parse::<usize>(), Ok(n) if n == index + 1)
+        }
+        _ => false,
+    }
+}
+
 /// Decide whether a constructor arg with optional auto-name goes into the
 /// positional or named slot of the emerging value. Tuple literals' `_N`
 /// auto-names are unwrapped back to positional; everything else goes named
 /// iff it has a name.
+///
+/// WI-786: the tuple-literal unwrap is narrow on purpose, and both conditions
+/// are load-bearing.
+///
+///  * The label must be EXACTLY the synthetic name for this component's source
+///    index — not merely `_`-prefixed. Identifiers may begin with `_`, so a
+///    plain prefix test also caught user labels like `_id`; those were re-slotted
+///    into `pos`, which carries no labels, DISCARDING the name and scrambling
+///    source order.
+///  * Nothing may have gone to `named` yet, so `pos` stays a source-order
+///    PREFIX. Without this, `(a: 1, 2)` would put `2` in `pos` behind `a` in
+///    `named` and `pos ++ named` would read `[2, 1]`.
+///
+/// Together they give every consumer the invariant that **`pos ++ named` is
+/// source order** — making a named tuple an ordered product in its runtime
+/// carrier, not just in its type. `match_tuple_pattern` (eval/pattern.rs) relies
+/// on it to bind a destructuring binder list; `validate_projection_labels`
+/// (parse/convert.rs) previously had to defend WI-639 projections against the
+/// old behaviour at the producer instead.
 fn classify_ctor_arg(
     kb: &KnowledgeBase,
     _ctor_sym: Symbol,
@@ -2580,7 +2613,12 @@ fn classify_ctor_arg(
     named: &mut Vec<(Symbol, Value)>,
 ) {
     match name {
-        Some(sym) if is_tuple_literal && kb.resolve_sym(sym).starts_with('_') => {
+        // `named.is_empty()` makes `pos.len()` this component's source index.
+        Some(sym)
+            if is_tuple_literal
+                && named.is_empty()
+                && is_synthetic_positional_label(kb.resolve_sym(sym), pos.len()) =>
+        {
             pos.push(value);
         }
         Some(sym) => named.push((sym, value)),

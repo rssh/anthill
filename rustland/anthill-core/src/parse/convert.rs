@@ -1137,13 +1137,17 @@ impl<'a> Converter<'a> {
     ///    later columns are silently dropped — both the tuple typer and the
     ///    eval twin resolve the FIRST match for a key.
     ///  - A `_`-prefixed label (`x.(_1, _2)`; bare positional-component
-    ///    members) collides with the positional-tuple convention:
-    ///    `classify_ctor_arg` re-slots ANY `_`-keyed tuple field positionally
-    ///    in argument order, discarding the label, so a reordered projection
-    ///    silently returns the wrong column. Projection is named-only
-    ///    (proposal 052 OQ3) — positional selection is written out explicitly
-    ///    as `(x.f1, x.f2)`; renaming a positional member (`x.(a: _1)`) is
-    ///    fine (label `a` is not `_`-prefixed).
+    ///    members) collides with the positional-tuple convention. Projection is
+    ///    named-only (proposal 052 OQ3) — positional selection is written out
+    ///    explicitly as `(x.f1, x.f2)`; renaming a positional member
+    ///    (`x.(a: _1)`) is fine (label `a` is not `_`-prefixed).
+    ///
+    ///    This guard used to be load-bearing for a second reason —
+    ///    `classify_ctor_arg` re-slotted ANY `_`-keyed tuple field positionally,
+    ///    discarding the label, so a reordered projection silently returned the
+    ///    wrong column. WI-786 narrowed that unwrap to the exact synthetic name
+    ///    for a component's own source index, so the corruption is gone at the
+    ///    source and only the named-only design rule keeps this check.
     fn validate_projection_labels(&mut self, node: Node, entries: &[ProjEntry]) {
         for (i, e) in entries.iter().enumerate() {
             if self.symbols.name(e.label).starts_with('_') {

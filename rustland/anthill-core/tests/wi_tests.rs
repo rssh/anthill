@@ -719,3 +719,9 @@ mod wi764_relation_binding_order_test;
 
 #[path = "include/wi768_dispatch_binding_key_test.rs"]
 mod wi768_dispatch_binding_key_test;
+
+#[path = "include/wi785_named_tuple_destructuring_test.rs"]
+mod wi785_named_tuple_destructuring_test;
+
+#[path = "include/wi786_tuple_component_order_test.rs"]
+mod wi786_tuple_component_order_test;

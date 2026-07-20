@@ -73,6 +73,9 @@ Integration tests in `anthill-core/tests/` follow:
 ## Conventions
 
 - `SmallVec<[T; N]>` for term args. Use `from_elem` for single, `from_slice` for multiple (requires `Copy`).
-- Named args always sorted by field name for canonical ordering.
+- Named args canonicalized for stable hash-consing/discrim matching — by DECLARED
+  field order when the functor has a schema, else interning order
+  (`canonicalize_record_named_args`). Not alphabetical. Exempt: an ORDERED
+  PRODUCT (named tuple), whose source order is its identity.
 - `assert_rule_debruijn_with_nodes` for rules (converts vars; term bodies first go through `term_body_to_nodes`), `assert_fact` for ground facts (arity 0).
 - `FnArg` is `Copy` (both `TermId` and `Symbol` are `Copy`).
