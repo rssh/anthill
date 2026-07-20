@@ -737,3 +737,9 @@ mod wi784_closure_arity_test;
 
 #[path = "include/wi792_function_value_args_test.rs"]
 mod wi792_function_value_args_test;
+
+#[path = "include/wi793_literal_receiver_projection_test.rs"]
+mod wi793_literal_receiver_projection_test;
+
+#[path = "include/wi794_multi_binder_annotation_test.rs"]
+mod wi794_multi_binder_annotation_test;

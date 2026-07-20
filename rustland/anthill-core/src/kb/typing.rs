@@ -3249,6 +3249,37 @@ enum TypeBuildFrame {
         /// WI-283: fire-fuel inherited from this node's `Visit`; on a fire
         /// the RHS is re-`Visit`ed with `fuel - 1` (bounds the chain).
         fuel: usize,
+        /// WI-793: results for arguments typed AHEAD of the others, keyed by their
+        /// unified `pos_args ++ named_args` index — a projection receiver whose type
+        /// the hints needed (see [`known_arg_types_and_staged`]). EMPTY for every
+        /// ordinary call, in which case the results stack is drained in natural order
+        /// exactly as before staging existed.
+        staged_results: Vec<(usize, Result<TypeResult, TypeError>)>,
+    },
+    /// WI-793: the staged half of an `Apply`. Reached once the projection-receiver
+    /// arguments have been typed: it completes the param→argument-type map with their
+    /// types, builds the hints for EVERY argument, then pushes the `Apply` frame and the
+    /// Visits for the arguments not yet typed. Exists because an argument hint can depend
+    /// on a SIBLING argument's type, which the single-phase "hint everything, then visit
+    /// everything" order could not express.
+    ApplyHints {
+        occ: Rc<NodeOccurrence>,
+        fn_sym: Symbol,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        env: Env,
+        expected: Option<Value>,
+        fuel: usize,
+        /// Unified argument indices, ASCENDING — the order their results sit in on the
+        /// results stack.
+        staged: Vec<usize>,
+        /// The callee's declared parameters. Non-empty whenever `staged` is (staging is
+        /// keyed off them), carried so the hint pass need not look the operation up twice.
+        op_params: Vec<(Symbol, Value)>,
+        sort_app_hint: Option<Value>,
+        /// What the no-typing readers already answered, to be completed with the staged
+        /// results rather than recomputed.
+        known: HashMap<Symbol, Value>,
     },
     /// All Constructor args finished; drain results and call
     /// `check_constructor_iter`. WI-270: `expected` flows into the
@@ -4845,11 +4876,7 @@ fn hof_arg_hint(
     param_type: Option<Value>,
 ) -> Option<Value> {
     let pt = param_type?;
-    let is_hof_arg = matches!(
-        &arg.kind,
-        NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. }
-    );
-    if is_hof_arg && arrow_parts(kb, &pt).is_some() {
+    if is_hof_shaped(arg) && arrow_parts(kb, &pt).is_some() {
         Some(pt)
     } else {
         None
@@ -4917,6 +4944,240 @@ fn relation_ref_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Op
         return None;
     }
     relation_reference_type(kb, name, Some(arg.span.span), arg).ok()
+}
+
+/// WI-275: a lambda or a bare reference — the two argument shapes that need a top-down
+/// function type (to type a lambda's parameter, or to eta-lift an operation name to a
+/// function value). [`hof_arg_hint`] gives those, and only those, the declared param type.
+///
+/// WI-793 named it: the SAME predicate decides which arguments must never be staged
+/// ahead of the hints, because a staged argument is visited before any hint exists and
+/// these are exactly the arguments a hint is for.
+fn is_hof_shaped(arg: &Rc<NodeOccurrence>) -> bool {
+    matches!(&arg.kind, NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. })
+}
+
+/// WI-793: the UNIFIED `pos_args ++ named_args` index of the argument bound to parameter
+/// `psym` at declared position `param_pos` — positional by slot, named by LABEL (WI-426,
+/// not symbol identity). One index space so a staged argument can be named once and
+/// located in either channel. [`arg_at`] reads it back; [`param_sym_for_arg_index`] is
+/// the inverse.
+fn param_arg_index(
+    kb: &KnowledgeBase,
+    psym: Symbol,
+    param_pos: usize,
+    pos_len: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<usize> {
+    if param_pos < pos_len {
+        return Some(param_pos);
+    }
+    named_args.iter().position(|(n, _)| same_label(kb, *n, psym)).map(|k| pos_len + k)
+}
+
+/// WI-793: the argument at a unified [`param_arg_index`].
+///
+/// Written as an explicit branch rather than `pos_args.get(u).or_else(|| named_args.get(u
+/// - pos_args.len()))`: that form is correct only because `or_else` is lazy, so the
+/// subtraction's precondition lives in the evaluation order instead of in the code. Here
+/// the `else` states it.
+fn arg_at<'a>(
+    pos_args: &'a [Rc<NodeOccurrence>],
+    named_args: &'a [(Symbol, Rc<NodeOccurrence>)],
+    unified: usize,
+) -> Option<&'a Rc<NodeOccurrence>> {
+    if unified < pos_args.len() {
+        pos_args.get(unified)
+    } else {
+        named_args.get(unified - pos_args.len()).map(|(_, a)| a)
+    }
+}
+
+/// WI-793: the parameter symbol an argument at a unified index is bound to — the inverse
+/// of [`param_arg_index`], used to key a staged argument's computed type back onto its
+/// parameter.
+fn param_sym_for_arg_index(
+    kb: &KnowledgeBase,
+    ps: &[(Symbol, Value)],
+    unified: usize,
+    pos_len: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<Symbol> {
+    if unified < pos_len {
+        return ps.get(unified).map(|(s, _)| *s);
+    }
+    let label = named_args.get(unified - pos_len)?.0;
+    ps.iter().find(|(s, _)| same_label(kb, *s, label)).map(|(s, _)| *s)
+}
+
+/// WI-485 + WI-793: the param→argument-type map that lets a sibling callback param's
+/// projection be eliminated BEFORE it hints a lambda — plus the argument positions whose
+/// type this call must compute FIRST for that map to be complete.
+///
+/// THE ORDERING PROBLEM this exists to solve. A callback param can be typed with a
+/// path-dependent projection over a SIBLING param — `List.foldLeft`'s
+/// `f: (acc: Acc, x: xs.T) -> Acc`. That declared type is what gets pushed into a lambda
+/// argument as its expected type, and it is the only thing that tells the binder `x` what
+/// it is, so `xs.T` must become `Int64` BEFORE the lambda is visited. That needs the type
+/// of the argument in the `xs` slot. But the `Expr::Apply` arm builds hints for EVERY
+/// argument and only then pushes the argument Visits — so at hint time nothing has been
+/// typed at all, the receiver included.
+///
+/// WI-485 worked around it with readers that need no typing: an env binding for a
+/// var-ref, a rule's schema, a stamp from an earlier frame. Those cover a receiver whose
+/// type already exists somewhere. They do not cover an ordinary EXPRESSION — a list
+/// literal `[1, 2, 3]`, a `cons` spine, a call `mk()` — so `List.foldLeft([1, 2, 3], 0, λ)`
+/// hinted the lambda with an un-eliminated `xs.T`, the binder bound the rigid NEUTRAL, and
+/// a CORRECT program failed to LOAD with `expected Int64, got xs.T` (WI-793). A named
+/// operation callback was unaffected — its own declared param types drive, and the arrow
+/// conforms after the WI-398 call-site elimination — which is why the defect needed the
+/// literal AND the lambda together.
+///
+/// So the second return value is the fix: the arguments to VISIT FIRST, in dependency
+/// order, rather than typing them a second time out of band. This is the shape the
+/// DOT-CALL path already had — `[1, 2, 3].foldLeft(0, λ)` never had the bug because the
+/// `DotApply` frame pushes only its receiver's Visit and reads that result before the
+/// arguments are typed (WI-443). Staging gives the qualified spelling the same footing,
+/// on the same work-stack, with the same fuel and the same `[simp]` gate.
+///
+/// STAGING IS NARROW, and each condition earns its place:
+///  - the call must have a higher-order argument at all (the caller's gate) — a hint is
+///    only load-bearing for a lambda;
+///  - the parameter must be one some OTHER parameter's type actually PROJECTS, which is
+///    what `projected` computes; a signature that projects nothing stages nothing;
+///  - the no-typing readers must have MISSED, so a var-ref receiver still costs nothing;
+///  - and the argument must not itself be [`is_hof_shaped`]. That last one is not
+///    hypothetical: `foo(g: (x: Int64) -> Int64, h: (y: g.T) -> Int64)` puts a CALLBACK
+///    in `projected`, and staging it would visit the lambda with no hint — the exact
+///    thing this machinery exists to provide.
+fn known_arg_types_and_staged(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    ps: &[(Symbol, Value)],
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> (HashMap<Symbol, Value>, Vec<usize>) {
+    // The params some param type PROJECTS. ONE walk of the signature; empty ⟹ this call
+    // eliminates nothing, so no argument is worth staging.
+    let mut projected: Vec<Symbol> = Vec::new();
+    for (_, t) in ps.iter() {
+        collect_projection_receivers(kb, t, &mut projected);
+    }
+    let mut known: HashMap<Symbol, Value> = HashMap::new();
+    let mut staged: Vec<usize> = Vec::new();
+    for (j, (psym, _)) in ps.iter().enumerate() {
+        let Some(unified) = param_arg_index(kb, *psym, j, pos_args.len(), named_args) else {
+            continue;
+        };
+        let Some(a) = arg_at(pos_args, named_args, unified) else { continue };
+        // A sibling callback param may project this arg's schema (`join`'s
+        // `cond: (c: r1.T, q: r2.T) -> Bool`). The env covers a let-bound receiver
+        // (WI-723); a bare RULE-reference arg (`join(r1, r2, …)`'s `r2`) is a
+        // `Relation[T]` value never bound in the env, so its schema is computed directly
+        // (WI-714) — else `r2.T` cannot be eliminated at hint time and the two-row
+        // lambda's binder stays an unresolved projection. WI-750: the third reader (the
+        // node's STAMPED type) covers a COMPUTED receiver — `r.where(λ).where(λ)`, whose
+        // inner call is an `Expr::Apply` that neither of the first two match.
+        //
+        // SCOPE OF THE STAMP READER, stated as the code actually behaves — carried
+        // forward from WI-750 because it is a warning aimed at edits like WI-793's, and
+        // the `projected` / `is_hof_shaped` gates BELOW must not be read back onto it:
+        // `projection_receiver_type` reads the stamp of ANY arg in ANY `Expr::Apply`
+        // carrying a HOF arg. There is no receiver gate on it, and it would be wrong to
+        // claim one. What bounds it is that a stamp is only present where a pass already
+        // typed the node, which for the shape WI-750 fixed is the spliced dot-call
+        // receiver. On a RE-typed tree other args carry stamps too and may now contribute
+        // a binding; that is a widening, deliberate — a computed
+        // `join(r1, mk().where(λ), cond)` operand needs exactly the same reading — but it
+        // means the bound is EMPIRICAL, not structural, so do not rely on "receiver only"
+        // when editing here. Leaf args are unaffected either way: `varref_arg_env_type`
+        // already consulted the stamp for them.
+        //
+        // The staging gates below are narrower than this reader ON PURPOSE and do not
+        // constrain it: they decide only which args are worth TYPING, never which args
+        // may be READ.
+        //
+        // `env` stays FIRST: a still-flexible env binding is the live one, a stamp only a
+        // fallback. This is [`projection_receiver_type`], the reader the WI-714 projection
+        // path already composes.
+        if let Some(t) = projection_receiver_type(kb, env, a) {
+            known.insert(*psym, t);
+        } else if projected.contains(psym) && !is_hof_shaped(a) {
+            staged.push(unified);
+        }
+    }
+    // ASCENDING: the caller pushes the staged Visits in reverse, so their results land on
+    // the results stack in this order, and the `Apply` frame splices them back by it.
+    // A named argument's unified index does not follow declaration order, so this sort is
+    // load-bearing, not tidiness.
+    staged.sort_unstable();
+    staged.dedup();
+    (known, staged)
+}
+
+/// WI-275/427/707: the top-down hint for ONE argument, given its declared parameter type.
+/// Shared by the positional and named channels (they differ only in how `pt` is looked
+/// up) and by both staging phases, so a hint cannot be computed one way before the
+/// receiver is typed and another way after.
+fn one_arg_hint(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    arg: &Rc<NodeOccurrence>,
+    pt: Option<Value>,
+    known: &HashMap<Symbol, Value>,
+) -> Option<Value> {
+    // WI-485: eliminate a callback param projection for the lambda hint (`s.T ⟹ Int64`);
+    // keep the original `pt` for the nested-call hint (that path is gated on a ground
+    // type and rides the call-site path).
+    let pt_hof = pt
+        .as_ref()
+        .and_then(|t| eliminate_callback_hint_projection(kb, t, known, functor))
+        .or_else(|| pt.clone());
+    hof_arg_hint(kb, arg, pt_hof)
+        .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
+        .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
+}
+
+/// WI-275: the top-down hints for every argument of a call, positional then named.
+///
+/// WI-793 note on why calling this BEFORE the staged arguments are typed is sound: only
+/// [`hof_arg_hint`] reads the projection-eliminated type, and it answers `None` for
+/// anything not [`is_hof_shaped`]. A staged argument is never hof-shaped, so its hint
+/// does not depend on `known` — computing it with the incomplete map yields exactly the
+/// hint the completed map would. That is what lets a staged argument keep the
+/// `nested_call_arg_hint` / `type_slot_arg_hint` it would otherwise have received.
+fn apply_arg_hints(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    op_params: Option<&Vec<(Symbol, Value)>>,
+    sort_app_hint: &Option<Value>,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    known: &HashMap<Symbol, Value>,
+) -> (Vec<Option<Value>>, Vec<Option<Value>>) {
+    let mut pos_hints = Vec::with_capacity(pos_args.len());
+    for (i, arg) in pos_args.iter().enumerate() {
+        // WI-707: inside a sort application every argument is a type.
+        if sort_app_hint.is_some() {
+            pos_hints.push(sort_app_hint.clone());
+            continue;
+        }
+        let pt = op_params.and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
+        pos_hints.push(one_arg_hint(kb, functor, arg, pt, known));
+    }
+    let mut named_hints = Vec::with_capacity(named_args.len());
+    for (name, arg) in named_args.iter() {
+        if sort_app_hint.is_some() {
+            named_hints.push(sort_app_hint.clone());
+            continue;
+        }
+        // WI-426: match the named-arg label to its param by name.
+        let pt = op_params
+            .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
+            .map(|(_, t)| t.clone());
+        named_hints.push(one_arg_hint(kb, functor, arg, pt, known));
+    }
+    (pos_hints, named_hints)
 }
 
 /// WI-485: eliminate a cross-param projection in a callback PARAM type (e.g. find's
@@ -5866,13 +6127,8 @@ fn visit_type(
             // (fully ground) — the `expected → argument` half of bidirectional
             // inference (`nested_call_arg_hint`). The lookup is gated on the
             // call actually having a lambda/ref or nested-call argument.
-            let has_hof_arg = pos_args
-                .iter()
-                .chain(named_args.iter().map(|(_, a)| a))
-                .any(|a| matches!(
-                    &a.kind,
-                    NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. }
-                ));
+            let has_hof_arg =
+                pos_args.iter().chain(named_args.iter().map(|(_, a)| a)).any(is_hof_shaped);
             let has_call_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
@@ -5890,117 +6146,97 @@ fn visit_type(
             } else {
                 None
             };
-            // WI-485: partial param→arg-type map from args whose type is known WITHOUT
-            // synthesis (VarRef args, via env), so a sibling callback param's projection
-            // (`pred: (x: s.T) -> …`) can be eliminated BEFORE it hints a lambda. Built
-            // once, only when a higher-order arg is present.
-            let known_param_arg_types: HashMap<Symbol, Value> = match (&op_params, has_hof_arg) {
-                (Some(ps), true) => {
-                    let mut m = HashMap::new();
-                    for (i, (psym, _)) in ps.iter().enumerate() {
-                        let arg = pos_args.get(i).or_else(|| {
-                            // WI-426: named labels bind to params by NAME, not symbol identity.
-                            named_args.iter().find(|(n, _)| same_label(kb, *n, *psym)).map(|(_, a)| a)
-                        });
-                        if let Some(a) = arg {
-                            // A sibling callback param may project this arg's schema
-                            // (`join`'s `cond: (c: r1.T, q: r2.T) -> Bool`). The env
-                            // covers a let-bound receiver (WI-723); a bare RULE-reference arg
-                            // (`join(r1, r2, …)`'s `r2`) is a `Relation[T]` value never bound
-                            // in the env, so compute its schema directly (WI-714) — else
-                            // `r2.T` cannot be eliminated at hint time and the two-row
-                            // lambda's binder stays an unresolved projection.
-                            //
-                            // WI-750: the third reader (the node's STAMPED type) is what
-                            // covers a COMPUTED receiver — `r.where(λ).where(λ)`, whose inner
-                            // call is an `Expr::Apply` that neither of the first two match, so
-                            // both answered `None` and the outer row lambda bound at the raw
-                            // projection `r.T`, leaving `d.name` with no sort to dispatch on.
-                            // The stamp is already there: the dot-call Build frame runs AFTER
-                            // its receiver's Visit+Stamp, so the receiver it splices in as
-                            // arg 0 carries a concrete `Relation[T = …]`.
-                            //
-                            // SCOPE, stated as the code actually behaves: this reads the stamp
-                            // of ANY arg in ANY `Expr::Apply` carrying a HOF arg — there is no
-                            // receiver gate, and it would be wrong to claim one. What bounds it
-                            // is that a stamp is only present where a pass already typed the
-                            // node, which for the shape this fixes is the spliced dot-call
-                            // receiver. On a RE-typed tree other args carry stamps too and may
-                            // now contribute a binding; that is a widening, deliberate — a
-                            // computed `join(r1, mk().where(λ), cond)` operand needs exactly
-                            // the same reading — but it means the bound is empirical, not
-                            // structural, so do not rely on "receiver only" when editing here.
-                            // Leaf args are unaffected either way: `varref_arg_env_type`
-                            // already consulted the stamp for them.
-                            //
-                            // `env` stays FIRST: a still-flexible env binding is the live one,
-                            // a stamp only a fallback. This is [`projection_receiver_type`],
-                            // the reader the WI-714 projection path already composes.
-                            if let Some(t) = projection_receiver_type(kb, &env, a) {
-                                m.insert(*psym, t);
-                            }
-                        }
-                    }
-                    m
-                }
-                _ => HashMap::new(),
+            // WI-485 + WI-793: the param→argument-type map that lets a sibling callback
+            // param's projection be eliminated BEFORE it hints a lambda, and the argument
+            // positions this call must type FIRST for that map to be complete. See
+            // `known_arg_types_and_staged` for the ordering problem and why staging is the
+            // fix; built only when a higher-order argument is present, since a hint is only
+            // load-bearing for a lambda.
+            let (known_param_arg_types, staged) = match (&op_params, has_hof_arg) {
+                (Some(ps), true) => known_arg_types_and_staged(kb, &env, ps, pos_args, named_args),
+                _ => (HashMap::new(), Vec::new()),
             };
-            let pos_hints: Vec<Option<Value>> = pos_args
-                .iter()
-                .enumerate()
-                .map(|(i, arg)| {
-                    // WI-707: inside a sort application every argument is a type.
-                    if sort_app_hint.is_some() {
-                        return sort_app_hint.clone();
-                    }
-                    let pt = op_params.as_ref().and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
-                    // WI-485: eliminate a callback param projection for the lambda hint
-                    // (`s.T ⟹ Int64`); keep the original `pt` for the nested-call hint
-                    // (that path is gated on a ground type and rides the call-site path).
-                    let pt_hof = pt
-                        .as_ref()
-                        .and_then(|t| eliminate_callback_hint_projection(kb, t, &known_param_arg_types, functor))
-                        .or_else(|| pt.clone());
-                    hof_arg_hint(kb, arg, pt_hof)
-                        .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
-                        .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
-                })
-                .collect();
-            let named_hints: Vec<Option<Value>> = named_args
-                .iter()
-                .map(|(name, arg)| {
-                    // WI-707: inside a sort application every argument is a type.
-                    if sort_app_hint.is_some() {
-                        return sort_app_hint.clone();
-                    }
-                    let pt = op_params
-                        .as_ref()
-                        // WI-426: match the named-arg label to its param by name.
-                        .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
-                        .map(|(_, t)| t.clone());
-                    let pt_hof = pt
-                        .as_ref()
-                        .and_then(|t| eliminate_callback_hint_projection(kb, t, &known_param_arg_types, functor))
-                        .or_else(|| pt.clone());
-                    hof_arg_hint(kb, arg, pt_hof)
-                        .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
-                        .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
-                })
-                .collect();
-            work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
-                occ: occ_clone,
-                fn_sym: functor,
-                pos_args: pos_args.clone(),
-                named_args: named_args.clone(),
-                env: env.clone(),
-                expected,
-                fuel,
-            }));
-            for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
-                push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
-            }
-            for (arg, hint) in pos_args.iter().zip(pos_hints.iter()).rev() {
-                push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
+            if staged.is_empty() {
+                // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
+                // argument's type, so hint everything and visit everything.
+                let (pos_hints, named_hints) = apply_arg_hints(
+                    kb, functor, op_params.as_ref(), &sort_app_hint,
+                    pos_args, named_args, &known_param_arg_types,
+                );
+                work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
+                    occ: occ_clone,
+                    fn_sym: functor,
+                    pos_args: pos_args.clone(),
+                    named_args: named_args.clone(),
+                    env: env.clone(),
+                    expected,
+                    fuel,
+                    staged_results: Vec::new(),
+                }));
+                for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
+                    push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
+                }
+                for (arg, hint) in pos_args.iter().zip(pos_hints.iter()).rev() {
+                    push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
+                }
+            } else {
+                // WI-793: STAGED. A callback param projects a sibling (`f: (…, x: xs.T) -> …`)
+                // whose argument no no-typing reader can answer for, so that argument is
+                // visited FIRST and the hints for everything else are built in the
+                // `ApplyHints` frame below, once its type exists.
+                //
+                // Only the STAGED arguments are hinted here — hinting the rest now would be
+                // discarded work, and the lambda's hint in particular would be computed
+                // against the very map that is still incomplete. A staged argument keeps
+                // exactly the hint it would otherwise have had: it is never hof-shaped, and
+                // `hof_arg_hint` is the only reader of the projection-eliminated type, so
+                // the incomplete map cannot change its answer (see `apply_arg_hints`).
+                let staged_hints: Vec<Option<Value>> = staged
+                    .iter()
+                    .map(|&unified| {
+                        if sort_app_hint.is_some() {
+                            return sort_app_hint.clone();
+                        }
+                        let (arg, pt) = if unified < pos_args.len() {
+                            let pt = op_params
+                                .as_ref()
+                                .and_then(|ps| ps.get(unified))
+                                .map(|(_, t)| t.clone());
+                            (&pos_args[unified], pt)
+                        } else {
+                            let (label, arg) = &named_args[unified - pos_args.len()];
+                            // WI-426: match the named-arg label to its param by name.
+                            let pt = op_params
+                                .as_ref()
+                                .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *label)))
+                                .map(|(_, t)| t.clone());
+                            (arg, pt)
+                        };
+                        one_arg_hint(kb, functor, arg, pt, &known_param_arg_types)
+                    })
+                    .collect();
+                work.push(TypeWorkOp::Build(TypeBuildFrame::ApplyHints {
+                    occ: occ_clone,
+                    fn_sym: functor,
+                    pos_args: pos_args.clone(),
+                    named_args: named_args.clone(),
+                    env: env.clone(),
+                    expected,
+                    fuel,
+                    staged: staged.clone(),
+                    // Non-empty whenever `staged` is — staging is keyed off the params.
+                    op_params: op_params.clone().unwrap_or_default(),
+                    sort_app_hint,
+                    known: known_param_arg_types,
+                }));
+                // Reverse, so they pop in ASCENDING unified order — the order
+                // `known_arg_types_and_staged` sorted `staged` into and the order the
+                // `Apply` frame splices their results back by.
+                for (k, &unified) in staged.iter().enumerate().rev() {
+                    let arg = arg_at(pos_args, named_args, unified)
+                        .expect("WI-793: a staged index was produced by `arg_at` itself");
+                    push_visit(work, Rc::clone(arg), env.clone(), staged_hints[k].clone(), fuel);
+                }
             }
         }
         Expr::Constructor { name, pos_args, named_args } => {
@@ -6558,11 +6794,117 @@ fn build_type(
                 r.node.set_inferred_type(r.ty.clone());
             }
         }
-        TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected, fuel } => {
-            let total = pos_args.len() + named_args.len();
-            let drain_start = results.len() - total;
-            let mut arg_results: Vec<Result<TypeResult, TypeError>> =
+        // WI-793: the staged projection-receiver arguments have been typed. Complete the
+        // param→argument-type map with their types, build the hints for EVERY argument now
+        // that the map is whole, then push the `Apply` frame and the Visits for the
+        // arguments still untyped. This is the phase the single-pass "hint everything, then
+        // visit everything" order could not express, and the reason a lambda's binder can
+        // now read an element type off a literal receiver.
+        TypeBuildFrame::ApplyHints {
+            occ, fn_sym, pos_args, named_args, env, expected, fuel,
+            staged, op_params, sort_app_hint, mut known,
+        } => {
+            // Staging is keyed off the callee's declared params, so reaching here with
+            // none is not a degraded case to tolerate — it would silently give EVERY
+            // argument a `None` hint, putting the lambda binder back on a fresh `?param`
+            // and restoring WI-793's defect with no diagnostic at all. That is the WI-791
+            // footgun by name (a required child left silently empty kept two tests green
+            // while covering nothing), so assert the invariant rather than comment it.
+            debug_assert!(
+                !op_params.is_empty(),
+                "WI-793: ApplyHints reached with no declared params, but staging is keyed \
+                 off them — every argument hint would silently be None",
+            );
+            // The staged Visits were pushed in reverse, so their results sit at the top of
+            // the stack in ASCENDING unified order — the order `staged` itself is in.
+            let drain_start = results.len() - staged.len();
+            let staged_results: Vec<Result<TypeResult, TypeError>> =
                 results.drain(drain_start..).collect();
+            for (k, &unified) in staged.iter().enumerate() {
+                // A staged argument that FAILED to type contributes nothing to the map, and
+                // that is not a silent skip: its `Err` rides `staged_results` into the
+                // `Apply` frame below, whose `collect_arg_errors` reports it as the argument
+                // error it is. The hints then fall back to the un-eliminated param type —
+                // exactly what this call used before staging existed.
+                if let Ok(r) = &staged_results[k] {
+                    if let Some(psym) = param_sym_for_arg_index(
+                        kb, &op_params, unified, pos_args.len(), &named_args,
+                    ) {
+                        known.insert(psym, r.ty.clone());
+                    }
+                }
+            }
+            let (pos_hints, named_hints) = apply_arg_hints(
+                kb, fn_sym, Some(&op_params), &sort_app_hint,
+                &pos_args, &named_args, &known,
+            );
+            let staged_pairs: Vec<(usize, Result<TypeResult, TypeError>)> =
+                staged.iter().copied().zip(staged_results).collect();
+            work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
+                occ,
+                fn_sym,
+                pos_args: pos_args.clone(),
+                named_args: named_args.clone(),
+                env: env.clone(),
+                expected,
+                fuel,
+                staged_results: staged_pairs,
+            }));
+            // Visit only what has NOT been typed — a staged argument is typed exactly once,
+            // on this same work-stack, with this same fuel and `[simp]` gate.
+            for (k, (_, arg)) in named_args.iter().enumerate().rev() {
+                if staged.contains(&(pos_args.len() + k)) {
+                    continue;
+                }
+                push_visit(work, Rc::clone(arg), env.clone(), named_hints[k].clone(), fuel);
+            }
+            for (i, arg) in pos_args.iter().enumerate().rev() {
+                if staged.contains(&i) {
+                    continue;
+                }
+                push_visit(work, Rc::clone(arg), env.clone(), pos_hints[i].clone(), fuel);
+            }
+        }
+        TypeBuildFrame::Apply {
+            occ, fn_sym, pos_args, named_args, env, expected, fuel, staged_results,
+        } => {
+            let total = pos_args.len() + named_args.len();
+            let drain_start = results.len() - (total - staged_results.len());
+            let drained: Vec<Result<TypeResult, TypeError>> =
+                results.drain(drain_start..).collect();
+            // WI-793: splice back the arguments typed AHEAD of the rest (a staged
+            // projection receiver — see `known_arg_types_and_staged`). Empty for every
+            // ordinary call, where this is the identity and `drained` already IS the
+            // arguments in order; the permutation exists only because a staged argument's
+            // result necessarily lands on the results stack before its siblings', whatever
+            // its position in the call.
+            let mut arg_results: Vec<Result<TypeResult, TypeError>> = if staged_results
+                .is_empty()
+            {
+                drained
+            } else {
+                let mut slots: Vec<Option<Result<TypeResult, TypeError>>> =
+                    (0..total).map(|_| None).collect();
+                for (unified, r) in staged_results {
+                    slots[unified] = Some(r);
+                }
+                let mut rest = drained.into_iter();
+                for slot in slots.iter_mut() {
+                    if slot.is_none() {
+                        *slot = rest.next();
+                    }
+                }
+                debug_assert!(
+                    rest.next().is_none(),
+                    "WI-793: more visited results than unstaged arguments",
+                );
+                slots
+                    .into_iter()
+                    .map(|s| {
+                        s.expect("WI-793: staged + visited results cover every argument")
+                    })
+                    .collect()
+            };
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
             // WI-283: reassemble this Apply from its children's (possibly-

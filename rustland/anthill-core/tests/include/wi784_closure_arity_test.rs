@@ -69,10 +69,10 @@ end
 
 /// The idiomatic higher-order call, through the SHIPPED stdlib fold whose
 /// callback is applied as `f(init, h)`. `FiniteCollection.foldLeft` is the route
-/// driven here because its callback uses a plain `Element` type param; the
-/// concrete `List.foldLeft` over a LITERAL is blocked one rung earlier by a
-/// separate path-dependent-`xs.T` defect, pinned in
-/// `known_gap_list_foldleft_lambda_over_a_literal_does_not_load`.
+/// driven here because its callback uses a plain `Element` type param. The
+/// concrete `List.foldLeft` over a LITERAL was blocked one rung earlier by a
+/// separate path-dependent-`xs.T` defect, which WI-793 closed — it is now driven
+/// alongside this one by `list_foldleft_lambda_over_a_literal_agrees`.
 #[test]
 fn stdlib_foldleft_agrees_for_lambda_and_operation() {
     let src = r#"
@@ -96,28 +96,23 @@ end
     );
 }
 
-/// KNOWN GAP, adjacent and NOT this ticket's — pinned so it stays visible and
-/// so the claim in `stdlib_foldleft_agrees_for_lambda_and_operation`'s comment
-/// is checked rather than asserted in prose.
+/// The `List.foldLeft` twin of `stdlib_foldleft_agrees_for_lambda_and_operation`,
+/// kept HERE (rather than only in WI-793's own suite) because this file's fold test
+/// routes around `List.foldLeft` and that detour needs a live check, not a prose claim.
 ///
-/// `List.foldLeft`'s callback parameter is typed with the path-dependent
-/// `xs.T`. When the receiver is a LIST LITERAL, that never resolves to the
-/// element type for a LAMBDA binder, and the body's arithmetic fails to
-/// typecheck — so the program does not even load. It is a typer defect one rung
-/// EARLIER than closure arity, which is why this ticket's fold test drives
-/// `FiniteCollection.foldLeft` instead (its callback uses a plain `Element`
-/// type param and does reach the closure).
+/// This was WI-784's pinned known gap, asserting the WRONG behaviour on purpose:
+/// `List.foldLeft`'s callback is typed with the path-dependent `xs.T`, which over a
+/// LITERAL receiver never resolved for a LAMBDA binder, so a correct program failed to
+/// LOAD (`expected Int64, got xs.T`). WI-793 closed it; the assertion is now positive.
 ///
-/// The two controls locate the boundary precisely, because the obvious readings
-/// are both WRONG: it is not "lambdas break `List.foldLeft`" (case 3 loads), and
-/// it is not "list literals break `List.foldLeft`" (case 1 loads). It needs the
-/// literal AND the lambda together.
-///
-/// Case 2 asserts the CURRENT wrong behaviour on purpose. It fails when the gap
-/// closes — at which point replace it with a positive assertion.
+/// The two controls are retained because they locate the boundary, and both obvious
+/// readings of the original defect were WRONG: it was not "lambdas break
+/// `List.foldLeft`" (control 3 loaded), and not "list literals break `List.foldLeft`"
+/// (control 1 loaded) — it took the literal AND the lambda together. Keeping them
+/// means a regression names which half came back.
 #[test]
-fn known_gap_list_foldleft_lambda_over_a_literal_does_not_load() {
-    // 1. CONTROL — literal + named operation: loads.
+fn list_foldleft_lambda_over_a_literal_agrees() {
+    // 1. CONTROL — literal + named operation. Loaded even while the gap was open.
     let literal_with_operation = r#"
 namespace test.wi784.listfold.op
   import anthill.prelude.{Int64, List, nil, cons}
@@ -127,7 +122,7 @@ namespace test.wi784.listfold.op
   operation drive() -> Int64 = List.foldLeft([1, 2, 3], 0, shift)
 end
 "#;
-    // 2. THE GAP — literal + lambda: does not load.
+    // 2. WAS THE GAP — literal + lambda. Now loads AND evaluates.
     let literal_with_lambda = r#"
 namespace test.wi784.listfold.lam
   import anthill.prelude.{Int64, List, nil, cons}
@@ -136,32 +131,31 @@ namespace test.wi784.listfold.lam
     List.foldLeft([1, 2, 3], 0, lambda (acc, x) -> acc * 10 + x)
 end
 "#;
-    // 3. CONTROL — declared `List[T = Int64]` parameter + the SAME lambda: loads.
-    //    So the lambda is not what breaks it; the unpinned literal receiver is.
+    // 3. CONTROL — declared `List[T = Int64]` parameter + the SAME lambda: the
+    //    declared type pinned the element even while the literal did not.
     let param_with_lambda = r#"
 namespace test.wi784.listfold.param
   import anthill.prelude.{Int64, List, nil, cons}
 
-  operation drive(xs: List[T = Int64]) -> Int64 =
+  operation fold(xs: List[T = Int64]) -> Int64 =
     List.foldLeft(xs, 0, lambda (acc, x) -> acc * 10 + x)
+
+  operation drive() -> Int64 = fold([1, 2, 3])
 end
 "#;
-    assert!(
-        try_load_kb_with(literal_with_operation).is_ok(),
-        "control 1: literal receiver + named operation must load",
+    let via_op = eval_int(literal_with_operation, "test.wi784.listfold.op.drive");
+    let via_lambda = eval_int(literal_with_lambda, "test.wi784.listfold.lam.drive");
+    let via_param = eval_int(param_with_lambda, "test.wi784.listfold.param.drive");
+    assert_eq!(via_op, 123, "control 1: literal receiver + named operation");
+    assert_eq!(
+        via_lambda, via_op,
+        "`List.foldLeft([1, 2, 3], 0, lambda (acc, x) -> …)` must agree with the \
+         operation spelling — this is the assertion WI-793 flipped",
     );
-    assert!(
-        try_load_kb_with(param_with_lambda).is_ok(),
-        "control 3: a declared List[T = Int64] parameter pins the element type, so \
-         the SAME lambda loads — the lambda is not the cause",
-    );
-    let errs = try_load_kb_with(literal_with_lambda)
-        .err()
-        .expect("known gap: literal receiver + lambda is expected to FAIL to load");
-    assert!(
-        errs.iter().any(|e| e.contains("xs.T")),
-        "the gap must be the path-dependent element type leaking into the binder, \
-         not some other error; got: {errs:?}",
+    assert_eq!(
+        via_param, via_op,
+        "control 3: pinning the element type through a declared parameter must reach \
+         the same answer as the literal receiver",
     );
 }
 
