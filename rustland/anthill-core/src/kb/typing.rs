@@ -20286,14 +20286,16 @@ fn extract_pattern_type_ann(pattern: &Rc<NodeOccurrence>) -> Option<&Rc<NodeOccu
 /// pattern's shape: `lambda (a, b) -> …` is a `Pattern::Tuple` of two, and
 /// everything else (`lambda x -> …`, `lambda (u: (a: A, b: B)) -> …`) is one.
 ///
-/// This is the WRITTEN arity, which is deliberately not the same thing as the
-/// runtime's: `enter_closure` is strictly unary and destructures the tuple, so a
-/// multi-binder lambda handed to a genuinely n-parameter callback still traps at
-/// eval (WI-784, open). Minting 1 here would turn that trap into a load rejection
-/// — a bigger change than this ticket's, and the wrong place for it: the defect
-/// is the runtime's missing spread, not the program's. Reporting the written
-/// count keeps every load verdict a multi-binder lambda gets today, and leaves
-/// WI-784 the single place to fix.
+/// The written count is also the count the RUNTIME accepts: WI-784 taught
+/// `gather_closure_arg` to gather an n-argument application into the tuple the
+/// binder list destructures, so a multi-binder lambda handed to a genuinely
+/// n-parameter callback now applies instead of trapping. (Before that, minting 1
+/// here was the considered alternative; it was rejected because the defect was
+/// the runtime's missing gather, not the program's — and reporting the written
+/// count preserved every load verdict a multi-binder lambda already got.)
+///
+/// Both sides read the SAME rule, `Pattern::binder_arity` — see its doc for why
+/// they must not drift.
 ///
 /// Grouping is transparent (WI-620: `(p)` unwraps to `p` at conversion), so
 /// `lambda ((a, b)) -> …` is the same two-binder lambda as `lambda (a, b) -> …`
@@ -20304,10 +20306,7 @@ fn lambda_written_arity(lambda_occ: &Rc<NodeOccurrence>) -> usize {
         Some(Expr::Lambda { param, .. }) | Some(Expr::LambdaWithin { param, .. }) => param,
         _ => return 1,
     };
-    match param.as_pattern() {
-        Some(Pattern::Tuple { positional, named }) => positional.len() + named.len(),
-        _ => 1,
-    }
+    param.as_pattern().map(Pattern::binder_arity).unwrap_or(1)
 }
 
 // ── Operation info lookup ──────────────────────────────────────

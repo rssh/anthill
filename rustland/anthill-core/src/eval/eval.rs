@@ -12,7 +12,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
-use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence};
+use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern};
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
@@ -1711,6 +1711,52 @@ impl Interpreter {
         })
     }
 
+    /// WI-784: gather an N-argument application into the ONE value a closure's
+    /// param pattern destructures — the dual of `spread_eta_args`, which
+    /// spreads a single tuple across an OPERATION's parameter list. A
+    /// multi-binder lambda is one TUPLE pattern (proposal 018 §"Lambda always
+    /// takes _one_ argument. Multiple parameters use tuple destructuring"), so
+    /// the `f(init, h)` convention the stdlib is written against
+    /// (`prelude/list.anthill` foldLeft/foldRight, whose callbacks are declared
+    /// `(acc: Acc, x: xs.T) -> Acc`) has to re-gather its two arguments into
+    /// that tuple; `lambda () -> a` (`prelude/delay.anthill`, forced by `t()`)
+    /// is the 0-component case of the same rule. Without this a lambda and a
+    /// named operation were NOT interchangeable as function values: the
+    /// operation spelling of the identical call went through `spread_eta_args`
+    /// and worked, the lambda spelling trapped.
+    ///
+    /// A SINGLE argument always passes through untouched — it is handed to the
+    /// pattern as-is, so `f((3, 10))`, where the CALLER built the tuple, keeps
+    /// destructuring exactly as before. That pass-through is load-bearing, not a
+    /// fast path: it is the whole reason both spellings of a 2-binder call work,
+    /// and it is why the arity comparison below only governs counts other than 1.
+    ///
+    /// The binder count comes from `Pattern::binder_arity` — the SAME rule the
+    /// typer records in the lambda's arrow type. They must not drift; see that
+    /// method's doc.
+    fn gather_closure_arg(
+        param_pattern: &Rc<NodeOccurrence>,
+        args: Vec<Value>,
+    ) -> Result<Value, EvalError> {
+        if args.len() == 1 {
+            return Ok(args.into_iter().next().unwrap());
+        }
+        // `as_pattern` is None only for a param occurrence that is not a Pattern
+        // at all — a reflectively-built lambda whose param is an Expr-kind
+        // meta-var (WI-511). Reading it as one binder is not a silent skip: such
+        // an occurrence names nothing bindable, so `match_pattern` refuses it
+        // immediately after and the call raises through `raise_match_failed`.
+        let arity = param_pattern.as_pattern().map(Pattern::binder_arity).unwrap_or(1);
+        if arity != args.len() {
+            return Err(EvalError::ArityMismatch {
+                op: "closure",
+                expected: arity,
+                got: args.len(),
+            });
+        }
+        Ok(Value::Tuple { pos: args.into(), named: Vec::new().into() })
+    }
+
     /// Operation-body lookup, memoized. `lookup_operation_body` linear-scans
     /// every `OperationInfo` fact, so calling it per dispatch makes every
     /// operation call O(num_operations) — the dominant cost in interpreted
@@ -1846,14 +1892,6 @@ impl Interpreter {
         handle: super::value::ClosureHandle,
         args: Vec<Value>,
     ) -> Result<StepOutcome, EvalError> {
-        if args.len() != 1 {
-            return Err(EvalError::ArityMismatch {
-                op: "closure",
-                expected: 1,
-                got: args.len(),
-            });
-        }
-        let arg = args.into_iter().next().unwrap();
         // WI-223: closure invocation overrides the uniform
         // `frame.requirements = apply_within.requirements` rule with the
         // requirements snapshotted at lambda construction. Preserves
@@ -1870,6 +1908,7 @@ impl Interpreter {
                 c.type_args.iter().cloned().collect();
             (c.param_pattern.clone(), c.body.clone(), reqs, ta)
         });
+        let arg = Self::gather_closure_arg(&param_pattern, args)?;
         let bindings = match match_pattern(self, &param_pattern, &arg) {
             Some(b) => b,
             // WI-610: route the match failure through the Error handler so an

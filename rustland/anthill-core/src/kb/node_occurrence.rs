@@ -856,6 +856,32 @@ pub enum Pattern {
     },
 }
 
+impl Pattern {
+    /// How many BINDERS this pattern writes when it stands as a parameter list:
+    /// a tuple pattern is the list (`lambda (a, b) -> …` writes two), and every
+    /// other pattern binds exactly ONE value (`lambda x`, `lambda _`, a
+    /// constructor or literal pattern, and — WI-620 — the grouped `lambda (x)`,
+    /// which unwraps to `x` at conversion rather than becoming a 1-tuple).
+    ///
+    /// ONE definition, deliberately shared by the two sides that must agree on
+    /// it: the TYPER records it in a lambda's arrow type (`lambda_written_arity`,
+    /// WI-791) and the RUNTIME decides how many arguments a closure accepts
+    /// (`gather_closure_arg`, WI-784). A disagreement between those two is not a
+    /// cosmetic drift — it is a program that typechecks and then traps at eval,
+    /// which is exactly the defect WI-784 removed. Keep them on this one rule.
+    ///
+    /// Note the tuple arm counts `named` as well: no producer mints a labelled
+    /// tuple sub-pattern today (see `match_tuple_pattern`'s debug_assert), but
+    /// counting it keeps the two sides in agreement if one ever does, rather
+    /// than having the typer say `n` while the runtime says 1.
+    pub fn binder_arity(&self) -> usize {
+        match self {
+            Pattern::Tuple { positional, named } => positional.len() + named.len(),
+            _ => 1,
+        }
+    }
+}
+
 // ── TypeNode / EffectExprNode (WI-342) ──────────────────────────
 
 /// A child slot of a [`TypeNode`] / [`EffectExprNode`] — either a **ground**

@@ -731,3 +731,6 @@ mod wi785_named_tuple_destructuring_test;
 
 #[path = "include/wi786_tuple_component_order_test.rs"]
 mod wi786_tuple_component_order_test;
+
+#[path = "include/wi784_closure_arity_test.rs"]
+mod wi784_closure_arity_test;

@@ -22,6 +22,15 @@ fn load_errors(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src).err().unwrap_or_default()
 }
 
+/// WI-784: the lambda cases here are DRIVEN, not merely loaded — the callback
+/// arity defect they sit on was invisible to `load_errors`.
+fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
+    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+        anthill_core::eval::Value::Int(i) => i,
+        other => panic!("call {op}: expected Int, got {other:?}"),
+    }
+}
+
 /// The WI-605 minimal repro: a keyword-less `(x, acc) -> …` as a higher-order
 /// argument. Must produce EXACTLY the targeted lambda-keyword hint — one
 /// error, no per-binder `UnresolvedName` cascade, no follow-on Bottom noise.
@@ -70,21 +79,31 @@ end
 /// The keyword form of the SAME body loads clean — the WI's hypothesized
 /// "lambda params not entered into a resolution scope" gap does not exist;
 /// binder resolution in an op-body argument position works.
+///
+/// WI-784: also DRIVEN. Loading clean was never the interesting half — the
+/// multi-binder lambda `List.foldRight` applies as `f(h, …)` trapped at eval
+/// until the closure arm learned to gather its arguments.
 #[test]
 fn lambda_keyword_form_resolves_params() {
-    let errs = load_errors(
-        r#"
+    let src = r#"
 namespace test.wi605.keyword
   import anthill.prelude.{List, nil, cons, Int64}
 
   operation sum_inc(xs: List[T=Int64]) -> List[T=Int64] =
     List.foldRight(xs, nil, lambda (x, acc) -> cons(head: x + 1, tail: acc))
+
+  operation drive() -> Int64 = List.length(sum_inc(cons(1, cons(2, nil))))
 end
-"#,
-    );
+"#;
+    let errs = load_errors(src);
     assert!(
         errs.is_empty(),
         "`lambda (x, acc) -> …` in an op-body argument position must load clean; got: {errs:?}",
+    );
+    assert_eq!(
+        run_int(&mut crate::common::interp_for(src), "test.wi605.keyword.drive"),
+        2,
+        "the multi-binder lambda callback must actually APPLY, not just load",
     );
 }
 
@@ -109,21 +128,38 @@ end
 /// A function-typed op PARAM named `arrow`, legitimately applied — the
 /// foldLeft `f(init, h)` pattern. `arrow(x, y)` is WRITTEN as a call (not
 /// pratt-minted), so the provenance gate never fires on working code.
+///
+/// WI-784: this case is DRIVEN, not merely loaded. It describes itself as the
+/// foldLeft pattern, and that pattern trapped at eval for a lambda callback
+/// while passing for an operation — a load-only assertion could not see it.
+/// Both spellings are evaluated here and must agree.
 #[test]
 fn function_typed_param_named_arrow_still_applies() {
-    let errs = load_errors(
-        r#"
+    let src = r#"
 namespace test.wi605.paramarrow
   import anthill.prelude.{Int64}
 
   operation apply2(arrow: (a: Int64, b: Int64) -> Int64, x: Int64, y: Int64) -> Int64 =
     arrow(x, y)
+
+  operation sub2(a: Int64, b: Int64) -> Int64 = a - b
+
+  operation drive_op() -> Int64 = apply2(sub2, 3, 10)
+  operation drive_lambda() -> Int64 = apply2(lambda (a, b) -> a - b, 3, 10)
 end
-"#,
-    );
+"#;
     assert!(
-        errs.is_empty(),
-        "applying a function-typed param named `arrow` must load clean; got: {errs:?}",
+        load_errors(src).is_empty(),
+        "applying a function-typed param named `arrow` must load clean; got: {:?}",
+        load_errors(src),
+    );
+    let via_op = run_int(&mut crate::common::interp_for(src), "test.wi605.paramarrow.drive_op");
+    let via_lambda =
+        run_int(&mut crate::common::interp_for(src), "test.wi605.paramarrow.drive_lambda");
+    assert_eq!(via_op, -7, "the operation spelling is the control");
+    assert_eq!(
+        via_lambda, via_op,
+        "the lambda and operation callbacks of the same call must agree",
     );
 }
 
