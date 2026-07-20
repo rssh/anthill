@@ -176,3 +176,28 @@ fn prefix_split_across_pos_and_named_still_binds_in_order() {
     );
     assert_eq!(run_int(&src, "test.wi786x.drive"), -7, "`_1` is slot 0, `b` slot 1");
 }
+
+/// The `named.is_empty()` half of the guard, which nothing else here reaches.
+///
+/// `_1` written SECOND is the synthetic name for index 0 — and `pos.len()` is
+/// still 0 when it is classified, because `a` went to `named`. Without the
+/// `named.is_empty()` condition it would therefore hoist into `pos`, and
+/// `pos ++ named` would read `[10, 3]` — a silent +7.
+///
+/// Every other fixture in this file leaves that condition trivially true (their
+/// `_`-labelled component is either first or never synthetic), so deleting the
+/// condition keeps them all green. This is the one that fails.
+#[test]
+fn synthetic_label_after_a_named_one_stays_named() {
+    let src = tuple_case(
+        "test.wi786g",
+        "(a: Int64, _1: Int64)",
+        "(a: 3, _1: 10)",
+        "lambda (p, q) -> p - q",
+    );
+    assert_eq!(
+        run_int(&src, "test.wi786g.drive"),
+        -7,
+        "`a` is slot 0 and `_1` slot 1; hoisting `_1` into pos would give +7",
+    );
+}

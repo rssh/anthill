@@ -2593,8 +2593,12 @@ fn is_synthetic_positional_label(label: &str, index: usize) -> bool {
 ///    into `pos`, which carries no labels, DISCARDING the name and scrambling
 ///    source order.
 ///  * Nothing may have gone to `named` yet, so `pos` stays a source-order
-///    PREFIX. Without this, `(a: 1, 2)` would put `2` in `pos` behind `a` in
-///    `named` and `pos ++ named` would read `[2, 1]`.
+///    PREFIX. The reachable case is an all-named literal whose LATER label is
+///    the synthetic name for `pos.len()`: in `(a: 3, _1: 10)`, `a` goes to
+///    `named`, and without this condition `_1` would match index `pos.len() ==
+///    0` and hoist into `pos`, so `pos ++ named` would read `[10, 3]`.
+///    (`(a: 1, 2)` cannot reach here at all — the parser rejects mixing
+///    positional and named in a tuple literal.)
 ///
 /// Together they give every consumer the invariant that **`pos ++ named` is
 /// source order** — making a named tuple an ordered product in its runtime
