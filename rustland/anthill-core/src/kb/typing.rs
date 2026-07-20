@@ -273,6 +273,11 @@ pub enum TypeErrorContext {
     /// distinct from `DotDispatchNoMatch` ("no such member"): the member is right there, so
     /// naming it as missing would point the user at the wrong thing.
     DotProjection { member: Symbol },
+    /// WI-794: a pattern binder whose WRITTEN `: Type` annotation contradicts the type
+    /// the context threads into that slot (a callback parameter, a tuple component, a
+    /// destructured field). The binder is named because the annotation is per-BINDER —
+    /// pointing at the whole lambda would leave the reader hunting which one is wrong.
+    BinderAnnotation { binder: Symbol },
 }
 
 impl TypeErrorContext {
@@ -292,6 +297,9 @@ impl TypeErrorContext {
             // The receiver's identity is not carried — the member name is what locates the
             // projection for the reader, and it rides in `field_name` below.
             TypeErrorContext::DotProjection { .. } => "<dot projection>".to_string(),
+            // The binder IS the subject here; there is no enclosing named entity to
+            // report (a lambda is anonymous), so the name rides in `field_name` below.
+            TypeErrorContext::BinderAnnotation { .. } => "<binder>".to_string(),
         }
     }
 
@@ -312,6 +320,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationAsFunctionValue { .. } => "op-as-fn-value",
             TypeErrorContext::OperationTypeParams { .. } => "op-type-params",
             TypeErrorContext::DotProjection { .. } => "dot-projection",
+            TypeErrorContext::BinderAnnotation { .. } => "binder-annotation",
         }
     }
 
@@ -327,6 +336,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationAsFunctionValue { .. } => "function-value".to_string(),
             TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
             TypeErrorContext::DotProjection { member } => kb.resolve_sym(*member).to_string(),
+            TypeErrorContext::BinderAnnotation { binder } => kb.resolve_sym(*binder).to_string(),
         }
     }
 }
@@ -3400,7 +3410,17 @@ enum TypeBuildFrame {
     /// to what the body referenced — without it, `build` would re-derive
     /// a *different* fresh var and the arrow would claim `?a -> T` while
     /// the body was typed under a distinct `?b`.
-    LambdaBody { occ: Rc<NodeOccurrence>, param_type: Value, outer_env: Env },
+    ///
+    /// WI-794: `binder_error` carries a contradicting binder annotation detected when the
+    /// body env was built. It rides the frame rather than being reported at the visit
+    /// because a visit cannot push a result — it has already pushed this frame and the
+    /// body's Visit, and an extra result there would desynchronize the stack.
+    LambdaBody {
+        occ: Rc<NodeOccurrence>,
+        param_type: Value,
+        outer_env: Env,
+        binder_error: Option<TypeError>,
+    },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return
     /// the if's `TypeResult`. WI-287: the type is the join of the then /
@@ -6012,7 +6032,16 @@ fn visit_type(
                     Value::term(kb.make_type_var(fresh))
                 });
             let mut lambda_env = (*env).clone();
-            extend_env_from_pattern(kb, &mut lambda_env, &param, Some(param_type.clone()));
+            // WI-794: at arity 1 `param_type` IS the annotation (it won the priority
+            // ladder above), so the two agree and nothing fires here — that case is
+            // rejected one altitude up, by the whole-arrow subsumption at the argument
+            // position, and keeps its existing diagnostic. At arity 2+ `param_type` comes
+            // from the CONTEXT and the per-binder annotations are compared against its
+            // components; this is the channel WI-794 measured as unchecked.
+            let mut binder_errors = Vec::new();
+            extend_env_from_pattern(
+                kb, &mut lambda_env, &param, Some(param_type.clone()), &mut binder_errors,
+            );
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
@@ -6028,6 +6057,7 @@ fn visit_type(
                 occ: Rc::clone(&occ),
                 param_type,
                 outer_env: env,
+                binder_error: binder_errors.into_iter().next(),
             }));
             push_visit(work, body_occ, body_env, body_expected, fuel);
         }
@@ -7333,7 +7363,16 @@ fn build_type(
                 ),
                 (ann, vty) => ann.or(vty),
             };
-            extend_env_from_pattern(kb, &mut ext_env, &pattern, bound_ty);
+            // WI-794: a destructuring binder may carry its own annotation
+            // (`let (a: String, b) = intPair`); report a contradiction rather than
+            // dropping the annotation. Same rule as the lambda-binder case — the value's
+            // type wins for the binding, the false claim is what is rejected.
+            let mut binder_errors = Vec::new();
+            extend_env_from_pattern(kb, &mut ext_env, &pattern, bound_ty, &mut binder_errors);
+            if let Some(e) = binder_errors.into_iter().next() {
+                results.push(Err(e));
+                return;
+            }
             if let Some(var_name) = extract_pattern_var_name(&pattern) {
                 ext_env.declare_local_resource(var_name);
                 // WI-400 increment C (eager let-alias): if the value is a STABLE receiver
@@ -7470,6 +7509,13 @@ fn build_type(
             // and the first guard type-error (short-circuits the match).
             let mut guard_effects: Vec<Value> = Vec::new();
             let mut guard_error: Option<TypeError> = None;
+            // WI-794: the first arm-pattern binder whose written annotation contradicts
+            // the scrutinee component it destructures (`case (a: String, b) -> …` over an
+            // `(Int64, Int64)` scrutinee). Short-circuits the match exactly as
+            // `guard_error` does, and is reported AHEAD of it: the binder types feed the
+            // guard, so a contradicting annotation is the root cause of anything the
+            // guard would go on to report.
+            let mut binder_error: Option<TypeError> = None;
             // WI-537 / proposal 050 `match` rule: the per-arm pattern fact +
             // earlier-arm negations. Computed once over all arms (negations
             // accumulate across earlier arms); the scrutinee value is the
@@ -7491,7 +7537,14 @@ fn build_type(
                     &mut has_wildcard,
                 );
                 let mut branch_env = (*outer_env).clone();
-                extend_env_from_pattern(kb, &mut branch_env, &branch.pattern, scr_ty.clone());
+                let mut branch_binder_errors = Vec::new();
+                extend_env_from_pattern(
+                    kb, &mut branch_env, &branch.pattern, scr_ty.clone(),
+                    &mut branch_binder_errors,
+                );
+                if binder_error.is_none() {
+                    binder_error = branch_binder_errors.into_iter().next();
+                }
                 // Arm Γ = the outer Γ + this arm's pattern fact + earlier-arm
                 // negations (+ the guard predicate below). `assume` is a set, so
                 // a fact `view_is_indexable` rejects (an `Opaque`-headed
@@ -7524,6 +7577,10 @@ fn build_type(
             // A guard that doesn't type-check fails the whole match (the
             // scrutinee result was already popped, so one Err is the match's
             // single result — no MatchFinal / body visits).
+            if let Some(e) = binder_error {
+                results.push(Err(e));
+                return;
+            }
             if let Some(e) = guard_error {
                 results.push(Err(e));
                 return;
@@ -7640,8 +7697,18 @@ fn build_type(
             }
             results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
         }
-        TypeBuildFrame::LambdaBody { occ, param_type, outer_env } => {
+        TypeBuildFrame::LambdaBody { occ, param_type, outer_env, binder_error } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
+            // WI-794: a contradicting binder annotation is reported ahead of any body
+            // error. The body was typed with the binder bound to the CONTEXT type, so
+            // when both fire the body's complaint is a CONSEQUENCE of the false
+            // annotation (WI-517's `needs_str(a)` fixture is exactly this shape) —
+            // reporting the annotation points at the line the user has to change. The
+            // body result is popped first either way, keeping the stack balanced.
+            if let Some(e) = binder_error {
+                results.push(Err(e));
+                return;
+            }
             // Build arrow(param, result, effects) type term. `param_type`
             // is the exact type the param was bound to in the body env
             // (see the `Expr::Lambda` visit case), so the arrow's param
@@ -20708,6 +20775,12 @@ fn extend_env_from_pattern(
     env: &mut TypingEnv,
     pattern: &Rc<NodeOccurrence>,
     scrutinee_type: Option<Value>,
+    // WI-794: contradictions between a binder's WRITTEN annotation and the type the
+    // context threads into its slot. An out-param rather than a `Result` because
+    // env-extension must CONTINUE past a bad binder — every other binder in the same
+    // pattern still has to land in the env, or the body reports a cascade of
+    // `UnresolvedName`s that hide the real diagnostic.
+    errors: &mut Vec<TypeError>,
 ) {
     let Some(pat) = pattern.as_pattern() else { return; };
     match pat {
@@ -20735,12 +20808,38 @@ fn extend_env_from_pattern(
             // another. (The single-binder `lambda (x: T) -> ...` path pins
             // `param_type` from the annotation at the lambda level, so its arrow
             // reflects the annotation and a mismatch is caught by subsumption.)
+            //
+            // WI-794 — THE CONTEXT STILL WINS, but the losing annotation is no longer
+            // DISCARDED SILENTLY. WI-517's claim above, that a contradiction "surfaces
+            // loudly through the body's own use of the binder", holds only when the body
+            // actually USES that binder at a type-constraining position: in
+            // `lambda (a: Int64, b: String) -> a` nothing ever reads `b`, so the `String`
+            // was accepted and ignored. That is the silent skip CLAUDE.md rules out — the
+            // annotation is the user's explicit statement of intent, so a contradicting
+            // one is now reported here, where the two types are both in hand.
             // WI-342: the env binds a carrier-agnostic `Value`, so a
             // `Value::Node` component type is preserved, not re-grounded.
+            // The annotation occurrence rides alongside its `Value` to carry the span.
+            // MEASURED: that span is currently the enclosing lambda's, not the written
+            // type's — `term_to_expr_leaf_occ` stamps the annotation with its PARENT
+            // pattern's span (node_occurrence.rs), because the loader lowers the
+            // annotation through hash-consed KB terms, which own no span (one shared term,
+            // many sites). So the diagnostic locates the lambda and names the BINDER to
+            // disambiguate which annotation is meant. Reading it from the occurrence
+            // anyway rather than hard-coding the pattern's: if per-annotation spans are
+            // ever preserved, this sharpens with no change here.
+            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann
+                .as_ref()
+                .map(|ann| (ann, Value::term(super::node_occurrence::occurrence_to_term(kb, ann))));
+            if let (Some(ctx), Some((ann_occ, ann))) = (scrutinee_type.as_ref(), ann_ty.as_ref()) {
+                if let Some(err) =
+                    binder_annotation_conflict(kb, *name, ctx, ann, Some(ann_occ.span.span))
+                {
+                    errors.push(err);
+                }
+            }
             let ty = scrutinee_type
-                .or_else(|| type_ann
-                    .as_ref()
-                    .map(|ann| Value::term(super::node_occurrence::occurrence_to_term(kb, ann))))
+                .or_else(|| ann_ty.map(|(_, v)| v))
                 .unwrap_or_else(|| {
                     let fresh = kb.intern("?pat");
                     Value::term(kb.make_type_var(fresh))
@@ -20787,7 +20886,7 @@ fn extend_env_from_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                extend_env_from_pattern(kb, env, sub_pat, field_type);
+                extend_env_from_pattern(kb, env, sub_pat, field_type, errors);
             }
             // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by FIELD
             // NAME — order-independent, so robust to declaration order. The
@@ -20802,7 +20901,7 @@ fn extend_env_from_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                extend_env_from_pattern(kb, env, sub_pat, field_type);
+                extend_env_from_pattern(kb, env, sub_pat, field_type, errors);
             }
         }
         Pattern::Tuple { positional, .. } => {
@@ -20814,14 +20913,80 @@ fn extend_env_from_pattern(
             let components = scrutinee_type
                 .as_ref()
                 .and_then(|t| named_tuple_field_types(kb, t));
+            // WI-794: the index zip pairs binder `i` with component `i`, which is a
+            // TRUSTWORTHY correspondence only at EQUAL arity — the rule
+            // `validate_callback_effect_row` already follows for its place map. At
+            // unequal arity binder `i` sits against an unrelated component, so an
+            // annotation check there blames the annotation for what is really a missing
+            // or extra parameter. MEASURED on the first cut of this fix:
+            // `lambda (x: Int64, y: Int64)` at a `(a: Int64, b: String, c: Int64)` slot
+            // reported "binder y: expected String, got Int64".
+            //
+            // Only the CHECK stands down; the BINDING is deliberately left exactly as it
+            // was. Withholding the components instead was tried and REVERTED — it broke
+            // `arity_mismatch_still_refuses_to_match`, where `lambda (p, q)` against a
+            // 3-component tuple must LOAD clean (the arity is a runtime pattern-match
+            // property there, not a load error) and fresh binder vars made `p - q`
+            // dispatch-ambiguous. So a misaligned component still types its binder, and
+            // the arity defect is left to whichever check genuinely owns it.
+            let aligned = components.as_ref().is_none_or(|c| c.len() == positional.len());
             for (i, sub_pat) in positional.iter().enumerate() {
                 let comp = components.as_ref().and_then(|c| c.get(i).cloned());
-                extend_env_from_pattern(kb, env, sub_pat, comp);
+                if aligned {
+                    extend_env_from_pattern(kb, env, sub_pat, comp, errors);
+                } else {
+                    let mut misaligned = Vec::new();
+                    extend_env_from_pattern(kb, env, sub_pat, comp, &mut misaligned);
+                }
             }
         }
         // wildcard, literal_pattern — no bindings
         Pattern::Wildcard | Pattern::Literal { .. } => {}
     }
+}
+
+/// WI-794: does a binder's WRITTEN `: Type` annotation contradict the type the context
+/// threads into its slot? `Some(error)` when the two are decisively incompatible, `None`
+/// when they agree or when the pair cannot be judged.
+///
+/// DIRECTION. The binder is bound to `context_ty` — the context wins, which is WI-517's
+/// soundness decision and is left untouched (see the `Pattern::Var` arm). So the
+/// annotation is a CLAIM about a value that really has `context_ty`, and the claim is
+/// truthful exactly when `context_ty` conforms to it: a WIDER annotation (`Int64` slot
+/// annotated with a spec `Int64` provides) is imprecise but true and is accepted; a
+/// NARROWER or disjoint one is false and is reported. The diagnostic then reads in the
+/// user's direction — `expected` is what the slot really is, `actual` what they wrote.
+///
+/// GROUNDNESS GATE, the WI-385/WI-469 discipline: judge only when BOTH sides are ground.
+/// A generic callback slot (`(acc: Acc, x: xs.T) -> Acc`) threads a type var or an
+/// unresolved projection into the binder, and an annotation is a legitimate way to PIN
+/// it — rejecting there would refuse correct programs. Deliberately conservative: this
+/// closes the ground case WI-794 measured and leaves the polymorphic slot to unification,
+/// alongside the same-family gap WI-791 pins as
+/// `known_gap_generic_callback_arrow_is_not_conformance_checked`.
+fn binder_annotation_conflict(
+    kb: &mut KnowledgeBase,
+    binder: Symbol,
+    context_ty: &Value,
+    annotation: &Value,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if !resolved_type_is_ground(kb, context_ty) || !resolved_type_is_ground(kb, annotation) {
+        return None;
+    }
+    // A scratch substitution: with both sides ground there is nothing to look up and
+    // nothing to bind, so no inference is lost by discarding it. This check is a
+    // VALIDATION — the binder's type is already decided above it.
+    if types_compatible(kb, &mut Substitution::new(), context_ty, annotation) {
+        return None;
+    }
+    Some(TypeError::TypeMismatch {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::BinderAnnotation { binder },
+        expected: context_ty.clone(),
+        actual: annotation.clone(),
+    })
 }
 
 /// WI-511 (WI-348): the optional type annotation occurrence of a `var_pattern`
