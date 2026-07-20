@@ -20,11 +20,18 @@
 //! program that must still load and evaluate — a fix that merely rejected more
 //! would satisfy the rejections alone.
 //!
-//! `ParamList` now ignores binder names entirely: equal arity, then a straight
-//! index zip. Names label slots and are not part of the correspondence (see
-//! `docs/kernel-language.md` §Arrow types), which is what lets a named-binder
-//! callback take an eta arrow — and the permutation in (1) is caught by the
-//! TYPES at each slot rather than by a name test.
+//! `ParamList` has NO by-name rung: the correspondence is a straight index zip
+//! of equal-arity lists, so a permuted list is compared slot-for-slot instead of
+//! being paired up by name. Names still gate ADMISSIBILITY — the two lists must
+//! agree on which slot is which (names lining up in order, or one side carrying
+//! the synthetic `_1.._n` convention) — which is what lets a named-binder
+//! callback take an eta arrow while keeping a lone tuple-typed parameter from
+//! passing as an n-parameter list (see `is_positional_tuple_names`).
+//!
+//! Note which rung rejects what: a PERMUTED list fails the admissibility gate
+//! before any type is compared, so `permuted_parameter_list_is_refused` does not
+//! exercise the per-slot type check. `same_named_slots_still_fail_on_the_types`
+//! covers that rung directly — it clears the gate and must be refused on TYPES.
 //!
 //! STILL OPEN, deliberately: WI-782's third case, where the param slot does not
 //! record parameter-list ARITY, so a one-tuple-parameter operation is the same
@@ -91,6 +98,35 @@ end
     );
 }
 
+/// The PER-SLOT TYPE CHECK, covered directly — the rung the test above never
+/// reaches. A permuted list fails the admissibility gate on the names before any
+/// type is compared, so `permuted_parameter_list_is_refused` would still pass if
+/// the slot-wise `types_compatible` loop were deleted outright. Here the names
+/// line up in order, so the gate ADMITS the zip and the refusal can only come
+/// from comparing `Bool` against `Int64` at slot 2 — which is the mechanism
+/// WI-782 installed and the thing that must keep working once WI-791 relaxes the
+/// name gate.
+#[test]
+fn same_named_slots_still_fail_on_the_types() {
+    assert_refused_naming(
+        r#"
+namespace test.wi782.slottypes
+  import anthill.prelude.{Int64, Bool}
+  operation take(f: (x: Int64, y: Bool) -> Int64) -> Int64
+    = f(7, true)
+  operation pass(g: (x: Int64, y: Int64) -> Int64) -> Int64
+    = take(g)
+  operation impl(x: Int64, y: Int64) -> Int64
+    = x
+  operation drive() -> Int64
+    = pass(impl)
+end
+"#,
+        "(x: Int64, y: Bool) -> Int64",
+        "(x: Int64, y: Int64) -> Int64",
+    );
+}
+
 /// The control: the same program with the parameters in the DECLARED order still
 /// loads and evaluates. Without it, a fix that rejected every named parameter
 /// list would pass the test above.
@@ -113,15 +149,17 @@ end
     assert_eq!(run_int(&mut interp, "test.wi782.sameorder.drive"), 7);
 }
 
-/// Binder names are labels on slots, not part of the correspondence: two lists
-/// that differ ONLY in what they call their slots still relate. This is the
-/// other half of dropping the by-name rung — the fix must not replace
-/// "matched by name" with "must be named the same", which would reject
-/// alpha-renaming.
+/// The zip is admissible only when the two lists agree on WHICH slot is which:
+/// names lining up, or one side carrying the synthetic `_1.._n` convention.
+/// Dropping that gate (zipping ANY equal-arity pair) was tried and REVERTED —
+/// measured, it made a lone tuple-typed parameter satisfy a genuinely
+/// 2-parameter list, turning a load error into a load-clean-then-`ArityMismatch`.
+/// So two name-disjoint lists stay REFUSED, exactly as before WI-782.
 #[test]
-fn differently_named_parameter_lists_still_relate() {
-    let src = r#"
-namespace test.wi782.renamed
+fn name_disjoint_parameter_lists_stay_refused() {
+    assert_refused_naming(
+        r#"
+namespace test.wi782.disjoint
   import anthill.prelude.{Int64}
   operation take(f: (x: Int64, y: Int64) -> Int64) -> Int64
     = f(10, 3)
@@ -132,9 +170,36 @@ namespace test.wi782.renamed
   operation drive() -> Int64
     = pass(minus)
 end
-"#;
-    let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi782.renamed.drive"), 7);
+"#,
+        "(x: Int64, y: Int64) -> Int64",
+        "(p: Int64, q: Int64) -> Int64",
+    );
+}
+
+/// THE case that forced the gate back. A lone TUPLE-typed parameter collapses to
+/// the tuple's own term (WI-791), so `get_a(t: (a: Int64, b: Int64))` presents a
+/// 2-field slot indistinguishable from a genuine 2-parameter list. With names
+/// ignored it satisfied `(p: Int64, q: Int64) -> Int64` and then trapped
+/// `ArityMismatch{expected:1, got:2}` at eval — a load error converted into
+/// exactly the load-clean-then-trap shape WI-782 exists to remove. Measured on
+/// both trees.
+#[test]
+fn tuple_typed_parameter_does_not_satisfy_a_name_disjoint_two_parameter_list() {
+    assert_refused_naming(
+        r#"
+namespace test.wi782.collapsedisjoint
+  import anthill.prelude.{Int64}
+  operation get_a(t: (a: Int64, b: Int64)) -> Int64
+    = t.a
+  operation take2(f: (p: Int64, q: Int64) -> Int64) -> Int64
+    = f(1, 2)
+  operation drive() -> Int64
+    = take2(get_a)
+end
+"#,
+        "(p: Int64, q: Int64) -> Int64",
+        "(a: Int64, b: Int64) -> Int64",
+    );
 }
 
 // ── (2) ARITY ──────────────────────────────────────────────────
@@ -267,6 +332,69 @@ end
 }
 
 // ── the KNOWN GAP, pinned so it stays visible ──────────────────
+
+/// WI-791, the FALSE-REJECT direction — the cost this fix knowingly pays.
+///
+/// A lone tuple-typed parameter collapses to the tuple's own term, so a DATA
+/// tuple arrives in `TupleAlign::ParamList` and is aligned POSITIONALLY. But a
+/// data tuple's components are read by NAME (`t.a`), so a permuted or narrower
+/// one is a CORRECT program — measured on the parent commit, both of these
+/// loaded and evaluated to 7. They are now refused at load.
+///
+/// This is not fixable at the alignment rung: a permuted PARAMETER LIST (the
+/// WI-782 bug, a silent wrong-typed value) and a permuted TUPLE PARAMETER (these,
+/// correct) are the same term once the slot collapses. Only WI-791 — making the
+/// slot report arity faithfully — can tell them apart. The trade taken here is a
+/// LOUD load error in this narrow shape in exchange for removing a SILENT
+/// wrong-typed value in the other; when WI-791 lands these should load again.
+#[test]
+fn known_gap_permuted_tuple_typed_parameter_is_falsely_refused() {
+    let errs = try_load_kb_with(
+        r#"
+namespace test.wi782.falseperm
+  import anthill.prelude.{Int64, Bool}
+  operation get_x(t: (x: Int64, y: Bool)) -> Int64
+    = t.x
+  operation take(f: (u: (y: Bool, x: Int64)) -> Int64) -> Int64
+    = f((y: true, x: 7))
+  operation drive() -> Int64
+    = take(get_x)
+end
+"#,
+    )
+    .err()
+    .expect("WI-791 not yet fixed: this correct program is still expected to be REFUSED");
+    assert!(
+        errs.iter().any(|e| e.contains("type mismatch")),
+        "the false rejection should still be a type mismatch; got: {errs:?}",
+    );
+}
+
+/// The same cost in the WIDTH direction: a narrower tuple parameter. `get_a`
+/// reads only `t.a`, so passing it a wider tuple is correct — and was accepted
+/// and evaluated to 7 on the parent commit.
+#[test]
+fn known_gap_narrower_tuple_typed_parameter_is_falsely_refused() {
+    let errs = try_load_kb_with(
+        r#"
+namespace test.wi782.falsewidth
+  import anthill.prelude.{Int64}
+  operation get_a(t: (a: Int64)) -> Int64
+    = t.a
+  operation take(f: (u: (a: Int64, b: Int64)) -> Int64) -> Int64
+    = f((a: 7, b: 8))
+  operation drive() -> Int64
+    = take(get_a)
+end
+"#,
+    )
+    .err()
+    .expect("WI-791 not yet fixed: this correct program is still expected to be REFUSED");
+    assert!(
+        errs.iter().any(|e| e.contains("type mismatch")),
+        "the false rejection should still be a type mismatch; got: {errs:?}",
+    );
+}
 
 /// WI-791 (WI-782 case 3): the param slot does not record parameter-list ARITY.
 /// An arity-1 list collapses to its parameter's bare type, so a ONE-tuple-

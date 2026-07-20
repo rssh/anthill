@@ -23758,14 +23758,57 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
     }
 }
 
-// WI-442's `is_positional_tuple_names` lived here: a test for the canonical
-// `_1.._n` field-name shape that the WI-355 tuple-arrow lowering and the
-// `operation_as_function_value` eta mint produce. It gated whether two
-// differently-named parameter lists could be zipped by POSITION. WI-782 retired
-// it by making `TupleAlign::ParamList` positional unconditionally — binder names
-// are labels on slots, never part of the correspondence — so there is no longer
-// a name test to escape from. The `_1.._n` convention itself is unchanged; it is
-// simply no longer load-bearing for admissibility.
+/// WI-442: are these named-tuple fields the canonical POSITIONAL convention —
+/// exactly `_1, _2, …, _n` in order? This is the field-name shape the WI-355
+/// tuple-arrow lowering and the [`operation_as_function_value`] eta arrow mint
+/// produce for an UNNAMED arrow param / multi-param op (spec §4.5). Such names
+/// are SYNTHETIC and make no claim about what the slots are called, which is what
+/// lets [`align_named_tuple_fields`] zip a `_1.._n` list against a named-binder
+/// arrow (`(acc, x)`) by position — in [`TupleAlign::ParamList`] mode only, since
+/// only a parameter list is applied positionally (WI-775).
+///
+/// WI-782 first RETIRED this gate (letting any two equal-arity lists zip) and
+/// then restored it VERBATIM — the body below is byte-identical to the pre-WI-782
+/// one. Dropping it made `operation get_a(t: (a: Int64, b: Int64))` satisfy a
+/// genuinely 2-parameter `(p: Int64, q: Int64) -> Int64`, because a lone
+/// tuple-typed parameter collapses to the tuple's own 2-field term (WI-791). That
+/// program had been a load error and became load-clean-then-`ArityMismatch` at
+/// eval — converting a static rejection into the very load-clean-then-trap shape
+/// WI-782 exists to remove.
+///
+/// The gate is PARTIAL, and where it stops matters more than where it fires. It
+/// separates a collapsed tuple parameter from a real parameter list only when the
+/// tuple's own component names are not themselves `_1.._n`. So it does NOT fire
+/// for either of these, both MEASURED to load clean and then trap
+/// `ArityMismatch{expected: 1, got: 2}` at eval:
+///
+///   * the POSITIONAL spelling `(t: (Int64, Int64))`, whose components are minted
+///     `_1, _2` by `intern_positional_label` — i.e. the idiomatic spelling is the
+///     one that slips through; and
+///   * a LEADING-ZERO spelling `(t: (_01: Int64, _02: Int64))`, because
+///     `parse::<usize>()` accepts leading zeros. That also puts this recognizer at
+///     odds with eval's `is_synthetic_positional_label`, which rejects them — see
+///     WI-786's `leading_zero_label_is_not_synthetic`.
+///
+/// Both holes are PRE-EXISTING (identical on the pre-WI-782 tree), not regressions
+/// of WI-782; they are WI-791's to close, and the divergent `_N` spellings are
+/// WI-789/WI-790's. What this gate actually buys is the NAME-DISJOINT case, which
+/// WI-782 had briefly widened. Do not read it as closing WI-791.
+///
+/// The index check requires the field at position `i` to be named `_{i+1}`, so it
+/// (and the zip in `align_named_tuple_fields`) relies on [`named_tuple_fields`]
+/// yielding fields in construction/declaration order — which it does (it reads
+/// the `fields` list spine in order; only the per-element record args are
+/// name-sorted, not the list).
+fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> bool {
+    !fields.is_empty()
+        && fields.iter().enumerate().all(|(i, (name, _))| {
+            kb.resolve_sym(*name)
+                .strip_prefix('_')
+                .and_then(|d| d.parse::<usize>().ok())
+                == Some(i + 1)
+        })
+}
 
 /// WI-775: which correspondence [`align_named_tuple_fields`] may use between two
 /// named-tuple field lists. The two positions look identical as TYPES — WI-766
@@ -23779,19 +23822,25 @@ enum TupleAlign {
     /// licenses a read with no value behind it — the program loads clean and
     /// traps at eval with `field_access: tuple has no component '_1'` (WI-775).
     ByName,
-    /// An ARROW'S PARAMETER LIST. Align by POSITION, with EQUAL ARITY required
-    /// and binder names IGNORED. Sound HERE and only here, and forced here: a
-    /// parameter list is APPLIED positionally, so slot `i` is slot `i` and there
-    /// are exactly as many slots as the call site passes arguments.
+    /// An ARROW'S PARAMETER LIST. Align by POSITION, with EQUAL ARITY required.
+    /// Sound HERE and only here, and forced here: a parameter list is APPLIED
+    /// positionally, so slot `i` is slot `i` and there are exactly as many slots
+    /// as the call site passes arguments.
     ///
-    /// Ignoring names is what lets a named-binder callback `(acc: Acc, x: Elem)`
-    /// accept a multi-param op's eta arrow `(_1, _2)`, whose synthetic names make
-    /// no claim (WI-442). WI-782: it is also why a permutation must NOT be
-    /// admitted by matching names up — the runtime performs no such reordering,
-    /// so `(y: Bool, x: Int64)` is compared slot-for-slot against
-    /// `(x: Int64, y: Bool)` and fails on the TYPES, where matching by name
-    /// accepted it and let an operation declared `-> Int64` evaluate to
-    /// `Bool(true)` with no trap.
+    /// Names take no part in the CORRESPONDENCE — the zip is by index — but they
+    /// do gate its ADMISSIBILITY: the two lists must agree on which slot is which,
+    /// meaning the names line up in order or one side is the synthetic `_1.._n`
+    /// convention (WI-442). That admissibility gate is what lets a named-binder
+    /// callback `(acc: Acc, x: Elem)` accept a multi-param op's eta arrow
+    /// `(_1, _2)` while keeping a lone tuple-typed parameter from passing as an
+    /// n-parameter list; see [`is_positional_tuple_names`], which also records the
+    /// two spellings it does NOT catch.
+    ///
+    /// WI-782: this mode has NO by-name rung, which is why a permutation is not
+    /// admitted by matching names up — the runtime performs no such reordering, so
+    /// `(y: Bool, x: Int64)` is compared slot-for-slot against
+    /// `(x: Int64, y: Bool)`, where matching by name accepted it and let an
+    /// operation declared `-> Int64` evaluate to `Bool(true)` with no trap.
     ParamList,
 }
 
@@ -23808,7 +23857,8 @@ enum TupleAlign {
 ///   subtyping). Order-insensitive, returning the pairs in `b` order. This is the
 ///   original [`unify_named_tuple`] / [`named_tuple_compatible`] behavior.
 /// * [`TupleAlign::ParamList`] — an arrow's PARAMETER LIST, APPLIED
-///   POSITIONALLY. A straight index zip of EQUAL-ARITY lists, names ignored.
+///   POSITIONALLY. A straight index zip of EQUAL-ARITY lists, admitted only when
+///   the names line up in order or one side is the synthetic `_1.._n` shape.
 ///   Both field lists are in declaration / positional order (the `named_tuple`
 ///   builders preserve list order), so the index zip is the correspondence the
 ///   runtime actually performs.
@@ -23825,7 +23875,7 @@ enum TupleAlign {
 ///     as many arguments as the call site's type says, so a narrower parameter
 ///     list is not a supertype.
 fn align_named_tuple_fields(
-    _kb: &KnowledgeBase,
+    kb: &KnowledgeBase,
     a_fields: &[(Symbol, Value)],
     b_fields: &[(Symbol, Value)],
     mode: TupleAlign,
@@ -23840,14 +23890,33 @@ fn align_named_tuple_fields(
                     .map(|(_, a_type)| (a_type.clone(), b_type.clone()))
             })
             .collect(),
-        TupleAlign::ParamList if a_fields.len() == b_fields.len() => Some(
-            a_fields
+        TupleAlign::ParamList => {
+            if a_fields.len() != b_fields.len() {
+                return None;
+            }
+            // The zip is admissible only when the two lists agree on WHICH slot
+            // is which: either the names already line up, or one side carries the
+            // SYNTHETIC `_1.._n` convention and so makes no claim. Zipping any
+            // two equal-arity lists was tried and reverted — see
+            // [`is_positional_tuple_names`] for the measured program it broke.
+            let names_agree_in_order = a_fields
                 .iter()
                 .zip(b_fields.iter())
-                .map(|((_, a_type), (_, b_type))| (a_type.clone(), b_type.clone()))
-                .collect(),
-        ),
-        TupleAlign::ParamList => None,
+                .all(|((a_name, _), (b_name, _))| a_name == b_name);
+            if names_agree_in_order
+                || is_positional_tuple_names(kb, a_fields)
+                || is_positional_tuple_names(kb, b_fields)
+            {
+                return Some(
+                    a_fields
+                        .iter()
+                        .zip(b_fields.iter())
+                        .map(|((_, a_type), (_, b_type))| (a_type.clone(), b_type.clone()))
+                        .collect(),
+                );
+            }
+            None
+        }
     }
 }
 
@@ -23856,8 +23925,9 @@ fn align_named_tuple_fields(
 /// here). Fields are read by name via [`named_tuple_fields`] on each carrier;
 /// every `b` field must have a matching `a` field whose type unifies. Alignment
 /// is BY NAME: these are data tuples, whose component names are their access
-/// paths. The WI-442 positional fallback belongs to [`unify_arrow_params`]
-/// (WI-775).
+/// paths. Positional alignment belongs to [`unify_arrow_params`] (WI-775), which
+/// selects [`TupleAlign::ParamList`]; it is that mode's SOLE rung, not a fallback
+/// after a by-name attempt (WI-782).
 fn unify_named_tuple<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -27773,9 +27843,10 @@ pub(crate) fn typed_pattern_bounds_hold(
 /// WI-342: the sole `named_tuple` subtyping, carrier-agnostic over [`TermView`].
 /// Width subtyping: every `expected` field must have a matching `actual` field
 /// whose type is compatible. Fields are read by name via [`named_tuple_fields`]
-/// and aligned BY NAME: these are data tuples. The WI-442 positional fallback —
-/// which lets a named-binder callback arrow's contravariant param check accept a
-/// multi-param op's eta arrow — belongs to [`arrow_params_compatible`] (WI-775).
+/// and aligned BY NAME: these are data tuples. Positional alignment — which lets
+/// a named-binder callback arrow's contravariant param check accept a multi-param
+/// op's eta arrow — belongs to [`arrow_params_compatible`] (WI-775), where it is
+/// [`TupleAlign::ParamList`]'s SOLE rung rather than a fallback (WI-782).
 fn named_tuple_compatible<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -27805,8 +27876,9 @@ fn named_tuple_compatible_as<A: TermView, B: TermView>(
 }
 
 /// WI-775: the subtyping twin of [`unify_arrow_params`] — a `<:` between two
-/// arrow PARAMETER LISTS, aligning positionally when one side is the `_1.._n`
-/// eta convention.
+/// arrow PARAMETER LISTS. WI-782: the alignment is POSITIONAL with equal arity
+/// (no by-name rung), admitted when the names line up or one side carries the
+/// synthetic `_1.._n` convention. See [`align_named_tuple_fields`].
 ///
 /// Argument order is `sub <: super`, exactly as [`types_compatible`] takes it,
 /// and this function does NOT perform the contravariant swap — the CALLER does,

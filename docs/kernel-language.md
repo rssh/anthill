@@ -345,30 +345,57 @@ Arrow sorts associate to the right: `(A) -> (B) -> C` is `(A) -> ((B) -> C)`.
 **Parameter lists correspond slot by slot** (WI-782). A parameter list is
 *applied positionally*, so one arrow conforms to another only when the two lists
 have the **same arity** and their slots correspond by **position**. Binder names
-label slots and take no part in the correspondence: `(acc: A, x: B) -> R` accepts
-a value typed `(_1: A, _2: B) -> R` (which is what lets a named-binder callback
-take an operation's eta-expanded arrow) and equally one typed `(p: A, q: B) -> R`.
-Consequently a permuted list is compared slot-for-slot rather than matched up by
-name, so `(y: Bool, x: Int64) -> R` fails against `(x: Int64, y: Bool) -> R` on
-the component types; and a two-parameter value does not conform to a
-three-parameter one. Permutation and width are subtyping rules for *data* tuples
-whose components are read by NAME (§Field access, mode 3) — a positionally
-consumed list admits neither. (Note that a data tuple read by *destructuring* is
-also positional, per §"Destructuring is POSITIONAL, unlike access"; aligning such
-a reader by name is a known open defect.)
+are not *paired up* to build that correspondence — the zip is by index — but they
+do decide whether the zip is **admissible** at all (see below): `(acc: A, x: B) ->
+R` accepts a value typed `(_1: A, _2: B) -> R`, which is what lets a named-binder
+callback take an operation's eta-expanded arrow. A permuted list is therefore compared
+slot-for-slot rather than paired by name, so `(y: Bool, x: Int64) -> R` fails
+against `(x: Int64, y: Bool) -> R` on the component types; and a two-parameter
+value does not conform to a three-parameter one. Permutation and width are
+subtyping rules for *data* tuples whose components are read by NAME (§Field
+access, mode 3) — a positionally consumed list admits neither. (A data tuple read
+by *destructuring* is also positional, per §"Destructuring is POSITIONAL, unlike
+access"; aligning such a reader by name is a known open defect, tracked as
+WI-788.)
+
+Because names are not matched up, the zip is admitted only when the two lists
+agree on which slot is which — the names line up, or one side carries the
+synthetic `_1.._n` convention. Two equal-arity lists with unrelated names do not
+conform.
 
 > **Known gap.** The parameter list `(t: (a: A, b: B))` — one tuple-typed
 > parameter — and the parameter list `(a: A, b: B)` — two parameters — currently
 > build the *same* arrow type, because an arity-1 list is represented by its
-> parameter's type alone. Each is therefore accepted where the other is required,
-> and the mismatch surfaces as a run-time trap rather than a load error. Tracked
-> as WI-791.
+> parameter's type alone. This cuts BOTH ways. Each is accepted where the other
+> is required, surfacing as a run-time trap rather than a load error. And,
+> conversely, a lone tuple-typed parameter is aligned as though it were a
+> parameter list, so a *permuted* or *narrower* one is **refused at load** even
+> though it is correct — its components are read by name at run time. The two
+> cannot be told apart at the conformance rung: a permuted parameter list and a
+> permuted tuple parameter are the same type. Tracked as WI-791; the arrow
+> spelling and the `Function[A, B]` spelling of such a callback consequently
+> disagree, since `A` is one tuple-typed argument and is still related by name.
+>
+> The admissibility gate above narrows the accepting direction but does **not**
+> close it, and the residue is the *idiomatic* spelling: a tuple parameter written
+> positionally, `(t: (A, B))`, has components named `_1, _2`, which is exactly the
+> synthetic shape that admits a zip. So `(t: (A, B))` still satisfies a genuine
+> two-parameter list and traps at run time, where `(t: (a: A, b: B))` is refused
+> at load. A component spelled with a leading zero (`_01`) behaves the same way.
+> Both are WI-791's to close.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
 The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned positionally to the argument's own parameters (`Modify[c]` on the argument's param 0 matches `Modify[x]`/`-Modify[x]` on the callback's param 0); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous).
 
 The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib (with empty effect set). The effectful arrow `(A) -> B @ E` is equivalent to `Function[A, B, E]`. `Function` is the unified sort for all callable values — pure and effectful. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`Function[A, B] <: Function[A, B, E]` for any `E`).
+
+> The equivalence is not currently exact for a **single tuple-typed parameter**.
+> `A` in `Function[A, B]` is one ARGUMENT and is related by name, whereas the
+> arrow spelling of the same callback collapses to a parameter list and is
+> related positionally — so a permuted or narrower tuple parameter conforms under
+> the `Function` spelling and is refused under the arrow spelling. See the Known
+> Gap under §Arrow types; tracked as WI-791.
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 
@@ -1348,9 +1375,13 @@ against a name-keyed tuple, so `lambda (p, q) -> p - q` applied to
 has no way to *spell* a label: its elements are patterns or `name: Type` typed
 binders, so a binder name is a fresh binder rather than a selector, and matching
 binder names against labels would leave `lambda (a, b)` no meaning at all over a
-named tuple. It also agrees with an arrow's parameter list, which is applied
-positionally, so binder names there need not match the callee's either. A binder
-list whose length differs from the component count does not match.
+named tuple. A binder list whose length differs from the component count does not
+match.
+
+An arrow's parameter list is likewise applied positionally, but its binder names
+are not free: they gate whether two lists may be zipped at all (§Arrow types,
+"Parameter lists correspond slot by slot"), so an arrow spelled `(p: A, q: B) ->
+R` does *not* currently conform to one spelled `(x: A, y: B) -> R`.
 
 **Disambiguation from qualified names.** At parse time, `a.b` in term position is parsed as `field_access(a, b)` — a variable or identifier followed by `.identifier`. Qualified names (`Namespace.Sort`) continue to be parsed as `name` nodes within `fn_term` and `instantiation_term`, which require `(...)` or `{...}` to follow the name. There is no ambiguity: `A.B(x)` parses as `fn_term(name: A.B, args: [x])`, while `A.B` alone in term position parses as `field_access(A, B)`.
 
