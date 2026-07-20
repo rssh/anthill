@@ -9673,6 +9673,84 @@ fn check_apply_iter(
             for r in pos_results.iter().chain(named_results.iter()).flatten() {
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
+            // WI-792: CHECK THE ARGUMENTS against the arrow's parameter list.
+            // Until this ran, the `param` slot was DISCARDED here — only `result`
+            // and `effects` were read — so a function-VALUE application enforced
+            // nothing about what it was handed. `f(true, 7)` against a declared
+            // `(x: Int64, y: Bool) -> Int64` loaded clean and an operation
+            // declared `-> Int64` returned `Bool(true)`. No permutation and no
+            // subtyping were involved: the call put each value in the wrong slot
+            // and nothing objected. It is also what made WI-782's premise — that a
+            // mis-aligned parameter list would then fail on the TYPES — hold only
+            // where conformance is checked, which this site was not.
+            //
+            // The relation is [`validate_arg_against_param`], CALLED rather than
+            // restated. A bespoke comparison here would get the types right and
+            // silently lose the three things that function already owns: the
+            // WI-408 some-coercion, the `is_reflect_term_type` reflection bypass,
+            // and the WI-385/WI-469 groundness discipline. A function-value
+            // application is simply the THIRD argument position (after the
+            // named-operation and entity-field ones that function's doc names),
+            // not a new relation — so it also ACTS on `WrapSome` below rather than
+            // treating it as Ok, which would leave a value bare in memory while
+            // its type says `Option[T]` (the WI-385 interim WI-408 replaced).
+            //
+            // `subst` is fresh and stays local: unlike Path 1 there is no callee
+            // signature to instantiate here — an arrow VALUE's type is already
+            // whatever the environment resolved it to — so nothing outside these
+            // loops reads a binding they make.
+            let mut subst = Substitution::new();
+            let mut arg_errors: Vec<TypeError> = Vec::new();
+            // WI-408: `(child-index, declared Option type)`, materialized below.
+            let mut some_wraps: Vec<(usize, Value)> = Vec::new();
+            // `None` = this callee STATES NO ARITY, and the check must then skip
+            // rather than guess — see [`arrow_positional_param_slots`].
+            if let Some(slots) = arrow_positional_param_slots(kb, &fn_type) {
+                // ARITY FIRST. A call whose count is wrong has no slot-wise
+                // correspondence to report against, and eval refuses it outright
+                // (`spread_eta_args` demands an exact count), so the load-time
+                // verdict must be one arity error rather than a cascade of
+                // mis-aligned type mismatches — or, worse, silence when the
+                // truncated prefix happens to typecheck.
+                let supplied = pos_args.len() + named_args.len();
+                if supplied != slots.len() {
+                    let arity_sym = kb.intern("arity");
+                    return Err(TypeError::Other {
+                        site: TypeError::here(),
+                        span,
+                        context: TypeErrorContext::OperationArgument {
+                            op_name: fn_sym,
+                            param: arity_sym,
+                        },
+                        expected: format!(
+                            "{} argument{} — the parameter list this function value declares",
+                            slots.len(),
+                            if slots.len() == 1 { "" } else { "s" },
+                        ),
+                        actual: format!(
+                            "{supplied} argument{}",
+                            if supplied == 1 { "" } else { "s" },
+                        ),
+                    });
+                }
+                for (i, _) in pos_args.iter().enumerate() {
+                    if let (Ok(arg_result), Some((param_sym, slot_type))) =
+                        (&pos_results[i], slots.get(i))
+                    {
+                        match validate_arg_against_param(
+                            kb, &mut subst, &arg_result.ty, slot_type, span,
+                            TypeErrorContext::OperationArgument {
+                                op_name: fn_sym,
+                                param: *param_sym,
+                            },
+                        ) {
+                            ArgValidation::Ok => {}
+                            ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
+                            ArgValidation::Fail(err) => arg_errors.push(err),
+                        }
+                    }
+                }
+            }
             // WI-783: resolve NAMED arguments against the arrow's declared binder
             // names — the job Path 1 does for a named operation via its
             // `op.params` (coverage check + `reorder_named_args_in_apply`), and
@@ -9688,9 +9766,13 @@ fn check_apply_iter(
             // list is applied POSITIONALLY, so declared slot i is the callee's
             // slot i, and resolving label → slot against the static type before
             // handing eval a positional call composes exactly.
-            let named_node;
-            let occ = if named_args.is_empty() {
-                occ
+            //
+            // WI-792 folded the per-argument TYPE check for these labels in below,
+            // beside the positional loop above: resolving a label to a slot and
+            // then not checking what lands in it is the same silence in the other
+            // channel.
+            let params = if named_args.is_empty() {
+                Vec::new()
             } else {
                 let params = arrow_declared_param_list(kb, &fn_type).ok_or_else(|| {
                     // No declared names to bind to (a 1-param arrow, whose binder
@@ -9721,20 +9803,54 @@ fn check_apply_iter(
                 })?;
                 // The same WI-426 coverage rule the named-operation path applies,
                 // via the shared checker so the two cannot drift.
-                let label_errors = named_arg_coverage_errors(
+                arg_errors.extend(named_arg_coverage_errors(
                     kb, &params, pos_args.len(), named_args, fn_sym,
                     "this function value's type", span,
-                );
-                if !label_errors.is_empty() {
-                    return Err(aggregate_errors(label_errors));
+                ));
+                // WI-792: and the same per-argument conformance the positional
+                // loop applies, at the slot each label resolved to. An UNKNOWN
+                // label matches no param and is skipped here, so it is reported
+                // once, by the coverage check. A DUPLICATE label does match, so it
+                // is type-checked too and can draw a second, different diagnostic
+                // — measured, and the same thing Path 1 does with the same two
+                // checks in the other order. Left alone deliberately: the two
+                // errors say different true things about the argument, and
+                // suppressing one here would make the two paths diverge.
+                for (i, (arg_name, _)) in named_args.iter().enumerate() {
+                    let Ok(arg_result) = &named_results[i] else { continue };
+                    let Some((param_sym, param_type)) =
+                        match_named_arg_param(kb, &params, *arg_name)
+                    else {
+                        continue;
+                    };
+                    let (param_sym, param_type) = (*param_sym, param_type.clone());
+                    match validate_arg_against_param(
+                        kb, &mut subst, &arg_result.ty, &param_type, span,
+                        TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+                    ) {
+                        ArgValidation::Ok => {}
+                        ArgValidation::WrapSome { declared } => {
+                            some_wraps.push((pos_args.len() + i, declared));
+                        }
+                        ArgValidation::Fail(err) => arg_errors.push(err),
+                    }
                 }
-                // Every label resolved: hand eval a positionally-correct call.
-                // `check_apply_iter` bailed on any ill-typed child up front
-                // (`collect_arg_errors`), so the reorder's Ok-child expectation
-                // holds. No some-wraps here — Path 2 runs no per-argument
-                // coercion (WI-408 is Path 1's).
+                params
+            };
+            if !arg_errors.is_empty() {
+                return Err(aggregate_errors(arg_errors));
+            }
+            // Materialize the WI-408 some-coercions recorded above, and — when the
+            // call has NAMED args, every label having resolved — hand eval a
+            // positionally-correct call. `check_apply_iter` bailed on any ill-typed
+            // child up front (`collect_arg_errors`), so the rebuilders' Ok-child
+            // expectation holds. Mirrors Path 1's rebuild, minus its reorder
+            // fallback: that fallback is for a callee with no parameter names,
+            // which this path has already rejected above.
+            let named_node;
+            let occ = if !named_args.is_empty() {
                 match reorder_named_args_in_apply(
-                    kb, occ, &params, pos_args.len(), &[], pos_results, named_results,
+                    kb, occ, &params, pos_args.len(), &some_wraps, pos_results, named_results,
                 ) {
                     Some(r) => {
                         named_node = r;
@@ -9765,6 +9881,11 @@ fn check_apply_iter(
                         });
                     }
                 }
+            } else if some_wraps.is_empty() {
+                occ
+            } else {
+                named_node = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
+                &named_node
             };
             return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
         }
@@ -16895,6 +17016,37 @@ fn validate_arrow_param_result(
         expected: declared.clone(),
         actual: actual.clone(),
     };
+    // WI-792: ARITY, and it runs FIRST because it is THE ONE COMPONENT THIS CHECK
+    // CAN ALWAYS DECIDE. The groundness discipline below defers a component whose
+    // type is still polymorphic; an arrow's arity is a ground `Const(Int)` sibling
+    // however polymorphic its param and result are, so that justification simply
+    // does not reach it. Without this, a callback argument to a TYPE-PARAMETERIZED
+    // operation was never conformance-checked at all: `apply2[T](f: (x: T, y: T)
+    // -> Int64, …)` given a ONE-tuple-parameter op loaded clean and trapped
+    // `ArityMismatch` at eval, while the identical program written NON-generically
+    // is refused at load by WI-791 — genericity was the whole difference.
+    //
+    // A `Function[A, B, E]` side yields `None` and the check skips, which is the
+    // right answer rather than a gap: WI-775 settled that its `A` is the ONE
+    // argument `apply(f, x: A)` passes, so it states no arity and cannot.
+    //
+    // DECIDED (WI-792, user): this also refuses the DUAL — a TWO-parameter op into
+    // a generic `(x: T) -> R` slot — which loads and evaluates today, but only
+    // because eval spreads a single POSITIONAL tuple argument; the name-keyed
+    // spelling of the same program already traps. WI-791 took exactly this trade
+    // at the conformance rung (`two_parameter_operation_is_refused_for_a_tuple_-
+    // argument_arrow`) on the grounds that letting a type relation depend on how a
+    // caller happens to build its tuple is incoherent. Since WI-784 the spread
+    // convention is reachable through `Function[A, B]` for operations AND lambdas
+    // in both application forms, so nothing is lost by refusing it here.
+    let arity_key = kb.intern("arity");
+    if let (Some(d_arity), Some(a_arity)) =
+        (arrow_arity(kb, declared, arity_key), arrow_arity(kb, actual, arity_key))
+    {
+        if d_arity != a_arity {
+            return Some(mismatch());
+        }
+    }
     // Contravariant param: `declared.param <: actual.param`.
     // WI-775: BY NAME. `arrow_parts` decomposes a `Function[A = …]` too, so a
     // positional bridge here would reopen the hole on that surface (see
@@ -18560,6 +18712,64 @@ fn arrow_declared_param_list<V: TermView>(
         // rejects on its own — asserting it here would turn that type error into a
         // panic.
         TypeExtractor::NamedTuple(fields) => Some(fields),
+        _ => None,
+    }
+}
+
+/// WI-792: the POSITIONAL parameter SLOTS of a callable type — one
+/// `(name, type)` per parameter, in declaration order. A positional application
+/// checks argument `i` against slot `i`, and must supply exactly `len()` of them.
+///
+/// The POSITIONAL peer of [`arrow_declared_param_list`], differing from it in
+/// exactly one place, deliberately: an arity-ONE arrow. That reader returns
+/// `None` there because the arrow representation DROPS a lone binder's name, so a
+/// LABEL has nothing to resolve against. A positional argument needs no name —
+/// the sole parameter's type IS the `param` slot — so it is checkable here, and
+/// reported against the synthetic position `_1`. That synthetic name is for the
+/// DIAGNOSTIC only: nothing resolves a label through this list, so minting one
+/// cannot make `f(_1: 5)` start binding at arity one.
+///
+/// `None` means the callee's type STATES NO ARITY, and that absence is
+/// load-bearing rather than defensive. A `Function[A, B, E]` carries no arity and
+/// cannot: WI-775 settled that its `A` is the ONE argument `apply(f, x: A)`
+/// passes, so `f(3, 10)` and `f((3, 10))` are BOTH legal at a `Function` slot
+/// (`operations_and_lambdas_are_interchangeable_in_both_application_forms`) and
+/// neither a count nor a slot-wise type check can be stated over it. Gating on
+/// [`TypeExtractor::Arrow`] — not on [`arrow_parts`], which maps both spellings
+/// onto one `param` — is what keeps `Function` out; reading that `A` as a single
+/// parameter would read `f(3, 10)` as two arguments against one slot and refuse
+/// a program the runtime handles by design.
+fn arrow_positional_param_slots<V: TermView>(
+    kb: &mut KnowledgeBase,
+    fn_type: &V,
+) -> Option<Vec<(Symbol, Value)>> {
+    match extract_type(kb, fn_type) {
+        // Arity ONE: the sole parameter's TYPE is the slot, and the arrow dropped
+        // the binder name, so the position stands in for it.
+        TypeExtractor::Arrow { param, arity: 1, .. } => Some(vec![(kb.intern("_1"), param)]),
+        // Every other arity: the parameter list IS the slot list, which is exactly
+        // what [`arrow_declared_param_list`] already reads. Shared rather than
+        // re-walked so the two readers cannot come to disagree about what the
+        // slots are — the only intended difference between them is the arm above.
+        TypeExtractor::Arrow { .. } => {
+            let slots = arrow_declared_param_list(kb, fn_type);
+            // A non-arity-1 `arrow` carries its list as a `named_tuple` at every
+            // producer — a NULLARY one carries the EMPTY tuple, measured, so zero
+            // reaches this arm as `Some(vec![])` and its applications ARE arity-
+            // checked. Anything else is a malformed arrow, and returning `None`
+            // for it would SILENTLY DISABLE the whole argument check at that call
+            // — precisely the WI-791 failure mode, where a hand-built arrow
+            // missing a child left two tests green while covering nothing. Loud
+            // where it can be: under test, the only place such a term exists.
+            debug_assert!(
+                slots.is_some(),
+                "WI-792: an `arrow` of arity != 1 must carry its parameter list as a \
+                 `named_tuple`; a term reaching here without one is malformed and would \
+                 silently skip the argument check (build it with `make_arrow_type` / \
+                 `make_arrow_occ`)",
+            );
+            slots
+        }
         _ => None,
     }
 }

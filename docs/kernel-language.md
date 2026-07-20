@@ -385,6 +385,29 @@ that is also how it prints.
 > against a single-parameter arrow. Arity is recorded; the arity-1 binder name is
 > not.
 
+**Applying a function value checks its arguments** (WI-792). The rules above
+relate one arrow to another; this is the other half — which *arguments* fit an
+arrow. Calling a value of arrow type `f(a₁, …, aₙ)` is checked exactly as calling
+a named operation is:
+
+* the argument **count** must equal the declared arity;
+* argument `i` is checked against parameter slot `i`, and a **named** argument
+  against the slot its label resolves to (§named arguments) — so a wrong-typed
+  value in any position is a **load error**, not a run-time trap;
+* the same call-side conversions apply as at any other argument position, notably
+  the `Option` some-coercion (a bare `T` supplied for a declared `Option[T]` is
+  wrapped).
+
+A `Function[A, B, E]` states no arity (see the note below), so neither the count
+nor the slot-wise check is stated over it — both `f(3, 10)` and `f((3, 10))`
+remain legal at a `Function[(A, B), R]` parameter.
+
+The same checks reach a callback argument whose declared type is still
+**polymorphic** (`apply2[T](f: (x: T, y: T) -> R, …)`). Component *types* there
+are deferred — a genuinely polymorphic component must not be rejected before it is
+instantiated — but **arity** is decided regardless, since a parameter count is not
+something instantiation can change.
+
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
 The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned positionally to the argument's own parameters (`Modify[c]` on the argument's param 0 matches `Modify[x]`/`-Modify[x]` on the callback's param 0); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous).

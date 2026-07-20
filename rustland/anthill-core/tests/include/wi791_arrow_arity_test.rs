@@ -363,38 +363,30 @@ end
     assert_eq!(gen2, gen1, "printing must be a fixpoint — no layer may accumulate");
 }
 
-// ── a KNOWN GAP this ticket does not close, pinned ─────────────
+// ── the gap this ticket left open, CLOSED by WI-792 ────────────
 
-/// A callback argument to a TYPE-PARAMETERIZED operation is not conformance-
-/// checked at all, so an arity mismatch there is still load-clean-then-trap.
-/// MEASURED IDENTICAL on the parent commit — this is PRE-EXISTING and is not a
-/// hole in the arity child: the same program written non-generically
-/// (`positionally_spelled_two_parameter_callback_is_refused`) IS refused.
+/// WAS `known_gap_generic_callback_arrow_is_not_conformance_checked`, which
+/// asserted the opposite — that this LOADS and then traps `ArityMismatch` at
+/// eval. WI-792 closed it, and the assertion is inverted here rather than the
+/// test deleted, because the program is WI-791's own relation reached through a
+/// different door and it must stay pinned at both.
 ///
-/// TRACKED AS WI-792, as a second locus of the same family — that ticket's own
-/// case is the APPLICATION site (calling a function value), this one is the
-/// ARGUMENT-PASSING site. When it closes, this test SHOULD fail; replace it with
-/// a load-rejection assertion.
+/// The gap was that a callback argument to a TYPE-PARAMETERIZED operation was
+/// never conformance-checked, so `positionally_spelled_two_parameter_callback_is_-
+/// refused` above and this program — the same mismatch, one generic — disagreed,
+/// with genericity the whole difference. `validate_arg_against_param` gates on
+/// `resolved_type_is_ground` for BOTH sides, and a declared `(x: T, y: T) ->
+/// Int64` is non-ground while `T` is free, so `types_compatible` (where the arity
+/// equality above lives) never ran; the non-ground path delegates to
+/// `validate_arrow_param_result`, which was arity-blind.
 ///
-/// ROOT CAUSE, for whoever closes it: `validate_arg_against_param`
-/// (`kb/typing.rs`) gates on `resolved_type_is_ground` for BOTH sides, and a
-/// declared `(x: T, y: T) -> Int64` is non-ground while `T` is free, so the full
-/// `types_compatible` — where the arity check lives — never runs. The non-ground
-/// path delegates to `validate_arrow_param_result`, which checks param and result
-/// COMPONENT-WISE and only where each component is itself ground.
-///
-/// Arity is the one component that check could always decide: it is a ground
-/// `Const(Int)` no matter how polymorphic the types are, so the groundness
-/// discipline that defers the rest does not apply to it. It is deliberately not
-/// done here because it also refuses the DUAL — a 2-parameter op into a generic
-/// `(x: T) -> R` slot — which works today only because eval spreads a single
-/// POSITIONAL tuple argument. That is the same trade
-/// `two_parameter_operation_is_refused_for_a_tuple_argument_arrow` takes at the
-/// conformance rung, and it should be a stated decision there rather than a side
-/// effect here.
+/// WI-792's fix is that arity is THE ONE COMPONENT that check can always decide —
+/// a ground `Const(Int)` however polymorphic the param and result are — so it now
+/// runs there too, ahead of the groundness-gated component checks.
 #[test]
-fn known_gap_generic_callback_arrow_is_not_conformance_checked() {
-    let src = r#"
+fn generic_callback_arrow_arity_is_conformance_checked() {
+    assert_refused_naming(
+        r#"
 namespace test.wi791.knowngap
   import anthill.prelude.{Int64}
   operation apply2[T](f: (x: T, y: T) -> Int64, v: T, w: T) -> Int64
@@ -404,18 +396,8 @@ namespace test.wi791.knowngap
   operation drive() -> Int64
     = apply2(get_a, 7, 8)
 end
-"#;
-    assert!(
-        try_load_kb_with(src).is_ok(),
-        "known gap: a generic op's callback arrow is still not checked, so this loads",
-    );
-    let mut interp = interp_for(src);
-    let err = interp
-        .call("test.wi791.knowngap.drive", &[])
-        .expect_err("known gap: this program is expected to TRAP at eval");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("ArityMismatch"),
-        "the gap should surface as the eval-time arity trap; got: {msg}",
+"#,
+        "(x: ?T, y: ?T) -> Int64",
+        "((a: Int64, b: Int64)) -> Int64",
     );
 }
