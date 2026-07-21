@@ -49,6 +49,21 @@ pub fn fixtures_dir(group: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(group)
 }
 
+/// Write `contents` to a uniquely-named temp dir and return the path.
+///
+/// `name` is the full filename including extension. Every `prove_*` test file
+/// carries its own copy of this; new tests should call this one instead. The
+/// directory is deliberately left behind for failure-mode debugging, matching
+/// the convention in `anthill-smt-gen/tests/common`.
+pub fn write_temp(name: &str, contents: &str) -> PathBuf {
+    let dir = std::env::temp_dir()
+        .join(format!("anthill-test-{}-{}", std::process::id(), name));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, contents).unwrap();
+    path
+}
+
 /// Run the built binary with `args`.
 pub fn anthill(args: &[&str]) -> Output {
     let out = Command::new(bin()).args(args).output().expect("run anthill binary");

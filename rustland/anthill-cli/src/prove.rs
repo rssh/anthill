@@ -11,9 +11,8 @@ use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::kb::proof_verify::{set_proof_result, VerdictWrite};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
-use anthill_smt_gen::{
-    emit_satisfiability_check_with_deps, lift_rule_to_implication_clause, ProofConfig,
-};
+use anthill_smt_gen::{emit_satisfiability_check_with_deps, ProofConfig};
+use anthill_smt_gen::policy::{render_cited_lemma_under_policy, SMT_Z3_BACKEND};
 use anthill_smt_gen::cache::{
     self, blob_subdir, build_key, hash_content, lookup, proof_subdir,
     resolve_cache_root, state_hash, store_blob, store_entry, store_witness,
@@ -1244,11 +1243,14 @@ fn dispatch_z3(
             effective.push(qn);
         }
     }
-    match render_cited_lemmas(kb, &effective, rule_qn, cli, discharged_this_run) {
+    match render_cited_lemmas(kb, &effective, rule_qn, abstract_body, cli, discharged_this_run) {
         Ok(Some(clauses)) => {
             config.assumptions = clauses;
             canon_parts.push(format!("using={}", effective.join(",")));
         }
+        // An all-`Inline` cite list renders no hypotheses (WI-781), so it takes
+        // the `Ok(None)` arm and contributes no `using=` to the cache canon —
+        // correct, since the emitted document really does carry none.
         Ok(None) => {}
         Err(msg) => {
             return DispatchOutcome::no_witness(Verdict::EmitError(msg));
@@ -1305,8 +1307,13 @@ fn dispatch_z3(
     run_smt_subquery(kb, rule_qn, &config, &tactic_canon, cli, stats)
 }
 
-/// Render each cited-lemma rule as a forall-quantified implication
-/// clause via `lift_rule_to_implication_clause` — see WI-C1.
+/// Render each cited-lemma rule into the hypothesis clauses the
+/// consumer should splice, under that lemma's per-predicate
+/// translation policy (`render_cited_lemma_under_policy`, WI-781).
+/// Absent a `TranslationPolicy` fact every cite takes the
+/// `LiftedAxiom` default — the forall-quantified implication this
+/// unconditionally emitted before — so the document is unchanged
+/// until a project states otherwise.
 ///
 /// Phase γ.1 + γ.2 (proposal 030): every cite is gated on the
 /// cited rule's ProofRecord being **discharged**. The check is:
@@ -1321,16 +1328,20 @@ fn dispatch_z3(
 /// path left open.
 ///
 /// Returns:
-///   - `Ok(Some(clauses))` — list of forall-quantified implications
-///     ready to splice into the consumer's `(assert …)` preamble.
-///   - `Ok(None)` — empty cite list (or only self-citation).
-///   - `Err(message)` — at least one cited rule is not discharged.
-///     The consumer's discharge fails with this message instead of
-///     proceeding under unverified assumptions.
+///   - `Ok(Some(clauses))` — clauses ready to splice into the
+///     consumer's `(assert …)` preamble.
+///   - `Ok(None)` — nothing to splice: an empty cite list, only
+///     self-citation, or every cite resolved to `Inline` (which
+///     contributes no hypothesis by policy).
+///   - `Err(message)` — at least one cited rule is not discharged, or
+///     could not be lowered under its policy. The consumer's
+///     discharge fails with this message instead of proceeding under
+///     unverified assumptions.
 fn render_cited_lemmas(
     kb: &KnowledgeBase,
     using: &[String],
     target_rule_qn: &str,
+    consumer_is_abstract: bool,
     cli: &ProveArgs,
     discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> Result<Option<Vec<String>>, String> {
@@ -1361,12 +1372,16 @@ fn render_cited_lemmas(
                 ));
             }
         }
-        match lift_rule_to_implication_clause(kb, cited) {
+        // WI-781: route through the per-predicate translation policy rather than
+        // lifting unconditionally. Absent an explicit `TranslationPolicy` fact
+        // every cite defaults to `LiftedAxiom`, so this is the same lift and the
+        // emitted document is unchanged; a policy fact is what makes it differ.
+        match render_cited_lemma_under_policy(kb, cited, SMT_Z3_BACKEND, consumer_is_abstract) {
             Ok(lifted) => clauses.extend(lifted),
             Err(e) => {
                 return Err(format!(
                     "cite `{cited}` (in proof `{target_rule_qn}`) could not be \
-                     lifted to an implication clause: {}",
+                     lowered under its translation policy: {}",
                     e.message
                 ));
             }
