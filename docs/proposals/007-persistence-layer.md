@@ -10,7 +10,7 @@
 > - **[053 — Fact Mutability](053-fact-mutability.md)** owns the write-policy ladder; `monotonicity` here is that query.
 > - **WI-780 (write seam)** retires the **`FactId` identity** of §4: `persist` returns the content / domain key and `retract` is content-keyed, so `FactId = Handle(RuleId)` is dropped.
 >
-> **What still stands:** §1 (persistence as a kernel algebra), §2's *declared* trait contract (`Store` / `NonMonotonicStore` / `QueryableStore` / `BulkStore` — 057 *conforms* to it rather than replacing it), and the concrete backends (§6–§8). Read the superseded sections for motivation; take the mechanism from 057 and the vision.
+> **What still stands:** §1 (persistence as a kernel algebra), §2's *declared* trait contract (`Store` / `NonMonotonicStore` / `QueryableStore` / `BulkStore` — 057 *conforms* to it rather than replacing it), and the **filesystem** backend (§6 — the one backend actually implemented). §7's SQL store is an **illustrative example, not a requirement** (`sql.anthill` is a sketch; no such backend is built), and its `retrieve`-based read design predates 057 — a SQL store is an `ExtentSource` *owner* under the extent model, not a retrieve-beside-unification `QueryableStore`. Read the superseded sections for motivation; take the mechanism from 057 and the vision.
 
 ## Motivation
 
@@ -235,6 +235,8 @@ end
 The filesystem backend is the **bootstrap store** — it is always available and always loaded first (see §8).
 
 ### 7. Concrete Backend: SQL (with Dialect)
+
+> **Illustrative example, not a requirement.** No SQL backend is implemented — `sql.anthill` is an anthill-level *sketch* of what a queryable store could declare, kept for the dialect / marshalling ideas. Its `queryable` / `retrieve` read design predates [057](057-extent-read-seam.md): under the extent model a SQL store is an `ExtentSource` **owner** — mounted at its functor node, answering `lookup` with `LookupQuery.bound` pushed down to a WHERE clause — not a retrieve-beside-unification `QueryableStore`. Read this for the dialect layering, not as a read-path spec.
 
 The SQL backend stores facts as table rows. It is `queryable` — backward chaining translates KB patterns to SQL queries. PostgreSQL, MySQL, SQLite, DuckDB etc. are **dialects** of a single `SqlStore`, not separate store types.
 
