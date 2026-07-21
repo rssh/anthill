@@ -10241,6 +10241,20 @@ fn check_apply_iter(
         // and it used to happen inside `arrow_parts` on the line below.
         let callee_ty = extract_callable_type(kb, &fn_type);
         if let Some((ret_ty, call_effects)) = extract_function_type_parts(kb, &callee_ty) {
+            // WI-798: and the DECLARED PARAMETER LIST likewise once — the
+            // positional check reads it as its slot list (for every arity but
+            // one), and the WI-783 named-label resolution below reads the SAME
+            // list to bind labels to slots. Deriving it twice meant a second
+            // `extract_type` of the arrow's `param` plus a second walk of the
+            // parameter cons-list on every named-argument call.
+            //
+            // What must NOT be shared is the POSITIONAL slot list: it diverges
+            // from this one at arity 1, where an arrow drops its lone binder's
+            // name, so `arrow_positional_param_slots` mints a synthetic `_1` while
+            // this stays `None` so a LABEL there is refused. That divergence lives
+            // in the reader's match, not in whether the list is computed, so
+            // hoisting the computation leaves it intact.
+            let declared_params = arrow_declared_param_list(kb, &callee_ty);
             // WI-516: `f(arg…)` performs the arrow's OWN call effect UNIONED with
             // the effects of EVALUATING each argument — the same arg-effect
             // accumulation Path 1 (known op) and Path 3 (unknown functor) do.
@@ -10289,6 +10303,7 @@ fn check_apply_iter(
             match positional_arg_expectations(
                 kb,
                 &callee_ty,
+                declared_params.as_deref(),
                 pos_args.len(),
                 pos_args.len() + named_args.len(),
             ) {
@@ -10357,7 +10372,7 @@ fn check_apply_iter(
             let params = if named_args.is_empty() {
                 Vec::new()
             } else {
-                let params = arrow_declared_param_list(kb, &callee_ty).ok_or_else(|| {
+                let params = declared_params.ok_or_else(|| {
                     // No declared names to bind to (a 1-param arrow, whose binder
                     // name the arrow type drops; a `Function[A, B]`, whose `A` is
                     // one tuple argument; an abstract param). The label can be
@@ -19378,10 +19393,11 @@ enum ArgExpectations {
 fn positional_arg_expectations(
     kb: &mut KnowledgeBase,
     fn_type: &TypeExtractor,
+    declared: Option<&[(Symbol, Value)]>,
     positional: usize,
     total: usize,
 ) -> ArgExpectations {
-    if let Some(slots) = arrow_positional_param_slots(kb, fn_type) {
+    if let Some(slots) = arrow_positional_param_slots(kb, fn_type, declared) {
         // ARITY FIRST. A call whose count is wrong has no slot-wise correspondence
         // to report against, and eval refuses it outright (`spread_eta_args`
         // demands an exact count), so the verdict must be ONE arity error rather
@@ -19512,23 +19528,28 @@ fn function_spec_param_type(kb: &KnowledgeBase, fn_type: &TypeExtractor) -> Opti
 /// a program the runtime handles by design.
 ///
 /// WI-798: reads the extraction its caller already performed — see
-/// [`positional_arg_expectations`] on why sharing one costs no dispatch.
+/// [`positional_arg_expectations`] on why sharing one costs no dispatch — and
+/// takes `declared` as the caller's ONE [`arrow_declared_param_list`] reading,
+/// rather than deriving its own. That the two readers agree on the slots is the
+/// point of the arm below; taking the same list makes them agree by construction
+/// instead of by both walking to the same answer.
 fn arrow_positional_param_slots(
     kb: &mut KnowledgeBase,
     fn_type: &TypeExtractor,
+    declared: Option<&[(Symbol, Value)]>,
 ) -> Option<Vec<(Symbol, Value)>> {
     match fn_type {
         // Arity ONE: the sole parameter's TYPE is the slot, and the arrow dropped
-        // the binder name, so the position stands in for it.
+        // the binder name, so the position stands in for it. `declared` is `None`
+        // here BY DESIGN — this is the one place the two readers diverge — so it
+        // is deliberately not consulted.
         TypeExtractor::Arrow { param, arity: 1, .. } => {
             Some(vec![(kb.intern(&positional_label(0)), param.clone())])
         }
         // Every other arity: the parameter list IS the slot list, which is exactly
-        // what [`arrow_declared_param_list`] already reads. Shared rather than
-        // re-walked so the two readers cannot come to disagree about what the
-        // slots are — the only intended difference between them is the arm above.
+        // what [`arrow_declared_param_list`] already read for the caller.
         TypeExtractor::Arrow { .. } => {
-            let slots = arrow_declared_param_list(kb, fn_type);
+            let slots = declared.map(|d| d.to_vec());
             // A non-arity-1 `arrow` carries its list as a `named_tuple` at every
             // producer — a NULLARY one carries the EMPTY tuple, measured, so zero
             // reaches this arm as `Some(vec![])` and its applications ARE arity-
