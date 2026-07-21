@@ -355,9 +355,13 @@ impl TypeError {
     pub fn format(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeError::TypeMismatch { expected, actual, .. } => {
-                format!("type mismatch: expected {}, got {}",
-                    type_display_name_value(kb, expected),
-                    type_display_name_value(kb, actual))
+                // WI-795: the SAME pair renderer `to_load_error` uses. This is a
+                // second, currently-unreached rendering of the same two values —
+                // rendering them independently here would silently reintroduce the
+                // `expected X, got X` arity blindness on whichever path reaches it
+                // first.
+                let (expected, actual) = render_mismatch_pair(kb, expected, actual);
+                format!("type mismatch: expected {expected}, got {actual}")
             }
             TypeError::UnknownField { entity_name, field, .. } => {
                 format!("unknown field '{}' in entity {}",
@@ -529,18 +533,24 @@ impl TypeError {
     pub fn to_load_error(&self, kb: &KnowledgeBase) -> super::load::LoadError {
         use super::load::{LoadError, TypeMismatchOrigin};
         match self {
-            TypeError::TypeMismatch { context, expected, actual, site, .. } => LoadError::TypeMismatch {
-                origin: Some(TypeMismatchOrigin {
-                    error_kind: "TypeMismatch",
-                    context_kind: context.kind_tag(),
-                    site: *site,
-                }),
-                entity_name: context.entity_name(kb),
-                field_name: context.field_name(kb),
-                expected_type: type_display_name_value(kb, expected),
-                actual_type: type_display_name_value(kb, actual),
-                span: self.span(kb),
-            },
+            TypeError::TypeMismatch { context, expected, actual, site, .. } => {
+                // WI-795: rendered as a PAIR, not as two independent sides — an
+                // arity-only arrow mismatch is invisible to the per-side
+                // renderer. See [`render_mismatch_pair`].
+                let (expected_type, actual_type) = render_mismatch_pair(kb, expected, actual);
+                LoadError::TypeMismatch {
+                    origin: Some(TypeMismatchOrigin {
+                        error_kind: "TypeMismatch",
+                        context_kind: context.kind_tag(),
+                        site: *site,
+                    }),
+                    entity_name: context.entity_name(kb),
+                    field_name: context.field_name(kb),
+                    expected_type,
+                    actual_type,
+                    span: self.span(kb),
+                }
+            }
             TypeError::UnknownField { entity_name, field, .. } => {
                 let field_name = kb.resolve_sym(*field).to_string();
                 LoadError::TypeMismatch {
@@ -2926,6 +2936,148 @@ fn display_arrow_param(rendered: String, arity: Option<usize>, param_is_tuple: b
     } else {
         rendered
     }
+}
+
+/// WI-795: render a type mismatch's `(expected, actual)` pair for a diagnostic.
+///
+/// Each side normally renders independently via [`type_display_name_value`], and
+/// for every mismatch but one that is enough. The exception is two arrows
+/// differing ONLY in their WI-791 `arity` child: the arrow renderer walks the
+/// param spine and never the arity, so both sides come out byte-identical and
+/// the message reads `expected X, got X` — it tells the user two types disagree
+/// while showing the same type twice, and says nothing about the parameter COUNT
+/// that is the actual fault. That message is the one WI-794's per-binder
+/// annotation check deliberately defers every misaligned-arity case to (blaming a
+/// specific annotation when a parameter is missing is worse than saying nothing),
+/// so a handoff target that cannot express an arity defect makes the deferral a
+/// downgrade rather than a delegation.
+///
+/// When both sides are arrows whose arities DIFFER, each is qualified with its
+/// own parameter count. A side whose param slot is NOT its own additionally drops
+/// the rendered arrow: a lambda takes its parameter types from the CONTEXT, so a
+/// 2-binder lambda at a 3-parameter slot carries the slot's 3-component list
+/// under an arity of 2 — printing that list is what made the original message
+/// unreadable, and it contradicts the count standing beside it.
+///
+/// Every other mismatch renders exactly as before, including an arrow pair
+/// differing in a param TYPE: the qualification is gated on both arities being
+/// present and UNEQUAL, which no param-type difference satisfies.
+fn render_mismatch_pair(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> (String, String) {
+    let (e, a) = render_mismatch_pair_by_cause(kb, expected, actual);
+    // WI-795: the CAUSE-AGNOSTIC backstop. Everything above fixes one KNOWN way
+    // for two unequal types to render alike (the unwalked `arity` child). This
+    // catches the rest without having to name them.
+    //
+    // Two identical sides are never a legitimate diagnostic: either the renderer
+    // failed to express a distinction the checker made — the WI-795 defect, of
+    // which `arity` was one instance and others plausibly remain in any child no
+    // display arm walks — or the mismatch is spurious and the two types really
+    // are equal, which is a worse bug in the check. Both deserve to be seen
+    // rather than printed as a tautology the reader is left to decode.
+    //
+    // It reports rather than panics BECAUSE this is the diagnostic path: a
+    // `debug_assert` here would convert a user's type error into a crash, and do
+    // nothing at all in release, which is precisely when a confusing message is
+    // most expensive. The user still gets the underlying rejection; they
+    // additionally get told the message is incomplete, instead of silently
+    // receiving one that cannot be acted on.
+    if e == a {
+        return (e, format!("{a} {IDENTICAL_RENDERING_NOTE}"));
+    }
+    (e, a)
+}
+
+/// WI-795: appended to a mismatch whose two sides render identically — see
+/// [`render_mismatch_pair`]. Phrased for the person reading the compiler output,
+/// who otherwise has no way to tell a renderer gap from nonsense.
+const IDENTICAL_RENDERING_NOTE: &str =
+    "(these render alike but are not the same type — the difference is in a \
+     component this diagnostic does not print; please report it)";
+
+/// WI-795: the cause-directed half of [`render_mismatch_pair`] — renders each side
+/// and qualifies BOTH with their parameter counts when the sides are arrows whose
+/// arities differ. Split out so the identical-rendering backstop above wraps every
+/// return path rather than just the fallthrough.
+fn render_mismatch_pair_by_cause(
+    kb: &KnowledgeBase,
+    expected: &Value,
+    actual: &Value,
+) -> (String, String) {
+    let (e, a) = (type_display_name_value(kb, expected), type_display_name_value(kb, actual));
+    // `lookup_symbol`, not `intern`: a diagnostic renders off `&KnowledgeBase`. A
+    // KB that never interned "arity" holds no arrow, so there is nothing to qualify.
+    let Some(arity_key) = kb.lookup_symbol("arity") else { return (e, a) };
+    match (
+        arrow_display_arity(kb, expected, arity_key),
+        arrow_display_arity(kb, actual, arity_key),
+    ) {
+        (Some(ne), Some(na)) if ne != na => (
+            arity_qualified_arrow(kb, expected, ne, e),
+            arity_qualified_arrow(kb, actual, na, a),
+        ),
+        _ => (e, a),
+    }
+}
+
+/// WI-795: the stated parameter-list arity of a type that IS an `arrow`, else
+/// `None`. Unlike [`agreed_arrow_arity`] this runs on an arbitrary mismatched
+/// pair rather than from an `(arrow, arrow)` dispatch arm, so the head is tested
+/// rather than assumed.
+///
+/// BELT AND BRACES, stated honestly: the obvious way to reach this without the
+/// head test — a non-arrow type with a parameter literally named `arity` bound to
+/// an integer — does NOT in fact slip through, because a value-in-type binding is
+/// a WI-302 `denoted` wrapper and [`const_usize_of`] already rejects it (measured
+/// on `Vec[arity = 3]` vs `Vec[arity = 2]`, which renders identically with the
+/// test removed). So this guards a shape no current spelling produces. It is kept
+/// because the alternative is relying on that coincidence of two unrelated
+/// encodings, but it should not be read as load-bearing.
+fn arrow_display_arity(kb: &KnowledgeBase, ty: &Value, arity_key: Symbol) -> Option<usize> {
+    if !matches!(type_head(kb, ty), TypeHead::Arrow) {
+        return None;
+    }
+    arrow_arity(kb, ty, arity_key)
+}
+
+/// WI-795: qualify one side of an arity mismatch with its parameter count. The
+/// rendered arrow is kept only when its param slot is the side's OWN parameter
+/// list — see [`render_mismatch_pair`].
+fn arity_qualified_arrow(kb: &KnowledgeBase, ty: &Value, arity: usize, rendered: String) -> String {
+    if arrow_param_list_is_own(kb, ty, arity) {
+        format!("a {arity}-parameter function {rendered}")
+    } else {
+        format!("a {arity}-parameter function")
+    }
+}
+
+/// WI-795: does this arrow's `param` slot hold the parameter list its own `arity`
+/// child describes? This is WI-791's consistency question read off one arrow: at
+/// arity `n != 1` the slot IS the parameter list, so it must be a `named_tuple`
+/// of exactly `n` components.
+///
+/// A `false` means the slot came from somewhere other than the side's own
+/// written parameters — in practice a lambda that was handed the context's
+/// parameter list, which is precisely the shape that renders identically to the
+/// type it is being refused against.
+///
+/// ARITY 1 IS A KNOWN INCOMPLETENESS, not a proof of ownership. There the slot is
+/// the sole parameter's TYPE, and every type is a well-formed sole-parameter type,
+/// so consistency cannot distinguish a written parameter from an inherited one and
+/// this answers `true` unconditionally. A 1-binder lambda at a 2-parameter slot
+/// therefore still renders the context's list as its own
+/// (`a 1-parameter function ((a: Int64, b: Int64)) -> Int64` — measured, and pinned
+/// by `a_one_binder_lambda_still_shows_an_inherited_sole_parameter_type`). That is
+/// tolerable where the n-parameter case was not: the count is stated, the two sides
+/// differ (WI-791's arity-1 paren wrap sees to that), and the reported fault is
+/// still the arity. Closing it needs provenance — whether the type was WRITTEN —
+/// which no amount of looking at the finished arrow can recover.
+fn arrow_param_list_is_own(kb: &KnowledgeBase, ty: &Value, arity: usize) -> bool {
+    if arity == 1 {
+        return true;
+    }
+    let Some(param) = view_child_value(kb, ty, "param") else { return false };
+    matches!(type_head(kb, &param), TypeHead::NamedTuple)
+        && named_tuple_fields(kb, &param).len() == arity
 }
 
 /// WI-791: is this type a `named_tuple`? The structural test

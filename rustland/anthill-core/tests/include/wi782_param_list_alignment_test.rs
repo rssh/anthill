@@ -192,7 +192,8 @@ end
 /// so this is 1 ≠ 2 rather than a question about names, and the gate that used to
 /// carry it is no longer asked. That shows in the message — the actual now reads
 /// `((a: Int64, b: Int64)) -> Int64`, the one-tuple-parameter spelling, where the
-/// two spellings used to render identically.
+/// two spellings used to render identically. WI-795 says the arity in words on
+/// top of that.
 #[test]
 fn tuple_typed_parameter_does_not_satisfy_a_name_disjoint_two_parameter_list() {
     assert_refused_naming(
@@ -207,8 +208,8 @@ namespace test.wi782.collapsedisjoint
     = take2(get_a)
 end
 "#,
-        "(p: Int64, q: Int64) -> Int64",
-        "((a: Int64, b: Int64)) -> Int64",
+        "a 2-parameter function (p: Int64, q: Int64) -> Int64",
+        "a 1-parameter function ((a: Int64, b: Int64)) -> Int64",
     );
 }
 
@@ -234,8 +235,11 @@ namespace test.wi782.arity
     = pass2(impl2)
 end
 "#,
-        "(a: Int64, b: Int64, c: Int64) -> Int64",
-        "(a: Int64, b: Int64) -> Int64",
+        // WI-795: the arity clause is the whole subject here — this is the
+        // ticket's own `expected 3, got 2` shape, and both sides state a
+        // parameter list they actually wrote, so both keep their spelling.
+        "a 3-parameter function (a: Int64, b: Int64, c: Int64) -> Int64",
+        "a 2-parameter function (a: Int64, b: Int64) -> Int64",
     );
 }
 

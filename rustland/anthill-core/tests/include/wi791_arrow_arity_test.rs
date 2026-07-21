@@ -51,14 +51,26 @@ fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
 /// `expected (a: Int64, b: Int64) -> Int64, got (a: Int64, b: Int64) -> Int64`
 /// — restating the confusion it is reporting. The extra parens in the expected
 /// text are the one-tuple-parameter spelling.
-fn assert_refused_naming(src: &str, expected: &str, got: &str) {
+///
+/// WI-795: each side is now given as `(parameter count, rendering)`, and the
+/// count is asserted alongside the spelling, because the loader states it in
+/// words. Every rejection in this file is an arity disagreement, so the count is
+/// the fixture's real subject; passing it separately rather than folding it into
+/// the literal keeps a fixture from pairing a count with the wrong side — the one
+/// mistake a hand-written `"a 2-parameter function (…)"` string invites.
+fn assert_refused_naming(src: &str, expected: (usize, &str), got: (usize, &str)) {
+    let (expected_arity, expected_type) = expected;
+    let (got_arity, got_type) = got;
     let errs = match try_load_kb_with(src) {
         Ok(_) => panic!(
-            "must NOT load: `{got}` and `{expected}` take a different number of parameters"
+            "must NOT load: `{got_type}` and `{expected_type}` take a different number of parameters"
         ),
         Err(errs) => errs,
     };
-    let wanted = format!("expected {expected}, got {got}");
+    let wanted = format!(
+        "expected a {expected_arity}-parameter function {expected_type}, \
+         got a {got_arity}-parameter function {got_type}"
+    );
     assert!(
         errs.iter().any(|e| e.contains("type mismatch") && e.contains(&wanted)),
         "rejection must be a type mismatch reading `{wanted}`; got: {errs:?}",
@@ -85,8 +97,8 @@ namespace test.wi791.repro1
       f((7, 8))
 end
 "#,
-        "(_1: Int64, _2: Int64) -> Int64",
-        "((a: Int64, b: Int64)) -> Int64",
+        (2, "(_1: Int64, _2: Int64) -> Int64"),
+        (1, "((a: Int64, b: Int64)) -> Int64"),
     );
 }
 
@@ -106,8 +118,8 @@ namespace test.wi791.repro2
       f((a: 7, b: 8))
 end
 "#,
-        "((a: Int64, b: Int64)) -> Int64",
-        "(_1: Int64, _2: Int64) -> Int64",
+        (1, "((a: Int64, b: Int64)) -> Int64"),
+        (2, "(_1: Int64, _2: Int64) -> Int64"),
     );
 }
 
@@ -133,8 +145,8 @@ namespace test.wi791.bypass1
     = take2(get_a)
 end
 "#,
-        "(_1: Int64, _2: Int64) -> Int64",
-        "((a: Int64, b: Int64)) -> Int64",
+        (2, "(_1: Int64, _2: Int64) -> Int64"),
+        (1, "((a: Int64, b: Int64)) -> Int64"),
     );
 }
 
@@ -162,8 +174,8 @@ namespace test.wi791.bypass2
     = take2(get_a)
 end
 "#,
-        "(p: Int64, q: Int64) -> Int64",
-        "((_01: Int64, _02: Int64)) -> Int64",
+        (2, "(p: Int64, q: Int64) -> Int64"),
+        (1, "((_01: Int64, _02: Int64)) -> Int64"),
     );
 }
 
@@ -198,8 +210,8 @@ namespace test.wi791.spread
     = take(minus)
 end
 "#,
-        "((_1: Int64, _2: Int64)) -> Int64",
-        "(_1: Int64, _2: Int64) -> Int64",
+        (1, "((_1: Int64, _2: Int64)) -> Int64"),
+        (2, "(_1: Int64, _2: Int64) -> Int64"),
     );
 }
 
@@ -397,7 +409,7 @@ namespace test.wi791.knowngap
     = apply2(get_a, 7, 8)
 end
 "#,
-        "(x: ?T, y: ?T) -> Int64",
-        "((a: Int64, b: Int64)) -> Int64",
+        (2, "(x: ?T, y: ?T) -> Int64"),
+        (1, "((a: Int64, b: Int64)) -> Int64"),
     );
 }

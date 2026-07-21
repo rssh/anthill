@@ -5823,3 +5823,71 @@ end
     assert!(!errors.is_empty(),
         "Box[T = Int64] from call should not unify with Box[T = String] expected return");
 }
+
+// ── WI-795 identical-rendering backstop ──────────────────────────────────
+
+/// WI-795: the CAUSE-AGNOSTIC guard fires. The ticket fixed one known way for two
+/// unequal types to render alike — the unwalked `arity` child — but the class is
+/// wider than its instances, so `render_mismatch_pair` also reports ANY pair that
+/// comes out byte-identical.
+///
+/// This pins that the guard is live rather than decorative, and it needs a
+/// hand-built pair to do it: the arity instance is fixed, and two probes for
+/// another reachable instance came back negative (a same-short-named sort pair
+/// loads clean; an effect-row mismatch has its own bespoke diagnostic naming the
+/// offending label). The guard exists precisely because "I could not construct
+/// one" is not "none exists".
+///
+/// The pair here is a REAL renderer gap even though the checker does not currently
+/// route to it: `type_display_name`'s Arrow arm renders `param -> result` and never
+/// walks `effects`, so two arrows differing only in their effect row are
+/// indistinguishable to it — the exact shape of the WI-795 defect, in a different
+/// child.
+///
+/// Doubles as the only coverage of `TypeError::format`, which WI-795 routed through
+/// the shared pair renderer so the two rendering paths cannot drift.
+#[test]
+fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
+    use anthill_core::kb::typing::{TypeError, TypeErrorContext};
+    use anthill_core::eval::value::Value;
+
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+
+    let int_sym = kb.intern("anthill.prelude.Int64");
+    let int_ty = kb.alloc(Term::Fn {
+        functor: int_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+
+    // Two arrows identical in every child the renderer WALKS (param, result,
+    // arity) and different only in `effects`, which it does not.
+    let console = kb.intern("anthill.prelude.Console");
+    let console_ty = kb.alloc(Term::Fn {
+        functor: console,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    let pure_arrow = kb.make_arrow_type(int_ty, int_ty, &[], 1);
+    let noisy_arrow = kb.make_arrow_type(int_ty, int_ty, &[console_ty], 1);
+    assert_ne!(pure_arrow, noisy_arrow, "the two arrows must be distinct terms");
+
+    let err = TypeError::TypeMismatch {
+        span: None,
+        context: TypeErrorContext::OperationArgument {
+            op_name: kb.intern("apply"),
+            param: kb.intern("f"),
+        },
+        expected: Value::term(pure_arrow),
+        actual: Value::term(noisy_arrow),
+        site: TypeError::here(),
+    };
+    let msg = err.format(&kb);
+
+    assert!(
+        msg.contains("render alike but are not the same type"),
+        "a pair that renders identically must say so rather than print `expected X, got X`; \
+         got: {msg}"
+    );
+}

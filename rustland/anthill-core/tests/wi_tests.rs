@@ -743,3 +743,6 @@ mod wi793_literal_receiver_projection_test;
 
 #[path = "include/wi794_multi_binder_annotation_test.rs"]
 mod wi794_multi_binder_annotation_test;
+
+#[path = "include/wi795_arity_mismatch_diagnostic_test.rs"]
+mod wi795_arity_mismatch_diagnostic_test;

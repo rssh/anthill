@@ -265,8 +265,8 @@ namespace test.wi792.gena
     = apply2(get_a, 7, 8)
 end
 "#,
-        "(x: ?T, y: ?T) -> Int64",
-        "((a: Int64, b: Int64)) -> Int64",
+        "a 2-parameter function (x: ?T, y: ?T) -> Int64",
+        "a 1-parameter function ((a: Int64, b: Int64)) -> Int64",
     );
 }
 
@@ -299,8 +299,8 @@ namespace test.wi792.genb
     = apply1(two, (7, 8))
 end
 "#,
-        "?T -> Int64",
-        "(_1: Int64, _2: Int64) -> Int64",
+        "a 1-parameter function ?T -> Int64",
+        "a 2-parameter function (_1: Int64, _2: Int64) -> Int64",
     );
 }
 
