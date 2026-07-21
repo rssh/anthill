@@ -365,6 +365,211 @@ impl KnowledgeBase {
     }
 }
 
+// ── The values-first accessor (WI-773) ─────────────────────────
+
+/// How [`KnowledgeBase::read_facts`] treats a bodied candidate for the read
+/// functor — a *value* of the accessor's policy parameter (057 §"The accessor").
+pub enum BodiedRulePolicy {
+    /// Facts-only. ANY bodied candidate for the functor is a loud
+    /// [`ExtentReadError::BodiedRule`] rendering the rule via
+    /// [`crate::persistence::print::TermPrinter::print_rule`]. Result-over-panic,
+    /// so a CLI / codegen caller renders it through its own error channel instead
+    /// of the WI-770 assert-abort (exit 101, no span). The refusal is **blanket**:
+    /// a bodied rule poisons the read regardless of the `selection`, even one
+    /// whose head the selection would not have matched (the WI-770 / WI-772
+    /// precedent — a divergent policy under one functor is the bug this centralises).
+    Refuse,
+    // Resolve { .. } — WI-774, a later value of this parameter: guards honored,
+    // most-specific-first (discrim specificity) ordering, loud on
+    // incomparable-specificity ties. It needs `&mut self` (resolution), so it
+    // arrives with its own signature; this slice ships `Refuse` only.
+}
+
+/// Error from [`KnowledgeBase::read_facts`]. Result-over-panic so a CLI / codegen
+/// caller renders it through its own channel (`error: {msg}`, exit 1) rather than
+/// aborting (the WI-770 assert path).
+#[derive(Clone, Debug)]
+pub enum ExtentReadError {
+    /// A bodied candidate was read under [`BodiedRulePolicy::Refuse`]. `rule` is
+    /// the rendered `head :- body` (`TermPrinter::print_rule`) so the caller names
+    /// the offender; `functor` is its fully-qualified name.
+    BodiedRule { functor: String, rule: String },
+    /// A mounted source refused or failed the query (an unsupported mode, a
+    /// backend/row error). Carries the underlying [`ExtentError`].
+    Extent { functor: String, source: ExtentError },
+    /// No declared query mode applies to `selection` on a mounted source — an
+    /// all-free selection against a non-enumerable (oracle) source. Unreachable
+    /// for a v1 source (registration admits only enumerable owners, whose
+    /// enumeration mode answers any selection); surfaced, not dropped, for when
+    /// the oracle archetype lands.
+    NoSupportedMode { functor: String },
+}
+
+impl std::fmt::Display for ExtentReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtentReadError::BodiedRule { functor, rule } => write!(
+                f,
+                "read_facts(`{functor}`): a bodied rule was read where only facts are \
+                 allowed: {rule}"
+            ),
+            ExtentReadError::Extent { functor, source } => {
+                write!(f, "read_facts(`{functor}`): {source}")
+            }
+            ExtentReadError::NoSupportedMode { functor } => write!(
+                f,
+                "read_facts(`{functor}`): no declared query mode applies to this selection"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExtentReadError {}
+
+impl KnowledgeBase {
+    /// The values-first read primitive every fact-reader migrates onto (057
+    /// §"The accessor"): the rows of `functor` under the ground `selection`, over
+    /// resident AND mounted extents uniformly. Returns row **`Value`s, never a
+    /// `RuleId`** — the public read shape stays `RuleId`-free so the write seam's
+    /// R4 ratchet (WI-780) can privatise the raw head-as-answer walk, and so a
+    /// store-mounted functor (which has no resident `RuleId` to hand out) reads
+    /// through the same door with zero caller change.
+    ///
+    /// `selection` is named-field ground equality (`field = value`) — the shape a
+    /// caller already grounds (cpp-gen's `anthill_type`, a WorkItem's `id`);
+    /// EMPTY selection = enumeration. It is the query contract's `bound` (057
+    /// §"The query contract" rule 2), matched as a **superset**: a returned row
+    /// must carry every selected field with the selected value, and MAY carry more
+    /// (width is fine — a partial spec selects). `policy` decides bodied
+    /// candidates ([`BodiedRulePolicy`]).
+    ///
+    /// The branch — resident discrim scan vs mount `query` — is internal; the
+    /// caller never sees which source answered.
+    pub fn read_facts(
+        &self,
+        functor: Symbol,
+        selection: &[(Symbol, Value)],
+        policy: BodiedRulePolicy,
+    ) -> Result<Vec<Value>, ExtentReadError> {
+        // Mounted extent (registration wrote a profile) → delegate to the owner's
+        // `query`, re-filtering its (possibly over-returned) rows. A mounted
+        // functor has NO resident rules (the single-owner loader/registration
+        // refusals, WI-797), so the bodied-rule `policy` cannot apply here — the
+        // read is vacuously facts-only.
+        if self.extents.profile(functor).is_some() {
+            return self.read_mounted_facts(functor, selection);
+        }
+
+        // Resident: scan the functor's rules/facts. Refuse a bodied candidate per
+        // `policy` (blanket — before the selection filter, so ANY bodied rule
+        // under the functor poisons the read), else keep each FACT head that
+        // matches the selection. Linear over the functor's bucket and filtered by
+        // `bound_matches` — the same superset semantics the mount obeys, and the
+        // same cost the hand-rolled `rules_by_functor` readers already paid (the
+        // discrim tree could index this selection later; a generic field-selection
+        // accessor cannot build a full-arity discrim pattern without the functor's
+        // field list, so the scan is the correct generic form).
+        //
+        // The ONLY early return in this loop is the bodied-rule `Err`; a selection
+        // match merely pushes and continues, so every bodied candidate is still
+        // reached regardless of where the first match sits (the WI-772
+        // single-pass-order landmine does not apply).
+        let bound = named_selection_as_bound(selection);
+        let mut out = Vec::new();
+        for rid in self.rules_by_functor(functor) {
+            if !self.is_fact(rid) {
+                match policy {
+                    BodiedRulePolicy::Refuse => {
+                        return Err(ExtentReadError::BodiedRule {
+                            functor: self.resolve_sym(functor).to_string(),
+                            rule: crate::persistence::print::TermPrinter::new(self)
+                                .print_rule(rid),
+                        });
+                    }
+                }
+            }
+            let head = self.rule_head_value(rid);
+            if bound_matches(self, head, &bound) {
+                out.push(head.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// The mounted arm of [`Self::read_facts`]: push `selection` down as the query
+    /// `bound`, pick the mode, drain the owner's cursor, and re-filter each row
+    /// against `selection` (the source may over-return past the pushed-down
+    /// equalities — sound; only under-return is a bug, 057 §"The query contract"
+    /// rule 3). Caller has already confirmed `functor` is mounted.
+    fn read_mounted_facts(
+        &self,
+        functor: Symbol,
+        selection: &[(Symbol, Value)],
+    ) -> Result<Vec<Value>, ExtentReadError> {
+        let profile = self
+            .extents
+            .profile(functor)
+            .expect("read_mounted_facts on an unmounted functor");
+        let bound = named_selection_as_bound(selection);
+        let ground: Vec<ArgKey> = bound.iter().map(|(k, _)| *k).collect();
+        let mode = profile.select_mode(&ground).ok_or_else(|| {
+            ExtentReadError::NoSupportedMode { functor: self.resolve_sym(functor).to_string() }
+        })?;
+        // A materialized profile implies a mounted owner (registration writes both
+        // atomically).
+        let owner = self
+            .extents
+            .owner(functor)
+            .expect("mounted profile implies a mounted owner");
+        let mk_err = |source| ExtentReadError::Extent {
+            functor: self.resolve_sym(functor).to_string(),
+            source,
+        };
+        // `bound` moves into the pattern; the cursor is owned (no borrow of
+        // `pattern`), so the re-filter reads `&pattern.bound` — no second clone of
+        // the selection values (`named_selection_as_bound` already cloned once).
+        let pattern = QueryPattern { mode, bound };
+        let mut cursor = owner.query(self, &pattern).map_err(mk_err)?;
+        let mut out = Vec::new();
+        while let Some(next) = cursor.next(self) {
+            let row = next.map_err(mk_err)?;
+            // Keep a row only if it is OF `functor` AND satisfies the selection.
+            // The functor check mirrors the resolver's re-unification, which drops
+            // a row whose head functor differs from the goal's
+            // (`match_view_value_pattern`, resolve.rs) — a mounted source that
+            // over-returns (057 §"query contract" rule 3) must over-return rows of
+            // ITS functor, never a foreign one, and the accessor promises "rows of
+            // `functor`". `bound_matches` alone is functor-blind, so both guards
+            // are load-bearing.
+            if row_has_functor(self, &row, functor)
+                && bound_matches(self, &row, &pattern.bound)
+            {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Digest a named-field `selection` into the query contract's `bound`: the
+/// accessor's public selection is `field = value` equalities (the shape callers
+/// ground), keyed as [`ArgKey::Named`] — the only vocabulary a fact head's named
+/// args and a source's `query_modes` share.
+fn named_selection_as_bound(selection: &[(Symbol, Value)]) -> Vec<(ArgKey, Value)> {
+    selection.iter().map(|(s, v)| (ArgKey::Named(*s), v.clone())).collect()
+}
+
+/// Whether `row`'s head functor is `functor`. A mounted source owns `functor`'s
+/// reads and answers with its rows; this drops a row a broken / over-broad source
+/// emitted under a foreign functor — the same guard the resolver applies through
+/// its full-goal `match_view_value_pattern` re-unification. A non-functor row (a
+/// bare scalar) is likewise not a row of `functor`.
+fn row_has_functor(kb: &KnowledgeBase, row: &Value, functor: Symbol) -> bool {
+    // `functor_sym` (WI-436) reads the head symbol off both a `Functor{Some(s)}`
+    // and a bare `Ref(s)` spelling, so a nullary-constructor row is matched too.
+    row.head(kb).functor_sym() == Some(functor)
+}
+
 // ── The shipped reference owner ────────────────────────────────
 
 /// The reference `ExtentSource`: an enumerable + complete + stable in-memory
@@ -487,6 +692,8 @@ fn bound_matches(kb: &KnowledgeBase, row: &Value, bound: &[(ArgKey, Value)]) -> 
 mod tests {
     use super::*;
     use crate::intern::SymbolKind;
+    use crate::kb::term::{Literal, Term, Var};
+    use smallvec::SmallVec;
 
     // ── Fixtures ───────────────────────────────────────────────
 
@@ -509,6 +716,24 @@ mod tests {
 
     fn table() -> Vec<Value> {
         vec![row(1, "alpha"), row(2, "beta"), row(3, "gamma")]
+    }
+
+    /// A `functor(id, name)` row / table carrying a GIVEN functor — a realistic
+    /// MOUNTED row whose head functor IS the mounted functor (as the resolver's
+    /// re-unification requires, and `read_facts`'s functor re-filter now checks).
+    /// The `row` / `table` fixtures above fix `func()`, fine for the direct-`query`
+    /// conformance tests (they never re-filter on the functor); `read_facts`
+    /// mounted tests need the functor to match the mount.
+    fn row_f(functor: Symbol, id: i64, name: &str) -> Value {
+        Value::Entity {
+            functor,
+            pos: [].into(),
+            named: [(ID, Value::Int(id)), (NAME, Value::Str(name.to_string()))].into(),
+        }
+    }
+
+    fn table_f(functor: Symbol) -> Vec<Value> {
+        vec![row_f(functor, 1, "alpha"), row_f(functor, 2, "beta"), row_f(functor, 3, "gamma")]
     }
 
     fn source(kb: &KnowledgeBase) -> InMemoryExtentSource {
@@ -895,5 +1120,196 @@ mod tests {
         assert_eq!(profile.select_mode(&[]), Some(0));
         // id ground → the keyed mode is more specific and wins.
         assert_eq!(profile.select_mode(&[ArgKey::Named(ID)]), Some(1));
+    }
+
+    // ── read_facts (WI-773): the values-first accessor ─────────
+
+    /// A ground resident fact `wi(id: <n>, tag: <t>)` interned into `kb`, so
+    /// `rules_by_functor` finds it — the resident counterpart of the `row`
+    /// fixture (which builds a raw `Value` for the mounted path).
+    fn assert_wi_fact(kb: &mut KnowledgeBase, f: Symbol, id_field: Symbol, tag_field: Symbol, id: i64, tag: &str) {
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        let id_t = kb.alloc(Term::Const(Literal::Int(id)));
+        let tag_t = kb.alloc(Term::Const(Literal::String(tag.to_string())));
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: [(id_field, id_t), (tag_field, tag_t)].into(),
+        });
+        kb.assert_fact(head, sort, domain, None);
+    }
+
+    #[test]
+    fn read_facts_reads_resident_facts_and_filters_by_selection() {
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        for (id, tag) in [(1, "a"), (2, "b"), (3, "a")] {
+            assert_wi_fact(&mut kb, f, id_field, tag_field, id, tag);
+        }
+        // Empty selection = enumeration: every fact.
+        let all = kb.read_facts(f, &[], BodiedRulePolicy::Refuse).expect("facts only");
+        assert_eq!(all.len(), 3);
+        // Named-field selection = superset filter: `tag = "a"` keeps two.
+        let tagged_a = kb
+            .read_facts(f, &[(tag_field, Value::Str("a".into()))], BodiedRulePolicy::Refuse)
+            .expect("facts only");
+        assert_eq!(tagged_a.len(), 2);
+        // A selection that matches nothing returns empty (not an error).
+        let none = kb
+            .read_facts(f, &[(tag_field, Value::Str("z".into()))], BodiedRulePolicy::Refuse)
+            .expect("facts only");
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn read_facts_returns_values_not_rule_ids() {
+        // The public read shape is values-first (057 R1): each returned row is the
+        // fact's head `Value`, readable carrier-neutrally — never a `RuleId`.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 7, "a");
+        let rows = kb.read_facts(f, &[], BodiedRulePolicy::Refuse).unwrap();
+        assert_eq!(rows.len(), 1);
+        // The row is a usable value: its `id` field reads back as 7.
+        match rows[0].named_arg(&kb, id_field).map(|a| a.to_value()) {
+            Some(Value::Term { id, .. }) => {
+                assert!(matches!(kb.get_term(id), Term::Const(Literal::Int(7))));
+            }
+            other => panic!("expected an id field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_facts_refuse_names_the_bodied_rule() {
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let g = kb.intern("g");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        // A matching FACT is asserted FIRST, then the bodied rule — pinning the
+        // WI-772 landmine: a fact enumerated ahead of the bodied rule must not
+        // hide the refusal (the loop early-returns only on the bodied rule, never
+        // on a selection match).
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        let x_sym = kb.intern("x");
+        let x = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(x)));
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((id_field, var_x), 1),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+
+        let err = kb.read_facts(f, &[], BodiedRulePolicy::Refuse).unwrap_err();
+        match err {
+            ExtentReadError::BodiedRule { functor, rule } => {
+                assert_eq!(functor, "wi");
+                // The message renders the rule (`head :- body`) so the caller
+                // names the offender, not just "a bodied rule exists".
+                assert!(rule.contains(":-"), "rendered as head :- body: {rule}");
+                assert!(rule.contains('g'), "names the body atom: {rule}");
+            }
+            other => panic!("expected BodiedRule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_facts_reads_a_mounted_extent_uniformly() {
+        // The mounted arm answers through the SAME accessor — the caller does not
+        // see that a source, not the discrim tree, produced the rows.
+        let mut kb = KnowledgeBase::new();
+        let item = define(&mut kb, "test.Item");
+        let src = InMemoryExtentSource::new(&kb, "test.Item", ArgKey::Named(ID), table_f(item))
+            .expect("well-formed seed");
+        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        // Enumeration (empty selection) streams the whole table.
+        let all = kb.read_facts(item, &[], BodiedRulePolicy::Refuse).expect("enumerable");
+        assert_eq!(ids(&kb, &all), vec![1, 2, 3]);
+        // Selection pushdown: `id = 2` takes the keyed mode and returns one row.
+        let one = kb
+            .read_facts(item, &[(ID, Value::Int(2))], BodiedRulePolicy::Refuse)
+            .expect("by-id is a declared mode");
+        assert_eq!(ids(&kb, &one), vec![2]);
+    }
+
+    /// A mounted owner that OVER-returns — it ignores `bound` and streams its
+    /// whole table (a sound backend, 057 §"query contract" rule 3). Distinct from
+    /// the test-only `OverReturnSource` above in that it `owned()`s a functor, so
+    /// it can be MOUNTED and drive `read_facts`.
+    struct OverReturningOwner {
+        name: String,
+        rows: Vec<Value>,
+    }
+    impl ExtentSource for OverReturningOwner {
+        fn owned(&self) -> Vec<(String, ExtentProfile)> {
+            vec![(
+                self.name.clone(),
+                stable_profile(
+                    vec![
+                        QueryMode { required_ground: vec![] },
+                        QueryMode { required_ground: vec![ArgKey::Named(ID)] },
+                    ],
+                    true,
+                ),
+            )]
+        }
+        fn query(
+            &self,
+            _kb: &KnowledgeBase,
+            _pattern: &QueryPattern,
+        ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
+            Ok(Box::new(VecCursor { iter: self.rows.clone().into_iter() }))
+        }
+    }
+
+    #[test]
+    fn read_facts_refilters_an_over_returning_mount() {
+        // `read_facts`'s OWN superset re-filter — not the source's — is the guard
+        // here: the owner streams all three rows regardless of the selection, so
+        // the accessor must narrow to the true match itself. (InMemoryExtentSource
+        // returns exact matches, so it cannot exercise this path.)
+        let mut kb = KnowledgeBase::new();
+        let item = define(&mut kb, "test.Item");
+        let src = OverReturningOwner { name: "test.Item".into(), rows: table_f(item) };
+        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        let got = kb
+            .read_facts(item, &[(ID, Value::Int(2))], BodiedRulePolicy::Refuse)
+            .expect("enumerable");
+        assert_eq!(ids(&kb, &got), vec![2]);
+    }
+
+    #[test]
+    fn read_facts_drops_a_foreign_functor_row_from_a_mount() {
+        // A broken / over-broad source emits a row under the WRONG functor.
+        // `read_facts`'s functor re-filter drops it — matching the resolver's
+        // full-goal re-unification — so a foreign row carrying the selected key
+        // does NOT leak through (the guard `bound_matches` alone would miss).
+        let mut kb = KnowledgeBase::new();
+        let item = define(&mut kb, "test.Item");
+        let other = define(&mut kb, "test.Other");
+        let rows = vec![
+            row_f(item, 2, "beta"),     // correct functor, selected id
+            row_f(other, 2, "foreign"), // FOREIGN functor, same id
+        ];
+        let src = OverReturningOwner { name: "test.Item".into(), rows };
+        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        let got = kb
+            .read_facts(item, &[(ID, Value::Int(2))], BodiedRulePolicy::Refuse)
+            .expect("enumerable");
+        assert_eq!(got.len(), 1, "only the correctly-functored row survives");
+        assert_eq!(got[0].head(&kb).functor_sym(), Some(item));
     }
 }

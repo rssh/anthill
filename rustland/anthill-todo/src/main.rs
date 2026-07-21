@@ -321,23 +321,48 @@ struct WorkItemInfo {
     id: String,
 }
 
-fn collect_workitems(kb: &KnowledgeBase) -> Vec<WorkItemInfo> {
+/// Collect WorkItem ids for the fresh-id counter. `Err` means the tracker is
+/// malformed (unreadable) — a FATAL condition the caller aborts on rather than
+/// silently seeding the counter from a partial read (which would mint a colliding
+/// id).
+fn collect_workitems(kb: &KnowledgeBase) -> Result<Vec<WorkItemInfo>, String> {
+    use anthill_core::eval::Value;
+    use anthill_core::kb::extent::BodiedRulePolicy;
+
     let wi_sym = match kb.try_resolve_symbol("anthill.stage0.WorkItem") {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
+    // Read WorkItem FACTS through the kb accessor (WI-773), values-first: a bodied
+    // WorkItem rule is a LOUD refusal, never a phantom item. The old
+    // `rules_by_functor` + `rule_head` walk head-matched a bodied rule (listing it
+    // as if it were a real work item) AND panicked outright on a value-fact head.
+    // The refusal is fatal — propagate it rather than degrade the counter.
+    let rows = kb
+        .read_facts(wi_sym, &[], BodiedRulePolicy::Refuse)
+        .map_err(|e| format!("reading work items: {e}"))?;
+
     let mut items = Vec::new();
-    for rid in kb.rules_by_functor(wi_sym) {
-        let head = kb.rule_head(rid);
-        // Skip entity definition (has no string id)
+    for row in rows {
+        // A WorkItem fact head hash-conses to a term. A value-fact carrier
+        // (Value::Node/Entity) is not expected for WorkItem and carries no readable
+        // term id — surface it loudly (the old `rule_head` walk PANICKED here)
+        // rather than drop it silently, but don't abort the whole read for one
+        // anomalous row.
+        let Value::Term { id: head, .. } = row else {
+            eprintln!("warning: skipping a WorkItem fact with an unexpected non-term head");
+            continue;
+        };
+        // A row without a string `id` is the entity-ctor definition (its `id` slot
+        // is a type, not a literal); skip it, as the pre-migration walk did.
         let id = match extract_named_arg(kb, head, "id").and_then(|t| extract_string(kb, t)) {
             Some(s) => s,
             None => continue,
         };
         items.push(WorkItemInfo { id });
     }
-    items
+    Ok(items)
 }
 
 /// All `(workitem, tag-name)` pairs from `anthill.stage0.Tag` facts.
@@ -753,8 +778,15 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // through `store: FileStore` until phase 3 wires them to spec ops.
     let wis_cell_value = {
         let kb_ref = interp.kb();
+        let items = match collect_workitems(kb_ref) {
+            Ok(items) => items,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        };
         let mut max_num: u32 = 0;
-        for item in collect_workitems(kb_ref) {
+        for item in items {
             if let Some(rest) = item.id.strip_prefix("WI-") {
                 if let Ok(n) = rest.parse::<u32>() {
                     max_num = max_num.max(n);
