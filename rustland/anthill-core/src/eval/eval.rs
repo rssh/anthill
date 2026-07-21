@@ -1698,9 +1698,15 @@ impl Interpreter {
             return Ok(arg_values);
         }
         if arity != 1 && arg_values.len() == 1 {
-            if let Value::Tuple { pos, .. } = &arg_values[0] {
-                if pos.len() == arity {
-                    return Ok(pos.iter().cloned().collect());
+            // WI-787: read BOTH halves through `Value::tuple_components`, which
+            // owns the `pos ++ named` invariant. This site used `pos` alone, so
+            // a name-keyed tuple presented as ZERO components and the spread
+            // never fired — and a relation ROW is built all-named, which is how
+            // mapping a two-parameter OPERATION over rows trapped while the
+            // byte-identical `lambda (p, q) -> …` spelling evaluated.
+            if let Some(components) = arg_values[0].tuple_components() {
+                if components.len() == arity {
+                    return Ok(components.iter().cloned().collect());
                 }
             }
         }

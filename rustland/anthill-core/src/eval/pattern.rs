@@ -136,30 +136,23 @@ fn match_constructor_pattern(
 /// over `(acc: …, x: …)` outright. It also agrees with the typer, which aligns
 /// an arrow's parameter list positionally (WI-775 `TupleAlign::ParamList`).
 ///
-/// ## Why `pos ++ named` is source order
-///
-/// A tuple's components are split across `pos` and `named` by `classify_ctor_arg`
-/// (eval/eval.rs), which unwraps the parser's synthetic `_N` labels for positional
-/// syntax back into `pos`. WI-786 made that unwrap exact — the label must be the
-/// synthetic name for its own source index, and nothing may already have gone to
-/// `named` — so `pos` is always a source-order PREFIX and `named` the remainder in
-/// order. Concatenating them therefore reproduces the components as written.
-///
-/// That invariant is load-bearing here, and it is young: before WI-786 the unwrap
-/// was a bare `_`-prefix test, which also caught user labels like `_b` and
-/// silently scrambled the order — `lambda (p, q) -> p - q` over `(a: 3, _b: 10)`
-/// yielded 7 instead of -7, and an operation declared `-> Int64` returned a
-/// `String`. If that unwrap is ever widened again, this walk is what breaks.
+/// The components come from [`Value::tuple_components`], which owns the
+/// `pos ++ named` = source-order invariant and explains why (WI-787). That
+/// invariant is load-bearing here and it is young: before WI-786 the
+/// `classify_ctor_arg` unwrap was a bare `_`-prefix test, which also caught user
+/// labels like `_b` and silently scrambled the order — `lambda (p, q) -> p - q`
+/// over `(a: 3, _b: 10)` yielded 7 instead of -7, and an operation declared
+/// `-> Int64` returned a `String`. If that unwrap is ever widened again, this
+/// walk is what breaks.
 fn match_tuple_pattern(
     interp: &Interpreter,
     positional: &[Rc<NodeOccurrence>],
     named: &[(Symbol, Rc<NodeOccurrence>)],
     scrutinee: &Value,
 ) -> Option<Bindings> {
-    let (val_pos, val_named) = match scrutinee {
-        Value::Tuple { pos, named } => (pos, named),
-        _ => return None,
-    };
+    // Source order, per the invariant above — read through the owning accessor
+    // (WI-787), not off either half.
+    let components = scrutinee.tuple_components()?;
     // Nothing mints a labelled tuple sub-pattern: the grammar has no production
     // for one, the parser emits `pattern_tuple` with positional elements only,
     // and the sole `Pattern::Tuple` producer hardcodes `named: Vec::new()`.
@@ -170,15 +163,12 @@ fn match_tuple_pattern(
     if !named.is_empty() {
         return None;
     }
-    if positional.len() != val_pos.len() + val_named.len() {
+    if positional.len() != components.len() {
         return None;
     }
-    // Source order, per the invariant above. Same idiom the Tuple/Entity walk in
-    // eval/effects.rs uses, and allocation-free as the old `pos`-only zip was.
-    let components = val_pos.iter().chain(val_named.iter().map(|(_, v)| v));
 
     let mut bindings = SmallVec::new();
-    for (sub_pat, sub_val) in positional.iter().zip(components) {
+    for (sub_pat, sub_val) in positional.iter().zip(components.iter()) {
         let mut sub_b = match_pattern(interp, sub_pat, sub_val)?;
         bindings.append(&mut sub_b);
     }

@@ -205,3 +205,39 @@ pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core:
     let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
     (kb, result)
 }
+
+/// Walk an anthill cons-list `Value` into its `Int64` elements.
+///
+/// A list is a chain of `cons(head, tail)` entities terminated by a
+/// zero-field `nil`; each `cons` carries its two components as NAMED fields, so
+/// the head is the `Int` among them and the tail the `Entity`. Several
+/// per-WI suites grew a private copy of this walk (wi714_*, wi727, wi730);
+/// this is the shared one to reach for.
+#[allow(dead_code)]
+pub fn list_ints(v: &eval::Value) -> Vec<i64> {
+    use eval::Value;
+    let mut out = Vec::new();
+    let mut cur = v.clone();
+    while let Value::Entity { named, .. } = &cur {
+        if named.is_empty() {
+            break; // nil
+        }
+        let mut head: Option<i64> = None;
+        let mut tail: Option<Value> = None;
+        for (_k, item) in named.iter() {
+            match item {
+                Value::Int(i) => head = Some(*i),
+                Value::Entity { .. } => tail = Some(item.clone()),
+                _ => {}
+            }
+        }
+        match (head, tail) {
+            (Some(h), Some(t)) => {
+                out.push(h);
+                cur = t;
+            }
+            _ => break,
+        }
+    }
+    out
+}

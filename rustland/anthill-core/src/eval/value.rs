@@ -273,6 +273,60 @@ impl Value {
         if let Value::Str(s) = self { Some(s.as_str()) } else { None }
     }
 
+    /// WI-787: a tuple's components in SOURCE order, or `None` when this is not
+    /// a `Value::Tuple`. THE owning reader for the `pos ++ named` invariant —
+    /// read a tuple's components through this, never off one half.
+    ///
+    /// `classify_ctor_arg` (eval/eval.rs) owns the SPLIT and documents why `pos`
+    /// is always a source-order PREFIX and `named` the remainder in order; this
+    /// is the reader side of that invariant. Reading one half alone silently
+    /// sees a DIFFERENT tuple than was written — a name-keyed tuple presents as
+    /// ZERO components to a `pos` reader. That is one bug twice over: WI-785 in
+    /// `match_tuple_pattern`, WI-787 in `spread_eta_args`, where it made an
+    /// OPERATION and a LAMBDA stop being interchangeable as function values.
+    ///
+    /// Positional ORDER is the whole content of the correspondence — a named
+    /// tuple is an ORDERED PRODUCT, exempted from
+    /// `canonicalize_record_named_args` because "source order IS its identity" —
+    /// so a consumer that reorders these components is wrong even though it
+    /// reads all of them.
+    ///
+    /// ## Why the two halves stay PUBLIC
+    ///
+    /// The obvious hardening — make `pos`/`named` private so every half-reader
+    /// becomes a COMPILE ERROR — was considered and REFUSED, because legitimate
+    /// half-readers exist and it would false-positive on all of them:
+    /// `TermView for Value` (kb/term_view.rs) reads `pos` by INDEX in `pos_arg`
+    /// and `named` by SYMBOL in `named_arg` / `named_keys`, which is the trait's
+    /// contract — it mirrors `Term::Fn { pos_args, named_args }` and must keep
+    /// the halves apart. `field_access` (eval/builtins.rs) reads BOTH but
+    /// through different access paths (`named` by short name, `pos` by
+    /// `positional_label_index`), so a flat component iterator cannot serve it
+    /// either. Those reads are SANCTIONED; do not re-litigate them as bugs.
+    ///
+    /// What is left unenforced is therefore only future readers, which is what
+    /// this accessor exists to reach — the invariant was documented in three doc
+    /// blocks across two files and the prose demonstrably did not reach a reader
+    /// 900 lines away in the same file.
+    ///
+    /// ## Why this does NOT generalize to `Value::Entity`
+    ///
+    /// `Entity` has the identical two-half LAYOUT but not the identical
+    /// invariant: `finish_constructor` canonicalizes an entity's `named` into
+    /// DECLARED FIELD order, while a tuple is exempted from that canonicalization
+    /// precisely so its SOURCE order survives. `pos ++ named` therefore means
+    /// source order for a `Tuple` and canonical order for an `Entity`, and one
+    /// shared accessor would be a single iterator silently meaning two different
+    /// things — exporting a source-order guarantee to a carrier that does not
+    /// have it. `constructor_sub_values` (eval/pattern.rs) stays separate for
+    /// this reason.
+    pub fn tuple_components(&self) -> Option<TupleComponents<'_>> {
+        match self {
+            Value::Tuple { pos, named } => Some(TupleComponents { pos, named }),
+            _ => None,
+        }
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "Int64",
@@ -295,6 +349,38 @@ impl Value {
             Value::Var(_) => "Var",
             Value::Relation { .. } => "Relation",
         }
+    }
+}
+
+/// WI-787: a borrowed view of a tuple's components as ONE sequence in source
+/// order, handed out by [`Value::tuple_components`].
+///
+/// A handle rather than a bare iterator so the COUNT and the WALK come off the
+/// same value. Every consumer tests arity before walking, and `Chain` is not an
+/// `ExactSizeIterator`; handing back a bare chain would force a second accessor
+/// for the count, and with it a second match on the value plus an unreachable
+/// `expect` at each call site. Here [`TupleComponents::len`] is O(1) — the two
+/// halves know their own lengths — and cannot be asked about a different value
+/// than the one being walked.
+pub struct TupleComponents<'a> {
+    pos: &'a [Value],
+    named: &'a [(Symbol, Value)],
+}
+
+impl<'a> TupleComponents<'a> {
+    /// How many components the tuple has, counting BOTH halves.
+    pub fn len(&self) -> usize {
+        self.pos.len() + self.named.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The components in SOURCE order — `pos` then `named`, per the invariant
+    /// on [`Value::tuple_components`]. Allocation-free.
+    pub fn iter(&self) -> impl Iterator<Item = &'a Value> {
+        self.pos.iter().chain(self.named.iter().map(|(_, v)| v))
     }
 }
 

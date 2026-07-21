@@ -1589,6 +1589,43 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     Ok(Value::Relation { query: std::rc::Rc::new(joined), columns: merged })
 }
 
+/// WI-787: read a column-keyed SPEC record (`Relation.project_run`'s projection
+/// map, `Relation.fix`'s restriction record) — the `named` half of a tuple, with
+/// a POSITIONAL component refused loudly rather than ignored.
+///
+/// These two builtins are the tuple readers that legitimately want `named`
+/// ALONE: every entry is `column-name ↦ …`, and a positional component carries
+/// no column name, so there is nothing it could restrict or select. But reading
+/// one half and dropping the other is exactly the WI-787 defect, and here it
+/// would degrade silently — a spec whose components all landed in `pos` reads as
+/// the EMPTY record, which both builtins treat as the identity, so the filter
+/// vanishes and the query returns unrestricted rows.
+///
+/// No source program reaches this — `project_run`'s spec is built by the typer
+/// with `pos` hardcoded empty, and `fix`'s is rejected upstream by the `Without`
+/// reduction, which refuses a key naming no column (MEASURED: `fix(_1: 3)`,
+/// where `_1` is the synthetic positional label for index 0 and so is hoisted
+/// into `pos`, fails to LOAD). The guard is for a programmatically-built spec,
+/// and it is a loud error rather than a `debug_assert` because the silent
+/// reading is a WRONG ANSWER, not a crash.
+fn spec_record_fields<'a>(
+    spec: &'a Value,
+    what: &'static str,
+) -> Result<&'a [(crate::intern::Symbol, Value)], EvalError> {
+    match spec {
+        Value::Tuple { pos, named } if pos.is_empty() => Ok(named),
+        Value::Tuple { pos, .. } => Err(EvalError::TypeMismatch {
+            expected: what,
+            got: format!(
+                "a spec with {} POSITIONAL component(s), which name no column — every entry \
+                 must be `column-name ↦ value`",
+                pos.len()
+            ),
+        }),
+        other => Err(type_mismatch(what, other, None)),
+    }
+}
+
 /// `Relation.project_run` (WI-714 / proposal 052) — the RUNTIME back-end of `project`
 /// (the distribute-dot `r.(f1, f2)`), a column restriction rather than a query
 /// combinator. `spec` is the compile-time projection map the typer spliced: a
@@ -1604,15 +1641,7 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
 fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r, spec] = expect_args::<2>("Relation.project_run", args)?;
     let (query, columns) = expect_relation(r)?;
-    let pairs = match &spec {
-        Value::Tuple { named, .. } => named,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "a projection spec tuple (result-key ↦ source-column-name)",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
+    let pairs = spec_record_fields(&spec, "a projection spec tuple (result-key ↦ source-column-name)")?;
     let mut projected: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
         Vec::with_capacity(pairs.len());
     for (result_key, source) in pairs.iter() {
@@ -1666,15 +1695,7 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
 fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [p, spec] = expect_args::<2>("Relation.fix", args)?;
     let (query, columns) = expect_relation(p)?;
-    let fixes = match &spec {
-        Value::Tuple { named, .. } => named,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "a fix record (column-name ↦ constant) captured named tuple",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
+    let fixes = spec_record_fields(&spec, "a fix record (column-name ↦ constant) captured named tuple")?;
     let eq_sym = interp
         .kb
         .try_resolve_symbol("anthill.prelude.PartialEq.eq")

@@ -735,6 +735,9 @@ mod wi786_tuple_component_order_test;
 #[path = "include/wi784_closure_arity_test.rs"]
 mod wi784_closure_arity_test;
 
+#[path = "include/wi787_eta_spread_named_tuple_test.rs"]
+mod wi787_eta_spread_named_tuple_test;
+
 #[path = "include/wi792_function_value_args_test.rs"]
 mod wi792_function_value_args_test;
 

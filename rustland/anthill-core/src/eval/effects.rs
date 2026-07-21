@@ -286,8 +286,10 @@ fn detect_cycle(
         Value::Term { id: tid, .. } => {
             detect_cycle_term(interp, target, *tid, depth)
         }
-        Value::Tuple { pos, named, .. } => {
-            for v in pos.iter().chain(named.iter().map(|(_, v)| v)) {
+        // WI-787: through the owning accessor, not an open-coded chain. Order is
+        // immaterial to a cycle search, but a half-read would MISS children.
+        Value::Tuple { .. } => {
+            for v in value.tuple_components().expect("matched Value::Tuple").iter() {
                 detect_cycle(interp, target, v, depth + 1)?;
             }
             Ok(())
