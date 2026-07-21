@@ -6,7 +6,7 @@
 
 ## Tracks: WI-780 (the umbrella this doc is the design half of; its implementation core narrows back to store addressing + the retract seam, §"Writes" / §"The Store API"), with the decomposition in §"Decomposition". WI-665 (cache coherence deferred from 053) lands inside this design; WI-177 (epochs) is pre-existing substrate this design consumes — §"Caching" states the exact relation.
 
-## Relates to: 007 (persistence — §2 capability/policy, §11 route rule; the 1-to-1 functor→store routing this doc promotes from *policy* authority to *extent* ownership), 026.1 Q4 Stage B (the `RouteHandler` registry, `kb/route.rs` — the read-seam prototype this trait subsumes), 036 (domain store sorts), 037 (state model — `Modify` is tracked-heap mutation; extent writes ride the same discipline), 045 (effect rows), 047 (effects as monads — the observation memo is its Filinski move applied to facts), 052 (`Relation[T]` — its access-effect row `E` is where extent effects surface), 053 (fact mutability — the monotonicity ladder *is* this doc's writability axis; "the owning store is the single authority" *is* this doc's declaration surface), 054 (`External` — the license-revocation table governs volatile sources; per-call freshness lives there, not here), WI-773 (values-first read accessor — shaped by §"Read path"), WI-774 (resolve-vs-refuse read policy — orthogonal, cited), WI-779 (interim write-side guard — subsumed by §"Writes"), WI-696 (carrier-neutral `Value` goals), WI-300 (resolve-or-suspend guard tier — the delay behavior unmet lookup modes reuse).
+## Relates to: 007 (persistence — §2 capability/policy, §11 route rule; the 1-to-1 functor→store routing this doc promotes from *policy* authority to *extent* ownership), 026.1 Q4 Stage B (the `RouteHandler` registry, `kb/route.rs` — the read-seam prototype this trait subsumes), 036 (domain store sorts), 037 (state model — `Modify` is tracked-heap mutation; extent writes ride the same discipline), 045 (effect rows), 047 (effects as monads — the observation memo is its Filinski move applied to facts), 052 (`Relation[T]` — its access-effect row `E` is where extent effects surface), 053 (fact mutability — the monotonicity ladder *is* this doc's writability axis; "the owning store is the single authority" *is* this doc's declaration surface), 054 (`External` — the license-revocation table governs volatile sources; per-call freshness lives there, not here), WI-773 (values-first read accessor — shaped by §"Read path"), WI-774 (resolve-vs-refuse read policy — orthogonal, cited), WI-779 (interim write-side guard — subsumed by §"Writes"), WI-696 (carrier-neutral `Value` goals), WI-300 (resolve-or-suspend guard tier — the delay behavior unmet query modes reuse).
 
 ## Problem
 
@@ -52,18 +52,18 @@ source**. This is the deductive-database EDB/IDB split:
 - **EDB (extensional)** — ground facts — belongs, per functor, to one owning source:
   the **resident source** (the default: today's `kb.rules` + discrim path, where
   program facts, reflection, and realization tables live), an **external table** (a
-  store answering by lookup — SQL, an indexed file, a service), or an **oracle** (a
+  store answering by query — SQL, an indexed file, a service), or an **oracle** (a
   computation producing answers on demand).
 
-Retrieval stays **one seam**. The discrim tree remains the universal candidate-lookup
+Retrieval stays **one seam**. The discrim tree remains the universal candidate-query
 structure — but it holds a node *per entry* for resident content only, never a node
 per external row. A store-owned functor is **mounted** at its functor position:
 retrieval reaching the mount delegates to the owning source with the goal pattern
 pushed down, and the source implements the very contract the missing subtree would
-have — *yield the candidates that could structurally match*. Lookup returns tagged
+have — *yield the candidates that could structurally match*. The query returns tagged
 candidates: `Resident(RuleId)`, opened exactly as today, or ground `Row(Value)`,
 entering σ via `bind_value` with no `TermStore` allocation (as `RouteHandler` rows
-already do). No consumer of lookup ever branches on ownership — the WI-770 lesson
+already do). No consumer of query ever branches on ownership — the WI-770 lesson
 (per-consumer hand-rolled policy diverges) applied to retrieval. And the mount
 enforces single ownership *structurally*: the functor position is occupied, so there
 is no subtree to insert a resident entry into. (Since ownership is per-functor and
@@ -93,7 +93,7 @@ external owner → streamed.
 ### Single owner — no union extents (decided)
 
 Ownership is **exclusive**. Today's `route.rs` behavior — handler consulted *in
-addition to* the discrim lookup — is a transition artifact to remove. The motivating
+addition to* the discrim query — is a transition artifact to remove. The motivating
 divergence: a source file carries `fact WorkItem(id: "WI-001", status: open(), …)`
 while the shared store's row for `WI-001` says `status: done()` (a teammate delivered
 it). Union semantics yields two well-formed answers — the item is open for claiming
@@ -132,7 +132,7 @@ form is nonetheless a **red cut**: with `?k` unbound it commits to the *first*
 stored row and drops the rest, staying correct only when `?k` is ground on call.
 `not StoredConfig(key: ?k, value: ?)` is steadfast in *every* mode, all-free
 enumeration included — which is exactly what a `Config` view over two extents
-must be, lookup mode being a first-class axis here (§"The capability profile").
+must be, query mode being a first-class axis here (§"The capability profile").
 Two traps sink the naive cut alternatives and are worth stating: two sibling
 `rule Config` clauses are tried in **nondeterministic** discrim order
 (`query_view` — HashMap, imposing only *facts before bodied rules*, `kb/mod.rs`),
@@ -155,7 +155,7 @@ archetypes:
 
 | axis | resident | table (10⁶ rows) | oracle |
 |---|---|---|---|
-| **lookup modes** — which args must be ground to answer | none required | any (indexes help) | per mode, e.g. `x` ground |
+| **query modes** — which args must be ground to answer | none required | any (indexes help) | per mode, e.g. `x` ground |
 | **enumerable** — can stream the full extent | yes | yes (lazy cursor) | typically **no** |
 | **complete** — closed world: the enumeration is the whole truth | yes | yes, per snapshot | typically **no** |
 | **stability** — re-ask within an epoch agrees | stable | stable | stable *or* **volatile** |
@@ -163,7 +163,7 @@ archetypes:
 
 Derived gating:
 
-- A goal not meeting any supported lookup mode **delays** (the WI-300
+- A goal not meeting any supported query mode **delays** (the WI-300
   resolve-or-suspend discipline — another goal may bind the needed args); floundering
   at the end is a loud error, never a silent failure.
 - Enumeration (all-free pattern), `forall`, and NAF that requires enumerating the
@@ -179,21 +179,21 @@ Derived gating:
 **Declaration surface** follows 053 exactly: the owning source is the single
 authority, answering through its trait (Rust-side), surfaced as reflect predicates.
 `fact_monotonicity(functor)` gains siblings — `fact_stability(functor)`,
-`fact_completeness(functor)`, lookup modes — materialized at registration the same way
+`fact_completeness(functor)`, query modes — materialized at registration the same way
 `Store::owned_monotonicity` is today (the `owned()` registration authority of
 §"The Store API"). No static binding fields in `.anthill`, for 053's reason:
 capability is source logic, not schema.
 
 ## Read path
 
-**Values, not addresses.** A lookup answers with rows/solutions — never `RuleId`.
+**Values, not addresses.** A query answers with rows/solutions — never `RuleId`.
 Resolve answers questions; walks address facts. This is the contract WI-773's
 accessor is shaped by: the public read surface neither returns nor requires `RuleId`,
 because for a store-backed functor there is none to return. The loud bodied-rule
 channel reports offending rules by rendered text (`TermPrinter::print_rule`), not id.
 
 **Lazy cursors and pushdown.** The seam is invoked through the discrim mount
-(§"Model") via `ExtentSource::lookup` — one call of the trait family that
+(§"Model") via `ExtentSource::query` — one call of the trait family that
 §"The Store API" defines in full.
 
 The resolver consumes one tagged candidate stream for every goal — `Resident` and
@@ -202,7 +202,7 @@ current eager drain at `step_init` (memory ∝ matching rows) is replaced by laz
 per-pump advancement — with 10⁶ rows, eager conversion of every match into a
 candidate substitution is not an optimization gap but a correctness-of-scale bug.
 Canonical named-arg ordering pays off here: the ground fields of the goal become
-the `LookupQuery.bound` equalities (§"The lookup contract"), no translation layer.
+the `QueryPattern.bound` equalities (§"The query contract"), no translation layer.
 
 **Effect surfacing.** Consulting an external extent is an `External`-classified act in
 054's sense — the answer depends on state that changes with no tracked `Modify`.
@@ -229,7 +229,7 @@ confined at the observation boundary. Consequences, each load-bearing:
   verdict. Otherwise NAF succeeds early, a later positive consult draws `(a, b)`
   fresh, and one query proved `¬p` and `p` in the same world.
 - **Later asks filter the frozen set; the same key is never re-consulted.** The memo
-  is keyed by the `LookupQuery.bound` of the source's single mode (§"The lookup
+  is keyed by the `QueryPattern.bound` of the source's single mode (§"The query
   contract"). If `Oracle(x: a, y: ?)` froze the answer set for `x = a`, a later
   `Oracle(x: a, y: b)` filters that set — re-consulting with the tighter pattern
   could draw a different world.
@@ -375,7 +375,7 @@ invention**:
   forcing them all into memory at once"), rows entering σ as `Value::Entity` with no
   `TermStore` allocation (the declaration cites 026.1 Q4 + 007 §11). The Rust
   realization — `Store::retrieve -> Vec<TermId>`, eager and interning — **betrays
-  its own declared spec**. `ExtentSource::lookup` is that realization brought into
+  its own declared spec**. `ExtentSource::query` is that realization brought into
   conformance, plus the mode surface; `RouteHandler` retires into it. Not a new
   read API — the declared one, finally honored.
 - `route` is *already the ownership declaration*; the mount is `route` finally
@@ -384,7 +384,7 @@ invention**:
   content-based routing (sharding) stays expressible *inside* a composite source,
   never as two owners of one functor.
 - The capability additions follow the file's own header split — **provision** =
-  trait, **policy** = per-functor value: stability, completeness, and lookup modes
+  trait, **policy** = per-functor value: stability, completeness, and query modes
   join `monotonicity` as policy operations, surfaced through the reflect facade like
   `fact_monotonicity` (053's authority model, per decision Q3); enumerability rides
   the existing provision split.
@@ -402,19 +402,19 @@ boundary** (§"RuleId retirement", stage R3), the **added `update`** on
 /// facade and the resolver's gating answer from the materialized copy,
 /// never by re-asking the backend.
 pub struct ExtentProfile {
-    /// Alternative input patterns `lookup` answers; each names the
+    /// Alternative input patterns `query` answers; each names the
     /// argument slots (`ArgKey`) that must be ground. One mode with
     /// nothing required means any pattern, enumeration included. A goal
     /// meeting no mode delays (WI-300); floundering at the end of
     /// resolution is loud.
-    pub lookup_modes: Vec<LookupMode>,
-    /// Can stream the full extent (the all-free `lookup`).
+    pub query_modes: Vec<QueryMode>,
+    /// Can stream the full extent (the all-free `query`).
     pub enumerable: bool,
     /// Closed world: the enumeration is the whole truth, per snapshot.
     pub complete: bool,
     /// Stable (re-ask within an epoch agrees) or Volatile (§"Volatile
     /// sources"). Registration refuses a volatile source declaring more
-    /// than one lookup mode.
+    /// than one query mode.
     pub stability: Stability,
     /// 053's ladder. `None` = not intrinsic to this backend: the
     /// functor's policy comes from project reflect rules — exactly
@@ -427,27 +427,27 @@ pub struct ExtentProfile {
 /// answer, naming the argument slots that must be ground for it — the
 /// source's indexes/keys. `required_ground` empty = the all-free mode
 /// (enumeration). This is the store's *pattern description*, read at
-/// registration; the engine gates goals on it (§"The lookup contract").
-pub struct LookupMode { pub required_ground: Vec<ArgKey> }
+/// registration; the engine gates goals on it (§"The query contract").
+pub struct QueryMode { pub required_ground: Vec<ArgKey> }
 
 /// An argument slot of a fact: a named field or a positional index
 /// (anthill facts carry both). Canonical named-arg ordering keeps the
 /// named form stable across writers.
 pub enum ArgKey { Named(Symbol), Pos(u32) }
 
-/// CALL side (passed to `lookup`): the digested selection for one call.
+/// CALL side (passed to `query`): the digested selection for one call.
 /// The engine has already matched the goal to a declared `mode` and pulled
 /// out `bound`, so a backend reads a typed query — never a raw goal Value.
 /// This is what replaces the bare `pattern: &Value`.
-pub struct LookupQuery {
-    /// Which declared mode (index into `profile.lookup_modes`) this call
+pub struct QueryPattern {
+    /// Which declared mode (index into `profile.query_modes`) this call
     /// satisfies — its `required_ground` slots are guaranteed present in
     /// `bound`; the store may switch access path on it.
     pub mode: usize,
     /// The pushed-down selection: every *fully-ground* argument slot of
     /// the goal, as a `slot = value` equality (a partially-instantiated
     /// compound arg is treated as unbound and left out). Ground equality
-    /// is the entire v1 pushdown vocabulary (§"The lookup contract").
+    /// is the entire v1 pushdown vocabulary (§"The query contract").
     pub bound: Vec<(ArgKey, Value)>,
 }
 
@@ -458,9 +458,9 @@ pub enum ExtentError {
     /// loud backstop; plan-time gating reads the profile first (053:
     /// query the policy, never attempt-and-catch).
     NotWritable,
-    /// `lookup` reached with a goal meeting no declared mode — a gating
+    /// `query` reached with a goal meeting no declared mode — a gating
     /// bug, since the resolver delays such goals (WI-300) before ever
-    /// building a `LookupQuery`.
+    /// building a `QueryPattern`.
     NoSupportedMode,
     /// `pull` on a backend that does not serve the mirror role.
     NotBulk,
@@ -487,13 +487,13 @@ pub trait ExtentSource {
     // ── read half (owner role) — retires `RouteHandler::retrieve` and
     //    `Store::retrieve` ──
     /// The discrimination contract for the mounted subtree: a lazy cursor
-    /// over the ground rows matching `query`. `query` is a digested
-    /// `LookupQuery` — the engine already walked the goal — whose `bound`
+    /// over the ground rows matching `pattern`. `pattern` is a digested
+    /// `QueryPattern` — the engine already walked the goal — whose `bound`
     /// equalities map straight onto a WHERE clause / index probe. The
     /// cursor must cover a **superset** of the rows satisfying `bound`;
     /// the engine re-checks each row against the full goal, so over-return
-    /// is sound and only under-return is a bug (§"The lookup contract").
-    fn lookup(&self, kb: &KnowledgeBase, query: &LookupQuery)
+    /// is sound and only under-return is a bug (§"The query contract").
+    fn query(&self, kb: &KnowledgeBase, pattern: &QueryPattern)
         -> Result<Box<dyn ExtentCursor>, ExtentError>;
 
     // ── write half (both roles; capability-gated — the profile is the
@@ -563,29 +563,29 @@ pub trait ExtentCursor {
 }
 ```
 
-### The lookup contract
+### The query contract
 
 The raw `pattern: &Value` was the API's soft spot: what a pattern *is* differs
 per backend and was nowhere pinned, so every store would re-walk a goal `Value`
 its own way and the resolver/store could silently disagree on what got pushed
 down. Three statements close it — a store's *pattern description* is its declared
-modes, the call payload is a *digested* `LookupQuery`, and the *soundness rule*
+modes, the call payload is a *digested* `QueryPattern`, and the *soundness rule*
 is fixed once for all backends:
 
 - **Capability is declared, not inferred (the pattern description in the
-  store).** What a source *can* answer is its `lookup_modes` (over `ArgKey`),
+  store).** What a source *can* answer is its `query_modes` (over `ArgKey`),
   read at registration. The engine owns goal→mode matching, once: it picks a
   satisfied mode, or delays the goal (WI-300), or flounders loud — a backend
-  never re-derives groundness from a `Value`. `LookupQuery.mode` names which mode
+  never re-derives groundness from a `Value`. `QueryPattern.mode` names which mode
   this call took, so the store switches access path on an integer.
-- **Pushdown vocabulary (v1): ground equality only.** `LookupQuery.bound` is a
+- **Pushdown vocabulary (v1): ground equality only.** `QueryPattern.bound` is a
   conjunction of `slot = ground_value` and nothing else — no ranges, no
   operators, no partially-instantiated compound args. This is deliberately the
   front edge of the out-of-scope join planner: canonical arg order maps `bound`
   straight onto a WHERE clause / index probe, and a richer predicate vocabulary
-  later *extends the `LookupQuery` struct* rather than re-parsing a blob — the
+  later *extends the `QueryPattern` struct* rather than re-parsing a blob — the
   reason a typed query beats a raw `Value` even before it is richer.
-- **Soundness, stated once.** `lookup` must yield a cursor over a **superset** of
+- **Soundness, stated once.** `query` must yield a cursor over a **superset** of
   the rows satisfying every `bound` equality; it MAY filter on whatever subset of
   `bound` it can index and leave the rest, because the engine unifies each
   returned row against the *full* goal (`match_view_value_pattern`, as route rows
@@ -638,7 +638,7 @@ impl KnowledgeBase {
     /// Owner role: mount `source` at each `owned()` functor's discrim
     /// node (subsumes `register_route_handler`). Loud
     /// registration errors: functor already owned (by another source or
-    /// by resident entries), volatile source with more than one lookup
+    /// by resident entries), volatile source with more than one query
     /// mode. From then on a source-file `fact` or same-head bodied
     /// `rule` for the functor is a `LoadError` (§"Model").
     pub fn register_extent_owner(&mut self, key: String,
@@ -646,7 +646,7 @@ impl KnowledgeBase {
 
     /// Mirror role: write-through durability for RESIDENT functors —
     /// `pull` rehydrates at load, the seam shadows resident writes into
-    /// `persist`/`update`/`retract`/`flush`; `lookup` is never consulted
+    /// `persist`/`update`/`retract`/`flush`; `query` is never consulted
     /// (the resident subtree answers). Today's `Interpreter::register_store`
     /// becomes this, moving KB-side with the registry.
     pub fn register_mirror(&mut self, key: String,
@@ -702,11 +702,11 @@ is what makes the interface *complete* rather than partial (§"Phasing"):
   reflection, and realization tables. It is described by a *profile* (the
   §"capability profile" `resident` column — no required modes, enumerable,
   complete, stable, writability per 053) and by its role as default, but it is
-  **not a `dyn ExtentSource` in v1**: the discrim tree already *is* its lookup
+  **not a `dyn ExtentSource` in v1**: the discrim tree already *is* its query
   structure — that is 057's core claim, the mount is the exception — and routing
   resident reads through a trait object + cursor would reintroduce exactly the
   per-row overhead the design removes. The accessor unifies the *read* over
-  resident and mounted uniformly; the branch (discrim vs `lookup`) is internal to
+  resident and mounted uniformly; the branch (discrim vs `query`) is internal to
   it, invisible to callers.
 - **The in-memory reference source** — a real, shipped `ExtentSource`: an
   enumerable + complete + stable table held in memory (`InMemoryExtentSource`).
@@ -724,7 +724,7 @@ is what makes the interface *complete* rather than partial (§"Phasing"):
 
 | client | reaches extents through | never again |
 |---|---|---|
-| resolver | the mount → `lookup` cursor, tagged candidates (§"Read path") | `route_handler_for` beside discrim; eager drains |
+| resolver | the mount → `query` cursor, tagged candidates (§"Read path") | `route_handler_for` beside discrim; eager drains |
 | `anthill.persistence` builtins (`persist` / `update` / `retract` / `flush` / `monotonicity` / `retrieve` / `pull`) | `assert_persistent` / `update_persistent` / `retract_persistent` / seam flush; materialized profiles | handle minting; the caller-visible store-then-kb dance; `find_fact` scans |
 | WI-773 read accessor — and through it CLI, `anthill-todo`, the generators | one values-first read over resident *and* mounted extents | raw `rules_by_functor` + `rule_head` walks (the ~20 WI-773 sites) |
 | loader | ownership check at define time → loud refusal; (later) the explicit seed command → the seam | silent import of facts for owned functors |
@@ -768,7 +768,7 @@ is the carrier-neutral `Value` row (`ExtentSource::persist`/`retract(row:
 | surface | today | target | stage |
 |---|---|---|---|
 | the ~20 raw-walk fact readers (`rules_by_functor` + `rule_head*` as answers — the WI-773 list) | hold `RuleId`s | the WI-773 values-first accessor | R1 |
-| `RouteHandler` (`kb/route.rs`); Rust `Store::retrieve -> Vec<TermId>` | two read seams beside discrim | retire into `ExtentSource::lookup` | R2 |
+| `RouteHandler` (`kb/route.rs`); Rust `Store::retrieve -> Vec<TermId>` | two read seams beside discrim | retire into `ExtentSource::query` | R2 |
 | `anthill.persistence.Store.persist -> FactId` | mints `Handle(Fact, RuleId.raw)` | `-> Term`: the canonical persisted row — the retract key | R3 |
 | `anthill.persistence.NonMonotonicStore.retract(id: FactId)` | handle → `RuleId` → two-phase store+kb retract | `retract(store, fact: Term) -> Bool`, content-keyed, through `retract_persistent` | R3 |
 | `anthill.reflect.find_fact(t) -> Option[FactId]` | content→`RuleId` bucket scan minting a handle for retract | **deleted** — its one job was minting retract keys, and the row a caller already holds *is* the key (a status transition = one `update(store, old, new)`, §"Writes") | R3 |
@@ -788,7 +788,7 @@ The stages, in dependency order:
   outside kb traffics in `RuleId`. Independent of this design's landing;
   already filed.
 - **R2 — one read seam, one home** (decomposition item 1). `RouteHandler` and
-  `Store::retrieve` are deleted into `lookup` — pure deletion, both are
+  `Store::retrieve` are deleted into `query` — pure deletion, both are
   in-tree-only surfaces with no declared twin — and the two registries merge
   into `kb.extents`, moving the store half off `Interpreter` (§"The engine
   half").
@@ -834,13 +834,13 @@ error — not a silently unchecked invariant.
 - **`orElse` / `coalesce` surface sugar for merged views.** A union view is
   written here as an explicit rule pair (the `Config` example). Nicer surface —
   `StoredConfig(?k,?v) orElse DefaultConfig(?k,?v)` — is already expressible for a
-  *keyed* lookup as the derived if-then-else `(StoredConfig(?k,?v), !) ;
+  *keyed* query as the derived if-then-else `(StoredConfig(?k,?v), !) ;
   DefaultConfig(?k,?v)`, but a *steadfast per-key* merge cannot be a bare binary
   combinator: `A orElse B` cannot tell the key `?k` from the value `?v` (both are
   shared), and per-key fallback needs the key named — which is exactly what
   `not StoredConfig(key: ?k, value: ?)` encodes by keeping `?k` and anonymizing
   the value. The explicit NAF rule is correct and mode-honest but **not
-  ergonomic** — the negated restatement of the stored lookup is boilerplate a
+  ergonomic** — the negated restatement of the stored query is boilerplate a
   merged view repeats, and shrinking it is the point of the sugar. A keyed
   `coalesce(?k; A; B)`, or a mode-aware `orElse` that treats the ground-on-call
   variables as the key (keyed-steadfast when called ground, coarse under
@@ -856,7 +856,7 @@ error — not a silently unchecked invariant.
 
 The seam is adopted **whole or not at all**. A caller migrated onto the read
 accessor reads the *final* contract — values-first, resident **and** mounted, the
-full §"lookup contract" — never a resident-only stub whose semantics shift under
+full §"query contract" — never a resident-only stub whose semantics shift under
 it when mounts land later. *Ready when used* is the rule. The way v1 stays small
 is therefore **not** a partial interface but **bounded capability behind a
 complete one**, every unsupported case a **loud refusal** — the trait's refusing
@@ -865,7 +865,7 @@ caller can never fall into a silent gap. The split is capability breadth, not
 interface surface:
 
 - **v1 — the complete interface + one real owner.** Items 0 and 1 in full:
-  `ExtentSource` with *every* method, discrim mounts, `LookupQuery` + the lookup
+  `ExtentSource` with *every* method, discrim mounts, `QueryPattern` + the query
   contract, the values-first accessor over resident **and** mounted, and one
   shipped reference source — the in-memory table (§"The resident source and the
   in-memory reference"), which is what makes "complete interface" a fact rather
@@ -909,7 +909,7 @@ doubles are the architectural core, not the last mile.
    implementations and the conformance suite the rest is tested through, since
    nothing else can virtualize an extent yet:
    - **Reference + mock backends** — the shipped `InMemoryExtentSource`
-     (enumerable + complete + stable, declaring lookup modes and a `by_id`-style
+     (enumerable + complete + stable, declaring query modes and a `by_id`-style
      key so the write overlay and content↔key mapping are exercised without a
      filesystem or SQL engine) is the v1 real owner *and* the table fixture
      (§"The resident source and the in-memory reference"), not a throwaway. The
@@ -918,8 +918,8 @@ doubles are the architectural core, not the last mile.
      (single-mode, volatile) land with items 3/4, so v1's `InMemoryExtentSource`
      is the sole archetype exercised end-to-end.
    - **Conformance suite** — profile-driven property tests any `ExtentSource`
-     must pass: a declared lookup mode answers and an undeclared pattern
-     *delays then flounders loud* (not silently empty); the §"lookup contract"
+     must pass: a declared query mode answers and an undeclared pattern
+     *delays then flounders loud* (not silently empty); the §"query contract"
      soundness boundary — a backend that **under-returns** (drops a row
      satisfying `bound`) fails, one that **over-returns** passes because the
      engine re-filters; enumeration/`forall`/NAF refuse loudly on a
@@ -933,11 +933,11 @@ doubles are the architectural core, not the last mile.
      fixture every later item's tests stand on.
 
 1. **`ExtentSource` trait + discrim mounts** — the trait family of §"The Store
-   API" lands (`ExtentProfile`, `LookupMode`/`ArgKey`/`LookupQuery`,
+   API" lands (`ExtentProfile`, `QueryMode`/`ArgKey`/`QueryPattern`,
    `ExtentCursor`, the two registration roles over the KB-owned `ExtentRegistry`)
    with its read half live (retirement stage R2): `RouteHandler` *and*
-   `Store::retrieve` retire into `lookup`; the engine's goal→mode match builds
-   the `LookupQuery` and enforces the §"lookup contract" (superset semantics,
+   `Store::retrieve` retire into `query`; the engine's goal→mode match builds
+   the `QueryPattern` and enforces the §"query contract" (superset semantics,
    engine re-filter); store-owned functors mounted at their discrim functor node;
    one tagged-candidate retrieval path (`Resident(RuleId)` | `Row(Value)`)
    replacing route-beside-discrim; lazy cursor replacing the eager drain; loader
@@ -945,7 +945,7 @@ doubles are the architectural core, not the last mile.
    (the single-owner decision). The write half's methods exist from day one but
    stay wired through today's builtin path until item 5.
 2. **Capability surface** — policy operations beside `monotonicity` in
-   `store.anthill` (stability, completeness, lookup modes); `ExtentProfile`; gating
+   `store.anthill` (stability, completeness, query modes); `ExtentProfile`; gating
    in the resolver (mode delay, enumeration/completeness checks, equational-context
    refusal); reflect facade siblings of `fact_monotonicity`.
 3. **Cache matrix over epochs** — WI-177 stays its own item (the registry +
