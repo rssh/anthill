@@ -765,3 +765,6 @@ mod wi803_destructure_by_label_test;
 
 #[path = "include/wi801_function_slot_arity_test.rs"]
 mod wi801_function_slot_arity_test;
+
+#[path = "include/wi805_duplicate_tuple_label_test.rs"]
+mod wi805_duplicate_tuple_label_test;

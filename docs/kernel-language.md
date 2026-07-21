@@ -574,6 +574,41 @@ Note the surface is **not** symmetric between types and terms here: `TupleLitera
 
 **All-or-nothing naming:** either all elements have explicit names or none do. Mixing `(a: Int64, String)` is an error.
 
+**Distinct component names** (WI-805): a named tuple's component names must be
+distinct. This is the same rule already stated for a projection's result keys
+(§Distributive projection, "Distinct keys") and for a call's named arguments, for the
+same reason: both of a tuple's readers resolve a name to its **first** match, so a
+second component under an already-used name is reachable by neither its name nor its
+position, and its declared type is never checked against anything. Measured before the
+rule existed, on a clean load: `(a: 1, b: 2, a: 3)` conformed to `(b: Int64, a: Int64)`
+with the `a: 3` column unreadable.
+
+It is checked wherever a tuple is **built from names the author wrote** — three places,
+each reporting a located error naming the repeated label:
+
+- the **literal**, `(a: 1, b: 2, a: 3)`;
+- the **type**, `(a: Int64, a: String)`;
+- a **variadic capture**'s leftover named arguments, `cap(1, a: 2, a: "ess")`, which
+  become a tuple without ever being written as one.
+
+Note this is not the same guarantee as making every reader agree on *which*
+occurrence to take (WI-803, which resolved a disagreement between the conformance
+relation and `t.a`): agreeing on which component to read leaves the unread one still
+unreadable. Refusing the duplicate where it is built is what makes the question
+unreachable.
+
+The rule is scoped to a **tuple**, not to every parenthesized name list. An arrow's
+**parameter list** shares the surface production (`(a: Int64, a: Int64) -> Int64`) but
+not the reading. A repeated binder name there does shadow — the body reads the *last*
+such parameter, the opposite occurrence from the one a tuple reader takes — but every
+parameter is still **applied positionally**, so the shadowed one's declared type is
+checked against an argument at every call. Nothing is silently unchecked, which is what
+this rule is about; whether to reject duplicate binder names is a separate question
+about shadowing, and it would have to answer for entity fields too. Synthetic `_N`
+labels are generated from each component's own index and cannot collide; a user
+`_`-prefixed label (`_b`, `_0`, a `_2` off its slot) is an ordinary name and is
+compared as one.
+
 **Desugaring:** Positional tuples desugar to named tuples with `_N` names:
 
 | Surface syntax | Desugared form |
@@ -1568,7 +1603,10 @@ a plain `.`).
   `(x.f1, x.f2)`. Renaming a positional member is fine: `x.(a: _1)`.
 - **Distinct keys.** Duplicate result keys are rejected: `x.(a, a)` and the
   rename collision `x.(k: f1, k: f2)` are errors (a duplicate-key tuple would
-  silently drop the later column).
+  silently drop the later column). This is one instance of the general rule that a
+  named tuple's component names are distinct (§4.5, "Distinct component names"),
+  kept here as its own check because a projection builds its result tuple from keys
+  the surface never writes as a tuple literal.
 
 Expression/call members (`x.(count(), y)`) and a positional projection variant
 are deferred (see proposal 052).

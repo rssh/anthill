@@ -114,6 +114,34 @@ pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<Str
     }
 }
 
+/// The messages of a source that must NOT parse — for a rule enforced at
+/// parse/convert rather than at load, where `try_load_kb_with` would panic
+/// instead of returning the diagnostic. Panics if the source parses clean, since
+/// a fixture that no longer trips the rule is a test-authoring bug.
+///
+/// Shared because the checks that report here have multiplied: the projection
+/// well-formedness rules (`validate_projection_labels`, WI-639) and the tuple
+/// component-label distinctness rule (`check_tuple_label_unique`, WI-805),
+/// whose fixtures live in four suites. Assert on the returned messages; the
+/// panic here only says the source parsed at all.
+#[allow(dead_code)]
+pub fn parse_errs(src: &str) -> Vec<String> {
+    match parse::parse(src) {
+        Ok(_) => panic!("expected a parse error, but the source parsed clean"),
+        Err(errs) => errs.iter().map(|e| e.message.clone()).collect(),
+    }
+}
+
+/// The control twin of [`parse_errs`]: a source that MUST parse. Panics with the
+/// diagnostics if it does not, so a guard that over-fires names what it caught
+/// rather than failing as a bare `false`.
+#[allow(dead_code)]
+pub fn parses_clean(src: &str) {
+    if let Err(errs) = parse::parse(src) {
+        panic!("expected a clean parse; got: {errs:?}");
+    }
+}
+
 /// Load stdlib + user source, construct an `Interpreter`, and register the
 /// standard eval builtins. The one-liner every eval_mN_test file needs.
 #[allow(dead_code)]

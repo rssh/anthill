@@ -4318,11 +4318,22 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
         .collect::<Result<_, _>>()?;
     // WI-763 — a duplicate RESULT key. The dot surface rejects this at parse
     // (`validate_projection_labels` on `r.(a: f1, a: f2)`), but a WRITTEN `Keep` does not pass
-    // through that check, and a named-tuple TYPE carries duplicate field names without
-    // complaint — so the two keys would silently reach `collapse_schema` and build a schema
-    // with two `a` columns, which no field lookup can then answer unambiguously. Checked here
-    // so the invariant holds for BOTH surfaces of the same spec rather than only the one that
-    // happens to route through the parser.
+    // through that check — so the two keys would silently reach `collapse_schema` and build a
+    // schema with two `a` columns, which no field lookup can then answer unambiguously.
+    // Checked here so the invariant holds for BOTH surfaces of the same spec rather than only
+    // the one that happens to route through the parser.
+    // WI-805 added the same rule to the tuple TYPE and the tuple LITERAL
+    // (`check_tuple_label_unique`), which is where this comment used to say "a named-tuple
+    // TYPE carries duplicate field names without complaint". That is now true only of a
+    // DERIVED schema — one this code builds — which is exactly what this check covers, and
+    // `concat_named_tuple_types` covers for the merging case.
+    // INSTRUMENTED, not assumed: a `panic!` on this branch was run against the full workspace
+    // suite (3354 tests) and NEVER FIRED. A written `Keep` is a tuple type and so is refused a
+    // stage earlier now; a derived one arrives from `concat_named_tuple_types` (which refuses
+    // colliding names itself) or from `Project` (which runs this check). So this guard has no
+    // live witness and cannot be given one from source today. KEPT anyway: it answers for a
+    // producer the parse-stage rule cannot see, and the alternative is a silent duplicate-keyed
+    // schema — the exact failure WI-763 measured here.
     // Compared by SHORT name for the same reason `projection_columns` resolves source columns
     // that way: these are one tuple's own field labels, so this is a within-schema field
     // comparison (WI-638 mode 3), not a cross-scope symbol identity (WI-672).
@@ -8500,13 +8511,16 @@ fn normalize_variadic_capture(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<CaptureRewrite> {
-    let capture_sym = kb.op_capture_param(fn_sym)?;
+) -> Result<Option<CaptureRewrite>, TypeError> {
+    let capture_sym = match kb.op_capture_param(fn_sym) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
     // Already-normalized / explicit-record guard: a named argument that names the capture
     // parameter directly (a re-typed rewrite, or a caller passing the record explicitly)
     // is left to ordinary typing. Without this the fold would re-fire every re-type.
     if named_args.iter().any(|(label, _)| same_label(kb, capture_sym, *label)) {
-        return None;
+        return Ok(None);
     }
     // Partition the named arguments: those matching a DECLARED, NON-capture parameter are
     // kept in place; the leftovers (a column name no fixed parameter names) are captured.
@@ -8533,8 +8547,44 @@ fn normalize_variadic_capture(
         // drop it (loud over silent), leaving the ordinary path to surface the error.
         let r = match &named_results[i] {
             Ok(r) => r,
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         };
+        // WI-805 §4.5: the captured record is a NAMED TUPLE, and its component names
+        // must be distinct. This is the third producer that keys a tuple on labels the
+        // author WROTE — after the tuple literal and the tuple type, both refused at
+        // parse (`check_tuple_label_unique`) — and the only one the parse guard cannot
+        // see, because the labels are written as a call's NAMED ARGUMENTS and only
+        // become a tuple here. `named_arg_coverage_errors`' duplicate rule does not
+        // reach them either: a leftover matches no declared parameter, which is
+        // precisely what routed it into the capture.
+        //
+        // Measured before this check, on a clean load:
+        //   operation cap[R](x: Int64, ...rest: R) -> R = rest
+        //   operation drive() -> Int64 = cap(1, a: 2, a: "ess").a   -- returned Int(2)
+        // building `(a: Int64, a: String)` — the exact type the parse guard forbids
+        // writing — with the `a: String` column reachable by neither its name nor its
+        // position and its type never checked. A `let (p, q) = cap(1, a: 2, a: 3)` over
+        // it reached `match_tuple_pattern` with two IDENTICAL labels and raised
+        // `MatchFailed` from the WI-445 double-cover guard, i.e. the defect was live at
+        // run time too.
+        //
+        // Refused rather than declined (`return Ok(None)`): falling back to ordinary
+        // typing would report that the label names no parameter, which is true of every
+        // captured field and so says nothing about the actual fault.
+        if captured_fields.iter().any(|(prev, _)| same_label(kb, *prev, *label)) {
+            let name = short_name_of(kb.resolve_sym(*label)).to_string();
+            return Err(TypeError::Other {
+                site: std::panic::Location::caller(),
+                span: Some(occ.span.span),
+                context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: *label },
+                expected: "distinct labels among the captured named arguments".to_string(),
+                actual: format!(
+                    "named argument '{name}' is captured twice into the `...` record; a named \
+                     tuple's component names must be distinct (spec §4.5) — the later '{name}' \
+                     would be reachable by neither its name nor its position"
+                ),
+            });
+        }
         captured.push((*label, Rc::clone(&r.node)));
         captured_fields.push((*label, r.ty.clone()));
         merge_effects_into(kb, &mut captured_effects, &r.effects);
@@ -8580,7 +8630,7 @@ fn normalize_variadic_capture(
         pass,
         occ.owner,
     );
-    Some(CaptureRewrite { occ: new_occ, named_args: kept_args, named_results: kept_results })
+    Ok(Some(CaptureRewrite { occ: new_occ, named_args: kept_args, named_results: kept_results }))
 }
 
 fn check_apply_iter(
@@ -8715,7 +8765,7 @@ fn check_apply_iter(
         // keeps the original borrows — the zero-cost common path.
         let capture_rewrite = normalize_variadic_capture(
             kb, env, fn_sym, &op.params, occ, pos_args, named_args, named_results,
-        );
+        )?;
         let (occ, named_args, named_results): (
             &Rc<NodeOccurrence>,
             &[(Symbol, Rc<NodeOccurrence>)],
@@ -25752,6 +25802,21 @@ pub(super) enum TupleOrder {
     /// resume-after-previous scan the two picked DIFFERENT components on a
     /// duplicate label — the tuple conformed on the second `a` while `t.a` read
     /// the first (WI-805). Looking up from the start is the reader's own rule.
+    ///
+    /// WI-805 has since refused a duplicate label at every producer that keys a tuple
+    /// on labels the author WROTE — the literal and the tuple type at parse
+    /// (`check_tuple_label_unique`), and a `...rest: R` capture's leftover named
+    /// arguments in `normalize_variadic_capture` — so no such tuple can put the two
+    /// walks in that position again. The discipline is still load-bearing, not
+    /// vestigial: labels reaching here may be DERIVED rather than written (a `Concat`
+    /// / `Project` schema), and the reader compares SHORT names, so two distinct
+    /// qualified symbols sharing a last segment collide for it whether or not they
+    /// collide here.
+    ///
+    /// A variadic capture is NOT one of the derived cases, and an earlier draft of
+    /// this comment listing it as one is what let that producer ship unguarded: its
+    /// labels are written in source, as a call's named arguments, and only become a
+    /// tuple in the typer.
     ///
     /// What is shared is the FIRST-MATCH discipline, not the whole rule: this walk
     /// compares names by `Symbol` IDENTITY while the reader compares SHORT names

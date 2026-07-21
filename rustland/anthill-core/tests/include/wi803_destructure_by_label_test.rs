@@ -358,33 +358,24 @@ end
     }
 }
 
-// ── the duplicate-label disagreement, closed as a side effect ──
+// ── the duplicate-label disagreement, and where it went ────────
 
-/// WI-805's program. `(a: 1, b: 2, a: "ess")` used to conform to
-/// `(b: Int64, a: String)` because the relation's cursor resumed AFTER the `b`
-/// match and so took the SECOND `a` (a `String`), while `t.a` read the FIRST
-/// (an `Int64`) — an operation declared `-> String` returned `Int(1)` on a clean
-/// load.
-///
-/// The `TupleOrder::Free` walk looks each name up from the START, which is
-/// `field_access`' own rule, so the relation and the reader now pick the same
-/// component and the program is REFUSED. Recorded here as the observable it is:
-/// WI-805's own fix — refusing a duplicate label where the tuple is BUILT — is a
-/// separate and still-open ticket, and this test does not stand in for it.
-#[test]
-fn duplicate_label_no_longer_conforms_on_the_second_occurrence() {
-    let src = r#"
-namespace test.wi803.dup
-  import anthill.prelude.{Int64, String}
-  operation take(t: (b: Int64, a: String)) -> String = t.a
-  operation drive() -> String = take((a: 1, b: 2, a: "ess"))
-end
-"#;
-    assert_refused(
-        src,
-        "a duplicate-label tuple whose FIRST `a` is the one `t.a` reads",
-    );
-}
+// Two tests drove duplicate labels here — the conformance case, and the double-cover
+// case below — and both programs are now PARSE errors (WI-805 refuses a duplicate
+// where the tuple is minted). `wi805_duplicate_tuple_label_test` owns the refusal;
+// these were removed rather than retargeted into copies of it.
+//
+// WHAT THE REMOVAL COSTS, which is the part worth keeping: a duplicate label was the
+// ONLY way a source program could tell first-match apart from
+// resume-after-the-previous-match, so WI-803's choice between them is no longer
+// observable from source. It stays load-bearing for labels never written in source —
+// a `Concat` / `Project` schema, a variadic capture — and the reasoning now lives at
+// the decision, on `TupleOrder::Free` (kb/typing.rs).
+//
+// Likewise `match_tuple_pattern`'s double-cover guard: WI-805 closes only the
+// EQUAL-label mode, not the distinct-QUALIFIED-names-sharing-a-last-segment mode the
+// short-name lookup admits, so the guard keeps its reason to exist and loses its
+// end-to-end witness. Recorded at the guard itself (eval/pattern.rs).
 
 // ── the three holes /code-review found in the first cut ────────
 
@@ -407,51 +398,19 @@ end
 // appearances; `identity_positional_tuple_still_binds_in_order` above already
 // covers the ordinary positional path.
 
-/// A tuple type whose components carry the SAME name must not serve one component
-/// to two binders.
-///
-/// By-label resolution takes the FIRST match, so without a double-cover guard both
-/// binders receive component `a`'s first occurrence — while the component the
-/// SECOND binder was TYPED from goes unread. The typer types `q` from the second
-/// `a` (a `String`), so a matcher that hands it the first (an `Int64`) produces a
-/// wrong-TYPED value from an operation declared `-> String`: the WI-788 family
-/// again, reached through duplicate labels rather than order.
-///
-/// `match_constructor_pattern` has guarded double cover since WI-445; the by-label
-/// tuple arm did not until /code-review found it.
-///
-/// NOTE the fixture is `-> q`, not `-> p`. An earlier version of this test drove
-/// `-> p` and asserted `is_err() || Ok(Int(3))` — which the BUGGY matcher also
-/// satisfies, since `p` legitimately takes the first `a`. Control-run with the
-/// guard removed, it passed. Only the SECOND binder can observe the collision.
-#[test]
-fn duplicate_component_names_do_not_bind_one_component_twice() {
-    let src = r#"
-namespace test.wi803.dupty
-  import anthill.prelude.{Int64, String, Function}
-  operation ap(f: Function[A = (a: Int64, a: String), B = String]) -> String
-    = f((a: 3, a: "ess"))
-  operation drive() -> String = ap(lambda (p, q) -> q)
-end
-"#;
-    assert!(
-        load_errs(src).is_empty(),
-        "the duplicate-label TYPE loads today — refusing it where the tuple is \
-         BUILT is WI-805, still open; got: {:?}",
-        load_errs(src),
-    );
-    let mut interp = interp_for(src);
-    match interp.call("test.wi803.dupty.drive", &[]) {
-        // The loud outcome: `q`'s label resolves to the component `p` already
-        // took, so the match is refused rather than binding one component twice.
-        Err(_) => {}
-        Ok(anthill_core::eval::Value::Str(_)) => {}
-        other => panic!(
-            "an operation declared `-> String` must not yield a non-String: `q` was \
-             typed from the SECOND `a` and must not be handed the first. Got: {other:?}",
-        ),
-    }
-}
+// THE DOUBLE-COVER CASE, also removed by WI-805 (see the note above). It drove
+// `ap(f: Function[A = (a: Int64, a: String)])` applied to `(a: 3, a: "ess")` with
+// `lambda (p, q) -> q`, and the guard it covered is `match_tuple_pattern`'s
+// `covered` check: by-label resolution takes the FIRST match, so without it BOTH
+// binders receive the first `a` while the component `q` was TYPED from goes unread
+// — a wrong-TYPED value from an operation declared `-> String`, the WI-788 family
+// reached through labels rather than order. `match_constructor_pattern` has guarded
+// this since WI-445; the tuple arm did not until /code-review found it.
+//
+// Worth keeping from that fixture: it had to drive `-> q`, not `-> p`. An earlier
+// version drove `-> p` and asserted `is_err() || Ok(Int(3))`, which the BUGGY matcher
+// also satisfies since `p` legitimately takes the first `a` — control-run with the
+// guard removed, it PASSED. Only the SECOND binder can observe the collision.
 
 /// The by-label reader resolves a label by SHORT name, so it must normalize BOTH
 /// sides consistently — including on the synthetic `_N` branch.

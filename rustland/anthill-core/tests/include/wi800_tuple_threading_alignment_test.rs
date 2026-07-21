@@ -18,7 +18,9 @@
 //!     one the literal was never given — see `permuted_*` below.
 //!   * THE HINT LANDED ON A DIFFERENT COMPONENT than the relation aligns, whenever
 //!     a first-match and a resume-after-the-previous-match disagree about which
-//!     component a name picks. `duplicate_label_*` drives that case directly.
+//!     component a name picks. That is the DUPLICATE-LABEL case; WI-805 has since
+//!     made it a parse error, and the note at the foot of this file records what
+//!     it demonstrated.
 //!
 //! The fix is that the threading calls the relation's own walk, in the same
 //! argument order (`actual`, `expected`) and the same `DATA` mode. What that
@@ -26,7 +28,7 @@
 //! so a component needing the hint can sit AFTER a dropped one — `width_*` below
 //! pins that, and a raw index-for-index zip fails it.
 
-use crate::common::{interp_for, try_load_kb_with};
+use crate::common::try_load_kb_with;
 
 fn load_errs(src: &str) -> Vec<String> {
     try_load_kb_with(src).err().unwrap_or_default()
@@ -121,39 +123,22 @@ fn width_threads_around_a_dropped_component() {
     );
 }
 
-/// A DUPLICATE label is where a first-match lookup and the cursor scan pick
-/// different components: expected `a` resumes AFTER `b`'s match, so it takes the
-/// SECOND `a`. The relation is built on that choice, so the hint must be too.
-///
-/// This program used to be ACCEPTED while computing a value its type denies:
-/// `t.a` reads the FIRST `a` (`field_access` is by name) while the relation, whose
-/// cursor resumed AFTER the `b` match, typed the SECOND. An operation declared
-/// `-> String` returned `Int(1)` on a clean load.
-///
-/// INVERTED BY WI-803, and by the half of it that was not the headline. Making
-/// `TupleAlign::DATA` order-free meant choosing where each name lookup STARTS, and
-/// starting from 0 — first match — is `field_access`' own rule. So the relation
-/// and the reader now pick the same component, the type mismatch is visible, and
-/// the program is refused.
-///
-/// This does NOT close WI-805, and the test does not claim to. WI-805's fix is to
-/// refuse a duplicate label where the tuple is BUILT, which makes the disagreement
-/// unreachable rather than merely aligned; a duplicate-label tuple whose two `a`s
-/// have the SAME type still loads today. What is fixed here is the divergence:
-/// two walks over one tuple no longer answer differently.
-#[test]
-fn duplicate_label_conforms_on_the_first_occurrence_like_field_access() {
-    let src = r#"
-namespace test.wi800.dup
-  import anthill.prelude.{Int64, String}
-  operation take(t: (b: Int64, a: String)) -> String = t.a
-  operation drive() -> String = take((a: 1, b: 2, a: "ess"))
-end
-"#;
-    let errs = load_errs(src);
-    assert!(
-        errs.iter().any(|e| e.contains("mismatch")),
-        "the alignment takes the FIRST `a` (Int64), which is the one `t.a` reads, so \
-         the `-> String` claim is refused instead of silently yielding Int(1); got: {errs:?}",
-    );
-}
+// A DUPLICATE label was the case that made the two walks disagree: expected `a`
+// resumed AFTER `b`'s match and so took the SECOND `a`, while `t.a` read the FIRST
+// — `take(t: (b: Int64, a: String))` applied to `(a: 1, b: 2, a: "ess")` returned
+// `Int(1)` from an operation declared `-> String`, on a clean load. It is the
+// fixture that PROVED a first-match and a resume-after-the-previous-match are
+// different functions, which is why WI-800's threading had to adopt the relation's
+// own walk rather than keep its order-blind lookup.
+//
+// The test that drove it lived here and is gone. WI-803 made both walks look up
+// from the START, and WI-805 then refused the duplicate where the tuple is MINTED
+// (`check_tuple_label_unique`, parse/convert.rs), so the program is now a PARSE
+// error and never reaches the relation. All that remained to assert was a message
+// string that `wi805_duplicate_tuple_label_test` owns, over a fixture that no
+// longer discriminates — the guard runs on labels alone, so the second `a`'s type
+// is no longer part of the case.
+//
+// Recorded rather than kept as a third copy: the history above is the part worth
+// having in WI-800's file, and prose carries it without pinning the wording of
+// another ticket's diagnostic in a fourth place.

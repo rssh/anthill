@@ -117,6 +117,22 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   is read: an arrow's PARAMETER LIST and UNIFICATION (`TupleAlign`'s three
   disciplines, `kb/typing.rs`). Canonicalizing a tuple's components would change
   its identity, hence the exemption. See `docs/kernel-language.md` §4.5.
+- **A tuple's component labels are DISTINCT** (WI-805), refused at each of the THREE
+  producers that key a tuple on labels the author WROTE: the literal and the tuple
+  TYPE (`check_tuple_label_unique`, `parse/convert.rs`), and a `...rest: R` VARIADIC
+  CAPTURE's leftover named args (`normalize_variadic_capture`, `kb/typing.rs`) —
+  whose labels are written as call arguments and only become a tuple in the typer, so
+  the parse guard cannot see them. Same rule the projection `x.(a, a)` and a call's
+  named args already had; DERIVED schemas (`Concat`/`Project`) guard themselves.
+  Every reader takes a name's FIRST match, so a repeated label leaves a component
+  reachable by neither its name nor its position, with its declared type never
+  checked — `(a: 1, b: 2, a: 3)` conformed to `(b: Int64, a: Int64)` on a clean load.
+  Making the readers AGREE (WI-803) does not fix this: agreeing which component to
+  read leaves the unread one unread. "Literal + type" felt exhaustive and was not —
+  enumerate `named_tuple_value`'s callers before believing a producer list. NOT
+  applied to an arrow's PARAMETER LIST: a repeated binder name there DOES shadow (the
+  body reads the LAST one), but params are applied positionally so the shadowed one's
+  type is still checked at every call — nothing is silently unchecked.
 - **Destructuring binds by LABEL** (WI-803): the typer records which component
   name each binder takes into `Pattern::Tuple.labels`, and `match_tuple_pattern`
   fetches by name via `TupleComponents::by_label` — the same reader `t.x` uses.

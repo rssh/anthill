@@ -22,7 +22,7 @@
 
 use anthill_core::parse;
 
-use crate::common::try_load_kb_with;
+use crate::common::{parse_errs, try_load_kb_with};
 
 /// The relation the projections below keep from: schema `(name: String, age: Int64)`.
 const REL: &str = r#"
@@ -214,11 +214,32 @@ end
 /// writable, and the one the family's own documentation already promised was rejected.
 ///
 /// The dot surface rejects `r.(a: f1, a: f2)` at parse (`validate_projection_labels`), but a
-/// WRITTEN `Keep` never passes through that check, and a named-tuple TYPE carries duplicate
-/// field names without complaint — so before this, the two keys reached `collapse_schema` and
-/// built a schema with two `a` columns, which no field lookup can answer unambiguously.
-/// Measured, not assumed: it loaded to `(a: String, a: Int64)` and failed only later, as a
-/// confusing conformance mismatch against a duplicate-keyed type.
+/// WRITTEN `Keep` never passed through that check — so before WI-763 the two keys reached
+/// `collapse_schema` and built a schema with two `a` columns, which no field lookup can answer
+/// unambiguously. Measured, not assumed: it loaded to `(a: String, a: Int64)` and failed only
+/// later, as a confusing conformance mismatch against a duplicate-keyed type.
+///
+/// WI-805 MOVED WHERE THIS IS CAUGHT, without changing whether it is. A written `Keep` IS a
+/// tuple type — `(a: "name", a: "age")`, its components denoted — so it now meets the §4.5
+/// distinctness rule at the mint, one stage earlier than `keep_spec_projections`' own check
+/// and with the offending component located. This test follows the diagnostic rather than
+/// asserting the old one, because the requirement it encodes is "loud, and NAMES the key",
+/// which both spellings satisfy.
+///
+/// KEPT rather than folded into `wi805_duplicate_tuple_label_test`, unlike the wi800/wi803
+/// duplicate tests that WI-805 subsumed. This fixture reaches `convert_tuple_type` through
+/// `denoted_field_decl` — a DIFFERENT grammar production from every wi805 fixture, all of
+/// which are `field_decl`. It is the only test that says the distinctness rule covers a keep
+/// spec's surface too, which is precisely the production WI-763 added.
+///
+/// `keep_spec_projections`' check is deliberately KEPT, and this is the honest statement of
+/// its coverage: it is now a backstop for a `Keep` this code DERIVES rather than one the
+/// author writes, and no fixture in this corpus reaches it — INSTRUMENTED, not assumed: a
+/// `panic!` on that branch was run against the full workspace suite and never fired, because
+/// every derived schema arrives from `concat_named_tuple_types` (which refuses colliding names
+/// itself) or from `Project` (which runs this very check). Recorded rather than deleted: the
+/// two guards answer for different producers, and the parse one cannot see a spec that was
+/// never written.
 #[test]
 fn wi763_duplicate_result_key_in_a_written_keep_spec_is_loud() {
     let src = format!(
@@ -231,9 +252,9 @@ namespace test.wi763dup
 end
 "#
     );
-    let errs = load_errs(&src);
+    let errs = parse_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("result key `a` twice")),
+        errs.iter().any(|e| e.contains("duplicate tuple type component label `a`")),
         "a keep spec naming one result key twice must be loud and NAME the key, not build a \
          duplicate-keyed schema; got: {errs:?}",
     );

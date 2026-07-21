@@ -255,6 +255,23 @@ fn match_tuple_pattern(
     // the whole WI-788 family. Refusing is loud (the caller raises
     // `Error[MatchFailed]`) and costs nothing on well-formed types, whose component
     // names are distinct.
+    //
+    // WI-805 closed the EQUAL mode at every producer that keys a tuple on labels the
+    // author wrote: the literal and the tuple type, refused at parse
+    // (`check_tuple_label_unique`, parse/convert.rs), and a `...rest: R` capture's
+    // leftover named arguments, refused in `normalize_variadic_capture`
+    // (kb/typing.rs). The capture is the one that mattered HERE — until WI-805 it was
+    // this guard's only end-to-end witness in the corpus, and it was live:
+    // `let (p, q) = cap(1, a: 2, a: 3)` loaded clean and raised `MatchFailed` from the
+    // `covered` check below.
+    //
+    // So this now has NO live driver, and is kept deliberately rather than by
+    // oversight. The QUALIFIED mode is untouched by any of those guards: they compare
+    // labels as WRITTEN, while this compares SHORT names of symbols that may arrive
+    // qualified off a TYPE's field list, so two distinct qualified labels sharing a
+    // last segment still collide here and nowhere else. Pinned at the reader in
+    // `eval::value::tests::wi803_by_label_reader`; the end-to-end history is recorded
+    // in `wi805_duplicate_tuple_label_test` beside the capture guard that closed it.
     let mut covered: SmallVec<[usize; 8]> = SmallVec::new();
     for (sub_pat, label) in positional.iter().zip(labels.iter()) {
         // Resolved through the ONE by-name tuple reader, shared with

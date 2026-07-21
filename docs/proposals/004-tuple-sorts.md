@@ -229,6 +229,16 @@ operation op_e(env: Env, a: A) -> (R, Env, List[T = Event])
 5. `()` is the unit sort with a single value `()`.
 6. Tuple values are constructed and destructured via pattern matching.
 7. All-or-nothing naming: either all elements have explicit names or none do.
+8. Component names are **distinct**, checked at every producer that builds a tuple from
+   names the author wrote: the literal `(a: 1, b: 2, a: 3)`, the type
+   `(a: Int64, a: String)`, and a variadic capture's leftover named arguments
+   `cap(1, a: 2, a: "ess")` (WI-805). Every reader resolves a name to its FIRST match
+   (rule 4a), so a repeated name makes the later component reachable by neither its name
+   nor its position and leaves its declared type unchecked. This is rule 2 read to its
+   conclusion: if identity is determined by field names and order, a name that
+   identifies two components identifies neither. Scoped to a tuple — an arrow's
+   parameter list shares the surface but is applied positionally, so a shadowed
+   parameter's type is still checked against an argument at every call.
 
 ## Backwards Compatibility
 

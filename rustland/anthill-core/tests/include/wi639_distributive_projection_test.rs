@@ -14,22 +14,15 @@
 //! field-access typing + named-tuple-literal typing + eval carry it.
 
 use anthill_core::eval::Value;
-use crate::common::{interp_for, try_load_kb_with};
+// The projection label guards are convert-time (purely syntactic, no type info
+// needed), so they surface as PARSE errors, not load errors — hence
+// `common::parse_errs` rather than `try_load_kb_with` for those cases.
+use crate::common::{interp_for, parse_errs, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
-    }
-}
-
-/// Parse-error messages for `src` — the projection label guards are convert-time
-/// (purely syntactic, no type info needed), so they surface as PARSE errors, not
-/// load errors. Panics if the source unexpectedly parses clean.
-fn parse_errs(src: &str) -> Vec<String> {
-    match anthill_core::parse::parse(src) {
-        Ok(_) => panic!("expected a parse error, but the source parsed clean"),
-        Err(errs) => errs.iter().map(|e| e.message.clone()).collect(),
     }
 }
 

@@ -1132,7 +1132,16 @@ impl<'a> Converter<'a> {
 
     /// Reject the two ill-formed key shapes a multi-member projection could
     /// otherwise emit into its result tuple, each a silent-corruption footgun
-    /// (WI-639 review):
+    /// (WI-639 review).
+    ///
+    /// DELIBERATELY SEPARATE from `check_tuple_label_unique` below, which enforces
+    /// the same distinctness rule where a tuple is written rather than projected.
+    /// The two loops look alike and are not worth merging: this one reports against
+    /// a `ProjEntry`'s `Span` (not a `Node`, which `self.err` takes), and its message
+    /// ends in the only fix available here — a rename — while the tuple one explains
+    /// reader semantics. Sharing would mean a struct change plus a second string
+    /// knob, for a three-line loop. The `_`-prefix half below is a genuinely
+    /// different and BROADER rule (see its note) and could not be shared at all.
     ///  - A DUPLICATE label (`x.(a, a)`, or a rename collision
     ///    `x.(k: f1, k: f2)`) would build a duplicate-key named tuple whose
     ///    later columns are silently dropped — both the tuple typer and the
@@ -1181,6 +1190,84 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Spec §4.5 — a named tuple's component names must be DISTINCT. Called once
+    /// per written component, from each place a named tuple is MINTED from source:
+    /// `push_tuple_literal` and `convert_tuple_type`.
+    ///
+    /// SAME RULE, SAME RATIONALE as `validate_projection_labels` 50 lines up, which
+    /// states it: a duplicate-key tuple silently drops the later column, because
+    /// every reader takes a name's FIRST match. The construct that can actually MINT
+    /// such a tuple was the one place it was missing (WI-805). Measured before this
+    /// guard: `(a: 1, b: 2, a: 3)` conformed to `(b: Int64, a: Int64)` on a clean
+    /// load with the `a: 3` column unreadable — reachable by neither its name nor its
+    /// position, its declared type never checked — and
+    /// `-> (a: Int64, a: Int64) = (a: 1, a: 2)` loaded with zero errors. Making the
+    /// readers AGREE (WI-803) was necessary and not sufficient: agreeing which
+    /// component to read leaves the unread one unread.
+    ///
+    /// TAKES `seen` RATHER THAN THE WHOLE LIST so the check sits inside the caller's
+    /// own component loop, testing against the collection the caller is already
+    /// building. A parallel `written_labels` vector — the first cut — had to be
+    /// pushed in lockstep with that collection, so a later branch adding a component
+    /// and forgetting the second push would silently skip it: a check that reads as
+    /// covering everything while covering less, which is the failure mode this
+    /// codebase treats as worse than none. The KEY (`Symbol` identity) stays here,
+    /// spelled once, rather than at each call site.
+    ///
+    /// Only labels WRITTEN IN SOURCE reach here. Synthetic `_N` labels are minted
+    /// from the component's own index (`intern_positional_label`), so they cannot
+    /// collide with one another; a user `_`-prefixed label (`_b`, `_0`, a `_2` off
+    /// its slot) is an ordinary name and compares as one (WI-790).
+    ///
+    /// THIS IS NOT THE WHOLE RULE — it is the SOURCE-SYNTAX half. Two other producers
+    /// key a named tuple on names, each guarded where it builds:
+    ///  * a `...rest: R` VARIADIC CAPTURE folds a call's leftover NAMED ARGUMENTS into
+    ///    a tuple (`normalize_variadic_capture`, kb/typing.rs). Those labels are
+    ///    written in source but never as a tuple, so this guard cannot see them — the
+    ///    hole a `/code-review` altitude pass found by enumerating `named_tuple_value`'s
+    ///    callers rather than trusting "literal + type" to be exhaustive.
+    ///  * a DERIVED schema — `Concat` / `Project` — where no author wrote the labels at
+    ///    all (`concat_named_tuple_types`, `keep_spec_projections`).
+    /// Enforcing centrally in `named_tuple_value` was considered and rejected: it
+    /// returns a bare `Value` with no error channel or span, and half its callers pass
+    /// synthetic `_N` labels that provably cannot collide.
+    ///
+    /// NOT applied to an arrow's PARAMETER LIST. It shares this production (WI-766) but
+    /// `convert_arrow_type` walks its params itself — the same seam that lets
+    /// `(A) -> B` be a parameter list while `(A)` is not a type. A repeated binder name
+    /// there DOES shadow: measured, `operation two(a: Int64, a: Int64) -> Int64 = a`
+    /// loads and `two(1, 2)` returns `Int(2)`, so the body reads the SECOND parameter
+    /// and the first is unreadable — note that is the opposite occurrence from the one
+    /// a tuple reader takes. What makes it not this defect is that the unreachable
+    /// parameter is still APPLIED POSITIONALLY, so its declared type is checked against
+    /// an argument at every call; nothing is silently unchecked, which is what this rule
+    /// is for. (The one channel that does resolve those names, a named argument, refuses
+    /// a duplicate at the call — `named_arg_coverage_errors`.) Rejecting duplicate
+    /// binder names is a separate decision about SHADOWING, to be taken on its own
+    /// terms; it would also have to answer for entity fields, where `entity mk(a: Int64,
+    /// a: Int64)` loads today.
+    fn check_tuple_label_unique(
+        &mut self,
+        what: &'static str,
+        seen: impl Iterator<Item = Symbol>,
+        sym: Symbol,
+        at: Node,
+    ) {
+        if !seen.into_iter().any(|prev| prev == sym) {
+            return;
+        }
+        let nm = self.symbols.name(sym).to_string();
+        self.err(
+            format!(
+                "duplicate {what} component label `{nm}`; a named tuple's component names \
+                 must be distinct (spec §4.5) — both readers resolve a name to its first \
+                 match, so this later `{nm}` would be reachable by neither its name nor its \
+                 position, and its type never checked"
+            ),
+            at,
+        );
+    }
+
     fn push_set_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
         let mut elements: SmallVec<[Node<'t>; 4]> = SmallVec::new();
         let mut cursor = node.walk();
@@ -1222,6 +1309,18 @@ impl<'a> Converter<'a> {
                     let val_node = self.field(child, "value");
                     if let (Some(k), Some(v)) = (key_node, val_node) {
                         let sym = self.intern(self.text(k));
+                        // Spec §4.5 distinctness, against the labels already in
+                        // `slots` — reported at the key node `k`, so the error
+                        // points at the offending component and not at the `(`.
+                        self.check_tuple_label_unique(
+                            "tuple literal",
+                            slots.iter().filter_map(|s| match s {
+                                ArgSlot::Named(prev) => Some(*prev),
+                                ArgSlot::Positional => None,
+                            }),
+                            sym,
+                            k,
+                        );
                         slots.push(ArgSlot::Named(sym));
                         child_nodes.push(v);
                     }
@@ -2181,6 +2280,15 @@ impl<'a> Converter<'a> {
                         (Some(n), Some(t)) => {
                             let sym = self.intern(self.text(n));
                             let ty = self.convert_type(t);
+                            // Spec §4.5 distinctness, against the components
+                            // already collected — reported at this component's
+                            // name node.
+                            self.check_tuple_label_unique(
+                                "tuple type",
+                                named.iter().map(|(prev, _)| *prev),
+                                sym,
+                                n,
+                            );
                             named.push((sym, ty));
                         }
                         // Both fields are mandatory in the grammar, so this is
