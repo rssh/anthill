@@ -17,6 +17,7 @@
 //! by the prelude's rewrite rules during SLD resolution.
 
 use super::{EvalError, Interpreter, Value};
+use crate::intern::positional_label_index;
 
 /// Register the standard-library builtins. Symbols that don't resolve in the
 /// current KB (stdlib partially loaded, e.g. a minimal test harness) are
@@ -277,10 +278,12 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                     return Ok(val.clone());
                 }
             }
-            if let Some(idx) = field_name.strip_prefix('_').and_then(|d| d.parse::<usize>().ok()) {
-                if let Some(val) = idx.checked_sub(1).and_then(|i| pos.get(i)) {
-                    return Ok(val.clone());
-                }
+            // WI-790: `_N` → slot N-1 via the convention's owner, which refuses
+            // `_0` (outside the 1-based image; the old `checked_sub(1)` also
+            // declined it, just without saying why) and `_01` (a USER label, so it
+            // is only ever reachable through the `named` scan above, never here).
+            if let Some(val) = positional_label_index(field_name.as_str()).and_then(|i| pos.get(i)) {
+                return Ok(val.clone());
             }
             Err(EvalError::Internal(format!(
                 "field_access: tuple has no component '{}'", field_name)))

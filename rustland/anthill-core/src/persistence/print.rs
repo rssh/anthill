@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use crate::eval::value::Value;
-use crate::intern::Symbol;
+use crate::intern::{is_positional_label_at, Symbol};
 use crate::kb::KnowledgeBase;
 use crate::kb::node_occurrence::{
     EffectExprNode, Expr, NodeKind, NodeOccurrence, TypeChild, TypeNode,
@@ -1006,7 +1006,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             if let Some(elems) = self.unwrap_list_spine(fields) {
                 for (i, &elem) in elems.iter().enumerate() {
                     if i > 0 { buf.push_str(", "); }
-                    self.write_named_tuple_element(elem, buf);
+                    self.write_named_tuple_element(elem, i, buf);
                 }
             }
         }
@@ -1015,7 +1015,10 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
 
     /// One `NamedTupleElement(name, type)` → `n: T`, or bare `T` for a positional
     /// `_N` field name (the surface tuple form `(A, B)` has no field labels).
-    fn write_named_tuple_element(&self, elem: TermId, buf: &mut String) {
+    ///
+    /// `index` is the component's own position, which is what decides whether its
+    /// label is the synthetic one — see [`Self::is_positional_name`].
+    fn write_named_tuple_element(&self, elem: TermId, index: usize, buf: &mut String) {
         let Term::Fn { named_args, .. } = self.view.term(elem) else {
             self.write_type_term(elem, buf);
             return;
@@ -1023,7 +1026,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         let name = self.named_arg(named_args, "name");
         let ty = self.named_arg(named_args, "type");
         let positional = name
-            .map(|n| self.is_positional_name(n))
+            .map(|n| self.is_positional_name(n, index))
             .unwrap_or(true);
         if !positional {
             if let Some(n) = name {
@@ -1037,11 +1040,27 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         }
     }
 
-    /// A positional tuple-field name is `_1`, `_2`, … (the surface `(A, B)` form).
-    fn is_positional_name(&self, name: TermId) -> bool {
+    /// Is this component's name the synthetic label for its OWN position — i.e.
+    /// is it the surface `(A, B)` form, whose labels the printer must omit?
+    ///
+    /// This was the LOOSEST of the five recognizers: `_` + digits at ANY index,
+    /// which the caller then ERASED. Two classes of user label were lost that way,
+    /// both MEASURED before the fix:
+    ///
+    ///  * `(_01: Int64, b: Int64)` printed as `(Int64, b: Int64)` — `_01` is a user
+    ///    label (WI-786), and the output mixes positional and named fields, which
+    ///    the parser REJECTS outright. The printed form did not round-trip at all.
+    ///  * `(_2: Int64, b: Int64)` printed the same way, and where such text does
+    ///    reparse the loader mints `_1` for slot 0 — a silent field RENAME across a
+    ///    persistence round trip.
+    ///
+    /// Asking [`is_positional_label_at`] with the component's own index refuses
+    /// both, and a genuine `(Int64, Int64)` still prints without labels. Narrowing
+    /// only the RULE and not also threading the index would have fixed the first
+    /// class and left the second, so the two halves are one fix (WI-790/WI-789).
+    fn is_positional_name(&self, name: TermId, index: usize) -> bool {
         if let Term::Ref(s) = self.view.term(name) {
-            let n = self.view.sym_name(*s);
-            n.strip_prefix('_').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            is_positional_label_at(self.view.sym_name(*s), index)
         } else {
             false
         }

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-use crate::intern::Symbol;
+use crate::intern::{positional_label, Symbol};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::{KnowledgeBase, RuleId};
 
@@ -889,11 +889,18 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
                 return Ok(serde_json::Value::Object(wrapper));
             }
 
-            // Mixed positional + named — serialize as object with all args
+            // Mixed positional + named — serialize as object with all args.
+            // WI-790: the positional keys are the 1-BASED `_1, _2, …` convention
+            // (`positional_label`), which is what every reader of a `_N` key
+            // interprets — `field_access` (eval/builtins.rs) and
+            // `field_step_in_value` (kb/load.rs) both map `_N` to slot N-1, and the
+            // type-directed loader below re-slots by NAME. This minted `_0`-based
+            // keys until WI-790: `_0` was outside every reader's domain, and the
+            // keys that did parse denoted a slot one to the left of what they named.
             let mut all_fields = serde_json::Map::new();
             for (i, &pos_id) in pos_args.iter().enumerate() {
                 let val = term_to_value(kb, pos_id)?;
-                all_fields.insert(format!("_{i}"), val);
+                all_fields.insert(positional_label(i), val);
             }
             for &(sym, val_id) in &named_args {
                 let field_name = kb.resolve_sym(sym).to_string();

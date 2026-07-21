@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use crate::intern::Symbol;
+use crate::intern::{is_positional_label_at, Symbol};
 use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern};
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
@@ -2604,20 +2604,6 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     }
 }
 
-/// Is `label` the parser's synthetic positional name for source index `index`?
-///
-/// Mirrors `intern_positional_label` (parse/convert.rs), which emits exactly
-/// `_{index + 1}` — so `_01` is a USER label, not a synthetic one, and stays
-/// named.
-fn is_synthetic_positional_label(label: &str, index: usize) -> bool {
-    match label.strip_prefix('_') {
-        Some(digits) if !digits.starts_with('0') => {
-            matches!(digits.parse::<usize>(), Ok(n) if n == index + 1)
-        }
-        _ => false,
-    }
-}
-
 /// Decide whether a constructor arg with optional auto-name goes into the
 /// positional or named slot of the emerging value. Tuple literals' `_N`
 /// auto-names are unwrapped back to positional; everything else goes named
@@ -2627,10 +2613,10 @@ fn is_synthetic_positional_label(label: &str, index: usize) -> bool {
 /// are load-bearing.
 ///
 ///  * The label must be EXACTLY the synthetic name for this component's source
-///    index — not merely `_`-prefixed. Identifiers may begin with `_`, so a
-///    plain prefix test also caught user labels like `_id`; those were re-slotted
-///    into `pos`, which carries no labels, DISCARDING the name and scrambling
-///    source order.
+///    index — not merely `_`-prefixed ([`is_positional_label_at`], WI-790's
+///    shared predicate). Identifiers may begin with `_`, so a plain prefix test
+///    also caught user labels like `_id`; those were re-slotted into `pos`, which
+///    carries no labels, DISCARDING the name and scrambling source order.
 ///  * Nothing may have gone to `named` yet, so `pos` stays a source-order
 ///    PREFIX. The reachable case is an all-named literal whose LATER label is
 ///    the synthetic name for `pos.len()`: in `(a: 3, _1: 10)`, `a` goes to
@@ -2660,7 +2646,7 @@ fn classify_ctor_arg(
         Some(sym)
             if is_tuple_literal
                 && named.is_empty()
-                && is_synthetic_positional_label(kb.resolve_sym(sym), pos.len()) =>
+                && is_positional_label_at(kb.resolve_sym(sym), pos.len()) =>
         {
             pos.push(value);
         }

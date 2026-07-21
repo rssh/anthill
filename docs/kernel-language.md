@@ -463,6 +463,8 @@ Additional types are introduced via `sort` declarations (unspecified, type alias
 
 **Tuple sorts** are structurally-typed anonymous products. There is one concept: **named tuples**. Every element has a name. Positional syntax is sugar for auto-generated names `_1`, `_2`, `_3`, ...
 
+The auto-generated names are **one-based and canonical**: a component at source index `i` is named exactly `_<i+1>`, with no leading zeros. Every other `_`-prefixed identifier is an ordinary **user** label — `_0` (outside the range), `_01` (not the string `_1`), `_b`, and a `_2` written at a position other than the second. A user label keeps its position, is reachable only by that name, and is never re-slotted positionally; a synthetic one is erased when the tuple is printed back to surface syntax, since positional syntax is how it was written. (WI-786/WI-790.)
+
 ```
 -- Tuple types (in type position)
 TupleType ::= '(' ')'                                              -- unit

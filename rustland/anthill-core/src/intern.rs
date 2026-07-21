@@ -592,6 +592,77 @@ impl SymbolTable {
 /// Alias: old code that uses `Interner` keeps compiling.
 pub type Interner = SymbolTable;
 
+// ── Positional field labels (WI-790) ────────────────────────────
+
+/// The synthetic field label for source index `index` — `_1`, `_2`, `_3`, …
+///
+/// ONE-based: `docs/kernel-language.md` §4.5 states that positional syntax is
+/// sugar for auto-generated names `_1`, `_2`, `_3`, so index 0 is `_1`.
+///
+/// This function, [`positional_label_index`] and [`is_positional_label_at`] are
+/// the SOLE owners of the FIELD-LABEL convention. Every producer (tuple literals
+/// and tuple TYPES in `parse/convert.rs`, unnamed arrow params and param-list
+/// types in `kb/load.rs`, the tuple/arrow type builders in `kb/typing.rs`, the
+/// JSON serializer in `persistence/term_ser.rs`) mints through here, and every
+/// consumer that asks "which slot does this label name?" reads through the
+/// inverse. They lived as nine hand-written `format!`/literal mints and five
+/// hand-spelled `strip_prefix('_')` tests before WI-790, and had drifted:
+/// `term_ser` was ZERO-based, so a serialized mixed positional/named `Term::Fn`
+/// carried keys off by one from every reader, and three of the five recognizers
+/// admitted leading zeros while WI-786's classifier (correctly) did not. Routing
+/// both directions through one pair makes such a divergence a compile-time
+/// impossibility rather than a silent textual one.
+///
+/// NOT this convention, despite the spelling: `anthill-stl`'s
+/// `reflect/reader.rs` renders a de Bruijn VARIABLE as `_{n}` — 0-based, a
+/// variable rather than a field label, and deliberately left alone. A `format!
+/// ("_{`  sweep finds it; it is not a survivor.
+pub fn positional_label(index: usize) -> String {
+    format!("_{}", index + 1)
+}
+
+/// The source index `label` names, or `None` when `label` is not one
+/// [`positional_label`] could have minted — i.e. its exact inverse.
+///
+/// Refuses everything outside the image, which is what makes it usable as a
+/// classifier and not just a parser:
+///
+///  * no `_` prefix (`x`, `a1`) — an ordinary name;
+///  * `_` alone, or `_` + non-digits (`_b`, `_id`) — a user label that merely
+///    starts with an underscore. `strip_prefix('_')` + `parse` already rejected
+///    these, but a bare `starts_with('_')` test did not, and WI-786 was the bug
+///    that caused (`_b` re-slotted positionally, DISCARDING the name);
+///  * a LEADING ZERO (`_0`, `_01`) — `_0` is outside the 1-based image entirely,
+///    and `_01` is a distinct string from the `_1` this would mint, so it is a
+///    USER label. `parse::<usize>()` alone accepts both, which is how three
+///    recognizers came to disagree with WI-786's classifier
+///    (`leading_zero_label_is_not_synthetic`);
+///  * a `+` sign (`_+1`) — accepted by `usize::from_str`, refused here.
+pub fn positional_label_index(label: &str) -> Option<usize> {
+    let digits = label.strip_prefix('_')?;
+    if digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // The parse rejects the two remaining non-labels: the empty `_`, and overflow.
+    // Past it, `digits` is non-empty with no leading zero, so `n >= 1` and the
+    // decrement cannot underflow.
+    Some(digits.parse::<usize>().ok()? - 1)
+}
+
+/// Is `label` the synthetic label for source index `index` — i.e. exactly
+/// `positional_label(index)`?
+///
+/// The question three of the five recognizers actually ask.
+/// [`positional_label_index`] alone was not enough of an owner: the raw inverse
+/// had one home while the PREDICATE built on it — the part carrying the index,
+/// and so the part that decides anything — was re-spelled at each site, which is
+/// the same drift one level up. `eval`'s `classify_ctor_arg` asks it of a
+/// constructor argument, `kb::typing`'s `is_positional_tuple_names` of a
+/// parameter list, and `persistence::print` of a tuple-type component.
+pub fn is_positional_label_at(label: &str, index: usize) -> bool {
+    positional_label_index(label) == Some(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -737,5 +808,50 @@ mod tests {
             ResolveResult::Found(found) => assert_eq!(found, local_foo),
             other => panic!("expected Found (local), got {:?}", other),
         }
+    }
+
+    // ── positional labels (WI-790) ──────────────────────────────
+
+    /// The convention itself: index 0 is `_1`, per spec §4.5. Spelled as literals
+    /// rather than derived, so a change to `positional_label` has to disagree with
+    /// the spec HERE rather than silently in eight call sites.
+    #[test]
+    fn positional_label_is_one_based() {
+        assert_eq!(positional_label(0), "_1");
+        assert_eq!(positional_label(1), "_2");
+        assert_eq!(positional_label(2), "_3");
+    }
+
+    /// The pair is a genuine round trip, not two independently-plausible rules —
+    /// this is the property the eight minters and five recognizers now share.
+    #[test]
+    fn positional_label_index_inverts_positional_label() {
+        for i in 0..64 {
+            assert_eq!(positional_label_index(&positional_label(i)), Some(i), "index {i}");
+        }
+    }
+
+    /// Everything outside the image is refused. `_0` and `_01` are the two that a
+    /// bare `parse::<usize>()` used to admit — the drift WI-790 closes.
+    #[test]
+    fn non_synthetic_labels_have_no_index() {
+        for label in ["_0", "_01", "_00", "_007", "_", "_b", "_id", "_1a", "_+1", "x", "1", ""] {
+            assert_eq!(positional_label_index(label), None, "{label:?} is not synthetic");
+        }
+    }
+
+    /// The predicate is index-SENSITIVE: a synthetic label at the wrong slot is
+    /// not synthetic THERE. That is the whole reason it takes an index rather
+    /// than being `positional_label_index(..).is_some()` — a `_2` written first
+    /// is a user label that must keep its name (WI-786's
+    /// `synthetic_name_for_the_wrong_index_stays_named`).
+    #[test]
+    fn is_positional_label_at_is_index_sensitive() {
+        assert!(is_positional_label_at("_1", 0));
+        assert!(is_positional_label_at("_2", 1));
+        assert!(!is_positional_label_at("_2", 0), "`_2` in slot 0 is a user label");
+        assert!(!is_positional_label_at("_1", 1), "`_1` in slot 1 is a user label");
+        assert!(!is_positional_label_at("_01", 0), "leading zero is a user label");
+        assert!(!is_positional_label_at("_b", 0));
     }
 }

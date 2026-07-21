@@ -41,7 +41,7 @@ runners).
 
 | Module | Role |
 |--------|------|
-| `intern.rs` | `SymbolTable`: string interning (`Symbol(u32)`), scope-aware resolution |
+| `intern.rs` | `SymbolTable`: string interning (`Symbol(u32)`), scope-aware resolution. Also the sole owner of the `_N` positional-field-label convention — `positional_label` / `positional_label_index` / `is_positional_label_at` (WI-790) |
 | `parse/convert.rs` | Tree-sitter CST → typed IR (`ParsedFile`) |
 | `parse/ir.rs` | Parse IR types: `Item`, `ParsedFile`, `SimpleTermStore` |
 | `kb/term.rs` | `Term`, `TermId`, `TermStore` (hash-consed), `Var` enum |
@@ -77,5 +77,10 @@ Integration tests in `anthill-core/tests/` follow:
   field order when the functor has a schema, else interning order
   (`canonicalize_record_named_args`). Not alphabetical. Exempt: an ORDERED
   PRODUCT (named tuple), whose source order is its identity.
+- Positional field labels are `_1`, `_2`, … (ONE-based, spec §4.5). Never spell
+  them with a local `format!` or `strip_prefix('_')` — mint via
+  `intern::positional_label(i)` and read via `positional_label_index` /
+  `is_positional_label_at` (WI-790). Anything else `_`-prefixed (`_0`, `_01`,
+  `_b`) is a USER label, reachable only by name and never re-slotted positionally.
 - `assert_rule_debruijn_with_nodes` for rules (converts vars; term bodies first go through `term_body_to_nodes`), `assert_fact` for ground facts (arity 0).
 - `FnArg` is `Copy` (both `TermId` and `Symbol` are `Copy`).

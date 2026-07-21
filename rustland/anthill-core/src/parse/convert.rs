@@ -9,7 +9,7 @@ use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-use crate::intern::{SymbolTable, Symbol};
+use crate::intern::{positional_label, SymbolTable, Symbol};
 use crate::span::Span;
 use crate::kb::term::{Term, TermId, Literal, Var, VarId};
 
@@ -321,9 +321,10 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// Intern a positional tuple label: _1, _2, _3, ...
+    /// Intern a positional tuple label: _1, _2, _3, ... (WI-790:
+    /// [`positional_label`] is the convention's one owner).
     fn intern_positional_label(&mut self, index: usize) -> Symbol {
-        self.intern(&format!("_{}", index + 1))
+        self.intern(&positional_label(index))
     }
 
     /// Allocate a Fn term with only positional args (no named args).
@@ -1148,6 +1149,12 @@ impl<'a> Converter<'a> {
     ///    wrong column. WI-786 narrowed that unwrap to the exact synthetic name
     ///    for a component's own source index, so the corruption is gone at the
     ///    source and only the named-only design rule keeps this check.
+    ///
+    ///    DELIBERATELY NOT routed through `positional_label_index` (WI-790's owner
+    ///    of the `_N` convention): this is a DIFFERENT and BROADER rule. It refuses
+    ///    every `_`-prefixed key — `_b` and `_01` as much as `_1` — because
+    ///    projection is named-only, not because those keys name slots. Narrowing it
+    ///    to the convention would make `x.(_b)` legal and silently reopen 052 OQ3.
     fn validate_projection_labels(&mut self, node: Node, entries: &[ProjEntry]) {
         for (i, e) in entries.iter().enumerate() {
             if self.symbols.name(e.label).starts_with('_') {

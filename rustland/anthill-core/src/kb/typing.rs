@@ -20,7 +20,7 @@ use super::persist_subst::BindValue;
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, RuleId, SortKind};
 use crate::eval::value::Value;
-use crate::intern::Symbol;
+use crate::intern::{is_positional_label_at, positional_label, Symbol};
 use crate::span::Span;
 
 // ── TypeError ──────────────────────────────────────────────────
@@ -4910,7 +4910,7 @@ fn operation_as_function_value(
             .params
             .iter()
             .enumerate()
-            .map(|(i, (_, t))| (kb.intern(&format!("_{}", i + 1)), t.clone()))
+            .map(|(i, (_, t))| (kb.intern(&positional_label(i)), t.clone()))
             .collect();
         named_tuple_value(kb, &fields, span, owner)
     };
@@ -8072,7 +8072,7 @@ fn build_type(
                 // so `unify_named_tuple` (name-based) unifies a tuple value's type
                 // against a tuple-typed / multi-param-arrow param. Eval/patterns
                 // treat `_N` positionally, so the base is invisible to them.
-                let field_name = kb.intern(&format!("_{}", i + 1));
+                let field_name = kb.intern(&positional_label(i));
                 field_types.push((field_name, r.ty.clone()));
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -18401,7 +18401,7 @@ fn check_tuple_literal_constructor(
     // value's type unifies (by name) against a tuple-typed / arrow param.
     let mut labeled: Vec<(Symbol, &TypeResult)> = Vec::new();
     for (i, r) in pos_results.iter().enumerate() {
-        labeled.push((kb.intern(&format!("_{}", i + 1)), r.as_ref().expect("aggregator")));
+        labeled.push((kb.intern(&positional_label(i)), r.as_ref().expect("aggregator")));
     }
     for ((name, _), r) in named_args.iter().zip(named_results.iter()) {
         labeled.push((*name, r.as_ref().expect("aggregator")));
@@ -19307,7 +19307,9 @@ fn arrow_positional_param_slots<V: TermView>(
     match extract_type(kb, fn_type) {
         // Arity ONE: the sole parameter's TYPE is the slot, and the arrow dropped
         // the binder name, so the position stands in for it.
-        TypeExtractor::Arrow { param, arity: 1, .. } => Some(vec![(kb.intern("_1"), param)]),
+        TypeExtractor::Arrow { param, arity: 1, .. } => {
+            Some(vec![(kb.intern(&positional_label(0)), param)])
+        }
         // Every other arity: the parameter list IS the slot list, which is exactly
         // what [`arrow_declared_param_list`] already reads. Shared rather than
         // re-walked so the two readers cannot come to disagree about what the
@@ -24849,18 +24851,19 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 ///   * the POSITIONAL spelling `(t: (Int64, Int64))`, whose components are minted
 ///     `_1, _2` by `intern_positional_label` — the idiomatic spelling was the one
 ///     that slipped through; and
-///   * a LEADING-ZERO spelling `(t: (_01: Int64, _02: Int64))`, because
-///     `parse::<usize>()` accepts leading zeros.
+///   * a LEADING-ZERO spelling `(t: (_01: Int64, _02: Int64))`, which the reading
+///     below used to admit as synthetic (it was a bare `parse::<usize>()`, and
+///     that accepts leading zeros). WI-790 closed that: `_01` is a USER label
+///     here as it already was in eval, and the decision went eval's way — if
+///     `_01` is a user label, a list spelling its binders `_01, _02` is a NAMED
+///     list making a real claim about which slot is which, so zipping it against
+///     `(p, q)` by position is precisely the unsoundness this gate exists to
+///     refuse, not a courtesy to surface intent.
 ///
-/// Neither is refused by a better name test — each is refused because 1 ≠ 2.
-///
-/// The leading-zero READING below is still at odds with eval's
-/// `is_synthetic_positional_label`, which rejects `_01` (WI-786's
-/// `leading_zero_label_is_not_synthetic`). That divergence is WI-789/WI-790's and
-/// is left alone deliberately: it no longer decides whether a tuple is a
-/// parameter list, only whether two same-length lists may zip when one spells its
-/// binders `_01, _02` — and there, admitting them agrees with the surface
-/// intent.
+/// Neither is refused by a better name test — each is refused because 1 ≠ 2. That
+/// stayed true through WI-790: the leading-zero program above is refused on ARITY
+/// by `leading_zero_component_names_do_not_make_a_parameter_list`, one gate
+/// earlier, so nothing depended on this function admitting it.
 ///
 /// The index check requires the field at position `i` to be named `_{i+1}`, so it
 /// (and the zip in `align_named_tuple_fields`) relies on [`named_tuple_fields`]
@@ -24869,12 +24872,10 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// name-sorted, not the list).
 fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> bool {
     !fields.is_empty()
-        && fields.iter().enumerate().all(|(i, (name, _))| {
-            kb.resolve_sym(*name)
-                .strip_prefix('_')
-                .and_then(|d| d.parse::<usize>().ok())
-                == Some(i + 1)
-        })
+        && fields
+            .iter()
+            .enumerate()
+            .all(|(i, (name, _))| is_positional_label_at(kb.resolve_sym(*name), i))
 }
 
 /// WI-775: which correspondence [`align_named_tuple_fields`] may use between two
@@ -27064,13 +27065,10 @@ fn project_constructor_arg(
                     .iter()
                     .find(|(k, _)| same_label(kb, *k, *fname))
                     .map(|(_, v)| Rc::clone(v)),
-                None => {
-                    let want = format!("_{}", *i + 1);
-                    named_args
-                        .iter()
-                        .find(|(k, _)| kb.resolve_sym(*k) == want)
-                        .map(|(_, v)| Rc::clone(v))
-                }
+                None => named_args
+                    .iter()
+                    .find(|(k, _)| is_positional_label_at(kb.resolve_sym(*k), *i))
+                    .map(|(_, v)| Rc::clone(v)),
             }
         }
         LeafSelector::Named(s) => {
@@ -28394,7 +28392,7 @@ fn tuple_value_type(
     }
     let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(pos_types.len() + named_types.len());
     for (i, cty) in pos_types.into_iter().enumerate() {
-        let name = kb.intern(&format!("_{}", i + 1));
+        let name = kb.intern(&positional_label(i));
         fields.push((name, cty));
     }
     for (k, cty) in named_types {

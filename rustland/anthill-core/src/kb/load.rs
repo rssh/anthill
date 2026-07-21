@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
+use crate::intern::{positional_label, positional_label_index, Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
 use crate::parse::pratt;
 use crate::span::{Span, SourceId, SourceSpan};
@@ -1625,7 +1625,7 @@ fn register_callback_places(
         let cb_name = match cb_name_sym {
             Some(s) => parse_sym.name(*s).to_owned(),
             // Unnamed arrow param: 1-based positional (`_1`, `_2`, …; spec §4.5).
-            None => format!("_{}", i + 1),
+            None => positional_label(i),
         };
         // `result` is reserved for the callback return (registered below); a
         // param so named would collide with it, so skip — mirroring the
@@ -10131,14 +10131,14 @@ impl<'a> Loader<'a> {
                 // Positional `_n` (1-based) into the tuple's fields — `result._1`. The
                 // field-ORDER semantics are the eliminator's; for existence an in-range
                 // index suffices, so this never falsely rejects a valid positional ref.
-                if let Some(idx) = field_name
-                    .strip_prefix('_')
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .filter(|&n| n >= 1)
+                // WI-790: the index comes from the convention's owner, so what counts
+                // as `_n` here is exactly what `field_access` (eval/builtins.rs) will
+                // read at runtime — a `_01` field is found by the NAME scan above and
+                // never by this one.
+                if let Some((_, v)) =
+                    positional_label_index(field_name).and_then(|idx| fields.get(idx))
                 {
-                    if let Some((_, v)) = fields.get(idx - 1) {
-                        return FieldStep::Found(v.clone());
-                    }
+                    return FieldStep::Found(v.clone());
                 }
                 FieldStep::NoField { type_display: "named tuple".to_owned() }
             }
@@ -10693,7 +10693,7 @@ impl<'a> Loader<'a> {
                                 let nm = self.parsed.symbols.name(*s).to_owned();
                                 self.kb.intern(&nm)
                             }
-                            None => self.kb.intern(&format!("_{}", i + 1)),
+                            None => self.kb.intern(&positional_label(i)),
                         };
                         let c = self.type_expr_to_child(p, span, owner);
                         any |= matches!(c, TypeChild::Node(_));
