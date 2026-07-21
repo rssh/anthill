@@ -6203,7 +6203,8 @@ fn visit_type(
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
             // body's expected hint is a carrier-agnostic `Value` — no re-ground.
             let body_expected = expected.as_ref().and_then(|exp| {
-                extract_function_type_parts(kb, exp).map(|(ret, _)| ret)
+                let exp_ty = extract_callable_type(kb, exp);
+                extract_function_type_parts(kb, &exp_ty).map(|(ret, _)| ret)
             });
             // The lambda body runs under the SAME Γ as the lambda site (the
             // binder narrows types, not the flow); capture it before `env` moves
@@ -10230,7 +10231,16 @@ fn check_apply_iter(
     // both flow through `extract_function_type_parts`, the occurrence never
     // re-grounded.
     if let Some(fn_type) = env.lookup_var(fn_sym) {
-        if let Some((ret_ty, call_effects)) = extract_function_type_parts(kb, &fn_type) {
+        // WI-798: the callee is classified ONCE for the whole path — the
+        // result/effects read here, the WI-792 positional argument check, and the
+        // WI-783 named-label resolution below all read THIS extraction. They used
+        // to derive it up to four times per application, each a head classify plus
+        // a fresh binding vector with every bound type cloned in. Via
+        // `extract_callable_type`, not `extract_type`: the child-key pre-intern it
+        // performs is what lets a `Value::Node` callee's children be found at all,
+        // and it used to happen inside `arrow_parts` on the line below.
+        let callee_ty = extract_callable_type(kb, &fn_type);
+        if let Some((ret_ty, call_effects)) = extract_function_type_parts(kb, &callee_ty) {
             // WI-516: `f(arg…)` performs the arrow's OWN call effect UNIONED with
             // the effects of EVALUATING each argument — the same arg-effect
             // accumulation Path 1 (known op) and Path 3 (unknown functor) do.
@@ -10278,7 +10288,7 @@ fn check_apply_iter(
             // precisely how the `Function` half came to check nothing at all.
             match positional_arg_expectations(
                 kb,
-                &fn_type,
+                &callee_ty,
                 pos_args.len(),
                 pos_args.len() + named_args.len(),
             ) {
@@ -10347,7 +10357,7 @@ fn check_apply_iter(
             let params = if named_args.is_empty() {
                 Vec::new()
             } else {
-                let params = arrow_declared_param_list(kb, &fn_type).ok_or_else(|| {
+                let params = arrow_declared_param_list(kb, &callee_ty).ok_or_else(|| {
                     // No declared names to bind to (a 1-param arrow, whose binder
                     // name the arrow type drops; a `Function[A, B]`, whose `A` is
                     // one tuple argument; an abstract param). The label can be
@@ -18972,24 +18982,51 @@ fn arrow_parts<V: TermView>(
     kb: &mut KnowledgeBase,
     ty: &V,
 ) -> Option<(Option<Value>, Value, Option<Value>)> {
-    // `extract_type` reads an `arrow`'s param/result/effects children and a
-    // `Function`'s A/B/E bindings carrier-agnostically. Pre-intern the child
-    // keys so a `Value::Node` carrier's named-child lookups resolve even in a
-    // minimal KB (the term builders intern them; cf. WI-361 slice 4's `base`).
+    let extracted = extract_callable_type(kb, ty);
+    arrow_parts_extracted(kb, &extracted)
+}
+
+/// WI-798: classify a value that is about to be read AS A CALLABLE. The
+/// pre-intern is the reason this exists rather than a bare [`extract_type`]:
+/// `extract_type` reads an `arrow`'s param/result/effects children and a
+/// `Function`'s A/B/E bindings through `kb.lookup_symbol`, so a `Value::Node`
+/// carrier's named-child lookups return `None` — silently degrading the callee to
+/// [`TypeExtractor::Error`] — unless the child keys already exist in a minimal KB
+/// (the term builders intern them; cf. WI-361 slice 4's `base`).
+///
+/// Any site hoisting one classification for the callable readers must go through
+/// HERE, not `extract_type`: hoisting a bare extraction above the first
+/// `arrow_parts` call would move it in front of the interning it depends on.
+fn extract_callable_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> TypeExtractor {
     for key in ["param", "result", "effects", "arity", "base"] {
         kb.intern(key);
     }
-    match extract_type(kb, ty) {
+    extract_type(kb, ty)
+}
+
+/// The decode half of [`arrow_parts`], over an ALREADY-CLASSIFIED callee
+/// (WI-798). Split out so a caller that has classified the callee once — see
+/// [`extract_callable_type`] — can read its parts without paying for a second
+/// classification. [`arrow_parts`] keeps its carrier-taking signature for the
+/// many single-shot callers that have no extraction to share.
+fn arrow_parts_extracted(
+    kb: &KnowledgeBase,
+    ty: &TypeExtractor,
+) -> Option<(Option<Value>, Value, Option<Value>)> {
+    // Borrowed, cloning only the three children handed back: a whole-extractor
+    // clone here would re-copy the binding vector this split exists to stop
+    // rebuilding.
+    match ty {
         // WI-791: `arity` is deliberately NOT returned here. This decomposition is
         // shared with `Function[A, B, E]`, which states no arity, so a caller that
         // needs one is asking a question only an `arrow` can answer and must ask it
         // separately via [`arrow_arity`]. Folding it into this tuple would hand
         // every `Function` consumer an absence to invent a default for.
         TypeExtractor::Arrow { param, result, effects, arity: _ } => {
-            Some((Some(param), result, Some(effects)))
+            Some((Some(param.clone()), result.clone(), Some(effects.clone())))
         }
         TypeExtractor::Parameterized { base, bindings }
-            if kb.qualified_name_of(base) == "anthill.prelude.Function" =>
+            if kb.qualified_name_of(*base) == "anthill.prelude.Function" =>
         {
             let find = |name: &str| {
                 bindings
@@ -19226,11 +19263,17 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
 /// take one path — the result is the `Value` carrier and the effects are the
 /// row's present labels (plus an open-row tail var), the occurrence never
 /// re-grounded. Folds the former TermId / `_value` twins into one.
-fn extract_function_type_parts<V: TermView>(
+///
+/// WI-798: takes the callee ALREADY CLASSIFIED (via [`extract_callable_type`],
+/// whose pre-intern this read depends on) so that the application path — which
+/// goes on to ask the SAME value for its parameter slots and binder names — pays
+/// for one classification instead of three. The lambda-hint caller has nothing to
+/// share and simply classifies at its own call site, as it did before.
+fn extract_function_type_parts(
     kb: &mut KnowledgeBase,
-    fn_type: &V,
+    fn_type: &TypeExtractor,
 ) -> Option<(Value, Vec<Value>)> {
-    let (_, result, eff) = arrow_parts(kb, fn_type)?;
+    let (_, result, eff) = arrow_parts_extracted(kb, fn_type)?;
     let effects = eff.map(|row| effect_row_present_values(kb, &row)).unwrap_or_default();
     Some((result, effects))
 }
@@ -19266,19 +19309,24 @@ fn extract_function_type_parts<V: TermView>(
 /// its `arity`, and arity one lands on the first `None` case above — those names
 /// are the tuple's components, reachable as `f((a: 1, b: 2))`, and are not
 /// parameter labels.
-fn arrow_declared_param_list<V: TermView>(
+///
+/// WI-798: takes the callee's ALREADY-EXTRACTED type rather than its carrier —
+/// see [`positional_arg_expectations`] on what a second classification costs.
+/// Both of this function's callers sit on a path that has just classified the
+/// same value.
+fn arrow_declared_param_list(
     kb: &KnowledgeBase,
-    fn_type: &V,
+    fn_type: &TypeExtractor,
 ) -> Option<Vec<(Symbol, Value)>> {
-    let (param, arity) = match extract_type(kb, fn_type) {
-        TypeExtractor::Arrow { param, arity, .. } => (param, arity),
+    let (param, arity) = match fn_type {
+        TypeExtractor::Arrow { param, arity, .. } => (param, *arity),
         _ => return None,
     };
     // WI-791: only a real parameter LIST carries binder names to resolve against.
     if arity == 1 {
         return None;
     }
-    match extract_type(kb, &param) {
+    match extract_type(kb, param) {
         // The list holds exactly `arity` slots by construction at every producer.
         // It is not re-checked here: this reader only needs the binder NAMES, and
         // a disagreement means an ill-formed arrow, which the conformance relation
@@ -19320,9 +19368,16 @@ enum ArgExpectations {
 /// `Function` has no declared binder names to resolve a label against, so a label
 /// there is rejected outright by [`arrow_declared_param_list`]'s `None` path in
 /// the caller — counting it here as well would report the same mistake twice.
-fn positional_arg_expectations<V: TermView>(
+///
+/// WI-798: `fn_type` arrives ALREADY EXTRACTED. The two readers below are
+/// disjoint on the variant — [`TypeExtractor::Arrow`] vs `Parameterized` — so
+/// classifying the callee once and handing both the result loses no dispatch,
+/// while each `extract_type` it removes costs a head classify plus a fresh
+/// binding vector with every bound type cloned into it. This runs per
+/// application.
+fn positional_arg_expectations(
     kb: &mut KnowledgeBase,
-    fn_type: &V,
+    fn_type: &TypeExtractor,
     positional: usize,
     total: usize,
 ) -> ArgExpectations {
@@ -19408,15 +19463,17 @@ fn positional_arg_expectations<V: TermView>(
 /// are both legal at a `Function` slot). Folding them together would hand the
 /// arity-checking caller an absence to invent a default for — which is exactly
 /// how the `Function` slot ended up checking NOTHING.
-/// Reads `A` out of the bindings this extraction already built rather than
-/// delegating to [`arrow_parts`]: that would classify the SAME value a second
-/// time — re-allocating the binding vector and re-cloning every bound type — and
-/// pre-intern five arrow child keys that a `Parameterized` arm never reads.
-/// Nothing here interns, which is why `kb` is shared rather than `&mut`.
-fn function_spec_param_type<V: TermView>(kb: &KnowledgeBase, fn_type: &V) -> Option<Value> {
-    match extract_type(kb, fn_type) {
+///
+/// WI-798: reads `A` out of the bindings the CALLER's extraction already built,
+/// rather than delegating to [`arrow_parts`] — that would classify the same value
+/// a second time, re-allocating the binding vector and re-cloning every bound
+/// type. The disjointness above is what makes one extraction safe to share: this
+/// arm fires only on `Parameterized`, its peer reader only on `Arrow`. Nothing
+/// here interns, which is why `kb` is shared rather than `&mut`.
+fn function_spec_param_type(kb: &KnowledgeBase, fn_type: &TypeExtractor) -> Option<Value> {
+    match fn_type {
         TypeExtractor::Parameterized { base, bindings }
-            if kb.qualified_name_of(base) == "anthill.prelude.Function" =>
+            if kb.qualified_name_of(*base) == "anthill.prelude.Function" =>
         {
             let find = |name: &str| {
                 bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == name).map(|(_, v)| v.clone())
@@ -19453,15 +19510,18 @@ fn function_spec_param_type<V: TermView>(kb: &KnowledgeBase, fn_type: &V) -> Opt
 /// onto one `param` — is what keeps `Function` out; reading that `A` as a single
 /// parameter would read `f(3, 10)` as two arguments against one slot and refuse
 /// a program the runtime handles by design.
-fn arrow_positional_param_slots<V: TermView>(
+///
+/// WI-798: reads the extraction its caller already performed — see
+/// [`positional_arg_expectations`] on why sharing one costs no dispatch.
+fn arrow_positional_param_slots(
     kb: &mut KnowledgeBase,
-    fn_type: &V,
+    fn_type: &TypeExtractor,
 ) -> Option<Vec<(Symbol, Value)>> {
-    match extract_type(kb, fn_type) {
+    match fn_type {
         // Arity ONE: the sole parameter's TYPE is the slot, and the arrow dropped
         // the binder name, so the position stands in for it.
         TypeExtractor::Arrow { param, arity: 1, .. } => {
-            Some(vec![(kb.intern(&positional_label(0)), param)])
+            Some(vec![(kb.intern(&positional_label(0)), param.clone())])
         }
         // Every other arity: the parameter list IS the slot list, which is exactly
         // what [`arrow_declared_param_list`] already reads. Shared rather than
