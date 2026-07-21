@@ -215,9 +215,16 @@ operation op_e(env: Env, a: A) -> (R, Env, List[T = Event])
 ## Semantic Rules
 
 1. There is one tuple construct: named tuples. Positional syntax is sugar for `_1`, `_2`, ... names.
-2. Tuple sorts are structurally typed — identity is determined by field names and types.
+2. Tuple sorts are structurally typed — identity is determined by field names, types, **and order**.
 3. `(A, B)` and `(_1: A, _2: B)` are the same sort.
 4. `(a: Int64, b: String)` and `(Int64, String)` are different sorts (different names).
+4a. `(a: Int64, b: String)` and `(b: String, a: Int64)` are different sorts (different **order**).
+    A component is identified by its name **and** its position: two tuple sorts are related slot
+    by slot with the names required to agree at each slot, so rule 4 (names) and this rule
+    (order) are both enforced and neither is discarded. A permutation is never admitted; width
+    subtyping is prefix-only. (WI-788 — see `kernel-language.md` §4.5 for why the positional
+    destructuring reader forces this, and why the `_1.._n` numbering is an intuition rather
+    than a normalization.)
 5. `()` is the unit sort with a single value `()`.
 6. Tuple values are constructed and destructured via pattern matching.
 7. All-or-nothing naming: either all elements have explicit names or none do.

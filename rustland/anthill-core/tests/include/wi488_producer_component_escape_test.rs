@@ -168,20 +168,48 @@ fn parameterized_nominal_abstracting_return_rejected() {
     );
 }
 
-/// THE GAP (named tuple, REORDERED fields): the abstracting component is a NAMED
-/// tuple field whose position differs between body and return —
-/// `(a: m, b: true)` returned as `-> (b: Bool, a: KVStore)`. Conformance aligns by
-/// NAME (`a`<:`a` is the MemStore→KVStore upcast, `b`<:`b` ok), so the body
-/// conforms; the gate must align by name too — a raw positional zip would pair
-/// `a:MemStore` with `b:Bool` and MISS the escape on `a`.
+/// THE GAP (NAMED tuple): the abstracting component is a named tuple field —
+/// `(a: m, b: true)` returned as `-> (a: KVStore, b: Bool)`. The sibling fixtures
+/// above are all POSITIONAL, so this is what pins the gate's recursion on a
+/// name-keyed tuple; the `a` component is the MemStore→KVStore upcast and must be
+/// caught.
 #[test]
-fn named_tuple_reordered_component_abstracting_producer_flagged() {
+fn named_tuple_component_abstracting_producer_flagged() {
+    let src = format!(
+        "namespace test.wi488.named\n{PRELUDE}\n  operation mkBare(m: MemStore) -> (a: KVStore, b: Bool) = (a: m, b: true)\nend\n"
+    );
+    let errs = load_errors(&[&src]);
+    assert!(
+        is_escape(&errs),
+        "a NAMED-tuple-component abstracting producer must be flagged (WI-488), got: {errs:?}",
+    );
+}
+
+/// SCOPE / FINDING — the REORDERED spelling of the fixture above
+/// (`(a: m, b: true)` returned as `-> (b: Bool, a: KVStore)`) no longer reaches
+/// the escape gate at all: WI-788 made a named tuple's component ORDER part of
+/// its type identity, so body `(a: MemStore, b: Bool)` and return
+/// `(b: Bool, a: KVStore)` are unrelated types and the return is a plain TYPE
+/// MISMATCH, strictly earlier than the gate — the same shape as
+/// `parameterized_nominal_abstracting_return_rejected` above.
+///
+/// This test formerly asserted the OPPOSITE, and its premise was that conformance
+/// aligns components by NAME so a reordered body conforms. That by-name alignment
+/// was itself the WI-788 defect: it admitted a permutation the value
+/// representation never performs, so a destructuring reader bound binder `i` to
+/// the value's `i`-th component while the typer had typed it from the DECLARED
+/// `i`-th field. Alignment is positional-with-name-agreement now, which is why
+/// the gate's old worry — "a raw positional zip would mispair `a:MemStore` with
+/// `b:Bool`" — cannot arise: a mispairing is a type error before the gate runs.
+#[test]
+fn named_tuple_reordered_component_rejected_as_mismatch() {
     let src = format!(
         "namespace test.wi488.reordered\n{PRELUDE}\n  operation mkBare(m: MemStore) -> (b: Bool, a: KVStore) = (a: m, b: true)\nend\n"
     );
     let errs = load_errors(&[&src]);
     assert!(
-        is_escape(&errs),
-        "a REORDERED named-tuple-component abstracting producer must be flagged via name alignment (WI-488), got: {errs:?}",
+        !errs.is_empty() && errs.iter().any(|e| e.contains("mismatch")) && !is_escape(&errs),
+        "a REORDERED named tuple must be rejected as a TYPE MISMATCH and never reach the \
+         abstracting-return gate (WI-788); got: {errs:?}",
     );
 }

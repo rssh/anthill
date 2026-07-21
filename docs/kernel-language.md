@@ -351,12 +351,11 @@ R` accepts a value typed `(_1: A, _2: B) -> R`, which is what lets a named-binde
 callback take an operation's eta-expanded arrow. A permuted list is therefore compared
 slot-for-slot rather than paired by name, so `(y: Bool, x: Int64) -> R` fails
 against `(x: Int64, y: Bool) -> R` on the component types; and a two-parameter
-value does not conform to a three-parameter one. Permutation and width are
-subtyping rules for *data* tuples whose components are read by NAME (§Field
-access, mode 3) — a positionally consumed list admits neither. (A data tuple read
-by *destructuring* is also positional, per §"Destructuring is POSITIONAL, unlike
-access"; aligning such a reader by name is a known open defect, tracked as
-WI-788.)
+value does not conform to a three-parameter one. **Data tuples relate the same
+way** (WI-788): a component is identified by its name *and* its position, so
+tuple types align slot by slot with the names required to agree at each slot
+(§4.5), and permutation is not a subtyping rule anywhere. Width is — but only as
+a *prefix*; see §4.5.
 
 Because names are not matched up, the zip is admitted only when the two lists
 agree on which slot is which — the names line up, or one side carries the
@@ -369,10 +368,10 @@ of the parameter type — decides which of the two relations applies:
 * **arity ≠ 1** — the parameter position *is* the list, and the rules above hold:
   same arity, slot-by-slot, no permutation and no width.
 * **arity 1** — the parameter position is the sole parameter's TYPE. A tuple there
-  is *data*, whose components are read by name (§Field access, mode 3), so it is
-  related by name with width subtyping like any other tuple. `(t: (x: A, y: B)) ->
-  R` therefore accepts a callback declared `(u: (y: B, x: A)) -> R`, and a callback
-  reading only `(a: A)` accepts a wider `(a: A, b: B)`.
+  is *data*, so it is related as data: slot-by-slot with the names agreeing, plus
+  prefix width (§4.5). A callback reading only `(a: A)` therefore accepts a wider
+  `(a: A, b: B)`, but `(t: (x: A, y: B)) -> R` does **not** accept a callback
+  declared `(u: (y: B, x: A)) -> R` — those are different parameter types.
 
 Arity is thus what tells `(t: (a: A, b: B))` — one tuple-typed parameter — from
 `(a: A, b: B)` — two parameters. They are different types: neither conforms to the
@@ -422,7 +421,14 @@ The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib (with em
 > `((A, B)) -> R` accepts only the former while `Function[(A, B), R]` accepts
 > either. (Before WI-791 the two disagreed the other way round, on permutation and
 > width of a tuple parameter; that half is resolved — both relate a lone tuple
-> parameter by name.)
+> parameter as data, slot-by-slot with names agreeing, per §4.5.)
+>
+> Stating no arity means no argument *count* can be **required** at a `Function`
+> slot — but a count can be **observed** at the call, and the arguments **are**
+> checked (WI-788): one argument is related to `A` itself, `n` arguments to `A`'s
+> `n` components. A call that matches neither reading is a load error naming both
+> admissible counts. This is not a special case for `Function` so much as the two
+> spellings of application it genuinely permits.
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 
@@ -464,6 +470,39 @@ Additional types are introduced via `sort` declarations (unspecified, type alias
 **Tuple sorts** are structurally-typed anonymous products. There is one concept: **named tuples**. Every element has a name. Positional syntax is sugar for auto-generated names `_1`, `_2`, `_3`, ...
 
 The auto-generated names are **one-based and canonical**: a component at source index `i` is named exactly `_<i+1>`, with no leading zeros. Every other `_`-prefixed identifier is an ordinary **user** label — `_0` (outside the range), `_01` (not the string `_1`), `_b`, and a `_2` written at a position other than the second. A user label keeps its position, is reachable only by that name, and is never re-slotted positionally; a synthetic one is erased when the tuple is printed back to surface syntax, since positional syntax is how it was written. (WI-786/WI-790.)
+
+**Component ORDER is part of a tuple's type identity** (WI-788), *alongside*
+component names. A component is identified by its **name and its position**
+together: two tuple types are related **slot by slot**, with the names required to
+agree at each slot. So a **permutation is never admitted**, at any position
+(argument, return, parameter, component) — `(a: Int64, b: String)` and
+`(b: String, a: Int64)` are different types because the positions disagree, and
+`(a: Int64, b: String)` and `(Int64, String)` are different types because the
+names disagree (proposal 004 rule 4 — no subtyping between named and positional).
+
+Numbering a tuple's components `_1.._n` by definition order is a useful way to
+*see* that position is part of identity, but it is **not a normalization** —
+nothing rewrites a named tuple into positional form. Read literally it would erase
+names and make `(a: A)` the same type as `(_1: A)`, which rule 4 refuses. Both
+coordinates are checked; neither is discarded.
+
+Order has to be identity because a tuple's two readers disagree about everything
+else. Component **access** is name-keyed and order-independent (§Field access,
+mode 3), but **destructuring** is positional (§"Destructuring is POSITIONAL,
+unlike access"), and the runtime value is an ordered product carrying its
+components in definition order. Admitting a permutation for the name-reader
+admitted it for the position-reader too, which bound a destructuring binder to
+one component while the type checker had typed it from another — an operation
+declared `-> Int64` could return a `String` with no error at load or run time.
+The read discipline cannot gate the rule, because a value flows through a
+`Function[A, B]` *parameter* to a consumer chosen at a different call site than
+the one relating it to `A`.
+
+**Width subtyping** survives, as a **prefix**: dropping a *trailing* component
+leaves every retained component's canonical position unchanged, so `(a: Int64, b:
+String)` conforms to `(a: Int64)`. Dropping a *middle* component would renumber
+everything after it (`c` moving from `_3` to `_2`), so `(a: A, b: B, c: C)` does
+**not** conform to `(a: A, c: C)`.
 
 ```
 -- Tuple types (in type position)
@@ -1399,8 +1438,9 @@ f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
 
 **Destructuring is POSITIONAL, unlike access** (WI-785). Component *access* is
 name-keyed and order-independent, as above. A destructuring binder list is not:
-`lambda (p, q) -> …` and `case (p, q) ->` bind `p` to the **first** component as
-written and `q` to the second, whatever the components are labelled — including
+`lambda (p, q) -> …` and `case (p, q) ->` bind `p` to the **first** component in
+the tuple's **declared component order** and `q` to the second, whatever the
+components are labelled — including
 against a name-keyed tuple, so `lambda (p, q) -> p - q` applied to
 `(x: 3, acc: 10)` computes `3 - 10`. The two rules differ because a tuple pattern
 has no way to *spell* a label: its elements are patterns or `name: Type` typed
@@ -1408,6 +1448,12 @@ binders, so a binder name is a fresh binder rather than a selector, and matching
 binder names against labels would leave `lambda (a, b)` no meaning at all over a
 named tuple. A binder list whose length differs from the component count does not
 match.
+
+This is sound only because component **order is part of a tuple's type identity**
+(§4.5, WI-788): a value's components arrive in the definition order of its type,
+so the component a binder receives is the one the type checker typed it from. When
+the two were allowed to differ — a permuted tuple conforming by name — this reader
+silently bound values of the wrong type.
 
 An arrow's parameter list is likewise applied positionally, but its binder names
 are not free: they gate whether two lists may be zipped at all (§Arrow types,

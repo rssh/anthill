@@ -2308,8 +2308,12 @@ fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
 /// names line up regardless of symbol identity. NOTE (WI-775): this is a hint-threading
 /// no-op on a miss, NOT a type relation, so it stays short-name-keyed across BOTH
 /// conventions — do not read it as evidence that `_1`/`_2` and declared names line up in
-/// the RELATIONS. They no longer do: `named_tuple_compatible` aligns data tuples strictly
-/// by name, and the positional lineup lives only in [`arrow_params_compatible`].
+/// the RELATIONS. They do not: every relation over two named tuples aligns SLOT BY SLOT
+/// with the names required to agree (WI-788), so `_1`/`_2` and declared names relate
+/// nowhere. Being order-blind here cannot make a permutation conform — the relation still
+/// refuses it — but it can thread a permuted literal's expected component type into the
+/// wrong slot and so mis-aim the diagnostic that follows. Threading positionally, with the
+/// same name agreement, would be the faithful reading.
 fn thread_expected_tuple_field(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -8068,9 +8072,12 @@ fn build_type(
             for i in 0..pos_count {
                 let r = it.next().unwrap().expect("aggregator");
                 // WI-355: positional field names are 1-based `_1`, `_2`, … (spec
-                // §4.5), matching the type surface (`convert.rs`) and arrow params
-                // so `unify_named_tuple` (name-based) unifies a tuple value's type
-                // against a tuple-typed / multi-param-arrow param. Eval/patterns
+                // §4.5), matching the type surface (`convert.rs`) and arrow params.
+                // WI-788: that match is what lets a POSITIONAL literal's type relate
+                // to a positional tuple type or a multi-param arrow — slot by slot
+                // with the names agreeing, `_N` to `_N`. It no longer bridges to a
+                // NAMED param (`_1` does not relate to `a`), which is deliberate:
+                // proposal 004 rule 4 makes those different types. Eval/patterns
                 // treat `_N` positionally, so the base is invisible to them.
                 let field_name = kb.intern(&positional_label(i));
                 field_types.push((field_name, r.ty.clone()));
@@ -10264,18 +10271,20 @@ fn check_apply_iter(
             let mut arg_errors: Vec<TypeError> = Vec::new();
             // WI-408: `(child-index, declared Option type)`, materialized below.
             let mut some_wraps: Vec<(usize, Value)> = Vec::new();
-            // `None` = this callee STATES NO ARITY, and the check must then skip
-            // rather than guess — see [`arrow_positional_param_slots`].
-            if let Some(slots) = arrow_positional_param_slots(kb, &fn_type) {
-                // ARITY FIRST. A call whose count is wrong has no slot-wise
-                // correspondence to report against, and eval refuses it outright
-                // (`spread_eta_args` demands an exact count), so the load-time
-                // verdict must be one arity error rather than a cascade of
-                // mis-aligned type mismatches — or, worse, silence when the
-                // truncated prefix happens to typecheck.
-                let supplied = pos_args.len() + named_args.len();
-                if supplied != slots.len() {
+            // WI-788: ONE reader, ONE loop, for BOTH callable spellings — an
+            // `arrow` and a `Function[A, B, E]`. They used to be two inline
+            // branches with a hand-rolled arity error and a per-argument loop
+            // each, differing only in where the expectation came from, which is
+            // precisely how the `Function` half came to check nothing at all.
+            match positional_arg_expectations(
+                kb,
+                &fn_type,
+                pos_args.len(),
+                pos_args.len() + named_args.len(),
+            ) {
+                ArgExpectations::CountMismatch { expected } => {
                     let arity_sym = kb.intern("arity");
+                    let supplied = pos_args.len() + named_args.len();
                     return Err(TypeError::Other {
                         site: TypeError::here(),
                         span,
@@ -10283,31 +10292,34 @@ fn check_apply_iter(
                             op_name: fn_sym,
                             param: arity_sym,
                         },
-                        expected: format!(
-                            "{} argument{} — the parameter list this function value declares",
-                            slots.len(),
-                            if slots.len() == 1 { "" } else { "s" },
-                        ),
+                        expected,
                         actual: format!(
                             "{supplied} argument{}",
                             if supplied == 1 { "" } else { "s" },
                         ),
                     });
                 }
-                for (i, _) in pos_args.iter().enumerate() {
-                    if let (Ok(arg_result), Some((param_sym, slot_type))) =
-                        (&pos_results[i], slots.get(i))
-                    {
-                        match validate_arg_against_param(
-                            kb, &mut subst, &arg_result.ty, slot_type, span,
-                            TypeErrorContext::OperationArgument {
-                                op_name: fn_sym,
-                                param: *param_sym,
-                            },
-                        ) {
-                            ArgValidation::Ok => {}
-                            ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
-                            ArgValidation::Fail(err) => arg_errors.push(err),
+                // The callee's argument type states nothing checkable. Named, so
+                // that this is a decision rather than a fallthrough.
+                ArgExpectations::NoVerdict => {}
+                ArgExpectations::Slots(slots) => {
+                    for (i, _) in pos_args.iter().enumerate() {
+                        if let (Ok(arg_result), Some((param_sym, slot_type))) =
+                            (&pos_results[i], slots.get(i))
+                        {
+                            match validate_arg_against_param(
+                                kb, &mut subst, &arg_result.ty, slot_type, span,
+                                TypeErrorContext::OperationArgument {
+                                    op_name: fn_sym,
+                                    param: *param_sym,
+                                },
+                            ) {
+                                ArgValidation::Ok => {}
+                                ArgValidation::WrapSome { declared } => {
+                                    some_wraps.push((i, declared))
+                                }
+                                ArgValidation::Fail(err) => arg_errors.push(err),
+                            }
                         }
                     }
                 }
@@ -19277,6 +19289,147 @@ fn arrow_declared_param_list<V: TermView>(
     }
 }
 
+/// WI-788: what a positional application must check its arguments against — a
+/// TOTAL answer, so that "nothing to check" is a named outcome rather than an
+/// anonymous fallthrough.
+///
+/// The three-way split exists because the two callable spellings fail
+/// differently. An `arrow` states its arity, so a count disagreement is decidable
+/// there. A `Function[A, B, E]` states none — WI-775 settled that `f(3, 10)` and
+/// `f((3, 10))` are both legal at that slot — so no count can be REQUIRED of it,
+/// only OBSERVED at the call; and when its `A` is not yet a known tuple, nothing
+/// about the components is statable at all. Collapsing that last case into the
+/// same `None` as "not a callable" is what left the `Function` slot checking
+/// nothing (WI-788): the absence was real, but unnamed, so it read as "handled".
+enum ArgExpectations {
+    /// Check argument `i` against slot `i`; the count is already agreed.
+    Slots(Vec<(Symbol, Value)>),
+    /// The supplied count cannot be right. `expected` describes what would be.
+    CountMismatch { expected: String },
+    /// The callee's argument type is not known well enough to state anything.
+    /// The one GENUINE absence here — distinct from a count or type disagreement,
+    /// and the only case that is silent by design.
+    NoVerdict,
+}
+
+/// WI-788: the sole reader behind the positional argument check, covering BOTH
+/// callable spellings so the two cannot drift into checking different things.
+///
+/// `positional` and `total` differ only for an `arrow`: it resolves LABELS to
+/// slots, so a labelled argument occupies one and the count must include it. A
+/// `Function` has no declared binder names to resolve a label against, so a label
+/// there is rejected outright by [`arrow_declared_param_list`]'s `None` path in
+/// the caller — counting it here as well would report the same mistake twice.
+fn positional_arg_expectations<V: TermView>(
+    kb: &mut KnowledgeBase,
+    fn_type: &V,
+    positional: usize,
+    total: usize,
+) -> ArgExpectations {
+    if let Some(slots) = arrow_positional_param_slots(kb, fn_type) {
+        // ARITY FIRST. A call whose count is wrong has no slot-wise correspondence
+        // to report against, and eval refuses it outright (`spread_eta_args`
+        // demands an exact count), so the verdict must be ONE arity error rather
+        // than a cascade of mis-aligned type mismatches — or, worse, silence when
+        // the truncated prefix happens to typecheck.
+        if total != slots.len() {
+            return ArgExpectations::CountMismatch {
+                expected: format!(
+                    "{} argument{} — the parameter list this function value declares",
+                    slots.len(),
+                    if slots.len() == 1 { "" } else { "s" },
+                ),
+            };
+        }
+        return ArgExpectations::Slots(slots);
+    }
+    let Some(param_ty) = function_spec_param_type(kb, fn_type) else {
+        // Neither spelling — a type variable, a projection, a malformed callee.
+        // Not a callable this check can read, so it states nothing.
+        return ArgExpectations::NoVerdict;
+    };
+    // A LABELLED argument at a `Function` slot is always an error — there are no
+    // declared binder names to bind it to — and the caller reports exactly that,
+    // naming the offending label. Counting labelled arguments here would compare
+    // `A`'s component count against the POSITIONAL count only, and the caller
+    // renders `actual` from the TOTAL, so a fully-labelled call produced a
+    // self-contradictory "expected … or 2 …, got 2 arguments" that also preempted
+    // the accurate diagnostic. Two currencies; say nothing and let the precise
+    // error through.
+    if total != positional {
+        return ArgExpectations::NoVerdict;
+    }
+    // ONE argument IS `A`; N arguments are `A`'s components spread across the
+    // call. Both are legal (WI-775), so the count is read, not required.
+    //
+    // DYNAMIC TWIN: eval's `spread_eta_args` / `gather_closure_arg` pivot on the
+    // CALLEE's own arity (`params.len()` / `Pattern::binder_arity`), whereas this
+    // pivots on `A`'s component count. The two coincide exactly when the callback
+    // conforms to `Function[A, …]`, which the arrow/lambda conformance check
+    // establishes separately — see `Pattern::binder_arity` (kb/node_occurrence.rs)
+    // on why the quantities the two sides agree on must be kept in view.
+    if positional == 1 {
+        return ArgExpectations::Slots(vec![(kb.intern(&positional_label(0)), param_ty)]);
+    }
+    match extract_type(kb, &param_ty) {
+        TypeExtractor::NamedTuple(fields) if fields.len() == positional => {
+            ArgExpectations::Slots(fields)
+        }
+        TypeExtractor::NamedTuple(fields) => ArgExpectations::CountMismatch {
+            // At component count ONE the two readings coincide — the lone
+            // argument is both "the tuple" and "its only component spread" — so
+            // offering a choice between 1 and 1 would read as a formatting bug.
+            expected: if fields.len() == 1 {
+                "1 argument".to_string()
+            } else {
+                format!(
+                    "1 argument (the tuple itself) or {} (its components spread)",
+                    fields.len(),
+                )
+            },
+        },
+        // `A` is not a tuple TYPE — a rigid type parameter, a projection, anything
+        // unresolved. The spread form is a claim about `A`'s COMPONENTS, and a type
+        // with no known components neither satisfies nor refutes it. A generic
+        // `operation ap[A](f: Function[A, R])` whose body spreads `f(x, y)` reaches
+        // eval and is checked by the matcher against the closure's real binder count.
+        _ => ArgExpectations::NoVerdict,
+    }
+}
+
+/// WI-788: the single argument type `A` of the stdlib `Function[A, B, E]`
+/// spelling, and ONLY that spelling — `None` for a real `arrow`, which states an
+/// arity and is checked through [`arrow_positional_param_slots`], and `None` for
+/// everything else.
+///
+/// The two are deliberately disjoint rather than one reader: an `arrow` can be
+/// asked how many slots it has, a `Function` cannot (WI-775 settled that its `A`
+/// is the ONE argument `apply(f, x: A)` passes, so `f(3, 10)` and `f((3, 10))`
+/// are both legal at a `Function` slot). Folding them together would hand the
+/// arity-checking caller an absence to invent a default for — which is exactly
+/// how the `Function` slot ended up checking NOTHING.
+/// Reads `A` out of the bindings this extraction already built rather than
+/// delegating to [`arrow_parts`]: that would classify the SAME value a second
+/// time — re-allocating the binding vector and re-cloning every bound type — and
+/// pre-intern five arrow child keys that a `Parameterized` arm never reads.
+/// Nothing here interns, which is why `kb` is shared rather than `&mut`.
+fn function_spec_param_type<V: TermView>(kb: &KnowledgeBase, fn_type: &V) -> Option<Value> {
+    match extract_type(kb, fn_type) {
+        TypeExtractor::Parameterized { base, bindings }
+            if kb.qualified_name_of(base) == "anthill.prelude.Function" =>
+        {
+            let find = |name: &str| {
+                bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == name).map(|(_, v)| v.clone())
+            };
+            // `arrow_parts` treats a `Function` with no `B` as not-a-callable;
+            // matched here so the two readers agree on what counts as one.
+            find("B")?;
+            find("A")
+        }
+        _ => None,
+    }
+}
+
 /// WI-792: the POSITIONAL parameter SLOTS of a callable type — one
 /// `(name, type)` per parameter, in declaration order. A positional application
 /// checks argument `i` against slot `i`, and must supply exactly `len()` of them.
@@ -24884,11 +25037,27 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
 /// but they are not interchangeable, so the caller states which one it is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TupleAlign {
-    /// A DATA tuple. Align by NAME only. A component's name IS its access path:
-    /// `t.x` reads `Value::Tuple.named`, `t._N` reads `.pos`, and a tuple has
-    /// exactly one of those populated. So relating `(a: Int64)` to `(_1: Int64)`
-    /// licenses a read with no value behind it — the program loads clean and
-    /// traps at eval with `field_access: tuple has no component '_1'` (WI-775).
+    /// A DATA tuple. Slot-by-slot with the NAMES required to agree at each slot,
+    /// plus PREFIX width (`a` may be longer; the extra components are trailing).
+    ///
+    /// The name test is what keeps `(a: Int64)` and `(_1: Int64)` apart: a
+    /// component's name IS its access path — `t.x` reads `Value::Tuple.named`,
+    /// `t._N` reads `.pos`, and a tuple has exactly one of those populated — so
+    /// relating them would license a read with no value behind it (WI-775).
+    ///
+    /// WI-788 made the correspondence POSITIONAL. This was an order-insensitive
+    /// by-name lookup, which admitted a PERMUTATION that the value representation
+    /// never performs: the carrier keeps SOURCE order (WI-786) and a destructuring
+    /// binder list reads it POSITIONALLY (WI-785), so binder `i` received the
+    /// value's `i`-th component while the typer had given it the type of the
+    /// DECLARED `i`-th field — an operation declared `-> Int64` returned a
+    /// `String` on a clean load.
+    ///
+    /// The mode now differs from [`TupleAlign::ParamList`] in TWO ways, both
+    /// tabulated in [`align_named_tuple_fields`]: prefix WIDTH, and the absence of
+    /// the SYNTHETIC `_1.._n` escape. The second is easy to miss and load-bearing
+    /// — granting it here would relate `(a: Int64, b: String)` to
+    /// `(Int64, String)`, which proposal 004 rule 4 makes a different type.
     ByName,
     /// An ARROW'S PARAMETER LIST. Align by POSITION, with EQUAL ARITY required.
     /// Sound HERE and only here, and forced here: a parameter list is APPLIED
@@ -24924,10 +25093,10 @@ enum TupleAlign {
 /// which is what [`TupleAlign`] states — applying ONE relation to both kinds of
 /// consumer is precisely the WI-782 defect:
 ///
-/// * [`TupleAlign::ByName`] — a DATA tuple, read by component NAME. Every `b`
-///   field must have a same-named `a` field; extra `a` fields are ignored (width
-///   subtyping). Order-insensitive, returning the pairs in `b` order. This is the
-///   original [`unify_named_tuple`] / [`named_tuple_compatible`] behavior.
+/// * [`TupleAlign::ByName`] — a DATA tuple. Slot-by-slot with the names required
+///   to agree at each slot, plus PREFIX width. (WI-788; the variant name is now
+///   about names PARTICIPATING, not about the correspondence being built from
+///   them.)
 /// * [`TupleAlign::ParamList`] — an arrow's PARAMETER LIST, APPLIED
 ///   POSITIONALLY. A straight index zip of EQUAL-ARITY lists, admitted only when
 ///   the names line up in order or one side is the synthetic `_1.._n` shape.
@@ -24935,8 +25104,10 @@ enum TupleAlign {
 ///   builders preserve list order), so the index zip is the correspondence the
 ///   runtime actually performs.
 ///
-/// WI-782, on why the by-name rung is wrong for a parameter list — it is
-/// order-insensitive and width-subtyping, and the runtime is neither:
+/// WI-782, on why an order-insensitive rung is wrong for a parameter list — it
+/// was order-insensitive and width-subtyping, and the runtime is neither.
+/// WI-788 then established that a DATA tuple is no more order-insensitive than a
+/// parameter list, so the two modes now share this one zip:
 ///   * ORDER — `(y: Bool, x: Int64)` satisfied `(x: Int64, y: Bool)` because the
 ///     same NAMES occur on both sides, but nothing reorders the ARGUMENTS, so
 ///     `f(7, true)` put `7` in the `Bool` slot and an operation declared
@@ -24952,54 +25123,65 @@ fn align_named_tuple_fields(
     b_fields: &[(Symbol, Value)],
     mode: TupleAlign,
 ) -> Option<Vec<(Value, Value)>> {
-    match mode {
-        TupleAlign::ByName => b_fields
-            .iter()
-            .map(|(b_name, b_type)| {
-                a_fields
-                    .iter()
-                    .find(|(n, _)| n == b_name)
-                    .map(|(_, a_type)| (a_type.clone(), b_type.clone()))
-            })
-            .collect(),
-        TupleAlign::ParamList => {
-            if a_fields.len() != b_fields.len() {
-                return None;
-            }
-            // The zip is admissible only when the two lists agree on WHICH slot
-            // is which: either the names already line up, or one side carries the
-            // SYNTHETIC `_1.._n` convention and so makes no claim. Zipping any
-            // two equal-arity lists was tried and reverted — see
-            // [`is_positional_tuple_names`] for the measured program it broke.
-            let names_agree_in_order = a_fields
-                .iter()
-                .zip(b_fields.iter())
-                .all(|((a_name, _), (b_name, _))| a_name == b_name);
-            if names_agree_in_order
-                || is_positional_tuple_names(kb, a_fields)
-                || is_positional_tuple_names(kb, b_fields)
-            {
-                return Some(
-                    a_fields
-                        .iter()
-                        .zip(b_fields.iter())
-                        .map(|((_, a_type), (_, b_type))| (a_type.clone(), b_type.clone()))
-                        .collect(),
-                );
-            }
-            None
-        }
+    // Both modes are the SAME positional zip; they differ in exactly TWO
+    // one-line predicates, stated here as a table so neither can drift and so a
+    // reader can see that the second one exists:
+    //
+    //   * LENGTH — a data tuple admits PREFIX width (`a` may be longer, the
+    //     extra components trailing); a parameter list demands equal arity,
+    //     because eval passes exactly as many arguments as the call site's type
+    //     says (WI-782).
+    //   * SYNTHETIC ESCAPE — a parameter list may zip when one side carries the
+    //     `_1.._n` convention, which makes no claim about which slot is which;
+    //     that is what lets a named-binder callback `(acc, x)` accept a
+    //     multi-param op's eta arrow (WI-442). A DATA tuple must NOT have it:
+    //     `_N` is a component's access path there, so admitting it would relate
+    //     `(a: Int64, b: String)` to `(Int64, String)`, which proposal 004
+    //     rule 4 makes a different type.
+    let (len_ok, allow_synthetic) = match mode {
+        TupleAlign::ByName => (a_fields.len() >= b_fields.len(), false),
+        TupleAlign::ParamList => (a_fields.len() == b_fields.len(), true),
+    };
+    if !len_ok {
+        return None;
     }
+    // WI-788: prefix width stops SHORT of the unit type. With `b` empty the zip
+    // is empty and every test below passes vacuously, so `(a: A, b: B)` conformed
+    // to `()` — and `()` has exactly ONE value, which a 2-component tuple is not.
+    // It loaded clean and then trapped, because a nullary pattern `lambda () -> …`
+    // matches zero components against two. Unit relates to unit only.
+    if b_fields.is_empty() && !a_fields.is_empty() {
+        return None;
+    }
+    // Zipping stops at `b_fields`, so under `ByName`'s prefix width the names are
+    // compared over the retained prefix and `a`'s trailing extras are ignored.
+    let zipped = || a_fields.iter().zip(b_fields.iter());
+    // Names decided BEFORE building, so a mismatch costs no allocation.
+    let names_agree_in_order = zipped().all(|((a_name, _), (b_name, _))| a_name == b_name);
+    if names_agree_in_order
+        || (allow_synthetic
+            && (is_positional_tuple_names(kb, a_fields)
+                || is_positional_tuple_names(kb, b_fields)))
+    {
+        return Some(zipped().map(|((_, a_ty), (_, b_ty))| (a_ty.clone(), b_ty.clone())).collect());
+    }
+    None
 }
 
 /// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
 /// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
-/// here). Fields are read by name via [`named_tuple_fields`] on each carrier;
-/// every `b` field must have a matching `a` field whose type unifies. Alignment
-/// is BY NAME: these are data tuples, whose component names are their access
-/// paths. Positional alignment belongs to [`unify_arrow_params`] (WI-775), which
-/// selects [`TupleAlign::ParamList`]; it is that mode's SOLE rung, not a fallback
-/// after a by-name attempt (WI-782).
+/// here). Fields are read via [`named_tuple_fields`] on each carrier and aligned
+/// SLOT BY SLOT with the names required to agree at each slot (WI-788 — these are
+/// data tuples, whose component order is part of their type identity as much as
+/// their names are). The equal-arity variant, with its synthetic `_1.._n` escape,
+/// belongs to [`unify_arrow_params`] (WI-775) as [`TupleAlign::ParamList`].
+///
+/// NOTE, pre-existing and NOT introduced by WI-788: this is an EQUALITY relation
+/// but takes the PREFIX-width mode, so it is asymmetric — `unify((x: A, y: B),
+/// (x: A))` succeeds while the arguments swapped fail. The old by-name arm was
+/// width-subtyping in the same direction, so the behaviour is unchanged; it is
+/// recorded here because "exact width, names exact" is a third real discipline
+/// and this caller arguably wants it.
 fn unify_named_tuple<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -26646,13 +26828,18 @@ fn abstracting_return_error(
     // used to load clean. Recurse into the components, re-applying the SAME
     // bare-vs-manifest-vs-ensures gate per component: an abstracting tuple
     // element is the §5 escape exactly as a bare top-level return is. Components
-    // are aligned the SAME way conformance aligned them — by NAME
+    // are aligned the SAME way conformance aligned them
     // ([`align_named_tuple_fields`] in `ByName` mode, since a return type is a
     // data tuple, not a parameter list — WI-775; passing
-    // body as `actual` so each pair is `(body_component, ret_component)`). A raw
-    // positional `zip` would mispair a NAMED tuple whose body/return field orders
-    // differ (`(a: m, b: true)` vs `-> (b: Bool, a: KVStore)`) and let the escape
-    // slip. The gate's own `same_sort_canonical` short-circuit spares an input-rooted /
+    // body as `actual` so each pair is `(body_component, ret_component)`).
+    // WI-788: that alignment is now slot-by-slot with the names required to
+    // agree, so the mispairing this comment used to warn about — a NAMED tuple
+    // whose body/return field orders DIFFER (`(a: m, b: true)` vs
+    // `-> (b: Bool, a: KVStore)`) letting the escape slip past a raw positional
+    // zip — cannot arise: differing orders are different types and conformance
+    // rejects them before this gate runs. Sharing the alignment still matters
+    // for the `None` arm below.
+    // The gate's own `same_sort_canonical` short-circuit spares an input-rooted /
     // equal component, and its `unbound` check spares a manifest one — so the
     // per-component reuse honours the "must NOT reject" cases without restating
     // them. Tuple components are the only gap here: a NOMINAL parameterized return
@@ -28989,12 +29176,13 @@ pub(crate) fn typed_pattern_bounds_hold(
 /// Width subtyping: actual may have more fields than expected.
 /// Depth subtyping: each expected field's type must be a supertype of actual's.
 /// WI-342: the sole `named_tuple` subtyping, carrier-agnostic over [`TermView`].
-/// Width subtyping: every `expected` field must have a matching `actual` field
-/// whose type is compatible. Fields are read by name via [`named_tuple_fields`]
-/// and aligned BY NAME: these are data tuples. Positional alignment — which lets
-/// a named-binder callback arrow's contravariant param check accept a multi-param
-/// op's eta arrow — belongs to [`arrow_params_compatible`] (WI-775), where it is
-/// [`TupleAlign::ParamList`]'s SOLE rung rather than a fallback (WI-782).
+/// PREFIX width subtyping: `expected` is related to a same-length PREFIX of
+/// `actual`, slot by slot, with the names required to agree at each slot
+/// (WI-788 — a data tuple's component ORDER is part of its type identity, so a
+/// permutation is refused here exactly as it is in a parameter list). The
+/// equal-arity variant, which lets a named-binder callback arrow's contravariant
+/// param check accept a multi-param op's eta arrow, belongs to
+/// [`arrow_params_compatible`] (WI-775) as [`TupleAlign::ParamList`].
 fn named_tuple_compatible<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,

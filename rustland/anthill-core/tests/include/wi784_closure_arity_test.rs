@@ -283,11 +283,25 @@ end
     );
 }
 
-/// A GENUINE arity error stays loud, and now reports the binder list's OWN
-/// arity instead of a hardcoded 1 — the fix widens what is accepted, it does
-/// not make a mismatched application silently succeed. Driven through
-/// `Function` (which states no arity) so the program reaches eval rather than
-/// being refused by WI-791's conformance check first.
+/// A GENUINE arity error stays loud and reports BOTH counts — the fix widens
+/// what is accepted, it does not make a mismatched application silently succeed.
+///
+/// WI-788 MOVED THIS ERROR FROM EVAL TO LOAD, and the assertion moved with it.
+/// The original ran the program: `Function` states no arity, so nothing refused
+/// the call and the 2-binder closure trapped `ArityMismatch{expected: 2, got: 3}`
+/// against three arguments. That "states no arity" was read as "nothing can be
+/// checked", which is what left the whole `Function` slot unchecked (WI-788: an
+/// argument of the WRONG TYPE was never looked at either). No slot COUNT can be
+/// REQUIRED of a `Function` — `f(3, 10)` and `f((3, 10))` are both legal — but a
+/// count can be OBSERVED at the call, and three arguments against a 2-component
+/// `A` is refutable without requiring anything.
+///
+/// So the invariant this test exists for is unchanged and still pinned: the
+/// diagnostic names the BINDER-derived count (2), not a hardcoded 1, alongside
+/// the actual 3. Only the STAGE changed, which is the direction the repo wants —
+/// a load error beats a run-time trap. The matcher's own binder-count arity guard
+/// is still exercised at eval by `nullary_thunk_called_with_an_argument_is_refused_by_the_matcher`
+/// here and by `wi785::arity_mismatch_still_refuses_to_match`.
 #[test]
 fn wrong_arity_application_is_still_refused_with_the_binder_count() {
     let src = r#"
@@ -300,21 +314,17 @@ namespace test.wi784.wrongarity
   operation drive() -> Int64 = apply3(lambda (x, y) -> x - y)
 end
 "#;
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("applying a 2-binder lambda to 3 arguments must be refused");
+    let msg = errs.join(" | ");
+    // The PHRASES, not loose digits: a bare `contains("2") && contains("3")` is
+    // satisfied incidentally by a span like `3:2`, so it would still pass if the
+    // counts regressed to the hardcoded 1 this test exists to forbid.
     assert!(
-        try_load_kb_with(src).is_ok(),
-        "the `Function` spelling states no arity, so this must reach eval",
-    );
-    let err = interp_for(src)
-        .call("test.wi784.wrongarity.drive", &[])
-        .expect_err("applying a 2-binder lambda to 3 arguments must still trap");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("ArityMismatch"),
-        "expected an ArityMismatch; got: {msg}",
-    );
-    assert!(
-        msg.contains("expected: 2") && msg.contains("got: 3"),
-        "the trap must report the BINDER count (2), not the old hardcoded 1; got: {msg}",
+        msg.contains("or 2 (its components spread)") && msg.contains("got 3 arguments"),
+        "the diagnostic must report A's component count (2) and the supplied count (3), \
+         not a hardcoded 1; got: {msg}",
     );
 }
 

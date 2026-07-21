@@ -752,3 +752,7 @@ mod wi795_arity_mismatch_diagnostic_test;
 
 #[path = "include/wi790_positional_label_convention_test.rs"]
 mod wi790_positional_label_convention_test;
+
+#[path = "include/wi788_tuple_component_order_identity_test.rs"]
+mod wi788_tuple_component_order_identity_test;
+

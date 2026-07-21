@@ -349,20 +349,32 @@ end
 
 /// A lone tuple-typed parameter used to collapse to the tuple's own term, so a
 /// DATA tuple arrived in `TupleAlign::ParamList` and was aligned POSITIONALLY.
-/// But a data tuple's components are read by NAME (`t.x`), so a permuted one is a
-/// CORRECT program — it loaded and evaluated to 7 on WI-782's parent, was
-/// FALSE-REJECTED by WI-782, and loads again now.
+/// WI-791 separated the two terms (an arrow now states its arity), and this
+/// program — a permuted TUPLE PARAMETER, as against a permuted PARAMETER LIST —
+/// loaded again on the strength of "a data tuple's components are read by NAME
+/// (`t.x`), so a permuted one is correct".
 ///
-/// WI-782 recorded that this was not fixable at the alignment rung, because a
-/// permuted PARAMETER LIST (its bug — a silent wrong-typed value) and a permuted
-/// TUPLE PARAMETER (this — correct) were the same term once the slot collapsed.
-/// They are different terms now: this arrow says arity 1, so its param is one
-/// tuple-typed argument and relates by name. Its sibling
-/// `permuted_parameter_list_is_refused` above still refuses the genuine
-/// 2-parameter permutation, which is what makes this pair discriminating rather
-/// than a blanket loosening.
+/// WI-788 OVERTURNED THAT PREMISE, and this test inverted with it. A component is
+/// identified by its NAME and its POSITION together, so tuple types align slot by
+/// slot with the names agreeing at each slot: `(x: Int64, y: Bool)` and
+/// `(y: Bool, x: Int64)` are DIFFERENT TYPES because the positions disagree, and
+/// the mismatch is a load error.
+///
+/// The premise failed because "read by NAME" is not a property of the TYPE, so it
+/// could not gate the relation. `t.x` reads by name, but a destructuring binder
+/// list over the same value reads by POSITION (WI-785), and which one a value
+/// eventually meets is not knowable where the permutation is admitted — the value
+/// can flow through a `Function[A, B]` parameter to a consumer chosen at another
+/// call site entirely. Admitting the permutation for the name-reader therefore
+/// admitted it for the position-reader too, and that was a silent wrong answer:
+/// an operation declared `-> Int64` returning a `String`.
+///
+/// So this program is now an ERROR, fixed by writing the components in the
+/// declared order. Its sibling `permuted_parameter_list_is_refused` refuses the
+/// 2-parameter permutation; the two now agree rather than discriminate, which is
+/// the point — one rule, stated once, for both.
 #[test]
-fn permuted_tuple_typed_parameter_still_applies() {
+fn permuted_tuple_typed_parameter_is_refused() {
     let src = r#"
 namespace test.wi782.falseperm
   import anthill.prelude.{Int64, Bool}
@@ -374,8 +386,34 @@ namespace test.wi782.falseperm
     = take(get_x)
 end
 "#;
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("a permuted tuple parameter is a different type and must be refused");
+    assert!(
+        errs.iter().any(|e| e.contains("mismatch")),
+        "expected a type mismatch naming the two orders; got: {errs:?}",
+    );
+}
+
+/// The CONTROL for the test above: the same program with the components written
+/// in the declared order loads and evaluates. What WI-788 refuses is the
+/// PERMUTATION, not the shape — a tuple-typed parameter passed to a
+/// tuple-parameter callback is still ordinary, and `t.x` still reads by name.
+#[test]
+fn in_order_tuple_typed_parameter_still_applies() {
+    let src = r#"
+namespace test.wi782.inorderperm
+  import anthill.prelude.{Int64, Bool}
+  operation get_x(t: (x: Int64, y: Bool)) -> Int64
+    = t.x
+  operation take(f: (u: (x: Int64, y: Bool)) -> Int64) -> Int64
+    = f((x: 7, y: true))
+  operation drive() -> Int64
+    = take(get_x)
+end
+"#;
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi782.falseperm.drive"), 7);
+    assert_eq!(run_int(&mut interp, "test.wi782.inorderperm.drive"), 7);
 }
 
 /// The same in the WIDTH direction: a narrower tuple parameter. `get_a` reads only
