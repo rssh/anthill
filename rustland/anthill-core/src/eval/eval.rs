@@ -12,6 +12,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{is_positional_label_at, Symbol};
+use crate::kb::call_form::{classify_application, CallForm};
 use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern};
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
@@ -1694,27 +1695,41 @@ impl Interpreter {
                 }),
             },
         };
-        if arg_values.len() == arity {
-            return Ok(arg_values);
-        }
-        if arity != 1 && arg_values.len() == 1 {
-            // WI-787: read BOTH halves through `Value::tuple_components`, which
-            // owns the `pos ++ named` invariant. This site used `pos` alone, so
-            // a name-keyed tuple presented as ZERO components and the spread
-            // never fired — and a relation ROW is built all-named, which is how
-            // mapping a two-parameter OPERATION over rows trapped while the
-            // byte-identical `lambda (p, q) -> …` spelling evaluated.
-            if let Some(components) = arg_values[0].tuple_components() {
-                if components.len() == arity {
-                    return Ok(components.iter().cloned().collect());
-                }
-            }
-        }
-        Err(EvalError::ArityMismatch {
+        // WI-801: the decision itself is `classify_application`'s, shared with the
+        // closure adapter below and with the typer's conformance gate, so the
+        // three cannot drift into pivoting on different quantities.
+        let mismatch = || EvalError::ArityMismatch {
             op: "function-value application",
             expected: arity,
             got: arg_values.len(),
-        })
+        };
+        match classify_application(arity, arg_values.len()) {
+            CallForm::AsWritten => Ok(arg_values),
+            CallForm::Spread => {
+                // `Spread`'s dynamic obligation, discharged here against the VALUE
+                // (the typer discharges the same obligation against `A`).
+                //
+                // WI-787: read BOTH halves through `Value::tuple_components`,
+                // which owns the `pos ++ named` invariant. This site used `pos`
+                // alone, so a name-keyed tuple presented as ZERO components and
+                // the spread never fired — and a relation ROW is built all-named,
+                // which is how mapping a two-parameter OPERATION over rows trapped
+                // while the byte-identical `lambda (p, q) -> …` spelling evaluated.
+                match arg_values[0].tuple_components() {
+                    Some(components) if components.len() == arity => {
+                        Ok(components.iter().cloned().collect())
+                    }
+                    _ => Err(mismatch()),
+                }
+            }
+            // WI-801: a gather needs the component LABELS, which live in the
+            // static `A` and are gone by now. At a slot whose type was known the
+            // TYPER already rewrote this call into its whole-`A` form, so reaching
+            // here means no static type said what the labels were — guessing a
+            // positional spelling would bind a name-keyed callee's components to
+            // nothing. Raise instead.
+            CallForm::Gather | CallForm::Mismatch => Err(mismatch()),
+        }
     }
 
     /// WI-784: gather an N-argument application into the ONE value a closure's
@@ -1744,23 +1759,36 @@ impl Interpreter {
         param_pattern: &Rc<NodeOccurrence>,
         args: Vec<Value>,
     ) -> Result<Value, EvalError> {
-        if args.len() == 1 {
-            return Ok(args.into_iter().next().unwrap());
-        }
         // `as_pattern` is None only for a param occurrence that is not a Pattern
         // at all — a reflectively-built lambda whose param is an Expr-kind
         // meta-var (WI-511). Reading it as one binder is not a silent skip: such
         // an occurrence names nothing bindable, so `match_pattern` refuses it
         // immediately after and the call raises through `raise_match_failed`.
         let arity = param_pattern.as_pattern().map(Pattern::binder_arity).unwrap_or(1);
-        if arity != args.len() {
-            return Err(EvalError::ArityMismatch {
-                op: "closure",
-                expected: arity,
-                got: args.len(),
-            });
+        // WI-801: on `classify_application`, the rule `spread_eta_args` and the
+        // typer's conformance gate also read.
+        match classify_application(arity, args.len()) {
+            // ONE value goes to the pattern untouched, under BOTH readings that
+            // reach it: at arity 1 it IS the binder's value, and at arity n it is
+            // the tuple the binder list destructures (`match_tuple_pattern`).
+            // Since the hand-off is identical they share this arm — and the guard
+            // is load-bearing only for `AsWritten` (`Spread` already implies one
+            // value). It is not a fast path: it is the whole reason `f((3, 10))`,
+            // where the CALLER built the tuple, destructures.
+            CallForm::AsWritten | CallForm::Spread if args.len() == 1 => {
+                Ok(args.into_iter().next().unwrap())
+            }
+            CallForm::AsWritten => Ok(Value::Tuple { pos: args.into(), named: Vec::new().into() }),
+            // WI-801: see `spread_eta_args` on why a gather cannot be performed
+            // here. The typer normalizes it away wherever `A` is known.
+            CallForm::Spread | CallForm::Gather | CallForm::Mismatch => {
+                Err(EvalError::ArityMismatch {
+                    op: "closure",
+                    expected: arity,
+                    got: args.len(),
+                })
+            }
         }
-        Ok(Value::Tuple { pos: args.into(), named: Vec::new().into() })
     }
 
     /// Operation-body lookup, memoized. `lookup_operation_body` linear-scans

@@ -429,6 +429,22 @@ The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib (with em
 > `n` components. A call that matches neither reading is a load error naming both
 > admissible counts. This is not a special case for `Function` so much as the two
 > spellings of application it genuinely permits.
+>
+> Symmetrically, the *callback's own* arity is checked against `A` (WI-801). Two
+> readings are admitted and no others, so where `A` has `n` components a callback
+> of arity `k ∉ {1, n}` is a **load error** — it fits neither `A -> B` nor `A`'s
+> components spread, and no call form at the slot could reach it. Where `A` is a
+> non-tuple the sole admissible arity is 1; where `A` is not yet known (a rigid
+> type parameter) nothing is required, since a component count is exactly what
+> instantiation supplies. This closes the dual of the paragraph above: the *call*
+> was checked against `A` and the *callback* was not, so `Function[(X, Y), R]`
+> given a three-binder lambda loaded clean and trapped at run time.
+>
+> The two admitted arities and the two admitted call forms compose freely — all
+> four combinations evaluate. A spread call against a callback that takes the whole
+> `A` is **normalized at load** into its whole-`A` form, which is the only place it
+> can be: gathering `f(v₁, …, vₙ)` into `(l₁: v₁, …, lₙ: vₙ)` needs `A`'s component
+> labels, and those are gone by run time.
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 
@@ -621,7 +637,7 @@ The `lambda` keyword is **required**. A keyword-less `(x, acc) -> body` (or `x -
 
 A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure).
 
-**Applying a lambda** (WI-784). Binding one pattern does not mean a lambda is applied to one *argument*: an `n`-binder lambda is applied as `f(a₁, …, aₙ)`, the spelling the standard library's callbacks use (`foldLeft(t, f(init, h), f)`). The arguments are gathered into the tuple its binder list destructures, so a nullary thunk is forced as `t()` and a two-binder callback is called `f(3, 10)`. A **single** argument is always passed to the pattern unchanged, so a caller that builds the tuple itself (`f((3, 10))`) destructures exactly as before — both spellings of a two-binder call therefore work. Any *other* argument count must equal the binder count, else it is an arity error reported against that count. This is the mirror of the `Function[(A, B), R]` ⇒ `op(a, b)` eta convention for operation references, and it is what makes a lambda and a named operation **interchangeable as function values** — the same call site accepts either.
+**Applying a lambda** (WI-784). Binding one pattern does not mean a lambda is applied to one *argument*: an `n`-binder lambda is applied as `f(a₁, …, aₙ)`, the spelling the standard library's callbacks use (`foldLeft(t, f(init, h), f)`). The arguments are gathered into the tuple its binder list destructures, so a nullary thunk is forced as `t()` and a two-binder callback is called `f(3, 10)`. A **single** argument is always passed to the pattern unchanged, so a caller that builds the tuple itself (`f((3, 10))`) destructures exactly as before — both spellings of a two-binder call therefore work. Any *other* argument count must equal the binder count, else it is an arity error reported against that count. This is the mirror of the `Function[(A, B), R]` ⇒ `op(a, b)` eta convention for operation references, and it is what makes a lambda and a named operation **interchangeable as function values** — the same call site accepts either. The reverse adaptation — `n` arguments *gathered* into a callback that takes the whole tuple — is **not** performed here, and cannot be: it needs the component labels, which live in the static `A`. It is performed at load instead, by normalizing the call (WI-801, §`Function` states no arity); the run-time arity error above is what remains for a call whose slot type never said what those labels were.
 
 A lambda binder may carry an **optional `: Type` annotation**, written in parens: a single binder `lambda (x: T) -> …`, or per-element in a tuple `lambda (a: A, b: B) -> …` (WI-517). The parens are required — a bare `lambda x: T -> …` would clash with the `->` separator. The annotation pins the binder's type, so a lambda can be written **without** an expected-type context (e.g. `let f = lambda (x: Int64) -> add(x, 1)`, where no use site supplies the parameter type) and so foldLeft-style callbacks can document their parameters. When an expected arrow type is also available at the use site, the annotation must be consistent with it — a genuine contradiction is rejected (for a single binder, the lambda's arrow carries the annotation and is checked against the expected type; for tuple binders, the surrounding component type drives the binding, so a conflict surfaces through the body's use of the binder). A binder written without an annotation infers its type from the expected arrow at the use site (the HOF parameter's declared type, the operation's return type, etc.).
 

@@ -759,3 +759,6 @@ mod wi788_tuple_component_order_identity_test;
 #[path = "include/wi800_tuple_threading_alignment_test.rs"]
 mod wi800_tuple_threading_alignment_test;
 
+
+#[path = "include/wi801_function_slot_arity_test.rs"]
+mod wi801_function_slot_arity_test;

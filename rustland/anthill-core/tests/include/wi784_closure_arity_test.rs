@@ -251,13 +251,26 @@ end
     assert_eq!(eval_int(src, "test.wi784.unary.drive"), -7);
 }
 
-/// The corner the single-argument pass-through creates: because ONE argument is
-/// always handed to the pattern as-is, a NULLARY thunk called with one argument
-/// is not caught by the arity comparison at all — it reaches the matcher and
-/// fails there. Still loud, and unchanged from pre-fix, but pinned so the
-/// branch structure's one asymmetry is stated rather than assumed.
+/// A NULLARY thunk where ONE argument is passed.
+///
+/// WI-801 MOVED THIS ERROR FROM EVAL TO LOAD, exactly as WI-788 moved
+/// `wrong_arity_application_is_still_refused_with_the_binder_count` below, and for
+/// the same reason. This used to assert the program LOADED and then failed in the
+/// matcher, pinning "the branch structure's one asymmetry": one argument is always
+/// handed to the pattern as-is, so the arity comparison never ran and a nullary
+/// thunk given an argument reached the matcher.
+///
+/// That corner was a CONSEQUENCE of the conformance check reading no arity at a
+/// `Function` slot, not a property worth keeping. `lambda () -> 5` has type
+/// `() -> Int64`; the slot is `Function[A = Int64, B = Int64]`, whose `A` is one
+/// indivisible value. No call form reaches a nullary callee there — neither the
+/// whole-`A` form (one argument) nor a spread (`A` has no components) — so the
+/// argument is refused at LOAD now, which is the direction the repo wants.
+///
+/// The matcher's own binder-count guard is still exercised at eval, by
+/// `a_callback_arity_the_typer_cannot_decide_still_fails_in_the_matcher` below.
 #[test]
-fn nullary_thunk_called_with_an_argument_is_refused_by_the_matcher() {
+fn nullary_thunk_called_with_an_argument_is_refused_at_load() {
     let src = r#"
 namespace test.wi784.nullaryarg
   import anthill.prelude.{Int64, Function}
@@ -267,19 +280,46 @@ namespace test.wi784.nullaryarg
   operation drive() -> Int64 = force_with_arg(lambda () -> 5)
 end
 "#;
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("a nullary thunk at a one-argument slot must be refused at load");
+    let msg = errs.join(" | ");
+    assert!(
+        msg.contains("mismatch"),
+        "a nullary callback fits neither reading of `Function[A = Int64, B]`; got: {msg}",
+    );
+}
+
+/// THE RESIDUAL EVAL-STAGE GUARD, which the load-time gate must not swallow.
+///
+/// WI-801 refuses a callback whose arity fits neither reading of `Function[A, …]`
+/// — but only where `A`'s component count is KNOWN. At a RIGID `A` it is not, and
+/// must not be guessed: a component count is exactly what instantiation supplies.
+/// So this loads, reaches eval, and fails in the matcher — the path
+/// `nullary_thunk_called_with_an_argument_is_refused_at_load` used to cover.
+#[test]
+fn a_callback_arity_the_typer_cannot_decide_still_fails_in_the_matcher() {
+    let src = r#"
+namespace test.wi784.rigidarity
+  import anthill.prelude.{Int64, Function}
+
+  operation ap[T](f: Function[A = T, B = T], x: T) -> T = f(x)
+
+  operation drive() -> Int64 = ap(lambda (p, q) -> p, 5)
+end
+"#;
     assert!(
         try_load_kb_with(src).is_ok(),
-        "the `Function` spelling states no arity, so this must reach eval",
+        "a RIGID `A` states no component count, so no arity may be required of the callback",
     );
     let err = interp_for(src)
-        .call("test.wi784.nullaryarg.drive", &[])
-        .expect_err("a nullary thunk given an argument must not silently succeed");
+        .call("test.wi784.rigidarity.drive", &[])
+        .expect_err("a 2-binder pattern must not match the scalar it is handed");
     let msg = format!("{err:?}");
     assert!(
         msg.contains("Raised"),
-        "one argument is passed through to the MATCHER, so the empty tuple pattern \
-         fails against Int(7) and this surfaces as a raised Error[MatchFailed] — NOT \
-         an ArityMismatch, which the comparison never reaches here; got: {msg}",
+        "the single argument is passed through to the MATCHER, so the 2-binder tuple \
+         pattern fails against Int(5) and surfaces as a raised Error[MatchFailed]; got: {msg}",
     );
 }
 
@@ -299,9 +339,11 @@ end
 /// So the invariant this test exists for is unchanged and still pinned: the
 /// diagnostic names the BINDER-derived count (2), not a hardcoded 1, alongside
 /// the actual 3. Only the STAGE changed, which is the direction the repo wants —
-/// a load error beats a run-time trap. The matcher's own binder-count arity guard
-/// is still exercised at eval by `nullary_thunk_called_with_an_argument_is_refused_by_the_matcher`
-/// here and by `wi785::arity_mismatch_still_refuses_to_match`.
+/// a load error beats a run-time trap. WI-801 then moved the two remaining
+/// eval-stage cases the same way; the matcher's own binder-count arity guard is
+/// still exercised at eval by
+/// `a_callback_arity_the_typer_cannot_decide_still_fails_in_the_matcher` here,
+/// which reaches it through a RIGID `A` no static check may decide.
 #[test]
 fn wrong_arity_application_is_still_refused_with_the_binder_count() {
     let src = r#"

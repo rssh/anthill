@@ -143,10 +143,22 @@ end
 
 /// Arity strictness must survive the widening: presenting named components
 /// alongside positional ones must not let an N-component tuple match an
-/// M-binder pattern. A 3-component tuple against 2 binders stays a non-match
-/// (which surfaces as a raised pattern-match failure, not a wrong answer).
+/// M-binder pattern. A 3-component tuple against 2 binders is refused.
+///
+/// WI-801 MOVED THIS REFUSAL FROM EVAL TO LOAD. It used to assert the program
+/// loaded and then failed to match, on the reading that "the arity is a runtime
+/// pattern-match property here". It is not only that: the callback's arity is 2
+/// where `A` has 3 components, so it fits neither reading of
+/// `Function[A, B]` — not `A -> B` (one binder) and not `A`'s components spread
+/// (three) — and nothing can call it at this slot. That is decidable statically
+/// and is now decided there.
+///
+/// What this test pins is unchanged: a 3-component tuple must NOT bind the first
+/// two binders and drop the third. Only the stage moved. The runtime guard itself
+/// still runs — `wi784::a_callback_arity_the_typer_cannot_decide_still_fails_in_-
+/// the_matcher` reaches it through a rigid `A`, where no static count exists.
 #[test]
-fn arity_mismatch_still_refuses_to_match() {
+fn arity_mismatch_is_refused() {
     let src = r#"
 namespace test.wi785arity
   import anthill.prelude.{Int64, Function}
@@ -156,12 +168,12 @@ namespace test.wi785arity
     = apply_tuple(lambda (p, q) -> p - q)
 end
 "#;
-    // Loads clean (the arity is a runtime pattern-match property here), then
-    // fails to match rather than binding the first two and dropping the third.
-    assert!(try_load_kb_with(src).is_ok(), "fixture must load; the check is at eval");
-    let mut interp = interp_for(src);
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("a 2-binder callback at a 3-component `A` must be refused");
+    let msg = errs.join(" | ");
     assert!(
-        interp.call("test.wi785arity.drive", &[]).is_err(),
-        "a 3-component tuple must not match a 2-binder pattern",
+        msg.contains("mismatch"),
+        "a 3-component tuple must not match a 2-binder pattern; got: {msg}",
     );
 }

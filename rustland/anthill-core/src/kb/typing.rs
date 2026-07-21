@@ -7543,13 +7543,15 @@ fn build_type(
                 if !types_compatible(kb, &mut subst, vty, ann) {
                     let var = extract_pattern_var_name(&pattern)
                         .unwrap_or_else(|| kb.intern("_"));
-                    results.push(Err(TypeError::TypeMismatch {
-                        site: TypeError::here(),
-                        span: None,
-                        context: TypeErrorContext::LetBinding { var },
-                        expected: ann.clone(),
-                        actual: vty.clone(),
-                    }));
+                    // WI-801: through the shared renderer — `let f: Function[A =
+                    // (Int64, Int64), B = Int64] = lambda (p, q, r) -> p` is the
+                    // same arity disagreement as the op-arg channel's, and
+                    // rendered raw it prints the two sides identically.
+                    let (ann, vty) = (ann.clone(), vty.clone());
+                    let err = conformance_error(
+                        kb, ann, vty, None, TypeErrorContext::LetBinding { var },
+                    );
+                    results.push(Err(err));
                     return;
                 }
             }
@@ -8513,18 +8515,8 @@ fn normalize_variadic_capture(
     // The captured record's runtime VALUE occurrence: an ordinary named-tuple literal the
     // back-end evaluates to a `Value::Tuple` (no `where`/`project` compile-time spec-splice
     // — §2.1). Stamp its type so the arg-matching reads it without re-typing the children.
+    let tuple_occ = synthesize_named_tuple_literal(kb, occ, captured, record_type.clone());
     let pass = super::simp_rewrite::simp_pass(kb);
-    let tuple_functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
-    // A named-tuple LITERAL occurrence (`Expr::Constructor`, the shape eval routes to
-    // `start_constructor` → `Value::Tuple`), NOT an `Expr::Apply` (which eval dispatches as
-    // an operation call → `UnknownOperation`).
-    let tuple_occ = NodeOccurrence::synthesized_expr(
-        Expr::Constructor { name: tuple_functor, pos_args: Vec::new(), named_args: captured },
-        Rc::clone(occ),
-        pass,
-        occ.owner,
-    );
-    tuple_occ.set_inferred_type(record_type.clone());
     let tuple_result = Ok(TypeResult {
         ty: record_type,
         env: env.clone(),
@@ -10343,6 +10335,9 @@ fn check_apply_iter(
             // branches with a hand-rolled arity error and a per-argument loop
             // each, differing only in where the expectation came from, which is
             // precisely how the `Function` half came to check nothing at all.
+            // WI-801: `A` when this call is `A`'s components spread and must be
+            // handed to eval as ONE whole-`A` tuple; `None` otherwise.
+            let mut gather_into: Option<(Value, Vec<Symbol>)> = None;
             match positional_arg_expectations(
                 kb,
                 &callee_ty,
@@ -10370,7 +10365,16 @@ fn check_apply_iter(
                 // The callee's argument type states nothing checkable. Named, so
                 // that this is a decision rather than a fallthrough.
                 ArgExpectations::NoVerdict => {}
-                ArgExpectations::Slots(slots) => {
+                ArgExpectations::Slots { slots, gather } => {
+                    gather_into = gather.map(|a| {
+                        // WI-801: the component LABELS come from the slot list the
+                        // check just used, not from a second `extract_type` of `A`
+                        // — `slots` IS that extraction, and re-running it per
+                        // gathered application is the cost this file's WI-798 notes
+                        // single out (a head classify plus a fresh binding vector
+                        // with every bound type cloned in).
+                        (a, slots.iter().map(|(l, _)| *l).collect::<Vec<_>>())
+                    });
                     for (i, _) in pos_args.iter().enumerate() {
                         if let (Ok(arg_result), Some((param_sym, slot_type))) =
                             (&pos_results[i], slots.get(i))
@@ -10522,6 +10526,48 @@ fn check_apply_iter(
                         });
                     }
                 }
+            } else if let Some((a_type, labels)) = gather_into {
+                // WI-801: normalize the SPREAD form into the whole-`A` form. Both
+                // admitted callee arities then take the identical one-argument
+                // call — a 1-parameter callee receives `A` itself, and an
+                // `|A|`-parameter one has eval's existing spread adapter applied
+                // to it (`spread_eta_args` / `match_tuple_pattern`) — so the
+                // callee's own arity, the quantity eval pivots on, can no longer
+                // disagree with `A`'s component count, the quantity this site
+                // pivots on. That disagreement is WI-801.
+                //
+                // AFTER the some-wraps, which index the ORIGINAL children: a
+                // coerced argument must be wrapped before it becomes a component.
+                named_node = gather_spread_args_into_tuple(
+                    kb, occ, a_type, &labels, &some_wraps, pos_results,
+                )
+                .ok_or_else(|| {
+                    // TWO causes, both unreachable, both loud rather than falling
+                    // back to `occ` — which would hand eval the un-normalized
+                    // spread call and silently restore the trap this branch exists
+                    // to remove. (1) A non-`Apply` occurrence, unreachable for the
+                    // same reason the reorder's `None` is: both
+                    // `check_apply_iter` call sites pass an `Expr::Apply`. (2) The
+                    // labels and the arguments disagreeing in count, which cannot
+                    // happen because both descend from the same `positional`.
+                    debug_assert!(false, "spread gather declined a well-formed application");
+                    TypeError::Other {
+                        site: TypeError::here(),
+                        span,
+                        context: TypeErrorContext::OperationArgument {
+                            op_name: fn_sym,
+                            param: kb.intern("arity"),
+                        },
+                        expected: "an application occurrence whose spread arguments can be \
+                                   gathered into the function's declared argument type"
+                            .to_string(),
+                        actual: "an application this typer cannot rebuild — its shape or its \
+                                 argument count does not match the declared components; pass \
+                                 the whole tuple"
+                            .to_string(),
+                    }
+                })?;
+                &named_node
             } else if some_wraps.is_empty() {
                 occ
             } else {
@@ -17609,13 +17655,7 @@ fn validate_arg_against_param(
             return ArgValidation::Ok;
         }
     }
-    ArgValidation::Fail(TypeError::TypeMismatch {
-        site: TypeError::here(),
-        span,
-        context,
-        expected: declared_g,
-        actual: actual_g,
-    })
+    ArgValidation::Fail(conformance_error(kb, declared_g, actual_g, span, context))
 }
 
 /// WI-469: validate a callback argument's CONCRETE arrow param/result element
@@ -17688,6 +17728,17 @@ fn validate_arrow_param_result(
             return Some(mismatch());
         }
     }
+    // WI-801: and the `Function[A, B, E]` half of the same question, which the
+    // paragraph above correctly declines to answer. That a `Function` states no
+    // arity does NOT mean nothing about the callback's arity is decidable — its
+    // `A` states a COMPONENT COUNT, and only two arities can be applied at the
+    // slot. This is the NON-GROUND path's decider; the ground path's is
+    // [`arrow_function_compatible`]. Reported through
+    // [`function_slot_arity_error`] rather than `mismatch()`, which would render
+    // the two sides identically — see that function's doc.
+    if let Some(err) = function_slot_arity_error(kb, declared, actual, span, context) {
+        return Some(err);
+    }
     // Contravariant param: `declared.param <: actual.param`.
     // WI-775: BY NAME. `arrow_parts` decomposes a `Function[A = …]` too, so a
     // positional bridge here would reopen the hole on that surface (see
@@ -17737,6 +17788,40 @@ fn synthesize_some_wrap(
     node
 }
 
+/// A synthesized named-tuple LITERAL occurrence, type already stamped.
+///
+/// ONE owner for a shape with a load-bearing and non-obvious representation: the
+/// surface form of `(a: 1, b: 2)` is an `Expr::Constructor` over
+/// `anthill.reflect.TupleLiteral` whose elements ALL ride in `named_args`
+/// (parse/convert.rs relabels positional ones `_1`, `_2`, …). It is NOT
+/// `Expr::TupleLit`, which is a non-surface IR shape eval refuses outright, and
+/// NOT an `Expr::Apply`, which eval would dispatch as an operation call
+/// (`UnknownOperation`). Eval routes the constructor through `start_constructor`
+/// to a `Value::Tuple`, and `classify_ctor_arg` hoists an `_N`-at-index-N run
+/// back into `Value::Tuple.pos` — so ONE construction serves both the positional
+/// and the named spelling, provided the labels are the type's own.
+///
+/// Callers: WI-727's variadic capture record and WI-801's spread-call
+/// normalization. Both previously restated the routing invariant above in their
+/// own words, which is two owners for one fact about eval.
+fn synthesize_named_tuple_literal(
+    kb: &mut KnowledgeBase,
+    from: &Rc<NodeOccurrence>,
+    named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    ty: Value,
+) -> Rc<NodeOccurrence> {
+    let pass = super::simp_rewrite::simp_pass(kb);
+    let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+    let occ = NodeOccurrence::synthesized_expr(
+        Expr::Constructor { name: functor, pos_args: Vec::new(), named_args },
+        Rc::clone(from),
+        pass,
+        from.owner,
+    );
+    occ.set_inferred_type(ty);
+    occ
+}
+
 /// WI-408: rebuild `occ` with `some(...)` wrappers around the flagged
 /// children. `wraps` carries `(child-index, declared-Option-type)` pairs —
 /// indices in reassembly order (positional args, then named args); every
@@ -17751,15 +17836,108 @@ fn wrap_some_children(
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
 ) -> Rc<NodeOccurrence> {
+    let children = some_wrapped_children(kb, wraps, pos_results, named_results);
+    super::simp_rewrite::reassemble(occ, &children)
+}
+
+/// The typed argument OCCURRENCES of one application, in reassembly order
+/// (positional then named), with the WI-408 some-coercions materialized.
+///
+/// Shared by the two rewrites that need it — [`wrap_some_children`], which then
+/// reassembles the call in place, and [`gather_spread_args_into_tuple`], which
+/// folds them into one tuple. The `wraps` indices are into THIS order, so the
+/// wrapping must happen here rather than at either caller: a coerced argument has
+/// to become `some(v)` BEFORE it becomes a tuple component, or the wrapper lands
+/// on the wrong node.
+///
+/// `check_apply_iter` bailed on any ill-typed child up front
+/// (`collect_arg_errors`), which is what makes the `Ok`-child expectation hold.
+fn some_wrapped_children(
+    kb: &mut KnowledgeBase,
+    wraps: &[(usize, Value)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Vec<Rc<NodeOccurrence>> {
     let mut children: Vec<Rc<NodeOccurrence>> = pos_results
         .iter()
         .chain(named_results.iter())
-        .map(|r| Rc::clone(&r.as_ref().expect("wrap_some_children: Ok child").node))
+        .map(|r| Rc::clone(&r.as_ref().expect("some_wrapped_children: Ok child").node))
         .collect();
     for (idx, declared) in wraps {
         children[*idx] = synthesize_some_wrap(kb, &children[*idx], declared);
     }
-    super::simp_rewrite::reassemble(occ, &children)
+    children
+}
+
+/// WI-801: rewrite `f(v₁, …, vₙ)` at a `Function[A, B, E]` slot into `f((l₁: v₁,
+/// …, lₙ: vₙ))`, where `l₁…lₙ` are `A`'s component labels — the ONE place the
+/// spread-vs-whole decision is made, and the only place it CAN be made.
+///
+/// Eval pivots on the callee's own arity and the typer on `A`'s component count
+/// (WI-801). Rather than teach eval the typer's quantity — it cannot be told: a
+/// gather needs `A`'s LABELS and those are erased at runtime — this removes the
+/// disagreement by handing eval a call whose shape is right for BOTH admitted
+/// arities. A 1-parameter callee gets `A` itself; an `|A|`-parameter one meets
+/// eval's long-standing spread adapters, which take a single tuple argument and
+/// were already the tested path (`spread_eta_args` for an operation,
+/// `match_tuple_pattern` for a lambda's binder list).
+///
+/// The labels come from `A` and are used AS-IS, which is what makes one
+/// construction serve both tuple spellings: `extract_type` yields `_1`/`_2` for a
+/// POSITIONAL `A` and the written labels for a NAMED one, and `classify_ctor_arg`
+/// (eval/eval.rs) hoists exactly the `_N`-at-index-N run back into `Value::Tuple.
+/// pos`. So the positional case rebuilds a positional tuple and the named case a
+/// named one, without this site branching on which it has — the same
+/// correspondence `convert.rs`' own `TupleLiteral` build relies on.
+///
+/// `named_args` is necessarily EMPTY here, not merely assumed: the `Function` arm
+/// of [`positional_arg_expectations`] states no verdict unless every argument is
+/// positional, so `gather` is `None` for any call carrying a label — which the
+/// caller has already rejected, a `Function` having no binder names to bind one to.
+///
+/// `None` only for a non-`Apply` occurrence, which the caller reports loudly.
+fn gather_spread_args_into_tuple(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    a_type: Value,
+    labels: &[Symbol],
+    wraps: &[(usize, Value)],
+    pos_results: &[Result<TypeResult, TypeError>],
+) -> Option<Rc<NodeOccurrence>> {
+    let Some(Expr::Apply { functor, type_args, .. }) = occ.as_expr() else {
+        return None;
+    };
+    let (functor, type_args) = (*functor, type_args.clone());
+    let children = some_wrapped_children(kb, wraps, pos_results, &[]);
+    // A HARD guard, not a `debug_assert`. The counts agree by construction — both
+    // descend from the `positional` the `Function` arm of
+    // [`positional_arg_expectations`] matched `A`'s component count against — so
+    // this cannot fire today. But the pairing below is a `zip`, which TRUNCATES to
+    // the shorter side: were the invariant ever broken, a debug-only assert
+    // compiles out and the gather silently builds a tuple with components MISSING,
+    // which is the "reads as handled when it isn't" failure the repo's
+    // loud-error rule targets. The caller renders this `None` loudly.
+    if children.len() != labels.len() {
+        return None;
+    }
+    let tuple_node = synthesize_named_tuple_literal(
+        kb,
+        occ,
+        labels.iter().copied().zip(children).collect(),
+        a_type,
+    );
+    let pass = super::simp_rewrite::simp_pass(kb);
+    Some(NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            functor,
+            pos_args: vec![tuple_node],
+            named_args: Vec::new(),
+            type_args,
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    ))
 }
 
 /// WI-426 / WI-783: named-argument COVERAGE against a callee's parameter list —
@@ -17853,16 +18031,7 @@ fn reorder_named_args_in_apply(
         ),
         _ => return None,
     };
-    // Children in combined [pos…, named…] order, some-wrapped by combined index
-    // (mirrors `wrap_some_children`; `some_wraps` indices are into this order).
-    let mut children: Vec<Rc<NodeOccurrence>> = pos_results
-        .iter()
-        .chain(named_results.iter())
-        .map(|r| Rc::clone(&r.as_ref().expect("reorder_named_args: Ok child").node))
-        .collect();
-    for (idx, declared) in some_wraps {
-        children[*idx] = synthesize_some_wrap(kb, &children[*idx], declared);
-    }
+    let mut children = some_wrapped_children(kb, some_wraps, pos_results, named_results);
     let named_children = children.split_off(pos_count);
     let pos_children = children;
     // Precompute each label's matched param index (immutable kb borrow) before
@@ -19133,6 +19302,176 @@ fn arrow_arity<V: TermView>(kb: &KnowledgeBase, ty: &V, arity_key: Symbol) -> Op
     }
 }
 
+/// WI-801: `A`'s COMPONENT COUNT, as [`arity_admitted_at_function_slot`] reads it
+/// — `Some(Some(n))` for a tuple type of `n` components, `Some(None)` for a known
+/// NON-tuple (one indivisible value), and `None` for a type that states neither
+/// yet.
+///
+/// The outer `None` is the load-bearing one. A rigid type parameter, an
+/// unresolved projection, a free inference var — a generic
+/// `operation ap[T](f: Function[A = T, B = R])` must stay unconstrained, since a
+/// component count is exactly what instantiation supplies. Gating on
+/// [`resolved_type_is_ground`] rather than on the [`extract_type`] shape is what
+/// separates "not a tuple" from "not yet known": both fall out of the match's
+/// `_` arm, and only the first may be read as "one value".
+fn function_param_component_count(kb: &mut KnowledgeBase, a: &Value) -> Option<Option<usize>> {
+    if !resolved_type_is_ground(kb, a) {
+        return None;
+    }
+    match extract_type(kb, a) {
+        TypeExtractor::NamedTuple(fields) => Some(Some(fields.len())),
+        _ => Some(None),
+    }
+}
+
+/// WI-801: `(A's components, the callback's arity)` when `actual`'s arity is NOT
+/// one a DECLARED `Function[A, B, E]` slot can apply — the half of the conformance
+/// question [`arrow_arity`]'s `None` leaves open.
+///
+/// "A `Function` states no arity" is true and was taken to mean nothing about
+/// arity is decidable here. It is not: `A` states a component count, and the slot
+/// reaches exactly two call counts (one whole `A`, or `A`'s components spread), so
+/// exactly two arities can stand in it. Everything else typechecks and traps —
+/// measured: a 3-binder lambda at a 2-component `A` loaded clean and trapped
+/// `ArityMismatch { expected: 3, got: 2 }`.
+///
+/// Why the LAMBDA spelling alone needed this. An op reference's eta arrow carries
+/// its parameter list as a CONCRETE tuple type, so a wrong count already fails the
+/// PARAM comparison its callers run (`validate_arrow_param_result`,
+/// `arrow_function_compatible`) — `got (_1: Int64, _2: Int64, _3: Int64) -> Int64`.
+/// An unannotated lambda ADOPTS the expected `A` as its param type (the
+/// `Expr::Lambda` visit case), so its param matches `A` by construction and its
+/// arity is the ONLY quantity left that can disagree — free-floating, and until
+/// now unread.
+///
+/// Yields the two counts — `(A's components, the callback's arity)` — so the
+/// DIAGNOSTIC can name them; see [`function_slot_arity_error`] on why a generic
+/// type mismatch cannot. `None` is NO VERDICT, never a guess, whenever either
+/// side is silent: `declared` stating an arity means it is an `arrow`, whose own
+/// equality check owns the comparison; `actual` stating none means it is not a
+/// callable this can count; an `A` that is not yet known states no component
+/// count, and a generic callback slot must stay unconstrained.
+fn function_slot_arity_counts<D: TermView, A: TermView>(
+    kb: &mut KnowledgeBase,
+    declared: &D,
+    actual: &A,
+    arity_key: Symbol,
+) -> Option<(Option<usize>, usize)> {
+    if arrow_arity(kb, declared, arity_key).is_some() {
+        return None;
+    }
+    let a_arity = arrow_arity(kb, actual, arity_key)?;
+    let (Some(d_param), _, _) = arrow_parts(kb, declared)? else {
+        return None;
+    };
+    function_slot_arity_counts_for(kb, &d_param, a_arity)
+}
+
+/// WI-801: the verdict with `A` ALREADY IN HAND — for a caller that has extracted
+/// it, so the check costs no second [`arrow_parts`]. That matters at
+/// [`arrow_function_compatible`], which runs per arrow-vs-`Function` comparison
+/// including the ones that SUCCEED, and already holds `A` as its `b_param`;
+/// re-deriving it there was a full `extract_callable_type` (five interns plus an
+/// `extract_type`) for a value sitting in scope.
+fn function_slot_arity_counts_for(
+    kb: &mut KnowledgeBase,
+    a: &Value,
+    a_arity: usize,
+) -> Option<(Option<usize>, usize)> {
+    let components = function_param_component_count(kb, a)?;
+    if crate::kb::call_form::arity_admitted_at_function_slot(components, a_arity) {
+        return None;
+    }
+    Some((components, a_arity))
+}
+
+/// WI-801: the ONE renderer for "`actual` does not conform to `declared`" at a
+/// site that has both types in hand — a [`TypeError::TypeMismatch`], except where
+/// the disagreement is an ARITY, which [`function_slot_arity_error`] renders as
+/// itself.
+///
+/// It has to be a renderer shared by the FAILURE paths rather than a check run
+/// ahead of them. The two sites that DECIDE the arity case —
+/// [`arrow_function_compatible`] and [`validate_arrow_param_result`] — cannot SAY
+/// it: the first is inside `types_compatible` and returns `bool`, so the pair is
+/// not in scope where the verdict is reached. Running the check at the ENTRY of
+/// every conformance test instead was measured at 1383 invocations to serve 9,
+/// each paying a `kb.intern` the surrounding code deliberately hoists — and it
+/// still reached only ONE of the three channels that render this error. The three
+/// are the op-ARGUMENT, the let-ANNOTATION and the op-RETURN; all now route here.
+fn conformance_error(
+    kb: &mut KnowledgeBase,
+    declared: Value,
+    actual: Value,
+    span: Option<Span>,
+    context: TypeErrorContext,
+) -> TypeError {
+    if let Some(err) = function_slot_arity_error(kb, &declared, &actual, span, &context) {
+        return err;
+    }
+    TypeError::TypeMismatch {
+        site: TypeError::here(),
+        span,
+        context,
+        expected: declared,
+        actual,
+    }
+}
+
+/// WI-801: the arity disagreement at a `Function[A, B, E]` slot, rendered as
+/// ITSELF rather than as a structural type mismatch. `None` when the arities
+/// agree or nothing is decidable — see [`function_slot_arity_counts`].
+///
+/// A generic mismatch cannot state this one. A callback's arrow carries `A` as
+/// its `param`, because an unannotated lambda ADOPTS the expected type (the
+/// `Expr::Lambda` visit case), so both sides print the SAME parameter list and
+/// only the unprinted `arity` child differs. The measured text was `expected
+/// Function[A = (_1: Int64, _2: Int64), B = Int64], got (_1: Int64, _2: Int64) ->
+/// Int64` — true, useless, and the expected-X-got-X shape WI-795 exists to keep
+/// out. The remedy is WI-795's: render the PAIR that actually differs. The printer
+/// is deliberately NOT the place to fix it — its arrow rendering is a faithful
+/// round trip, and an arity/param-count disagreement is a shape it is not meant
+/// to spell.
+///
+/// Names BOTH admissible counts, because `Function` admits two readings and a
+/// reader who has just been refused needs to know which ones were open — the same
+/// discipline the count diagnostic in [`positional_arg_expectations`] follows,
+/// including its collapse at ONE (where the two readings coincide, so offering a
+/// choice between 1 and 1 would read as a formatting bug). The two messages stay
+/// separate strings deliberately: that one counts call ARGUMENTS and this one
+/// callback PARAMETERS, and a shared wording would have to lie about one of them.
+fn function_slot_arity_error<D: TermView, A: TermView>(
+    kb: &mut KnowledgeBase,
+    declared: &D,
+    actual: &A,
+    span: Option<Span>,
+    context: &TypeErrorContext,
+) -> Option<TypeError> {
+    let arity_key = kb.intern("arity");
+    let (components, a_arity) = function_slot_arity_counts(kb, declared, actual, arity_key)?;
+    // At a NON-tuple `A`, and at a 1-component one, the two readings coincide on
+    // 1 — offering a choice between 1 and 1 would read as a formatting bug.
+    let expected = match components {
+        Some(n) if n != 1 => format!(
+            "a callback of 1 parameter (taking the whole argument type) or {n} (its \
+             components spread)",
+        ),
+        _ => "a callback of 1 parameter — this function's argument type has no \
+              components to spread"
+            .to_string(),
+    };
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: context.clone(),
+        expected,
+        actual: format!(
+            "a callback of {a_arity} parameter{}",
+            if a_arity == 1 { "" } else { "s" },
+        ),
+    })
+}
+
 /// Normalize a raw effects-row [`Value`] (the third element of [`arrow_parts`])
 /// into a canonical `effects_rows(...)` carrier the row machinery
 /// ([`subtype_effect_rows`] / [`unify_effect_rows`]) consumes. An arrow's
@@ -19417,7 +19756,19 @@ fn arrow_declared_param_list(
 /// nothing (WI-788): the absence was real, but unnamed, so it read as "handled".
 enum ArgExpectations {
     /// Check argument `i` against slot `i`; the count is already agreed.
-    Slots(Vec<(Symbol, Value)>),
+    ///
+    /// WI-801: `gather` carries `A` when these arguments are `A`'s COMPONENTS
+    /// spread across the call at a `Function[A, B, E]` slot, and the call must
+    /// therefore be normalized into ONE whole-`A` tuple before eval — see
+    /// [`gather_spread_args_into_tuple`]. `None` everywhere else: at an `arrow`
+    /// slot the arguments are genuine separate parameters, and at a `Function`
+    /// slot given ONE argument the call is already in whole-`A` form.
+    ///
+    /// It carries `A` ALONE; the component LABELS the rewrite needs are `slots`'
+    /// own keys, taken by the consumer. Carrying them here too would store the
+    /// same extraction twice — and re-deriving them from `A` downstream is the
+    /// `extract_type`-per-application this file's WI-798 notes exist to prevent.
+    Slots { slots: Vec<(Symbol, Value)>, gather: Option<Value> },
     /// The supplied count cannot be right. `expected` describes what would be.
     CountMismatch { expected: String },
     /// The callee's argument type is not known well enough to state anything.
@@ -19463,7 +19814,7 @@ fn positional_arg_expectations(
                 ),
             };
         }
-        return ArgExpectations::Slots(slots);
+        return ArgExpectations::Slots { slots, gather: None };
     }
     let Some(param_ty) = function_spec_param_type(kb, fn_type) else {
         // Neither spelling — a type variable, a projection, a malformed callee.
@@ -19491,11 +19842,24 @@ fn positional_arg_expectations(
     // establishes separately — see `Pattern::binder_arity` (kb/node_occurrence.rs)
     // on why the quantities the two sides agree on must be kept in view.
     if positional == 1 {
-        return ArgExpectations::Slots(vec![(kb.intern(&positional_label(0)), param_ty)]);
+        return ArgExpectations::Slots {
+            slots: vec![(kb.intern(&positional_label(0)), param_ty)],
+            // Already the whole-`A` form; nothing to normalize.
+            gather: None,
+        };
     }
     match extract_type(kb, &param_ty) {
         TypeExtractor::NamedTuple(fields) if fields.len() == positional => {
-            ArgExpectations::Slots(fields)
+            // WI-801: THE spread form. The typer is the only party that can act
+            // on it — the gather needs `A`'s component LABELS, which are erased
+            // by the time eval runs — so it normalizes the call to `f((a: …, b:
+            // …))` here rather than leaving eval to guess a spelling.
+            //
+            // This fires at every count but ONE, including ZERO: `f()` at
+            // `Function[A = (), B]` reaches a 1-binder callback as a Gather of
+            // zero arguments and trapped exactly as `f(1, 2)` did. Arity one is
+            // the sole count that is already whole, and it returned above.
+            ArgExpectations::Slots { slots: fields, gather: Some(param_ty) }
         }
         TypeExtractor::NamedTuple(fields) => ArgExpectations::CountMismatch {
             // At component count ONE the two readings coincide — the lone
@@ -26335,15 +26699,36 @@ fn arrow_function_compatible<A: TermView, E: TermView>(
         None => return false,
     };
 
-    // WI-791: NO arity check on this arm, and that is a decision rather than an
-    // omission. A `Function[A, B, E]` states no arity and cannot: its `A` is the
-    // ONE argument `apply(f, x: A)` passes, so `Function[(T, T), Bool]` has
+    // WI-791: no arity EQUALITY check on this arm, and that is a decision rather
+    // than an omission. A `Function[A, B, E]` states no arity and cannot: its `A`
+    // is the ONE argument `apply(f, x: A)` passes, so `Function[(T, T), Bool]` has
     // denoted both the single-tuple-argument reading and the eta arrow of a
     // 2-parameter op since WI-775. Demanding arity 1 of the arrow side would break
     // the latter; demanding a match would need a count `Function` does not have.
     // What DOES hold here is the by-name param comparison below, which is what
     // WI-775 installed to keep `(acc, x)` from bridging to `(_1, _2)`.
     //
+    // WI-801: what ALSO holds is that the two readings above are the ONLY two.
+    // Stating no arity bounds the check to a SET rather than an equality; it does
+    // not remove it. The param comparison below cannot stand in for that, because
+    // an unannotated lambda adopts `A` as its param type and so passes it
+    // regardless of how many binders it wrote.
+    //
+    // This is the GROUND path's decider (the non-ground path's is
+    // `validate_arrow_param_result`). It only decides — being inside
+    // `types_compatible`, it returns `bool` and the two types are not in scope
+    // where a message would be built; [`conformance_error`] renders the verdict
+    // at the sites that do have them. `b_param` IS the `A` the check needs, so it
+    // is handed over rather than re-extracted: this runs per comparison,
+    // including every one that succeeds.
+    let arity_key = kb.intern("arity");
+    if let (Some(a_arity), Some(bp)) = (arrow_arity(kb, actual, arity_key), b_param.clone()) {
+        if arrow_arity(kb, expected, arity_key).is_none()
+            && function_slot_arity_counts_for(kb, &bp, a_arity).is_some()
+        {
+            return false;
+        }
+    }
     // Param is contravariant (expected param <: actual param), result
     // covariant — matching `arrow_compatible`. A missing param on either side
     // (a bare `Function` without an `A` binding, polymorphic) is unconstrained.
@@ -31013,13 +31398,17 @@ fn check_operation_bodies(
                         None => false,
                     };
                 if !conforms {
-                    errors.push(TypeError::TypeMismatch {
-                        site: TypeError::here(),
-                        span: None,
-                        context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
-                        expected: effective_return.clone(),
-                        actual: result.ty.clone(),
-                    });
+                    // WI-801: through the shared renderer — an operation RETURNING a
+                    // callback (`-> Function[A = (Int64, Int64), B = Int64]`) is the
+                    // third channel that can carry an arity disagreement, and the
+                    // third that printed the two sides identically.
+                    errors.push(conformance_error(
+                        kb,
+                        effective_return.clone(),
+                        result.ty.clone(),
+                        None,
+                        TypeErrorContext::OperationReturn { op_name: op.op_sym },
+                    ));
                 } else if let Some(e) =
                     abstracting_return_error(kb, &result.ty, &effective_return, op.op_sym)
                 {
