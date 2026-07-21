@@ -351,11 +351,11 @@ R` accepts a value typed `(_1: A, _2: B) -> R`, which is what lets a named-binde
 callback take an operation's eta-expanded arrow. A permuted list is therefore compared
 slot-for-slot rather than paired by name, so `(y: Bool, x: Int64) -> R` fails
 against `(x: Int64, y: Bool) -> R` on the component types; and a two-parameter
-value does not conform to a three-parameter one. **Data tuples relate the same
-way** (WI-788): a component is identified by its name *and* its position, so
-tuple types align slot by slot with the names required to agree at each slot
-(§4.5), and permutation is not a subtyping rule anywhere. Width is — but only as
-a *prefix*; see §4.5.
+value does not conform to a three-parameter one. A positionally consumed list
+admits neither permutation nor width. **Data tuples are different**: their
+components are read by NAME (§Field access, mode 3), so **width is a subtyping
+rule** for them — dropped from anywhere — and permutation would be too, were it
+not held back by the destructuring reader. See §4.5.
 
 Because names are not matched up, the zip is admitted only when the two lists
 agree on which slot is which — the names line up, or one side carries the
@@ -368,10 +368,10 @@ of the parameter type — decides which of the two relations applies:
 * **arity ≠ 1** — the parameter position *is* the list, and the rules above hold:
   same arity, slot-by-slot, no permutation and no width.
 * **arity 1** — the parameter position is the sole parameter's TYPE. A tuple there
-  is *data*, so it is related as data: slot-by-slot with the names agreeing, plus
-  prefix width (§4.5). A callback reading only `(a: A)` therefore accepts a wider
-  `(a: A, b: B)`, but `(t: (x: A, y: B)) -> R` does **not** accept a callback
-  declared `(u: (y: B, x: A)) -> R` — those are different parameter types.
+  is *data*, so it is related as data: name-keyed, with width (§4.5). A callback
+  reading only `(a: A)` therefore accepts a wider `(a: A, b: B)`. Under the §4.5
+  interim, `(t: (x: A, y: B)) -> R` does not yet accept a callback declared
+  `(u: (y: B, x: A)) -> R`; that is the held-back permutation, not a separate rule.
 
 Arity is thus what tells `(t: (a: A, b: B))` — one tuple-typed parameter — from
 `(a: A, b: B)` — two parameters. They are different types: neither conforms to the
@@ -498,11 +498,23 @@ The read discipline cannot gate the rule, because a value flows through a
 `Function[A, B]` *parameter* to a consumer chosen at a different call site than
 the one relating it to `A`.
 
-**Width subtyping** survives, as a **prefix**: dropping a *trailing* component
-leaves every retained component's canonical position unchanged, so `(a: Int64, b:
-String)` conforms to `(a: Int64)`. Dropping a *middle* component would renumber
-everything after it (`c` moving from `_3` to `_2`), so `(a: A, b: B, c: C)` does
-**not** conform to `(a: A, c: C)`.
+**Width subtyping is name-keyed**: `S <: T` requires every component `n : T_n` of
+`T` to appear in `S` with `S_n <: T_n`, and `S`'s extra components — dropped from
+*anywhere*, not only the end — are simply not observed. So `(A: TA, B: TB, C: TC)
+<: (A: TA, C: TC)`. Order plays no part in `<:`; it belongs to *identity*, and the
+two are different relations.
+
+> **Interim (WI-804).** `<:` should be fully name-keyed, which would admit a
+> **permutation** as well — `(b: String, a: Int64) <: (a: Int64, b: String)`
+> serves every name-reading consumer. It is currently **refused**, and the reason
+> is the *reader*, not the relation: a destructuring binder list reads by slot and
+> count (§"Destructuring is POSITIONAL"), so it is unsound under any `<:` step.
+> The two failure modes differ, which is what this interim exploits — width
+> changes the binder **count** and so fails *loudly*, while a permutation keeps
+> the count and swaps the **values**, silently binding a component the checker
+> typed from a different field. Order is therefore held until destructuring binds
+> by **label** rather than by slot; at that point the order requirement is dropped
+> and `<:` becomes name-keyed outright.
 
 ```
 -- Tuple types (in type position)

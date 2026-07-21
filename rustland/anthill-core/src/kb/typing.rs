@@ -25038,7 +25038,8 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TupleAlign {
     /// A DATA tuple. Slot-by-slot with the NAMES required to agree at each slot,
-    /// plus PREFIX width (`a` may be longer; the extra components are trailing).
+    /// plus NAME-KEYED width — `b`'s components need only be a subset of `a`'s,
+    /// dropped from anywhere (WI-804).
     ///
     /// The name test is what keeps `(a: Int64)` and `(_1: Int64)` apart: a
     /// component's name IS its access path — `t.x` reads `Value::Tuple.named`,
@@ -25094,7 +25095,7 @@ enum TupleAlign {
 /// consumer is precisely the WI-782 defect:
 ///
 /// * [`TupleAlign::ByName`] — a DATA tuple. Slot-by-slot with the names required
-///   to agree at each slot, plus PREFIX width. (WI-788; the variant name is now
+///   to agree at each slot, plus name-keyed WIDTH. (WI-788/WI-804; the name is now
 ///   about names PARTICIPATING, not about the correspondence being built from
 ///   them.)
 /// * [`TupleAlign::ParamList`] — an arrow's PARAMETER LIST, APPLIED
@@ -25123,14 +25124,13 @@ fn align_named_tuple_fields(
     b_fields: &[(Symbol, Value)],
     mode: TupleAlign,
 ) -> Option<Vec<(Value, Value)>> {
-    // Both modes are the SAME positional zip; they differ in exactly TWO
-    // one-line predicates, stated here as a table so neither can drift and so a
+    // The two modes differ on TWO axes, tabulated so neither can drift and so a
     // reader can see that the second one exists:
     //
-    //   * LENGTH — a data tuple admits PREFIX width (`a` may be longer, the
-    //     extra components trailing); a parameter list demands equal arity,
-    //     because eval passes exactly as many arguments as the call site's type
-    //     says (WI-782).
+    //   * WIDTH — a DATA tuple admits width subtyping: `b`'s components need only
+    //     be a SUBSET of `a`'s, dropped from anywhere (WI-804 restored the middle
+    //     drop; see below). A PARAMETER LIST admits none — eval passes exactly as
+    //     many arguments as the call site's type says (WI-782).
     //   * SYNTHETIC ESCAPE — a parameter list may zip when one side carries the
     //     `_1.._n` convention, which makes no claim about which slot is which;
     //     that is what lets a named-binder callback `(acc, x)` accept a
@@ -25138,34 +25138,70 @@ fn align_named_tuple_fields(
     //     `_N` is a component's access path there, so admitting it would relate
     //     `(a: Int64, b: String)` to `(Int64, String)`, which proposal 004
     //     rule 4 makes a different type.
-    let (len_ok, allow_synthetic) = match mode {
-        TupleAlign::ByName => (a_fields.len() >= b_fields.len(), false),
-        TupleAlign::ParamList => (a_fields.len() == b_fields.len(), true),
+    //
+    // WI-804, on the DATA arm's ORDER requirement — it is an INTERIM, not the
+    // rule. Subtyping is properly NAME-KEYED for a data tuple: every consumer of
+    // a `(a, c)`-typed value asks for `.a` and `.c`, and an `(a, b, c)` value
+    // answers both wherever the components sit. Order belongs to a tuple's
+    // IDENTITY, not to `<:`; conflating the two is what made WI-788 refuse
+    // `(A, B, C) <: (A, C)`, a correct program.
+    //
+    // What blocks full name-keying is not the relation but the READER: a
+    // destructuring binder list (WI-785) reads by SLOT and COUNT, so it is
+    // unsound under any `<:` step. The two failure modes differ, and that is what
+    // this interim exploits — MEASURED both ways:
+    //   * WIDTH changes the COUNT, so the binder list fails to match and raises
+    //     LOUDLY. Admitting it costs a loud error, not a wrong answer.
+    //   * PERMUTATION keeps the count and swaps the VALUES, so binder `i` is
+    //     bound to a component the typer typed from a different field — an
+    //     operation declared `-> Int64` returning a `String` on a clean load.
+    // So width is admitted and order is held until the reader binds by LABEL
+    // rather than by slot, which is the real WI-788 and is tracked separately.
+    // When that lands, delete the order requirement here — not before.
+    let (allow_width, allow_synthetic) = match mode {
+        TupleAlign::ByName => (true, false),
+        TupleAlign::ParamList => (false, true),
     };
-    if !len_ok {
+    if !allow_width && a_fields.len() != b_fields.len() {
         return None;
     }
-    // WI-788: prefix width stops SHORT of the unit type. With `b` empty the zip
-    // is empty and every test below passes vacuously, so `(a: A, b: B)` conformed
-    // to `()` — and `()` has exactly ONE value, which a 2-component tuple is not.
-    // It loaded clean and then trapped, because a nullary pattern `lambda () -> …`
-    // matches zero components against two. Unit relates to unit only.
+    if allow_width && a_fields.len() < b_fields.len() {
+        return None;
+    }
+    // Width stops SHORT of the unit type. Every test below is vacuous on an empty
+    // `b`, so `(a: A, b: B)` would conform to `()` — but `()` is not "the record
+    // with no fields", it is the UNIT sort, which §4.5 gives exactly ONE value,
+    // and a 2-component tuple is not that value. Unit relates to unit only.
     if b_fields.is_empty() && !a_fields.is_empty() {
         return None;
     }
-    // Zipping stops at `b_fields`, so under `ByName`'s prefix width the names are
-    // compared over the retained prefix and `a`'s trailing extras are ignored.
-    let zipped = || a_fields.iter().zip(b_fields.iter());
-    // Names decided BEFORE building, so a mismatch costs no allocation.
-    let names_agree_in_order = zipped().all(|((a_name, _), (b_name, _))| a_name == b_name);
-    if names_agree_in_order
-        || (allow_synthetic
-            && (is_positional_tuple_names(kb, a_fields)
-                || is_positional_tuple_names(kb, b_fields)))
+    // The SYNTHETIC escape is a whole-list property, so it is decided first and
+    // bypasses the name walk entirely.
+    if allow_synthetic
+        && (is_positional_tuple_names(kb, a_fields) || is_positional_tuple_names(kb, b_fields))
     {
-        return Some(zipped().map(|((_, a_ty), (_, b_ty))| (a_ty.clone(), b_ty.clone())).collect());
+        return Some(
+            a_fields
+                .iter()
+                .zip(b_fields.iter())
+                .map(|((_, a_ty), (_, b_ty))| (a_ty.clone(), b_ty.clone()))
+                .collect(),
+        );
     }
-    None
+    // Name-keyed, ORDER-PRESERVING: the scan resumes from `next` rather than
+    // restarting, so each `b` name must occur in `a` AFTER the previous one.
+    // Dropping components (from anywhere) preserves the order of those that
+    // remain, so width passes; a PERMUTATION does not, so it is refused — the
+    // interim above. At equal arity this degenerates to the slot-for-slot
+    // agreement `ParamList` needs, which is why one walk serves both.
+    let mut next = 0;
+    let mut pairs = Vec::with_capacity(b_fields.len());
+    for (b_name, b_ty) in b_fields {
+        let off = a_fields[next..].iter().position(|(n, _)| n == b_name)?;
+        pairs.push((a_fields[next + off].1.clone(), b_ty.clone()));
+        next += off + 1;
+    }
+    Some(pairs)
 }
 
 /// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
@@ -29176,10 +29212,11 @@ pub(crate) fn typed_pattern_bounds_hold(
 /// Width subtyping: actual may have more fields than expected.
 /// Depth subtyping: each expected field's type must be a supertype of actual's.
 /// WI-342: the sole `named_tuple` subtyping, carrier-agnostic over [`TermView`].
-/// PREFIX width subtyping: `expected` is related to a same-length PREFIX of
-/// `actual`, slot by slot, with the names required to agree at each slot
-/// (WI-788 — a data tuple's component ORDER is part of its type identity, so a
-/// permutation is refused here exactly as it is in a parameter list). The
+/// NAME-KEYED width subtyping: every `expected` component must appear in
+/// `actual` with a compatible type, and `actual`'s extras — dropped from
+/// ANYWHERE — are not observed (WI-804). Order is not part of `<:`; the
+/// order-PRESERVING scan is an interim holding permutation back until
+/// destructuring binds by label, NOT a claim that `<:` is ordered. The
 /// equal-arity variant, which lets a named-binder callback arrow's contravariant
 /// param check accept a multi-param op's eta arrow, belongs to
 /// [`arrow_params_compatible`] (WI-775) as [`TupleAlign::ParamList`].

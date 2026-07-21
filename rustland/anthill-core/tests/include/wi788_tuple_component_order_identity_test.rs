@@ -22,26 +22,34 @@
 //!      `f((a: "ess", b: 3))` (in order, wrong types) and `f(true)` loaded clean
 //!      too, which `function_slot_*` below pins.
 //!
-//! THE RULE. A component is identified by its NAME and its POSITION together, so
-//! tuple types align SLOT BY SLOT with the names required to agree at each slot —
-//! the same correspondence `TupleAlign::ParamList` already performed for arrow
-//! parameter lists (WI-782), one rule for both as the ticket asked.
-//! `(a: Int64, b: String)` therefore differs from `(b: String, a: Int64)` (the
-//! positions disagree) AND from `(Int64, String)` (the names disagree, proposal
-//! 004 rule 4 — pinned by `positional_tuple_does_not_conform_to_a_named_one`).
-//! Numbering components `_1.._n` by definition order is a way to SEE that
-//! position counts; it is not a normalization, and read literally it would erase
-//! names and collapse `(a: A)` into `(_1: A)`.
+//! THE RULE, as it stands after WI-804 corrected this ticket. ORDER is part of a
+//! tuple's IDENTITY: `(a: Int64, b: String)` differs from `(b: String, a: Int64)`,
+//! and from `(Int64, String)` too (names — proposal 004 rule 4, pinned by
+//! `positional_tuple_does_not_conform_to_a_named_one`).
+//!
+//! But `<:` IS A DIFFERENT RELATION and is NAME-KEYED. Width holds with a
+//! component dropped from ANYWHERE, since a consumer of an `(a, c)`-typed value
+//! asks for `.a` and `.c` and an `(a, b, c)` value answers both wherever they sit
+//! (`width_*` below). WI-788 originally refused the middle drop by carrying the
+//! order rule across from identity into `<:`; that refused correct programs and
+//! bought nothing, because the PREFIX drop it allowed breaks the destructuring
+//! reader exactly as the middle drop would.
+//!
+//! PERMUTATION is refused, but as an INTERIM and for a reason that is not about
+//! `<:`: the destructuring reader (WI-785) reads by SLOT and COUNT, so it is
+//! unsound under any `<:` step — and the two failure modes differ. Width changes
+//! the COUNT, so the match fails LOUDLY; a permutation keeps the count and swaps
+//! the VALUES, silently binding a component the typer typed from a different
+//! field. Order is held until destructuring binds by LABEL, which is the real
+//! WI-788 and is tracked separately. `permuted_*` below pins the interim, and
+//! those tests are expected to INVERT when the reader is fixed.
 //!
 //! WHY NOT "align by the consumer's read discipline" (the direction originally
 //! proposed): it is not decidable where the permutation is admitted. `t.x` reads
 //! by name and a binder list reads by position, but a value flows through a
 //! `Function[A, B]` PARAMETER to a consumer chosen at a different call site, so
 //! the site relating the literal to `A` cannot know which reader it will meet.
-//!
-//! WIDTH survives as a PREFIX: dropping a TRAILING component leaves every
-//! retained component's canonical position unchanged, whereas dropping a MIDDLE
-//! one renumbers everything after it. `width_*` below pins both halves.
+//! Fixing the READER sidesteps this: a by-label fetch needs no such knowledge.
 
 use crate::common::{interp_for, try_load_kb_with};
 
@@ -174,11 +182,9 @@ end
     );
 }
 
-// ── width subtyping: prefix yes, middle-drop no ────────────────
+// ── width subtyping: name-keyed, dropped from anywhere ─────────
 
-/// PREFIX width survives. Dropping a TRAILING component leaves every retained
-/// component's canonical position unchanged, so `(a: Int64, b: String)` still
-/// conforms to `(a: Int64)`.
+/// A TRAILING drop conforms: `(a: Int64, b: String) <: (a: Int64)`.
 #[test]
 fn width_prefix_still_conforms() {
     let src = r#"
@@ -191,21 +197,27 @@ end
     assert_eq!(run_int(src, "test.wi788.widthok.drive"), 3);
 }
 
-/// A MIDDLE drop does NOT. Removing `b` renumbers `c` from `_3` to `_2`, which is
-/// a different type — the boundary that distinguishes this rule from the looser
-/// "expected names appear in order" (subsequence) reading.
+/// A MIDDLE drop conforms too — width is NAME-KEYED, so a dropped component may
+/// come from anywhere. `(A: TA, B: TB, C: TC) <: (A: TA, C: TC)`.
+///
+/// WI-788 shipped this REFUSED, on the argument that dropping `b` renumbers `c`
+/// from `_3` to `_2` and so changes the type. That argument is about IDENTITY and
+/// was applied to `<:`, which is a different relation: the consumer of an
+/// `(a, c)`-typed value asks for `.a` and `.c`, and an `(a, b, c)` value answers
+/// both wherever they sit. It also did not buy safety — the prefix drop it
+/// ALLOWED breaks the destructuring reader exactly as this one would (both change
+/// the binder COUNT and raise loudly), so the rule refused a correct program and
+/// admitted an equally broken one. WI-804 restored it.
 #[test]
-fn width_middle_drop_is_refused() {
-    assert_refused(
-        r#"
+fn width_middle_drop_conforms() {
+    let src = r#"
 namespace test.wi788.widthmid
-  import anthill.prelude.{Int64, String, Bool}
-  operation narrow(t: (a: Int64, c: Bool)) -> Int64 = t.a
-  operation drive() -> Int64 = narrow((a: 3, b: "ess", c: true))
+  import anthill.prelude.{Int64, String}
+  operation narrow(t: (a: Int64, c: Int64)) -> Int64 = t.c
+  operation drive() -> Int64 = narrow((a: 3, b: "ess", c: 10))
 end
-"#,
-        "dropping a MIDDLE component, which renumbers the ones after it",
-    );
+"#;
+    assert_eq!(run_int(src, "test.wi788.widthmid.drive"), 10);
 }
 
 // ── the Function slot checks its arguments at all ──────────────
@@ -288,7 +300,7 @@ fn labelled_argument_at_a_function_slot_reports_the_label() {
     );
 }
 
-/// PREFIX width stops short of the unit type. `()` has exactly one value, which a
+/// Width stops short of the unit type. `()` has exactly one value, which a
 /// 2-component tuple is not — but an empty expected list zips to nothing and every
 /// name test passes vacuously, so this conformed and then trapped at eval against
 /// a nullary pattern. Also found by `/code-review` here.

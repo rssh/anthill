@@ -108,16 +108,15 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   functor has a field schema, else by interning order
   (`canonicalize_record_named_args`, `kb/resolve.rs`). **Not** alphabetical, and
   **not** universal: it returns early for an ORDERED PRODUCT (a named tuple),
-  whose component order is part of its TYPE IDENTITY (WI-788) *alongside* its
-  names — a component is identified by name AND position, so tuple types relate
-  slot-by-slot with names agreeing at each slot. `(a: Int64, b: String)` differs
-  from `(b: String, a: Int64)` (order) and from `(Int64, String)` (names); the
-  `_1.._n` numbering is an intuition for why order counts, NOT a normalization —
-  nothing rewrites a named tuple positionally. Load-bearing — components are read
-  positionally (see `match_tuple_pattern`), so canonicalizing one would silently
-  re-bind destructured components. A permutation is refused by the typer rather
-  than reordered here; width subtyping is prefix-only. See `docs/kernel-language.md`
-  §4.5.
+  whose component order is part of its TYPE IDENTITY (WI-788) — `(a: Int64, b:
+  String)` differs from `(b: String, a: Int64)` (order) and from `(Int64, String)`
+  (names). IDENTITY and `<:` ARE DIFFERENT RELATIONS: subtyping is name-keyed, so
+  width holds with components dropped from anywhere, and permutation is refused
+  only as an INTERIM until destructuring binds by label (WI-804). Do not carry the
+  order rule across from identity into `<:` — that mistake refused correct
+  programs. Load-bearing — components are read positionally (see
+  `match_tuple_pattern`), so canonicalizing one would silently re-bind
+  destructured components. See `docs/kernel-language.md` §4.5.
 
 # Repository rules
 
