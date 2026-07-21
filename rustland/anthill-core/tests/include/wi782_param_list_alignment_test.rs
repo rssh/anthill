@@ -354,27 +354,27 @@ end
 /// loaded again on the strength of "a data tuple's components are read by NAME
 /// (`t.x`), so a permuted one is correct".
 ///
-/// WI-788 OVERTURNED THAT PREMISE, and this test inverted with it. A component is
-/// identified by its NAME and its POSITION together, so tuple types align slot by
-/// slot with the names agreeing at each slot: `(x: Int64, y: Bool)` and
-/// `(y: Bool, x: Int64)` are DIFFERENT TYPES because the positions disagree, and
-/// the mismatch is a load error.
+/// WI-788 OVERTURNED THAT PREMISE and this test inverted; WI-803 RESTORED IT and
+/// inverted it back, which is why the reasoning is kept in full rather than
+/// rewritten — the round trip is the lesson.
 ///
-/// The premise failed because "read by NAME" is not a property of the TYPE, so it
-/// could not gate the relation. `t.x` reads by name, but a destructuring binder
-/// list over the same value reads by POSITION (WI-785), and which one a value
-/// eventually meets is not knowable where the permutation is admitted — the value
-/// can flow through a `Function[A, B]` parameter to a consumer chosen at another
-/// call site entirely. Admitting the permutation for the name-reader therefore
-/// admitted it for the position-reader too, and that was a silent wrong answer:
-/// an operation declared `-> Int64` returning a `String`.
+/// WI-788's argument was that "read by NAME" is not a property of the TYPE, so it
+/// cannot gate the relation: `t.x` reads by name but a destructuring binder list
+/// over the same value read by POSITION (WI-785), and which reader a value meets
+/// is not knowable where the permutation is admitted — it can flow through a
+/// `Function[A, B]` parameter to a consumer chosen at another call site. That
+/// argument was CORRECT, and it is precisely why WI-788's fix was aimed at the
+/// wrong half: it made the relation match the worse of the two readers instead of
+/// fixing that reader. WI-803 taught the binder list to fetch by LABEL, so both
+/// readers are name-keyed and the premise holds after all.
 ///
-/// So this program is now an ERROR, fixed by writing the components in the
-/// declared order. Its sibling `permuted_parameter_list_is_refused` refuses the
-/// 2-parameter permutation; the two now agree rather than discriminate, which is
-/// the point — one rule, stated once, for both.
+/// So this program loads and evaluates again. Its sibling
+/// `permuted_parameter_list_is_refused` still refuses the 2-PARAMETER
+/// permutation, and the two do NOT agree — that is the point. A parameter list is
+/// applied positionally by eval, with no label to fetch by; a tuple parameter is
+/// DATA and is read by name. WI-791's arity child is what tells them apart.
 #[test]
-fn permuted_tuple_typed_parameter_is_refused() {
+fn permuted_tuple_typed_parameter_still_applies() {
     let src = r#"
 namespace test.wi782.falseperm
   import anthill.prelude.{Int64, Bool}
@@ -386,12 +386,11 @@ namespace test.wi782.falseperm
     = take(get_x)
 end
 "#;
-    let errs = try_load_kb_with(src)
-        .err()
-        .expect("a permuted tuple parameter is a different type and must be refused");
-    assert!(
-        errs.iter().any(|e| e.contains("mismatch")),
-        "expected a type mismatch naming the two orders; got: {errs:?}",
+    let mut interp = interp_for(src);
+    assert_eq!(
+        run_int(&mut interp, "test.wi782.falseperm.drive"),
+        7,
+        "a tuple PARAMETER is data, read by name — the permutation is a `<:` step",
     );
 }
 

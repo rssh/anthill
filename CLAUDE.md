@@ -110,13 +110,20 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   **not** universal: it returns early for an ORDERED PRODUCT (a named tuple),
   whose component order is part of its TYPE IDENTITY (WI-788) — `(a: Int64, b:
   String)` differs from `(b: String, a: Int64)` (order) and from `(Int64, String)`
-  (names). IDENTITY and `<:` ARE DIFFERENT RELATIONS: subtyping is name-keyed, so
-  width holds with components dropped from anywhere, and permutation is refused
-  only as an INTERIM until destructuring binds by label (WI-804). Do not carry the
-  order rule across from identity into `<:` — that mistake refused correct
-  programs. Load-bearing — components are read positionally (see
-  `match_tuple_pattern`), so canonicalizing one would silently re-bind
-  destructured components. See `docs/kernel-language.md` §4.5.
+  (names). IDENTITY and `<:` ARE DIFFERENT RELATIONS: subtyping is fully
+  name-keyed, so BOTH width (dropped from anywhere) and PERMUTATION hold
+  (WI-804, WI-803). Do not carry the order rule across from identity into `<:` —
+  that mistake refused correct programs. Order still binds where position is what
+  is read: an arrow's PARAMETER LIST and UNIFICATION (`TupleAlign`'s three
+  disciplines, `kb/typing.rs`). Canonicalizing a tuple's components would change
+  its identity, hence the exemption. See `docs/kernel-language.md` §4.5.
+- **Destructuring binds by LABEL** (WI-803): the typer records which component
+  name each binder takes into `Pattern::Tuple.labels`, and `match_tuple_pattern`
+  fetches by name via `TupleComponents::by_label` — the same reader `t.x` uses.
+  Reading by SLOT is what made a permuted value bind a component the typer typed
+  from a different field (WI-788). A POSITIONAL carrier has no names, so it still
+  reads by slot; that is exact, not a fallback, and it is how a spread call
+  (`f(3, 10)`) arrives.
 
 # Repository rules
 

@@ -35,14 +35,20 @@
 //! bought nothing, because the PREFIX drop it allowed breaks the destructuring
 //! reader exactly as the middle drop would.
 //!
-//! PERMUTATION is refused, but as an INTERIM and for a reason that is not about
-//! `<:`: the destructuring reader (WI-785) reads by SLOT and COUNT, so it is
-//! unsound under any `<:` step — and the two failure modes differ. Width changes
-//! the COUNT, so the match fails LOUDLY; a permutation keeps the count and swaps
-//! the VALUES, silently binding a component the typer typed from a different
-//! field. Order is held until destructuring binds by LABEL, which is the real
-//! WI-788 and is tracked separately. `permuted_*` below pins the interim, and
-//! those tests are expected to INVERT when the reader is fixed.
+//! PERMUTATION is likewise admitted by `<:` — WI-803 fixed the READER, which is
+//! what the interim here was protecting. A destructuring binder list used to read
+//! by SLOT and COUNT; it now takes each binder's component NAME from the expected
+//! type and fetches by label, so a permuted value hands every binder the component
+//! the typer typed it from. The `permuted_*` tests below were written as
+//! refusals against this ticket's rule and INVERTED when that landed, exactly as
+//! this header predicted they would; they are kept here, next to the defect they
+//! came from, and `wi803_destructure_by_label_test` drives each one through to its
+//! answer.
+//!
+//! ORDER IS STILL IDENTITY, which is this ticket's actual holding and is
+//! untouched: a permutation is refused by UNIFICATION and by an arrow's PARAMETER
+//! LIST, where position is what eval reads. What WI-803 removed is only the
+//! carrying of that rule across into `<:`, a different relation.
 //!
 //! WHY NOT "align by the consumer's read discipline" (the direction originally
 //! proposed): it is not decidable where the permutation is admitted. `t.x` reads
@@ -80,90 +86,107 @@ fn assert_refused(src: &str, what: &str) {
 /// as `wi786_tuple_component_order_test`'s, which pins the carrier invariant this
 /// ticket's rule rests on.
 fn fn_slot_case(ns: &str, imports: &str, ty: &str, lit: &str, lam: &str) -> String {
-    format!(
-        r#"
-namespace {ns}
-  import anthill.prelude.{{{imports}}}
-  operation ap(f: Function[A = {ty}, B = Int64]) -> Int64
-    = f({lit})
-  operation drive() -> Int64
-    = ap({lam})
-end
-"#
-    )
+    crate::common::function_slot_case(ns, imports, ty, lit, lam)
 }
 
 // ── THE REGRESSION, driven end-to-end ──────────────────────────
 
-/// THE headline program. Pre-fix this loaded clean and `drive()`, declared
-/// `-> Int64`, evaluated to `Str("ess")` — a wrong-TYPED value, not merely a
-/// wrong one, with no trap anywhere.
+/// THE headline program. Pre-WI-788 this loaded clean and `drive()`, declared
+/// `-> Int64`, evaluated to `Str("ess")` — a wrong-TYPED value, not merely a wrong
+/// one, with no trap anywhere. WI-788 refused it; WI-803 admits it again and binds
+/// `p` to the `Int64`, which is the answer that was wanted all along.
+///
+/// INVERTED BY WI-803 from `..._is_refused`. Kept here because the refusal and the
+/// right answer are two readings of ONE program, and this file is where the
+/// program is explained. `wi803_..::permuted_literal_at_a_function_slot_binds_by_label`
+/// asserts the value.
 #[test]
-fn permuted_literal_at_a_function_slot_is_refused() {
-    assert_refused(
-        &fn_slot_case(
-            "test.wi788.headline",
-            "Int64, String, Function",
-            "(a: Int64, b: String)",
-            r#"(b: "ess", a: 3)"#,
-            "lambda (p, q) -> p",
-        ),
-        "a permuted tuple literal against a declared (a: Int64, b: String)",
+fn permuted_literal_at_a_function_slot_now_conforms() {
+    let errs = load_errs(&fn_slot_case(
+        "test.wi788.headline",
+        "Int64, String, Function",
+        "(a: Int64, b: String)",
+        r#"(b: "ess", a: 3)"#,
+        "lambda (p, q) -> p",
+    ));
+    assert!(
+        errs.is_empty(),
+        "`<:` is name-keyed and the reader binds by label, so a permuted literal \
+         conforms; got: {errs:?}",
     );
 }
 
 /// The ALL-Int64 variant, which carries no type signal at all: every component
-/// type matches under the old by-name lookup, so nothing downstream could notice.
-/// It returned 7 where the declared order (a, b) implies -7.
+/// type matches, so nothing downstream could ever notice a swap. It returned 7
+/// where the declared order (a, b) implies -7; under WI-803 it conforms AND
+/// returns -7 (driven in `wi803_..::permuted_literal_with_uniform_types_binds_by_label`).
+///
+/// INVERTED BY WI-803.
 #[test]
-fn permuted_literal_with_uniform_types_is_refused() {
-    assert_refused(
-        &fn_slot_case(
-            "test.wi788.uniform",
-            "Int64, Function",
-            "(a: Int64, b: Int64)",
-            "(b: 10, a: 3)",
-            "lambda (p, q) -> p - q",
-        ),
-        "a permuted all-Int64 tuple literal",
-    );
+fn permuted_literal_with_uniform_types_now_conforms() {
+    let errs = load_errs(&fn_slot_case(
+        "test.wi788.uniform",
+        "Int64, Function",
+        "(a: Int64, b: Int64)",
+        "(b: 10, a: 3)",
+        "lambda (p, q) -> p - q",
+    ));
+    assert!(errs.is_empty(), "a permuted all-Int64 literal conforms; got: {errs:?}");
 }
 
-// ── order is identity at every tuple position ──────────────────
+// ── `<:` is name-keyed at every tuple position ─────────────────
 
-/// A plain operation ARGUMENT. Pre-fix this loaded clean and even returned the
-/// RIGHT answer (3), because `t.a` reads by NAME — which is precisely why the
-/// by-name relation looked sound and why it could not be gated on the reader:
-/// the same admitted permutation is a silent wrong answer once the reader is a
-/// binder list instead.
+/// A plain operation ARGUMENT. This one always returned the RIGHT answer (3),
+/// because `t.a` reads by NAME — which is precisely why the by-name relation
+/// looked sound, and why WI-788 refusing it was the over-correction WI-804 and
+/// WI-803 unwound between them.
+///
+/// INVERTED BY WI-803.
 #[test]
-fn permuted_operation_argument_is_refused() {
-    assert_refused(
-        r#"
+fn permuted_operation_argument_now_conforms() {
+    let src = r#"
 namespace test.wi788.oparg
   import anthill.prelude.{Int64, String}
   operation take(t: (a: Int64, b: String)) -> Int64 = t.a
   operation drive() -> Int64 = take((b: "ess", a: 3))
 end
-"#,
-        "a permuted tuple passed as an operation argument",
-    );
+"#;
+    let errs = load_errs(src);
+    assert!(errs.is_empty(), "a permuted argument conforms; got: {errs:?}");
+    assert_eq!(run_int(src, "test.wi788.oparg.drive"), 3);
 }
 
 /// An operation RETURN — the dual position, same rule.
+///
+/// INVERTED BY WI-803.
 #[test]
-fn permuted_operation_return_is_refused() {
-    assert_refused(
-        r#"
+fn permuted_operation_return_now_conforms() {
+    let src = r#"
 namespace test.wi788.opret
   import anthill.prelude.{Int64, String}
   operation mk() -> (a: Int64, b: String) = (b: "ess", a: 3)
   operation drive() -> Int64 = mk().a
 end
-"#,
-        "a permuted tuple returned from an operation",
-    );
+"#;
+    let errs = load_errs(src);
+    assert!(errs.is_empty(), "a permuted return conforms; got: {errs:?}");
+    assert_eq!(run_int(src, "test.wi788.opret.drive"), 3);
 }
+
+// NOTE on where ORDER-AS-IDENTITY is pinned now that the `<:` cases above have
+// inverted. It is NOT pinned end-to-end from this file: the two relations that
+// still refuse a permutation are `TupleAlign::EQUALITY` (unification) and
+// `TupleAlign::PARAM_LIST` (an arrow's parameter list), and reaching EQUALITY from
+// surface syntax is not something a fixture here does reliably — a type ARGUMENT
+// (`List[T = (a: …, b: …)]`) was tried and goes through SUBTYPING, so it conforms
+// and proves nothing about identity. Measured, not assumed: that fixture was
+// written as a refusal, failed, and was removed rather than weakened.
+//
+// Both disciplines are pinned DIRECTLY at the relation instead, in
+// `kb::typing::wi799_tuple_align_policy::alignment_reports_the_slot_each_component_matched`,
+// which asserts the same permutation aligns under DATA and is refused under
+// PARAM_LIST and EQUALITY. The parameter-list half is additionally driven
+// end-to-end by `wi803_..::identity_permuted_parameter_list_is_still_refused`.
 
 /// Names still take part, so this is NOT a raw positional zip: a POSITIONAL tuple
 /// does not conform to a NAMED one of the same component types (proposal 004

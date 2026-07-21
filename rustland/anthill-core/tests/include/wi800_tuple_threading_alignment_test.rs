@@ -54,40 +54,27 @@ const DECLARED: &str = "(head: xs.T, rest: List[T = xs.T])";
 
 // ── the hint agrees with the relation about WHETHER to thread ───
 
-/// A PERMUTED literal is refused (WI-788), and the diagnostic reports the type the
-/// literal actually has: `head` is the free `?_` nothing determined. It used to be
-/// reported as `xs.T` — the expected component type, threaded in by name at a slot
-/// the relation was about to refuse, so the "got" side named a type the literal was
-/// never given.
+/// A PERMUTED literal now CONFORMS (WI-803 made `<:` fully name-keyed), and the
+/// threading has to agree with that too — it shares the relation's walk, so a
+/// component's hint follows it to whatever slot it actually occupies.
+///
+/// INVERTED BY WI-803, which is the outcome this test was built to detect either
+/// way. Under WI-788 the literal was refused and the point was that the "got" side
+/// must not report a type the literal never had (`head: xs.T`, threaded in by name
+/// at a slot the relation was about to refuse). The shared walk is what makes both
+/// verdicts come out right without a second alignment rule: it threaded nothing
+/// when the relation refused, and it threads correctly now that the relation
+/// accepts. A threading that had kept its own order-blind by-name lookup would
+/// have produced the right answer here for the wrong reason, and the wrong one
+/// before.
 #[test]
-fn permuted_literal_is_not_threaded() {
+fn permuted_literal_is_threaded_at_its_own_slot() {
     let src = split_case("test.wi800.permuted", DECLARED, "(rest: t, head: h)");
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("mismatch")),
-        "a permuted tuple literal must still be refused; got: {errs:?}",
-    );
-    // Only the GOT side — `head: xs.T` is what the message SHOULD say on the
-    // expected side, and asserting over the whole string would pin nothing.
-    let got: Vec<&str> = errs.iter().filter_map(|e| e.split_once(", got ")).map(|(_, g)| g).collect();
-    assert!(!got.is_empty(), "expected a mismatch message with a got-side; got: {errs:?}");
-    assert!(
-        !got.iter().any(|g| g.contains("head: xs.T")),
-        "the refused literal must not be reported as having the EXPECTED component \
-         type threaded into it; got: {errs:?}",
-    );
-    // The positive half, so the assertion above cannot pass on a message that
-    // simply stopped naming components: the literal is reported in SOURCE order,
-    // `rest` before `head`. Deliberately NOT asserting how the unbound `head`
-    // renders (`?_` today) — that is the type printer's business, and pinning it
-    // here would fail this test for a change that has nothing to do with
-    // threading.
-    assert!(
-        got.iter().any(|g| {
-            g.find("rest").is_some_and(|r| g.find("head").is_some_and(|h| r < h))
-        }),
-        "the got-side must be the literal's own type, in SOURCE order (rest before \
-         head); got: {errs:?}",
+        errs.is_empty(),
+        "a permuted tuple literal conforms and its components' hints thread to the \
+         slots they occupy; got: {errs:?}",
     );
 }
 
@@ -138,20 +125,24 @@ fn width_threads_around_a_dropped_component() {
 /// different components: expected `a` resumes AFTER `b`'s match, so it takes the
 /// SECOND `a`. The relation is built on that choice, so the hint must be too.
 ///
-/// This program is accepted, and the value it computes is NOT the one its type
-/// says — `t.a` reads the FIRST `a` (`field_access` is by name) while the relation
-/// typed the second. That is a live defect of the WI-788 family, filed as WI-805,
-/// and is NOT what this ticket fixes: it is in the relation and the by-name
-/// reader, not in the threading, which is why this test pins the alignment's
-/// CHOICE (via the load verdict) and records the wrong answer rather than
-/// asserting it is right.
+/// This program used to be ACCEPTED while computing a value its type denies:
+/// `t.a` reads the FIRST `a` (`field_access` is by name) while the relation, whose
+/// cursor resumed AFTER the `b` match, typed the SECOND. An operation declared
+/// `-> String` returned `Int(1)` on a clean load.
 ///
-/// MEASURED: this test passes with the old by-name threading too — it does not
-/// discriminate this ticket's change (the `permuted_*` and `width_*` tests do).
-/// It is here because the disagreement it drives is what makes sharing the walk
-/// more than tidiness, and because the defect it records needs a live witness.
+/// INVERTED BY WI-803, and by the half of it that was not the headline. Making
+/// `TupleAlign::DATA` order-free meant choosing where each name lookup STARTS, and
+/// starting from 0 — first match — is `field_access`' own rule. So the relation
+/// and the reader now pick the same component, the type mismatch is visible, and
+/// the program is refused.
+///
+/// This does NOT close WI-805, and the test does not claim to. WI-805's fix is to
+/// refuse a duplicate label where the tuple is BUILT, which makes the disagreement
+/// unreachable rather than merely aligned; a duplicate-label tuple whose two `a`s
+/// have the SAME type still loads today. What is fixed here is the divergence:
+/// two walks over one tuple no longer answer differently.
 #[test]
-fn duplicate_label_alignment_resumes_after_the_previous_match() {
+fn duplicate_label_conforms_on_the_first_occurrence_like_field_access() {
     let src = r#"
 namespace test.wi800.dup
   import anthill.prelude.{Int64, String}
@@ -159,20 +150,10 @@ namespace test.wi800.dup
   operation drive() -> String = take((a: 1, b: 2, a: "ess"))
 end
 "#;
+    let errs = load_errs(src);
     assert!(
-        load_errs(src).is_empty(),
-        "the alignment takes the SECOND `a` (String), so this conforms; a first-match \
-         walk would take the first (Int64) and refuse it: {:?}",
-        load_errs(src),
+        errs.iter().any(|e| e.contains("mismatch")),
+        "the alignment takes the FIRST `a` (Int64), which is the one `t.a` reads, so \
+         the `-> String` claim is refused instead of silently yielding Int(1); got: {errs:?}",
     );
-    let mut interp = interp_for(src);
-    match interp.call("test.wi800.dup.drive", &[]) {
-        Ok(anthill_core::eval::Value::Int(1)) => {}
-        other => panic!(
-            "RECORDED, not endorsed: `t.a` reads the first `a` while the relation typed \
-             the second, so an operation declared `-> String` yields Int(1). Filed as \
-             WI-805; when that lands this program is REFUSED at load and this test should \
-             assert the refusal. Got: {other:?}",
-        ),
-    }
 }

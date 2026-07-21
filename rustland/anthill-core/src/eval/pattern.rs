@@ -19,7 +19,7 @@ use crate::intern::Symbol;
 use crate::kb::node_occurrence::{NodeOccurrence, Pattern};
 use crate::kb::term::{Literal, Term};
 
-use super::value::Value;
+use super::value::{TupleComponents, Value};
 use super::Interpreter;
 
 pub type Bindings = SmallVec<[(Symbol, Value); 4]>;
@@ -54,8 +54,8 @@ pub fn match_pattern(
         Pattern::Constructor { name, pos_args, named_args } => {
             match_constructor_pattern(interp, *name, pos_args, named_args, scrutinee)
         }
-        Pattern::Tuple { positional, named } => {
-            match_tuple_pattern(interp, positional, named, scrutinee)
+        Pattern::Tuple { positional, labels } => {
+            match_tuple_pattern(interp, positional, labels, scrutinee)
         }
     }
 }
@@ -118,8 +118,56 @@ fn match_constructor_pattern(
     Some(bindings)
 }
 
-/// Match a tuple pattern, binding each binder to the component in the same
-/// position — for a positionally-keyed AND a name-keyed tuple alike.
+/// Match a tuple pattern, binding each binder to the component the typer
+/// assigned it: BY LABEL when the typer resolved one (WI-803), else by position.
+///
+/// ## The by-label arm
+///
+/// `labels[i]` is the component name binder `i` selects, resolved by the typer
+/// from the pattern's expected named-tuple type — never from what the binder is
+/// called. A binder name remains a fresh binder, so `lambda (p, q)` over an
+/// `(a: …, b: …)` slot still binds `p` and `q`; what the labels add is WHICH
+/// component each one receives.
+///
+/// This is what makes `TupleAlign::DATA` safe to be fully name-keyed. Reading by
+/// slot, a permuted value handed binder `i` the value's `i`-th component while the
+/// typer had typed it from the DECLARED `i`-th field, so an operation declared
+/// `-> Int64` returned a `String` on a clean load (WI-788). Fetching `labels[i]`
+/// by name hands back the component the typer typed it from, whatever slot it
+/// sits in.
+///
+/// It also drops the COUNT test, and must: width subtyping lets an
+/// `(a: A, b: B, c: C)` value reach a binder list typed `(a: A, b: B)`, and a
+/// by-label fetch does not care how many components it did not ask for. The count
+/// test survives on the positional path, where it is still the only arity guard
+/// (`arity_mismatch_still_refuses_to_match`).
+///
+/// A label with no matching component is NO MATCH, which raises through
+/// `raise_match_failed` — loud, not a skipped binder.
+///
+/// ## The positional arm
+///
+/// Reached on ANY of three conditions, and the second is the one most executions
+/// take. The `by_label` gate below spells all three:
+///
+///  * the typer resolved no labels (an unannotated `let`, a reflectively-built
+///    pattern, a rule-body occurrence), so there is no DECLARED order for the
+///    value's own order to disagree with;
+///  * the VALUE is a positional carrier with no names to match the labels
+///    against. Here the labels are real and so is the declared order — what is
+///    missing is the value's half of the correspondence. This is the shape a
+///    SPREAD call arrives in (`f(3, 10)` gathers to `Tuple { pos, named: [] }`),
+///    which covers `foldLeft` and every other two-binder callback. See
+///    [`TupleComponents::is_name_keyed`] on why reading it by slot is exact
+///    rather than a degradation; or
+///  * the LABELS are the synthetic `_1.._n` convention, i.e. the expected type is
+///    a POSITIONAL tuple, where `_i` means slot `i` and a by-label read adds
+///    nothing — see [`TupleComponents::labels_are_positional`], which also
+///    explains why it does not merely add nothing but actively FAILS when the
+///    value is name-keyed.
+///
+/// In each case the components are read in source order, which is then the only
+/// available reading and the correct one. Below on why it cannot be by-name.
 ///
 /// Reading only `Value::Tuple.pos` (as this did) meant a NAME-keyed tuple showed
 /// up as zero components, so a destructuring binder never matched one:
@@ -128,17 +176,17 @@ fn match_constructor_pattern(
 /// operation taking one `(acc: Int64, x: Int64)` parameter worked too. Only the
 /// destructuring-lambda-over-named-tuple corner was broken.
 ///
-/// Binding by POSITION rather than by matching binder names to labels is forced:
-/// a tuple pattern has no way to spell a label (the grammar's tuple-pattern
-/// element is a pattern or a WI-517 `name: Type` TYPED BINDER, never a
-/// `named_pattern_field` — that production is constructor-only), so a binder
-/// name is a fresh binder, not a selector. By-name would break `lambda (a, b)`
-/// over `(acc: …, x: …)` outright. It also agrees with the typer, which aligns
-/// an arrow's parameter list positionally (WI-775 `TupleAlign::ParamList`).
+/// Deriving the label from the BINDER NAME is what is forced out, on both arms: a
+/// tuple pattern has no way to spell a label (the grammar's tuple-pattern element
+/// is a pattern or a WI-517 `name: Type` TYPED BINDER, never a
+/// `named_pattern_field` — that production is constructor-only), so a binder name
+/// is a fresh binder, not a selector, and matching binder names against labels
+/// would break `lambda (a, b)` over `(acc: …, x: …)` outright. WI-803 changes
+/// where the label comes FROM (the expected type), not that one is written.
 ///
 /// The components come from [`Value::tuple_components`], which owns the
 /// `pos ++ named` = source-order invariant and explains why (WI-787). That
-/// invariant is load-bearing here and it is young: before WI-786 the
+/// invariant is load-bearing for the POSITIONAL arm and it is young: before WI-786 the
 /// `classify_ctor_arg` unwrap was a bare `_`-prefix test, which also caught user
 /// labels like `_b` and silently scrambled the order — `lambda (p, q) -> p - q`
 /// over `(a: 3, _b: 10)` yielded 7 instead of -7, and an operation declared
@@ -147,28 +195,78 @@ fn match_constructor_pattern(
 fn match_tuple_pattern(
     interp: &Interpreter,
     positional: &[Rc<NodeOccurrence>],
-    named: &[(Symbol, Rc<NodeOccurrence>)],
+    labels: &[Symbol],
     scrutinee: &Value,
 ) -> Option<Bindings> {
-    // Source order, per the invariant above — read through the owning accessor
-    // (WI-787), not off either half.
     let components = scrutinee.tuple_components()?;
-    // Nothing mints a labelled tuple sub-pattern: the grammar has no production
-    // for one, the parser emits `pattern_tuple` with positional elements only,
-    // and the sole `Pattern::Tuple` producer hardcodes `named: Vec::new()`.
-    // Refuse rather than carry untestable code for a shape that cannot occur —
-    // and note a future label rule would have to agree with `field_access`'
-    // short-name lookup (eval/builtins.rs), not raw symbol identity.
-    debug_assert!(named.is_empty(), "no producer mints a labelled tuple sub-pattern");
-    if !named.is_empty() {
-        return None;
-    }
-    if positional.len() != components.len() {
-        return None;
+    let mut bindings = SmallVec::new();
+
+    // The by-label arm needs the correspondence to be REAL on all three counts:
+    // labels from the typer, names on the value to match them against, and labels
+    // that actually name something a slot does not.
+    //
+    //  * a POSITIONAL carrier has no names — see `TupleComponents::is_name_keyed`
+    //    on why reading it by slot is exact rather than a degradation, and why a
+    //    spread call (`f(3, 10)`) arrives this way even at a fully named type;
+    //  * SYNTHETIC `_1.._n` labels say "positional tuple", where `_i` MEANS slot
+    //    `i` — see `TupleComponents::labels_are_positional`. Routing those through
+    //    the by-label arm does not just waste a lookup, it FAILS on a name-keyed
+    //    value (no component is called `_1`, and the `_N` fallback indexes an empty
+    //    `pos`), which is reachable via an all-named relation row.
+    let by_label = !labels.is_empty()
+        && components.is_name_keyed()
+        && !TupleComponents::labels_are_positional(interp.kb(), labels);
+    if !by_label {
+        // Source order, per the invariant above — read through the owning accessor
+        // (WI-787), not off either half.
+        if positional.len() != components.len() {
+            return None;
+        }
+        for (sub_pat, sub_val) in positional.iter().zip(components.iter()) {
+            let mut sub_b = match_pattern(interp, sub_pat, sub_val)?;
+            bindings.append(&mut sub_b);
+        }
+        return Some(bindings);
     }
 
-    let mut bindings = SmallVec::new();
-    for (sub_pat, sub_val) in positional.iter().zip(components.iter()) {
+    // WI-803: one label per binder, or none at all — `bind_and_label_pattern`
+    // only records the list when it has a component for every binder. A SHORTER
+    // list would zip-truncate and leave the trailing binders silently unbound,
+    // which is a match reported as succeeding on binders that were never given a
+    // value.
+    debug_assert_eq!(
+        labels.len(),
+        positional.len(),
+        "WI-803: a labelled tuple pattern carries one label per binder",
+    );
+    if labels.len() != positional.len() {
+        return None;
+    }
+    // WI-803: which components have been claimed, so two binders cannot be served
+    // the SAME one. `match_constructor_pattern` above has kept this invariant since
+    // WI-445 (its `covered` vec); the by-label tuple arm needs it for the same
+    // reason and did not have it at first.
+    //
+    // Two labels collide either by being EQUAL — a tuple type carrying a repeated
+    // component name — or by being distinct QUALIFIED names sharing a last segment,
+    // since the lookup compares short names. Either way the second binder would be
+    // handed a component the typer typed the FIRST from, while the component it was
+    // actually typed from goes unread: a wrong-TYPED value on a clean load, which is
+    // the whole WI-788 family. Refusing is loud (the caller raises
+    // `Error[MatchFailed]`) and costs nothing on well-formed types, whose component
+    // names are distinct.
+    let mut covered: SmallVec<[usize; 8]> = SmallVec::new();
+    for (sub_pat, label) in positional.iter().zip(labels.iter()) {
+        // Resolved through the ONE by-name tuple reader, shared with
+        // `field_access` — see `TupleComponents::by_label_index` on why the two must
+        // not each carry their own rule, and why this resolves an INDEX. A component
+        // the value does not have is NO MATCH; it is not a binder quietly skipped.
+        let idx = components.by_label_index(interp.kb(), interp.kb().resolve_sym(*label))?;
+        if covered.contains(&idx) {
+            return None;
+        }
+        covered.push(idx);
+        let sub_val = components.component_at(idx)?;
         let mut sub_b = match_pattern(interp, sub_pat, sub_val)?;
         bindings.append(&mut sub_b);
     }

@@ -192,9 +192,9 @@ fn drain_pattern_children(pat: &mut Pattern, stack: &mut Vec<Rc<NodeOccurrence>>
             for c in std::mem::take(pos_args) { stack.push(c); }
             for (_, c) in std::mem::take(named_args) { stack.push(c); }
         }
-        Pattern::Tuple { positional, named } => {
+        // WI-803: `labels` holds Symbols — no Rc children to drain.
+        Pattern::Tuple { positional, .. } => {
             for c in std::mem::take(positional) { stack.push(c); }
-            for (_, c) in std::mem::take(named) { stack.push(c); }
         }
     }
 }
@@ -849,10 +849,38 @@ pub enum Pattern {
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
     },
-    /// `(a, b)` / `(x: a, y: b)` — destructure a tuple scrutinee.
+    /// `(a, b)` — destructure a tuple scrutinee.
     Tuple {
+        /// The binder list, in written order. ALWAYS authoritative for how many
+        /// binders this pattern writes and which sub-pattern is which — `labels`
+        /// only says which COMPONENT each one selects.
         positional: Vec<Rc<NodeOccurrence>>,
-        named: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        /// WI-803: the component NAME each binder selects, resolved by the typer
+        /// from the pattern's expected named-tuple type
+        /// (`bind_and_label_pattern`), and read by `match_tuple_pattern` to fetch
+        /// components BY LABEL instead of by slot.
+        ///
+        /// Either EMPTY — the typer had no tuple type for this pattern, so the
+        /// matcher falls back to reading the value's own component order — or
+        /// exactly as long as `positional`, one label per binder. Never partially
+        /// filled; the matcher `debug_assert`s the invariant it relies on.
+        ///
+        /// This is what makes a permuted value safe to destructure, and so what
+        /// let `TupleAlign::DATA` become fully name-keyed (WI-788 → WI-804 →
+        /// WI-803). A binder name is still a fresh binder, NOT a selector: the
+        /// label comes from the TYPE's component at that slot, never from what the
+        /// binder happens to be called.
+        ///
+        /// Deliberately a SIBLING of `positional` rather than a re-slotting of the
+        /// sub-patterns into a `named` half (which is how WI-803's ticket sketched
+        /// it, and which this replaced). Every reader of a tuple pattern's binder
+        /// list — `binder_arity` here, `lambda_binder_slots` and
+        /// `bind_and_label_pattern` in kb/typing.rs, `destructure_bindings`'
+        /// leaf-selector walk — reads `positional`, and moving the sub-patterns out
+        /// of it would have left each of those reading an EMPTY list with no type
+        /// error to say so. Labelling is an annotation on the list, not a different
+        /// list.
+        labels: Vec<Symbol>,
     },
 }
 
@@ -870,13 +898,12 @@ impl Pattern {
     /// cosmetic drift — it is a program that typechecks and then traps at eval,
     /// which is exactly the defect WI-784 removed. Keep them on this one rule.
     ///
-    /// Note the tuple arm counts `named` as well: no producer mints a labelled
-    /// tuple sub-pattern today (see `match_tuple_pattern`'s debug_assert), but
-    /// counting it keeps the two sides in agreement if one ever does, rather
-    /// than having the typer say `n` while the runtime says 1.
+    /// WI-803: `labels` does not enter the count. It annotates the binder list
+    /// with the component each entry selects; it does not add binders, and the
+    /// invariant is that it is empty or exactly `positional.len()` long.
     pub fn binder_arity(&self) -> usize {
         match self {
-            Pattern::Tuple { positional, named } => positional.len() + named.len(),
+            Pattern::Tuple { positional, .. } => positional.len(),
             _ => 1,
         }
     }
@@ -1126,9 +1153,9 @@ pub fn for_each_pattern_child(pat: &Pattern, mut f: impl FnMut(&Rc<NodeOccurrenc
             for c in pos_args.iter() { f(c); }
             for (_, c) in named_args.iter() { f(c); }
         }
-        Pattern::Tuple { positional, named } => {
+        // WI-803: `labels` holds Symbols, not occurrences — no children there.
+        Pattern::Tuple { positional, .. } => {
             for c in positional.iter() { f(c); }
-            for (_, c) in named.iter() { f(c); }
         }
     }
 }
@@ -1193,13 +1220,14 @@ pub fn reassemble_pattern(
                 .collect();
             Pattern::Constructor { name: *name, pos_args: pos, named_args: named }
         }
-        Pattern::Tuple { positional, named } => {
+        Pattern::Tuple { positional, labels } => {
             let pos: Vec<Rc<NodeOccurrence>> = positional.iter().map(|_| take()).collect();
-            let named_out: Vec<(Symbol, Rc<NodeOccurrence>)> = named
-                .iter()
-                .map(|(s, _)| (*s, take()))
-                .collect();
-            Pattern::Tuple { positional: pos, named: named_out }
+            // WI-803: `labels` is carried across, not recomputed. A rebuilt binder
+            // list that dropped it would silently fall back to reading the value's
+            // own component order — which is the WI-788 wrong answer, and the one
+            // thing this reassembly must not do. It survives every walker that goes
+            // through here: De Bruijn open/close and `substitute_occurrence`.
+            Pattern::Tuple { positional: pos, labels: labels.clone() }
         }
     };
     NodeOccurrence::new_pattern(new_pat, occ.span, occ.owner)
@@ -2862,7 +2890,13 @@ pub fn term_to_param_occurrence(
                 .iter()
                 .map(|&t| term_to_param_occurrence(kb, t, span))
                 .collect();
-            Pattern::Tuple { positional, named: Vec::new() }
+            // WI-803: `labels` is empty here and can only be empty here — this
+            // rebuilds a pattern from its REFLECTED TERM, and the term surface
+            // (`tuple_pattern(elements: …)`) carries no labels because the surface
+            // grammar has no way to write one. They are the typer's, resolved from
+            // the expected type; a pattern that arrives this way has not been
+            // typed, so the matcher's positional fallback is the correct reading.
+            Pattern::Tuple { positional, labels: Vec::new() }
         }
         _ => {
             // Unknown functor in a pattern slot: surface as Expr-kind so
@@ -3041,7 +3075,7 @@ pub(crate) fn build_named_pattern_term(
 /// WI-445: read a reflect `NamedPattern(name: Ref(field), pattern: sub)` term
 /// into `(field_symbol, sub_pattern_term)`. The element shape of a constructor
 /// pattern's `named` list. Returns `None` for a malformed element. Shared by
-/// the typer (`extend_env_from_pattern`) and eval (`match_constructor_pattern`).
+/// the typer (`bind_and_label_pattern`) and eval (`match_constructor_pattern`).
 pub(crate) fn read_named_pattern_term(kb: &KnowledgeBase, tid: TermId) -> Option<(Symbol, TermId)> {
     let Term::Fn { named_args, .. } = kb.get_term(tid) else { return None; };
     let field = extract_term_ref_sym(kb, named_args, "name")?;
@@ -3090,7 +3124,7 @@ fn extract_named_list(
 /// shape (`var_pattern` / `wildcard` / `literal_pattern` /
 /// `constructor_pattern` / `tuple_pattern`) that the loader used to
 /// store before the lift. A bridge for consumers (typer's
-/// `extend_env_from_pattern` / `extract_pattern_type_ann`, the printer,
+/// `bind_and_label_pattern` / `extract_pattern_type_ann`, the printer,
 /// reflection) that still operate on the term form. Each pattern
 /// child is recursively converted (they too are Pattern-kind), so a
 /// nested constructor pattern lowers to a cons-list of converted
@@ -3105,7 +3139,7 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
         // ?x, …)` body atom has param kind Expr::Var, not Pattern).
         // Reify those back via `occurrence_to_term` instead of
         // returning Bottom — Bottom would silently make match_pattern /
-        // extend_env_from_pattern no-op without a diagnostic.
+        // bind_and_label_pattern no-op without a diagnostic.
         NodeKind::Expr { .. } => return occurrence_to_term(kb, occ),
         // RuleHead in a pattern slot is genuinely unreachable — bodies
         // are GOAL positions, never RuleHead. Surface as Bottom + assert
@@ -3188,6 +3222,25 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
             kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: na })
         }
         Pattern::Tuple { positional, .. } => {
+            // WI-803, KNOWN LOSSY AND UNCOVERED — read this before relying on the
+            // round trip. `labels` is DROPPED here, because the reflect surface
+            // (`entity tuple_pattern(elements: List[Pattern])`,
+            // stdlib/anthill/reflect/reflect.anthill) has nowhere to put it. A
+            // pattern lowered after typing and rebuilt by
+            // `term_to_pattern_occurrence` therefore comes back with no labels and
+            // silently reverts to reading its components BY SLOT — which is exactly
+            // the WI-788 wrong answer, on a permuted value.
+            //
+            // MEASURED, and the measurement is why this is a comment rather than a
+            // fix or an assert: this arm is reached ZERO times across the whole
+            // workspace suite (instrumented and run — the count is zero for ALL
+            // tuple lowerings, not just labelled ones). So the hazard is real and
+            // has no live witness, an assert here would never fire in tests, and a
+            // reflect-surface change (a `labels` field, or reviving the declared
+            // `named_tuple_pattern` entity) would ship with no coverage either. It
+            // is recorded here, at the site that drops them, rather than only at
+            // `term_to_pattern_occurrence`, which defends the READ direction.
+            //
             // Tuple patterns lower to `tuple_pattern(elements: List[...])`.
             let elements: Vec<TermId> = positional
                 .iter()

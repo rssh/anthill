@@ -3536,7 +3536,7 @@ enum TypeBuildFrame {
     LetAfterValue {
         occ: Rc<NodeOccurrence>,
         // WI-511: the let pattern occurrence, read occurrence-native by
-        // `extend_env_from_pattern` / `extract_pattern_var_name`.
+        // `bind_and_label_pattern` / `extract_pattern_var_name`.
         pattern: Rc<NodeOccurrence>,
         annotation: Option<Value>,
         body_occ: Rc<NodeOccurrence>,
@@ -3561,6 +3561,11 @@ enum TypeBuildFrame {
         /// with the body's node to reassemble the `Let` (WI-283).
         value_node: Rc<NodeOccurrence>,
         value_effects: Vec<Value>,
+        /// WI-803: the binder pattern as `bind_and_label_pattern` returned it at
+        /// `LetAfterValue` — relabelled, when it is a tuple binder list over a
+        /// known named-tuple type. Carried rather than re-read off `occ`, which
+        /// still holds the unlabelled written form.
+        pattern: Rc<NodeOccurrence>,
     },
     /// Scrutinee finished; walk the branch patterns for coverage,
     /// compute each branch's env, schedule body Visits + a
@@ -3593,6 +3598,11 @@ enum TypeBuildFrame {
         scr_ty: Option<Value>,
         covered_entities: Vec<Symbol>,
         has_wildcard: bool,
+        /// WI-803: each branch's pattern as `bind_and_label_pattern` returned it
+        /// — relabelled, when it is a tuple binder list over a known scrutinee
+        /// type. In branch order. `reassemble_match` uses these instead of
+        /// re-reading `occ`'s written patterns, which carry no labels.
+        branch_patterns: Vec<Rc<NodeOccurrence>>,
         /// WI-287: the match's own expected type (the parent's hint).
         /// `Some` ⇒ checked mode (every branch must conform); `None` ⇒
         /// synthesis mode (result is the join — a common supertype — of
@@ -3619,6 +3629,11 @@ enum TypeBuildFrame {
         param_type: Value,
         outer_env: Env,
         binder_error: Option<TypeError>,
+        /// WI-803: the param pattern as `bind_and_label_pattern` returned it —
+        /// relabelled, when it is a tuple binder list over a known named-tuple
+        /// type. This is the child the lambda is reassembled from; `occ`'s own
+        /// `param` is still the unlabelled written form.
+        param: Rc<NodeOccurrence>,
     },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return
@@ -6238,7 +6253,7 @@ fn visit_type(
             // from the CONTEXT and the per-binder annotations are compared against its
             // components; this is the channel WI-794 measured as unchecked.
             let mut binder_errors = Vec::new();
-            extend_env_from_pattern(
+            let param = bind_and_label_pattern(
                 kb, &mut lambda_env, &param, Some(param_type.clone()), &mut binder_errors,
             );
             // WI-270: if expected is `arrow(param, result, effects)`,
@@ -6258,6 +6273,7 @@ fn visit_type(
                 param_type,
                 outer_env: env,
                 binder_error: binder_errors.into_iter().next(),
+                param,
             }));
             push_visit(work, body_occ, body_env, body_expected, fuel);
         }
@@ -6837,14 +6853,18 @@ fn reassemble_group(
 /// typed/visited** (so they have no result `node`); they're re-read from
 /// `occ` unchanged and interleaved after each body, reproducing
 /// `for_each_child(Match)` order ([scrutinee, pattern, body, guard?, …])
-/// for the shared `reassemble`. WI-318: `pattern` is now a Pattern-kind
-/// occurrence child — typer doesn't rewrite patterns so they're passed
-/// through identical (Rc::clone of the original `branch.pattern`).
+/// for the shared `reassemble`. WI-318: `pattern` is a Pattern-kind
+/// occurrence child. WI-803: patterns are no longer passed through identical —
+/// `branch_patterns` carries each one as `bind_and_label_pattern` returned it,
+/// relabelled where a `case (p, q) ->` binder list met a known named-tuple
+/// scrutinee. Re-reading `branch.pattern` off `occ` here would drop those labels
+/// and send the arm back to destructuring by slot.
 /// `branch_results` are the branch-body `TypeResult`s (all `Ok`), in
 /// branch order. Returns `occ` unchanged when nothing moved.
 fn reassemble_match(
     occ: &Rc<NodeOccurrence>,
     scr_node: &Rc<NodeOccurrence>,
+    branch_patterns: &[Rc<NodeOccurrence>],
     branch_results: &[Result<TypeResult, TypeError>],
 ) -> Rc<NodeOccurrence> {
     let branches = match occ.as_expr() {
@@ -6854,9 +6874,16 @@ fn reassemble_match(
     let mut children: Vec<Rc<NodeOccurrence>> =
         Vec::with_capacity(1 + branch_results.len() * 3);
     children.push(Rc::clone(scr_node));
-    for (branch, r) in branches.iter().zip(branch_results.iter()) {
+    debug_assert_eq!(
+        branch_patterns.len(),
+        branches.len(),
+        "WI-803: one relabelled pattern per branch",
+    );
+    for ((branch, pattern), r) in
+        branches.iter().zip(branch_patterns.iter()).zip(branch_results.iter())
+    {
         // WI-318: emit pattern in for_each_child order.
-        children.push(Rc::clone(&branch.pattern));
+        children.push(Rc::clone(pattern));
         children.push(Rc::clone(&r.as_ref().expect("reassemble_match: Ok body").node));
         if let Some(g) = &branch.guard {
             children.push(Rc::clone(g));
@@ -7570,7 +7597,11 @@ fn build_type(
             // dropping the annotation. Same rule as the lambda-binder case — the value's
             // type wins for the binding, the false claim is what is rejected.
             let mut binder_errors = Vec::new();
-            extend_env_from_pattern(kb, &mut ext_env, &pattern, bound_ty, &mut binder_errors);
+            // WI-803: the relabelled pattern replaces the written one in the
+            // reassembled `Let` below, so a destructuring `let` over a permuted
+            // value binds by label like every other binder list.
+            let pattern =
+                bind_and_label_pattern(kb, &mut ext_env, &pattern, bound_ty, &mut binder_errors);
             if let Some(e) = binder_errors.into_iter().next() {
                 results.push(Err(e));
                 return;
@@ -7629,12 +7660,14 @@ fn build_type(
                 Some(var_name) => assume_call_ensures(kb, body_flow, &value_node, var_name),
                 None => body_flow,
             };
-            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
+            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal {
+                occ, value_node, value_effects, pattern,
+            }));
             // WI-537: the body's types come from the value result (`ext_env`),
             // its Γ from the let-site flow narrowed by the binding fact above.
             push_visit(work, body_occ, Env { types: Rc::new(ext_env), flow: body_flow }, body_expected, fuel);
         }
-        TypeBuildFrame::LetFinal { occ, value_node, value_effects } => {
+        TypeBuildFrame::LetFinal { occ, value_node, value_effects, pattern } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
             let body_r = match body_r {
                 Ok(r) => r,
@@ -7646,18 +7679,13 @@ fn build_type(
             let effects = merge_effects(kb, &value_effects, &body_r.effects);
             // WI-283: reassemble the `Let` from [pattern, value, body]
             // (`for_each_child(Let)` order, WI-318 added pattern) so a
-            // rewrite in any of them propagates. The pattern itself is
-            // passed through unchanged (typer doesn't rewrite patterns).
-            let node = {
-                let pattern_clone = match occ.as_expr() {
-                    Some(Expr::Let { pattern, .. }) => Rc::clone(pattern),
-                    _ => Rc::clone(&occ), // defensive; unreachable for Let frame
-                };
-                super::simp_rewrite::reassemble(
-                    &occ,
-                    &[pattern_clone, value_node, Rc::clone(&body_r.node)],
-                )
-            };
+            // rewrite in any of them propagates. WI-803: the pattern is no longer
+            // "passed through unchanged" — `bind_and_label_pattern` returned it
+            // relabelled, and THAT is the one that has to land in the stored tree.
+            let node = super::simp_rewrite::reassemble(
+                &occ,
+                &[Rc::clone(&pattern), value_node, Rc::clone(&body_r.node)],
+            );
             results.push(Ok(TypeResult {
                 ty: body_r.ty,
                 env: body_r.env,
@@ -7687,6 +7715,8 @@ fn build_type(
             // here so MatchFinal can run the check without re-walking.
             let mut covered_entities: Vec<Symbol> = Vec::new();
             let mut has_wildcard = false;
+            // WI-803: relabelled branch patterns, in branch order.
+            let mut branch_patterns: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(branches.len());
             // Constructors of the scrutinee sort. A bare `case red` parses as a
             // var_pattern (the name could be a binding or a nullary
             // constructor); recognizing it as a constructor needs the
@@ -7740,10 +7770,10 @@ fn build_type(
                 );
                 let mut branch_env = (*outer_env).clone();
                 let mut branch_binder_errors = Vec::new();
-                extend_env_from_pattern(
+                branch_patterns.push(bind_and_label_pattern(
                     kb, &mut branch_env, &branch.pattern, scr_ty.clone(),
                     &mut branch_binder_errors,
-                );
+                ));
                 if binder_error.is_none() {
                     binder_error = branch_binder_errors.into_iter().next();
                 }
@@ -7805,6 +7835,7 @@ fn build_type(
                 scr_ty,
                 covered_entities,
                 has_wildcard,
+                branch_patterns,
                 body_expected: body_expected.clone(),
             }));
             for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
@@ -7821,6 +7852,7 @@ fn build_type(
             scr_ty,
             covered_entities,
             has_wildcard,
+            branch_patterns,
             body_expected,
         } => {
             let drain_start = results.len() - branch_count;
@@ -7833,7 +7865,7 @@ fn build_type(
             // WI-283: reassemble the `Match` from the (rewritten) scrutinee
             // and branch bodies (guards re-read from `occ`, unchanged) before
             // `branch_results` is consumed below.
-            let node = reassemble_match(&occ, &scr_node, &branch_results);
+            let node = reassemble_match(&occ, &scr_node, &branch_patterns, &branch_results);
             let mut effects = scr_effects;
             // WI-342: branch types are carrier-agnostic `Value`s — a branch may be
             // a `Value::Node` lambda arrow; the join carries it (no re-grounding).
@@ -7899,7 +7931,7 @@ fn build_type(
             }
             results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
         }
-        TypeBuildFrame::LambdaBody { occ, param_type, outer_env, binder_error } => {
+        TypeBuildFrame::LambdaBody { occ, param_type, outer_env, binder_error, param } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
             // WI-794: a contradicting binder annotation is reported ahead of any body
             // error. The body was typed with the binder bound to the CONTEXT type, so
@@ -7942,16 +7974,15 @@ fn build_type(
             match body_r {
                 // WI-283: reassemble the lambda from its [param, body]
                 // (WI-318 added param) so a `[simp]` rewrite in either
-                // propagates up. The param is passed through unchanged
-                // (typer doesn't rewrite patterns).
+                // propagates up. WI-803: the param is NO LONGER passed through
+                // unchanged — the frame carries the relabelled one, and a lambda
+                // rebuilt from `occ`'s written param would drop the labels and
+                // silently destructure by slot again.
                 Ok(ref r) => {
-                    let node = {
-                        let param_clone = match occ.as_expr() {
-                            Some(Expr::Lambda { param, .. }) => Rc::clone(param),
-                            _ => Rc::clone(&occ), // defensive; unreachable
-                        };
-                        super::simp_rewrite::reassemble(&occ, &[param_clone, Rc::clone(&r.node)])
-                    };
+                    let node = super::simp_rewrite::reassemble(
+                        &occ,
+                        &[Rc::clone(&param), Rc::clone(&r.node)],
+                    );
                     results.push(Ok(TypeResult {
                         ty: fn_ty,
                         env: unwrap_env(outer_env),
@@ -10648,7 +10679,7 @@ pub(crate) fn record_apply_rewrite(
 
 /// Last segment of a dotted qualified name (`foo.bar.baz` → `baz`).
 /// Returns the input unchanged when it has no dot.
-fn short_name_of(qn: &str) -> &str {
+pub(crate) fn short_name_of(qn: &str) -> &str {
     qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(qn)
 }
 
@@ -20050,8 +20081,21 @@ fn extract_function_param_type<V: TermView>(kb: &mut KnowledgeBase, fn_type: &V)
 /// component that is a denoted-bearing lambda arrow) is handled too, and yields
 /// each component as a carrier-agnostic [`Value`]. A non-tuple type yields `None`.
 fn named_tuple_field_types<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Vec<Value>> {
+    named_tuple_field_pairs(kb, ty).map(|f| f.into_iter().map(|(_, v)| v).collect())
+}
+
+/// As [`named_tuple_field_types`], KEEPING each component's name — the form that
+/// discards them is this one plus a projection, not the other way round.
+///
+/// WI-803 needs the names: `bind_and_label_pattern` types binder `i` from
+/// component `i` AND records that component's label on the pattern, so the matcher
+/// can fetch it by name from a value that may order its components differently.
+fn named_tuple_field_pairs<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+) -> Option<Vec<(Symbol, Value)>> {
     match extract_type(kb, ty) {
-        TypeExtractor::NamedTuple(fields) => Some(fields.into_iter().map(|(_, v)| v).collect()),
+        TypeExtractor::NamedTuple(fields) => Some(fields),
         _ => None,
     }
 }
@@ -21617,10 +21661,26 @@ fn type_param_vid_in_sort(
     type_param_global_var(kb, qualified_sym)
 }
 
+/// Bind a pattern's variables into `env`, AND record each tuple binder's component
+/// label on the pattern (WI-803). Named for both jobs: as `extend_env_from_pattern`
+/// it advertised only the first, so the second — whose result a caller must thread
+/// onward or silently lose — lived only in the `#[must_use]` message.
+///
 /// WI-511 (WI-348): reads the `Pattern` occurrence DIRECTLY (no `pattern_to_term`
 /// lowering, no `Ref`/`Fn` carrier to disambiguate). The sub-patterns are
 /// already `Rc<NodeOccurrence>` children, so the recursion threads occurrences.
-fn extend_env_from_pattern(
+///
+/// WI-803: RETURNS the pattern, relabelled — the same `Rc` when nothing changed,
+/// a rebuilt one when a tuple binder list learned its components' LABELS from
+/// `scrutinee_type` (`Pattern::Tuple.labels`, which `match_tuple_pattern` then
+/// destructures by). The comment this function's three callers used to carry, "the
+/// typer doesn't rewrite patterns", is no longer true, and the caller must thread
+/// the result into its `reassemble` — a dropped result is not a compile error, it
+/// is a binder list that silently falls back to reading by SLOT, which is the
+/// WI-788 wrong answer the labels exist to prevent.
+#[must_use = "WI-803: the relabelled pattern must reach the reassembled node, or \
+              destructuring silently falls back to positional"]
+fn bind_and_label_pattern(
     kb: &mut KnowledgeBase,
     env: &mut TypingEnv,
     pattern: &Rc<NodeOccurrence>,
@@ -21631,8 +21691,8 @@ fn extend_env_from_pattern(
     // pattern still has to land in the env, or the body reports a cascade of
     // `UnresolvedName`s that hide the real diagnostic.
     errors: &mut Vec<TypeError>,
-) {
-    let Some(pat) = pattern.as_pattern() else { return; };
+) -> Rc<NodeOccurrence> {
+    let Some(pat) = pattern.as_pattern() else { return Rc::clone(pattern); };
     match pat {
         Pattern::Var { name, type_ann } => {
             // Bind the pattern var even when its type is unknown — a
@@ -21716,6 +21776,9 @@ fn extend_env_from_pattern(
             // surface persist's `Modify[b]` as an external effect even though
             // b's lifetime ends at case end.
             env.declare_local_resource(*name);
+            // A binder writes no labels of its own; its `type_ann` is an Expr-kind
+            // child the typer does not rewrite here.
+            Rc::clone(pattern)
         }
         Pattern::Constructor { name, pos_args, named_args } => {
             let ctor_sym = *name;
@@ -21735,6 +21798,13 @@ fn extend_env_from_pattern(
                 .as_ref()
                 .zip(parent_sort)
                 .and_then(|(st, p)| build_pattern_subst(kb, st, p));
+            // WI-803: a constructor's sub-patterns may THEMSELVES be tuple binder
+            // lists (`case Box((a, b)) ->`), so the rebuilt children are collected
+            // in `for_each_pattern_child` order — positional then named — and
+            // handed to `reassemble_pattern`, which returns this same `Rc` when
+            // none of them moved.
+            let mut rebuilt: Vec<Rc<NodeOccurrence>> =
+                Vec::with_capacity(pos_args.len() + named_args.len());
             // POSITIONAL sub-patterns: zip against field types by index.
             for (i, sub_pat) in pos_args.iter().enumerate() {
                 // WI-342: the field type is a carrier-agnostic `Value`
@@ -21750,7 +21820,7 @@ fn extend_env_from_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                extend_env_from_pattern(kb, env, sub_pat, field_type, errors);
+                rebuilt.push(bind_and_label_pattern(kb, env, sub_pat, field_type, errors));
             }
             // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by FIELD
             // NAME — order-independent, so robust to declaration order. The
@@ -21765,18 +21835,23 @@ fn extend_env_from_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                extend_env_from_pattern(kb, env, sub_pat, field_type, errors);
+                rebuilt.push(bind_and_label_pattern(kb, env, sub_pat, field_type, errors));
             }
+            crate::kb::node_occurrence::reassemble_pattern(pattern, &rebuilt)
         }
-        Pattern::Tuple { positional, .. } => {
+        Pattern::Tuple { positional, labels: old_labels } => {
             // When the scrutinee is a tuple type, bind each sub-pattern to its
             // component type — so `lambda (a, b) -> a + b` checked against
             // `Function[(Int, Int), Int]` types a/b as Int and `+` dispatches
             // uniquely. Otherwise the component type is unknown and the
             // sub-pattern var mints a fresh type var.
-            let components = scrutinee_type
-                .as_ref()
-                .and_then(|t| named_tuple_field_types(kb, t));
+            // WI-803: keep the component NAMES, which this read used to discard
+            // (`named_tuple_field_types` maps them away). They are what binder `i`
+            // is typed FROM, and recording them on the pattern is what lets the
+            // matcher fetch that same component at run time instead of trusting
+            // slot `i` of whatever value arrives — the WI-788 disagreement.
+            let fields: Option<Vec<(Symbol, Value)>> =
+                scrutinee_type.as_ref().and_then(|t| named_tuple_field_pairs(kb, t));
             // WI-794: the index zip pairs binder `i` with component `i`, which is a
             // TRUSTWORTHY correspondence only at EQUAL arity — the rule
             // `validate_callback_effect_row` already follows for its place map. At
@@ -21793,19 +21868,56 @@ fn extend_env_from_pattern(
             // property there, not a load error) and fresh binder vars made `p - q`
             // dispatch-ambiguous. So a misaligned component still types its binder, and
             // the arity defect is left to whichever check genuinely owns it.
-            let aligned = components.as_ref().is_none_or(|c| c.len() == positional.len());
+            let aligned = fields.as_ref().is_none_or(|f| f.len() == positional.len());
+            let mut rebuilt: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(positional.len());
             for (i, sub_pat) in positional.iter().enumerate() {
-                let comp = components.as_ref().and_then(|c| c.get(i).cloned());
-                if aligned {
-                    extend_env_from_pattern(kb, env, sub_pat, comp, errors);
+                let comp = fields.as_ref().and_then(|f| f.get(i)).map(|(_, v)| v.clone());
+                rebuilt.push(if aligned {
+                    bind_and_label_pattern(kb, env, sub_pat, comp, errors)
                 } else {
                     let mut misaligned = Vec::new();
-                    extend_env_from_pattern(kb, env, sub_pat, comp, &mut misaligned);
-                }
+                    bind_and_label_pattern(kb, env, sub_pat, comp, &mut misaligned)
+                });
+            }
+            // WI-803: the LABELS, recorded only when there is one component per
+            // binder. `aligned` is exactly that condition, and it is the right gate
+            // for two independent reasons:
+            //
+            //  * a MISALIGNED list has no correspondence to record — binder `i`
+            //    already sits against an unrelated component, which is what the
+            //    WI-794 note above is about;
+            //  * leaving the labels empty there keeps the POSITIONAL path, whose
+            //    count test is the only thing that refuses the shape at run time.
+            //    `arity_mismatch_still_refuses_to_match` pins that: `lambda (p, q)`
+            //    against a 3-component tuple must LOAD clean and fail at the MATCH.
+            //    A by-label read would not care about the extra component and would
+            //    quietly succeed — turning a loud arity failure into an accepted
+            //    program, which is the wrong direction.
+            //
+            // Width subtyping is unaffected: it makes the VALUE wider than the
+            // type, never the type wider than the binder list, so a value with
+            // extra components still meets a labelled pattern and its extras go
+            // unread — exactly as a `.a` / `.c` reader would leave them.
+            let labels: Vec<Symbol> = match &fields {
+                Some(f) if aligned => f.iter().map(|(name, _)| *name).collect(),
+                _ => Vec::new(),
+            };
+            if labels == *old_labels {
+                // Nothing new to record, so the "reuse `occ` when no child moved"
+                // rule stays under its owner — the same call the Constructor arm
+                // above makes. Hand-rolling the `Rc::ptr_eq` scan here as well left
+                // two copies of that rule in one function, free to drift apart.
+                crate::kb::node_occurrence::reassemble_pattern(pattern, &rebuilt)
+            } else {
+                NodeOccurrence::new_pattern(
+                    Pattern::Tuple { positional: rebuilt, labels },
+                    pattern.span,
+                    pattern.owner,
+                )
             }
         }
         // wildcard, literal_pattern — no bindings
-        Pattern::Wildcard | Pattern::Literal { .. } => {}
+        Pattern::Wildcard | Pattern::Literal { .. } => Rc::clone(pattern),
     }
 }
 
@@ -25574,10 +25686,13 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
             .all(|(i, (name, _))| is_positional_label_at(kb.resolve_sym(*name), i))
 }
 
-/// WI-799: the alignment policy and its two axes, SEALED in a private module.
+/// WI-799: the alignment policy and its axes, SEALED in a private module.
+/// WI-803 added a THIRD axis ([`TupleOrder`]); the seal below is stated over the
+/// width×names pair because that is the pairing it has to make unconstructible.
 ///
-/// The axes are independent, which yields FOUR combinations while only THREE are
-/// disciplines. The fourth — `Subset` width with the synthetic escape — is not
+/// Width and names are independent, which yields FOUR combinations while only
+/// THREE are disciplines. The fourth — `Subset` width with the synthetic escape —
+/// is not
 /// merely unused, it is UNSOUND: the escape branch in
 /// [`align_named_tuple_slots`] zips the two lists without consulting width, and
 /// `zip` stops at the shorter one, so a subset width would silently relate
@@ -25607,6 +25722,44 @@ pub(super) enum TupleWidth {
     /// supertype (WI-782) — and correct for an equality relation, where admitting
     /// a subset in one argument position makes the relation ASYMMETRIC.
     Exact,
+}
+
+/// WI-803: may the correspondence REORDER, or must each match come after the
+/// previous one — the third axis of [`TupleAlign`].
+///
+/// This axis did not exist until WI-803 because it had exactly one live value:
+/// every discipline preserved order, so naming it would have bought surface area
+/// and no type-safety. WI-804 wrote the DATA arm's order requirement down as an
+/// explicit INTERIM for precisely this moment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum TupleOrder {
+    /// POSITION IS LOAD-BEARING: each `b` name must occur in `a` AFTER the
+    /// previous one. A component may be dropped from anywhere (that preserves the
+    /// order of those that remain), but a PERMUTATION is refused. Forced for a
+    /// parameter list, which is applied positionally, and for an equality, whose
+    /// operands are two tuple IDENTITIES and where order is part of identity.
+    Preserved,
+    /// NAME-KEYED, order immaterial: each `b` name is looked up in `a` from the
+    /// start. Correct for a data tuple under `<:` — the consumer of an
+    /// `(a: TA, c: TC)`-typed value asks for `.a` and `.c`, and the value answers
+    /// both wherever the components sit. Order belongs to a tuple's IDENTITY;
+    /// `<:` is a different relation and carrying the rule across is the mistake
+    /// WI-788 made and WI-804 named.
+    ///
+    /// FIRST match, not any match: that is what makes this walk agree with the
+    /// READER it licenses. `TupleComponents::by_label` (eval/value.rs) scans a
+    /// value's components and returns the FIRST with the wanted name, so under a
+    /// resume-after-previous scan the two picked DIFFERENT components on a
+    /// duplicate label — the tuple conformed on the second `a` while `t.a` read
+    /// the first (WI-805). Looking up from the start is the reader's own rule.
+    ///
+    /// What is shared is the FIRST-MATCH discipline, not the whole rule: this walk
+    /// compares names by `Symbol` IDENTITY while the reader compares SHORT names
+    /// (a value's component symbol may carry a qualified path). That difference
+    /// predates WI-803 and is not introduced here, but it does bound the claim —
+    /// the two agree on WHICH occurrence of a repeated name to take, not
+    /// necessarily on whether two spellings name the same component.
+    Free,
 }
 
 /// WI-799: what the two lists' NAMES must satisfy for the alignment to be
@@ -25657,19 +25810,29 @@ pub(super) enum TupleNames {
 pub(super) struct TupleAlign {
     width: TupleWidth,
     names: TupleNames,
+    order: TupleOrder,
 }
 
 impl TupleAlign {
-    /// A DATA tuple under `<:`. Name-keyed width, names exact at every slot.
+    /// A DATA tuple under `<:`. FULLY NAME-KEYED: width from anywhere, names
+    /// exact, order immaterial.
     ///
-    /// WI-788 made the correspondence POSITIONAL. It had been an order-insensitive
-    /// by-name lookup, which admitted a PERMUTATION that the value representation
+    /// WI-788 made the correspondence POSITIONAL, because the order-insensitive
+    /// lookup it replaced admitted a PERMUTATION that the value representation
     /// never performs: the carrier keeps SOURCE order (WI-786) and a destructuring
-    /// binder list reads it POSITIONALLY (WI-785), so binder `i` received the
+    /// binder list read it POSITIONALLY (WI-785), so binder `i` received the
     /// value's `i`-th component while the typer had given it the type of the
     /// DECLARED `i`-th field — an operation declared `-> Int64` returned a
     /// `String` on a clean load.
-    pub(super) const DATA: Self = Self { width: TupleWidth::Subset, names: TupleNames::Exact };
+    ///
+    /// WI-803 restored the name-keying by fixing THE READER instead. The typer
+    /// now resolves each binder's LABEL from the expected type and the matcher
+    /// fetches that component by name (`Pattern::Tuple.labels`,
+    /// `match_tuple_pattern`), so a permuted value hands each binder the
+    /// component the typer typed it from. Order is a tuple's IDENTITY, never a
+    /// term of `<:` — see [`TupleOrder`].
+    pub(super) const DATA: Self =
+        Self { width: TupleWidth::Subset, names: TupleNames::Exact, order: TupleOrder::Free };
 
     /// An ARROW'S PARAMETER LIST. Equal arity, with the synthetic escape.
     ///
@@ -25687,8 +25850,15 @@ impl TupleAlign {
     /// `(y: Bool, x: Int64)` is compared slot-for-slot against
     /// `(x: Int64, y: Bool)`, where matching by name accepted it and let an
     /// operation declared `-> Int64` evaluate to `Bool(true)` with no trap.
-    pub(super) const PARAM_LIST: Self =
-        Self { width: TupleWidth::Exact, names: TupleNames::ExactOrSynthetic };
+    ///
+    /// WI-803: order [`TupleOrder::Preserved`], and here it is not an interim but
+    /// the rule — a parameter list is applied by POSITION, so slot `i` is slot `i`
+    /// and no by-label reader can be substituted for the one eval performs.
+    pub(super) const PARAM_LIST: Self = Self {
+        width: TupleWidth::Exact,
+        names: TupleNames::ExactOrSynthetic,
+        order: TupleOrder::Preserved,
+    };
 
     /// EQUALITY between two data tuples — [`unify_named_tuple`]'s discipline, and
     /// the one the two-variant enum could not express (WI-799).
@@ -25702,8 +25872,19 @@ impl TupleAlign {
     /// first is a defect however the relation is spelled.
     ///
     /// Identical to [`Self::PARAM_LIST`] on width and to [`Self::DATA`] on names —
-    /// which is exactly why it needs both axes to be data. It is neither site.
-    pub(super) const EQUALITY: Self = Self { width: TupleWidth::Exact, names: TupleNames::Exact };
+    /// which is exactly why the axes have to be data rather than a site enum. It
+    /// is neither site.
+    ///
+    /// WI-803: order [`TupleOrder::Preserved`], and this is the axis on which it
+    /// now parts company with [`Self::DATA`]. Unification asks whether two tuples
+    /// are the SAME TYPE, and §4.5 makes component order part of a tuple's
+    /// identity — so `(a: Int64, b: String)` and `(b: String, a: Int64)` must not
+    /// unify, even though each conforms to the other under `<:`.
+    pub(super) const EQUALITY: Self = Self {
+        width: TupleWidth::Exact,
+        names: TupleNames::Exact,
+        order: TupleOrder::Preserved,
+    };
 
     pub(super) fn width(self) -> TupleWidth {
         self.width
@@ -25712,10 +25893,14 @@ impl TupleAlign {
     pub(super) fn names(self) -> TupleNames {
         self.names
     }
+
+    pub(super) fn order(self) -> TupleOrder {
+        self.order
+    }
 }
 }
 
-use tuple_align::{TupleAlign, TupleNames, TupleWidth};
+use tuple_align::{TupleAlign, TupleNames, TupleOrder, TupleWidth};
 
 /// WI-800: an [`align_named_tuple_slots`] correspondence — one `a` index per `b`
 /// component. Inline up to 8; a wider tuple spills to the heap exactly as the old
@@ -25742,7 +25927,7 @@ type AlignedSlots = SmallVec<[usize; 8]>;
 /// order (both field lists are in declaration / positional order, since the
 /// `named_tuple` builders preserve it, so this is the correspondence the runtime
 /// actually performs). What the caller chooses is not the walk but the POLICY it
-/// runs under: [`TupleAlign`]'s two axes. Applying one policy to consumers that
+/// runs under: [`TupleAlign`]'s three axes. Applying one policy to consumers that
 /// read the tuple differently is precisely the WI-782 defect; naming the policies
 /// after the two SITES that had one, rather than after the axes, is WI-799's.
 ///
@@ -25771,38 +25956,30 @@ fn align_named_tuple_slots(
     b_fields: &[(Symbol, Value)],
     mode: TupleAlign,
 ) -> Option<AlignedSlots> {
-    // WI-799: the two axes are `mode`'s FIELDS — see [`TupleWidth`] /
-    // [`TupleNames`] for what each admits and why. They were a two-variant enum
-    // tabulated here, which is how the codebase came to disagree with itself about
-    // how many axes there even were.
+    // WI-799/WI-803: the THREE axes are `mode`'s FIELDS — see [`TupleWidth`] /
+    // [`TupleNames`] / [`TupleOrder`] for what each admits and why. They were a
+    // two-variant enum tabulated here, which is how the codebase came to disagree
+    // with itself about how many axes there even were. Keep the count here honest:
+    // WI-803 added `order` and this comment said "two" until the /simplify pass
+    // caught it, which is that same drift starting over.
     //
-    // WI-804, on the DATA arm's ORDER requirement — it is an INTERIM, not the
-    // rule. Subtyping is properly NAME-KEYED for a data tuple: every consumer of
-    // a `(a, c)`-typed value asks for `.a` and `.c`, and an `(a, b, c)` value
-    // answers both wherever the components sit. Order belongs to a tuple's
-    // IDENTITY, not to `<:`; conflating the two is what made WI-788 refuse
-    // `(A, B, C) <: (A, C)`, a correct program.
+    // WI-803 retired WI-804's ORDER interim by promoting order to the third axis
+    // ([`TupleOrder`]) and fixing the READER that the interim was protecting.
+    // What the interim said: `<:` between data tuples is properly NAME-KEYED, but
+    // a destructuring binder list (WI-785) read by SLOT and COUNT, so admitting a
+    // permutation bound binder `i` to a component the typer typed from a different
+    // field — an operation declared `-> Int64` returning a `String` on a clean
+    // load. Width was admitted anyway because it changes the COUNT and so fails
+    // LOUDLY; only the silent half was held back.
     //
-    // What blocks full name-keying is not the relation but the READER: a
-    // destructuring binder list (WI-785) reads by SLOT and COUNT, so it is
-    // unsound under any `<:` step. The two failure modes differ, and that is what
-    // this interim exploits — MEASURED both ways:
-    //   * WIDTH changes the COUNT, so the binder list fails to match and raises
-    //     LOUDLY. Admitting it costs a loud error, not a wrong answer.
-    //   * PERMUTATION keeps the count and swaps the VALUES, so binder `i` is
-    //     bound to a component the typer typed from a different field — an
-    //     operation declared `-> Int64` returning a `String` on a clean load.
-    // So width is admitted and order is held until the reader binds by LABEL
-    // rather than by slot, which is the real WI-788 and is tracked separately.
-    // When that lands, delete the order requirement here — not before.
+    // The reader now binds by LABEL: the typer resolves each binder's component
+    // name from the expected type into `Pattern::Tuple.labels` and
+    // `match_tuple_pattern` fetches by name. A permuted value therefore hands each
+    // binder the component the typer typed it from, and the count no longer has to
+    // agree either — so the loud half is retired with the silent one.
     //
-    // HOW to delete it, for WI-803: ORDER is not currently an axis because it has
-    // exactly one live value — all three disciplines preserve it, so an axis would
-    // buy no type-safety today, only surface area. But WI-803 makes DATA's walk
-    // unordered while PARAM_LIST and EQUALITY must stay ordered (position is
-    // load-bearing for both), and at that point order HAS two values. Promote it
-    // to a third axis then. Do NOT branch on `mode == TupleAlign::DATA` here: that
-    // reintroduces the named-SITE test one line below the axes that exist to
+    // The axis is deliberately NOT a `mode == TupleAlign::DATA` test: that would
+    // reintroduce the named-SITE branch one line below the axes that exist to
     // replace it, which is the whole of WI-799.
     // EXHAUSTIVE, no wildcard: a new `TupleWidth` must force an arm here rather
     // than fall through to "no width check at all", which would read as handled.
@@ -25853,18 +26030,25 @@ fn align_named_tuple_slots(
         // restores exactly the silent truncation the seal exists to prevent.
         return Some((0..b_fields.len()).collect());
     }
-    // Name-keyed, ORDER-PRESERVING: the scan resumes from `next` rather than
-    // restarting, so each `b` name must occur in `a` AFTER the previous one.
-    // Dropping components (from anywhere) preserves the order of those that
-    // remain, so width passes; a PERMUTATION does not, so it is refused — the
-    // interim above. At equal arity this degenerates to the slot-for-slot
-    // agreement `PARAM_LIST` needs, which is why one walk serves both.
+    // Name-keyed. The ORDER axis says only WHERE each lookup starts:
+    //   * `Preserved` — resume after the previous match, so each `b` name must
+    //     occur in `a` AFTER the one before it. Dropping components preserves the
+    //     order of those that remain, so width still passes; a PERMUTATION does
+    //     not. At equal arity this degenerates to the slot-for-slot agreement
+    //     `PARAM_LIST` needs, which is why one walk serves every discipline.
+    //   * `Free` — restart from 0, so a permutation aligns. FIRST match, which is
+    //     `field_access`' own rule; see [`TupleOrder::Free`] on the duplicate-label
+    //     disagreement (WI-805) that resuming caused.
     let mut next = 0;
     let mut slots = AlignedSlots::with_capacity(b_fields.len());
     for (b_name, _) in b_fields {
-        let off = a_fields[next..].iter().position(|(n, _)| n == b_name)?;
-        slots.push(next + off);
-        next += off + 1;
+        let from = match mode.order() {
+            TupleOrder::Preserved => next,
+            TupleOrder::Free => 0,
+        };
+        let off = a_fields[from..].iter().position(|(n, _)| n == b_name)?;
+        slots.push(from + off);
+        next = from + off + 1;
     }
     Some(slots)
 }
@@ -27924,15 +28108,16 @@ fn destructure_bindings(
 ) {
     match pattern.as_pattern() {
         Some(Pattern::Var { name, .. }) => out.push((*name, prefix.to_vec())),
-        Some(Pattern::Tuple { positional, named }) => {
+        // WI-803: `Pos(i)` stays correct even for a LABELLED binder list. The
+        // selector is resolved against the pattern's expected TYPE
+        // (`project_type_component`), and in that type component `i` IS
+        // `labels[i]` — the labels were read off it in declaration order. `Pos(i)`
+        // and `Named(labels[i])` therefore name the same component here; only the
+        // RUNTIME value can be permuted, and this walk never looks at one.
+        Some(Pattern::Tuple { positional, .. }) => {
             for (i, sub) in positional.iter().enumerate() {
                 let mut p = prefix.to_vec();
                 p.push(LeafSelector::Pos(i));
-                destructure_bindings(sub, &p, out);
-            }
-            for (sym, sub) in named {
-                let mut p = prefix.to_vec();
-                p.push(LeafSelector::Named(*sym));
                 destructure_bindings(sub, &p, out);
             }
         }
@@ -28028,7 +28213,7 @@ fn project_constructor_arg(
 /// WI-480: project one selector from a tuple / entity TYPE (carrier-agnostic). Used
 /// when no structural value node exists (an opaque call result, an input param). A
 /// tuple type indexes its named-tuple components in field order (matching how
-/// [`extend_env_from_pattern`] binds the destructured var's type); a `Named`
+/// [`bind_and_label_pattern`] binds the destructured var's type); a `Named`
 /// selector matches by field name. `None` for a non-tuple carrier.
 fn project_type_component(kb: &KnowledgeBase, ty: &Value, sel: &LeafSelector) -> Option<Value> {
     match sel {
@@ -35309,7 +35494,7 @@ mod wi621_carrier_neutral_goal_subst {
 
 #[cfg(test)]
 mod wi799_tuple_align_policy {
-    //! WI-799 — [`TupleAlign`] is a POLICY over two axes, and the equality
+    //! WI-799/WI-803 — [`TupleAlign`] is a POLICY over three axes, and the equality
     //! relation gets its own discipline.
     //!
     //! These drive [`align_named_tuple_slots`] and [`unify_named_tuple`]
@@ -35371,14 +35556,34 @@ mod wi799_tuple_align_policy {
             Some([0usize, 2].as_slice()),
             "a width drop must report the SURVIVING components' own slots",
         );
-        // The cursor RESUMES rather than restarting, so a repeated label is taken
-        // by the match after the previous one — not by the first of that name,
-        // which is where the threading's old by-name lookup disagreed with the
-        // relation it was feeding.
+        // WI-803: DATA is `TupleOrder::Free`, so a PERMUTATION aligns — and the
+        // slots report where each component actually sits, which is the whole
+        // content of the correspondence for a reader that fetches by name.
+        assert_eq!(
+            slots(&mut kb, &["a", "b", "c"], &["c", "a"].as_slice(), TupleAlign::DATA).as_deref(),
+            Some([2usize, 0].as_slice()),
+            "a permuted b-list reports each component's own slot in `a`",
+        );
+        // WI-803 INVERTED THIS. The scan used to RESUME after the previous match,
+        // so a repeated label was taken by the match after the previous one —
+        // `["a", "b", "a"]` against `["b", "a"]` gave slots [1, 2], the SECOND `a`.
+        // `TupleOrder::Free` looks each name up from the start, which is
+        // `field_access`' own rule, so it now takes the FIRST — and the relation
+        // and the reader stop disagreeing on a duplicate label (WI-805).
         assert_eq!(
             slots(&mut kb, &["a", "b", "a"], &["b", "a"], TupleAlign::DATA).as_deref(),
-            Some([1usize, 2].as_slice()),
-            "the scan resumes after the previous match, so `a` is the SECOND one",
+            Some([1usize, 0].as_slice()),
+            "each name is looked up from the START, so `a` is the FIRST one",
+        );
+        // ORDER still binds where position is load-bearing: the same permutation
+        // is REFUSED for a parameter list and for an equality.
+        assert!(
+            !aligns(&mut kb, &["a", "b"], &["b", "a"], TupleAlign::PARAM_LIST),
+            "a parameter list is applied positionally — no permutation",
+        );
+        assert!(
+            !aligns(&mut kb, &["a", "b"], &["b", "a"], TupleAlign::EQUALITY),
+            "order is part of a tuple's IDENTITY, so a permutation is not an equality",
         );
     }
 
@@ -35465,15 +35670,28 @@ mod wi799_tuple_align_policy {
         }
     }
 
-    /// The two axes are INDEPENDENT, which is the whole point of the struct: each
-    /// of the three disciplines differs from the other two in exactly one axis, so
-    /// no two-variant enum can express all three.
+    /// The axes are INDEPENDENT, which is the whole point of the struct: no two
+    /// disciplines agree on ALL of them, so no single enum over one axis can
+    /// express the three.
+    ///
+    /// WI-803 weakened the original claim, which was "each differs from the other
+    /// two in exactly ONE axis". With `order` added that is false — DATA and
+    /// EQUALITY now differ on width AND order — and the assertions below were
+    /// blind to it, testing only `width()` and `names()`. A test whose stated job
+    /// is pinning the grid must cover the axis a ticket just added, or the axis
+    /// ships unpinned.
     #[test]
     fn the_three_disciplines_are_distinct_points_in_the_grid() {
         assert_eq!(TupleAlign::EQUALITY.width(), TupleAlign::PARAM_LIST.width());
         assert_ne!(TupleAlign::EQUALITY.names(), TupleAlign::PARAM_LIST.names());
         assert_eq!(TupleAlign::EQUALITY.names(), TupleAlign::DATA.names());
         assert_ne!(TupleAlign::EQUALITY.width(), TupleAlign::DATA.width());
+        // WI-803's axis: DATA is the only order-free discipline, and it is what
+        // separates DATA from EQUALITY on a second coordinate.
+        assert_eq!(TupleAlign::DATA.order(), TupleOrder::Free);
+        assert_eq!(TupleAlign::PARAM_LIST.order(), TupleOrder::Preserved);
+        assert_eq!(TupleAlign::EQUALITY.order(), TupleOrder::Preserved);
+        assert_ne!(TupleAlign::EQUALITY.order(), TupleAlign::DATA.order());
     }
 }
 

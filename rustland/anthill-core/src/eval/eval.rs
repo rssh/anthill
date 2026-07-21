@@ -1715,6 +1715,24 @@ impl Interpreter {
                 // the spread never fired — and a relation ROW is built all-named,
                 // which is how mapping a two-parameter OPERATION over rows trapped
                 // while the byte-identical `lambda (p, q) -> …` spelling evaluated.
+                // WI-803, THE LATENT TWIN of the destructuring reader — this spread
+                // reads a name-keyed tuple in SOURCE order and does NOT go through
+                // `TupleComponents::by_label`, even though `<:` now admits a
+                // PERMUTED value. That is the shape that made binder `i` receive a
+                // component the typer typed from a different field (WI-788), here in
+                // its operation spelling rather than its lambda one.
+                //
+                // Currently UNREACHABLE, and only incidentally: an eta'd operation's
+                // arrow carries the synthetic `_1/_2` labels (an arrow drops its
+                // binder names, WI-783), so it can never conform to a
+                // `Function[A = (a: …, b: …)]` slot — the mismatch reports
+                // `got (_1: Int64, _2: Int64) -> Int64`. Probed, not assumed.
+                //
+                // The barrier is a consequence of WI-783, not a stated invariant, and
+                // WI-784's rule is that a lambda and an operation must be
+                // INTERCHANGEABLE. So if arrows ever learn their parameter names this
+                // becomes a live silent-wrong-answer on day one, and it must be
+                // routed through `by_label` at that point.
                 match arg_values[0].tuple_components() {
                     Some(components) if components.len() == arity => {
                         Ok(components.iter().cloned().collect())

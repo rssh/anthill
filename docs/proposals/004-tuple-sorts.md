@@ -220,10 +220,12 @@ operation op_e(env: Env, a: A) -> (R, Env, List[T = Event])
 4. `(a: Int64, b: String)` and `(Int64, String)` are different sorts (different names).
 4a. `(a: Int64, b: String)` and `(b: String, a: Int64)` are different sorts (different **order**).
     Order is part of a tuple's IDENTITY. It is NOT part of `<:`, which is a different relation:
-    subtyping is name-keyed, so width holds with components dropped from anywhere
-    (`(A: TA, B: TB, C: TC) <: (A: TA, C: TC)`) and permutation would hold too. Permutation is
-    currently refused as an INTERIM, because a positional destructuring reader is unsound under
-    it — see `kernel-language.md` §4.5 (WI-788, WI-804).
+    subtyping is name-keyed, so BOTH width and permutation hold —
+    `(A: TA, B: TB, C: TC) <: (A: TA, C: TC)` with the drop from anywhere, and
+    `(b: String, a: Int64) <: (a: Int64, b: String)`. Every reader of a data tuple is name-keyed
+    (`t.x` access and destructuring alike), which is what makes that sound; do not carry the
+    order rule across from identity into `<:`. See `kernel-language.md` §4.5
+    (WI-788, WI-804, WI-803).
 5. `()` is the unit sort with a single value `()`.
 6. Tuple values are constructed and destructured via pattern matching.
 7. All-or-nothing naming: either all elements have explicit names or none do.

@@ -241,3 +241,32 @@ pub fn list_ints(v: &eval::Value) -> Vec<i64> {
     }
     out
 }
+
+// ── Tuple-cluster fixture builder (WI-786 / 788 / 803) ───────
+
+/// Build `ap(f) = f(<lit>)` over a `Function[A = <ty>, B = Int64]`, driven by
+/// `drive() = ap(<lam>)`.
+///
+/// ONE builder for the program shape the WI-775 → 786 → 788 → 804 → 803 cluster
+/// is argued over: a tuple literal reaching a destructuring binder list through a
+/// `Function` slot. It had been copy-pasted into three test files, and
+/// `wi788_..`'s copy carried a doc comment claiming it was "the same builder as
+/// `wi786_..`'s" — a claim nothing enforced, and exactly the property those files
+/// need, since their value is being comparable line for line. WI-803 was about to
+/// add a fourth copy.
+///
+/// `imports` is the brace-list body (e.g. `"Int64, String, Function"`).
+#[allow(dead_code)]
+pub fn function_slot_case(ns: &str, imports: &str, ty: &str, lit: &str, lam: &str) -> String {
+    format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{{imports}}}
+  operation ap(f: Function[A = {ty}, B = Int64]) -> Int64
+    = f({lit})
+  operation drive() -> Int64
+    = ap({lam})
+end
+"#
+    )
+}

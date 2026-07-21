@@ -37,18 +37,12 @@ fn run_int(src: &str, op: &str) -> i64 {
 }
 
 /// Build `ap(f) = f(<lit>)` over a `Function[A = <ty>, B = Int64]` and drive it.
+/// Delegates to the cluster's ONE builder (`common::function_slot_case`) so this
+/// file and its WI-788 / WI-803 siblings stay comparable line for line — they had
+/// three copies of this shape, and wi788's asserted the sameness in a comment that
+/// nothing enforced.
 fn tuple_case(ns: &str, ty: &str, lit: &str, lam: &str) -> String {
-    format!(
-        r#"
-namespace {ns}
-  import anthill.prelude.{{Int64, Function}}
-  operation ap(f: Function[A = {ty}, B = Int64]) -> Int64
-    = f({lit})
-  operation drive() -> Int64
-    = ap({lam})
-end
-"#
-    )
+    crate::common::function_slot_case(ns, "Int64, Function", ty, lit, lam)
 }
 
 /// THE regression. `_b` is a user label that merely happens to start with `_`;

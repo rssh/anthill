@@ -352,10 +352,10 @@ callback take an operation's eta-expanded arrow. A permuted list is therefore co
 slot-for-slot rather than paired by name, so `(y: Bool, x: Int64) -> R` fails
 against `(x: Int64, y: Bool) -> R` on the component types; and a two-parameter
 value does not conform to a three-parameter one. A positionally consumed list
-admits neither permutation nor width. **Data tuples are different**: their
-components are read by NAME (§Field access, mode 3), so **width is a subtyping
-rule** for them — dropped from anywhere — and permutation would be too, were it
-not held back by the destructuring reader. See §4.5.
+admits neither permutation nor width. **Data tuples are different**: every reader
+of one is name-keyed — `t.x` access (§Field access, mode 3) and destructuring
+alike (§"Destructuring binds by LABEL") — so **width and permutation are both
+subtyping rules** for them, with components dropped from anywhere. See §4.5.
 
 Because names are not matched up, the zip is admitted only when the two lists
 agree on which slot is which — the names line up, or one side carries the
@@ -368,10 +368,10 @@ of the parameter type — decides which of the two relations applies:
 * **arity ≠ 1** — the parameter position *is* the list, and the rules above hold:
   same arity, slot-by-slot, no permutation and no width.
 * **arity 1** — the parameter position is the sole parameter's TYPE. A tuple there
-  is *data*, so it is related as data: name-keyed, with width (§4.5). A callback
-  reading only `(a: A)` therefore accepts a wider `(a: A, b: B)`. Under the §4.5
-  interim, `(t: (x: A, y: B)) -> R` does not yet accept a callback declared
-  `(u: (y: B, x: A)) -> R`; that is the held-back permutation, not a separate rule.
+  is *data*, so it is related as data: name-keyed, with width AND permutation
+  (§4.5). A callback reading only `(a: A)` therefore accepts a wider
+  `(a: A, b: B)`, and `(t: (x: A, y: B)) -> R` accepts a callback declared
+  `(u: (y: B, x: A)) -> R`.
 
 Arity is thus what tells `(t: (a: A, b: B))` — one tuple-typed parameter — from
 `(a: A, b: B)` — two parameters. They are different types: neither conforms to the
@@ -502,17 +502,22 @@ nothing rewrites a named tuple into positional form. Read literally it would era
 names and make `(a: A)` the same type as `(_1: A)`, which rule 4 refuses. Both
 coordinates are checked; neither is discarded.
 
-Order has to be identity because a tuple's two readers disagree about everything
-else. Component **access** is name-keyed and order-independent (§Field access,
-mode 3), but **destructuring** is positional (§"Destructuring is POSITIONAL,
-unlike access"), and the runtime value is an ordered product carrying its
-components in definition order. Admitting a permutation for the name-reader
-admitted it for the position-reader too, which bound a destructuring binder to
-one component while the type checker had typed it from another — an operation
-declared `-> Int64` could return a `String` with no error at load or run time.
-The read discipline cannot gate the rule, because a value flows through a
-`Function[A, B]` *parameter* to a consumer chosen at a different call site than
-the one relating it to `A`.
+Order is identity because a tuple's components are read *positionally* wherever
+names are unavailable or not what is being asked: an arrow's parameter list is
+applied by position (§Arrow types), and unification asks whether two tuples are
+the same type, which a reordering changes. Where a *consumer* reads by name, order
+does not participate — that is `<:`, and the two must not be conflated.
+
+Both of a tuple's readers are name-keyed. Component **access** always was
+(§Field access, mode 3); **destructuring** became so in WI-803
+(§"Destructuring binds by LABEL"). Before that it read by slot, and the
+disagreement was the source of a whole family of silent wrong answers — a binder
+bound to one component while the type checker had typed it from another. Note
+that the read discipline could not have gated the *relation*: a value flows
+through a `Function[A, B]` *parameter* to a consumer chosen at a different call
+site than the one relating it to `A`, so the site admitting a permutation cannot
+know which reader it will meet. Making every reader name-keyed is what removes
+the question.
 
 **Width subtyping is name-keyed**: `S <: T` requires every component `n : T_n` of
 `T` to appear in `S` with `S_n <: T_n`, and `S`'s extra components — dropped from
@@ -520,17 +525,20 @@ the one relating it to `A`.
 <: (A: TA, C: TC)`. Order plays no part in `<:`; it belongs to *identity*, and the
 two are different relations.
 
-> **Interim (WI-804).** `<:` should be fully name-keyed, which would admit a
-> **permutation** as well — `(b: String, a: Int64) <: (a: Int64, b: String)`
-> serves every name-reading consumer. It is currently **refused**, and the reason
-> is the *reader*, not the relation: a destructuring binder list reads by slot and
-> count (§"Destructuring is POSITIONAL"), so it is unsound under any `<:` step.
-> The two failure modes differ, which is what this interim exploits — width
-> changes the binder **count** and so fails *loudly*, while a permutation keeps
-> the count and swaps the **values**, silently binding a component the checker
-> typed from a different field. Order is therefore held until destructuring binds
-> by **label** rather than by slot; at that point the order requirement is dropped
-> and `<:` becomes name-keyed outright.
+**Permutation is a subtyping rule too** (WI-803): `(b: String, a: Int64) <:
+(a: Int64, b: String)`. Every consumer of a value typed `(a: Int64, b: String)`
+asks for its components by *name*, and a value carrying both answers regardless of
+the order it wrote them in. This is the same principle as width — `<:` is
+name-keyed throughout — and it is *not* in tension with order being identity,
+because they are different relations. Conflating them is the mistake to avoid: it
+is what made an earlier rule refuse `(A, B, C) <: (A, C)`, a correct program.
+
+This holds because **destructuring binds by label**, not by slot
+(§"Destructuring binds by LABEL"). Until it did, a permutation admitted by `<:`
+handed a destructuring binder a component the checker had typed from a different
+field — an operation declared `-> Int64` returning a `String` with no error at
+load or run time (WI-788) — and the rule was held back for that reason alone. The
+defect was in the reader; the relation was right.
 
 ```
 -- Tuple types (in type position)
@@ -1464,24 +1472,39 @@ f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
 
 3. **Named-tuple component access** (WI-638): if the object types as a **named tuple** (its functor is `named_tuple`, so the receiver sort is `None` and modes 1–2 never reach it), resolve the identifier against the tuple's `(name, type)` components — by short name (`t.x`) or by positional `_N` (`t._1`, 1-based, since positional tuples desugar to `_N` names). Access is name-keyed on both the type and the runtime `Value::Tuple`, hence **order-independent**. E.g., `(x: 10, y: 20).x` evaluates to `10`; `t.x` on a param typed `(x: Int64, y: Int64)` type-checks and evaluates.
 
-**Destructuring is POSITIONAL, unlike access** (WI-785). Component *access* is
-name-keyed and order-independent, as above. A destructuring binder list is not:
-`lambda (p, q) -> …` and `case (p, q) ->` bind `p` to the **first** component in
-the tuple's **declared component order** and `q` to the second, whatever the
-components are labelled — including
-against a name-keyed tuple, so `lambda (p, q) -> p - q` applied to
-`(x: 3, acc: 10)` computes `3 - 10`. The two rules differ because a tuple pattern
-has no way to *spell* a label: its elements are patterns or `name: Type` typed
-binders, so a binder name is a fresh binder rather than a selector, and matching
-binder names against labels would leave `lambda (a, b)` no meaning at all over a
-named tuple. A binder list whose length differs from the component count does not
-match.
+**Destructuring binds by LABEL, like access** (WI-803). `lambda (p, q) -> …` and
+`case (p, q) ->` bind `p` to the component named **first in the binder list's
+expected tuple type** and `q` to the second — by *name*, so whatever slot the
+value put that component in is where it is fetched from. `lambda (p, q) -> p - q`
+applied to a value typed `(x: Int64, acc: Int64)` computes `x - acc` whether the
+value was written `(x: 3, acc: 10)` or `(acc: 10, x: 3)`.
 
-This is sound only because component **order is part of a tuple's type identity**
-(§4.5, WI-788): a value's components arrive in the definition order of its type,
-so the component a binder receives is the one the type checker typed it from. When
-the two were allowed to differ — a permuted tuple conforming by name — this reader
-silently bound values of the wrong type.
+The label comes from the **type**, never from the binder's name: a tuple pattern
+has no way to *spell* a label (its elements are patterns or `name: Type` typed
+binders), so a binder name is a fresh binder rather than a selector — matching
+binder names against labels would leave `lambda (a, b)` no meaning at all over a
+named tuple. Position still selects *which label*; it no longer selects which
+value.
+
+Two consequences:
+
+- A **wider** value destructures fine. Width subtyping (§4.5) lets an
+  `(a: A, b: B, c: C)` value meet a binder list typed `(a: A, b: B)`; a by-label
+  fetch ignores the component it was not asked for, exactly as an `.a`/`.b` reader
+  would.
+- Where no tuple type is known for the pattern, the binder list falls back to the
+  value's own component order, which is then the only reading available. The same
+  applies to a **positional** tuple, whose labels are the synthetic `_1.._n` — for
+  it the two readings coincide by construction.
+
+A binder list whose length differs from its expected tuple's component count is a
+**mismatch**, reported where it occurs; it is not silently narrowed to the
+components that do line up.
+
+This reader is what lets `<:` be name-keyed at all (§4.5). While it read by
+**slot**, a permuted value conforming by name bound a binder to one component
+while the checker had typed it from another, and an operation declared `-> Int64`
+could return a `String` on a clean load (WI-788).
 
 An arrow's parameter list is likewise applied positionally, but its binder names
 are not free: they gate whether two lists may be zipped at all (§Arrow types,

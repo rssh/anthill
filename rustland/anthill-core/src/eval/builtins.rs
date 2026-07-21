@@ -17,7 +17,6 @@
 //! by the prelude's rewrite rules during SLD resolution.
 
 use super::{EvalError, Interpreter, Value};
-use crate::intern::positional_label_index;
 
 /// Register the standard-library builtins. Symbols that don't resolve in the
 /// current KB (stdlib partially loaded, e.g. a minimal test harness) are
@@ -270,24 +269,17 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         // runtime `Value::Tuple`. A named component lives in `named` (by short
         // name); a positional tuple stores its components in `pos`, so a `_N`
         // member (1-based) maps to `pos[N-1]`.
-        Value::Tuple { pos, named, .. } => {
-            for (sym, val) in named.iter() {
-                let full = interp.kb().resolve_sym(*sym);
-                let short = full.rsplit('.').next().unwrap_or(full);
-                if short == field_name.as_str() {
-                    return Ok(val.clone());
-                }
-            }
-            // WI-790: `_N` → slot N-1 via the convention's owner, which refuses
-            // `_0` (outside the 1-based image; the old `checked_sub(1)` also
-            // declined it, just without saying why) and `_01` (a USER label, so it
-            // is only ever reachable through the `named` scan above, never here).
-            if let Some(val) = positional_label_index(field_name.as_str()).and_then(|i| pos.get(i)) {
-                return Ok(val.clone());
-            }
-            Err(EvalError::Internal(format!(
-                "field_access: tuple has no component '{}'", field_name)))
-        }
+        // WI-803: the named scan and the WI-790 `_N` fallback both moved into
+        // `TupleComponents::by_label`, which is now the ONE owner of "read a tuple
+        // component by name" — shared with `match_tuple_pattern`, whose by-label
+        // destructuring must resolve a label exactly as `t.x` does or the relation
+        // and the reader diverge again (WI-800, WI-805).
+        Value::Tuple { .. } => receiver
+            .tuple_components()
+            .and_then(|c| c.by_label(interp.kb(), field_name.as_str()))
+            .cloned()
+            .ok_or_else(|| EvalError::Internal(format!(
+                "field_access: tuple has no component '{}'", field_name))),
         other => Err(EvalError::Internal(format!(
             "field_access: receiver is not an entity (got {})", other.type_name()))),
     }

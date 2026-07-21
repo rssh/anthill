@@ -328,11 +328,10 @@ fn bind_into(pat: &Rc<NodeOccurrence>, scrutinee: Option<Origin>, e: &mut HashMa
                 bind_into(a, sub, e);
             }
         }
-        Some(Pattern::Tuple { positional, named }) => {
+        // WI-803: `labels` says which component each binder takes; every binder
+        // still binds from the same scrutinee, so the flow edge is unchanged.
+        Some(Pattern::Tuple { positional, .. }) => {
             for a in positional {
-                bind_into(a, scrutinee, e);
-            }
-            for (_, a) in named {
                 bind_into(a, scrutinee, e);
             }
         }

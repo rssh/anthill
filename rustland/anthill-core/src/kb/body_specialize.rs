@@ -544,9 +544,12 @@ fn match_pattern_occ(
                 PatOutcome::Undecidable
             }
         }
-        Pattern::Tuple { positional, named } => match scr.as_expr() {
+        // WI-803: `labels` is deliberately not consulted — see `match_tuple_fields`
+        // on why a name-keyed scrutinee (the only shape the runtime reads by label)
+        // is already undecidable there.
+        Pattern::Tuple { positional, .. } => match scr.as_expr() {
             Some(Expr::TupleLit { positional: sp, named: sn }) => {
-                match_tuple_fields(kb, positional, named, sp, sn)
+                match_tuple_fields(kb, positional, sp, sn)
             }
             // A known non-tuple scrutinee can't match a tuple pattern.
             _ if occ_head_ctor(kb, scr).is_some() || scr_literal(scr).is_some() => PatOutcome::No,
@@ -603,13 +606,25 @@ fn match_ctor_fields(
 fn match_tuple_fields(
     kb: &KnowledgeBase,
     pos_pats: &[Rc<NodeOccurrence>],
-    named_pats: &[(Symbol, Rc<NodeOccurrence>)],
     scr_pos: &[Rc<NodeOccurrence>],
     scr_named: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> PatOutcome {
-    if !named_pats.is_empty() || !scr_named.is_empty() || pos_pats.len() != scr_pos.len() {
-        // Named-tuple patterns aren't exercised in this increment — don't guess.
-        return if named_pats.is_empty() && scr_named.is_empty() {
+    // WI-803, on why this static matcher needs NO new test for the by-label reader.
+    // It zips POSITIONALLY, so it may only decide a case the runtime matcher also
+    // reads positionally — and `match_tuple_pattern` reads by LABEL exactly when
+    // the scrutinee is NAME-KEYED. That case already returns `Undecidable` here and
+    // did before this ticket ("named-tuple patterns aren't exercised in this
+    // increment"), so the two can never disagree: wherever the runtime would read
+    // by label, this walk has already declined to decide.
+    //
+    // A guard on the pattern's `labels` was written, measured, and REMOVED: it was
+    // `!labels.is_empty() && !scr_named.is_empty()`, which is subsumed by the
+    // `scr_named` test one line below and so decided nothing. Shipping it would
+    // have been dead code reading as a safeguard. If the `scr_named` arm is ever
+    // relaxed to decide name-keyed literals, THAT is where the by-label reader has
+    // to be accounted for.
+    if !scr_named.is_empty() || pos_pats.len() != scr_pos.len() {
+        return if scr_named.is_empty() {
             PatOutcome::No
         } else {
             PatOutcome::Undecidable
@@ -817,11 +832,9 @@ fn collect_bound_names(pattern: &Rc<NodeOccurrence>, out: &mut Vec<Symbol>) {
                 collect_bound_names(p, out);
             }
         }
-        Pattern::Tuple { positional, named } => {
+        // WI-803: `labels` names components, not binders — nothing to collect.
+        Pattern::Tuple { positional, .. } => {
             for p in positional {
-                collect_bound_names(p, out);
-            }
-            for (_, p) in named {
                 collect_bound_names(p, out);
             }
         }

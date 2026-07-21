@@ -382,6 +382,138 @@ impl<'a> TupleComponents<'a> {
     pub fn iter(&self) -> impl Iterator<Item = &'a Value> {
         self.pos.iter().chain(self.named.iter().map(|(_, v)| v))
     }
+
+    /// WI-803: does this tuple carry component NAMES at all?
+    ///
+    /// A tuple populates exactly one of its two halves (WI-786), so this splits the
+    /// carrier cleanly: a NAME-keyed tuple can be read by label, a POSITIONAL one
+    /// cannot — it has no names, and its slot order is the whole of what it says.
+    /// That makes it the gate on the by-label destructuring arm.
+    ///
+    /// A positional carrier is not a degraded named one; reading it by slot is
+    /// exact, not a fallback. It is also how a SPREAD call arrives: applying a
+    /// two-binder closure as `f(3, 10)` gathers the arguments into
+    /// `Tuple { pos: [3, 10], named: [] }` (`gather_closure_arg`) while the
+    /// expected type is the named `(acc: Acc, x: Elem)` — so the labels are real
+    /// and there is still nothing to key on. That shape is the COMMON one
+    /// (`foldLeft` and every other two-binder callback), which makes this the arm
+    /// most destructuring executions take, not a corner; a by-label read of it
+    /// raised `MatchFailed` on every such program until this gate was added.
+    ///
+    /// THE INVARIANT THIS RESTS ON, stated because the arm is selected silently: a
+    /// positional carrier reaching a LABELLED pattern always holds its components
+    /// in the expected type's DECLARED order. It holds because the only producer of
+    /// such a carrier is `gather_closure_arg`, which preserves argument order, and
+    /// the routes that could permute those arguments are refused at load — a
+    /// function value applied with named arguments (`f(b: 10, a: 3)`) is rejected
+    /// with "records no parameter names to bind a label to", since an arrow drops
+    /// its binder names (WI-783). If arrows ever learn their parameter names, that
+    /// barrier goes and this invariant has to be re-established rather than
+    /// assumed. See `spread_eta_args` (eval/eval.rs) for the same dependency on the
+    /// operation-spelling side.
+    pub fn is_name_keyed(&self) -> bool {
+        !self.named.is_empty()
+    }
+
+    /// WI-803: the component a LABEL names, or `None` when the tuple has no such
+    /// component. THE one rule for reading a tuple by name, shared by the two
+    /// readers that must agree on it — `field_access` (`t.x`, eval/builtins.rs)
+    /// and `match_tuple_pattern`'s by-label arm (eval/pattern.rs), which since
+    /// WI-803 destructures by label rather than by slot.
+    ///
+    /// They MUST agree, and the codebase has already paid twice for two walks over
+    /// one tuple diverging: WI-800 found the typer's expected-type threading and
+    /// the conformance relation picking different components, and WI-805 found the
+    /// relation and `field_access` doing the same on a duplicate label. A
+    /// destructuring reader that resolved labels its own way would be the third.
+    ///
+    /// The rule, in the order `field_access` established:
+    ///  1. scan `named` by SHORT name and take the FIRST match — short name, not
+    ///     symbol identity, because a component's Symbol may carry a qualified path
+    ///     the label does not;
+    ///  2. otherwise read the synthetic `_N` convention through its owner
+    ///     (`positional_label_index`, WI-790), which maps 1-based `_N` to `pos[N-1]`
+    ///     and refuses `_0` / `_01` as USER labels — those are reachable only by (1).
+    ///
+    /// Both sides are normalized through [`short_name_of`], the WI-672 owner of the
+    /// one place short-name matching legitimately survives. Normalizing only the
+    /// COMPONENT side (as this first did) is a half-rule: `match_tuple_pattern`
+    /// hands over a label read off a TYPE's field list, and those symbols can
+    /// arrive qualified — `project_type_component` compares the very same
+    /// `named_tuple_fields` symbols with `same_label` rather than `==`, which is
+    /// only necessary if they can. A qualified label would then have matched
+    /// nothing and raised `MatchFailed` on a correct program.
+    ///
+    /// Step 2 cannot compete with step 1 for the same tuple, per the one-half
+    /// invariant stated on [`Self::is_name_keyed`].
+    pub fn by_label(&self, kb: &crate::kb::KnowledgeBase, label: &str) -> Option<&'a Value> {
+        self.by_label_index(kb, label).and_then(|i| self.component_at(i))
+    }
+
+    /// [`Self::by_label`]'s answer as a component INDEX, in [`Self::iter`] order
+    /// (`pos` then `named`) — the owner of the rule, with `by_label` its
+    /// value-returning face.
+    ///
+    /// The index exists because a caller resolving SEVERAL labels against one
+    /// tuple has to know whether two of them landed on the SAME component, and a
+    /// returned `&Value` cannot answer that. `match_tuple_pattern` needs exactly
+    /// that: two binders served the same component is a match that binds one
+    /// component twice and never reads another, which is a wrong answer rather
+    /// than a failed match. Two labels can collide either by being equal or — since
+    /// step 1 compares SHORT names — by being distinct qualified names sharing a
+    /// last segment, and an index catches both without the caller re-deriving the
+    /// comparison.
+    pub fn by_label_index(&self, kb: &crate::kb::KnowledgeBase, label: &str) -> Option<usize> {
+        let want = crate::kb::typing::short_name_of(label);
+        for (i, (sym, _)) in self.named.iter().enumerate() {
+            if crate::kb::typing::short_name_of(kb.resolve_sym(*sym)) == want {
+                return Some(self.pos.len() + i);
+            }
+        }
+        // `want`, NOT the raw label. The doc above justifies normalizing because a
+        // label read off a TYPE's field list can arrive qualified — and if that is
+        // true it is true of a POSITIONAL tuple's `_N` fields too, so reading the
+        // raw label here would normalize one branch and not the other and fail to
+        // resolve `ns._1`. Asserting the premise on one branch while relying on its
+        // negation on the other is the inconsistency this had.
+        crate::intern::positional_label_index(want).filter(|i| *i < self.pos.len())
+    }
+
+    /// The component at an [`Self::iter`]-order index — the inverse of
+    /// [`Self::by_label_index`], over the same `pos ++ named` sequence.
+    pub fn component_at(&self, flat: usize) -> Option<&'a Value> {
+        match self.pos.get(flat) {
+            Some(v) => Some(v),
+            None => self.named.get(flat - self.pos.len()).map(|(_, v)| v),
+        }
+    }
+
+    /// WI-803: are these labels the SYNTHETIC `_1.._n` convention — i.e. does the
+    /// expected type say "positional tuple"?
+    ///
+    /// Read through [`is_positional_label_at`](crate::intern::is_positional_label_at),
+    /// WI-790's owner, which requires each label to be the synthetic name for ITS
+    /// OWN index — so a USER label like `_0`, `_01`, or a `_2` written first is not
+    /// one, and a genuinely name-keyed type is never mistaken for a positional one.
+    ///
+    /// This gates OUT the by-label arm, because for a positional type a label
+    /// carries no information a slot does not: `_i` MEANS slot `i`. Reading such a
+    /// type by label is not merely redundant, it FAILS whenever the value is
+    /// name-keyed — the named scan finds no component called `_1`, and the `_N`
+    /// fallback indexes a `pos` half that a name-keyed carrier leaves empty. The
+    /// combination is reachable: a relation ROW is built all-named (see
+    /// `spread_eta_args`, eval/eval.rs), so a row destructured against a positional
+    /// tuple type has a name-keyed value and synthetic labels at once, and by-label
+    /// would raise `MatchFailed` where reading in source order succeeds.
+    pub fn labels_are_positional(kb: &crate::kb::KnowledgeBase, labels: &[Symbol]) -> bool {
+        !labels.is_empty()
+            && labels.iter().enumerate().all(|(i, l)| {
+                crate::intern::is_positional_label_at(
+                    crate::kb::typing::short_name_of(kb.resolve_sym(*l)),
+                    i,
+                )
+            })
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +591,110 @@ mod tests {
             let kb = KnowledgeBase::new();
             assert!(!views_structurally_equal(&kb, &global(0, 0), &Value::Int(0)));
             assert!(!views_structurally_equal(&kb, &Value::Int(0), &global(0, 0)));
+        }
+    }
+
+    /// WI-803 — the by-label tuple reader, tested at the reader rather than
+    /// end-to-end.
+    ///
+    /// These pin two guards that a /code-review of the first cut found, and that
+    /// NO source-level program in this workspace can currently drive: the
+    /// end-to-end fixtures written for them were control-run with each guard
+    /// removed and PASSED, i.e. they were blind. Rather than ship a test that
+    /// asserts nothing, the mechanism is exercised directly here — a tuple carrier
+    /// and a label list, built by hand into the shapes the guards exist for.
+    ///
+    /// Both guards are therefore DEFENSIVE. That is stated, not hidden: the reader
+    /// must not depend on a caller never handing it these shapes, because the
+    /// carrier/label combinations are legal and the barriers that keep them out of
+    /// today's programs are incidental (see `is_name_keyed`' invariant note).
+    mod wi803_by_label_reader {
+        use super::*;
+        use crate::kb::KnowledgeBase;
+
+        fn named_tuple(kb: &mut KnowledgeBase, fields: &[(&str, i64)]) -> Value {
+            Value::Tuple {
+                pos: Vec::new().into(),
+                named: fields.iter().map(|(n, v)| (kb.intern(n), Value::Int(*v))).collect::<Vec<_>>().into(),
+            }
+        }
+
+        fn positional_tuple(vals: &[i64]) -> Value {
+            Value::Tuple {
+                pos: vals.iter().map(|v| Value::Int(*v)).collect::<Vec<_>>().into(),
+                named: Vec::new().into(),
+            }
+        }
+
+        /// A QUALIFIED synthetic label resolves against a positional tuple.
+        ///
+        /// `by_label` normalizes the component side to a short name because a label
+        /// read off a TYPE's field list can arrive qualified. If that premise holds
+        /// it holds for a positional tuple's `_N` fields too — so the `_N` branch
+        /// must normalize as well. It first did not, and `ns._1` resolved to
+        /// nothing while `ns.a` resolved fine: one branch asserting the premise and
+        /// the other relying on its negation.
+        #[test]
+        fn qualified_positional_label_resolves_like_a_qualified_named_one() {
+            let mut kb = KnowledgeBase::new();
+            let t = positional_tuple(&[3, 10]);
+            let c = t.tuple_components().expect("tuple");
+            assert!(matches!(c.by_label(&kb, "_1"), Some(Value::Int(3))));
+            assert!(
+                matches!(c.by_label(&kb, "ns._1"), Some(Value::Int(3))),
+                "a qualified `_N` must normalize to its short name, as the named scan does",
+            );
+            // Out of range stays None rather than falling through into `named`.
+            assert!(c.by_label(&kb, "_5").is_none());
+            let _ = &mut kb;
+        }
+
+        /// Synthetic labels cannot be resolved against a NAME-keyed carrier — which
+        /// is why `labels_are_positional` gates the by-label arm OFF for them.
+        ///
+        /// Without that gate a positional tuple TYPE (whose fields ARE `_1.._n`)
+        /// meeting a name-keyed value sends every label through a reader that finds
+        /// no component called `_1` and then indexes an empty `pos` half, so the
+        /// match fails where reading in source order succeeds. An all-named
+        /// relation ROW is the shape that makes this reachable in principle.
+        #[test]
+        fn synthetic_labels_do_not_resolve_against_a_name_keyed_carrier() {
+            let mut kb = KnowledgeBase::new();
+            let t = named_tuple(&mut kb, &[("x", 1), ("y", 2)]);
+            let c = t.tuple_components().expect("tuple");
+            assert!(
+                c.by_label(&kb, "_1").is_none(),
+                "no component is called `_1` and `pos` is empty — this is exactly \
+                 why the matcher must not route synthetic labels here",
+            );
+            let synthetic: Vec<Symbol> = ["_1", "_2"].iter().map(|n| kb.intern(n)).collect();
+            assert!(TupleComponents::labels_are_positional(&kb, &synthetic));
+        }
+
+        /// `labels_are_positional` must recognize only the SYNTHETIC convention, or
+        /// it would switch a genuinely name-keyed type onto the slot reader and
+        /// reintroduce WI-788.
+        #[test]
+        fn only_synthetic_labels_count_as_positional() {
+            let mut kb = KnowledgeBase::new();
+            let named: Vec<Symbol> = ["a", "b"].iter().map(|n| kb.intern(n)).collect();
+            assert!(!TupleComponents::labels_are_positional(&kb, &named));
+            // `_2` written FIRST is a USER label (WI-790), not slot 2's synthetic name.
+            let out_of_place: Vec<Symbol> = ["_2", "_1"].iter().map(|n| kb.intern(n)).collect();
+            assert!(!TupleComponents::labels_are_positional(&kb, &out_of_place));
+            // An empty list is not "positional" — it means the typer resolved nothing.
+            assert!(!TupleComponents::labels_are_positional(&kb, &[]));
+        }
+
+        /// Two labels that collide land on the SAME index, which is what lets
+        /// `match_tuple_pattern` refuse a double cover.
+        #[test]
+        fn colliding_labels_report_the_same_index() {
+            let mut kb = KnowledgeBase::new();
+            let t = named_tuple(&mut kb, &[("a", 1), ("b", 2)]);
+            let c = t.tuple_components().expect("tuple");
+            assert_eq!(c.by_label_index(&kb, "a"), c.by_label_index(&kb, "ns.a"));
+            assert_ne!(c.by_label_index(&kb, "a"), c.by_label_index(&kb, "b"));
         }
     }
 }
