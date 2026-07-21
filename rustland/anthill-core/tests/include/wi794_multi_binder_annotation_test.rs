@@ -234,6 +234,76 @@ end
     );
 }
 
+/// THE DIRECTION OF THE CHECK, which nothing else here pins. Every other fixture pairs
+/// DISJOINT types (`String` at an `Int64` slot), and those fail conformance BOTH ways —
+/// so the whole suite would stay green if the comparison were reversed, or replaced with
+/// plain equality. Only an asymmetric pair distinguishes them.
+///
+/// The rule: the binder really holds a `context_ty` value (the context wins — WI-517's
+/// soundness decision), so the annotation is a CLAIM about that value, true exactly when
+/// `context_ty` conforms to it. A WIDER annotation is imprecise but TRUE and is accepted;
+/// a NARROWER one is FALSE and is refused. `Square` provides `Shape`, which is the
+/// `sort_provides_admissibly` widening `types_compatible` implements.
+///
+/// This matters because the call reads `types_compatible(kb, subst, context_ty,
+/// annotation)` — parameters `(actual, expected)` — while the error it builds names the
+/// sides the other way round (`expected` = the slot, `actual` = what the user wrote), on
+/// purpose, so the message reads in the user's direction. Anyone "tidying" that apparent
+/// inconsistency by swapping the arguments flips the rule, and these two cases are what
+/// catch it.
+#[test]
+fn a_wider_annotation_is_accepted_and_a_narrower_one_is_refused() {
+    // Slot `Square`, annotation `Shape` — imprecise but true.
+    let wider = r#"
+namespace test.wi794.wider
+  import anthill.prelude.{Int64}
+
+  sort Shape
+  end
+
+  sort Square
+    fact Shape
+    entity mk(n: Int64)
+  end
+
+  operation apply2(f: (a: Square, b: Int64) -> Int64) -> Int64 = f(mk(n: 1), 2)
+
+  operation drive() -> Int64 = apply2(lambda (a: Shape, b: Int64) -> b)
+end
+"#;
+    assert_eq!(eval_int(wider, "test.wi794.wider.drive"), 2);
+
+    // Slot `Shape`, annotation `Square` — the binder may hold any `Shape`, so the
+    // narrower claim is false.
+    let narrower = r#"
+namespace test.wi794.narrower
+  import anthill.prelude.{Int64}
+
+  sort Shape
+  end
+
+  sort Square
+    fact Shape
+    entity mk(n: Int64)
+  end
+
+  operation apply2(f: (a: Shape, b: Int64) -> Int64) -> Int64 = f(mk(n: 1), 2)
+
+  operation drive() -> Int64 = apply2(lambda (a: Square, b: Int64) -> b)
+end
+"#;
+    let msg = reject_as_binder_annotation(
+        narrower, "a narrower binder annotation is a false claim and must be refused",
+    );
+    // Order matters here and is the point: the SLOT is `expected`, the WRITTEN type is
+    // `actual`. Asserting both names would pass under a swap; asserting their order does
+    // not.
+    assert!(
+        msg.contains("expected Shape, got Square"),
+        "the diagnostic must read slot-then-annotation; got: {msg}",
+    );
+}
+
 /// THE OVER-REJECTION GUARD, and the reason the check is gated on GROUNDNESS. A generic
 /// callback slot threads a type VARIABLE (`Acc`) and an unresolved PROJECTION (`xs.T`)
 /// into the binders; annotating them is a legitimate way to pin them, and the annotation

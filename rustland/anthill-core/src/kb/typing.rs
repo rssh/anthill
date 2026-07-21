@@ -20828,6 +20828,20 @@ fn extend_env_from_pattern(
             // disambiguate which annotation is meant. Reading it from the occurrence
             // anyway rather than hard-coding the pattern's: if per-annotation spans are
             // ever preserved, this sharpens with no change here.
+            // INTERNED, not carried as a `Value::Node`, and that is load-bearing rather
+            // than incidental. Comparing on the occurrence carrier was TRIED and makes
+            // `resolved_type_is_ground` answer false — `node_type_is_ground` walks a
+            // `Type`/`EffectExpression` spine, and a pattern's `type_ann` child is not yet
+            // in that form (hence the "ground it to a `Value::Term`" step the lambda arm
+            // performs on the same child). The gate then stands the check DOWN and every
+            // contradiction loads clean again. Measured: 6 of the 11 WI-794 tests failed,
+            // and precisely the rejection ones — a silent no-op of exactly the kind this
+            // ticket exists to remove, caught only because those tests assert the
+            // `binder-annotation` TAG rather than a bare `is_err`.
+            //
+            // One term per annotated binder is therefore the price of the check, and
+            // nothing is wasted: when the context wins, this term answers the comparison;
+            // when it does not, the same term becomes the binder's type below.
             let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann
                 .as_ref()
                 .map(|ann| (ann, Value::term(super::node_occurrence::occurrence_to_term(kb, ann))));
@@ -20964,6 +20978,17 @@ fn extend_env_from_pattern(
 /// closes the ground case WI-794 measured and leaves the polymorphic slot to unification,
 /// alongside the same-family gap WI-791 pins as
 /// `known_gap_generic_callback_arrow_is_not_conformance_checked`.
+///
+/// THE GATE IS WIDER THAN THAT RATIONALE, and the difference is worth knowing before
+/// relying on this check. `resolved_type_is_ground` takes an immutable `&KnowledgeBase`
+/// and answers STRUCTURALLY — it consults no `Substitution`, because this runs in the
+/// visit phase, which has none (the same reason the comparison below needs a scratch
+/// one). So a type var that the surrounding inference HAS already bound to a concrete
+/// type still reads as non-ground here, and its contradiction is passed over exactly as
+/// the original defect did. Not just the honestly-polymorphic slot: any slot whose
+/// concreteness is known only through a substitution. Closing that needs the check to run
+/// where `subst` is in hand, which is the argument-position alternative this ticket
+/// rejected for a different reason (it would re-derive the binder↔slot alignment).
 fn binder_annotation_conflict(
     kb: &mut KnowledgeBase,
     binder: Symbol,
