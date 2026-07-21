@@ -25061,7 +25061,7 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// produce for an UNNAMED arrow param / multi-param op (spec §4.5). Such names
 /// are SYNTHETIC and make no claim about what the slots are called, which is what
 /// lets [`align_named_tuple_fields`] zip a `_1.._n` list against a named-binder
-/// arrow (`(acc, x)`) by position — in [`TupleAlign::ParamList`] mode only, since
+/// arrow (`(acc, x)`) by position — in [`TupleAlign::PARAM_LIST`] mode only, since
 /// only a parameter list is applied positionally (WI-775).
 ///
 /// WI-782 first RETIRED this gate (letting any two equal-arity lists zip) and
@@ -25072,7 +25072,7 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 ///
 /// WI-791 TOOK THAT JOB AWAY, and this gate is better for it. Arity is now a
 /// child of the arrow, so a collapsed tuple parameter never reaches
-/// [`TupleAlign::ParamList`] at all — [`unify_arrow_params`] routes arity one to
+/// [`TupleAlign::PARAM_LIST`] at all — [`unify_arrow_params`] routes arity one to
 /// the ordinary type relation. The gate no longer stands between a data tuple and
 /// a parameter list; it is asked only about two genuine parameter LISTS of equal
 /// length, where its question — do these agree on which slot is which? — is the
@@ -25112,79 +25112,166 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
             .all(|(i, (name, _))| is_positional_label_at(kb.resolve_sym(*name), i))
 }
 
-/// WI-775: which correspondence [`align_named_tuple_fields`] may use between two
-/// named-tuple field lists. The two positions look identical as TYPES — WI-766
-/// made an arrow's parameter list and a tuple type literally the same surface —
-/// but they are not interchangeable, so the caller states which one it is.
+/// WI-799: the alignment policy and its two axes, SEALED in a private module.
+///
+/// The axes are independent, which yields FOUR combinations while only THREE are
+/// disciplines. The fourth — `Subset` width with the synthetic escape — is not
+/// merely unused, it is UNSOUND: the escape branch in
+/// [`align_named_tuple_fields`] zips the two lists without consulting width, and
+/// `zip` stops at the shorter one, so a subset width would silently relate
+/// `(a: Int64, b: String, c: Bool)` to the positional `(Int64, String)` by
+/// truncation — precisely the relation proposal 004 rule 4 forbids, reached
+/// through the back door of the OTHER axis.
+///
+/// So the fields are private to this module and the three constants are the only
+/// constructors: the illegal combination is a COMPILE ERROR outside, not a
+/// convention. This is why the constants are associated rather than free consts
+/// in the [`GateSpec`](crate::kb::resolve) style — here they are the type's
+/// constructors, not merely named values of it.
+mod tuple_align {
+/// WI-799: how many of `a`'s components `b` must account for — one of the two
+/// axes of [`TupleAlign`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TupleAlign {
-    /// A DATA tuple. Slot-by-slot with the NAMES required to agree at each slot,
-    /// plus NAME-KEYED width — `b`'s components need only be a subset of `a`'s,
-    /// dropped from anywhere (WI-804).
+pub(super) enum TupleWidth {
+    /// WIDTH SUBTYPING. `b`'s components need only be a name-keyed SUBSET of
+    /// `a`'s, dropped from ANYWHERE (WI-804) — a consumer of a `(a, c)`-typed
+    /// value asks for `.a` and `.c`, and an `(a, b, c)` value answers both
+    /// wherever they sit. Correct for a `<:` between DATA tuples, and for nothing
+    /// else here: it is a SUBTYPING allowance, so a relation that means EQUALITY
+    /// must not take it (that was the [`TupleAlign::EQUALITY`] defect).
+    Subset,
+    /// EQUAL ARITY. Forced for a parameter list — eval passes exactly as many
+    /// arguments as the call site's type says, so a narrower list is not a
+    /// supertype (WI-782) — and correct for an equality relation, where admitting
+    /// a subset in one argument position makes the relation ASYMMETRIC.
+    Exact,
+}
+
+/// WI-799: what the two lists' NAMES must satisfy for the alignment to be
+/// admissible at all — the second axis of [`TupleAlign`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum TupleNames {
+    /// The names must agree at each slot they are aligned at. This is what keeps
+    /// `(a: Int64)` and `(_1: Int64)` apart: a component's name IS its access path
+    /// — `t.x` reads `Value::Tuple.named`, `t._N` reads `.pos`, and a tuple has
+    /// exactly one of those populated — so relating them would license a read with
+    /// no value behind it (WI-775), and proposal 004 rule 4 makes them different
+    /// types.
+    Exact,
+    /// As `Exact`, OR one side carries the synthetic `_1.._n` convention, which
+    /// makes no claim about which slot is which (WI-442). That escape is what lets
+    /// a named-binder callback `(acc: Acc, x: Elem)` accept a multi-param op's
+    /// eta arrow `(_1, _2)`.
     ///
-    /// The name test is what keeps `(a: Int64)` and `(_1: Int64)` apart: a
-    /// component's name IS its access path — `t.x` reads `Value::Tuple.named`,
-    /// `t._N` reads `.pos`, and a tuple has exactly one of those populated — so
-    /// relating them would license a read with no value behind it (WI-775).
+    /// Legitimate ONLY for a parameter list. Granting it to a data tuple would
+    /// relate `(a: Int64, b: String)` to `(Int64, String)`, which proposal 004
+    /// rule 4 makes a different type. This is the axis that is easy to miss —
+    /// see [`TupleAlign`] on the miscount that cost.
+    ExactOrSynthetic,
+}
+
+/// WI-775/WI-799: the alignment discipline [`align_named_tuple_fields`] applies
+/// between two named-tuple field lists. The two positions look identical as TYPES
+/// — WI-766 made an arrow's parameter list and a tuple type literally the same
+/// surface — but they are not interchangeable, so the caller states which one it
+/// is.
+///
+/// WI-799 made this a POLICY over two independent axes rather than an enum over
+/// two SITES. The enum named where it was called from (`ByName` / `ParamList`),
+/// which had gone wrong in three ways:
+///
+///  * `ByName` no longer aligned by name — WI-788 made it a slot-wise walk, and
+///    its own doc conceded the name was "about names PARTICIPATING, not about the
+///    correspondence being built from them". A reader reaching for "align by name"
+///    got positional alignment.
+///  * With the axes fused, how many there were was a matter of OPINION: WI-788
+///    shipped a comment asserting the modes differed in EXACTLY ONE way (width),
+///    missing the synthetic escape entirely. As data, the axes are countable.
+///  * A site enum can only express the disciplines that have a SITE. "Exact width,
+///    names exact" is a real third discipline that no site was named for, so the
+///    equality relation took the width-subtyping mode and was silently asymmetric
+///    — see [`TupleAlign::EQUALITY`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct TupleAlign {
+    width: TupleWidth,
+    names: TupleNames,
+}
+
+impl TupleAlign {
+    /// A DATA tuple under `<:`. Name-keyed width, names exact at every slot.
     ///
-    /// WI-788 made the correspondence POSITIONAL. This was an order-insensitive
+    /// WI-788 made the correspondence POSITIONAL. It had been an order-insensitive
     /// by-name lookup, which admitted a PERMUTATION that the value representation
     /// never performs: the carrier keeps SOURCE order (WI-786) and a destructuring
     /// binder list reads it POSITIONALLY (WI-785), so binder `i` received the
     /// value's `i`-th component while the typer had given it the type of the
     /// DECLARED `i`-th field — an operation declared `-> Int64` returned a
     /// `String` on a clean load.
+    pub(super) const DATA: Self = Self { width: TupleWidth::Subset, names: TupleNames::Exact };
+
+    /// An ARROW'S PARAMETER LIST. Equal arity, with the synthetic escape.
     ///
-    /// The mode now differs from [`TupleAlign::ParamList`] in TWO ways, both
-    /// tabulated in [`align_named_tuple_fields`]: prefix WIDTH, and the absence of
-    /// the SYNTHETIC `_1.._n` escape. The second is easy to miss and load-bearing
-    /// — granting it here would relate `(a: Int64, b: String)` to
-    /// `(Int64, String)`, which proposal 004 rule 4 makes a different type.
-    ByName,
-    /// An ARROW'S PARAMETER LIST. Align by POSITION, with EQUAL ARITY required.
-    /// Sound HERE and only here, and forced here: a parameter list is APPLIED
+    /// Sound here and only here, and forced here: a parameter list is APPLIED
     /// positionally, so slot `i` is slot `i` and there are exactly as many slots
     /// as the call site passes arguments.
     ///
-    /// Names take no part in the CORRESPONDENCE — the zip is by index — but they
-    /// do gate its ADMISSIBILITY: the two lists must agree on which slot is which,
-    /// meaning the names line up in order or one side is the synthetic `_1.._n`
-    /// convention (WI-442). That is what lets a named-binder callback
-    /// `(acc: Acc, x: Elem)` accept a multi-param op's eta arrow `(_1, _2)`.
+    /// WI-791: selected by the arrow's own `arity` child, never by the param
+    /// slot's shape, so it is reached ONLY for a real parameter list (arity ≠ 1).
+    /// A lone tuple-typed parameter is a DATA tuple and takes the [`Self::DATA`]
+    /// road with everything else at arity one.
     ///
-    /// WI-791: this mode is now selected by the arrow's own `arity` child, never
-    /// by the param slot's shape, so it is reached ONLY for a real parameter list
-    /// (arity ≠ 1). A lone tuple-typed parameter is a DATA tuple and takes the
-    /// [`TupleAlign::ByName`] road with everything else at arity one. The
-    /// admissibility gate is correspondingly no longer load-bearing for
-    /// soundness — see [`is_positional_tuple_names`].
-    ///
-    /// WI-782: this mode has NO by-name rung, which is why a permutation is not
-    /// admitted by matching names up — the runtime performs no such reordering, so
+    /// WI-782: no by-name rung, which is why a permutation is not admitted by
+    /// matching names up — the runtime performs no such reordering, so
     /// `(y: Bool, x: Int64)` is compared slot-for-slot against
     /// `(x: Int64, y: Bool)`, where matching by name accepted it and let an
     /// operation declared `-> Int64` evaluate to `Bool(true)` with no trap.
-    ParamList,
+    pub(super) const PARAM_LIST: Self =
+        Self { width: TupleWidth::Exact, names: TupleNames::ExactOrSynthetic };
+
+    /// EQUALITY between two data tuples — [`unify_named_tuple`]'s discipline, and
+    /// the one the two-variant enum could not express (WI-799).
+    ///
+    /// Unification is SYMMETRIC by nature and is driven bidirectionally by the
+    /// resolver, but it was taking the width-SUBTYPING mode, so it inherited a
+    /// direction: `unify((x: A, y: B), (x: A))` succeeded while the same two
+    /// arguments swapped failed. Width is an allowance for a consumer that reads
+    /// only what it asked for; an equality has no consumer to be lenient toward,
+    /// and answering differently depending on which side a caller happened to pass
+    /// first is a defect however the relation is spelled.
+    ///
+    /// Identical to [`Self::PARAM_LIST`] on width and to [`Self::DATA`] on names —
+    /// which is exactly why it needs both axes to be data. It is neither site.
+    pub(super) const EQUALITY: Self = Self { width: TupleWidth::Exact, names: TupleNames::Exact };
+
+    pub(super) fn width(self) -> TupleWidth {
+        self.width
+    }
+
+    pub(super) fn names(self) -> TupleNames {
+        self.names
+    }
 }
+}
+
+use tuple_align::{TupleAlign, TupleNames, TupleWidth};
 
 /// WI-442: align two named-tuple field lists into the `(a_type, b_type)` pairs a
 /// field-wise relation (unify / subtype) should relate, or `None` when the shapes
 /// are incompatible.
 ///
-/// Which correspondence applies depends on how the CONSUMER reads the tuple,
-/// which is what [`TupleAlign`] states — applying ONE relation to both kinds of
-/// consumer is precisely the WI-782 defect:
+/// The CORRESPONDENCE is one walk for every discipline — slot by slot, in list
+/// order (both field lists are in declaration / positional order, since the
+/// `named_tuple` builders preserve it, so this is the correspondence the runtime
+/// actually performs). What the caller chooses is not the walk but the POLICY it
+/// runs under: [`TupleAlign`]'s two axes. Applying one policy to consumers that
+/// read the tuple differently is precisely the WI-782 defect; naming the policies
+/// after the two SITES that had one, rather than after the axes, is WI-799's.
 ///
-/// * [`TupleAlign::ByName`] — a DATA tuple. Slot-by-slot with the names required
-///   to agree at each slot, plus name-keyed WIDTH. (WI-788/WI-804; the name is now
-///   about names PARTICIPATING, not about the correspondence being built from
-///   them.)
-/// * [`TupleAlign::ParamList`] — an arrow's PARAMETER LIST, APPLIED
-///   POSITIONALLY. A straight index zip of EQUAL-ARITY lists, admitted only when
-///   the names line up in order or one side is the synthetic `_1.._n` shape.
-///   Both field lists are in declaration / positional order (the `named_tuple`
-///   builders preserve list order), so the index zip is the correspondence the
-///   runtime actually performs.
+/// * [`TupleAlign::DATA`] — a data tuple under `<:`. Name-keyed width, names
+///   exact.
+/// * [`TupleAlign::PARAM_LIST`] — an arrow's parameter list, APPLIED
+///   positionally. Equal arity, with the synthetic `_1.._n` escape.
+/// * [`TupleAlign::EQUALITY`] — unification. Equal arity, names exact.
 ///
 /// WI-782, on why an order-insensitive rung is wrong for a parameter list — it
 /// was order-insensitive and width-subtyping, and the runtime is neither.
@@ -25205,20 +25292,10 @@ fn align_named_tuple_fields(
     b_fields: &[(Symbol, Value)],
     mode: TupleAlign,
 ) -> Option<Vec<(Value, Value)>> {
-    // The two modes differ on TWO axes, tabulated so neither can drift and so a
-    // reader can see that the second one exists:
-    //
-    //   * WIDTH — a DATA tuple admits width subtyping: `b`'s components need only
-    //     be a SUBSET of `a`'s, dropped from anywhere (WI-804 restored the middle
-    //     drop; see below). A PARAMETER LIST admits none — eval passes exactly as
-    //     many arguments as the call site's type says (WI-782).
-    //   * SYNTHETIC ESCAPE — a parameter list may zip when one side carries the
-    //     `_1.._n` convention, which makes no claim about which slot is which;
-    //     that is what lets a named-binder callback `(acc, x)` accept a
-    //     multi-param op's eta arrow (WI-442). A DATA tuple must NOT have it:
-    //     `_N` is a component's access path there, so admitting it would relate
-    //     `(a: Int64, b: String)` to `(Int64, String)`, which proposal 004
-    //     rule 4 makes a different type.
+    // WI-799: the two axes are `mode`'s FIELDS — see [`TupleWidth`] /
+    // [`TupleNames`] for what each admits and why. They were a two-variant enum
+    // tabulated here, which is how the codebase came to disagree with itself about
+    // how many axes there even were.
     //
     // WI-804, on the DATA arm's ORDER requirement — it is an INTERIM, not the
     // rule. Subtyping is properly NAME-KEYED for a data tuple: every consumer of
@@ -25239,15 +25316,28 @@ fn align_named_tuple_fields(
     // So width is admitted and order is held until the reader binds by LABEL
     // rather than by slot, which is the real WI-788 and is tracked separately.
     // When that lands, delete the order requirement here — not before.
-    let (allow_width, allow_synthetic) = match mode {
-        TupleAlign::ByName => (true, false),
-        TupleAlign::ParamList => (false, true),
-    };
-    if !allow_width && a_fields.len() != b_fields.len() {
-        return None;
-    }
-    if allow_width && a_fields.len() < b_fields.len() {
-        return None;
+    //
+    // HOW to delete it, for WI-803: ORDER is not currently an axis because it has
+    // exactly one live value — all three disciplines preserve it, so an axis would
+    // buy no type-safety today, only surface area. But WI-803 makes DATA's walk
+    // unordered while PARAM_LIST and EQUALITY must stay ordered (position is
+    // load-bearing for both), and at that point order HAS two values. Promote it
+    // to a third axis then. Do NOT branch on `mode == TupleAlign::DATA` here: that
+    // reintroduces the named-SITE test one line below the axes that exist to
+    // replace it, which is the whole of WI-799.
+    // EXHAUSTIVE, no wildcard: a new `TupleWidth` must force an arm here rather
+    // than fall through to "no width check at all", which would read as handled.
+    match mode.width() {
+        TupleWidth::Exact => {
+            if a_fields.len() != b_fields.len() {
+                return None;
+            }
+        }
+        TupleWidth::Subset => {
+            if a_fields.len() < b_fields.len() {
+                return None;
+            }
+        }
     }
     // Width stops SHORT of the unit type. Every test below is vacuous on an empty
     // `b`, so `(a: A, b: B)` would conform to `()` — but `()` is not "the record
@@ -25258,9 +25348,22 @@ fn align_named_tuple_fields(
     }
     // The SYNTHETIC escape is a whole-list property, so it is decided first and
     // bypasses the name walk entirely.
-    if allow_synthetic
+    if mode.names() == TupleNames::ExactOrSynthetic
         && (is_positional_tuple_names(kb, a_fields) || is_positional_tuple_names(kb, b_fields))
     {
+        // THE TWO AXES ARE COUPLED HERE, and only here: this zip stops at the
+        // SHORTER list, so it is a correct alignment only because the width gate
+        // above already required equal arity. Pairing this escape with `Subset`
+        // width would relate `(a: A, b: B, c: C)` to `(_1: A, _2: B)` by silent
+        // TRUNCATION — the combination `mod tuple_align` exists to make
+        // unconstructible. Asserted rather than assumed: the sealing is what makes
+        // it true, and a seal is exactly the kind of thing a later edit reopens.
+        debug_assert_eq!(
+            a_fields.len(),
+            b_fields.len(),
+            "WI-799: the synthetic escape zips, so it requires TupleWidth::Exact; \
+             a Subset-width policy reaching here would align by truncation",
+        );
         return Some(
             a_fields
                 .iter()
@@ -25274,7 +25377,7 @@ fn align_named_tuple_fields(
     // Dropping components (from anywhere) preserves the order of those that
     // remain, so width passes; a PERMUTATION does not, so it is refused — the
     // interim above. At equal arity this degenerates to the slot-for-slot
-    // agreement `ParamList` needs, which is why one walk serves both.
+    // agreement `PARAM_LIST` needs, which is why one walk serves both.
     let mut next = 0;
     let mut pairs = Vec::with_capacity(b_fields.len());
     for (b_name, b_ty) in b_fields {
@@ -25291,24 +25394,22 @@ fn align_named_tuple_fields(
 /// SLOT BY SLOT with the names required to agree at each slot (WI-788 — these are
 /// data tuples, whose component order is part of their type identity as much as
 /// their names are). The equal-arity variant, with its synthetic `_1.._n` escape,
-/// belongs to [`unify_arrow_params`] (WI-775) as [`TupleAlign::ParamList`].
+/// belongs to [`unify_arrow_params`] (WI-775) as [`TupleAlign::PARAM_LIST`].
 ///
-/// NOTE, pre-existing and NOT introduced by WI-788: this is an EQUALITY relation
-/// but takes the PREFIX-width mode, so it is asymmetric — `unify((x: A, y: B),
-/// (x: A))` succeeds while the arguments swapped fail. The old by-name arm was
-/// width-subtyping in the same direction, so the behaviour is unchanged; it is
-/// recorded here because "exact width, names exact" is a third real discipline
-/// and this caller arguably wants it.
+/// WI-799: takes [`TupleAlign::EQUALITY`] — exact width, names exact. It used to
+/// take the width-SUBTYPING mode, which made this relation ASYMMETRIC; see that
+/// constant's doc for the defect and for why the two-variant enum it predates
+/// could not express the fix.
 fn unify_named_tuple<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a: &A,
     b: &B,
 ) -> bool {
-    unify_named_tuple_as(kb, subst, a, b, TupleAlign::ByName)
+    unify_named_tuple_as(kb, subst, a, b, TupleAlign::EQUALITY)
 }
 
-/// [`unify_named_tuple`] with the alignment stated explicitly — `ParamList` only
+/// [`unify_named_tuple`] with the alignment stated explicitly — `PARAM_LIST` only
 /// from [`unify_arrow_params`], where the tuples are an arrow's parameter lists.
 fn unify_named_tuple_as<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
@@ -25366,7 +25467,7 @@ fn agreed_arrow_arity<A: TermView, B: TermView>(
 
 /// WI-775: relate an arrow's two param slots, at an arity both sides agree on
 /// (WI-791 established it in the caller). Identical to [`unify_types`] except
-/// that two named-tuple PARAMETER LISTS align in [`TupleAlign::ParamList`] mode,
+/// that two named-tuple PARAMETER LISTS align in [`TupleAlign::PARAM_LIST`] mode,
 /// so a named-binder callback `(acc, x)` still unifies against a multi-param op's
 /// eta arrow `(_1, _2)` (WI-442). Everything the param list CONTAINS is an
 /// ordinary type again — a nested tuple component is data, and recursing through
@@ -25376,7 +25477,7 @@ fn agreed_arrow_arity<A: TermView, B: TermView>(
 /// the fix. At arity ONE the slot is not a list at all — it is the sole
 /// parameter's TYPE — so it relates as an ordinary type, and a tuple there is
 /// DATA, aligned by name with width subtyping. WI-782 had to route a lone
-/// tuple-typed parameter through `ParamList` (it could not tell one from a list)
+/// tuple-typed parameter through `PARAM_LIST` (it could not tell one from a list)
 /// and knowingly paid for it by false-rejecting correct programs:
 /// `get_x(t: (x: Int64, y: Bool))` handed to a `(u: (y: Bool, x: Int64)) -> R`
 /// callback, and the narrower `(a: Int64)` against `(a: Int64, b: Int64)`. Both
@@ -25392,11 +25493,14 @@ fn unify_arrow_params<A: TermView, B: TermView>(
     // `unify_types` opens with the same two `walk_view`s for exactly that reason
     // (see its head). Classifying the RAW carrier would read `type_var`, miss the
     // arm, and fall through to `unify_types`, which walks, sees `named_tuple`,
-    // and dispatches to the ByName `unify_named_tuple` — silently downgrading
-    // the mode on the one path that most needs it.
+    // and dispatches to the EQUALITY `unify_named_tuple` — silently downgrading
+    // the mode on the one path that most needs it. WI-799 made that downgrade
+    // STRICTER, not laxer (exact width, and no synthetic escape), so the
+    // fallthrough now REFUSES a positional eta arrow rather than mis-relating it
+    // — still wrong, still silent, and still what the walk prevents.
     let (aw, bw) = (walk_view(kb, subst, a), walk_view(kb, subst, b));
     if arity != 1 && both_named_tuples(kb, &aw, &bw) {
-        return unify_named_tuple_as(kb, subst, &aw, &bw, TupleAlign::ParamList);
+        return unify_named_tuple_as(kb, subst, &aw, &bw, TupleAlign::PARAM_LIST);
     }
     unify_types(kb, subst, &aw, &bw)
 }
@@ -26946,7 +27050,7 @@ fn abstracting_return_error(
     // bare-vs-manifest-vs-ensures gate per component: an abstracting tuple
     // element is the §5 escape exactly as a bare top-level return is. Components
     // are aligned the SAME way conformance aligned them
-    // ([`align_named_tuple_fields`] in `ByName` mode, since a return type is a
+    // ([`align_named_tuple_fields`] in `DATA` mode, since a return type is a
     // data tuple, not a parameter list — WI-775; passing
     // body as `actual` so each pair is `(body_component, ret_component)`).
     // WI-788: that alignment is now slot-by-slot with the names required to
@@ -26968,8 +27072,8 @@ fn abstracting_return_error(
     // function's contract reads as "no escape found" — a fail-open. It cannot fire,
     // and the reason is worth stating because it is NOT local: return CONFORMANCE
     // runs first and is `named_tuple_compatible(actual = body, expected = ret)` —
-    // the SAME alignment, SAME `ByName` mode, SAME argument order — so any pair
-    // this gate could not align was already rejected. The `ByName` narrowing makes
+    // the SAME alignment, SAME `DATA` mode, SAME argument order — so any pair
+    // this gate could not align was already rejected. The `DATA` narrowing makes
     // the arm strictly more reachable than before, so if conformance ever widens
     // (or stops sharing this alignment), the `None` arm must be split into
     // "aligned, no escape" vs "could not align" rather than left silent.
@@ -26979,7 +27083,7 @@ fn abstracting_return_error(
         let body_fields = named_tuple_fields(kb, body_ty);
         let ret_fields = named_tuple_fields(kb, ret_ty);
         // WI-775: a RETURN type is a data tuple — align by NAME.
-        return align_named_tuple_fields(kb, &body_fields, &ret_fields, TupleAlign::ByName)
+        return align_named_tuple_fields(kb, &body_fields, &ret_fields, TupleAlign::DATA)
             .and_then(|pairs| {
                 pairs
                     .iter()
@@ -29300,17 +29404,17 @@ pub(crate) fn typed_pattern_bounds_hold(
 /// destructuring binds by label, NOT a claim that `<:` is ordered. The
 /// equal-arity variant, which lets a named-binder callback arrow's contravariant
 /// param check accept a multi-param op's eta arrow, belongs to
-/// [`arrow_params_compatible`] (WI-775) as [`TupleAlign::ParamList`].
+/// [`arrow_params_compatible`] (WI-775) as [`TupleAlign::PARAM_LIST`].
 fn named_tuple_compatible<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     actual: &A,
     expected: &B,
 ) -> bool {
-    named_tuple_compatible_as(kb, subst, actual, expected, TupleAlign::ByName)
+    named_tuple_compatible_as(kb, subst, actual, expected, TupleAlign::DATA)
 }
 
-/// [`named_tuple_compatible`] with the alignment stated explicitly — `ParamList`
+/// [`named_tuple_compatible`] with the alignment stated explicitly — `PARAM_LIST`
 /// only from [`arrow_params_compatible`], where the tuples are parameter lists.
 fn named_tuple_compatible_as<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
@@ -29359,7 +29463,7 @@ fn arrow_params_compatible<A: TermView, B: TermView>(
     // it is (by name, width-subtyping). See `unify_arrow_params` for the two
     // measured programs this restores.
     if arity != 1 && both_named_tuples(kb, sub, sup) {
-        return named_tuple_compatible_as(kb, subst, sub, sup, TupleAlign::ParamList);
+        return named_tuple_compatible_as(kb, subst, sub, sup, TupleAlign::PARAM_LIST);
     }
     types_compatible(kb, subst, sub, sup)
 }
@@ -34664,5 +34768,139 @@ mod wi621_carrier_neutral_goal_subst {
             ViewHead::Const(Literal::Int(5)) => {}
             other => panic!("var_ref(b) inside the tuple must ground to 5, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod wi799_tuple_align_policy {
+    //! WI-799 — [`TupleAlign`] is a POLICY over two axes, and the equality
+    //! relation gets its own discipline.
+    //!
+    //! These drive [`align_named_tuple_fields`] and [`unify_named_tuple`]
+    //! DIRECTLY rather than through a surface program, deliberately. The
+    //! asymmetry this ticket fixes is not reachable from source: the only caller
+    //! that reaches a width-mismatched `unify_named_tuple` is `check_apply_iter`'s
+    //! INFERENCE unify, whose failure is tolerated because conformance
+    //! ([`types_compatible`], which legitimately keeps width) decides acceptance
+    //! separately — measured, by instrumenting every `unify_named_tuple` call in
+    //! the suite (8254 of them; 4 width-mismatched, all from that one site, and
+    //! flipping the mode changed no test outcome). So a surface test would pin
+    //! nothing, and the relation has to be pinned where it lives.
+    use super::*;
+    use crate::kb::load::register_prelude;
+
+    fn kb_with_prelude() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    /// `(a: Int64, b: Int64)` and `(a: Int64)` as field lists.
+    fn fields(kb: &mut KnowledgeBase, names: &[&str]) -> Vec<(Symbol, Value)> {
+        let int = kb.resolve_symbol("anthill.prelude.Int64");
+        let int_ref = kb.alloc(Term::Ref(int));
+        names
+            .iter()
+            .map(|n| (kb.intern(n), Value::Term { id: int_ref }))
+            .collect()
+    }
+
+    fn aligns(kb: &mut KnowledgeBase, a: &[&str], b: &[&str], mode: TupleAlign) -> bool {
+        let (af, bf) = (fields(kb, a), fields(kb, b));
+        align_named_tuple_fields(kb, &af, &bf, mode).is_some()
+    }
+
+    /// THE DEFECT. An equality relation that answers differently depending on
+    /// which side the caller passed first. Under the old `ByName` mode — width
+    /// SUBTYPING — the first of these succeeded and the second failed.
+    #[test]
+    fn equality_is_symmetric_under_width() {
+        let mut kb = kb_with_prelude();
+        assert!(
+            !aligns(&mut kb, &["a", "b"], &["a"], TupleAlign::EQUALITY),
+            "EQUALITY must not take a width step in the wide→narrow direction",
+        );
+        assert!(
+            !aligns(&mut kb, &["a"], &["a", "b"], TupleAlign::EQUALITY),
+            "EQUALITY must not take a width step in the narrow→wide direction",
+        );
+    }
+
+    /// The control for the test above: the SUBTYPING discipline is where width
+    /// belongs, and it is directional BY DESIGN there — `<:` is not symmetric.
+    /// If this ever goes symmetric, width subtyping has been broken, and §4.5's
+    /// "its inhabitants arrive by width subtyping from a wider tuple" (the only
+    /// way a one-component tuple type is inhabited) goes with it.
+    #[test]
+    fn data_subtyping_keeps_its_direction() {
+        let mut kb = kb_with_prelude();
+        assert!(
+            aligns(&mut kb, &["a", "b"], &["a"], TupleAlign::DATA),
+            "DATA <: must admit width — a wider actual satisfies a narrower expected",
+        );
+        assert!(
+            !aligns(&mut kb, &["a"], &["a", "b"], TupleAlign::DATA),
+            "DATA <: must NOT invent components the actual does not have",
+        );
+    }
+
+    /// WI-804: the width drop is NAME-KEYED, from anywhere, not a prefix.
+    #[test]
+    fn data_width_drops_from_the_middle() {
+        let mut kb = kb_with_prelude();
+        assert!(aligns(&mut kb, &["a", "b", "c"], &["a", "c"], TupleAlign::DATA));
+    }
+
+    /// The SECOND axis, which WI-788 shipped a comment denying existed. Granting
+    /// the synthetic escape to a data tuple would relate `(a: Int64, b: Int64)` to
+    /// `(Int64, Int64)` — proposal 004 rule 4 makes those different types.
+    #[test]
+    fn synthetic_escape_is_the_param_lists_alone() {
+        let mut kb = kb_with_prelude();
+        assert!(
+            aligns(&mut kb, &["a", "b"], &["_1", "_2"], TupleAlign::PARAM_LIST),
+            "a named-binder callback must accept a multi-param op's eta arrow",
+        );
+        assert!(
+            !aligns(&mut kb, &["a", "b"], &["_1", "_2"], TupleAlign::DATA),
+            "a DATA tuple must not relate to its positional spelling",
+        );
+        assert!(
+            !aligns(&mut kb, &["a", "b"], &["_1", "_2"], TupleAlign::EQUALITY),
+            "EQUALITY must not inherit the param-list escape along with exact width",
+        );
+    }
+
+    /// The fourth combination — `Subset` width with the synthetic escape — is
+    /// UNCONSTRUCTIBLE outside `mod tuple_align`, which is load-bearing rather
+    /// than tidy: the escape branch zips, and `zip` truncates, so that policy
+    /// would relate `(a, b, c)` to the positional `(_1, _2)` by dropping `c`.
+    /// This test pins that no discipline HAS that pairing; the seal (private
+    /// fields, three consts as the only constructors) is what stops one being
+    /// written, and the `debug_assert` in the escape branch is what would catch
+    /// it if the seal were ever reopened.
+    #[test]
+    fn no_discipline_pairs_subset_width_with_the_synthetic_escape() {
+        for (name, m) in [
+            ("DATA", TupleAlign::DATA),
+            ("PARAM_LIST", TupleAlign::PARAM_LIST),
+            ("EQUALITY", TupleAlign::EQUALITY),
+        ] {
+            assert!(
+                !(m.width() == TupleWidth::Subset && m.names() == TupleNames::ExactOrSynthetic),
+                "{name} pairs subset width with the synthetic escape — that aligns by truncation",
+            );
+        }
+    }
+
+    /// The two axes are INDEPENDENT, which is the whole point of the struct: each
+    /// of the three disciplines differs from the other two in exactly one axis, so
+    /// no two-variant enum can express all three.
+    #[test]
+    fn the_three_disciplines_are_distinct_points_in_the_grid() {
+        assert_eq!(TupleAlign::EQUALITY.width(), TupleAlign::PARAM_LIST.width());
+        assert_ne!(TupleAlign::EQUALITY.names(), TupleAlign::PARAM_LIST.names());
+        assert_eq!(TupleAlign::EQUALITY.names(), TupleAlign::DATA.names());
+        assert_ne!(TupleAlign::EQUALITY.width(), TupleAlign::DATA.width());
     }
 }
