@@ -15,8 +15,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::extent::BodiedRulePolicy;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
 use anthill_smt_gen::cache::{
@@ -85,10 +87,29 @@ pub fn run_check_with(
         None => return Ok(Vec::new()),
     };
 
+    // Read ProofRecord FACTS through the kb accessor (WI-773/806): a bodied
+    // ProofRecord rule is refused loudly (exit 1) instead of silently checked as a
+    // phantom record, and a value-fact head is a loud skip rather than the
+    // `rule_head` value-head panic the old walk risked.
+    let records = kb
+        .read_facts(record_sym, &[], BodiedRulePolicy::Refuse)
+        .map_err(|e| {
+            eprintln!("error: {e}");
+            1
+        })?;
     let mut out = Vec::new();
-    for rid in kb.rules_by_functor(record_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+    for row in records {
+        let Value::Term { id: head, .. } = row else {
+            // A ProofRecord this kernel checker cannot read (a value-fact head)
+            // must NOT vanish into a green result — fail the run loudly. (The old
+            // `rule_head` walk crashed here; a skip would be strictly less sound
+            // than that crash. ProofRecord is invariantly Term-carried today, so
+            // this arm is defensive — but the checker contract demands loud, and
+            // the other readers here degrade safely by falling through, whereas
+            // this loop's skip would exit 0.)
+            eprintln!("error: cannot verify a ProofRecord with a non-term head");
+            return Err(1);
+        };
         let outcome = match check_one_record_with(
             kb, head, &blob_dir, &witness_dir, solver, opts
         ) {
@@ -475,9 +496,21 @@ fn proof_record_exists(kb: &KnowledgeBase, qn: &str) -> bool {
         Some(s) => s,
         None => return false,
     };
-    for rid in kb.rules_by_functor(record_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+    // WI-806: read ProofRecord FACTS through the accessor. No error channel here
+    // (bare bool), so a bodied ProofRecord rule is surfaced loudly and treated as
+    // "no such record" rather than silently head-matched.
+    let records = match kb.read_facts(record_sym, &[], BodiedRulePolicy::Refuse) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return false;
+        }
+    };
+    for row in records {
+        let Value::Term { id: head, .. } = row else {
+            eprintln!("warning: skipping a ProofRecord fact with a non-term head");
+            continue;
+        };
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             if let Some(tid) = get_named_arg(kb, named_args, "rule") {
                 if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
@@ -564,9 +597,18 @@ fn check_scope_axiom_witness(
                 "ScopeAxiom(induction): SortInfo schema not loaded".into()
             ),
         };
-        for rid in kb.rules_by_functor(sort_info_sym) {
-            if !kb.is_fact(rid) { continue; }
-            let head = kb.rule_head(rid);
+        // WI-806: read SortInfo FACTS through the accessor — a bodied SortInfo
+        // rule fails the check loudly (not silently skipped), and a value-fact
+        // head is a loud skip rather than the old `rule_head` value-head panic.
+        let sort_infos = match kb.read_facts(sort_info_sym, &[], BodiedRulePolicy::Refuse) {
+            Ok(r) => r,
+            Err(e) => return CheckStatus::Failed(format!("ScopeAxiom(induction): {e}")),
+        };
+        for row in sort_infos {
+            let Value::Term { id: head, .. } = row else {
+                eprintln!("warning: skipping a SortInfo fact with a non-term head");
+                continue;
+            };
             let head_named = match kb.get_term(head) {
                 Term::Fn { named_args, .. } => named_args.clone(),
                 _ => continue,

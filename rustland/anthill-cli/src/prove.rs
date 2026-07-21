@@ -6,8 +6,10 @@ use std::process::Command;
 
 use smallvec::SmallVec;
 
+use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::extent::BodiedRulePolicy;
 use anthill_core::kb::proof_verify::{set_proof_result, VerdictWrite};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
@@ -1444,10 +1446,22 @@ fn cite_status(
         Some(s) => s,
         None => return CiteStatus::NotFound,
     };
+    // WI-806: read ProofRecord FACTS through the accessor — a bodied ProofRecord
+    // rule is surfaced loudly (cite reads NotFound) rather than silently
+    // head-matched, and a value-fact head is a loud skip, not a `rule_head` panic.
+    let records = match kb.read_facts(record_sym, &[], BodiedRulePolicy::Refuse) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return CiteStatus::NotFound;
+        }
+    };
     let mut found_record = false;
-    for rid in kb.rules_by_functor(record_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+    for row in records {
+        let Value::Term { id: head, .. } = row else {
+            eprintln!("warning: skipping a ProofRecord fact with a non-term head");
+            continue;
+        };
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
@@ -1580,10 +1594,22 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
     if parts.len() < 2 { return Vec::new(); }
 
     // Snapshot all ProofRecord QNs once so the inner loop is cheap.
+    // WI-806: read through the accessor — a bodied ProofRecord rule is surfaced
+    // loudly (empty snapshot) rather than silently head-matched, and a value-fact
+    // head is a loud skip, not the old `rule_head` value-head panic.
     let mut all_record_qns: Vec<String> = Vec::new();
-    for rid in kb.rules_by_functor(record_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+    let records = match kb.read_facts(record_sym, &[], BodiedRulePolicy::Refuse) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return Vec::new();
+        }
+    };
+    for row in records {
+        let Value::Term { id: head, .. } = row else {
+            eprintln!("warning: skipping a ProofRecord fact with a non-term head");
+            continue;
+        };
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
