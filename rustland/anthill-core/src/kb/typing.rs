@@ -18383,9 +18383,7 @@ fn validate_callback_effect_row(
     // every call): most var-ref args land in non-callable param slots.
     let head_is_callable = match type_head(kb, declared) {
         TypeHead::Arrow => true,
-        TypeHead::Parameterized { base } => {
-            kb.qualified_name_of(base) == "anthill.prelude.Function"
-        }
+        TypeHead::Parameterized { base } => is_function_spec(kb, base),
         _ => false,
     };
     if !head_is_callable {
@@ -19196,6 +19194,71 @@ fn check_constructor_iter(
     Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
+/// The qualified name of the stdlib sort that spells a function type at the
+/// surface — the ONE place `kb/typing.rs` spells it (WI-802). NOT crate-wide:
+/// `eval`'s `runtime_carrier_sort` names it too, as one row of its value→carrier
+/// table, where it is a PRODUCER rather than a recognizer.
+const FUNCTION_SPEC_QNAME: &str = "anthill.prelude.Function";
+
+/// WI-802: the ONE recognizer for the stdlib `Function[A, B, E]` sort — the
+/// surface spelling of the typer's canonical `arrow` (see [`arrow_parts`]).
+/// Three sites hand-compared the name before; what regresses if that returns is
+/// pinned by `wi802_function_spec_owner_tests` at the end of this file. Same
+/// discipline as [`crate::intern::positional_label`] for `_N` (WI-790).
+///
+/// Identity by QUALIFIED name, never by last segment — a bare top-level
+/// `sort Function` is a DIFFERENT sort (spec §8.6, cf. [`same_qname`]).
+/// `qualified_name_of` returns the short name for an unresolved symbol, which a
+/// dotted literal cannot equal, so an unresolved `Function` is correctly not
+/// recognized.
+///
+/// Takes the APPLIED head's `base` symbol rather than a `&V: TermView`, so —
+/// unlike its siblings [`is_option_type`] / [`is_reflect_term_type`] — it has no
+/// bare-`SortRef` arm. That is the pre-existing rule, stated rather than left
+/// implicit in the signature: `Function` is parametric and every consumer here
+/// wants its `B` (see [`function_spec_parts`]), so an unapplied `sort_ref`
+/// `Function` names no result type and is not a callable.
+fn is_function_spec(kb: &KnowledgeBase, base: Symbol) -> bool {
+    kb.qualified_name_of(base) == FUNCTION_SPEC_QNAME
+}
+
+/// WI-802: the ONE reader of a `Function[A, B, E]`'s type-parameter bindings —
+/// `(A, B, E)`, borrowed from `bindings`. `None` unless `base` is the
+/// [`is_function_spec`] sort AND it binds a result `B`; `A` and `E` stay
+/// optional (the source may omit either — an applied `Function[A, B]` that
+/// states no `E` is effect-polymorphic).
+///
+/// Owns the `"A"`/`"B"`/`"E"` binding names alongside the sort recognizer, so
+/// [`arrow_parts_extracted`] and [`function_spec_param_type`] agree on what
+/// counts as a callable by construction rather than by each restating it.
+/// Binding keys match by SHORT name via [`same_label`]'s rule: this is a lookup
+/// within an established same-sort gate (`base` is already known to be
+/// `Function`), not an identity comparison.
+///
+/// Returns BORROWED parts so [`function_spec_param_type`], which wants only `A`,
+/// need not CLONE `B` and `E` — WI-798 split that path apart precisely to stop
+/// re-cloning bound types. It does still LOOK UP all three (a scan of a ≤3-entry
+/// binding list); it is the `Rc` traffic, not the lookup, that WI-798 was about.
+///
+/// Three separate `find` passes rather than one loop over `bindings`, so a
+/// DUPLICATE key keeps `find`'s first-wins reading. Fusing them would silently
+/// flip that to last-wins — see WI-805, where duplicate-label disagreement
+/// between two readers is an open defect, not a free choice.
+fn function_spec_parts<'b>(
+    kb: &KnowledgeBase,
+    base: Symbol,
+    bindings: &'b [(Symbol, Value)],
+) -> Option<(Option<&'b Value>, &'b Value, Option<&'b Value>)> {
+    if !is_function_spec(kb, base) {
+        return None;
+    }
+    let find = |name: &str| {
+        bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == name).map(|(_, v)| v)
+    };
+    let result = find("B")?;
+    Some((find("A"), result, find("E")))
+}
+
 /// Decompose a callable type into `(param, result, effects-row)` — carrier-
 /// agnostic over [`TermView`], outputs owned [`Value`]s (WI-361/WI-342: input
 /// `TermView`, output `Value`; never re-grounds, so a `Value::Node` callback
@@ -19260,17 +19323,9 @@ fn arrow_parts_extracted(
         TypeExtractor::Arrow { param, result, effects, arity: _ } => {
             Some((Some(param.clone()), result.clone(), Some(effects.clone())))
         }
-        TypeExtractor::Parameterized { base, bindings }
-            if kb.qualified_name_of(*base) == "anthill.prelude.Function" =>
-        {
-            let find = |name: &str| {
-                bindings
-                    .iter()
-                    .find(|(p, _)| kb.resolve_sym(*p) == name)
-                    .map(|(_, v)| v.clone())
-            };
-            let result = find("B")?;
-            Some((find("A"), result, find("E")))
+        TypeExtractor::Parameterized { base, bindings } => {
+            let (param, result, effects) = function_spec_parts(kb, *base, bindings)?;
+            Some((param.cloned(), result.clone(), effects.cloned()))
         }
         _ => None,
     }
@@ -19903,16 +19958,8 @@ fn positional_arg_expectations(
 /// here interns, which is why `kb` is shared rather than `&mut`.
 fn function_spec_param_type(kb: &KnowledgeBase, fn_type: &TypeExtractor) -> Option<Value> {
     match fn_type {
-        TypeExtractor::Parameterized { base, bindings }
-            if kb.qualified_name_of(*base) == "anthill.prelude.Function" =>
-        {
-            let find = |name: &str| {
-                bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == name).map(|(_, v)| v.clone())
-            };
-            // `arrow_parts` treats a `Function` with no `B` as not-a-callable;
-            // matched here so the two readers agree on what counts as one.
-            find("B")?;
-            find("A")
+        TypeExtractor::Parameterized { base, bindings } => {
+            function_spec_parts(kb, *base, bindings).and_then(|(param, _, _)| param.cloned())
         }
         _ => None,
     }
@@ -35427,5 +35474,197 @@ mod wi799_tuple_align_policy {
         assert_ne!(TupleAlign::EQUALITY.names(), TupleAlign::PARAM_LIST.names());
         assert_eq!(TupleAlign::EQUALITY.names(), TupleAlign::DATA.names());
         assert_ne!(TupleAlign::EQUALITY.width(), TupleAlign::DATA.width());
+    }
+}
+
+/// WI-802 — the `anthill.prelude.Function` recognizer has ONE owner.
+///
+/// The convention was hand-compared at three independent sites, so a rename or
+/// namespace move of the stdlib sort could fix two and leave the third matching
+/// nothing — and the third's failure is SILENT: the `Function`-slot argument
+/// check simply stops firing, reverting to the no-check state WI-788 fixed, with
+/// no test failing on the recognizer ITSELF. These tests are that missing
+/// coverage: they fail at the recognizer, naming the cause, instead of leaving a
+/// reader to infer it from the downstream callable-typing failures a broken
+/// constant produces (44 in the `wi_tests` binary alone, measured by breaking
+/// it; the workspace figure is higher).
+#[cfg(test)]
+mod wi802_function_spec_owner_tests {
+    use super::{extract_sort_ref_sym, function_spec_parts, is_function_spec, FUNCTION_SPEC_QNAME};
+    use crate::eval::value::Value;
+    use crate::intern::SymbolKind;
+    use crate::kb::load::{self, NullResolver};
+    use crate::kb::KnowledgeBase;
+    use crate::parse;
+    use std::path::PathBuf;
+
+    /// The stdlib, plus an optional extra source loaded alongside it.
+    fn load_stdlib(extra: Option<&str>) -> KnowledgeBase {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+        // WI-747: the walk is the shared `crate::fs_util`, which fails LOUD on an
+        // unreadable/missing dir. A hand-rolled `if dir.is_dir()` copy returns an
+        // EMPTY list instead, and this module's headline test would then report
+        // "the stdlib declares no anthill.prelude.Function" — blaming the constant
+        // for a bad path, the exact misdiagnosis it exists to prevent.
+        let files = crate::fs_util::collect_files(&dir, &["anthill"])
+            .unwrap_or_else(|e| panic!("collect stdlib .anthill files: {e}"));
+        // Each `expect` NAMES the file: a bare `unwrap` here reports an Io or
+        // parse error with no path, which is the same mute-diagnostic problem the
+        // walk above was just fixed for.
+        let mut parsed: Vec<_> = files
+            .iter()
+            .map(|p| {
+                let text = std::fs::read_to_string(p)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+                parse::parse(&text).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            })
+            .collect();
+        if let Some(src) = extra {
+            parsed.push(parse::parse(src).expect("parse fixture"));
+        }
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+            panic!("stdlib load errors: {:?}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+        }
+        kb
+    }
+
+    /// THE guard the ticket asks for: the constant must name a sort the stdlib
+    /// actually DECLARES. Rename or move `anthill.prelude.Function` and this
+    /// fails here, pointing at the one line to update.
+    #[test]
+    fn the_recognizer_names_a_sort_the_stdlib_declares() {
+        let kb = load_stdlib(None);
+        let f = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).unwrap_or_else(|| {
+            panic!("the stdlib declares no `{FUNCTION_SPEC_QNAME}` — if the sort was \
+                    renamed or moved, update FUNCTION_SPEC_QNAME, which is the ONE \
+                    place kb/typing.rs spells it")
+        });
+        assert_eq!(kb.kind_of(f), Some(SymbolKind::Sort), "it must be a SORT");
+        assert!(is_function_spec(&kb, f), "the owner recognizes its own referent");
+    }
+
+    /// Identity is by QUALIFIED name, never by last segment (spec §8.6, the
+    /// WI-672 direction): a bare `Function` is a DIFFERENT sort. Loosening the
+    /// owner to a short-name compare would conflate a user's top-level
+    /// `sort Function` with the stdlib spec and make it callable.
+    ///
+    /// Split from its sibling below because the two bare spellings reach
+    /// `qualified_name_of` through DIFFERENT branches: an UNRESOLVED symbol
+    /// falls back to its short name (this test), while a namespace-less
+    /// top-level declaration is RESOLVED with a bare qualified name (the next).
+    /// They need separate KBs — once a fixture declares `sort Function`,
+    /// `intern("Function")` resolves to it and the unresolved branch is
+    /// unreachable.
+    #[test]
+    fn an_unresolved_function_name_is_not_the_stdlib_sort() {
+        let mut kb = load_stdlib(None);
+        let unresolved = kb.intern("Function");
+        assert_eq!(kb.kind_of(unresolved), None, "no such declaration ⇒ unresolved");
+        assert_eq!(kb.qualified_name_of(unresolved), "Function", "falls back to short name");
+        assert!(!is_function_spec(&kb, unresolved));
+    }
+
+    /// The case the doc actually warns about: a REAL user sort. A namespace-less
+    /// top-level `sort Function` lands in `_global` with the bare qualified name
+    /// `Function`, so it is resolved — and must still not be the stdlib spec.
+    #[test]
+    fn a_user_declared_top_level_function_sort_is_not_the_stdlib_sort() {
+        let kb = load_stdlib(Some("sort Function\n  sort A = ?\n  sort B = ?\nend\n"));
+
+        let declared = kb.try_resolve_symbol("Function").expect("top-level `sort Function`");
+        assert_eq!(kb.kind_of(declared), Some(SymbolKind::Sort));
+        assert_eq!(kb.qualified_name_of(declared), "Function", "resolved, bare QN");
+        assert!(!is_function_spec(&kb, declared), "a user's own sort is NOT the stdlib spec");
+
+        // ... and the stdlib one still is, in the very same KB.
+        let stdlib = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).expect("stdlib Function");
+        assert!(is_function_spec(&kb, stdlib));
+        assert_ne!(declared, stdlib, "two distinct symbols");
+    }
+
+    /// Both readers now inherit ONE rule about what counts as a callable rather
+    /// than each restating it: a `Function` binding no `B` names no result type.
+    /// `E` is genuinely optional — omitting it is effect-polymorphism, not a
+    /// malformed type — so it must NOT be folded into the same refusal.
+    #[test]
+    fn a_result_binding_is_required_but_an_effect_row_is_not() {
+        let mut kb = load_stdlib(None);
+        let f = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).expect("Function");
+        let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let int = Value::term(kb.make_sort_ref(int_sym));
+        let (a, b, e) = (kb.intern("A"), kb.intern("B"), kb.intern("E"));
+
+        assert!(function_spec_parts(&kb, f, &[(a, int.clone())]).is_none(),
+            "no B ⇒ not a callable");
+        let bindings = [(a, int.clone()), (b, int.clone())];
+        let (param, _result, effects) =
+            function_spec_parts(&kb, f, &bindings).expect("A + B is a callable");
+        assert!(param.is_some(), "A is read");
+        assert!(effects.is_none(), "a Function without E is effect-polymorphic");
+
+        // E PRESENT — the positive half. Without this, a reader that always
+        // returned `None` for E would satisfy the assertion above, and E is what
+        // `arrow_parts_extracted` hands to the effect-row conformance checks.
+        let with_e = [(a, int.clone()), (b, int.clone()), (e, int.clone())];
+        let (_, _, effects) =
+            function_spec_parts(&kb, f, &with_e).expect("A + B + E is a callable");
+        assert_eq!(
+            effects.and_then(|v| extract_sort_ref_sym(&kb, v)),
+            Some(int_sym),
+            "E is read back, not dropped",
+        );
+
+        // Same bindings under a NON-Function base: the recognizer, not the
+        // binding names, is what admits this shape.
+        let opt = kb.try_resolve_symbol("anthill.prelude.Option").expect("Option");
+        assert!(function_spec_parts(&kb, opt, &[(a, int.clone()), (b, int)]).is_none());
+    }
+
+    /// WI-708 / WI-726: a type param has TWO symbol spellings — the BARE last
+    /// segment (`A`, what a written annotation lowers to) and the sort-CANONICAL
+    /// one (`anthill.prelude.Function.A`, what a rule citation keys with). The
+    /// reader matches by SHORT name precisely so both reach the same slot, which
+    /// is why the doc cites [`same_label`]'s lookup rule rather than an identity
+    /// comparison.
+    ///
+    /// Nothing pinned this: swapping `resolve_sym` for `qualified_name_of` in
+    /// `function_spec_parts` left ALL 3318 workspace tests green (measured), so
+    /// the canonical spelling had zero coverage at this reader. It is a live
+    /// spelling — `anthill.prelude.Function.A` resolves in a stdlib KB — so the
+    /// tolerance is real, not dead generality.
+    #[test]
+    fn a_canonically_spelled_binding_key_reaches_the_same_slot() {
+        let mut kb = load_stdlib(None);
+        let f = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).expect("Function");
+        let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let int = Value::term(kb.make_sort_ref(int_sym));
+
+        let canon_a = kb
+            .try_resolve_symbol("anthill.prelude.Function.A")
+            .expect("canonical `A` param symbol");
+        let canon_b = kb
+            .try_resolve_symbol("anthill.prelude.Function.B")
+            .expect("canonical `B` param symbol");
+        assert_ne!(canon_a, kb.intern("A"), "canonical and bare are distinct symbols");
+        assert_eq!(kb.qualified_name_of(canon_a), "anthill.prelude.Function.A");
+
+        let bindings = [(canon_a, int.clone()), (canon_b, int.clone())];
+        let (param, result, _) = function_spec_parts(&kb, f, &bindings)
+            .expect("canonically-keyed bindings are read");
+        assert_eq!(
+            param.and_then(|v| extract_sort_ref_sym(&kb, v)),
+            Some(int_sym),
+            "canonical `A` binds the param slot",
+        );
+        assert_eq!(
+            extract_sort_ref_sym(&kb, result),
+            Some(int_sym),
+            "canonical `B` binds the result slot",
+        );
     }
 }
