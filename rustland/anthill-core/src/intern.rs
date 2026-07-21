@@ -17,8 +17,9 @@ impl Symbol {
         self.0
     }
 
-    /// Create from raw index. Used for synthetic VarIds (de Bruijn).
-    pub fn from_raw(raw: u32) -> Self {
+    /// Create from raw index. Used for synthetic VarIds (de Bruijn). `const` so
+    /// a fixed symbol can be a `const` (e.g. a test's stable functor id).
+    pub const fn from_raw(raw: u32) -> Self {
         Symbol(raw)
     }
 }
