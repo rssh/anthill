@@ -23,6 +23,7 @@ use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{goal_fingerprint, GoalKey, ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
 use super::persist_subst::BindValue;
 use super::discrim::SubstTree;
+use super::extent::{ArgKey, QueryPattern};
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use crate::eval::{EvalConfig, EvalError, Interpreter};
@@ -295,12 +296,15 @@ enum Candidate {
     /// recognized without a `term_body_to_nodes` round-trip at re-entry
     /// (proposal 033 §"TermId / Value asymmetry").
     Continuation(Vec<Value>),
-    /// Row from a registered external-source backend (proposal 007 §11 +
-    /// 026.1 Q4 Stage B). The substitution unifies the goal pattern with
-    /// the row's `Value::Entity`, with bindings entering σ as the row's
-    /// raw `Value` shape (no `TermStore` allocation per row). Behaviorally
-    /// identical to `Assumption`: zero body, just bindings to merge.
-    ExternalRow(Substitution),
+    /// Row from a mounted [`ExtentSource`] (`kb.extents`) — proposal 057
+    /// §"Mounts", WI-797 (successor to the retired `RouteHandler`). The
+    /// substitution unifies the goal pattern with the row's `Value`
+    /// (`match_view_value_pattern`), with bindings entering σ as the row's raw
+    /// `Value` shape (no `TermStore` allocation per row). Produced lazily — one
+    /// matched row per choice-point visit (`pump_extent_row`), not an eager
+    /// drain. Behaviorally identical to `Assumption`: zero body, just bindings
+    /// to merge.
+    ExtentRow(Substitution),
 }
 
 /// Result of a recursive groundness check.
@@ -444,6 +448,16 @@ enum FrameState {
         original_goal: Value,
         candidates: Vec<Candidate>,
         next: usize,
+        /// Rows drained from the goal's mounted [`ExtentSource`] (`kb.extents`),
+        /// empty for a resident (unmounted) functor (WI-797). Tried AFTER the
+        /// resident `candidates`, matched against the goal lazily one per visit
+        /// (`pump_extent_row`) — so a goal satisfied by the first row never
+        /// matches the rest. A mounted functor has no resident candidates
+        /// (single-owner + loader/registration refusals), so for it `candidates`
+        /// is empty and these rows are the only answers.
+        extent_rows: Vec<Value>,
+        /// Cursor into `extent_rows` — the next row `pump_extent_row` will match.
+        extent_next: usize,
         any_delayed: bool,
         child_solutions: usize,
         /// Cut barrier (proposal 033.1 / WI-568). Set to `Some(B)` when this
@@ -925,6 +939,11 @@ impl SearchStream {
                         original_goal: goal_val.clone(),
                         candidates,
                         next: 0,
+                        // A builtin / control goal (push_choice, SemEq unfold) is
+                        // never a mounted functor, so it gathers no extent rows —
+                        // only the non-builtin path below does (WI-797).
+                        extent_rows: Vec::new(),
+                        extent_next: 0,
                         any_delayed: false,
                         child_solutions: 0,
                         seen_goals: HashSet::new(),
@@ -974,6 +993,9 @@ impl SearchStream {
                         original_goal: goal_val.clone(),
                         candidates: gamma_cands,
                         next: 0,
+                        // Γ-overlay discharge gathers no mounted extent rows (WI-797).
+                        extent_rows: Vec::new(),
+                        extent_next: 0,
                         any_delayed: false,
                         child_solutions: 0,
                         seen_goals: HashSet::new(),
@@ -1006,6 +1028,11 @@ impl SearchStream {
                         original_goal: goal_val.clone(),
                         candidates,
                         next: 0,
+                        // A builtin / control goal (push_choice, SemEq unfold) is
+                        // never a mounted functor, so it gathers no extent rows —
+                        // only the non-builtin path below does (WI-797).
+                        extent_rows: Vec::new(),
+                        extent_next: 0,
                         any_delayed: false,
                         child_solutions: 0,
                         seen_goals: HashSet::new(),
@@ -1230,30 +1257,28 @@ impl SearchStream {
 
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
 
-        // External-source rows (proposal 007 §11 + 026.1 Q4 Stage B). If the
-        // goal head functor has a registered route handler, drain its stream and
-        // add each matching row as an ExternalRow candidate. Carrier-neutral
-        // (WI-696): the handler reads the goal `Value` through `TermView` and each
-        // row matches via `match_view_value_pattern` — no whole-goal reify.
-        let functor = match goal_val.head(kb) {
-            ViewHead::Functor { functor: Some(f), .. } => Some(f),
-            _ => None,
-        };
-        if let Some(functor) = functor {
-            if kb.route_handler_for(functor).is_some() {
-                let stream_opt =
-                    kb.route_handler_for(functor).map(|h| h.retrieve(kb, &goal_val));
-                if let Some(mut stream) = stream_opt {
-                    while let Some(row) = stream.next() {
-                        if let Some(subst) = kb.match_view_value_pattern(&goal_val, &row) {
-                            if !subst.is_contradiction() {
-                                candidates.push(Candidate::ExternalRow(subst));
-                            }
-                        }
-                    }
-                }
+        // Mounted extent rows (WI-797 / proposal 057 §"Mounts", successor to the
+        // retired `RouteHandler`). A functor owned by a registered `ExtentSource`
+        // (`kb.extents`) has its reads delegated to the source's `query`: the
+        // goal's ground argument slots are pushed down as a `QueryPattern`, and
+        // the returned rows are matched against the goal on the SAME candidate
+        // path as resident rules — no consumer branches on ownership (the WI-770
+        // divergence lesson applied to retrieval). The rows are drained here but
+        // matched LAZILY, one per choice-point visit (`pump_extent_row`); a
+        // mounted functor has no resident candidates (single-owner + the loader /
+        // registration refusals), so its `rule_candidates` is empty and these rows
+        // are its only answers. `functor_sym` reads the head symbol off either the
+        // `Fn{c}` or bare `Ref(c)` spelling (a 0-ary mounted functor). The frame σ
+        // is read by reference (not cloned) — `gather_extent_rows` only reads it,
+        // so cloning it per non-builtin goal (the hot path) is wasted work for the
+        // common resident case.
+        let extent_rows: Vec<Value> = match goal_val.head(kb).functor_sym() {
+            Some(functor) => {
+                let subst = &self.stack.last().unwrap().subst;
+                self.gather_extent_rows(kb, functor, &goal_val, subst)
             }
-        }
+            None => Vec::new(),
+        };
 
         // Local hypotheses, matched against the goal and added as zero-body
         // `Assumption` candidates — resolved *inside* the normal SLD search, so
@@ -1293,6 +1318,8 @@ impl SearchStream {
             original_goal: goal_val,
             candidates,
             next: 0,
+            extent_rows,
+            extent_next: 0,
             any_delayed: false,
             child_solutions: 0,
             seen_goals: HashSet::new(),
@@ -1660,6 +1687,10 @@ impl SearchStream {
                 original_goal,
                 candidates,
                 next: 0,
+                // This path (re-entry with a prebuilt candidate list) mounts no
+                // extent rows (WI-797).
+                extent_rows: Vec::new(),
+                extent_next: 0,
                 any_delayed: false,
                 child_solutions: 0,
                 seen_goals: HashSet::new(),
@@ -2147,82 +2178,225 @@ impl SearchStream {
         }
     }
 
+    /// The next candidate for the current `ChoicePoint` frame on the ONE path
+    /// (WI-797): the resident discrim `candidates` first (in `query_view` order),
+    /// then the mounted extent's rows, each matched against the goal lazily on
+    /// demand (`pump_extent_row`). `None` = both are exhausted. The caller does
+    /// not branch on whether a candidate is resident or mounted.
+    fn next_candidate(&mut self, kb: &KnowledgeBase) -> Option<Candidate> {
+        // Resident candidates, advancing `next`.
+        {
+            let frame = self.stack.last_mut().unwrap();
+            match &mut frame.state {
+                FrameState::ChoicePoint { candidates, next, .. } => {
+                    if *next < candidates.len() {
+                        let c = candidates[*next].clone();
+                        *next += 1;
+                        return Some(c);
+                    }
+                }
+                _ => unreachable!("next_candidate on a non-ChoicePoint frame"),
+            }
+        }
+        // Then the mounted extent's rows, matched one per call.
+        self.pump_extent_row(kb).map(Candidate::ExtentRow)
+    }
+
+    /// Advance the current frame's mounted-extent cursor to the next row that
+    /// matches the goal, returning the matching substitution — the lazy half of
+    /// the extent seam (proposal 057 §"Mounts"). Rows are matched one per call: a
+    /// non-matching row (the source may over-return past the pushed-down `bound`,
+    /// which is sound) is skipped and the next tried, until a match or the rows
+    /// are exhausted (`None`). The match is `match_view_value_pattern` (the same
+    /// carrier-neutral re-unification the retired routed-row path used); its
+    /// bindings enter σ as the row's raw `Value` shape at the consumer (the
+    /// non-`Term` bind path in `step_choice_point`), with no `TermStore` alloc.
+    fn pump_extent_row(&mut self, kb: &KnowledgeBase) -> Option<Substitution> {
+        let goal = match &self.stack.last().unwrap().state {
+            FrameState::ChoicePoint { original_goal, .. } => original_goal.clone(),
+            _ => unreachable!("pump_extent_row on a non-ChoicePoint frame"),
+        };
+        loop {
+            let row = {
+                let frame = self.stack.last_mut().unwrap();
+                match &mut frame.state {
+                    FrameState::ChoicePoint { extent_rows, extent_next, .. } => {
+                        if *extent_next >= extent_rows.len() {
+                            return None;
+                        }
+                        let row = extent_rows[*extent_next].clone();
+                        *extent_next += 1;
+                        row
+                    }
+                    _ => unreachable!("pump_extent_row on a non-ChoicePoint frame"),
+                }
+            };
+            if let Some(subst) = kb.match_view_value_pattern(&goal, &row) {
+                if !subst.is_contradiction() {
+                    return Some(subst);
+                }
+            }
+            // Non-match — skip and try the next row.
+        }
+    }
+
+    /// Drain the rows a mounted [`ExtentSource`] (`kb.extents`) offers for `goal`,
+    /// or an empty vec when `functor` is resident (unmounted) — WI-797 /
+    /// proposal 057. The goal's ground argument slots are digested into a
+    /// `QueryPattern` and pushed down to the source's `query`; the returned rows
+    /// are a SUPERSET of those satisfying the pushed equalities (the source may
+    /// over-return), re-filtered against the full goal when each is matched
+    /// (`pump_extent_row`). Drained eagerly into a `Vec` here (the frame is
+    /// `Clone`; the shipped in-memory source already materializes its rows), but
+    /// the per-row match — the real work — stays lazy.
+    fn gather_extent_rows(
+        &self,
+        kb: &KnowledgeBase,
+        functor: Symbol,
+        goal: &Value,
+        subst: &Substitution,
+    ) -> Vec<Value> {
+        let Some(profile) = kb.extent_profile(functor) else {
+            return Vec::new(); // resident functor — served by the discrim tree
+        };
+        let bound = self.extent_bound(kb, goal, subst);
+        let ground: Vec<ArgKey> = bound.iter().map(|(k, _)| *k).collect();
+        let Some(mode) = profile.select_mode(&ground) else {
+            // No declared query mode applies. Unreachable for a v1 source
+            // (registration admits only enumerable sources, whose enumeration
+            // mode answers any all-free goal); this becomes the WI-300 delay /
+            // loud-flounder point when non-enumerable oracle sources land. Surface
+            // it, do not drop it silently.
+            eprintln!(
+                "[extent] `{}`: no query mode for ground slots {:?} — goal unanswerable",
+                kb.resolve_sym(functor),
+                ground
+            );
+            return Vec::new();
+        };
+        // A materialized profile implies a mounted owner (registration writes
+        // both atomically), so this lookup cannot be `None`.
+        let owner = kb
+            .extent_owner(functor)
+            .expect("mounted profile implies a mounted owner");
+        let pattern = QueryPattern { mode, bound };
+        let mut cursor = match owner.query(kb, &pattern) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[extent] `{}`: query failed: {e}", kb.resolve_sym(functor));
+                return Vec::new();
+            }
+        };
+        let mut rows = Vec::new();
+        while let Some(next) = cursor.next(kb) {
+            match next {
+                Ok(row) => rows.push(row),
+                Err(e) => {
+                    eprintln!("[extent] `{}`: row error: {e}", kb.resolve_sym(functor));
+                    break;
+                }
+            }
+        }
+        rows
+    }
+
+    /// Digest `goal`'s fully-ground argument slots into the extent query's
+    /// `bound` (ground equality only — proposal 057 §"The query contract" rule
+    /// 2). ONLY a genuinely-ground slot is pushed: under-reporting is sound (the
+    /// source then over-returns and the per-row match re-filters), while pushing a
+    /// var-carrying slot as an "equality" would be unsound. Positional slots key
+    /// as `ArgKey::Pos`, named as `ArgKey::Named` — the vocabulary the source
+    /// declared its `query_modes` in.
+    fn extent_bound(
+        &self,
+        kb: &KnowledgeBase,
+        goal: &Value,
+        subst: &Substitution,
+    ) -> Vec<(ArgKey, Value)> {
+        let pos_arity = match goal.head(kb) {
+            ViewHead::Functor { pos_arity, .. } => pos_arity,
+            _ => 0,
+        };
+        let mut bound = Vec::new();
+        for i in 0..pos_arity {
+            if let Some(item) = goal.pos_arg(kb, i) {
+                let v = item.to_value();
+                if kb.value_is_ground(&v, subst) {
+                    bound.push((ArgKey::Pos(i as u32), v));
+                }
+            }
+        }
+        for key in goal.named_keys(kb) {
+            if let Some(item) = goal.named_arg(kb, key) {
+                let v = item.to_value();
+                if kb.value_is_ground(&v, subst) {
+                    bound.push((ArgKey::Named(key), v));
+                }
+            }
+        }
+        bound
+    }
+
     /// Handle a frame in `ChoicePoint` state — try the next candidate.
     fn step_choice_point(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
-        let frame = self.stack.last().unwrap();
-        let (delay_mode, original_goal, next, candidates_len, any_delayed, child_solutions) =
+        let (delay_mode, original_goal, any_delayed, child_solutions) = {
+            let frame = self.stack.last().unwrap();
             match &frame.state {
                 FrameState::ChoicePoint {
                     delay_mode,
                     original_goal,
-                    next,
-                    candidates,
                     any_delayed,
                     child_solutions,
                     ..
                 } => (
                     delay_mode.clone(),
                     original_goal.clone(),
-                    *next,
-                    candidates.len(),
                     *any_delayed,
                     *child_solutions,
                 ),
                 _ => unreachable!(),
-            };
-
-        // All candidates exhausted
-        if next >= candidates_len {
-            if child_solutions == 0 && any_delayed {
-                // Delay fallback: rotate goal to end, push new Init frame
-                let goals = &frame.goals;
-                let mut rotated: Vec<Value> = goals[1..].to_vec();
-                rotated.push(original_goal.clone());
-                let new_depth = frame.depth + 1;
-                let new_subst = frame.subst.clone();
-                let new_consecutive = match &delay_mode {
-                    DelayMode::Normal => 1,
-                    DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
-                };
-                let inherited = frame.assumed_facts.clone();
-                self.stack.pop();
-                self.stack.push(Frame {
-                    goals: rotated,
-                    subst: new_subst,
-                    depth: new_depth,
-                    state: FrameState::Init {
-                        delay_mode: DelayMode::Delayed {
-                            consecutive_delays: new_consecutive,
-                        },
-                    },
-                    assumed_facts: inherited,
-                });
-                return Some(StepResult::Continue);
-            }
-            // Backtrack — pop this frame
-            self.stack.pop();
-            return Some(StepResult::Continue);
-        }
-
-        // Extract candidate data
-        let candidate = {
-            let frame = self.stack.last().unwrap();
-            match &frame.state {
-                FrameState::ChoicePoint { candidates, next, .. } => {
-                    candidates[*next].clone()
-                }
-                _ => unreachable!(),
             }
         };
 
-        // Advance `next` in the current frame
-        {
-            let frame = self.stack.last_mut().unwrap();
-            match &mut frame.state {
-                FrameState::ChoicePoint { next, .. } => *next += 1,
-                _ => unreachable!(),
+        // The next candidate on the ONE path: resident discrim candidates first,
+        // then the mounted extent's rows matched lazily (WI-797) — the consumer
+        // below never branches on which source a candidate came from. `None` =
+        // both are exhausted → delay fallback or backtrack.
+        let candidate = match self.next_candidate(kb) {
+            Some(c) => c,
+            None => {
+                let frame = self.stack.last().unwrap();
+                if child_solutions == 0 && any_delayed {
+                    // Delay fallback: rotate goal to end, push new Init frame
+                    let goals = &frame.goals;
+                    let mut rotated: Vec<Value> = goals[1..].to_vec();
+                    rotated.push(original_goal.clone());
+                    let new_depth = frame.depth + 1;
+                    let new_subst = frame.subst.clone();
+                    let new_consecutive = match &delay_mode {
+                        DelayMode::Normal => 1,
+                        DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+                    };
+                    let inherited = frame.assumed_facts.clone();
+                    self.stack.pop();
+                    self.stack.push(Frame {
+                        goals: rotated,
+                        subst: new_subst,
+                        depth: new_depth,
+                        state: FrameState::Init {
+                            delay_mode: DelayMode::Delayed {
+                                consecutive_delays: new_consecutive,
+                            },
+                        },
+                        assumed_facts: inherited,
+                    });
+                    return Some(StepResult::Continue);
+                }
+                // Backtrack — pop this frame
+                self.stack.pop();
+                return Some(StepResult::Continue);
             }
-        }
+        };
 
         // Continuation inherits parent σ unchanged — no head match, so no
         // new bindings to merge and no walk of the tail to perform. See
@@ -2248,7 +2422,7 @@ impl SearchStream {
         let (opt_rid, tree_subst) = match candidate {
             Candidate::Rule(rid, subst) => (Some(rid), subst),
             Candidate::Assumption(subst) => (None, subst),
-            Candidate::ExternalRow(subst) => (None, subst),
+            Candidate::ExtentRow(subst) => (None, subst),
             Candidate::Continuation(_) => unreachable!("handled above"),
         };
 
@@ -2289,7 +2463,7 @@ impl SearchStream {
 
         if is_fact {
             // Ground fact (occurrence or rule with empty body, or
-            // ExternalRow from a routed-store backend).
+            // ExtentRow from a mounted extent source).
             //
             // [WI-030] No eager apply_subst_each here — bindings from this
             // match enter `frame.subst` via `bind_compressed` below, and
@@ -2320,7 +2494,7 @@ impl SearchStream {
                     // before it enters σ. The hot term fast-path
                     // (`bind_compressed` above) stays unchecked; this rare
                     // non-`Term` bind is the one route by which a cyclic entity
-                    // sigma (`?v ↦ Entity{…?v…}` — a routed-store row that
+                    // sigma (`?v ↦ Entity{…?v…}` — a mounted-extent row that
                     // references the goal's own query var) could form and later
                     // overflow `reify_value`'s now-deep (WI-629) child recursion.
                     //
@@ -6397,8 +6571,8 @@ impl KnowledgeBase {
     ///   `is_thing(42)` exists.)
     /// - Refutation is DISABLED when a conjunct could be discharged by a
     ///   resolution path `query_view` does not see — the frame's `assumed_facts`
-    ///   (WI-108), the Γ overlay (WI-537), the `[simp]` eq-rewrite pass, a route
-    ///   handler (external rows), a scoping/quantifier MARKER (`forall_impl` /
+    ///   (WI-108), the Γ overlay (WI-537), the `[simp]` eq-rewrite pass, a mounted
+    ///   extent source (extent rows), a scoping/quantifier MARKER (`forall_impl` /
     ///   `forall_in` / `some_in` / `__pop_assumption`), or a
     ///   `bare_bodied_bool_relation` (routed to `eq(f(args), true)`). The caller
     ///   folds the assumptions/Γ/simplify conditions into `context_opaque`; the
@@ -6429,7 +6603,9 @@ impl KnowledgeBase {
             };
             // Skip every non-builtin functor that `step_init` resolves off the
             // discrim path — otherwise its zero candidates would falsely refute.
-            if self.route_handler_for(functor).is_some()
+            // A mounted extent functor (WI-797) resolves via its source's rows,
+            // which `query_view` does not see.
+            if self.extent_owner(functor).is_some()
                 || self.bare_bodied_bool_relation(functor)
                 || is_scoping_marker_name(self.resolve_sym(functor))
             {

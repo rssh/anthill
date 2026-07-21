@@ -9,10 +9,13 @@
 //! in ISOLATION — the conformance suite drives sources via DIRECT `query` calls,
 //! with no resolver involvement.
 //!
-//! Wiring the mount into resolution and load — discrim mounts, tagged candidates,
-//! retiring `RouteHandler` / `Store::retrieve` into `query` (retirement stage R2),
-//! and the loader's single-owner refusal on resident collisions — is the sibling
-//! item WI-797. The values-first `read_facts` accessor is WI-773. The write half
+//! WI-797 wired the mount into resolution and load — the resolver's discrim-mount
+//! delegation (`SearchStream::gather_extent_rows`), retiring `RouteHandler` into
+//! `query`, and the loader / registration single-owner refusals on resident
+//! collisions. (The read-beside-discrim `Store::retrieve` retirement — the other
+//! half of R2 — waits on the store-registry→`kb.extents` move in the write seam,
+//! WI-780: it backs the still-declared `QueryableStore.retrieve` op.) The
+//! values-first `read_facts` accessor is WI-773. The write half
 //! of the trait (`persist`/`update`/`retract`) arrives with the write seam
 //! (WI-780); the trait grows one method-set per slice, never ahead of the code.
 //!
@@ -189,6 +192,12 @@ pub enum ExtentRegError {
     UnresolvableName(String),
     /// The functor already has a registered extent owner (single-owner rule).
     AlreadyOwned { functor: String },
+    /// The functor already has resident facts/rules in `kb.rules` — mounting an
+    /// owner over it would make the extent a SECOND, invisible source of truth.
+    /// The registration-time complement of the loader's `FunctorOwnedByExtent`
+    /// refusal (both enforce the single-owner rule, from the two orderings:
+    /// mount-then-load vs load-then-mount). WI-797.
+    ResidentCollision { functor: String },
     /// A `Volatile` source declared more than one query mode — the permanent
     /// well-formedness invariant of a volatile source (at most one mode, so its
     /// observation memo has a single key). Checked ahead of the v1 volatile gate
@@ -212,6 +221,11 @@ impl std::fmt::Display for ExtentRegError {
                 f,
                 "register_extent_owner: functor '{functor}' already has an extent owner"
             ),
+            ExtentRegError::ResidentCollision { functor } => write!(
+                f,
+                "register_extent_owner: functor '{functor}' already has resident facts/rules; \
+                 a mounted source must own its functor exclusively (seed it through the store)"
+            ),
             ExtentRegError::VolatileMultiMode { functor, modes } => write!(
                 f,
                 "register_extent_owner: volatile source for '{functor}' declares {modes} query \
@@ -233,7 +247,8 @@ impl std::fmt::Display for ExtentRegError {
 
 impl std::error::Error for ExtentRegError {}
 
-/// KB-owned aggregate of extent sources — successor to `route::RouteRegistry`.
+/// KB-owned aggregate of extent sources — successor to the retired `RouteHandler`
+/// registry (WI-797).
 /// Sources live in a `SourceId`-keyed slab; `mounts` names the owner of each
 /// functor; `profiles` materializes each owned functor's read profile once, at
 /// registration.
@@ -283,8 +298,9 @@ impl KnowledgeBase {
     /// Rules, per owned `(name, profile)`, in order:
     /// 1. `name` must resolve → else [`ExtentRegError::UnresolvableName`].
     /// 2. the functor must be unowned → else [`ExtentRegError::AlreadyOwned`]
-    ///    (single-owner). Resident-collision refusal (a functor with resident
-    ///    facts/rules) lands with the loader wiring, WI-797.
+    ///    (single-owner), AND have no resident facts/rules → else
+    ///    [`ExtentRegError::ResidentCollision`] (WI-797, the load-then-mount
+    ///    complement of the loader's `FunctorOwnedByExtent` refusal).
     /// 3. a `Volatile` profile must declare ≤1 mode → else
     ///    [`ExtentRegError::VolatileMultiMode`] (well-formedness).
     /// 4. `Volatile` is refused in v1 → [`ExtentRegError::VolatileUnsupported`].
@@ -306,6 +322,13 @@ impl KnowledgeBase {
                 || resolved.iter().any(|(s, _)| *s == sym)
             {
                 return Err(ExtentRegError::AlreadyOwned { functor: name });
+            }
+            // Single-owner, the other ordering (load-then-mount): a functor with
+            // resident facts/rules can't also be mounted — the loader's
+            // `FunctorOwnedByExtent` refusal is the mount-then-load complement.
+            // `rules_by_functor` already drops retracted rules (WI-797).
+            if !self.rules_by_functor(sym).is_empty() {
+                return Err(ExtentRegError::ResidentCollision { functor: name });
             }
             if profile.stability == Stability::Volatile && profile.query_modes.len() > 1 {
                 return Err(ExtentRegError::VolatileMultiMode {

@@ -378,6 +378,18 @@ pub enum LoadError {
         unresolved: String,
         span: Span,
     },
+    /// WI-797 / proposal 057 §"Mounts": a source-file `fact` or `rule` whose head
+    /// functor is owned by a mounted [`ExtentSource`](crate::kb::extent) (`kb.extents`).
+    /// The extent virtualizes that functor's reads through its store, so a resident
+    /// fact/rule for it would be a SECOND, invisible source of truth — the
+    /// single-owner rule. Seed the functor through its owning store's own channel.
+    FunctorOwnedByExtent {
+        /// The refused item's kind — `"fact"` or `"rule"`.
+        kind: &'static str,
+        /// The owned functor's qualified name.
+        functor: String,
+        span: Span,
+    },
     /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
     /// parser and loader carry it faithfully, but the guard engine cannot yet
     /// evaluate aggregation — so the loader reports it loudly (load-blocking)
@@ -592,7 +604,8 @@ impl LoadError {
             | LoadError::InvalidFieldProjection { span, .. }
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
-            | LoadError::BindingInContract { span, .. } => Some(*span),
+            | LoadError::BindingInContract { span, .. }
+            | LoadError::FunctorOwnedByExtent { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
@@ -710,6 +723,14 @@ impl LoadError {
             // as `error: load error: …`. `Other` is now a blocking front-door
             // diagnostic, so it matches its siblings.
             LoadError::Other { message } => message.clone(),
+            LoadError::FunctorOwnedByExtent { kind, functor, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: resident {} for '{}' is refused: the functor is owned by a \
+                     mounted extent source; seed it through the store's own channel",
+                    line, col, kind, functor
+                )
+            }
             LoadError::ArrowTermInExprPosition { span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: {}", line, col, arrow_expr_hint())
@@ -1015,6 +1036,14 @@ impl std::fmt::Display for LoadError {
             // WI-744: bare message — see `format_with_source`'s note.
             LoadError::Other { message } => {
                 write!(f, "{}", message)
+            }
+            LoadError::FunctorOwnedByExtent { kind, functor, span } => {
+                write!(
+                    f,
+                    "resident {} for '{}' is refused: the functor is owned by a mounted \
+                     extent source; seed it through the store's own channel at {}..{}",
+                    kind, functor, span.start, span.end,
+                )
             }
             LoadError::ArrowTermInExprPosition { span } => {
                 write!(f, "{} at {}..{}", arrow_expr_hint(), span.start, span.end)
@@ -11955,6 +11984,27 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-797 / proposal 057 §"Mounts": if `head`'s functor is owned by a mounted
+    /// [`ExtentSource`](crate::kb::extent) (`kb.extents`), record a
+    /// [`LoadError::FunctorOwnedByExtent`] and return `true` so the caller skips
+    /// the assertion. A mounted functor is virtualized through its store, so a
+    /// resident fact/rule for it would be a second, invisible source of truth (the
+    /// single-owner rule). `kind` is `"fact"` or `"rule"`; `span` is the refused
+    /// head's source span. The complementary direction — refusing an owner for a
+    /// functor that ALREADY has resident entries — lives in `register_extent_owner`.
+    fn refuse_if_extent_owned(&mut self, head: TermId, kind: &'static str, span: Span) -> bool {
+        let Some(functor) = self.kb.head_functor(head) else {
+            return false;
+        };
+        if self.kb.extent_owner(functor).is_some() {
+            let functor = self.kb.qualified_name_of(functor).to_string();
+            self.errors.push(LoadError::FunctorOwnedByExtent { kind, functor, span });
+            true
+        } else {
+            false
+        }
+    }
+
     fn load_fact(&mut self, f: &Fact, domain: TermId) {
         let sort_name = f.sort.as_deref().unwrap_or("Fact");
         let fact_sort = self.kb.make_name_term(sort_name);
@@ -11979,6 +12029,12 @@ impl<'a> Loader<'a> {
         self.in_value_position = true;
         let term = self.convert_term(f.term);
         self.in_value_position = false;
+        // WI-797: a mounted-extent functor is virtualized through its store, so a
+        // resident source fact for it is refused (single owner).
+        if self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term)) {
+            self.current_owner = prev_owner;
+            return;
+        }
         // Record the fact's top-level term span on the side-tables so
         // typing.rs error formatting can resolve it back to a span.
         self.create_occurrence(f.term, term);
@@ -12504,6 +12560,12 @@ impl<'a> Loader<'a> {
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
                     positive_head_spans.push(self.source_span_of(*tid));
                     positive_heads.push(head);
+                    // WI-797: a mounted-extent functor must have no resident rule
+                    // (single owner) — refuse any head owned by a mounted source.
+                    if self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid)) {
+                        self.current_owner = prev_owner;
+                        return;
+                    }
                 }
                 RuleHead::Bottom => has_bottom = true,
             }

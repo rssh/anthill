@@ -23,7 +23,6 @@ pub mod simp_rewrite;
 pub(crate) mod body_specialize;
 pub mod term_view;
 pub mod execute;
-pub mod route;
 pub mod extent;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
@@ -718,18 +717,13 @@ pub struct KnowledgeBase {
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
 
-    // Goal-routing registry — per-functor `RouteHandler`s that surface
-    // external row streams as resolution candidates. Empty by default;
-    // populated by host code via `register_route_handler`. See
-    // `kb/route.rs` and proposal 007 §11.
-    pub(crate) routes: route::RouteRegistry,
-
-    // Extent-source registry (proposal 057, WI-796) — per-functor read owners,
-    // successor to `routes`. Sources in a `SourceId`-keyed slab, a functor→owner
-    // mount table, and materialized per-functor read profiles. Empty by default;
-    // populated via `register_extent_owner`. The resolver/loader wiring that
-    // consults a mount is WI-797; today it is a self-contained, directly-queried
-    // registry. See `kb/extent.rs`.
+    // Extent-source registry (proposal 057, WI-796/WI-797) — per-functor read
+    // owners, successor to the retired `RouteHandler`/`routes` registry. Sources
+    // in a `SourceId`-keyed slab, a functor→owner mount table, and materialized
+    // per-functor read profiles. Empty by default; populated via
+    // `register_extent_owner`. The resolver consults a mount through
+    // `SearchStream::gather_extent_rows` and the loader refuses a resident
+    // collision (WI-797). See `kb/extent.rs`.
     pub(crate) extents: extent::ExtentRegistry,
 
     // WI-218 — static-dispatch rewrite tables.
@@ -916,7 +910,6 @@ impl KnowledgeBase {
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
-            routes: route::RouteRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),

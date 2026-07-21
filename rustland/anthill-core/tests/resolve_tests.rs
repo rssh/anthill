@@ -32,8 +32,8 @@ mod wi300_rule_body_requires_test;
 #[path = "include/cut_test.rs"]
 mod cut_test;
 
-#[path = "include/route_dispatch_test.rs"]
-mod route_dispatch_test;
+#[path = "include/extent_mount_test.rs"]
+mod extent_mount_test;
 
 #[path = "include/guard_trigger_test.rs"]
 mod guard_trigger_test;
