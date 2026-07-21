@@ -2149,14 +2149,20 @@ fn hidden_field_owner(
 /// against `field_access`'s own reflect signature.
 ///
 /// TWO receivers declare members statically:
-///  1. a NAMED TUPLE — components matched by SHORT name. That is the convention every other
-///     named-tuple member lookup uses (`named_tuple_compatible`, `thread_expected_tuple_field`,
-///     the forward dot dispatch), and it is forced here anyway: a name-keyed constructor is
-///     keyed by a NAME, and there is no symbol to compare identities with.
-///     (`without_named_tuple_types` compares by symbol identity instead — correctly, because
-///     BOTH its operands are type-level named tuples whose symbols come from one producer.)
+///  1. a NAMED TUPLE — components matched by SHORT name, as the forward dot dispatch does,
+///     and forced here anyway: the incoming `field_name` is a NAME (a source-level `x.f`, or
+///     a `FieldOf` denoted), so there is no symbol to compare identities with.
 ///  2. an ENTITY / sort receiver — the field's declared type with the receiver's
 ///     type-arguments substituted, plus EVERY constructor that declares it.
+///
+/// A NAMED TUPLE IS THEREFORE MATCHED TWO WAYS, BY DESIGN — by SHORT NAME here, and by
+/// SYMBOL IDENTITY in every relation over two named tuples ([`align_named_tuple_slots`],
+/// and since WI-800 the tuple-literal expected-type threading with them). Which one is
+/// available is decided by the operands, not by taste: a relation has two type-level tuples
+/// whose symbols come from one producer (the reasoning `without_named_tuple_types` records),
+/// and a READER holding a bare name has nothing to compare identities with. The two CAN
+/// disagree — see WI-805, where a duplicate-labelled tuple has the relation typing one
+/// component and this lookup reading another.
 ///
 /// A `Term` receiver is deliberately NOT handled here. Its "fields" are a runtime term's
 /// named arguments rather than a declared schema, so ANY name projects — an answer that is
@@ -2300,38 +2306,75 @@ fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
 }
 
 
-/// WI-462: thread one tuple-literal component's EXPECTED type into its inferred type.
-/// If `exp_fields` (the expected named-tuple's component types) has an entry whose SHORT
-/// name matches `field_name`, unify the component's inferred `ty` against it (binding a free
-/// element var — `h : ?_` ⟹ `xs.T`) and return the σ-walked result; otherwise return `ty`
-/// unchanged. Matched by short name so the `_1`/`_2` positional convention and any declared
-/// names line up regardless of symbol identity. NOTE (WI-775): this is a hint-threading
-/// no-op on a miss, NOT a type relation, so it stays short-name-keyed across BOTH
-/// conventions — do not read it as evidence that `_1`/`_2` and declared names line up in
-/// the RELATIONS. They do not: every relation over two named tuples aligns SLOT BY SLOT
-/// with the names required to agree (WI-788), so `_1`/`_2` and declared names relate
-/// nowhere. Being order-blind here cannot make a permutation conform — the relation still
-/// refuses it — but it can thread a permuted literal's expected component type into the
-/// wrong slot and so mis-aim the diagnostic that follows. Threading positionally, with the
-/// same name agreement, would be the faithful reading.
-fn thread_expected_tuple_field(
+/// WI-462: thread a tuple LITERAL's EXPECTED component types into its inferred ones, IN
+/// PLACE. A component's inferred type can be a free var (`cons(h, t)` over a bare
+/// `xs : List` binds `h` to a fresh `?_`) while the expected type carries the real one;
+/// unifying the two binds the var (`h ⟹ xs.T`) and the σ-walked result replaces it, so the
+/// tuple built from `fields` carries it. A component the expected type does not account for
+/// is left alone.
+///
+/// WI-800: the correspondence is [`align_named_tuple_slots`] in [`TupleAlign::DATA`] mode —
+/// the SAME walk, in the same argument order (`actual`, `expected`), that the relation
+/// DECIDING this literal's conformance runs: `types_compatible` →
+/// [`named_tuple_compatible`], which hardcodes `DATA`. It used to be an independent
+/// order-blind lookup keyed on SHORT names, which disagreed with that relation in both
+/// directions:
+///
+///  * it threaded where the relation REFUSES. A permuted literal `(b: ?_, a: 3)` against
+///    `(a: Int64, b: String)` had `String` threaded into its `b` component, so the type
+///    reported back in the "got" position was one the literal was never given and the
+///    relation never accepted. Not a soundness bug — the relation still refuses the
+///    program — but the message describes a fiction.
+///  * it threaded a DIFFERENT slot than the relation aligns whenever the two disagree
+///    about which component a name picks. `find` takes the FIRST component of that name;
+///    the alignment takes the first at or after the previous match. With duplicate labels
+///    those are different components, and it is the ALIGNMENT's choice that the relation
+///    (and so the accepted program) is built on.
+///
+/// Sharing the walk also keeps width working: the drop is name-keyed from ANYWHERE
+/// (WI-804), so `(head: h, mid: 1, rest: t)` against `(head: …, rest: …)` still threads
+/// `rest`, which a raw index-for-index zip would have missed.
+///
+/// It also moves the keying from SHORT NAMES to SYMBOL IDENTITY, which the old doc had
+/// warned against ("regardless of symbol identity"). That warning does not survive the
+/// sharing, and the reason is not local: `fields` is the very list the built tuple type
+/// carries, so the symbols conformance compares on the ACTUAL side are these, and the ones
+/// it compares on the EXPECTED side are `exp_fields`'. Threading now agrees with the
+/// relation by construction — where the symbols fail to line up, conformance fails on the
+/// same comparison, so the hint is only ever withheld from a program that is refused
+/// anyway.
+///
+/// `DATA` is the discipline of the relation that decides ACCEPTANCE, which is not the only
+/// relation this literal's type may meet: `check_apply_iter`'s INFERENCE unify can reach
+/// [`unify_named_tuple`], whose `EQUALITY` discipline takes exact width and so refuses a
+/// width step this hint took. That is tolerated for the same reason the unify itself is —
+/// its failure does not decide acceptance (see the `wi799_tuple_align_policy` module doc) —
+/// but it is why the claim here is "the relation that decides", not "every relation that
+/// runs". If a hint threaded under the wrong one of the three ever costs something
+/// measurable, the fix is to make the discipline a parameter, not to widen `DATA`.
+///
+/// This is a hint, not a relation: alignment failure is a threading NO-OP (every component
+/// keeps its inferred type) and the refusal is left to the relation, which reports it with
+/// a located diagnostic. It must stay that way — a `TupleAlign::DATA` miss here is not
+/// evidence the program is ill-typed, only that there is no expectation to push down.
+///
+/// RESIDUAL (not this ticket): the pass exists at all only because `types_compatible` will
+/// not BIND a var on the actual side — a checking relation that bound would need no
+/// separate hint, and no second correspondence to keep in step with the first. WI-800
+/// removes the duplicate correspondence, not the duplicate pass.
+fn thread_expected_tuple_fields(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
+    fields: &mut [(Symbol, Value)],
     exp_fields: &[(Symbol, Value)],
-    field_name: Symbol,
-    ty: &Value,
-) -> Value {
-    let short = short_name_of(kb.resolve_sym(field_name)).to_owned();
-    let exp_ty = exp_fields
-        .iter()
-        .find(|(n, _)| short_name_of(kb.resolve_sym(*n)) == short)
-        .map(|(_, v)| v.clone());
-    match exp_ty {
-        Some(exp_ty) => {
-            unify_types(kb, subst, ty, &exp_ty);
-            walk_type_deep_value(kb, subst, ty)
-        }
-        None => ty.clone(),
+) {
+    let Some(slots) = align_named_tuple_slots(kb, fields, exp_fields, TupleAlign::DATA) else {
+        return;
+    };
+    for (&slot, (_, exp_ty)) in slots.iter().zip(exp_fields.iter()) {
+        unify_types(kb, subst, &fields[slot].1, exp_ty);
+        let walked = walk_type_deep_value(kb, subst, &fields[slot].1);
+        fields[slot].1 = walked;
     }
 }
 
@@ -18449,23 +18492,31 @@ fn check_tuple_literal_constructor(
     // fresh `?_`); the declared return `(xs.T, …)` carries the real type, but the later
     // conformance check (`types_compatible`) does NOT bind a var — it only subtype-checks,
     // and a raw `Var::Global` is not a wildcard there. So unify each element's type against
-    // its expected component (matched by `_1`/`_2`/name), binding the free var (`h ⟹ xs.T`),
-    // then walk it into the built tuple type. (A `pair(h, t)` constructor threads this way
-    // for free — its build seeds the expected; a tuple literal has no constructor to do so.)
-    // No / non-tuple expected leaves the inferred types unchanged.
+    // its expected component, binding the free var (`h ⟹ xs.T`), then walk it into the built
+    // tuple type. (A `pair(h, t)` constructor threads this way for free — its build seeds
+    // the expected; a tuple literal has no constructor to do so.) No / non-tuple expected
+    // leaves the inferred types unchanged — as does an expected the conformance relation
+    // will refuse anyway (WI-800): the correspondence is that relation's own.
     let exp_fields: Vec<(Symbol, Value)> = match &expected {
         Some(e) if matches!(extract_type(kb, e), TypeExtractor::NamedTuple(_)) => {
             named_tuple_fields(kb, e)
         }
         _ => Vec::new(),
     };
+    // WI-342: carrier-agnostic field types (carry a `Value::Node` field). This IS the list
+    // the tuple type is built from, so threading writes through it rather than into a
+    // parallel copy — and it is the same list conformance reads back off that type.
+    let mut tuple_fields: Vec<(Symbol, Value)> =
+        labeled.iter().map(|(label, r)| (*label, r.ty.clone())).collect();
     let mut tsubst = Substitution::new();
+    thread_expected_tuple_fields(kb, &mut tsubst, &mut tuple_fields, &exp_fields);
+    // Effects merge in a SECOND pass. They used to interleave with the threading, one
+    // component at a time; the two are independent and the split is safe, which is worth
+    // stating rather than leaving to be re-derived: threading's substitution is the local
+    // `tsubst` and never reaches effect merging, and both only ever ADD to `kb`, whose
+    // terms are hash-consed by structure — so allocation ORDER is not observable.
     let mut effects: Vec<Value> = Vec::new();
-    // WI-342: carrier-agnostic field types (carry a `Value::Node` field).
-    let mut tuple_fields: Vec<(Symbol, Value)> = Vec::new();
-    for (label, r) in labeled {
-        let ty = thread_expected_tuple_field(kb, &mut tsubst, &exp_fields, label, &r.ty);
-        tuple_fields.push((label, ty));
+    for (_, r) in &labeled {
         merge_effects_into(kb, &mut effects, &r.effects);
     }
     let tuple_ty = named_tuple_value(kb, &tuple_fields, occ.span, occ.owner);
@@ -25060,7 +25111,7 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// tuple-arrow lowering and the [`operation_as_function_value`] eta arrow mint
 /// produce for an UNNAMED arrow param / multi-param op (spec §4.5). Such names
 /// are SYNTHETIC and make no claim about what the slots are called, which is what
-/// lets [`align_named_tuple_fields`] zip a `_1.._n` list against a named-binder
+/// lets [`align_named_tuple_slots`] zip a `_1.._n` list against a named-binder
 /// arrow (`(acc, x)`) by position — in [`TupleAlign::PARAM_LIST`] mode only, since
 /// only a parameter list is applied positionally (WI-775).
 ///
@@ -25100,7 +25151,7 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// earlier, so nothing depended on this function admitting it.
 ///
 /// The index check requires the field at position `i` to be named `_{i+1}`, so it
-/// (and the zip in `align_named_tuple_fields`) relies on [`named_tuple_fields`]
+/// (and the zip in `align_named_tuple_slots`) relies on [`named_tuple_fields`]
 /// yielding fields in construction/declaration order — which it does (it reads
 /// the `fields` list spine in order; only the per-element record args are
 /// name-sorted, not the list).
@@ -25117,7 +25168,7 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
 /// The axes are independent, which yields FOUR combinations while only THREE are
 /// disciplines. The fourth — `Subset` width with the synthetic escape — is not
 /// merely unused, it is UNSOUND: the escape branch in
-/// [`align_named_tuple_fields`] zips the two lists without consulting width, and
+/// [`align_named_tuple_slots`] zips the two lists without consulting width, and
 /// `zip` stops at the shorter one, so a subset width would silently relate
 /// `(a: Int64, b: String, c: Bool)` to the positional `(Int64, String)` by
 /// truncation — precisely the relation proposal 004 rule 4 forbids, reached
@@ -25170,7 +25221,7 @@ pub(super) enum TupleNames {
     ExactOrSynthetic,
 }
 
-/// WI-775/WI-799: the alignment discipline [`align_named_tuple_fields`] applies
+/// WI-775/WI-799: the alignment discipline [`align_named_tuple_slots`] applies
 /// between two named-tuple field lists. The two positions look identical as TYPES
 /// — WI-766 made an arrow's parameter list and a tuple type literally the same
 /// surface — but they are not interchangeable, so the caller states which one it
@@ -25255,9 +25306,26 @@ impl TupleAlign {
 
 use tuple_align::{TupleAlign, TupleNames, TupleWidth};
 
-/// WI-442: align two named-tuple field lists into the `(a_type, b_type)` pairs a
-/// field-wise relation (unify / subtype) should relate, or `None` when the shapes
-/// are incompatible.
+/// WI-800: an [`align_named_tuple_slots`] correspondence — one `a` index per `b`
+/// component. Inline up to 8; a wider tuple spills to the heap exactly as the old
+/// `(Value, Value)` pair vector always did, so this only ever removes allocations,
+/// never adds one. (8 is the usual small-buffer pick, NOT a measured cover of the
+/// corpus's tuple arities — no such measurement was taken, and none is claimed.)
+type AlignedSlots = SmallVec<[usize; 8]>;
+
+/// WI-442: align two named-tuple field lists — for each component of `b`, the
+/// INDEX of the `a` component it corresponds to — or `None` when the shapes are
+/// incompatible. A field-wise relation (unify / subtype) relates
+/// `a_fields[slots[i]].1` to `b_fields[i].1`.
+///
+/// WI-800 made the correspondence itself the return value. It used to return the
+/// `(a_type, b_type)` pairs directly, which discarded the one thing a caller that
+/// is not a field-wise relation needs: WHICH slot of `a` each `b` component landed
+/// on. The tuple-literal expected-type threading needs exactly that (it writes
+/// back into `a`'s slots), and lacking it, it had its own order-blind by-name
+/// lookup — a second, differently-behaved alignment one call away from this one.
+/// Returning indices also spares the two `Value` clones per component that
+/// building the pairs cost every relation on this path.
 ///
 /// The CORRESPONDENCE is one walk for every discipline — slot by slot, in list
 /// order (both field lists are in declaration / positional order, since the
@@ -25286,12 +25354,12 @@ use tuple_align::{TupleAlign, TupleNames, TupleWidth};
 ///     width-ignored, then trapped `ArityMismatch` at eval. Eval passes exactly
 ///     as many arguments as the call site's type says, so a narrower parameter
 ///     list is not a supertype.
-fn align_named_tuple_fields(
+fn align_named_tuple_slots(
     kb: &KnowledgeBase,
     a_fields: &[(Symbol, Value)],
     b_fields: &[(Symbol, Value)],
     mode: TupleAlign,
-) -> Option<Vec<(Value, Value)>> {
+) -> Option<AlignedSlots> {
     // WI-799: the two axes are `mode`'s FIELDS — see [`TupleWidth`] /
     // [`TupleNames`] for what each admits and why. They were a two-variant enum
     // tabulated here, which is how the codebase came to disagree with itself about
@@ -25364,13 +25432,15 @@ fn align_named_tuple_fields(
             "WI-799: the synthetic escape zips, so it requires TupleWidth::Exact; \
              a Subset-width policy reaching here would align by truncation",
         );
-        return Some(
-            a_fields
-                .iter()
-                .zip(b_fields.iter())
-                .map(|((_, a_ty), (_, b_ty))| (a_ty.clone(), b_ty.clone()))
-                .collect(),
-        );
+        // WI-800, on what a RELEASE build does if that assert's invariant is ever
+        // broken: these indices are `b`'s positions, so a SHORTER `a` makes
+        // `aligned_pairs` panic on `a_fields[slot]` rather than truncate to the
+        // shorter list as the pair-building zip used to. A panic in the typer is not
+        // a diagnostic and is not an improvement — but it is a LOUD wrong over a
+        // silent one, and the seal plus the assert above are what keep it
+        // unreachable. Do not "fix" it by clamping to the shorter length: that
+        // restores exactly the silent truncation the seal exists to prevent.
+        return Some((0..b_fields.len()).collect());
     }
     // Name-keyed, ORDER-PRESERVING: the scan resumes from `next` rather than
     // restarting, so each `b` name must occur in `a` AFTER the previous one.
@@ -25379,13 +25449,44 @@ fn align_named_tuple_fields(
     // interim above. At equal arity this degenerates to the slot-for-slot
     // agreement `PARAM_LIST` needs, which is why one walk serves both.
     let mut next = 0;
-    let mut pairs = Vec::with_capacity(b_fields.len());
-    for (b_name, b_ty) in b_fields {
+    let mut slots = AlignedSlots::with_capacity(b_fields.len());
+    for (b_name, _) in b_fields {
         let off = a_fields[next..].iter().position(|(n, _)| n == b_name)?;
-        pairs.push((a_fields[next + off].1.clone(), b_ty.clone()));
+        slots.push(next + off);
         next += off + 1;
     }
-    Some(pairs)
+    Some(slots)
+}
+
+/// WI-800: the `(a_type, b_type)` pairs an [`align_named_tuple_slots`] result stands
+/// for, BORROWED — what a field-wise relation (unify / subtype) wants, and what the
+/// alignment returned directly before the threading needed the indices themselves.
+///
+/// It is a function rather than three inline zips because the pairing carries an
+/// invariant the types do not enforce: the slot indexes `a`, the position indexes
+/// `b`. Written out at each site, `b_fields[slot]` compiles and silently misaligns —
+/// the failure class WI-788/799/800 each paid for once already. Borrowing keeps the
+/// clone-elision that returning indices bought: the pairs are views, never copies.
+///
+/// The `zip` needs the assert, and it is the one line here that could fail QUIETLY.
+/// `slots` is [`align_named_tuple_slots`]' output, which always has one entry per `b`
+/// component — but `zip` stops at the shorter side, so a `slots` that had drifted
+/// shorter would drop the trailing components and every caller's `.all(…)` would pass
+/// VACUOUSLY on the ones it never looked at. That is a relation accepting a tuple whose
+/// last component was never checked. (The other misuse — a slot out of range for `a` —
+/// panics on the index and so cannot pass silently.)
+fn aligned_pairs<'a>(
+    slots: &'a [usize],
+    a_fields: &'a [(Symbol, Value)],
+    b_fields: &'a [(Symbol, Value)],
+) -> impl Iterator<Item = (&'a Value, &'a Value)> + 'a {
+    debug_assert_eq!(
+        slots.len(),
+        b_fields.len(),
+        "WI-800: an alignment has one slot per `b` component; a shorter `slots` would \
+         zip-truncate and relate only a PREFIX, passing the rest vacuously",
+    );
+    slots.iter().zip(b_fields.iter()).map(|(&slot, (_, b_ty))| (&a_fields[slot].1, b_ty))
 }
 
 /// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
@@ -25420,8 +25521,9 @@ fn unify_named_tuple_as<A: TermView, B: TermView>(
 ) -> bool {
     let a_fields = named_tuple_fields(kb, a);
     let b_fields = named_tuple_fields(kb, b);
-    match align_named_tuple_fields(kb, &a_fields, &b_fields, mode) {
-        Some(pairs) => pairs.iter().all(|(a_type, b_type)| unify_types(kb, subst, a_type, b_type)),
+    match align_named_tuple_slots(kb, &a_fields, &b_fields, mode) {
+        Some(slots) => aligned_pairs(&slots, &a_fields, &b_fields)
+            .all(|(a_type, b_type)| unify_types(kb, subst, a_type, b_type)),
         None => false,
     }
 }
@@ -27050,7 +27152,7 @@ fn abstracting_return_error(
     // bare-vs-manifest-vs-ensures gate per component: an abstracting tuple
     // element is the §5 escape exactly as a bare top-level return is. Components
     // are aligned the SAME way conformance aligned them
-    // ([`align_named_tuple_fields`] in `DATA` mode, since a return type is a
+    // ([`align_named_tuple_slots`] in `DATA` mode, since a return type is a
     // data tuple, not a parameter list — WI-775; passing
     // body as `actual` so each pair is `(body_component, ret_component)`).
     // WI-788: that alignment is now slot-by-slot with the names required to
@@ -27067,7 +27169,7 @@ fn abstracting_return_error(
     // abstracting a type-arg (`-> Box[T = KVStore]` from a body `Box[T = MemStore]`)
     // is rejected even earlier, as an invariant-param TYPE MISMATCH.
     //
-    // WI-775, on the `None` arm below: `align_named_tuple_fields` returning `None`
+    // WI-775, on the `None` arm below: `align_named_tuple_slots` returning `None`
     // (shapes don't align) collapses through `.and_then` into `None`, which this
     // function's contract reads as "no escape found" — a fail-open. It cannot fire,
     // and the reason is worth stating because it is NOT local: return CONFORMANCE
@@ -27083,10 +27185,9 @@ fn abstracting_return_error(
         let body_fields = named_tuple_fields(kb, body_ty);
         let ret_fields = named_tuple_fields(kb, ret_ty);
         // WI-775: a RETURN type is a data tuple — align by NAME.
-        return align_named_tuple_fields(kb, &body_fields, &ret_fields, TupleAlign::DATA)
-            .and_then(|pairs| {
-                pairs
-                    .iter()
+        return align_named_tuple_slots(kb, &body_fields, &ret_fields, TupleAlign::DATA)
+            .and_then(|slots| {
+                aligned_pairs(&slots, &body_fields, &ret_fields)
                     .find_map(|(bc, rc)| abstracting_return_error(kb, bc, rc, op_sym))
             });
     }
@@ -29425,10 +29526,9 @@ fn named_tuple_compatible_as<A: TermView, B: TermView>(
 ) -> bool {
     let actual_fields = named_tuple_fields(kb, actual);
     let expected_fields = named_tuple_fields(kb, expected);
-    match align_named_tuple_fields(kb, &actual_fields, &expected_fields, mode) {
-        Some(pairs) => {
-            pairs.iter().all(|(act_type, exp_type)| types_compatible(kb, subst, act_type, exp_type))
-        }
+    match align_named_tuple_slots(kb, &actual_fields, &expected_fields, mode) {
+        Some(slots) => aligned_pairs(&slots, &actual_fields, &expected_fields)
+            .all(|(act_type, exp_type)| types_compatible(kb, subst, act_type, exp_type)),
         None => false,
     }
 }
@@ -29436,7 +29536,7 @@ fn named_tuple_compatible_as<A: TermView, B: TermView>(
 /// WI-775: the subtyping twin of [`unify_arrow_params`] — a `<:` between two
 /// arrow PARAMETER LISTS. WI-782: the alignment is POSITIONAL with equal arity
 /// (no by-name rung), admitted when the names line up or one side carries the
-/// synthetic `_1.._n` convention. See [`align_named_tuple_fields`].
+/// synthetic `_1.._n` convention. See [`align_named_tuple_slots`].
 ///
 /// Argument order is `sub <: super`, exactly as [`types_compatible`] takes it,
 /// and this function does NOT perform the contravariant swap — the CALLER does,
@@ -34776,7 +34876,7 @@ mod wi799_tuple_align_policy {
     //! WI-799 — [`TupleAlign`] is a POLICY over two axes, and the equality
     //! relation gets its own discipline.
     //!
-    //! These drive [`align_named_tuple_fields`] and [`unify_named_tuple`]
+    //! These drive [`align_named_tuple_slots`] and [`unify_named_tuple`]
     //! DIRECTLY rather than through a surface program, deliberately. The
     //! asymmetry this ticket fixes is not reachable from source: the only caller
     //! that reaches a width-mismatched `unify_named_tuple` is `check_apply_iter`'s
@@ -34806,8 +34906,44 @@ mod wi799_tuple_align_policy {
     }
 
     fn aligns(kb: &mut KnowledgeBase, a: &[&str], b: &[&str], mode: TupleAlign) -> bool {
+        slots(kb, a, b, mode).is_some()
+    }
+
+    fn slots(
+        kb: &mut KnowledgeBase,
+        a: &[&str],
+        b: &[&str],
+        mode: TupleAlign,
+    ) -> Option<AlignedSlots> {
         let (af, bf) = (fields(kb, a), fields(kb, b));
-        align_named_tuple_fields(kb, &af, &bf, mode).is_some()
+        align_named_tuple_slots(kb, &af, &bf, mode)
+    }
+
+    /// WI-800 — WHICH slot of `a` each `b` component lands on, now that the
+    /// alignment returns the correspondence itself rather than the type pairs.
+    /// [`thread_expected_tuple_fields`] writes back into those slots, so the
+    /// indices are load-bearing and not merely an implementation detail of the
+    /// field-wise relations (which only ever consume them in order).
+    #[test]
+    fn alignment_reports_the_slot_each_component_matched() {
+        let mut kb = kb_with_prelude();
+        // Compared as SLICES so the assertion reads the returned `AlignedSlots`
+        // itself rather than a `Vec` copy of it — the inline capacity can change
+        // without touching this test.
+        assert_eq!(
+            slots(&mut kb, &["a", "b", "c"], &["a", "c"], TupleAlign::DATA).as_deref(),
+            Some([0usize, 2].as_slice()),
+            "a width drop must report the SURVIVING components' own slots",
+        );
+        // The cursor RESUMES rather than restarting, so a repeated label is taken
+        // by the match after the previous one — not by the first of that name,
+        // which is where the threading's old by-name lookup disagreed with the
+        // relation it was feeding.
+        assert_eq!(
+            slots(&mut kb, &["a", "b", "a"], &["b", "a"], TupleAlign::DATA).as_deref(),
+            Some([1usize, 2].as_slice()),
+            "the scan resumes after the previous match, so `a` is the SECOND one",
+        );
     }
 
     /// THE DEFECT. An equality relation that answers differently depending on

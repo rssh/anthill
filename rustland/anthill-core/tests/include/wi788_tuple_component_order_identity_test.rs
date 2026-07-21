@@ -6,7 +6,7 @@
 //! p)` LOADED CLEAN and returned `Str("ess")` from an operation declared
 //! `-> Int64`. Two independent causes had to meet, and each is fixed here:
 //!
-//!   1. ORDER WAS NOT IDENTITY. `align_named_tuple_fields` (kb/typing.rs) related
+//!   1. ORDER WAS NOT IDENTITY. `align_named_tuple_slots` (kb/typing.rs) related
 //!      two named tuples by an order-insensitive NAME lookup, so a permuted
 //!      literal conformed. But the value carrier keeps SOURCE order (WI-786) and a
 //!      destructuring binder list reads it POSITIONALLY (WI-785), so binder `i`

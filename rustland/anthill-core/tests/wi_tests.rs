@@ -756,3 +756,6 @@ mod wi790_positional_label_convention_test;
 #[path = "include/wi788_tuple_component_order_identity_test.rs"]
 mod wi788_tuple_component_order_identity_test;
 
+#[path = "include/wi800_tuple_threading_alignment_test.rs"]
+mod wi800_tuple_threading_alignment_test;
+

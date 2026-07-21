@@ -1,6 +1,6 @@
 //! WI-775 — a name-keyed tuple must not satisfy a POSITIONAL `_N`-keyed one.
 //!
-//! `align_named_tuple_fields`' WI-442 positional fallback admitted any two
+//! `align_named_tuple_slots`' WI-442 positional fallback admitted any two
 //! equal-arity field lists as long as ONE side was the canonical `_1.._n`
 //! convention. That let a VALUE of type `(a: Int64, b: Int64)` be passed where
 //! `(_1: Int64, _2: Int64)` was declared — and reading `._1` off it then went to

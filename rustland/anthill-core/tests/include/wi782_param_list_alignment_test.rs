@@ -1,7 +1,7 @@
 //! WI-782 — an arrow's PARAMETER LIST is applied positionally, so the type
 //! relation over it must align positionally too.
 //!
-//! `align_named_tuple_fields` tried a by-NAME rung first in BOTH `TupleAlign`
+//! `align_named_tuple_slots` tried a by-NAME rung first in BOTH `TupleAlign`
 //! modes. That rung is order-insensitive and width-subtyping, and the runtime is
 //! neither: eval binds slot `i` to argument `i` and passes exactly as many
 //! arguments as the call site's type says. Two programs slipped through, both

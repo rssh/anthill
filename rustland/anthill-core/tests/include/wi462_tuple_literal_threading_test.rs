@@ -104,9 +104,10 @@ end
 }
 
 /// A NAMED tuple literal `(head: h, rest: t)` threads against a named-tuple type
-/// `(head: xs.T, rest: List[T = xs.T])` too — `thread_expected_tuple_field` matches the
-/// declared field names (not just the positional `_1`/`_2`), so the named form reaches
-/// parity with the positional one.
+/// `(head: xs.T, rest: List[T = xs.T])` too — `thread_expected_tuple_fields` relates the
+/// declared field names, not just the positional `_1`/`_2`, so the named form reaches
+/// parity with the positional one. (WI-800 made that relating the conformance relation's
+/// own walk, so a name that lines up here is one that lines up there.)
 #[test]
 fn named_tuple_literal_threads() {
     let ok = r#"
