@@ -774,3 +774,6 @@ mod wi808_entity_field_labels_test;
 
 #[path = "include/wi809_duplicate_named_arg_test.rs"]
 mod wi809_duplicate_named_arg_test;
+
+#[path = "include/wi778_zero_width_token_test.rs"]
+mod wi778_zero_width_token_test;
