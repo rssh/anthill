@@ -37,7 +37,7 @@ use std::collections::HashMap;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
-use crate::kb::term::Var;
+use crate::kb::term::{Var, VarId};
 use crate::kb::term_view::{views_structurally_equal, TermView};
 
 use super::KnowledgeBase;
@@ -484,40 +484,149 @@ impl KnowledgeBase {
             return self.read_mounted_facts(functor, selection);
         }
 
-        // Resident: scan the functor's rules/facts. Refuse a bodied candidate per
-        // `policy` (blanket — before the selection filter, so ANY bodied rule
-        // under the functor poisons the read), else keep each FACT head that
-        // matches the selection. Linear over the functor's bucket and filtered by
-        // `bound_matches` — the same superset semantics the mount obeys, and the
-        // same cost the hand-rolled `rules_by_functor` readers already paid (the
-        // discrim tree could index this selection later; a generic field-selection
-        // accessor cannot build a full-arity discrim pattern without the functor's
-        // field list, so the scan is the correct generic form).
-        //
-        // The ONLY early return in this loop is the bodied-rule `Err`; a selection
-        // match merely pushes and continues, so every bodied candidate is still
-        // reached regardless of where the first match sits (the WI-772
-        // single-pass-order landmine does not apply).
-        let bound = named_selection_as_bound(selection);
-        let mut out = Vec::new();
-        for rid in self.rules_by_functor(functor) {
-            if !self.is_fact(rid) {
-                match policy {
-                    BodiedRulePolicy::Refuse => {
-                        return Err(ExtentReadError::BodiedRule {
-                            functor: self.resolve_sym(functor).to_string(),
-                            rule: crate::persistence::print::TermPrinter::new(self)
-                                .print_rule(rid),
-                        });
-                    }
+        // Resident. Blanket bodied-rule refusal FIRST — O(1) and selection-
+        // INDEPENDENT (WI-812). A bodied rule under the functor poisons the read
+        // regardless of the `selection`, even one whose head the selection would
+        // not have matched (the WI-770 / WI-772 precedent — a divergent policy
+        // under one functor is the bug this centralises). The `has_bodied_rule`
+        // gate proves the absence of any bodied rule with one map read; only the
+        // refusal (error) path scans, to NAME the offender, and that is cold. This
+        // separates "is this functor a pure table?" (the gate) from "which rows
+        // match?" (the query below) — the two were entangled in the old
+        // single-pass bucket scan.
+        match policy {
+            BodiedRulePolicy::Refuse => {
+                if self.has_bodied_rule(functor) {
+                    let rid = self
+                        .rules_by_functor_iter(functor)
+                        .find(|&rid| !self.is_fact(rid))
+                        .expect("has_bodied_rule ⇒ a bodied rule is in the bucket");
+                    return Err(ExtentReadError::BodiedRule {
+                        functor: self.resolve_sym(functor).to_string(),
+                        rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
+                    });
                 }
             }
-            let head = self.rule_head_value(rid);
-            if bound_matches(self, head, &bound) {
-                out.push(head.clone());
+        }
+
+        // The gate held: every rule under `functor` is a FACT. Collect the heads
+        // matching `selection`.
+        //
+        // A non-empty selection on a functor with a declared field schema pushes
+        // the selection DOWN through the discrimination tree: a full-arity
+        // `functor(field: …)` pattern grounds the selected fields and wildcards the
+        // rest, so the read is O(matching) and naturally functor-scoped rather than
+        // an O(bucket) scan. Empty selection (enumeration is inherently every row)
+        // and a SCHEMALESS functor (no full-arity pattern is buildable — the reason
+        // the old accessor scanned) enumerate the bucket instead. `bound_matches`
+        // is the authoritative selection filter either way (the 057 superset
+        // contract, mirroring the mounted arm): it re-confirms the exact discrim
+        // rows and narrows the enumerated rows.
+        let bound = named_selection_as_bound(selection);
+        if !selection.is_empty() {
+            if let Some(pattern) = self.selection_query_pattern(functor, selection) {
+                let rows: Vec<Value> = self
+                    .query_fact_heads(&pattern)
+                    .into_iter()
+                    .filter(|head| bound_matches(self, head, &bound))
+                    .collect();
+                // The discrim pushdown keys on ARITY, so it matches only full-arity
+                // facts; the bucket scan (`bound_matches`) is arity-agnostic. They
+                // can diverge ONLY when a stored fact is not full-arity — a WI-716
+                // loader-padding violation / malformed fact. Surface that loudly in
+                // debug rather than silently dropping the row (the "loud over silent"
+                // rule); the whole check (and its scan) is `cfg`'d out of release, so
+                // the fast indexed path stands alone there.
+                #[cfg(debug_assertions)]
+                {
+                    let scanned = self.scan_matching_fact_count(functor, &bound);
+                    assert_eq!(
+                        rows.len(),
+                        scanned,
+                        "read_facts: discrim pushdown for `{}` returned {} rows but the scan \
+                         matched {} — a non-full-arity fact bypassed the full-arity pattern",
+                        self.resolve_sym(functor),
+                        rows.len(),
+                        scanned,
+                    );
+                }
+                return Ok(rows);
             }
         }
-        Ok(out)
+        // Enumeration (empty selection) or a schemaless functor: scan the bucket.
+        // Keep the per-row `is_fact` filter (not merely a debug assert): the gate
+        // held so every entry SHOULD be a fact, but filtering makes the facts-only
+        // guarantee LOCAL — a `bodied_rule_counts` bug can never leak a bodied head
+        // as a "fact" even in release, matching `query_fact_heads`' own filter.
+        Ok(self
+            .rules_by_functor_iter(functor)
+            .filter_map(|rid| {
+                if !self.is_fact(rid) {
+                    debug_assert!(
+                        false,
+                        "read_facts: has_bodied_rule was false but a bodied rule under {} \
+                         slipped through (bodied_rule_counts drift)",
+                        self.resolve_sym(functor),
+                    );
+                    return None;
+                }
+                let head = self.rule_head_value(rid);
+                bound_matches(self, head, &bound).then(|| head.clone())
+            })
+            .collect())
+    }
+
+    /// Count the resident FACT heads under `functor` matching `bound` by an
+    /// arity-agnostic bucket scan — the authoritative selection semantics the
+    /// mounted arm and the old resident scan use. Only [`Self::read_facts`]'s debug
+    /// cross-check calls it, to catch a discrim pushdown that under-returns a
+    /// non-full-arity fact; it is `#[cfg(debug_assertions)]` so the scan is never
+    /// compiled into release.
+    #[cfg(debug_assertions)]
+    fn scan_matching_fact_count(&self, functor: Symbol, bound: &[(ArgKey, Value)]) -> usize {
+        self.rules_by_functor_iter(functor)
+            .filter(|&rid| self.is_fact(rid) && bound_matches(self, self.rule_head_value(rid), bound))
+            .count()
+    }
+
+    /// Build the discrim query pattern for [`Self::read_facts`]'s SELECTIVE
+    /// resident arm (WI-812): a full-arity `functor(field: …)` [`Value::Entity`]
+    /// carrying EVERY declared field of `functor` ([`Self::entity_field_names`]) —
+    /// each grounded to its `selection` value, or a wildcard var. `None` when the
+    /// functor has NO declared field schema, or `selection` names a field it lacks;
+    /// neither is expressible as a full-arity pattern, so the caller enumerates the
+    /// bucket instead (a schemaless functor still reads exactly, just not indexed).
+    ///
+    /// The FULL field set is load-bearing — the same reason [`Self::enumeration_goal`]
+    /// (the Resolve read's goal builder, which shares [`full_arity_entity_pattern`])
+    /// carries it: the discrim tree keys on arity and stored fact heads are
+    /// full-arity (the loader pads omitted fields, WI-716), so a partial pattern
+    /// would key a wrong arity and match nothing. A fact that is NOT full-arity
+    /// therefore fails to match — [`Self::read_facts`] guards that divergence with a
+    /// debug cross-check against the scan.
+    ///
+    /// Unselected fields carry a DISTINCT wildcard var (`u32::MAX - i`, which never
+    /// collides with a real allocated var). Distinct — not one reused var — so the
+    /// pattern is a valid query for ANY consumer: [`Self::query_fact_heads`] discards
+    /// the substitution, so reuse would also be sound there, but distinct vars keep
+    /// it correct even if a future caller routes it through [`Self::query_view`]
+    /// (which folds a repeated binding into an `is_contradiction`). All ids are
+    /// synthetic, so the read stays `&self` (no `&mut self` fresh-var mint).
+    fn selection_query_pattern(
+        &self,
+        functor: Symbol,
+        selection: &[(Symbol, Value)],
+    ) -> Option<Value> {
+        let fields = self.entity_field_names(functor)?;
+        // A selection key the functor does not declare cannot be pushed down as a
+        // full-arity field slot — enumerate instead (the bucket + `bound_matches`
+        // reads it exactly, returning empty if no fact carries the key).
+        if selection.iter().any(|(k, _)| !fields.contains(k)) {
+            return None;
+        }
+        Some(full_arity_entity_pattern(functor, fields, selection, |i, _| {
+            Value::Var(Var::Global(VarId::new(u32::MAX - i as u32, functor)))
+        }))
     }
 
     /// The `Resolve` counterpart of [`Self::read_facts`] (057 §"The accessor"; the
@@ -603,19 +712,13 @@ impl KnowledgeBase {
                 });
             }
         }
-        let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
-        for f in fields {
-            let v = match selection.iter().find(|(s, _)| *s == f) {
-                Some((_, v)) => v.clone(),
-                None => Value::Var(Var::Global(self.fresh_var(f))),
-            };
-            named.push((f, v));
-        }
-        Ok(Value::Entity {
-            functor,
-            pos: std::rc::Rc::from(Vec::<Value>::new()),
-            named: std::rc::Rc::from(named),
-        })
+        // Shared full-arity builder (see `selection_query_pattern`); here the
+        // unselected fields are FRESH vars (a resolution goal reifies its answer via
+        // the substitution, so each free column must be its own var — unlike the
+        // `&self` discrim pattern, whose substitution is discarded).
+        Ok(full_arity_entity_pattern(functor, &fields, selection, |_, f| {
+            Value::Var(Var::Global(self.fresh_var(f)))
+        }))
     }
 
     /// The mounted arm of [`Self::read_facts`]: push `selection` down as the query
@@ -702,6 +805,41 @@ impl KnowledgeBase {
             out.push(next?);
         }
         Ok(out)
+    }
+}
+
+/// Build a full-arity `functor(field: …)` [`Value::Entity`] — every declared
+/// `field` grounded to its `selection` value, or `filler(index, field)`. The
+/// shared shape behind both values-first read builders (WI-812):
+/// [`KnowledgeBase::selection_query_pattern`] (the `&self` discrim pattern; filler
+/// = a distinct synthetic wildcard) and [`KnowledgeBase::enumeration_goal`] (the
+/// `&mut self` Resolve goal; filler = a fresh var). The FULL field set is
+/// load-bearing — see either caller: the discrim tree / resolver unify a
+/// full-arity pattern against a stored fact head, which the loader pads to full
+/// arity (WI-716). `pos` is empty (a record functor). The caller guarantees every
+/// `selection` key is one of `fields`, so each ungrounded slot is a free column.
+fn full_arity_entity_pattern(
+    functor: Symbol,
+    fields: &[Symbol],
+    selection: &[(Symbol, Value)],
+    mut filler: impl FnMut(usize, Symbol) -> Value,
+) -> Value {
+    let named: Vec<(Symbol, Value)> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, &f)| {
+            let v = selection
+                .iter()
+                .find(|(s, _)| *s == f)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| filler(i, f));
+            (f, v)
+        })
+        .collect();
+    Value::Entity {
+        functor,
+        pos: std::rc::Rc::from(Vec::<Value>::new()),
+        named: std::rc::Rc::from(named),
     }
 }
 
@@ -1378,6 +1516,192 @@ mod tests {
             }
             other => panic!("expected BodiedRule, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_facts_pushes_a_selection_down_through_the_discrim_tree() {
+        // WI-812: a functor WITH a declared field schema takes the discrim
+        // pushdown path (`selection_query_pattern` + `query_fact_heads`), not the
+        // bucket scan. Correctness must match the scan for every selection shape.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("Item");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        // Declaring the field schema is what routes reads through the discrim tree.
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        for (id, tag) in [(1, "a"), (2, "b"), (3, "a")] {
+            assert_wi_fact(&mut kb, f, id_field, tag_field, id, tag);
+        }
+        // Selection on the less-selective field: `tag = "a"` keeps two rows.
+        let tagged_a = kb
+            .read_facts(f, &[(tag_field, Value::Str("a".into()))], BodiedRulePolicy::Refuse)
+            .expect("facts only");
+        assert_eq!(tagged_a.len(), 2);
+        // Selection on the key field: `id = 2` keeps exactly one, and it is the
+        // row whose `id` field is 2 (not some other row the pushdown misfiled).
+        let by_id = kb
+            .read_facts(f, &[(id_field, Value::Int(2))], BodiedRulePolicy::Refuse)
+            .expect("facts only");
+        assert_eq!(by_id.len(), 1);
+        match by_id[0].named_arg(&kb, id_field).map(|a| a.to_value()) {
+            Some(Value::Term { id, .. }) => {
+                assert!(matches!(kb.get_term(id), Term::Const(Literal::Int(2))));
+            }
+            other => panic!("expected an id field of 2, got {other:?}"),
+        }
+        // A no-match selection is empty (not an error); empty selection enumerates.
+        assert!(kb
+            .read_facts(f, &[(id_field, Value::Int(9))], BodiedRulePolicy::Refuse)
+            .unwrap()
+            .is_empty());
+        assert_eq!(kb.read_facts(f, &[], BodiedRulePolicy::Refuse).unwrap().len(), 3);
+        // A selection on a field the schema does NOT declare falls back to
+        // enumeration + `bound_matches` (no fact carries it → empty), never a panic.
+        let ghost = kb.intern("ghost");
+        assert!(kb
+            .read_facts(f, &[(ghost, Value::Int(1))], BodiedRulePolicy::Refuse)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn read_facts_discrim_pushdown_with_multiple_wildcard_fields() {
+        // WI-812: a THREE-field schema selected on ONE field leaves TWO wildcard
+        // positions — the case the 2-field tests don't exercise. Pins that the
+        // discrim walk collects each matching leaf exactly ONCE (no duplicate rows)
+        // across multiple wildcard-skip descents, and returns exactly the matches.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("Triple");
+        let a = kb.intern("a");
+        let b = kb.intern("b");
+        let c = kb.intern("c");
+        kb.register_entity_fields(f, vec![a, b, c]);
+        let assert_triple = |kb: &mut KnowledgeBase, av: i64, bv: i64, cv: i64| {
+            let sort = kb.make_name_term("Test");
+            let domain = kb.make_name_term("test");
+            let at = kb.alloc(Term::Const(Literal::Int(av)));
+            let bt = kb.alloc(Term::Const(Literal::Int(bv)));
+            let ct = kb.alloc(Term::Const(Literal::Int(cv)));
+            let head = kb.alloc(Term::Fn {
+                functor: f,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(a, at), (b, bt), (c, ct)]),
+            });
+            kb.assert_fact(head, sort, domain, None);
+        };
+        // Two rows share a=1 (so the a-selection has two matches, each with distinct
+        // b,c wildcards); one row has a=2.
+        assert_triple(&mut kb, 1, 10, 100);
+        assert_triple(&mut kb, 1, 20, 200);
+        assert_triple(&mut kb, 2, 30, 300);
+        // Select on `a` only → two wildcard fields (b, c). Exactly two rows, no dupes.
+        let a1 = kb
+            .read_facts(f, &[(a, Value::Int(1))], BodiedRulePolicy::Refuse)
+            .expect("facts only");
+        assert_eq!(a1.len(), 2, "two a=1 rows, each collected once (no duplication)");
+        // Every returned row genuinely carries a=1 (the wildcards didn't smear).
+        for row in &a1 {
+            match row.named_arg(&kb, a).map(|x| x.to_value()) {
+                Some(Value::Term { id, .. }) => {
+                    assert!(matches!(kb.get_term(id), Term::Const(Literal::Int(1))));
+                }
+                other => panic!("expected a=1, got {other:?}"),
+            }
+        }
+        // Select on the middle field `b` (wildcards a and c) → one row.
+        let b20 = kb
+            .read_facts(f, &[(b, Value::Int(20))], BodiedRulePolicy::Refuse)
+            .expect("facts only");
+        assert_eq!(b20.len(), 1);
+    }
+
+    #[test]
+    fn has_bodied_rule_gate_tracks_assert_and_retract() {
+        // WI-812: the O(1) gate mirrors "does this functor's bucket hold any bodied
+        // rule?" across asserts and retracts — a COUNT, so removing one of several
+        // bodied rules leaves it set.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let g = kb.intern("g");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+
+        // A pure table: facts only → gate is false.
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 2, "b");
+        assert!(!kb.has_bodied_rule(f));
+
+        // Assert two bodied rules under `f`.
+        let mk_rule = |kb: &mut KnowledgeBase| {
+            let sort = kb.make_name_term("Test");
+            let domain = kb.make_name_term("test");
+            let x = kb.fresh_var(id_field);
+            let var_x = kb.alloc(Term::Var(Var::Global(x)));
+            let head = kb.alloc(Term::Fn {
+                functor: f,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_elem((id_field, var_x), 1),
+            });
+            let body = kb.alloc(Term::Fn {
+                functor: g,
+                pos_args: SmallVec::from_elem(var_x, 1),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_rule(head, vec![body], sort, domain, None)
+        };
+        let r1 = mk_rule(&mut kb);
+        assert!(kb.has_bodied_rule(f));
+        let r2 = mk_rule(&mut kb);
+        assert!(kb.has_bodied_rule(f));
+
+        // Retracting ONE of two bodied rules leaves the gate set (count semantics).
+        kb.retract(r1);
+        assert!(kb.has_bodied_rule(f), "one bodied rule remains");
+        // Retracting the last clears it — back to a pure table.
+        kb.retract(r2);
+        assert!(!kb.has_bodied_rule(f));
+        // Idempotent double-retract must not underflow the count.
+        kb.retract(r2);
+        assert!(!kb.has_bodied_rule(f));
+    }
+
+    #[test]
+    fn read_facts_refuses_a_bodied_rule_no_selection_would_match() {
+        // WI-812: the blanket refusal is SELECTION-INDEPENDENT — the O(1) gate
+        // fires even for a selection whose match is a plain fact and whose value
+        // the bodied rule's head could never carry. This is the WI-770/772 blanket
+        // contract the gate preserves after the row read stopped being a full scan.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("Item");
+        let g = kb.intern("g");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
+        // A bodied rule under `f` with a head `Item(id: ?x)` — a different arity, so
+        // the `id = 1` selection below would never structurally reach it.
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        let x = kb.fresh_var(id_field);
+        let var_x = kb.alloc(Term::Var(Var::Global(x)));
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((id_field, var_x), 1),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+
+        // A selection that matches the fact (id = 1) still refuses, because the gate
+        // is functor-wide, not selection-scoped.
+        let err = kb
+            .read_facts(f, &[(id_field, Value::Int(1))], BodiedRulePolicy::Refuse)
+            .unwrap_err();
+        assert!(matches!(err, ExtentReadError::BodiedRule { .. }));
     }
 
     #[test]
