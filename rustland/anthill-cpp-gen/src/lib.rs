@@ -16,10 +16,9 @@ use std::collections::HashMap;
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
-use anthill_core::persistence::print::TermPrinter;
-use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term_view::TermIdView;
+use anthill_core::kb::term_view::{TermIdView, TermView};
 use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use anthill_core::eval::Value;
 
@@ -90,10 +89,16 @@ impl std::error::Error for CppCodegenError {}
 /// `assert!` abort (exit 101, no span) for the readers WI-771 migrated —
 /// `Implementation` / `OperationImpl` / `Generated` / `OperationInfo` — and, via
 /// [`read_realization_facts`], the WI-810 type-lowering readers `TypeMapping` /
-/// `IncludeMapping` / `NamingConvention`. The one remaining head-match reader,
-/// `query_realization_facts`, still refuses via the WI-770 `assert!` (see its
-/// BOUNDARY note); it has a single caller left (`supported_effects`), and the two
-/// mechanisms coexist until it migrates too (WI-774, the `Resolve` policy).
+/// `IncludeMapping` / `NamingConvention`. WI-774 retired the last head-match
+/// reader (`query_realization_facts` + its WI-770 `assert!`): `supported_effects`
+/// now RESOLVES its `EffectMapping` / `LanguageMapping` candidates via
+/// `kb.read_facts_resolved`, so a bodied realization rule is EVALUATED (its guard
+/// honored) instead of head-matched-and-aborted. Every cpp-gen realization read
+/// now rides `read_facts` / `read_facts_resolved`; the `assert!`-abort mechanism
+/// is gone. (The `Refuse` type-lowering readers stay on `read_facts(Refuse)` — a
+/// bodied `TypeMapping` is still a loud graceful refusal, because graduating them
+/// to `Resolve` needs a `lower_type` predicate that does not exist; see
+/// [`read_realization_facts`].)
 impl From<ExtentReadError> for CppCodegenError {
     fn from(e: ExtentReadError) -> Self {
         CppCodegenError { message: e.to_string() }
@@ -1542,12 +1547,15 @@ fn operations_in_sort(
                 }
             };
             let Some(receiver) = cpp_effect_receiver(kb, ctx, &kind) else {
+                // Render the supported-effect set BEFORE building the error (WI-774:
+                // it now resolves, so it is fallible — a truncated/failed candidate
+                // search is a loud refusal here, never a panic mid-diagnostic).
+                let supported = describe_supported_effects(kb, ctx)?;
                 return Err(CppCodegenError {
                     message: format!(
                         "operation '{name}' requires effect '{kind}', which {} cannot \
-                         realize — no EffectMapping declares it. Supported effects: {}",
+                         realize — no EffectMapping declares it. Supported effects: {supported}",
                         cpp_profile_label(ctx),
-                        describe_supported_effects(kb, ctx)
                     ),
                 });
             };
@@ -3864,92 +3872,7 @@ fn select_keyed<T>(
     None
 }
 
-/// Shared machinery for the WI-089 keyed realization-fact queries (TypeMapping,
-/// EffectMapping, NamingConvention). Builds an allocation-free `Value::Entity`
-/// pattern that grounds `ground_field` to `ground_value` and leaves every other
-/// field a fresh placeholder var, then returns the head `TermId` of each
-/// matching top-level fact. This is a HEAD MATCH: `query_view` returns the head
-/// of every structurally-matching rule and never evaluates a body, so a bodied
-/// realization rule read through here would have its guards silently skipped —
-/// hence any bodied candidate is REFUSED with a loud panic (WI-770), in every
-/// build, naming the rule. Since WI-760 codegen threads `&mut KnowledgeBase`
-/// and CAN `kb.resolve`, so a predicate that needs body evaluation belongs on
-/// the resolution path (the `realizes_effect` rule set is the model), not
-/// here. It matches structurally rather than hash-consing a
-/// pattern term; `query_view` keys named args by Symbol —
-/// hence the pattern carries the facts' exact field symbols, and the whole
-/// query bails (empty) if the functor or any field name isn't interned yet.
-/// Callers read the non-ground fields back from each head and apply their own
-/// post-filters (e.g. an `Option` `lang`). `functor_names` is tried in order
-/// (qualified first, then bare short name). `ground` is `None` for an
-/// ENUMERATION query — every field a placeholder, so every fact of that
-/// functor matches (WI-576 lists a profile's supported effects that way).
-///
-/// WI-774 BOUNDARY: this is the ONE realization reader still on the WI-770
-/// `assert!` below (a bodied realization rule read through THIS reader aborts,
-/// exit 101, where a migrated reader refuses gracefully via `CppCodegenError`,
-/// exit 1). Its former type-lowering callers (`query_type_mappings` /
-/// `query_include_mappings` / `cpp_method_name` — TypeMapping / IncludeMapping /
-/// NamingConvention) moved to [`read_realization_facts`] (`read_facts(Refuse)`,
-/// WI-810), which routed the Option→Result refactor of the type-lowering path
-/// (`resolve_type_mapping` → `marshal_for_type` → `is_body_emittable` → …). Its
-/// SOLE remaining caller is `supported_effects` (EffectMapping / LanguageMapping),
-/// which wants the WI-774 `Resolve` policy — bodied overlay guards HONORED on the
-/// deciding path, most-specific-first — not `Refuse`. It cannot move to `Refuse`
-/// without wrongly rejecting a program WI-774 means to support, so it stays here
-/// (head match + assert-abort) until `read_facts` gains the `Resolve` policy.
-fn query_realization_facts(
-    kb: &KnowledgeBase,
-    functor_names: &[&str],
-    fields: &[&str],
-    ground: Option<(&str, &str)>,
-) -> Vec<TermId> {
-    let Some(functor) = functor_names.iter().find_map(|n| kb.try_resolve_symbol(n)) else {
-        return Vec::new();
-    };
-    let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
-    for (i, fname) in fields.iter().enumerate() {
-        let Some(fsym) = kb.lookup_symbol(fname) else {
-            return Vec::new();
-        };
-        let val = if let Some((_, gv)) = ground.filter(|(gf, _)| gf == fname) {
-            Value::Str(gv.to_string())
-        } else {
-            // A distinct placeholder var per non-ground slot. Facts are ground,
-            // so a synthetic high VarId cannot collide; results are read from the
-            // matched fact head, not from these bindings.
-            Value::Var(Var::Global(VarId::new(u32::MAX - i as u32, fsym)))
-        };
-        named.push((fsym, val));
-    }
-    let pattern = Value::Entity {
-        functor,
-        pos: std::rc::Rc::from(Vec::<Value>::new()),
-        named: std::rc::Rc::from(named),
-    };
-    kb.query_view(&pattern)
-        .into_iter()
-        .map(|(rid, _)| {
-            // WI-770. `assert!`, not `debug_assert!`: compiled out, a release
-            // build would emit C++ a guard should have withheld.
-            assert!(
-                kb.is_fact(rid),
-                "bodied realization rule refused: `{}` — this reader \
-                 head-matches facts and never evaluates a rule body, so the \
-                 guard would be silently skipped (WI-770). Realization \
-                 entries must be asserted as facts; guarded selection is \
-                 honored only where codegen RESOLVES, which today is effect \
-                 realization (`anthill.realization.realizes_effect`, WI-760) \
-                 — no resolve seam reads a bodied rule for the other \
-                 realization functors.",
-                TermPrinter::new(kb).print_rule(rid),
-            );
-            kb.rule_head(rid)
-        })
-        .collect()
-}
-
-/// WI-810: the values-first successor to [`query_realization_facts`] for the
+/// WI-810: the values-first realization-fact reader for the type-lowering
 /// `Refuse`-policy readers — the head `TermId` of each FACT of `functor_names`
 /// (tried in order, qualified first) whose named `selection` fields hold the
 /// given values, read through `kb.read_facts(functor, .., Refuse)` (WI-773/057)
@@ -3964,27 +3887,53 @@ fn query_realization_facts(
 /// selectable this way (an `Option`-typed `lang: some("cpp")` cannot be grounded
 /// structurally — its callers post-filter instead). Empty when the functor isn't
 /// loaded, or when a selection field name isn't interned (no fact carries it, so
-/// nothing could match) — matching `query_realization_facts`' bail-empty.
+/// nothing could match).
 ///
 /// Each row is narrowed `Value::Term` → `TermId` via [`expect_term_head`]:
 /// TypeMapping / IncludeMapping / NamingConvention are invariantly Term-carried
 /// (plain ground facts), so a value/Node head is a loud error, never a silent
 /// skip — unlike the `OperationInfo` readers, which carry value heads.
+///
+/// WI-774 PIN (the accepted contract): these type-lowering readers STAY on
+/// `Refuse`, not the new `Resolve` (`read_facts_resolved`). A bodied `TypeMapping`
+/// — even one for another language the post-filter would discard — is a loud
+/// graceful refusal, blanket by design (`Refuse` poisons the read before the
+/// selection filter, WI-773/810). Graduating them to `Resolve` would need a
+/// realization RULE SET analogous to `realizes_effect` (WI-089's addendum
+/// `lower_type` predicate) to carry the base/profile/binding key priority through
+/// resolution; that predicate does not exist, so the honest state is refusal, not
+/// silent selection. Only `supported_effects` graduated to `Resolve` (WI-774),
+/// because its `realizes_effect` DECIDING path already resolves.
+/// Resolve `functor_names` (qualified first, then bare short name) to the first
+/// loaded symbol and encode the `field = value` `selection` as ground
+/// `Value::Str` equalities — the shared front of both realization readers
+/// ([`read_realization_facts`], `Refuse`, and [`resolve_realization_rows`],
+/// `Resolve`). `None` is their shared BAIL-EMPTY: no `functor_names` entry is
+/// loaded, or a selection field name isn't interned (so no fact carries it and
+/// nothing could match).
+fn realization_functor_and_selection(
+    kb: &KnowledgeBase,
+    functor_names: &[&str],
+    selection: &[(&str, &str)],
+) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
+    let functor = functor_names.iter().find_map(|n| kb.try_resolve_symbol(n))?;
+    let mut sel: Vec<(Symbol, Value)> = Vec::with_capacity(selection.len());
+    for (field, value) in selection {
+        let fsym = kb.lookup_symbol(field)?;
+        sel.push((fsym, Value::Str(value.to_string())));
+    }
+    Some((functor, sel))
+}
+
 fn read_realization_facts(
     kb: &KnowledgeBase,
     functor_names: &[&str],
     selection: &[(&str, &str)],
 ) -> Result<Vec<TermId>, CppCodegenError> {
-    let Some(functor) = functor_names.iter().find_map(|n| kb.try_resolve_symbol(n)) else {
+    let Some((functor, sel)) = realization_functor_and_selection(kb, functor_names, selection)
+    else {
         return Ok(Vec::new());
     };
-    let mut sel: Vec<(Symbol, Value)> = Vec::with_capacity(selection.len());
-    for (field, value) in selection {
-        let Some(fsym) = kb.lookup_symbol(field) else {
-            return Ok(Vec::new());
-        };
-        sel.push((fsym, Value::Str(value.to_string())));
-    }
     kb.read_facts(functor, &sel, BodiedRulePolicy::Refuse)?
         .into_iter()
         .map(|row| expect_term_head(kb, functor, row))
@@ -4227,51 +4176,120 @@ fn cpp_effect_receiver(kb: &mut KnowledgeBase, ctx: &CodegenContext, effect: &st
     realizes_effect(kb, "cpp", ctx.profile.as_deref(), effect)
 }
 
+/// WI-774: the values-first RESOLVED realization-fact reader — the ground rows of
+/// the first loaded `functor_names` (tried in order, qualified first) under the
+/// named `selection`, via `kb.read_facts_resolved` (057 `Resolve` policy). Unlike
+/// [`read_realization_facts`] (`Refuse`, which REJECTS a bodied candidate), a
+/// bodied realization rule is RESOLVED — its guard honored — so a guarded
+/// `EffectMapping` / `LanguageMapping` entry participates iff its body succeeds.
+/// Empty when no name is loaded or a selection field name isn't interned (no fact
+/// carries it). A DEPTH-CAP-truncated candidate search is a loud `CppCodegenError`
+/// (via the `?` on [`ExtentReadError::SearchTruncated`], the WI-767 discipline).
+/// A mounted-BACKEND query failure is NOT surfaced here — the resolver's mount
+/// path handles it leniently in v1 (log + empty, WI-797); the loud channel for a
+/// fallible backend arrives with the write seam (WI-780). Immaterial to the
+/// realization readers, which are resident.
+fn resolve_realization_rows(
+    kb: &mut KnowledgeBase,
+    functor_names: &[&str],
+    selection: &[(&str, &str)],
+) -> Result<Vec<Value>, CppCodegenError> {
+    let Some((functor, sel)) = realization_functor_and_selection(kb, functor_names, selection)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(kb.read_facts_resolved(functor, &sel)?)
+}
+
+/// Read named field `field` off a RESOLVED row (a `Value` from
+/// [`resolve_realization_rows`] / `read_facts_resolved`) as its child `TermId`. A
+/// resolved row is a reified enumeration goal — a `Value::Entity` whose ground
+/// children are `Value::Term` — so this reads the field carrier-neutrally and
+/// narrows the (ground) child to its term, letting the existing term readers
+/// (`as_string` / `walk_list`) apply unchanged. `Ok(None)` when the field is
+/// ABSENT (a legitimate skip — e.g. the entity-constructor row). A field PRESENT
+/// with a non-`Term` carrier is a LOUD error, not a silent drop: it is the
+/// `expect_term_head` analog for a field (the CLAUDE.md "loud error over silent
+/// skip" principle), and it cannot occur for a resident realization fact (all
+/// ground fields reify to `Value::Term`) — so it signals a genuinely unexpected
+/// carrier (e.g. a future mounted store handing back a raw value), which the
+/// Term-assuming realization readers cannot yet consume.
+fn row_named_term(
+    kb: &KnowledgeBase,
+    row: &Value,
+    field: &str,
+) -> Result<Option<TermId>, CppCodegenError> {
+    let Some(sym) = kb.lookup_symbol(field) else { return Ok(None) };
+    match row.named_arg(kb, sym).map(|v| v.to_value()) {
+        None => Ok(None),
+        Some(Value::Term { id, .. }) => Ok(Some(id)),
+        Some(_) => Err(CppCodegenError {
+            message: format!(
+                "resolved realization row: field `{field}` has an unexpected non-term \
+                 carrier; cpp-gen reads realization fact fields as terms"
+            ),
+        }),
+    }
+}
+
 /// WI-576: every effect `lang` realizes under `profile` — the profile's
 /// SUPPORTED-EFFECT SET, which the capability gate requires an operation's
 /// residual row to be a subset of.
 ///
-/// Both representations are enumerated to gather CANDIDATE effect names, then
-/// [`realizes_effect`] decides membership per name. Enumeration stays a head
-/// match: it asks "which effect names appear at all", a question with no
-/// overlay logic to get wrong, so it needs no resolution. The flat query
-/// deliberately grounds nothing — `lang` there is an `Option` field
-/// (`some("cpp")`), which `query_realization_facts` cannot ground structurally.
-/// So the candidate list is over-broad (other languages' entries, other
-/// profiles' overlays) and the `realizes_effect` filter, not the query, is what
-/// makes the answer exact. Sorted + deduplicated for a deterministic diagnostic.
-fn supported_effects(kb: &mut KnowledgeBase, lang: &str, profile: Option<&str>) -> Vec<String> {
-    // WI-760: gather the candidate NAMES first, under a shared borrow, and
-    // materialize them. Membership is decided by `realizes_effect`, which now
-    // resolves and so needs `&mut` — it cannot run inside a lazy chain still
-    // borrowing the KB.
-    let mut names: Vec<String> = {
-        let flat = query_realization_facts(
-            kb,
-            &["anthill.realization.EffectMapping", "EffectMapping"],
-            &["effect", "receiver", "lang", "key"],
-            None,
-        );
-        let nested = query_realization_facts(
-            kb,
-            &["anthill.realization.LanguageMapping", "LanguageMapping"],
-            &["language", "profile", "effect_map", "receiver_map", "type_map", "trait_return"],
-            Some(("language", lang)),
-        )
-        .into_iter()
-        .filter_map(|head| named_arg(kb, head, "effect_map"))
-        .flat_map(|list| walk_list(kb, list))
-        .collect::<Vec<_>>();
+/// WI-774: both representations are RESOLVED to gather CANDIDATE effect names, then
+/// [`realizes_effect`] decides membership per name. Resolution (not the retired
+/// WI-770 head-match) means a bodied `EffectMapping` / `LanguageMapping` rule is
+/// EVALUATED — its guard honored — instead of aborting the read: the old
+/// head-match `assert!` fired even while RENDERING this gate's error, turning a
+/// diagnostic into a panic. The candidate list stays deliberately over-broad (the
+/// flat read grounds nothing — `lang` is an `Option` field, `some("cpp")`, not a
+/// plain-string selection; the nested read grounds only `language`), and the
+/// `realizes_effect` filter, not the candidate read, is what makes the answer
+/// exact. Sorted + deduplicated for a deterministic diagnostic. Fallible: a
+/// truncated candidate search (WI-767 depth-cap discipline) or a mounted-store
+/// failure is a loud refusal, never a silently short set.
+fn supported_effects(
+    kb: &mut KnowledgeBase,
+    lang: &str,
+    profile: Option<&str>,
+) -> Result<Vec<String>, CppCodegenError> {
+    // Resolve the CANDIDATE rows first (each read borrows `&mut kb`), collecting
+    // owned `Value` rows, before extracting names under a shared borrow —
+    // `realizes_effect` (below) also resolves (`&mut`), so no reader may run inside
+    // a chain still borrowing the KB.
+    let flat_rows = resolve_realization_rows(
+        kb,
+        &["anthill.realization.EffectMapping", "EffectMapping"],
+        &[],
+    )?;
+    let lang_rows = resolve_realization_rows(
+        kb,
+        &["anthill.realization.LanguageMapping", "LanguageMapping"],
+        &[("language", lang)],
+    )?;
 
-        flat.into_iter()
-            .chain(nested)
-            .filter_map(|entry| named_string(kb, entry, "effect"))
-            .collect()
-    };
+    let mut names: Vec<String> = Vec::new();
+    // Flat: each top-level `EffectMapping` row's `effect`.
+    for row in &flat_rows {
+        if let Some(effect) = row_named_term(kb, row, "effect")?.and_then(|t| as_string(kb, t)) {
+            names.push(effect);
+        }
+    }
+    // Nested: each `LanguageMapping` row's `effect_map` cons-list → each entry's
+    // `effect` (the rust/scala representation the flat read never surfaces).
+    for row in &lang_rows {
+        if let Some(list) = row_named_term(kb, row, "effect_map")? {
+            for entry in walk_list(kb, list) {
+                if let Some(effect) = named_string(kb, entry, "effect") {
+                    names.push(effect);
+                }
+            }
+        }
+    }
     names.sort();
     names.dedup();
     names.retain(|effect| realizes_effect(kb, lang, profile, effect).is_some());
-    names
+    Ok(names)
 }
 
 /// WI-576: name the codegen target in a diagnostic. `emit_traits_struct` and
@@ -4285,13 +4303,19 @@ fn cpp_profile_label(ctx: &CodegenContext) -> String {
 }
 
 /// WI-576: render [`supported_effects`] for the capability gate's error text.
-fn describe_supported_effects(kb: &mut KnowledgeBase, ctx: &CodegenContext) -> String {
-    let names = supported_effects(kb, "cpp", ctx.profile.as_deref());
-    if names.is_empty() {
+/// Fallible (WI-774): a truncated / failed candidate resolution propagates rather
+/// than aborting mid-diagnostic (the head-match `assert!` this replaced panicked
+/// exactly here — while rendering the gate error).
+fn describe_supported_effects(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+) -> Result<String, CppCodegenError> {
+    let names = supported_effects(kb, "cpp", ctx.profile.as_deref())?;
+    Ok(if names.is_empty() {
         "(none declared — is the cpp realization profile loaded?)".to_string()
     } else {
         names.join(", ")
-    }
+    })
 }
 
 /// WI-089(c): the cpp `(host_type spelling, include directive)` probe pairs from
