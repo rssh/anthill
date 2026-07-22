@@ -104,17 +104,18 @@ fn min_sort_of_list_constructor_is_list() {
     let tail = kb.intern("tail");
 
     // nil() — a no-arg List constructor.
-    let onil = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![] });
+    let onil = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![], from_projection: false });
     let nil_sort = typed_min_sort(&mut kb, &onil).expect("min_sort(nil()) Some");
     assert_sort_named(&kb, nil_sort, "List");
 
     // cons(head: 1, tail: nil()) — the acceptance example.
     let o1 = occ(Expr::Const(Literal::Int(1)));
-    let onil2 = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![] });
+    let onil2 = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![], from_projection: false });
     let ocons = occ(Expr::Constructor {
         name: cons,
         pos_args: vec![],
         named_args: vec![(head, Rc::clone(&o1)), (tail, Rc::clone(&onil2))],
+        from_projection: false,
     });
     let cons_sort = typed_min_sort(&mut kb, &ocons).expect("min_sort(cons(..)) Some");
     assert_sort_named(&kb, cons_sort, "List");
@@ -134,7 +135,7 @@ fn min_sort_of_entity_value_is_its_sort() {
         Term::Ref(s) => *s,
         other => panic!("Color.red resolved to unexpected term: {other:?}"),
     };
-    let ored = occ(Expr::Constructor { name: red, pos_args: vec![], named_args: vec![] });
+    let ored = occ(Expr::Constructor { name: red, pos_args: vec![], named_args: vec![], from_projection: false });
     let ms = typed_min_sort(&mut kb, &ored).expect("min_sort(red) should be Some");
     assert_sort_named(&kb, ms, "Color");
 }

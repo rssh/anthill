@@ -4699,55 +4699,21 @@ fn relation_column_access_parts(
     }
 }
 
-/// WI-714 — do two projection-field receiver occurrences denote the SAME relation? The
-/// distribute-dot writes ONE receiver and `convert.rs` distributes it over the members, so a
-/// genuine projection's fields all carry that one receiver — but the sharing is a shared
-/// TermId, which does NOT survive as a shared `Rc` (measured, WI-732), so `Rc::ptr_eq` alone
-/// misses every case. Three rungs, in order:
+/// WI-714 — the `Relation[T]` type of an argument that a SIBLING CALLBACK PARAM projects
+/// (`join(r1, r2, cond: (c: r1.T, q: r2.T) -> Bool)`): a let-bound relation var (env), a
+/// bare rule reference (a `Relation` value, WI-714 C2, never in the value env), or a
+/// computed relation the node already carries stamped (WI-750). Composed from the
+/// [`varref_arg_env_type`] / [`relation_ref_arg_type`] readers, env first — a still-flexible
+/// env binding is the live one, a stamp only a fallback.
 ///
-///  1. `Rc::ptr_eq` — the same occurrence outright.
-///  2. LEAF SYMBOL — a let-bound var / bare rule ref, matched by name.
-///  3. SOURCE SPAN — a COMPUTED receiver (`r.where(..).(f1, f2)`, WI-732). Two occurrences
-///     with the same `(file, start, end)` are one piece of source text, which is exactly the
-///     desugaring's duplicate. This is what distinguishes ONE receiver duplicated by
-///     `convert.rs` from TWO receivers the user genuinely wrote: a hand-written
-///     `(a: f().x, b: f().y)` has two DIFFERENT spans, so it keeps its tuple reading and its
-///     two evaluations. The empty-span guard keeps two unrelated SYNTHESIZED nodes (default
-///     `0..0` spans) from comparing equal.
-///
-///     What that guard does NOT exclude, stated rather than glossed: a rewrite that
-///     DUPLICATES a subterm gives every copy the original's span (`synthesized_expr` copies
-///     `from.span`), so a `[simp]` rule like `f(?x) = g(?x, ?x)` yields two `?x` occurrences
-///     this rung would call one receiver. That is believed harmless — the copies denote the
-///     same pure relation, so collapsing two evaluations into one preserves the answers, the
-///     same reasoning the leaf rung already relies on — but it is REASONED, not measured, and
-///     no test constructs the shape.
-///
-/// Rung 3 is not merely an optimization: without it the desugared tuple silently typed as a
-/// TUPLE OF INDEPENDENT SINGLE-COLUMN RELATIONS — `(name: Relation[String], age:
-/// Relation[Int64])` — instead of the projected `Relation[(name, age)]`. Loud only by
-/// accident, when the caller then used the result as a relation (WI-732 probe).
-fn projection_receivers_same(a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) -> bool {
-    if Rc::ptr_eq(a, b) {
-        return true;
-    }
-    fn leaf_sym(occ: &NodeOccurrence) -> Option<Symbol> {
-        match occ.as_expr()? {
-            Expr::Var(Var::Global(v)) => Some(v.name()),
-            Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => Some(*s),
-            _ => None,
-        }
-    }
-    if let (Some(sa), Some(sb)) = (leaf_sym(a), leaf_sym(b)) {
-        return sa == sb;
-    }
-    a.span == b.span && a.span.span.start < a.span.span.end
-}
-
-/// WI-714 — the `Relation[T]` type of a projection's receiver: a let-bound relation var
-/// (env), a bare rule reference (a `Relation` value, WI-714 C2, not in the value env),
-/// or a computed relation the receiver node already carries stamped. Companion readers
-/// [`varref_arg_env_type`] / [`relation_ref_arg_type`] the where/join hint path uses.
+/// TWO CONSUMERS, both wanting the same thing — a receiver's `Relation[T]`: the row-lambda
+/// hint path ([`known_arg_types_and_staged`]) and the relation-projection recognizer
+/// ([`try_relation_projection_tuple`]). WI-762 removed only the recognizer's use of this to
+/// find the LOWERED receiver NODE (that now comes from the `DotApply` frame's own record);
+/// the TYPE still comes from here, and it must, because the rung ORDER is load-bearing:
+/// env FIRST, stamp only as a fallback. A let-bound receiver's env binding is the live,
+/// still-refinable one while the stamp is a snapshot, so reading the stamp alone can compute
+/// a projected schema from a stale type.
 fn projection_receiver_type(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -4758,52 +4724,39 @@ fn projection_receiver_type(
         .or_else(|| receiver.inferred_type())
 }
 
-/// WI-732 — the LOWERED twin of a projection's receiver, recovered from a field the typer
-/// has already rewritten. Every field of a projection tuple is itself a SINGLE-column
-/// projection, so the typer rewrote each one into a call whose first positional argument is
-/// the receiver *after* lowering — which for a computed receiver (`r.where(..)`) is the
-/// macro-expanded form eval can actually run, and for a leaf is the leaf itself.
+/// WI-714 (proposal 052) — synthesize the projected relation for the named tuple a
+/// MULTI-member distributive projection `r.(f1, f2)` (rename `r.(a: f1, …)`) desugared
+/// into (§6.8).
 ///
-/// Reads the typer's OWN output shape positionally and never compares an operation symbol:
-/// keying a typer decision on a domain op's identity is what the `join` → `Concat` discipline
-/// forbids, and what the rest of this ticket removes. Dot dispatch desugars UNIFORMLY —
-/// the receiver becomes positional argument 0 of the rewritten call — so position, not
-/// identity, is the load-bearing structure.
+/// RECOGNIZED BY PROVENANCE, not by shape (WI-762). `convert.rs` desugars `r.(f1, f2)` to
+/// `(f1: r.f1, f2: r.f2)` — a term IDENTICAL to that tuple written by hand — and marks the
+/// result. Before the mark this function inferred projection-hood from the fields' shape
+/// plus a SOURCE-SPAN comparison of their receivers, which is what told ONE receiver
+/// duplicated by the desugaring from two the author wrote. Every field of a marked tuple
+/// carries the same receiver BY CONSTRUCTION, so the first field's receiver is THE
+/// receiver and there is nothing to compare.
 ///
-/// The cross-check is the candidate's TYPE, which must be the receiver type the caller
-/// already resolved. Deliberately NOT the source span: a lowered twin does not keep the raw
-/// receiver's span. The WI-722 `where` macro synthesizes `where_run(person_row, <recipe>)`
-/// FROM the inner `person_row` occurrence, so it inherits THAT span (measured: raw
-/// `person_row.where(..)` at 3007..3050 vs the twin at 878..888, the `person_row` citation) —
-/// a span test rejects the very node it is meant to find.
+/// THE NARROWING THIS MADE DELIBERATE: a HAND-WRITTEN `(name: r.name, age: r.age)` is no
+/// longer read as a projection. It is a tuple, and it types as one — a tuple of two
+/// independent single-column relations. Proposal 052:182 introduced the shape-based
+/// reading explicitly as the stopgap "until `.( )` lands"; `.( )` landed as WI-639, so the
+/// stopgap has served its purpose. 052:184-187 states the positive rule that replaces it:
+/// projection is the distribute-dot, and anything COMPUTED per row is written functionally
+/// with `.map`, which yields a plain `Stream` rather than a `Relation`. Nothing in the
+/// corpus relied on the old reading; the one hand-written instance
+/// (`wi714_project_two_written_receivers_stay_a_tuple`) asserts the tuple reading, and now
+/// gets it structurally rather than by a span compare.
 ///
-/// `None` when no field typed, or when none carries a matching type — the caller then keeps
-/// the raw occurrence. That is exactly right for the two shapes that reach it: a LEAF
-/// receiver (a let-bound var) needs no lowering, and a BARE RULE REF receiver's members fail
-/// ordinary dot dispatch, leaving a citation eval already understands.
-fn lowered_projection_receiver(
-    kb: &KnowledgeBase,
-    named_results: &[Result<TypeResult, TypeError>],
-    recv_ty: &Value,
-) -> Option<Rc<NodeOccurrence>> {
-    named_results.iter().filter_map(|r| r.as_ref().ok()).find_map(|tr| {
-        let Some(Expr::Apply { pos_args, .. }) = tr.node.as_expr() else {
-            return None;
-        };
-        let cand = pos_args.first()?;
-        let cand_ty = cand.inferred_type()?;
-        views_structurally_equal(kb, &cand_ty, recv_ty).then(|| Rc::clone(cand))
-    })
-}
-
-/// WI-714 (proposal 052) — recognize a name-keyed row tuple `(f1: rel.f1, f2: rel.f2)`
-/// (rename `(a: rel.f1, …)`) ALL of whose fields are single-column accesses on the SAME
-/// relation `rel` as a PROJECTION `r.(f1, f2)` and synthesize the projected relation.
-/// Runs BEFORE the tuple checker's arg-error aggregation, since each `rel.c` field FAILS
-/// ordinary dot dispatch (a `Relation` has no member `c`). Requires ≥2 named fields (a
-/// single member 1-collapses at convert to a bare `rel.c`, handled by dot dispatch); a
-/// positional field, a non-`rel.c` field, or fields on differing receivers fall through
-/// to ordinary tuple typing.
+/// The gate is a SURFACE FORM, which is what keeps it inside the rule the deleted doc block
+/// stated and was the only citation of: "keying a typer decision on a domain op's identity is
+/// what the `join` → `Concat` discipline forbids". An operation's identity is an OPEN set the
+/// stdlib owns — branching on it means editing the typer to add `leftJoin`. A surface form is
+/// a CLOSED set the grammar owns, and branching on it is what an IR variant is for.
+///
+/// Returns `None` — ordinary tuple typing — when the tuple is not marked, or when a field
+/// is not a bare column access. The latter is the NON-VALUE receiver: `convert.rs` builds
+/// `field_access` rather than `dot_apply` for it (`is_value_receiver`), and a projection
+/// over e.g. a type-level receiver is not a relation projection.
 fn try_relation_projection_tuple(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -4813,6 +4766,15 @@ fn try_relation_projection_tuple(
     named_results: &[Result<TypeResult, TypeError>],
     occ: &Rc<NodeOccurrence>,
 ) -> Option<Result<TypeResult, TypeError>> {
+    if !matches!(occ.as_expr(), Some(Expr::Constructor { from_projection: true, .. })) {
+        return None;
+    }
+    // A TOTAL guard, not a `debug_assert`. Both conditions are implied by the mark —
+    // `convert.rs` builds the projection tuple with named args only, and 1-collapses a
+    // single member to a scalar before any tuple exists — but an assert compiles out, and
+    // the release-mode consequence of a violation is that a positional field is SILENTLY
+    // DROPPED from the synthesized projection. Falling through to ordinary tuple typing is
+    // the safe reading of a shape this function does not understand.
     if positional > 0 || named_args.len() < 2 {
         return None;
     }
@@ -4820,60 +4782,58 @@ fn try_relation_projection_tuple(
     let mut projections: Vec<(Symbol, String)> = Vec::with_capacity(named_args.len());
     for (label, field) in named_args {
         let (recv_occ, source) = relation_column_access_parts(kb, field)?;
-        match &receiver {
-            None => receiver = Some(recv_occ),
-            Some(r) => {
-                if !projection_receivers_same(r, &recv_occ) {
-                    return None;
-                }
-            }
-        }
+        receiver.get_or_insert(recv_occ);
         projections.push((*label, source));
     }
     let receiver = receiver?;
-    // WI-732 hardening. Reaching here means the loop above matched: ≥2 named fields, EVERY
-    // one a bare column access, ALL on one receiver. That is the syntactic signature of a
-    // projection — it is what `convert.rs` emits for `R.(c1, c2)` — so failing to resolve the
-    // receiver's TYPE is not "this is not a projection". Returning `None` would re-read the
-    // very same source as a tuple of INDEPENDENT single-column relations, which is the silent
-    // mis-typing this ticket exists to remove: the shape would be recognized and then quietly
-    // abandoned. CLAUDE.md: a case that cannot be handled is a diagnostic, not a silent skip.
+    let columns =
+        projections.iter().map(|(_, src)| src.as_str()).collect::<Vec<_>>().join(", ");
+    // ASSUMED, NOT VERIFIED — every field shares this receiver. `convert.rs` guarantees it
+    // where it desugars, and taking the FIRST field's receiver is what the mark licenses.
+    // The residual hazard, stated because it is not checked: the mark rides through
+    // rewrites (`simp_rewrite::reassemble` carries `from_projection`), so a `[simp]` rule
+    // that rewrote ONE field's receiver would leave a marked tuple whose fields disagree,
+    // and this would project the first and silently drop the rest.
     //
-    // GATED on every field having TYPED, and that gate is load-bearing rather than defensive.
-    // When a field failed, its OWN error is the better diagnostic and the caller's
-    // `collect_arg_errors` reports it; raising here would mask a real error with a vaguer one.
-    //
-    // Measured before being made loud: across the whole `anthill-core` corpus this path is
-    // reached 59 times and resolves the receiver EVERY time (all with 2 fields, all with every
-    // field typed) — 0 fall-throughs. So no existing shape depends on the retreat, and the
-    // raise changes no current behavior. It exists for the shapes nobody has written yet.
-    let Some(recv_ty) = projection_receiver_type(kb, env, &receiver) else {
-        if !named_results.iter().all(|r| r.is_ok()) {
-            return None;
-        }
-        let columns = projections
-            .iter()
-            .map(|(_, src)| src.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
+    // A verifying guard belongs here and is NOT yet written. What it needs is a plain
+    // STRUCTURAL WALK over the two occurrence trees (`for_each_child` gives the spine) —
+    // no allocation, no `&mut kb`, no interning. Two tools were tried instead and both are
+    // the wrong shape for the question; recorded so neither is reached for again:
+    //  - `cached_term` / `occurrence_to_term`: answers a pure question by MUTATING the KB,
+    //    and its cache "owns the single `+1` … and never releases it (pin-for-lifetime)",
+    //    so each comparison pins a term for the KB's life. It is also a GOAL-POSITION
+    //    reifier — an args-bearing `Expr::DotApply` (`r.where(λ)`) takes its
+    //    `debug_assert!(false)` arm and yields `Term::Bottom`, so in RELEASE two DIFFERENT
+    //    computed receivers would both reify to ⊥ and compare EQUAL. (That arm is
+    //    under-written rather than principled — the loader fills the same `args` slot for
+    //    every dot call — but widening it is a separate concern and not needed here.)
+    //  - `views_structurally_equal`: THE right tool, and a second comparator must NOT be
+    //    written beside it. It is sound but INCOMPLETE for an identity question. Not
+    //    because of the dot: `Expr::DotApply` heads as `Functor{Expr.dot_apply, 0, 3}`
+    //    (WI-278/397/425). It is the LAMBDA nested in a computed receiver's args —
+    //    `Expr::Lambda` falls to `occ_head`'s `_ => ViewHead::Opaque` arm ("control-flow
+    //    and post-elaboration forms … are opaque to rule-LHS matching"), and the function
+    //    has no `(Opaque, Opaque)` arm. Refusing to claim equality is CORRECT for a
+    //    matching predicate; as an identity test it yields false negatives, which is why
+    //    it rejected all ten `wi714_project` tests. Completing it means giving `Lambda` a
+    //    head in `occ_head` — its own ticket: `head()` feeds the discrim tree, `GoalKey`
+    //    fingerprints and rule matching, so Opaque→Functor there changes indexing and
+    //    dedup semantics and needs measurement first.
+    // Both measured, not reasoned.
+    let lowered = receiver.lowered_receiver();
+    let recv_ty = projection_receiver_type(kb, env, &receiver);
+    let (Some(receiver), Some(recv_ty)) = (lowered, recv_ty) else {
         return Some(Err(projection_type_error(
             &TypeErrorContext::DotProjection { member: projections[0].0 },
             Some(occ.span.span),
             &format!(
                 "this is a column projection `({columns})` over ONE receiver, but the \
-                 receiver's type cannot be resolved here, so the projected schema cannot be \
-                 computed. Bind the receiver with a `let` first (`let r = …; r.({columns})`). \
-                 Reported rather than silently re-read as a tuple of independent \
-                 single-column relations."
+                 receiver's typed form is not available here, so the projected schema cannot \
+                 be computed. Bind the receiver with a `let` first \
+                 (`let r = …; r.({columns})`)."
             ),
         )));
     };
-    // Splice the LOWERED receiver, not the raw one. A leaf receiver needs no lowering, but a
-    // COMPUTED one does — `r.where(..)` reaches eval only as the WI-722 macro's `where_run`
-    // rewrite, which lives on the typer's rewritten twin. Handing eval the raw occurrence
-    // instead raised `unhandled Expr variant in eval: DotApply` (measured, WI-732).
-    let receiver =
-        lowered_projection_receiver(kb, named_results, &recv_ty).unwrap_or(receiver);
     // The receiver's EFFECTS. Every field is a single-column projection of the SAME
     // receiver, and a single-column projection's effects ARE the receiver's (projection
     // adds no search — the dot-dispatch mode threads `recv.effects` through unchanged), so
@@ -4881,13 +4841,13 @@ fn try_relation_projection_tuple(
     // Reading them here is what lets the receiver be COMPUTED (WI-732): the pre-WI-732
     // leaf-only recognizer could hardcode `&[]` because a let-bound var / bare rule ref is
     // pure, and left threading a computed receiver's effects as an explicit follow-up NOTE.
-    // No typed field ⇒ the fields failed ordinary dot dispatch, which is the BARE RULE REF
-    // receiver (its members desugar to `field_access(…, Ident)` and error) — a citation, not
-    // an expression, so `&[]` is exact there rather than a fallback.
+    //
+    // `.expect` rather than a default: `check_constructor_iter` runs `collect_arg_errors`
+    // before routing here, so every result is already `Ok` — the file's own idiom for a
+    // slot the aggregator has already guaranteed.
     let recv_effects: &[Value] = named_results
-        .iter()
-        .find_map(|r| r.as_ref().ok())
-        .map(|r| r.effects.as_slice())
+        .first()
+        .map(|r| r.as_ref().expect("aggregator").effects.as_slice())
         .unwrap_or(&[]);
     build_relation_projection(kb, env, flow, &recv_ty, recv_effects, &receiver, &projections, occ)
 }
@@ -6659,7 +6619,7 @@ fn visit_type(
                 }
             }
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, .. } => {
             let name = *name;
             // WI-657(5): borrow the pattern slots for local reads + the push_visit loops;
             // clone once into the Build frame below (was two clones per Constructor).
@@ -7516,6 +7476,17 @@ fn build_type(
                 if !Rc::ptr_eq(raw, &recv.node) {
                     raw.set_inferred_type(recv.ty.clone());
                 }
+                // WI-762: record the LOWERED twin, so a consumer that must splice
+                // this receiver elsewhere reads it rather than re-deriving it.
+                // UNCONDITIONAL, unlike the type stamp above: when `raw` IS
+                // `recv.node` the record is the identity, and the reader needs to
+                // tell "the leaf lowers to itself" from "no dot was ever typed
+                // here" — the guard above collapses those two. Storing it WEAKLY is
+                // what makes that safe: the identity case would otherwise put an
+                // `Rc` to `raw` inside `raw`. The TYPE is not recorded with it —
+                // it is on this node either from the stamp above or, in the identity
+                // case, from the `Stamp` frame that typed `recv.node` (the same node).
+                raw.set_lowered_receiver(&recv.node);
             }
             // `min_sort`: widen the receiver to its least declared sort. Read
             // the child's result type directly (don't depend on the receiver's
@@ -18038,6 +18009,7 @@ fn synthesize_some_wrap(
             name: some_sym,
             pos_args: Vec::new(),
             named_args: vec![(value_sym, Rc::clone(child))],
+            from_projection: false,
         },
         Rc::clone(child),
         pass,
@@ -18072,7 +18044,12 @@ fn synthesize_named_tuple_literal(
     let pass = super::simp_rewrite::simp_pass(kb);
     let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
     let occ = NodeOccurrence::synthesized_expr(
-        Expr::Constructor { name: functor, pos_args: Vec::new(), named_args },
+        Expr::Constructor {
+            name: functor,
+            pos_args: Vec::new(),
+            named_args,
+            from_projection: false,
+        },
         Rc::clone(from),
         pass,
         from.owner,
@@ -18879,19 +18856,21 @@ fn check_tuple_literal_constructor(
         return Ok(TypeResult::pure(unit_ty, env.clone(), Rc::clone(occ)));
     }
 
-    // WI-714 (proposal 052) — a name-keyed row tuple all of whose fields are single-
-    // column accesses `rel.c` on the SAME relation IS a PROJECTION `r.(f1, f2)` (the
-    // distribute-dot desugars to this tuple). A tuple that is NOT such a projection falls
-    // through to ordinary tuple typing unchanged.
+    // WI-714 (proposal 052) — the tuple a distribute-dot `r.(f1, f2)` desugared into is a
+    // PROJECTION of `r`, not a tuple of `r`'s columns. Recognized by the mark `convert.rs`
+    // left on it (WI-762), since the desugared term is identical to the hand-written tuple;
+    // anything unmarked falls through to ordinary tuple typing unchanged.
     //
-    // Runs BEFORE arg-error aggregation. The original reason given was that each `rel.c`
-    // field FAILS ordinary dot dispatch, so `collect_arg_errors` would report those failures
-    // instead — that is now STALE, and measuring says so: across the whole corpus this
-    // recognizer fires 59 times and every field typed cleanly in every one. WI-714's own
-    // FOURTH dot-dispatch mode is why — each `rel.c` now succeeds on its own as a
-    // single-column projection. So the ordering earns its keep for the opposite reason: the
-    // fields succeed INDIVIDUALLY, as independent single-column relations, and running after
-    // them would accept that tuple-of-relations reading rather than the projection.
+    // Runs FIRST for a reason that survives the provenance change: every `rel.c` field types
+    // cleanly ON ITS OWN, as an independent single-column projection (WI-714's fourth
+    // dot-dispatch mode), so a pass that ran after them would have already committed to the
+    // tuple-of-relations reading. The ordering picks the whole-tuple reading over the
+    // field-by-field one — it is NOT, as this comment once said, about the fields failing.
+    //
+    // NOTE the `collect_arg_errors` below is redundant: `check_constructor_iter` runs the
+    // same aggregation before routing here, so every result is already `Ok` on entry (which
+    // is what lets the recognizer treat a missing typed field as impossible rather than as a
+    // case to retreat from). Kept as the local restatement of that invariant.
     if let Some(r) =
         try_relation_projection_tuple(kb, env, flow, pos_results.len(), named_args, named_results, occ)
     {
@@ -28398,7 +28377,7 @@ fn project_node_component(
                 .find(|(k, _)| same_label(kb, *k, *s))
                 .map(|(_, v)| Rc::clone(v)),
         },
-        Expr::Constructor { name, pos_args, named_args }
+        Expr::Constructor { name, pos_args, named_args, .. }
         | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
             project_constructor_arg(kb, *name, pos_args, named_args, sel)
         }
@@ -33955,7 +33934,7 @@ fn collect_occurrence_type_constraints(
         Expr::Apply { functor, pos_args, named_args, .. } => {
             constrain_application(kb, *functor, pos_args, named_args, var_types, subst);
         }
-        Expr::Constructor { name, pos_args, named_args }
+        Expr::Constructor { name, pos_args, named_args, .. }
         | Expr::Instantiation { name, pos_args, named_args } => {
             constrain_application(kb, *name, pos_args, named_args, var_types, subst);
         }

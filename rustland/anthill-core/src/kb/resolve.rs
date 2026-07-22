@@ -3949,7 +3949,12 @@ impl KnowledgeBase {
                 let mut named = vec![(value_sym, node.clone())];
                 self.canonicalize_record_named_args(some_sym, &mut named);
                 NodeOccurrence::new_expr(
-                    Expr::Constructor { name: some_sym, pos_args: Vec::new(), named_args: named },
+                    Expr::Constructor {
+                        name: some_sym,
+                        pos_args: Vec::new(),
+                        named_args: named,
+                        from_projection: false,
+                    },
                     node.span,
                     None,
                 )
@@ -6223,7 +6228,12 @@ impl KnowledgeBase {
                 } else {
                     named.sort_by_key(|(s, _)| s.index());
                     Some(NodeOccurrence::new_expr(
-                        Expr::Constructor { name, pos_args: Vec::new(), named_args: named },
+                        Expr::Constructor {
+                            name,
+                            pos_args: Vec::new(),
+                            named_args: named,
+                            from_projection: false,
+                        },
                         span,
                         None,
                     ))
@@ -6284,8 +6294,9 @@ impl KnowledgeBase {
                 let lit = lit.clone();
                 Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
-            Expr::Constructor { name, pos_args, named_args } => {
+            Expr::Constructor { name, pos_args, named_args, from_projection } => {
                 let name = *name;
+                let from_projection = *from_projection;
                 let pos_c = pos_args.clone();
                 let named_c = named_args.clone();
                 let mut pos = Vec::with_capacity(pos_c.len());
@@ -6314,7 +6325,12 @@ impl KnowledgeBase {
                     Some(NodeOccurrence::new_expr(Expr::Ref(name), span, None))
                 } else {
                     Some(NodeOccurrence::new_expr(
-                        Expr::Constructor { name, pos_args: pos, named_args: named },
+                        Expr::Constructor {
+                            name,
+                            pos_args: pos,
+                            named_args: named,
+                            from_projection,
+                        },
                         span,
                         None,
                     ))

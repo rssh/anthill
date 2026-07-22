@@ -258,7 +258,7 @@ impl Interpreter {
                     *functor, args, named_args, requirements, type_args,
                 )
             }
-            Expr::Constructor { name, pos_args, named_args } => {
+            Expr::Constructor { name, pos_args, named_args, .. } => {
                 self.start_constructor(*name, pos_args, named_args)
             }
             Expr::RequirementAtSort { chain, slot } => {

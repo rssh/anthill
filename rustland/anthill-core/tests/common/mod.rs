@@ -241,6 +241,41 @@ pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core:
 /// the head is the `Int` among them and the tail the `Entity`. Several
 /// per-WI suites grew a private copy of this walk (wi714_*, wi727, wi730);
 /// this is the shared one to reach for.
+/// The HEAD VALUES of a `cons`/`nil` list, in order — the element-type-agnostic
+/// peer of [`list_ints`], for suites whose elements are not `Int` (a projected
+/// relation drains to `Value::Tuple` rows, WI-762).
+///
+/// Same walk and the same limitation: within a `cons` the TAIL is the `Entity`
+/// field and the head is the other one, so a list whose elements are themselves
+/// entities is out of scope for both helpers.
+#[allow(dead_code)]
+pub fn list_heads(v: &eval::Value) -> Vec<eval::Value> {
+    use eval::Value;
+    let mut out = Vec::new();
+    let mut cur = v.clone();
+    while let Value::Entity { named, .. } = &cur {
+        if named.is_empty() {
+            break; // nil
+        }
+        let mut head: Option<Value> = None;
+        let mut tail: Option<Value> = None;
+        for (_k, item) in named.iter() {
+            match item {
+                Value::Entity { .. } => tail = Some(item.clone()),
+                other => head = Some(other.clone()),
+            }
+        }
+        match (head, tail) {
+            (Some(h), Some(t)) => {
+                out.push(h);
+                cur = t;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
 #[allow(dead_code)]
 pub fn list_ints(v: &eval::Value) -> Vec<i64> {
     use eval::Value;

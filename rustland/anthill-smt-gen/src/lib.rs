@@ -1359,10 +1359,11 @@ impl<'kb> Emitter<'kb> {
                 named_args: self.close_named(named_args, env, str_env)?,
                 type_args: type_args.clone(),
             },
-            Expr::Constructor { name, pos_args, named_args } => Expr::Constructor {
+            Expr::Constructor { name, pos_args, named_args, from_projection } => Expr::Constructor {
                 name: *name,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
+                from_projection: *from_projection,
             },
             Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
                 name: *name,
@@ -1822,7 +1823,7 @@ fn occ_as_fn(
         Expr::Apply { functor, pos_args, named_args, .. } => {
             Some((*functor, pos_args, named_args))
         }
-        Expr::Constructor { name, pos_args, named_args }
+        Expr::Constructor { name, pos_args, named_args, .. }
         | Expr::Instantiation { name, pos_args, named_args }
         | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
             Some((*name, pos_args, named_args))

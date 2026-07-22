@@ -9093,6 +9093,12 @@ impl<'a> Loader<'a> {
                     let frame = if is_entity {
                         node_occurrence::BuildFrame::Constructor {
                             span, name: kb_functor, pos_count, named_keys: occ_named_keys,
+                            // WI-762: the ONE point where the distributive-projection
+                            // desugaring's provenance crosses from the parse store onto
+                            // the occurrence the typer will read. Everything downstream
+                            // carries it; nothing downstream can re-derive it, because
+                            // the desugared term is identical to the hand-written tuple.
+                            from_projection: self.parsed.terms.is_projection(outer_parse_id),
                         }
                     } else {
                         // WI-342: the occurrence carries the carrier-agnostic

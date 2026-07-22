@@ -2411,7 +2411,7 @@ fn lower_node(
             }
             Ok(format!("{fn_short}({})", args.join(", ")))
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, .. } => {
             let name_qn = kb.qualified_name_of(*name).to_string();
             // List/Tuple/Set literals → uniform brace-init.
             if matches!(name_qn.as_str(),
@@ -2699,7 +2699,7 @@ fn node_references_name(
                 || pos_args.iter().any(|a| node_references_name(kb, a, target))
                 || named_args.iter().any(|(_, a)| node_references_name(kb, a, target))
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, .. } => {
             matches_sym(*name)
                 || pos_args.iter().any(|a| node_references_name(kb, a, target))
                 || named_args.iter().any(|(_, a)| node_references_name(kb, a, target))

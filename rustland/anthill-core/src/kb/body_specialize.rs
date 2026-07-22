@@ -398,12 +398,17 @@ fn reduce(
                 pass,
             ))
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, from_projection } => {
             let pos = reduce_vec(kb, pos_args, env, pass)?;
             let named = reduce_named(kb, named_args, env, pass)?;
             Some(rebuild(
                 occ,
-                Expr::Constructor { name: *name, pos_args: pos, named_args: named },
+                Expr::Constructor {
+                    name: *name,
+                    pos_args: pos,
+                    named_args: named,
+                    from_projection: *from_projection,
+                },
                 pass,
             ))
         }
@@ -650,7 +655,7 @@ fn ctor_field_occs(
     scr: &Rc<NodeOccurrence>,
 ) -> Option<Vec<(Symbol, Rc<NodeOccurrence>)>> {
     match scr.as_expr()? {
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, .. } => {
             let fields = kb.entity_field_names(*name)?;
             let mut slots: Vec<Option<Rc<NodeOccurrence>>> = vec![None; fields.len()];
             for (i, a) in pos_args.iter().enumerate() {
@@ -723,7 +728,7 @@ fn occ_as_ctor(
 ) -> Option<(Symbol, Vec<Rc<NodeOccurrence>>, Vec<(Symbol, Rc<NodeOccurrence>)>)> {
     let is_data = |f: Symbol| kb.entity_field_types(f).is_some() || kb.is_constructor_symbol(f);
     match occ.as_expr()? {
-        Expr::Constructor { name, pos_args, named_args }
+        Expr::Constructor { name, pos_args, named_args, .. }
         | Expr::Instantiation { name, pos_args, named_args }
             if is_data(*name) =>
         {
@@ -752,7 +757,12 @@ fn skeletonize(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Rc<NodeOccur
         let pos2: Vec<_> = pos.iter().map(|p| skeletonize(kb, p)).collect();
         let named2: Vec<_> = named.iter().map(|(s, v)| (*s, skeletonize(kb, v))).collect();
         return NodeOccurrence::new_expr(
-            Expr::Constructor { name, pos_args: pos2, named_args: named2 },
+            Expr::Constructor {
+                name,
+                pos_args: pos2,
+                named_args: named2,
+                from_projection: false,
+            },
             arg.span,
             arg.owner,
         );

@@ -1648,6 +1648,24 @@ a plain `.`).
 Expression/call members (`x.(count(), y)`) and a positional projection variant
 are deferred (see proposal 052).
 
+**The desugaring is MARKED, and the mark is what "is a projection" means.** The
+tuple built above is structurally identical to the same tuple written by hand —
+`x.(f1, f2)` and `(f1: x.f1, f2: x.f2)` are the same term — so the desugaring
+records its own provenance and downstream passes read that mark rather than
+re-deriving projection-hood from the shape (WI-762). This is observable, and
+deliberately so: **only a written `.( )` projects.** Over a relation, `r.(f1, f2)`
+is the projection `Relation[T = (f1: …, f2: …)]`, while a hand-written
+`(f1: r.f1, f2: r.f2)` is what it says — an ordinary named tuple whose two
+components are two independent single-column relations, evaluated separately.
+
+That is the same distinction §4.5 draws elsewhere: a projection is an *operation
+on* a relation that happens to yield a tuple-shaped schema; a tuple literal *is* a
+tuple. Per-row computation is not projection at all (a computed column is out of
+the distribute-dot, above) — it is written functionally with `.map`, which yields a
+`Stream` rather than a `Relation`. Proposal 052 originally had the typer recognize
+a name-keyed row tuple as `projected` directly, stated there as the stopgap "until
+`.( )` lands"; `.( )` is §6.8, so that reading is retired.
+
 ## 7. Metadata
 
 Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` namespace — not a special grammar production. It is a regular Fn term with named arguments.

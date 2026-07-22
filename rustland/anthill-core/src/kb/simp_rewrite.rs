@@ -853,10 +853,13 @@ pub(super) fn reassemble(
             named_args: cur.take_named(named_args),
             type_args: type_args.clone(),
         },
-        Expr::Constructor { name, pos_args, named_args } => Expr::Constructor {
+        Expr::Constructor { name, pos_args, named_args, from_projection } => Expr::Constructor {
             name: *name,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
+            // WI-762: a rewritten CHILD does not stop this node being the tuple a
+            // projection desugared into — the receiver moved, the form did not.
+            from_projection: *from_projection,
         },
         Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
             name: *name,

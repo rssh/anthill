@@ -382,7 +382,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             Expr::ApplyWithin { functor, args, named_args, .. } => {
                 self.write_occ_fn(self.view.sym_name(*functor), args, named_args, buf);
             }
-            Expr::Constructor { name, pos_args, named_args }
+            Expr::Constructor { name, pos_args, named_args, .. }
             | Expr::Instantiation { name, pos_args, named_args }
             | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
                 self.write_occ_fn(self.view.sym_name(*name), pos_args, named_args, buf);

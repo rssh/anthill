@@ -7729,6 +7729,7 @@ mod wi518_occurrence_guard_resolution_tests {
                 name: edge,
                 pos_args: vec![var_occ.clone(), var_occ],
                 named_args: Vec::new(),
+                from_projection: false,
             },
             span(),
             None,

@@ -8,7 +8,7 @@
 /// without lifetime threading, and cross-pass identity is `Rc::ptr_eq`.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::intern::Symbol;
 use crate::span::SourceSpan;
@@ -319,6 +319,7 @@ impl NodeOccurrence {
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
                 inferred_type: RefCell::new(None),
+                lowered_receiver: RefCell::new(None),
             },
             span,
             owner,
@@ -373,6 +374,7 @@ impl NodeOccurrence {
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
                 inferred_type: RefCell::new(None),
+                lowered_receiver: RefCell::new(None),
             },
             span,
             owner,
@@ -525,6 +527,31 @@ impl NodeOccurrence {
             _ => None,
         }
     }
+
+    /// WI-762: record this receiver occurrence's LOWERED twin — see
+    /// [`NodeKind::Expr::lowered_receiver`]. Called only from the `DotApply` typing
+    /// frame, on the occurrence held in the dot's receiver slot. Stored WEAKLY; the
+    /// twin is kept alive by the typing result that owns it.
+    pub fn set_lowered_receiver(&self, lowered: &Rc<NodeOccurrence>) {
+        if let NodeKind::Expr { lowered_receiver, .. } = &self.kind {
+            *lowered_receiver.borrow_mut() = Some(Rc::downgrade(lowered));
+        }
+    }
+
+    /// WI-762: this receiver occurrence's lowered twin, if the `DotApply` frame has
+    /// typed it and the twin is still alive. `None` for a non-`Expr` kind, a
+    /// receiver no dot has been typed against, or a twin already dropped — the sole
+    /// consumer reads it during the same typing pass that wrote it, while the twin
+    /// is still owned by that field's `TypeResult`, so a dropped twin means the
+    /// caller is off that path and `None` is the honest answer for it too.
+    pub fn lowered_receiver(&self) -> Option<Rc<NodeOccurrence>> {
+        match &self.kind {
+            NodeKind::Expr { lowered_receiver, .. } => {
+                lowered_receiver.borrow().as_ref().and_then(Weak::upgrade)
+            }
+            _ => None,
+        }
+    }
 }
 
 // ── NodeKind ────────────────────────────────────────────────────
@@ -563,6 +590,38 @@ pub enum NodeKind {
         /// by the typer's `Stamp` work-frame once a node's `TypeResult`
         /// is finalized; `None` until typed, or when the node is ill-typed.
         inferred_type: RefCell<Option<Value>>,
+        /// WI-762: for an occurrence sitting in a dot's RECEIVER slot — the typer's
+        /// own LOWERED twin of it. Written by the `DotApply` work-frame: `recv.node`
+        /// is what the receiver typed INTO (for a computed receiver `r.where(λ)`
+        /// that is the WI-722 macro's `where_run` rewrite, the only form eval can
+        /// run; for a leaf it is the leaf itself). `None` until that frame runs.
+        ///
+        /// Exists so a consumer that must SPLICE the receiver elsewhere — the
+        /// relation-projection recognizer, which rebuilds it into a `project_run`
+        /// call — can READ the lowered form instead of RE-DERIVING it. It used to
+        /// re-derive it by scanning `pos_args[0]` of whatever a sibling field had
+        /// typed into and cross-checking by type equality: correct in practice, but
+        /// an inference about a fact the frame already knew. Handing eval the RAW
+        /// receiver instead raised `unhandled Expr variant in eval: DotApply`.
+        ///
+        /// `Weak`, NOT `Rc`, and that is load-bearing rather than cautious. The
+        /// write is deliberately UNCONDITIONAL — the reader must tell "this leaf
+        /// lowers to itself" from "no dot was ever typed here", and a guarded write
+        /// collapses those — but in the leaf case `recv.node` IS this very node, so
+        /// a strong handle would store an `Rc` to SELF and the refcount could never
+        /// reach zero. The computed case is no better: a synthesized twin holds a
+        /// strong `OccurrenceOrigin::Synthesized { from }` back-pointer to this
+        /// node, closing a two-node cycle. Neither is reachable by the hand-rolled
+        /// [`drain_node`] walk, which drains `origin.from` and the `expr` children
+        /// and matches the annotation slots with `..` — so the leak would be
+        /// permanent AND invisible to the machinery written to prevent exactly it.
+        /// A `Weak` has no such failure mode and needs no draining.
+        ///
+        /// Deliberately does NOT also carry the type: `set_inferred_type` records it
+        /// on the same node three lines away (and the `Stamp` frame does so in the
+        /// leaf case, where this node and the twin are one), so a second copy would
+        /// be two facts that must agree with nothing enforcing it.
+        lowered_receiver: RefCell<Option<Weak<NodeOccurrence>>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     /// Args are `TermId` (KB-position content); the wrap exists for span
@@ -638,6 +697,32 @@ pub enum Expr {
         name: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        /// WI-762: this is the `TupleLiteral` a MULTI-member distributive
+        /// projection `x.(m1, …, mn)` desugared into (§6.8), not a tuple written
+        /// as one. Set by the loader from `SimpleTermStore::is_projection`; `false`
+        /// for every other constructor, including a hand-written tuple whose fields
+        /// happen to be column accesses on one receiver.
+        ///
+        /// A FIELD OF THE `Expr` rather than a slot beside it, deliberately. Note
+        /// what the reason is NOT: [`NodeOccurrence::rebuilt_expr`] does carry the
+        /// beside-the-`Expr` state it knows about — `Synthesized` provenance AND
+        /// `inferred_type` — so "rebuilds drop side slots" would be false. The reason
+        /// is that `rebuilt_expr` is not the only rebuild path: `substitute_occurrence`
+        /// (`node_occurrence.rs`), `term_view`, `resolve`, and `body_specialize` build
+        /// replacement nodes with `new_expr` / `synthesized_expr` directly, and each
+        /// beside-slot must be re-carried at every one of them by hand. Missing one is
+        /// SILENT, and here it re-reads a projection as a tuple of independent
+        /// single-column relations — the exact mis-typing WI-732 removed. Riding
+        /// INSIDE the `Expr` makes every rebuild site a compile error until it decides.
+        ///
+        /// NOT carried by `materialize_from_handle` (term → occurrence), which has no
+        /// parse provenance to read. That is structural rather than a gap: op and rule
+        /// bodies are stored AS OCCURRENCES (`op_body_node` / `rule_body_nodes`) and
+        /// persistence stores facts, not bodies, so a typed body never round-trips
+        /// through a `Term` and back. (The weaker argument — "by the time anything
+        /// materializes the projection is already a `project_run` call" — is a claim
+        /// about pass ordering that nothing checks; the structural one does not decay.)
+        from_projection: bool,
     },
     /// `match` expression with branches.
     Match {
@@ -1290,10 +1375,15 @@ pub fn open_debruijn_node(
                 type_args: ta,
             })
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, from_projection } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
-            (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
+            (c1 || c2).then(|| Expr::Constructor {
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+                from_projection: *from_projection,
+            })
         }
         Expr::Instantiation { name, pos_args, named_args } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
@@ -1425,10 +1515,15 @@ pub fn node_to_debruijn(
                 type_args: ta,
             })
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, from_projection } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
-            (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
+            (c1 || c2).then(|| Expr::Constructor {
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+                from_projection: *from_projection,
+            })
         }
         Expr::Instantiation { name, pos_args, named_args } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
@@ -2407,7 +2502,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
             occ_build_fn(kb, *functor, pos_args, named_args)
         }
-        Some(Expr::Constructor { name, pos_args, named_args })
+        Some(Expr::Constructor { name, pos_args, named_args, .. })
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
             occ_build_fn(kb, *name, pos_args, named_args)
         }
@@ -2525,7 +2620,12 @@ pub fn build_occurrence_cons_list(
         let mut named = vec![(head_sym, item), (tail_sym, list)];
         kb.canonicalize_record_named_args(cons_sym, &mut named);
         list = NodeOccurrence::new_expr(
-            Expr::Constructor { name: cons_sym, pos_args: Vec::new(), named_args: named },
+            Expr::Constructor {
+                name: cons_sym,
+                pos_args: Vec::new(),
+                named_args: named,
+                from_projection: false,
+            },
             span,
             None,
         );
@@ -3347,12 +3447,17 @@ pub fn substitute_occurrence(
                 )
             })
         }
-        Expr::Constructor { name, pos_args, named_args } => {
+        Expr::Constructor { name, pos_args, named_args, from_projection } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
                 NodeOccurrence::new_expr(
-                    Expr::Constructor { name: *name, pos_args: pos, named_args: named },
+                    Expr::Constructor {
+                        name: *name,
+                        pos_args: pos,
+                        named_args: named,
+                        from_projection: *from_projection,
+                    },
                     occ.span,
                     occ.owner,
                 )
@@ -3856,7 +3961,15 @@ pub(crate) enum BuildFrame {
         named_keys: Vec<Symbol>,
         type_args: Vec<(Option<Symbol>, Value)>,
     },
-    Constructor { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+    Constructor {
+        span: SourceSpan,
+        name: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+        /// WI-762 — see [`Expr::Constructor::from_projection`]. Only the loader
+        /// (which can read the parse store's provenance) ever sets this true.
+        from_projection: bool,
+    },
     /// `dot_apply(receiver, name, args)` — the receiver is the single child
     /// visited after the args, so it pops last (see `build_frame`).
     DotApply { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
@@ -4066,7 +4179,13 @@ fn visit_fn(
             push_apply_like_args(
                 kb, args_tid,
                 |span_, pos_count, named_keys| {
-                    BuildFrame::Constructor { span: span_, name, pos_count, named_keys }
+                    // WI-762: rematerialization from a KB term. A term carries no
+                    // parse provenance, and a named tuple recovered from one IS a
+                    // plain tuple — by the time anything materializes, a projection
+                    // has already been resolved into a `project_run` call.
+                    BuildFrame::Constructor {
+                        span: span_, name, pos_count, named_keys, from_projection: false,
+                    }
                 },
                 span, work,
             );
@@ -4359,9 +4478,9 @@ pub(crate) fn build_frame(
             let expr = Expr::Apply { functor, pos_args, named_args, type_args };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Constructor { span, name, pos_count, named_keys } => {
+        BuildFrame::Constructor { span, name, pos_count, named_keys, from_projection } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::Constructor { name, pos_args, named_args };
+            let expr = Expr::Constructor { name, pos_args, named_args, from_projection };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::DotApply { span, name, pos_count, named_keys } => {

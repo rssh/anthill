@@ -1,9 +1,10 @@
 //! WI-714 (proposal 052) — `project`: SELECT columns of a relation via the distribute-dot
 //! `r.(f1, f2)` (rename `r.(a: f1, b: f2)`; a single member `r.(f)` 1-collapses to `r.f`).
 //!
-//! Lifted over a relation, the name-keyed row tuple the distribute-dot desugars to (WI-639)
-//! IS projection: the typer maps it to a `projected` query and stamps the kept columns'
-//! schema. `projected` lowers as a resolver PASS-THROUGH (kb/execute.rs), so the column
+//! Lifted over a relation, the tuple the distribute-dot desugars to (WI-639) IS projection:
+//! the typer maps it to a `projected` query and stamps the kept columns' schema. Since
+//! WI-762 that reading is keyed on the MARK `convert.rs` leaves on the desugared tuple, not
+//! on its name-keyed SHAPE — an identically-shaped hand-written tuple stays a tuple. `projected` lowers as a resolver PASS-THROUGH (kb/execute.rs), so the column
 //! restriction happens at 052's OWN materialization step — the runtime `project_run`
 //! rebuilds the relation's materialized `columns` to the kept/renamed set, leaving the
 //! query (and therefore the solutions) unchanged: a dropped column is still SOLVED, so the
@@ -414,10 +415,19 @@ end
 }
 
 /// A hand-written tuple of column accesses on TWO SEPARATE computed receivers keeps its
-/// tuple reading — the receiver-identity test is SOURCE-SPAN based, so it matches only ONE
-/// receiver duplicated by the distribute-dot desugaring, never two the user genuinely wrote.
-/// Without this distinction the span rung would collapse two independent expressions (and
-/// their two evaluations) into one.
+/// tuple reading.
+///
+/// WI-762 REBASED THE REASON. This used to hold because the receiver-identity test compared
+/// SOURCE SPANS, so it matched only a receiver the distribute-dot had duplicated; two
+/// written receivers have two spans. There is no identity test any more — the tuple simply
+/// is not MARKED as a desugared projection, so the recognizer never looks at its fields.
+/// The guarantee is now structural rather than a span comparison, and it is broader: a
+/// hand-written tuple stays a tuple even when its receivers ARE identical (see
+/// `wi762_handwritten_tuple_is_a_tuple_of_relations`), which is the narrowing WI-762 made
+/// deliberate. This case — two separate `where` calls — is the one where collapsing
+/// them would ALSO collapse two evaluations into one; note the test asserts only the
+/// TYPE reading (it expects a load error naming `takeN`), so the evaluation half is
+/// argued, not covered.
 #[test]
 fn wi714_project_two_written_receivers_stay_a_tuple() {
     const TWO: &str = r#"
@@ -440,8 +450,8 @@ end
     // `takeN` — so the two differ only in whether the receiver was written once or twice.
     let joined = match try_load_kb_with(TWO) {
         Ok(_) => panic!(
-            "two separately-written receivers collapsed into ONE projection — the span rung \
-             must match only a receiver duplicated by the distribute-dot desugaring"
+            "two separately-written receivers collapsed into ONE projection — only a tuple \
+             MARKED by the distribute-dot desugaring may be read as one (WI-762)"
         ),
         Err(e) => e.join("\n"),
     };

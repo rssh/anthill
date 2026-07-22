@@ -233,11 +233,15 @@ end
 /// hardening commit (9be1f834) called its new unresolvable-receiver branch "unreachable by
 /// measurement, and therefore untested" and named THIS ticket as the blocker — the
 /// reasoning being that a projection off a call result would reach it once the annotation
-/// conformed. It does not: that branch fires only when `projection_receiver_type` cannot
-/// resolve the receiver, and a call result resolves fine, which is why this LOADS instead
-/// of raising. Unblocking WI-764 did not make it reachable. (Measured for THIS shape only —
-/// no claim is made about others.) The second assertion is the tripwire: if that diagnostic
-/// ever does fire here, the branch has finally acquired a test and WI-732's comment is stale.
+/// conformed. It does not, and this LOADS instead of raising. Unblocking WI-764 did not make
+/// it reachable. (Measured for THIS shape only — no claim is made about others.)
+///
+/// WI-762 moved the branch it refers to: the recognizer no longer resolves its receiver's
+/// type via `projection_receiver_type`, it reads the record the `DotApply` frame wrote, and
+/// the loud branch now fires only if that record is MISSING — which for a marked projection
+/// whose fields are dot accesses cannot happen. So the branch went from
+/// unreachable-by-measurement to unreachable-by-construction. The second assertion below
+/// stays as the tripwire: if that diagnostic ever fires here, the reasoning above is wrong.
 #[test]
 fn wi764_projection_off_a_call_result_types_and_reorders() {
     let src = format!(

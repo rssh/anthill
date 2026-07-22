@@ -359,8 +359,9 @@ end
 /// dispatch on (the WI-723 symptom, `<unresolved receiver>.name`).
 ///
 /// The type was always available — a dot call's Build frame runs after its receiver's
-/// Visit+Stamp — just unread, so the fix is the third reader
-/// (`projection_receiver_type`) the WI-714 projection path already composed.
+/// Visit+Stamp — just unread, so the fix is the third reader (`projection_receiver_type`),
+/// at the time shared with the WI-714 projection path. WI-762 removed that path's use of
+/// it, so this hint path is now its SOLE consumer; the rung this test pins is unchanged.
 #[test]
 fn wi750_row_lambda_schema_through_a_computed_receiver() {
     const SRC: &str = r#"

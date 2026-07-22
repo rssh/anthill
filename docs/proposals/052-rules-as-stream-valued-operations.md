@@ -181,6 +181,15 @@ name-keying). So **`select` is retired**: projection is the distribute-dot on a 
 `.( )` is a general named-tuple operation useful far beyond relations (the WI-638 generalization). Until
 `.( )` lands, `projected` is reachable directly — the typer maps a name-keyed row-tuple to `projected`.
 
+> **Superseded (WI-762).** `.( )` landed as WI-639, so that stopgap is retired: a name-keyed row tuple is
+> **no longer** mapped to `projected`. Only a written `.( )` projects. The desugaring is structurally
+> identical to the hand-written tuple, so `convert.rs` now MARKS it and the typer reads the mark instead
+> of inferring projection-hood from the fields' shape and their receivers' source spans. Consequence, and
+> intended: `r.(f1, f2)` is `Relation[T = (f1, f2)]`, while `(f1: r.f1, f2: r.f2)` is an ordinary tuple of
+> two independent single-column relations. This is the same line the paragraph below already draws for
+> *computed* columns — those leave the distribute-dot entirely and are written with `.map`, yielding a
+> `Stream`, not a `Relation`. See kernel-language.md §6.8.
+
 A **computed** column (an expression member like `x.f1 + 1`, not a bare member) is *not* projection —
 the value is no longer joinable-as-a-column — so it is **out of the distribute-dot**: compute it
 functionally with `.map` on the provided stream, which yields a plain `Stream`, not a `Relation`.
@@ -460,7 +469,8 @@ constructors, columns filled with the relation's `VarId`s at runtime; typer-pass
 restriction at 052's materialization step. The single-field `x.f` is **delivered (WI-638)**; the
 distribute-dot `x.(…)` is **WI-639** — a general §6.7 form (members resolved at *typing*, like WI-638;
 result the ordered/named tuple), useful to any tuple consumer, not only relations. Until it lands,
-`projected` is reached via a name-keyed row-tuple the typer recognizes.
+`projected` is reached via a name-keyed row-tuple the typer recognizes. *(Superseded — WI-639 landed and
+WI-762 retired that reading; see the note at "Lifted over a relation" above.)*
 
 Core rests on **landed** pieces — the 026.1 `execute`/`lower_query` engine (`kb/execute.rs`, with
 `conjunction`/`disjunction`/`negation`/`guarded` wired), WI-603 var types, the provides cluster — with

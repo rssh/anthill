@@ -720,6 +720,9 @@ mod wi783_function_value_named_args_test;
 #[path = "include/wi458_head_span_occurrence_test.rs"]
 mod wi458_head_span_occurrence_test;
 
+#[path = "include/wi762_projection_provenance_test.rs"]
+mod wi762_projection_provenance_test;
+
 #[path = "include/wi764_relation_binding_order_test.rs"]
 mod wi764_relation_binding_order_test;
 

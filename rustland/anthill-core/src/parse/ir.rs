@@ -57,6 +57,28 @@ pub struct SimpleTermStore {
     /// only here. Recorded like [`Self::minted`], for the same reason — provenance the
     /// consumer needs is carried, not re-derived from name/scope heuristics.
     type_applications: HashSet<TermId>,
+    /// WI-762: the named-tuple `Term::Fn` nodes this converter DESUGARED a
+    /// distributive projection `x.(m1, …, mn)` into (§6.8; the sole producer is
+    /// `BuildFrame::DistributiveProjection`). Only the MULTI-member case is
+    /// recorded — a single member 1-collapses to the scalar `x.m`, which is not a
+    /// tuple and has nothing to mark.
+    ///
+    /// The desugaring distributes ONE receiver over the members, and until this set
+    /// existed that fact was thrown away: the typer's relation-projection recognizer
+    /// re-derived "these N fields share one receiver" from a SOURCE-SPAN comparison,
+    /// which is an inference about a fact this file KNEW. Recorded like
+    /// [`Self::minted`] / [`Self::type_applications`], for the same stated reason —
+    /// provenance the consumer needs is carried, not re-derived.
+    ///
+    /// Unlike its two siblings this one is read by the TYPER, not the loader, so it
+    /// is plumbed onward: `load.rs` reads it while building the occurrence and
+    /// stores it on [`crate::kb::node_occurrence::Expr::Constructor`], the carrier
+    /// that survives the typer's rebuilds.
+    ///
+    /// Governed by the same `TermId`-stability caveat stated on [`Self::minted`] — a
+    /// future rewrite pass that reconstructs parse subtrees must carry these marks
+    /// over. That note is written once, there, and now governs all three sets.
+    projections: HashSet<TermId>,
 }
 
 impl SimpleTermStore {
@@ -110,6 +132,20 @@ impl SimpleTermStore {
     /// data constructor, whose named args are FIELDS.
     pub fn is_type_application(&self, id: TermId) -> bool {
         self.type_applications.contains(&id)
+    }
+
+    /// WI-762: record that `id` is the named tuple a MULTI-member distributive
+    /// projection `x.(m1, …, mn)` desugared into.
+    pub fn mark_projection(&mut self, id: TermId) {
+        self.projections.insert(id);
+    }
+
+    /// WI-762: was this named tuple DESUGARED from a distributive projection, as
+    /// opposed to written as a tuple literal? The two are structurally identical
+    /// once desugared — `x.(a, b)` and `(a: x.a, b: x.b)` build the same term — so
+    /// only this bit tells them apart.
+    pub fn is_projection(&self, id: TermId) -> bool {
+        self.projections.contains(&id)
     }
 
     /// Iterate every allocated `(TermId, &Term)` in allocation order.

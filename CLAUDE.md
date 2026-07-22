@@ -151,6 +151,27 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   patterns all take the FIRST match. Refused because a field name is the field's
   public interface. Field names are scoped PER ENTITY — sibling entities in one sort
   may each declare `a`, which is the ordinary variant shape.
+- **A distributive projection is known by its MARK, not its shape** (WI-762).
+  `convert.rs` desugars `r.(f1, f2)` to `(f1: r.f1, f2: r.f2)` — a term IDENTICAL to
+  that tuple written by hand — so it MARKS the result
+  (`SimpleTermStore::projections` → `Expr::Constructor::from_projection`, set once in
+  `load.rs`) and the typer gates on the mark. Three inferences went with it:
+  receiver IDENTITY by SOURCE SPAN, receiver TYPE by stamp, and the LOWERED receiver
+  by reading `pos_args[0]` of whatever a sibling field typed into. The last two are
+  now ONE producer-written record — the `DotApply` frame stores the receiver's
+  lowered twin + type on the receiver occurrence (`set_lowered_receiver`), the only
+  place both are in hand. DELIBERATE NARROWING: **only a written `.( )` projects.**
+  `r.(f1, f2)` is `Relation[T = (f1, f2)]`; hand-written `(f1: r.f1, f2: r.f2)` is a
+  tuple of two independent single-column relations — a projection is an OPERATION on
+  a relation, a tuple literal IS a tuple, and per-row computation is `.map` (a
+  `Stream`, not a `Relation`). Proposal 052:182 had introduced the shape-based
+  reading as the stopgap "until `.( )` lands"; §6.8 is `.( )`. The mark rides as a
+  FIELD of `Expr::Constructor` so every rebuild site is a compile error until it
+  carries it. NOT because rebuilds drop side slots — `rebuilt_expr` carries both
+  `Synthesized` provenance and `inferred_type` — but because `rebuilt_expr` is not
+  the only rebuild path: `substitute_occurrence` / `term_view` / `resolve` /
+  `body_specialize` call `new_expr` directly, so a beside-slot must be re-carried at
+  each by hand, and missing one is SILENT.
 - **Destructuring binds by LABEL** (WI-803): the typer records which component
   name each binder takes into `Pattern::Tuple.labels`, and `match_tuple_pattern`
   fetches by name via `TupleComponents::by_label` — the same reader `t.x` uses.

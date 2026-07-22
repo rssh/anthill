@@ -93,11 +93,12 @@ fn node_identity_for_constructor() {
     // cons(head: 1, tail: nil()) routes through the Constructor build
     // frame + check_constructor_iter — the node must come back identical.
     let o1 = occ(Expr::Const(Literal::Int(1)));
-    let onil = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![] });
+    let onil = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![], from_projection: false });
     let ocons = occ(Expr::Constructor {
         name: cons,
         pos_args: vec![],
         named_args: vec![(head, Rc::clone(&o1)), (tail, Rc::clone(&onil))],
+        from_projection: false,
     });
     assert_node_identity(&mut kb, &ocons);
     // Children are typed and carry their own node-type too.

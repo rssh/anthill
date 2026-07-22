@@ -1919,14 +1919,25 @@ impl<'a> Converter<'a> {
                     results.push(named[0].1);
                 } else {
                     let tuple_functor = self.intern("TupleLiteral");
-                    results.push(self.terms.alloc(
+                    let tid = self.terms.alloc(
                         Term::Fn {
                             functor: tuple_functor,
                             pos_args: SmallVec::new(),
                             named_args: named,
                         },
                         span,
-                    ));
+                    );
+                    // WI-762: PROVENANCE — this tuple IS a projection. The desugaring
+                    // above distributes ONE receiver over the members, and the term it
+                    // builds is indistinguishable from the same tuple written by hand
+                    // (`x.(a, b)` and `(a: x.a, b: x.b)` are the same `Term::Fn`). The
+                    // typer's relation-projection recognizer needs that distinction, and
+                    // before this mark it RE-DERIVED it by comparing the fields'
+                    // receiver SOURCE SPANS — an inference about a fact known right here.
+                    // Marked only in the multi-member arm: the 1-collapse above yields a
+                    // scalar `x.m`, which ordinary dot dispatch already projects.
+                    self.terms.mark_projection(tid);
+                    results.push(tid);
                 }
             }
             BuildFrame::MatchExpr { node, branch_count } => {

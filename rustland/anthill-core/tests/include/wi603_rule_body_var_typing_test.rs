@@ -73,7 +73,7 @@ fn find_atom_args(
         let expr = occ.as_expr()?;
         match expr {
             Expr::Apply { functor: f, pos_args, named_args, .. }
-            | Expr::Constructor { name: f, pos_args, named_args }
+            | Expr::Constructor { name: f, pos_args, named_args, .. }
             | Expr::Instantiation { name: f, pos_args, named_args }
                 if kb.resolve_sym(*f).rsplit('.').next() == Some(atom_short) =>
             {

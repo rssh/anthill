@@ -235,7 +235,12 @@ fn dot_apply_args_child(
     let (k_name, k_value) = (dot_apply_key(kb, "name"), dot_apply_key(kb, "value"));
     let mk = |name: Symbol, named: Vec<(Symbol, Rc<NodeOccurrence>)>| {
         NodeOccurrence::new_expr(
-            Expr::Constructor { name, pos_args: Vec::new(), named_args: named },
+            Expr::Constructor {
+                name,
+                pos_args: Vec::new(),
+                named_args: named,
+                from_projection: false,
+            },
             occ.span,
             occ.owner,
         )
@@ -325,7 +330,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // `Term::Fn{name, …}` twin — so it reads the same `Functor` head (a
         // reflect-`Expr` instantiation occurrence must match its own term twin,
         // not collapse to `Opaque`).
-        Some(Expr::Constructor { name, pos_args, named_args })
+        Some(Expr::Constructor { name, pos_args, named_args, .. })
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
             functor_view_head(kb, *name, pos_args.len(), named_args.len())
         }
@@ -1520,7 +1525,12 @@ mod wi436_tests {
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
         };
         let ctor_occ = Value::Node(NodeOccurrence::new_expr(
-            Expr::Constructor { name: red, pos_args: Vec::new(), named_args: Vec::new() },
+            Expr::Constructor {
+                name: red,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+                from_projection: false,
+            },
             dummy_span(),
             None,
         ));
