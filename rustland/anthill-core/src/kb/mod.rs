@@ -430,6 +430,18 @@ pub struct KnowledgeBase {
     by_domain: HashMap<TermId, Vec<RuleId>>,
     rules_by_label: HashMap<Symbol, Vec<RuleId>>,
 
+    /// WI-812: per-functor count of currently-indexed BODIED rules (non-facts) —
+    /// maintained in lockstep with `rules_by_functor` at each of its three
+    /// mutation sites (`push_value_head_entry`, `retract`, `unindex_functor`).
+    /// Backs the O(1) [`Self::has_bodied_rule`] gate that [`Self::read_facts`]
+    /// reads for its blanket bodied-rule refusal, so the common (pure-table) read
+    /// proves the ABSENCE of a bodied rule with one map lookup instead of a
+    /// `rules_by_functor` bucket scan + per-row `is_fact`. A COUNT (not a
+    /// bool/set) so dropping one of several bodied rules under a functor leaves
+    /// the flag correctly set. Entries at zero are removed, so the map holds only
+    /// functors that currently have ≥1 bodied rule.
+    bodied_rule_counts: HashMap<Symbol, u32>,
+
     // Entity-of indexes: entity → parent sort (1-level, non-transitive).
     // Materialized indexes for EntityOf(entity, parent) facts.
     sort_entities: HashMap<TermId, Vec<TermId>>,   // sort → its entity constructors
@@ -874,6 +886,7 @@ impl KnowledgeBase {
             rules: Vec::new(),
             by_sort: HashMap::new(),
             rules_by_functor: HashMap::new(),
+            bodied_rule_counts: HashMap::new(),
             rules_by_label: HashMap::new(),
             by_domain: HashMap::new(),
             sort_entities: HashMap::new(),
@@ -1502,6 +1515,10 @@ impl KnowledgeBase {
             );
         }
 
+        // WI-812: capture fact-ness before `body_nodes` is moved into the entry,
+        // to bump the `has_bodied_rule` gate below (a bodied rule = non-empty body).
+        let is_bodied = !body_nodes.is_empty();
+
         self.rules.push(RuleEntry {
             head: head.clone(),
             body_nodes,
@@ -1528,6 +1545,12 @@ impl KnowledgeBase {
         self.by_domain.entry(domain).or_default().push(rule_id);
         if let Some(f) = head_functor {
             self.rules_by_functor.entry(f).or_default().push(rule_id);
+            // WI-812: one more indexed bodied rule under `f` — bump the O(1)
+            // `has_bodied_rule` gate. Paired with the `retract` / `unindex_functor`
+            // decrements; a fact leaves the gate untouched.
+            if is_bodied {
+                self.inc_bodied_rule_count(f);
+            }
             // WI-665: recompute the simp gate lazily only when this head is an
             // `eq`/`unify` equation (superseding WI-646's drop-on-any-assert). A
             // head with no functor cannot be one, so skipping the drop there is
@@ -2424,8 +2447,19 @@ impl KnowledgeBase {
         // `assert` populated (insert/retract stay symmetric).
         let head_functor = term_view::TermView::head(&head_val, self).functor_sym();
         if let Some(f) = head_functor {
-            if let Some(v) = self.rules_by_functor.get_mut(&f) {
+            let removed = if let Some(v) = self.rules_by_functor.get_mut(&f) {
+                let before = v.len();
                 v.retain(|&rid| rid != id);
+                before != v.len()
+            } else {
+                false
+            };
+            // WI-812: drop the `has_bodied_rule` gate iff a BODIED rule was actually
+            // removed from the bucket. Guarding on `removed` (not just `!is_fact`)
+            // keeps the count correct when the rule was already pulled from the
+            // bucket by `unindex_functor` (retract then finds nothing to remove).
+            if removed && !is_fact {
+                self.dec_bodied_rule_count(f);
             }
             // WI-665: a retract flips the simp gate only when the head is an
             // `eq`/`unify` equation — it drops that rule from the bucket
@@ -2735,13 +2769,28 @@ impl KnowledgeBase {
     /// would loop on rules like `add_comm: add(a, b) = add(b, a)`).
     pub fn unindex_functor(&mut self, id: RuleId) {
         let head = self.rule_head(id);
+        // WI-812: capture fact-ness before the borrow of `rules_by_functor` — the
+        // rule is only unindexed, not retracted, so `is_fact` is still valid.
+        let is_fact = self.is_fact(id);
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
-            if let Some(v) = self.rules_by_functor.get_mut(&functor) {
+            let removed = if let Some(v) = self.rules_by_functor.get_mut(&functor) {
+                let before = v.len();
                 v.retain(|&rid| rid != id);
+                before != v.len()
+            } else {
+                false
+            };
+            // WI-812: keep the `has_bodied_rule` gate in step with the bucket. A
+            // non-directional equation (the only thing unindexed today, WI-139) is
+            // a bodied rule under its `=` / `<=>` head functor, so unindexing it
+            // must drop the gate — else `read_facts(eq)` would see a phantom bodied
+            // rule. Guarded on `removed` so a later `retract` cannot double-count.
+            if removed && !is_fact {
+                self.dec_bodied_rule_count(functor);
             }
             // WI-665: defensive. `unindex_functor` is only ever called (WI-139) on
-            // NON-directional equations, which the gate does NOT count, so this
-            // never actually changes the gate today — but routing it through the
+            // NON-directional equations, which the simp gate does NOT count, so this
+            // never actually changes THAT gate today — but routing it through the
             // helper keeps the three mutation sites uniform and stays correct if a
             // directional head is ever unindexed. See
             // `invalidate_simp_gate_if_connective`.
@@ -2777,6 +2826,41 @@ impl KnowledgeBase {
             .flatten()
             .copied()
             .filter(move |rid| !self.rules[rid.index()].retracted)
+    }
+
+    /// WI-812: whether `functor` currently has ANY indexed bodied rule (a rule
+    /// with a non-empty body). O(1) — a single lookup of the `bodied_rule_counts`
+    /// gate maintained at assert / retract / unindex, so [`Self::read_facts`]'s
+    /// blanket bodied-rule refusal costs one map read instead of a
+    /// `rules_by_functor` bucket scan with a per-row `is_fact`. It separates "is
+    /// this functor a pure table?" (this gate) from "which rows match?" (the
+    /// discrim query), so the blanket-vs-scoped refusal is a deliberate choice,
+    /// not a scan artifact. cf. the cached WI-635 `head_has_vars` / WI-646 simp
+    /// gate.
+    pub fn has_bodied_rule(&self, functor: Symbol) -> bool {
+        self.bodied_rule_counts.get(&functor).is_some_and(|&c| c > 0)
+    }
+
+    /// WI-812: one more indexed bodied rule under `functor` — bump the
+    /// [`Self::has_bodied_rule`] gate. Called from `push_value_head_entry` beside
+    /// the `rules_by_functor` push.
+    fn inc_bodied_rule_count(&mut self, functor: Symbol) {
+        *self.bodied_rule_counts.entry(functor).or_insert(0) += 1;
+    }
+
+    /// WI-812: one fewer indexed bodied rule under `functor` — drop the
+    /// [`Self::has_bodied_rule`] gate. Called from `retract` / `unindex_functor`
+    /// ONLY when a bodied rule was actually removed from the bucket (the caller's
+    /// `removed` guard), so the count never underflows: a present entry is ≥ 1
+    /// (zero entries are pruned), and an absent entry is a no-op rather than a
+    /// wrapping subtraction.
+    fn dec_bodied_rule_count(&mut self, functor: Symbol) {
+        if let Some(c) = self.bodied_rule_counts.get_mut(&functor) {
+            *c -= 1;
+            if *c == 0 {
+                self.bodied_rule_counts.remove(&functor);
+            }
+        }
     }
 
     /// All active rules/facts belonging to a given domain.
@@ -2927,6 +3011,17 @@ impl KnowledgeBase {
     /// field-name is a `Ref` constant), so the rule's `arity`/`globals`/
     /// `shared_arity` stay valid and the head-indexed discrim entry is untouched.
     pub fn set_rule_body_nodes(&mut self, id: RuleId, body_nodes: Vec<Rc<NodeOccurrence>>) {
+        // WI-812: the `has_bodied_rule` gate (`bodied_rule_counts`) tracks
+        // body-emptiness ONLY at assert / retract / unindex. This is a 1:1 atom
+        // rewrite (dispatch never adds/removes atoms), so fact-ness must not flip —
+        // assert it loudly, else a future body-emptiness-changing caller would
+        // silently desync the gate.
+        debug_assert_eq!(
+            self.rules[id.index()].body_nodes.is_empty(),
+            body_nodes.is_empty(),
+            "set_rule_body_nodes must not flip a rule's fact-ness (WI-812 has_bodied_rule \
+             gate is not maintained here)",
+        );
         self.rules[id.index()].body_nodes = body_nodes;
     }
 
@@ -3257,6 +3352,44 @@ impl KnowledgeBase {
         // before recursive rules to find base-case solutions first.
         results.sort_by_key(|(rid, _)| if rules[rid.index()].body_nodes.is_empty() { 0 } else { 1 });
         results
+    }
+
+    /// WI-812: the head `Value`s of resident, non-retracted FACTS whose head
+    /// matches `pattern` through the discrimination tree — the indexed peer of a
+    /// `rules_by_functor` + `bound_matches` scan, for [`Self::read_facts`]'s
+    /// SELECTIVE resident reads (a non-empty `selection` on a functor with a
+    /// declared field schema).
+    ///
+    /// It differs from [`Self::query_view`] in two load-bearing ways, both so the
+    /// caller can build the query `pattern` under `&self` without minting fresh
+    /// vars:
+    /// - it returns head **`Value`s, not `(RuleId, Substitution)`** — keeping the
+    ///   `read_facts` read shape `RuleId`-free — and
+    /// - it goes through [`SubstTree::query_raw`] and DISCARDS the match
+    ///   substitution, taking only the matched leaves, so a query var's binding is
+    ///   never folded. `read_facts`'s pattern uses distinct synthetic wildcards
+    ///   (`selection_query_pattern`), but this discard is what lets it stay `&self`:
+    ///   the wildcard ids need not be freshly minted. `query_view` instead folds the
+    ///   substitution through `resolve_leaf`, so a repeated binding would drop the
+    ///   row as a spurious `is_contradiction`.
+    ///
+    /// Only FACT heads are returned (a bodied rule under the functor is dropped
+    /// here, not refused — `read_facts` gates the blanket bodied-rule refusal
+    /// separately and O(1) via [`Self::has_bodied_rule`], BEFORE calling this).
+    /// Retracted leaves are filtered, exactly as `query_view` guards (the discrim
+    /// tree may still hold a retracted non-ground head).
+    pub(crate) fn query_fact_heads<V: term_view::TermView>(
+        &self,
+        pattern: &V,
+    ) -> Vec<crate::eval::value::Value> {
+        self.discrim
+            .query_raw(self, pattern)
+            .into_iter()
+            .filter(|(rid, _)| {
+                !self.rules[rid.index()].retracted && self.rules[rid.index()].body_nodes.is_empty()
+            })
+            .map(|(rid, _)| self.rules[rid.index()].head.clone())
+            .collect()
     }
 
     /// Find all active rules (non-empty body) whose head matches the pattern.
