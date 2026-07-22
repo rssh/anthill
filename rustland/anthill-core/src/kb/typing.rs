@@ -3011,6 +3011,15 @@ fn display_arrow_param(rendered: String, arity: Option<usize>, param_is_tuple: b
 /// present and UNEQUAL, which no param-type difference satisfies.
 fn render_mismatch_pair(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> (String, String) {
     let (e, a) = render_mismatch_pair_by_cause(kb, expected, actual);
+    // WI-776: a 1-collapse mismatch. Appended to the ACTUAL side so the note lands at the
+    // END of `expected …, got …`, matching IDENTICAL_RENDERING_NOTE's placement. Checked
+    // BEFORE the identical-rendering backstop below and returning directly: the two sides
+    // here are genuinely different types that render differently, so the backstop would
+    // not fire anyway — but ordering it first keeps "the pair has a KNOWN cause" ahead of
+    // "the pair is inexplicable", which is the same precedence the arity cause has.
+    if let Some((label, elem)) = one_collapse_site(kb, expected, actual) {
+        return (e, format!("{a} {}", one_collapse_note(&label, &elem)));
+    }
     // WI-795: the CAUSE-AGNOSTIC backstop. Everything above fixes one KNOWN way
     // for two unequal types to render alike (the unwalked `arity` child). This
     // catches the rest without having to name them.
@@ -3063,6 +3072,160 @@ fn render_mismatch_pair_by_cause(
             arity_qualified_arrow(kb, actual, na, a),
         ),
         _ => (e, a),
+    }
+}
+
+/// WI-776: the note appended when the expected side writes a ONE-COMPONENT named tuple
+/// and the actual side is exactly that component's type — the shape a
+/// [`collapse_schema`] 1-collapse always produces.
+///
+/// This is the second CAUSE in the [`render_mismatch_pair`] family, and it exists for the
+/// same reason as the first: the pair says something neither side does. `expected
+/// (a: Int64), got Int64` is a true and useless message — both types are correct, they are
+/// simply the two sides of a collapse the reader has no way to know about.
+///
+/// WI-776 was a DECIDE ticket and this is the "explain it" branch; the two sides are NOT
+/// made to agree.
+///
+/// WHY NOT MAKE THEM AGREE — stated correctly, because the first version of this comment
+/// got it wrong and a reviewer caught it. It is NOT that a one-column result would be
+/// unconstructible. It is constructible: §4.5 says a one-component tuple type's inhabitants
+/// arrive by WIDTH SUBTYPING from a wider tuple, and measured, `operation narrow() ->
+/// (a: Int64) = wide()` over `wide() -> (a: Int64, b: String)` loads clean. The value side
+/// is equally capable — `materialize_solution` (eval/mod.rs) already builds the row as
+/// `(name, value)` pairs and then DISCARDS the name at arity one.
+///
+/// The real reason is that the collapse is a PAIRED type-and-value convention, and §6.8
+/// fixes the value half at the TERM level: `x.(f)` yields the scalar `x.f`, and a single
+/// RENAME `x.(a: f)` collapses too, dropping the label (WI-639). Keeping the column in the
+/// SCHEMA alone would desynchronize type from term across projection, relation drain, and
+/// `Without`/`Project`. Option A is therefore a breaking change to a SPECIFIED term-level
+/// rule — a real cost to weigh, not an impossibility.
+///
+/// What the note must convey is that `(a: A)` is not a broken spelling of `A` — it is a
+/// real type, matching any tuple whose `a` column CONFORMS (width subtyping is `S_n <: T_n`
+/// per §4.5, not merely "has a column named a"). A message saying only "write `A`" would
+/// teach the reader the type is useless. It must NOT call it an "input-position type":
+/// width subtyping is stated generally, the arity-1 callback rule is one consequence of it,
+/// and the note fires at op-ARG positions too — where telling the author their input-position
+/// type is an input-position type is both wrong and useless.
+///
+/// NOT FIXED by this, and deliberately not claimed to be: `Concat`/`Without` are not
+/// inverses at arity one. The collapse DESTROYS the column name, so
+/// `Concat[A = Without[T = (a: Int64, b: String), Drop = (b: String)], B = (c: Bool)]`
+/// stalls as `Concat[A = Int64, B = (c: Bool)]` — no expectation supplies the lost `a`,
+/// so no diagnostic here can recover it. That is a type-level algebra gap, not a
+/// rendering one.
+fn one_collapse_note(label: &str, elem: &str) -> String {
+    format!(
+        "(the expected type is a ONE-COMPONENT tuple whose component is exactly the actual \
+         type. A one-column computed schema 1-collapses to its element type and drops the \
+         column name — a `Without`/`Project` residual or a single-member projection yields \
+         `{elem}`, never `({label}: {elem})` — which is the usual source of this pair. \
+         `({label}: {elem})` is a real type: by width subtyping it matches any tuple whose \
+         `{label}` column conforms to `{elem}`. Either write `{elem}` here, or supply a \
+         wider tuple)"
+    )
+}
+
+/// WI-776: the label and element rendering of a one-component named tuple on the EXPECTED
+/// side whose component is exactly what the ACTUAL side has in that position, else `None`.
+///
+/// Descends through same-functor parameterized types, aligning type ARGUMENTS by parameter
+/// name, because the measured `Relation` case puts the collapse one level in — `expected
+/// Relation[T = (name: String)], got Relation[T = String, E = {…}]`. Arguments present on
+/// only one side are skipped rather than treated as a difference: that `E` is absent from
+/// the written type is not part of this fault (`Relation[T = String]` loads clean against
+/// the same actual), so requiring whole-type equality would silence the note on the very
+/// case it was written for.
+///
+/// Compares the element to the actual by RENDERING, not by `==`. That is the carrier-
+/// neutral comparison here: one type can ride as a hash-consed `Value::Term` and an equal
+/// one as a transient `Value::Node` (see the CLAUDE.md representation note), so `==` would
+/// answer "different" for two types this diagnostic is about to print identically. The
+/// message speaks in rendered types, so rendering is also the granularity the reader sees.
+///
+/// TWO RESIDUAL HAZARDS, both reviewed, neither reached by any constructed program — stated
+/// so the next reader inherits the analysis instead of redoing it:
+///
+/// 1. Rendering equality is not type equality, which is the very gap WI-795's
+///    `IDENTICAL_RENDERING_NOTE` exists to flag. Collision sources are real (`Term::Var`
+///    deliberately renders two distinct vars sharing a textual name alike; occurrence and
+///    denoted renderers fall through to `"?"`; an arrow pair differing only in `arity`
+///    renders alike, and this compare does not route through the arity qualification). A hit
+///    would make the note recommend a spelling that also fails. Not reachable from the
+///    surface in review — generic passthrough, cross-op instantiation, type-member
+///    projection and lambda-into-a-1-tuple-slot were all tried and all render distinctly.
+///    The softened wording limits the damage: it states the SHAPE relation it actually
+///    tested, and offers the collapse as the usual cause rather than asserting it.
+/// 2. `same_label` carries a `debug_assert!` that panics on two distinct DOTTED qualified
+///    names sharing a last segment — and [`render_mismatch_pair`] is a diagnostic path,
+///    where the WI-795 comment above expressly argues an assert is wrong because it turns a
+///    user's type error into a crash. This is a fourth caller of a helper whose doc
+///    enumerates three. Measured over the whole `anthill-core` suite: 33 distinct
+///    Parameterized/Parameterized pairs reach here, ZERO trips, because the assert needs
+///    BOTH sides dotted while the written side's binding keys are always interned bare
+///    (dotted keys appear only on the inferred side, and a dotted key written in source is
+///    normalized to bare by the loader). Bounded by that asymmetry, not by luck — but it is
+///    the asymmetry, not the assert, that is load-bearing, so re-measure if binding-key
+///    interning changes.
+fn one_collapse_site(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> Option<(String, String)> {
+    match extract_type(kb, expected) {
+        TypeExtractor::NamedTuple(fields) if fields.len() == 1 => {
+            let (label, elem) = &fields[0];
+            let elem_rendered = type_display_name_value(kb, elem);
+            (elem_rendered == type_display_name_value(kb, actual))
+                .then(|| (kb.resolve_sym(*label).to_string(), elem_rendered))
+        }
+        TypeExtractor::Parameterized { base: expected_base, bindings: expected_args } => {
+            let TypeExtractor::Parameterized { base: actual_base, bindings: actual_args } =
+                extract_type(kb, actual)
+            else {
+                return None;
+            };
+            // Sort identity by canonical name, then the type-param key by SHORT name —
+            // the exact pairing [`same_label`] documents for a type-param binding key,
+            // and the base gate above is the "already-established same-spec context" it
+            // requires. Raw `Symbol` equality is WRONG here and silently so: measured, the
+            // written `Relation[T = …]` keys its argument on a different `Symbol` than the
+            // inferred one does (WI-708 dual-keying — bare vs op-scoped), both resolving
+            // to "T", so an identity compare found no shared argument and the note went
+            // missing on the very case that motivated the descent.
+            if !same_sort_canonical(kb, expected_base, actual_base) {
+                return None;
+            }
+            // The collapse must be the ONLY fault, else the advice is a fix that does not
+            // fix. Taking the first hit and ignoring the rest was measured actively wrong:
+            // `Vec[T = (a: Int64), N = 4]` against `Vec[T = Int64, N = 3]` named the `T`
+            // fix confidently, and applying it verbatim still failed on `N`. So a second
+            // differing argument, or a second collapse site (which would make "write
+            // `{elem}` here" ambiguous about WHICH here), withdraws the note entirely.
+            //
+            // An argument on the ACTUAL side only is skipped, not counted: the measured
+            // `Relation` case has `E` there and `Relation[T = String]` loads clean against
+            // it, so its absence from the written type is not part of the fault. One on the
+            // EXPECTED side only IS a fault, and not one this note explains.
+            let mut site = None;
+            for (param, expected_arg) in &expected_args {
+                let Some((_, actual_arg)) =
+                    actual_args.iter().find(|(q, _)| same_label(kb, *q, *param))
+                else {
+                    return None;
+                };
+                if let Some(hit) = one_collapse_site(kb, expected_arg, actual_arg) {
+                    if site.is_some() {
+                        return None;
+                    }
+                    site = Some(hit);
+                } else if type_display_name_value(kb, expected_arg)
+                    != type_display_name_value(kb, actual_arg)
+                {
+                    return None;
+                }
+            }
+            site
+        }
+        _ => None,
     }
 }
 

@@ -115,6 +115,11 @@ end
 /// A single kept column 1-COLLAPSES to its element type, exactly as any relation schema does,
 /// so this reduces to `String` and not to a one-field tuple. That collapse is why the declared
 /// `-> String` is a real assertion here.
+///
+/// WI-776 kept this behaviour deliberately after weighing the alternative: the collapse
+/// stays, and a mismatch against a written `(who: String)` now EXPLAINS it rather than the
+/// schema growing a column. So this test still asserts `-> String`, and it is the assertion
+/// that pins the decision — see `wi776_one_collapse_diagnostic_test`.
 #[test]
 fn wi763_single_component_keep_spec_reduces_and_collapses() {
     let src = format!(

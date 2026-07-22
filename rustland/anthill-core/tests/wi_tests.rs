@@ -777,3 +777,6 @@ mod wi809_duplicate_named_arg_test;
 
 #[path = "include/wi778_zero_width_token_test.rs"]
 mod wi778_zero_width_token_test;
+
+#[path = "include/wi776_one_collapse_diagnostic_test.rs"]
+mod wi776_one_collapse_diagnostic_test;

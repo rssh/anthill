@@ -1604,6 +1604,29 @@ one-column result is always the bare scalar. Projections and the tuple type
 therefore disagree at arity one — a `Without`/`Project` residual with one column
 left has type `A`, not `(a: A)`.
 
+That disagreement is **deliberate** (WI-776). Note what it is *not*: it is not that
+`(a: A)` is uninhabited. Per §4.5 its inhabitants arrive by width subtyping from a
+wider tuple, in any position — `operation narrow() -> (a: Int64) = wide()` over a
+`wide() -> (a: Int64, b: String)` is well-typed. What no *collapsed* result ever
+has is that type.
+
+The two sides are kept apart because the collapse is a paired **type-and-value**
+convention. The value half is fixed above at the term level — `x.(f)` yields the
+scalar `x.f`, and a single rename `x.(a: f)` collapses too — so a one-column
+*schema* keeping its column would desynchronize the type from the term across
+projection, relation drain, and `Without`/`Project`. Changing that is a breaking
+change to a specified rule, not an impossibility; it is a cost weighed and
+declined, and revisiting it means moving both halves together.
+
+What the implementation owes the author meanwhile is an explanation, so a mismatch
+between a written `(a: A)` and a computed `A` **names the collapse** rather than
+printing two correct-looking types.
+
+One consequence is **not** repaired by that and is a known limit: `Concat` and
+`Without` are not inverses at arity one. The collapse drops the column *name*, so
+`Concat[A = Without[T = (a: A, b: B), Drop = (b: B)], B = (c: C)]` stalls with `A`
+where a named tuple is required, and nothing downstream can supply the lost `a`.
+
 **Grammar note.** The opener is a single fused `.(` token (a `.` immediately
 followed by `(`, no interior space). `.(` is otherwise-free syntax, so the
 receiver may be any atom **including a bare/dotted `name`** (`t.(x, y)`,
