@@ -4,13 +4,13 @@
 
 ## Tracks: WI-773 (the accessor — its API *is* §"The accessor"), WI-771 (the first migration — cpp-gen realization readers). Carries retirement stages **R1** (readers off the raw walk) and **R2** (one read seam, one home) from the vision's `RuleId` plan. Does **not** carry R3/R4 (write-boundary + `RuleId` privatization) — those wait on the write seam (WI-780).
 
-## Relates to: [the extent-sources vision](future/extent-sources.md) (broader model + rationale; this proposal is its minimal read slice, not a re-reading of it), 026.1 Q4 / `kb/route.rs` (the `RouteHandler` prototype this retires), WI-774 (the `Resolve` read policy — a *value* of this proposal's policy parameter, itself deferred), WI-696 (carrier-neutral `Value` goals).
+## Relates to: [the extent-sources vision](future/extent-sources.md) (broader model + rationale; this proposal is its minimal read slice, not a re-reading of it), 026.1 Q4 / `kb/route.rs` (the `RouteHandler` prototype this retires), WI-774 (the `Resolve` read — deferred from this slice, since **delivered** as the `&mut self` sibling `read_facts_resolved`, not a policy variant), WI-696 (carrier-neutral `Value` goals).
 
 ## Scope — exactly the read seam
 
 **In.** One owner per functor for *reads*; the `ExtentSource` trait **read half** (`owned` + `query` — the trait grows one method-set per slice, each arriving *with* its implementation, never ahead of it); discrim mounts; the query contract (`QueryPattern`); the values-first accessor over resident **and** mounted extents; one shipped reference owner, `InMemoryExtentSource` (read-only in this slice); the single-owner loader refusal on the read side.
 
-**Out (untouched, not stubbed).** The write half of the trait, the engine write seam (`assert/update/retract_persistent`), store-native identity, `FactId`/`RuleId` retirement R3/R4, and the anthill-level `persist`/`retract`/`update` API → **the write seam (WI-780)**, *written as its own proposal when it is built*. Volatile sources + observation memo, the oracle archetype, the cache matrix + epochs, constraint delta-checking → named open problems in the [vision](future/extent-sources.md), **not designed until implemented**. The `Resolve` read policy → **WI-774**.
+**Out (untouched, not stubbed).** The write half of the trait, the engine write seam (`assert/update/retract_persistent`), store-native identity, `FactId`/`RuleId` retirement R3/R4, and the anthill-level `persist`/`retract`/`update` API → **the write seam (WI-780)**, *written as its own proposal when it is built*. Volatile sources + observation memo, the oracle archetype, the cache matrix + epochs, constraint delta-checking → named open problems in the [vision](future/extent-sources.md), **not designed until implemented**. The `Resolve` read → **WI-774** (since delivered as the sibling `read_facts_resolved`; the single-valued most-specific-first + loud-tie refinement of it stays deferred — no consumer yet).
 
 Why the read seam alone is *complete*, not partial: "complete interface" binds per **caller**, not per trait. A read caller (cpp-gen) migrates onto the final read contract — values-first, resident **and** mounted, the full query contract — and nothing about it changes when the write seam adds writes (writes are orthogonal to how reads answer). Write callers stay on today's `Store` path, untouched, until they migrate *once* at the write seam (WI-780) — where the write half is added *then*, with its code. The trait is never larger than what is implemented: a method signature carried "for later" is the same speculative liability this split exists to remove.
 
@@ -85,7 +85,12 @@ pub enum BodiedRulePolicy {
     /// TermPrinter::print_rule (Result-over-panic, so CLI/codegen render it
     /// through their own error channels — not an assert-abort).
     Refuse,
-    // Resolve { .. } — WI-774, a later value of this parameter.
+    // Resolve is NOT a variant here (WI-774, DELIVERED): it needs `&mut self`
+    // (resolution allocates fresh vars / interns answers), so it ships as the
+    // sibling `read_facts_resolved(&mut self, functor, selection)` rather than a
+    // value of this `&self` parameter. Resolve IS SLD — it EVALUATES bodied rules
+    // (guards honored) where Refuse rejects them, delegating to the resolver (which
+    // already serves resident + mounted uniformly), loud on depth-cap truncation.
 }
 ```
 
@@ -98,7 +103,7 @@ The shipped reference `ExtentSource`: an enumerable + complete + stable table, *
 ## Consumers in this slice
 
 - **WI-773** — the accessor above, with a pinned bodied-rule-policy test.
-- **WI-771** — migrate cpp-gen's facts-only realization readers (`CarrierTable`/`OpImplTable`/`generated_targets`, `query_realization_facts`, the op_info readers) onto `read_facts(functor, selection, Refuse)`; the placeholder-var build, `query_view`, `is_fact` assert, and `rule_head` extraction all collapse into the accessor, and the refusal renders through `CppCodegenError`. cpp-gen reads the **resident** realization tables today; the same code reads a mounted `realization.*` store the day one is registered, unchanged — the store-API payoff. (The EffectMapping/LanguageMapping candidate readers want the `Resolve` policy = WI-774, out of this slice.)
+- **WI-771** — migrate cpp-gen's facts-only realization readers (`CarrierTable`/`OpImplTable`/`generated_targets`, `query_realization_facts`, the op_info readers) onto `read_facts(functor, selection, Refuse)`; the placeholder-var build, `query_view`, `is_fact` assert, and `rule_head` extraction all collapse into the accessor, and the refusal renders through `CppCodegenError`. cpp-gen reads the **resident** realization tables today; the same code reads a mounted `realization.*` store the day one is registered, unchanged — the store-API payoff. (The EffectMapping/LanguageMapping candidate readers wanted the `Resolve` read = WI-774, out of this slice; **delivered** as the sibling `read_facts_resolved`, which retired the last head-match reader `query_realization_facts` + its WI-770 assert-abort.)
 
 ## Decomposition
 

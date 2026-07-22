@@ -37,6 +37,7 @@ use std::collections::HashMap;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
+use crate::kb::term::Var;
 use crate::kb::term_view::{views_structurally_equal, TermView};
 
 use super::KnowledgeBase;
@@ -379,10 +380,12 @@ pub enum BodiedRulePolicy {
     /// whose head the selection would not have matched (the WI-770 / WI-772
     /// precedent — a divergent policy under one functor is the bug this centralises).
     Refuse,
-    // Resolve { .. } — WI-774, a later value of this parameter: guards honored,
-    // most-specific-first (discrim specificity) ordering, loud on
-    // incomparable-specificity ties. It needs `&mut self` (resolution), so it
-    // arrives with its own signature; this slice ships `Refuse` only.
+    // The `Resolve` policy is NOT a variant here — it needs `&mut self`
+    // (resolution allocates fresh vars / interns answers), so it ships as the
+    // sibling method [`KnowledgeBase::read_facts_resolved`] (WI-774) rather than a
+    // value of this `&self` parameter. `Resolve` IS SLD: it evaluates bodied rules
+    // (guards honored) instead of refusing them, which is why it cannot share the
+    // `&self` candidate-read `Refuse` rides.
 }
 
 /// Error from [`KnowledgeBase::read_facts`]. Result-over-panic so a CLI / codegen
@@ -403,6 +406,17 @@ pub enum ExtentReadError {
     /// enumeration mode answers any selection); surfaced, not dropped, for when
     /// the oracle archetype lands.
     NoSupportedMode { functor: String },
+    /// A [`BodiedRulePolicy`]-less [`KnowledgeBase::read_facts_resolved`] search
+    /// TRUNCATED at the depth cap (WI-628/767). Its row set is then UNDECIDED
+    /// (under-reported), never complete, so it is a loud refusal rather than a
+    /// silently short list — the WI-767 "a missing answer is undecided, not
+    /// refuted" discipline carried onto the Resolve read.
+    SearchTruncated { functor: String },
+    /// A [`KnowledgeBase::read_facts_resolved`] read of a functor with no declared
+    /// field schema ([`KnowledgeBase::entity_field_names`] returned `None`), or a
+    /// `selection` naming a field the functor lacks — the Resolve read needs the
+    /// full field set to build a matching full-arity goal, so it cannot proceed.
+    NoFieldSchema { functor: String },
 }
 
 impl std::fmt::Display for ExtentReadError {
@@ -419,6 +433,16 @@ impl std::fmt::Display for ExtentReadError {
             ExtentReadError::NoSupportedMode { functor } => write!(
                 f,
                 "read_facts(`{functor}`): no declared query mode applies to this selection"
+            ),
+            ExtentReadError::SearchTruncated { functor } => write!(
+                f,
+                "read_facts_resolved(`{functor}`): resolution truncated at the depth cap; \
+                 the row set is undecided, not complete — raise the depth budget"
+            ),
+            ExtentReadError::NoFieldSchema { functor } => write!(
+                f,
+                "read_facts_resolved(`{functor}`): no declared field schema (or a selection \
+                 names an undeclared field); cannot build a full-arity resolution goal"
             ),
         }
     }
@@ -494,6 +518,104 @@ impl KnowledgeBase {
             }
         }
         Ok(out)
+    }
+
+    /// The `Resolve` counterpart of [`Self::read_facts`] (057 §"The accessor"; the
+    /// WI-774 policy the [`BodiedRulePolicy`] note names): the rows of `functor`
+    /// under the ground `selection`, computed by RESOLUTION rather than a candidate
+    /// scan. Where `Refuse` finds candidates and REJECTS any bodied rule, `Resolve`
+    /// IS SLD — it evaluates them, so a bodied rule's GUARD is honored (its
+    /// head-instance is a row iff its body succeeds) and a mounted extent answers
+    /// through the same door the resolver already mounts (WI-797). It DELEGATES to
+    /// the resolver; there is no third read path (the 057 design synthesis:
+    /// "read_facts(Resolve) delegates to the resolver, not a third mount path").
+    ///
+    /// This is the ENUMERATION (walkable, multi-valued) shape: every non-floundered
+    /// solution is a row, in the resolver's most-specific-first discrim order. A
+    /// SINGLE-VALUED read — pick THE most-specific row, loud on an
+    /// incomparable-specificity tie (the decided WI-774 policy for a single-valued
+    /// table functor) — layers on top and is deliberately NOT built here: no table
+    /// functor reads single-valued yet, and the one single-valued realization
+    /// resolve (`anthill.realization.realizes_effect`) is a proper predicate with
+    /// mutually-exclusive NAF arms and its own loud tie-check, so the mechanism
+    /// would have no consumer.
+    ///
+    /// WI-767 depth-cap discipline: a search that TRUNCATED at the depth cap has an
+    /// UNDECIDED (under-reported) row set, so it is a loud
+    /// [`ExtentReadError::SearchTruncated`] — never a silently short list. A
+    /// FLOUNDERED solution (undischarged residual goals) proves nothing and is
+    /// dropped (as `realizes_effect`'s own reader does). NOTE the loud channel here
+    /// covers depth truncation only: a MOUNTED-backend query failure is handled by
+    /// the resolver's mount path, which in v1 logs and yields empty (WI-797) rather
+    /// than surfacing an error — so a mounted read can under-report without a loud
+    /// signal until fallible backends land (WI-780). Immaterial to today's
+    /// consumers, all of which read RESIDENT functors.
+    ///
+    /// Needs `&mut self` (resolution allocates fresh vars / interns answers), so it
+    /// is a sibling method, not a `&self` [`BodiedRulePolicy`] variant.
+    pub fn read_facts_resolved(
+        &mut self,
+        functor: Symbol,
+        selection: &[(Symbol, Value)],
+    ) -> Result<Vec<Value>, ExtentReadError> {
+        let goal = self.enumeration_goal(functor, selection)?;
+        let config = crate::kb::resolve::ResolveConfig::default();
+        let (solutions, truncated) =
+            self.resolve_goals_with_truncation(vec![goal.clone()], &config);
+        if truncated {
+            return Err(ExtentReadError::SearchTruncated {
+                functor: self.resolve_sym(functor).to_string(),
+            });
+        }
+        Ok(solutions
+            .into_iter()
+            .filter(|s| s.residual.is_empty())
+            .map(|s| self.reify_value(&goal, &s.subst))
+            .collect())
+    }
+
+    /// Build the enumeration goal for [`Self::read_facts_resolved`]: a
+    /// `functor(field: …)` pattern carrying EVERY declared field of `functor`
+    /// ([`Self::entity_field_names`]) — each grounded to its `selection` value, or
+    /// a fresh var. A `Value::Entity` (the resolver's non-interned query idiom — a
+    /// transient query pattern is never hash-consed, per the CLAUDE.md
+    /// representation note). The FULL field set is load-bearing: unification needs
+    /// a full-arity pattern to match a stored fact head (the loader pads omitted
+    /// fields on stored heads, not on a runtime goal), so a partial goal would
+    /// silently match nothing.
+    fn enumeration_goal(
+        &mut self,
+        functor: Symbol,
+        selection: &[(Symbol, Value)],
+    ) -> Result<Value, ExtentReadError> {
+        let fields: Vec<Symbol> = self
+            .entity_field_names(functor)
+            .ok_or_else(|| ExtentReadError::NoFieldSchema {
+                functor: self.resolve_sym(functor).to_string(),
+            })?
+            .to_vec();
+        // Every selection key must be a declared field — else the caller selected
+        // on a field the functor lacks; loud, not a silent empty read.
+        for (key, _) in selection {
+            if !fields.contains(key) {
+                return Err(ExtentReadError::NoFieldSchema {
+                    functor: self.resolve_sym(functor).to_string(),
+                });
+            }
+        }
+        let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+        for f in fields {
+            let v = match selection.iter().find(|(s, _)| *s == f) {
+                Some((_, v)) => v.clone(),
+                None => Value::Var(Var::Global(self.fresh_var(f))),
+            };
+            named.push((f, v));
+        }
+        Ok(Value::Entity {
+            functor,
+            pos: std::rc::Rc::from(Vec::<Value>::new()),
+            named: std::rc::Rc::from(named),
+        })
     }
 
     /// The mounted arm of [`Self::read_facts`]: push `selection` down as the query
@@ -1343,5 +1465,151 @@ mod tests {
             .expect("enumerable");
         assert_eq!(got.len(), 1, "only the correctly-functored row survives");
         assert_eq!(got[0].head(&kb).functor_sym(), Some(item));
+    }
+
+    // ── read_facts_resolved (WI-774): the Resolve read ─────────────
+
+    /// Assert a GUARDED bodied rule `f(id: <id>, tag: <tag>) :- guard()` — a
+    /// realization-shaped derivation whose head is a row iff `guard()` succeeds.
+    /// The shape WI-770's blanket refusal rejects and WI-774's Resolve evaluates.
+    fn assert_guarded_wi_rule(
+        kb: &mut KnowledgeBase,
+        f: Symbol,
+        id_field: Symbol,
+        tag_field: Symbol,
+        id: i64,
+        tag: &str,
+        guard: Symbol,
+    ) {
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        let id_t = kb.alloc(Term::Const(Literal::Int(id)));
+        let tag_t = kb.alloc(Term::Const(Literal::String(tag.to_string())));
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: [(id_field, id_t), (tag_field, tag_t)].into(),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: guard,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(head, vec![body], sort, domain, None);
+    }
+
+    /// Assert a nullary ground fact `f()` — a guard that succeeds.
+    fn assert_nullary_fact(kb: &mut KnowledgeBase, f: Symbol) {
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(head, sort, domain, None);
+    }
+
+    /// The sorted `id` ints of a set of resolved rows (each a reified
+    /// `Value::Entity` whose `id` child is a `Const(Int)`).
+    fn resolved_ids(kb: &KnowledgeBase, rows: &[Value], id_field: Symbol) -> Vec<i64> {
+        let mut v: Vec<i64> = rows
+            .iter()
+            .filter_map(|r| match r.named_arg(kb, id_field).map(|a| a.to_value()) {
+                Some(Value::Term { id, .. }) => match kb.get_term(id) {
+                    Term::Const(Literal::Int(n)) => Some(*n),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn read_facts_resolved_enumerates_resident_facts() {
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        for (id, tag) in [(1, "a"), (2, "b")] {
+            assert_wi_fact(&mut kb, f, id_field, tag_field, id, tag);
+        }
+        let all = kb.read_facts_resolved(f, &[]).expect("resolves");
+        assert_eq!(resolved_ids(&kb, &all, id_field), vec![1, 2]);
+    }
+
+    #[test]
+    fn read_facts_resolved_honors_a_passing_bodied_rule_guard() {
+        // The genuine CONTRAST with `Refuse`: a bodied rule is RESOLVED, not
+        // rejected, so its guard is honored. `enabled()` present → the derived row
+        // (id 3) joins the resident facts.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        let enabled = kb.intern("enabled");
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 2, "b");
+        assert_guarded_wi_rule(&mut kb, f, id_field, tag_field, 3, "c", enabled);
+        assert_nullary_fact(&mut kb, enabled);
+        let all = kb.read_facts_resolved(f, &[]).expect("resolves, guard honored");
+        assert_eq!(resolved_ids(&kb, &all, id_field), vec![1, 2, 3]);
+        // The SAME bodied rule is REFUSED by `Refuse` (the WI-770 shape) — proving
+        // the two policies genuinely differ on a bodied candidate, not by accident.
+        assert!(matches!(
+            kb.read_facts(f, &[], BodiedRulePolicy::Refuse),
+            Err(ExtentReadError::BodiedRule { .. })
+        ));
+    }
+
+    #[test]
+    fn read_facts_resolved_omits_a_row_whose_guard_fails() {
+        // Guard `enabled()` ABSENT → the derived row does NOT appear, and (unlike
+        // Refuse) resolving the bodied rule is NOT an error — the row is simply not
+        // proved. This is the over-refusal WI-770 caused and WI-774 fixes.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        let enabled = kb.intern("enabled");
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
+        assert_guarded_wi_rule(&mut kb, f, id_field, tag_field, 3, "c", enabled);
+        // `enabled()` is NOT asserted → the guard fails.
+        let all = kb.read_facts_resolved(f, &[]).expect("resolves");
+        assert_eq!(resolved_ids(&kb, &all, id_field), vec![1]);
+    }
+
+    #[test]
+    fn read_facts_resolved_grounds_a_selection_field() {
+        // A named-field selection grounds that slot in the goal (a `Value::Str`
+        // unifies with the fact's `Const(String)` field — the shape cpp-gen uses to
+        // ground `LanguageMapping.language`).
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        for (id, tag) in [(1, "a"), (2, "b"), (3, "a")] {
+            assert_wi_fact(&mut kb, f, id_field, tag_field, id, tag);
+        }
+        let a = kb
+            .read_facts_resolved(f, &[(tag_field, Value::Str("a".into()))])
+            .expect("resolves");
+        assert_eq!(resolved_ids(&kb, &a, id_field), vec![1, 3]);
+    }
+
+    #[test]
+    fn read_facts_resolved_refuses_a_functor_without_a_field_schema() {
+        // No registered entity-field schema → no full-arity goal can be built; a
+        // loud refusal, not a silent empty read.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("schemaless");
+        let err = kb.read_facts_resolved(f, &[]).unwrap_err();
+        assert!(matches!(err, ExtentReadError::NoFieldSchema { .. }));
     }
 }
