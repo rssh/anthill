@@ -6252,6 +6252,7 @@ struct ExprBuilderSyms {
     k_param: Symbol,
     k_target: Symbol,
     k_strategy: Symbol,
+    k_using: Symbol,
     k_conclude: Symbol,
     k_name: Symbol,
     k_receiver: Symbol,
@@ -6290,6 +6291,7 @@ impl ExprBuilderSyms {
             k_param: kb.intern("param"),
             k_target: kb.intern("target"),
             k_strategy: kb.intern("strategy"),
+            k_using: kb.intern("using"),
             k_conclude: kb.intern("conclude"),
             k_name: kb.intern("name"),
             k_receiver: kb.intern("receiver"),
@@ -8916,9 +8918,18 @@ impl<'a> Loader<'a> {
                 let using: Vec<Symbol> =
                     meta.using.iter().map(|nm| self.remap_name(nm)).collect();
 
-                // KB term: proof_stmt { target, [strategy,] body, [conclude] }.
-                // `using` rides only on the occurrence (citation metadata,
-                // not a child); a term round-trip drops it.
+                // KB term: proof_stmt { target, [strategy,] using, body, [conclude] }.
+                //
+                // WI-814: `using` IS on the term. It used to be withheld here on
+                // the ground that it is "citation metadata, not a child", and that
+                // was WRONG: `proof Y using X` and `proof Y using Z` are DIFFERENT
+                // proofs, because the premise set differs. `using` is part of what
+                // a proof IS, so a term omitting it did not represent proofs — it
+                // was INCOMPLETE, not merely smaller, and every consumer reading
+                // the term as a proof's identity (`views_structurally_equal`, a
+                // `GoalKey`, a discrim key) silently conflated two distinct proofs.
+                // Always present as a possibly-`nil` list, the `dot_apply.args`
+                // precedent — a proof always has a premise set; it may be empty.
                 let k_target = self.expr_syms.k_target;
                 let k_strategy = self.expr_syms.k_strategy;
                 let k_body = self.expr_syms.k_body;
@@ -8931,6 +8942,10 @@ impl<'a> Loader<'a> {
                     let strat_term = self.kb.alloc(Term::Ident(strat));
                     named.push((k_strategy, strat_term));
                 }
+                let using_terms: Vec<TermId> =
+                    using.iter().map(|s| self.kb.alloc(Term::Ident(*s))).collect();
+                let using_list = build_list(self.kb, &using_terms);
+                named.push((self.expr_syms.k_using, using_list));
                 named.push((k_body, body));
                 if let Some(c) = conclude {
                     named.push((k_conclude, c));

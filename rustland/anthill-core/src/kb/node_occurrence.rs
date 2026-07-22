@@ -4076,9 +4076,23 @@ fn visit_fn(
         }
         "let_expr" => {
             let pattern = get_named_arg(kb, named_args, "pattern").unwrap_or(t);
-            // WI-342: this term→occurrence rebuild reads the ground `type_name`
-            // TermId off the reflect term — it rides as a ground `Value::Term`.
-            let type_annotation = get_named_arg(kb, named_args, "type_name").map(Value::term);
+            // WI-814: NO `type_name` read. WI-342 T8 deleted the WRITE side (the
+            // `k_type_name` slot on the reflect `let_expr` term) because it was
+            // write-only — the typer types a `let` from the occurrence, never
+            // from the term. This reader outlived it, leaving a slot with no
+            // producer anywhere in the workspace: half a deleted feature, which
+            // is worse than either state. It made the two carriers disagree about
+            // a `let`'s ARITY (the loader emits 3 named args, this could rebuild
+            // one carrying a 4th), and a cross-carrier arity divergence is a
+            // wrong answer, not a precision loss (WI-425).
+            //
+            // NOT to be confused with the PARSE-IR `type_name` key
+            // (`parse/convert.rs`, WI-271), which is live and load-bearing: it
+            // carries `let x: T = …` from source as a `Term::ParseAux(TypeExpr)`
+            // and the loader lowers it onto the occurrence via
+            // `type_expr_to_value`. Different namespace, different direction.
+            // Deleting THAT would drop every let annotation.
+            let type_annotation = None;
             let value = get_named_arg(kb, named_args, "value");
             let body = get_named_arg(kb, named_args, "body");
             work.push(WorkOp::Build(BuildFrame::Let { span, pattern, type_annotation }));
@@ -4099,12 +4113,32 @@ fn visit_fn(
             match named_ref(kb, named_args, "target") {
                 Some(target) => {
                     let strategy = named_ref(kb, named_args, "strategy");
-                    // WI-538: the `proof_stmt` KB term carries no `using`
-                    // cites — they ride only on the live-load occurrence
-                    // (citation metadata, not a child), so a rebuild from
-                    // the term yields an empty `using`. A follow-on
-                    // encodes them when `using`-as-hypotheses lands.
-                    let using: Vec<Symbol> = Vec::new();
+                    // WI-814: the `proof_stmt` term DOES carry its `using`
+                    // cites now, as a possibly-`nil` `List[Ident]`, so the
+                    // rebuild recovers them instead of yielding an empty list.
+                    // The former "citation metadata, not a child" reading was
+                    // wrong: `proof Y using X` and `proof Y using Z` are
+                    // different proofs, so dropping the premise set made the
+                    // term an INCOMPLETE representation, and a rebuild silently
+                    // returned a proof that was not the one stored.
+                    let using: Vec<Symbol> = extract_named_list(kb, named_args, "using")
+                        .iter()
+                        .filter_map(|t| match kb.get_term(*t) {
+                            Term::Ref(s) | Term::Ident(s) => Some(*s),
+                            // A non-symbol in the cite list is a malformed term,
+                            // not a shape this rebuild understands: loud in debug,
+                            // dropped in release (the arm's own `None` fallback
+                            // for a malformed `proof_stmt` is the same shape).
+                            _ => {
+                                debug_assert!(
+                                    false,
+                                    "proof_stmt rebuild: `using` element is not a \
+                                     Ref/Ident symbol",
+                                );
+                                None
+                            }
+                        })
+                        .collect();
                     let conclude = get_named_arg(kb, named_args, "conclude");
                     let body = get_named_arg(kb, named_args, "body");
                     work.push(WorkOp::Build(BuildFrame::Proof {

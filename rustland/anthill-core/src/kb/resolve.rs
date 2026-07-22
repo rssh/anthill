@@ -3768,10 +3768,16 @@ impl KnowledgeBase {
     /// the carrier-neutral [`match_view_value_pattern`](Self::match_view_value_pattern)
     /// (WI-683), no reification.
     ///
-    /// The `view_is_indexable` guard rejects a child-bearing / post-elaboration
-    /// reflect form (`if`/`let`/`lambda`/`match`, …) that reads `Opaque` and has no
-    /// goal-term shape: it fails clean (such a pattern could never unify with a
-    /// goal-shaped target) rather than trip `insert_pattern`'s `Opaque` panic. This
+    /// The `view_is_indexable` guard rejects a reflect form that reads `Opaque`
+    /// and has no goal-term shape: it fails clean (such a pattern could never
+    /// unify with a goal-shaped target) rather than trip `insert_pattern`'s
+    /// `Opaque` panic. WI-814 SHRANK that set — `if`/`let`/`lambda`/`match` (and
+    /// the Pattern-kind occurrences they bind) now read as their loader term
+    /// twins and so ARE indexable — as does `proof`; what remains opaque is the
+    /// rebuild-only `*Within` IR, `SetLit`/`TupleLit`, and Rigid/DeBruijn vars (see
+    /// `occ_head`'s final arm, which names each reason). The guard still earns its
+    /// place: it reads the WHOLE structure, so a control-flow form NESTED under an
+    /// otherwise-indexable head still fails clean. This
     /// is the carrier-neutral peer of the former `try_occurrence_to_term`
     /// `None => Failure` arm (WI-297) and — reading the WHOLE structure — also fails
     /// clean on a *nested* such form (which that top-level-only reify silently

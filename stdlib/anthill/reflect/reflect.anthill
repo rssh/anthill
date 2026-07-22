@@ -464,8 +464,21 @@ namespace anthill.reflect
   enum Expr
     entity match_expr(scrutinee: NodeOccurrence, branches: List[MatchBranch])
     entity if_expr(cond: NodeOccurrence, then_branch: NodeOccurrence, else_branch: NodeOccurrence)
-    entity let_expr(pattern: Pattern, value: NodeOccurrence, body: NodeOccurrence,
-                    type_name: Option[T = Term])
+    -- WI-814: no `type_name` field. WI-342 deleted the term-side annotation
+    -- slot as write-only (the typer types a `let` from the occurrence, not the
+    -- term); the declaration and the term→occurrence reader outlived it, so the
+    -- field described a slot nothing produced. A `let`'s annotation now has ONE
+    -- carrier: the occurrence's `Let.type_annotation`, a `Value`.
+    --
+    -- NOT because a type cannot ride a term — it can, and this field could be
+    -- restored faithfully. WI-390 gave a denoted-bearing type a hash-consed twin
+    -- (`value_to_term` lowers a `Value::Node` type losslessly via
+    -- `occurrence_to_term`), so the older "a denoted type cannot be hash-consed"
+    -- reasoning no longer holds. The slot went because nothing READ it: the typer
+    -- types a `let` from the occurrence. If a consumer ever needs the annotation
+    -- in a TERM-side identity (a `GoalKey`, a discrim key), restoring the slot is
+    -- the fix and it is now representable.
+    entity let_expr(pattern: Pattern, value: NodeOccurrence, body: NodeOccurrence)
     entity lambda_expr(param: Pattern, body: NodeOccurrence)
     entity apply(fn: Symbol, args: List[ApplyArg],
                  type_args: Option[T = List[type_arg]])

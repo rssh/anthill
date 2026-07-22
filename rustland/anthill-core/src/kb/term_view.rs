@@ -19,7 +19,9 @@ use std::rc::Rc;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
-use super::node_occurrence::{EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
+use super::node_occurrence::{
+    EffectExprNode, Expr, MatchBranch, NodeOccurrence, Pattern, TypeChild, TypeNode,
+};
 use super::persist_subst::BindValue;
 use super::term::{Literal, Term, TermId, Var};
 use super::KnowledgeBase;
@@ -151,9 +153,13 @@ impl ViewItem<'_> {
 // ── Occurrence views (WI-276) ──────────────────────────────────
 //
 // `Value::Node` / `ViewItem::Node` expose a reflect `Expr` occurrence to the
-// matcher. Only the Apply / Constructor / DotApply / leaf forms are made
-// structural — those a `[simp]` rule LHS matches; control-flow forms (Match /
-// If / Let / Lambda / collection literals / *Within / …) stay `Opaque`.
+// matcher. The Apply / Constructor / DotApply / ListLit / leaf forms are
+// structural — those a `[simp]` rule LHS matches — as are `Lambda` and the
+// Pattern-kind occurrences it binds (WI-814: `head()` also backs IDENTITY and
+// GoalKey fingerprints, where `Opaque` is a false negative, and WI-550's
+// globally-unique binder gensyms make descending under the binder capture-free).
+// The remaining control-flow / post-elaboration forms (Match / If / Let /
+// *Within / …) stay `Opaque`.
 
 // ── DotApply ↔ `dot_apply` term isomorphism (WI-425) ────────────
 //
@@ -166,35 +172,56 @@ impl ViewItem<'_> {
 // keys and a fact stored under one carrier matches a query in the other
 // (discrim-query-is-the-unifier: a cross-carrier miss is a wrong answer).
 
-/// The `dot_apply` functor symbol, or `None` when reflect isn't loaded — the
-/// occurrence then reads `Opaque` (fail-soft: such a KB cannot hold a
-/// loader-built DotApply occurrence anyway).
-fn dot_apply_functor(kb: &KnowledgeBase) -> Option<Symbol> {
-    kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")
-}
-
-/// A field key the dot_apply encoding uses, panicking if it was never
-/// interned: any KB holding a DotApply occurrence interned them all when the
-/// loader built the occurrence's term twin (`ExprSyms`), so a miss is an
-/// inconsistent KB — and silently dropping a key would desync `named_keys`
-/// from `head`'s `named_arity` and mis-depth a discrim walk.
-fn dot_apply_key(kb: &KnowledgeBase, k: &str) -> Symbol {
+/// A field key of a reflect form's term twin, panicking if it was never
+/// interned: any KB holding such an occurrence interned every one of that
+/// form's keys when the loader built the occurrence's term twin (`ExprSyms`),
+/// so a miss is an inconsistent KB — and silently dropping a key would desync
+/// `named_keys` from `head`'s `named_arity` and mis-depth a discrim walk.
+///
+/// ONE owner for the whole file's field-key reads (`form` names the twin in the
+/// message): the DotApply, VarRef and WI-814 Lambda/Pattern arms all resolve
+/// keys the same way, and each restating the panic invited them to drift.
+fn reflect_field_key(kb: &KnowledgeBase, k: &str, form: &str) -> Symbol {
     kb.lookup_symbol(k).unwrap_or_else(|| {
         panic!(
-            "dot_apply view: field key `{k}` not interned — KB holds a \
-             DotApply occurrence but never built a dot_apply term twin"
+            "{form} view: field key `{k}` not interned — KB holds a \
+             {form} occurrence but never built a {form} term twin"
         )
     })
 }
 
-/// The named-child keys of a `dot_apply` term in the loader's builder order:
-/// `receiver`, `name`, `args`.
-fn dot_apply_keys(kb: &KnowledgeBase) -> [Symbol; 3] {
-    [
-        dot_apply_key(kb, "receiver"),
-        dot_apply_key(kb, "name"),
-        dot_apply_key(kb, "args"),
-    ]
+/// A reflect/prelude CONSTRUCTOR symbol a view arm synthesizes a child from,
+/// panicking for the same reason as [`reflect_field_key`]: the occurrence
+/// exists, so its twin's constructors were resolved when the loader built it.
+fn reflect_ctor_sym(kb: &KnowledgeBase, qname: &str, form: &str) -> Symbol {
+    kb.try_resolve_symbol(qname).unwrap_or_else(|| {
+        panic!(
+            "{form} view: `{qname}` unresolved — KB holds a {form} \
+             occurrence but never built a {form} term twin"
+        )
+    })
+}
+
+fn dot_apply_key(kb: &KnowledgeBase, k: &str) -> Symbol {
+    reflect_field_key(kb, k, "dot_apply")
+}
+
+/// A synthesized constructor-occurrence child, carrying the parent's span and
+/// owner. Every view arm that must present a term twin's *wrapper* node — an
+/// `ApplyArg`, a `cons`/`nil` cell, an `Option.some`/`none`, a `NamedPattern` —
+/// builds it through here, so the wrappers are shaped identically across arms.
+/// `from_projection: false`: a synthesized wrapper is never the `.( )`
+/// desugaring's tuple (WI-762).
+fn synth_ctor(
+    occ: &NodeOccurrence,
+    name: Symbol,
+    named: Vec<(Symbol, Rc<NodeOccurrence>)>,
+) -> Rc<NodeOccurrence> {
+    NodeOccurrence::new_expr(
+        Expr::Constructor { name, pos_args: Vec::new(), named_args: named, from_projection: false },
+        occ.span,
+        occ.owner,
+    )
 }
 
 /// Synthesize a DotApply occurrence's `args` child — the `List[ApplyArg]`
@@ -218,14 +245,7 @@ fn dot_apply_args_child(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Rc<NodeOccurrence> {
-    let resolve = |q: &str| {
-        kb.try_resolve_symbol(q).unwrap_or_else(|| {
-            panic!(
-                "dot_apply view: `{q}` unresolved — KB holds a DotApply \
-                 occurrence but never built a dot_apply term twin"
-            )
-        })
-    };
+    let resolve = |q: &str| reflect_ctor_sym(kb, q, "dot_apply");
     let cons = resolve("anthill.prelude.List.cons");
     let nil = resolve("anthill.prelude.List.nil");
     let some = resolve("anthill.prelude.Option.some");
@@ -234,16 +254,7 @@ fn dot_apply_args_child(
     let (k_head, k_tail) = (dot_apply_key(kb, "head"), dot_apply_key(kb, "tail"));
     let (k_name, k_value) = (dot_apply_key(kb, "name"), dot_apply_key(kb, "value"));
     let mk = |name: Symbol, named: Vec<(Symbol, Rc<NodeOccurrence>)>| {
-        NodeOccurrence::new_expr(
-            Expr::Constructor {
-                name,
-                pos_args: Vec::new(),
-                named_args: named,
-                from_projection: false,
-            },
-            occ.span,
-            occ.owner,
-        )
+        synth_ctor(occ, name, named)
     };
     let none_occ = mk(none, Vec::new());
     let mut items: Vec<Rc<NodeOccurrence>> =
@@ -278,14 +289,6 @@ fn dot_apply_args_child(
 // a Γ fact over a binder non-indexable, so silently dropped by
 // `view_is_indexable`).
 
-/// The `var_ref` functor symbol, or `None` when reflect isn't loaded. `occ_head`
-/// turns a `None` here into a loud `debug_assert` + `Opaque` — a `VarRef`
-/// occurrence implies reflect IS loaded (the loader / `build_expr_leaf` need
-/// it), so a miss is an inconsistent KB, not a normal degenerate one.
-fn var_ref_functor(kb: &KnowledgeBase) -> Option<Symbol> {
-    kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
-}
-
 /// The `ListLiteral` functor symbol, or `None` when reflect isn't loaded — the
 /// occurrence then reads `Opaque` (fail-soft: such a KB holds no reflect list
 /// literal). WI-683: a `[…]` list-literal occurrence reads STRUCTURALLY as its
@@ -297,16 +300,490 @@ fn list_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.ListLiteral")
 }
 
-/// The `name` field key of the `var_ref` encoding, panicking if never interned
-/// (mirrors [`dot_apply_key`]): any KB holding a `var_ref` occurrence interned
-/// it building the occurrence's term twin, so a miss is an inconsistent KB — and
-/// a silent drop would desync `named_keys` from `head`'s `named_arity`.
-fn var_ref_name_key(kb: &KnowledgeBase) -> Symbol {
-    kb.lookup_symbol("name").unwrap_or_else(|| {
-        panic!(
-            "var_ref view: field key `name` not interned — KB holds a \
-             var_ref occurrence but never built a var_ref term twin"
-        )
+// ── Lambda ↔ `lambda_expr` term isomorphism (WI-814) ────────────
+//
+// A `lambda p -> e` occurrence reads byte-identically to the term twin the
+// loader emits for the same source: `LoadBuildFrame::Lambda` (load.rs) allocs
+// `Fn{anthill.reflect.Expr.lambda_expr, named: [param, body]}` — 0 positional,
+// 2 named, in that builder order — alongside the occurrence it builds from the
+// same parse node. So the twin is not invented here; it already existed, and
+// `Expr::Lambda` merely stopped reading as `Opaque`.
+//
+// WHY THE OPACITY WAS NOT LOAD-BEARING. `head()` is read by three consumers,
+// and the binder question lands differently on each:
+//
+//  - MATCHING (discrim insert/query, `match_view`). Descending under a binder is
+//    unsound only where two distinct binders can share a name, because then a
+//    substitution can CAPTURE. They cannot here: WI-550 mints every binder symbol
+//    through `intern_unique`, memoized on the binder's PARSE-NODE id (load.rs),
+//    so a binder symbol is globally unique by construction and a `var_ref` names
+//    exactly one binder. That is Barendregt's convention enforced at the producer,
+//    which is what makes the descent capture-free — NOT the `Opaque` collapse,
+//    which merely declined to look. (The DeBruijn arms in `discrim.rs` and
+//    `resolve.rs`'s `unify_match_values` stay the second line of defence: a
+//    `Var::DeBruijn` reached inside a body still keys as an inert var-edge and
+//    still refuses to bind.)
+//  - IDENTITY (`views_structurally_equal`). `Opaque` has no `(Opaque, Opaque)`
+//    arm, so it answered FALSE for two lambdas — including a lambda and itself.
+//    Correct as a matching predicate, a false negative as an identity test; this
+//    is what blocked WI-762's receiver-divergence guard.
+//  - FINGERPRINT (`goal_fingerprint`/`GoalKey`). `Opaque` is payload-free, so it
+//    made a lambda-bearing goal both non-cacheable and OVER-deduped in
+//    `seen_goals` (two answers differing only inside a lambda collapsed to one
+//    key and the second was dropped). Structural tokens fix both.
+//
+// ALPHA-EQUIVALENCE — the view is SYNTACTIC, deliberately. Two lambdas compare
+// equal iff their binder SYMBOLS and bodies match, so `lambda x -> x` and
+// `lambda y -> y` written independently are UNEQUAL (WI-550 gives them distinct
+// gensyms), while the N copies `convert.rs`'s distribute-dot makes of ONE source
+// receiver are EQUAL (they share the parse node, hence the gensym) — which is
+// exactly what WI-762's guard needs. Making the view alpha-aware would require
+// normalizing binder symbols de-Bruijn-style HERE, and that is the wrong place:
+// the view's whole contract is that it reads what the term twin reads, and the
+// twin is a hash-consed `Fn{lambda_expr, param: Ref(gensym), …}` compared by
+// structure, not up to alpha. An alpha-aware view would DISAGREE with its own
+// twin — a cross-carrier miss, which is a wrong answer, not a precision loss
+// (WI-425). Alpha-equivalence is a relation over both carriers; if it is ever
+// wanted it belongs beside `views_structurally_equal`, not inside `head()`.
+
+// ── The reflect-WRAPPED `Expr` forms (WI-814) ───────────────────
+//
+// READ THIS BEFORE ADDING AN ARM. An `Expr` occurrence is born on one of TWO
+// paths that emit DIFFERENT terms for the same source, and the loader says so
+// itself ("the children differ on purpose … Do NOT 'unify' the two paths",
+// `load.rs`, `convert_term`):
+//
+//   A. an OPERATION / CONST BODY (`convert_expr_term`) → a reflect-WRAPPED term:
+//      `f(a, b)` becomes `Fn{Expr.apply, fn: Ref(f), args: List[ApplyArg]}`.
+//   B. a FACT / RULE HEAD / RULE BODY (`convert_term` → `materialize_from_handle`)
+//      → the DIRECT term `Fn{f, a, b}`.
+//
+// `occ_head` is faithful to B for `Apply` / `Constructor` / `Const` (an
+// `Expr::Apply` heads as `Functor{f, pos, named}`, its DIRECT spelling) and to A
+// for the forms in the table below. That split is not arbitrary: the forms below
+// EXIST ONLY ON PATH A — there is no direct-term spelling of an `if` or a
+// `lambda` — so for them "the term twin" is unambiguous. `Apply`/`Constructor`/
+// `Const` are provenance-overloaded and a single head can only be right for one
+// provenance; which one they should read is a separate question and NOT settled
+// here (see the note at the `_ => Opaque` arm).
+//
+// The table is the SINGLE owner of each form's functor and named keys, so
+// `head`'s `named_arity` and `named_keys`' list cannot disagree — the desync
+// `reflect_field_key`'s panic exists to catch, here made structurally
+// impossible. Keys are in the loader's BUILDER SLICE order, not sorted: the
+// discrim walk descends in `named_keys` order, so matching the term's stored
+// order is what keeps a term-side insert and an occurrence-side query in
+// lockstep.
+
+/// A shape table's key list must be DUPLICATE-FREE. Checked, not assumed,
+/// because [`views_structurally_equal`] compares using only ONE side's keys:
+/// it iterates `a.named_keys` and looks each up in `b`, concluding the key SETS
+/// are identical from `named_arity` equality plus `keys(a) ⊆ keys(b)`. That
+/// inference is a cardinality argument — |keys(a)| = na = nb = |keys(b)| — and
+/// it collapses the moment `keys(a)` repeats a name: `b` could then carry an
+/// extra key that is never compared, and two structurally DIFFERENT views would
+/// answer EQUAL.
+///
+/// It is the same failure the duplicate-label rules already refuse at their own
+/// producers — a repeated label leaves a component reachable by neither name nor
+/// position, so it is never checked (WI-805 tuples, WI-808 entity fields, WI-809
+/// named args). Those guard what an AUTHOR writes; this guards what the shape
+/// table declares, which no parser sees. Debug-only: the lists are static, so a
+/// violation is a source bug caught the first time the arm is exercised, not a
+/// runtime condition.
+fn debug_assert_keys_distinct(qname: &str, keys: &[&str]) {
+    debug_assert!(
+        keys.iter().enumerate().all(|(i, k)| !keys[..i].contains(k)),
+        "shape table for `{qname}` repeats a key in {keys:?} — \
+         `views_structurally_equal` compares only one side's keys, so a repeat \
+         lets an uncompared child on the other side pass as equal",
+    );
+}
+
+/// The path-A reflect twin of `expr`: functor qualified name + named keys in
+/// builder order. `None` for a form that is not reflect-wrapped (path B, a leaf,
+/// or still `Opaque`).
+fn expr_wrapped_shape(expr: &Expr) -> Option<(&'static str, &'static [&'static str])> {
+    let shape = expr_wrapped_shape_inner(expr)?;
+    debug_assert_keys_distinct(shape.0, shape.1);
+    Some(shape)
+}
+
+fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'static str])> {
+    Some(match expr {
+        // WI-278 / WI-397 / WI-425 — always arity-3, `args = nil` for a bare
+        // field access.
+        Expr::DotApply { .. } => {
+            ("anthill.reflect.Expr.dot_apply", &["receiver", "name", "args"])
+        }
+        // WI-537.
+        Expr::VarRef { .. } => ("anthill.reflect.Expr.var_ref", &["name"]),
+        // WI-814 — `LoadBuildFrame::Lambda`.
+        Expr::Lambda { .. } => ("anthill.reflect.Expr.lambda_expr", &["param", "body"]),
+        // WI-814 — `LoadBuildFrame::IfExpr`. Binds nothing at all; it was opaque
+        // only because no `[simp]` LHS had ever needed it.
+        Expr::If { .. } => {
+            ("anthill.reflect.Expr.if_expr", &["cond", "then_branch", "else_branch"])
+        }
+        // WI-814 — `LoadBuildFrame::LetExpr`, exactly THREE keys, unconditionally.
+        //
+        // `Expr::Let.type_annotation` is NOT among them, and that is now exact
+        // rather than lossy: WI-342 deleted the term-side `type_name` slot as
+        // write-only, and WI-814 finished the deletion — the reflect field and
+        // `visit_fn`'s reader are gone too, so no `let_expr` term anywhere can
+        // carry an annotation. A conditional 4th key would describe a term shape
+        // that no longer exists.
+        //
+        // What this means for identity, stated because it is real: two `let`s
+        // differing ONLY in their annotation compare structurally EQUAL through
+        // this view. The annotation is genuinely absent from the term carrier,
+        // so any view that distinguished them would disagree with the term — a
+        // cross-carrier miss, which is a wrong answer (WI-425). A consumer that
+        // needs annotations in an identity test must read
+        // `Let.type_annotation` off the occurrence directly, its sole carrier.
+        //
+        // AND THAT IS FIXABLE, so do not read the loss as permanent: WI-390 gave
+        // a denoted-bearing type a faithful hash-consed twin (`value_to_term`
+        // lowers a `Value::Node` type losslessly through `occurrence_to_term`),
+        // so the annotation CAN be restored to the `let_expr` term and to this
+        // key list. The older "a denoted type cannot be hash-consed" reasoning is
+        // out of date and must not be repeated here.
+        Expr::Let { .. } => ("anthill.reflect.Expr.let_expr", &["pattern", "value", "body"]),
+        // WI-814 — `LoadBuildFrame::ProofStmt`, in its push order
+        // `target, strategy?, using, body, conclude?`.
+        //
+        // `using` IS here because WI-814 put it on the TERM, which is where the
+        // defect was. It had been withheld as "citation metadata, not a child",
+        // and that was wrong: `proof Y using X` and `proof Y using Z` are
+        // DIFFERENT proofs, because the premise set differs. A carrier omitting
+        // it does not represent proofs — it is INCOMPLETE, not merely smaller —
+        // so every consumer reading the term as a proof's identity conflated two
+        // distinct proofs. The fix belonged in the loader, NOT in a view that
+        // diverges from its term: carrier-neutral comparison presupposes the
+        // carriers hold the SAME INFORMATION, so the repair is to make them
+        // equivalent, never to truncate the complete one or to enrich only the
+        // view. Always present as a possibly-`nil` list (the `dot_apply.args`
+        // precedent) — a proof always has a premise set; it may be empty.
+        //
+        // `strategy` / `conclude` stay CONDITIONAL because the term pushes them
+        // conditionally; that is a faithful mirror, not a loss — an absent key
+        // and a `none()` payload carry the same information, and the arity
+        // difference keeps the two shapes distinct on both carriers.
+        Expr::Proof { strategy, conclude, .. } => (
+            "anthill.reflect.Expr.proof_stmt",
+            match (strategy.is_some(), conclude.is_some()) {
+                (false, false) => &["target", "using", "body"],
+                (true, false) => &["target", "strategy", "using", "body"],
+                (false, true) => &["target", "using", "body", "conclude"],
+                (true, true) => &["target", "strategy", "using", "body", "conclude"],
+            },
+        ),
+        // WI-814 — `LoadBuildFrame::MatchExpr`; `branches` is a `List[MatchBranch]`
+        // cons/nil spine (see [`match_branches_child`]).
+        Expr::Match { .. } => ("anthill.reflect.Expr.match_expr", &["scrutinee", "branches"]),
+        _ => return None,
+    })
+}
+
+/// `expr`'s reflect-wrapped head, or `None` when the form is not wrapped or
+/// reflect isn't loaded (the caller then falls through to the direct-form arms /
+/// `Opaque` — fail-soft, as such a KB holds no loader-built occurrence of it).
+fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
+    let (qname, keys) = expr_wrapped_shape(expr)?;
+    let f = kb.try_resolve_symbol(qname)?;
+    Some(ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: keys.len() })
+}
+
+/// `expr`'s reflect-wrapped named keys, in builder order — empty when the form
+/// is not wrapped or reflect isn't loaded (consistent with the `Opaque` head
+/// [`wrapped_expr_head`] then yields).
+fn wrapped_expr_keys(expr: &Expr, kb: &KnowledgeBase) -> Vec<Symbol> {
+    let Some((qname, keys)) = expr_wrapped_shape(expr) else { return Vec::new() };
+    if kb.try_resolve_symbol(qname).is_none() {
+        return Vec::new();
+    }
+    let form = qname.rsplit('.').next().unwrap_or(qname);
+    keys.iter().map(|k| reflect_field_key(kb, k, form)).collect()
+}
+
+/// The named child `sym` of a reflect-WRAPPED form, mirroring the child the
+/// loader puts in that slot. Sub-expression children are the EXISTING
+/// occurrences (shared `Rc`s); leaves (`Ref`) and wrappers (`ApplyArg` /
+/// `MatchBranch` / `Option` / cons cells) are synthesized per call, the same
+/// cost class as `DotApply`'s `name` child.
+///
+/// `sym` is matched back to its NAME in [`expr_wrapped_shape`]'s key slice, and
+/// the arms below dispatch on `(variant, name)`. By NAME, not by position:
+/// `Let` and `Proof` have CONDITIONAL keys, so a position would mean different
+/// fields for different occurrences of the same variant. Adding a key without an
+/// arm for it is what the `debug_assert` catches.
+fn wrapped_expr_child(
+    occ: &NodeOccurrence,
+    expr: &Expr,
+    kb: &KnowledgeBase,
+    sym: Symbol,
+) -> Option<Rc<NodeOccurrence>> {
+    let (qname, names) = expr_wrapped_shape(expr)?;
+    // Reflect not loaded ⇒ head reads `Opaque`, so this yields no children too.
+    kb.try_resolve_symbol(qname)?;
+    // Resolved lazily and short-circuited rather than through `wrapped_expr_keys`,
+    // which allocates a `Vec<Symbol>` — this runs once per named-child access on
+    // the discrim / `views_structurally_equal` / `goal_fingerprint` paths, so the
+    // allocation was pure waste (the code this replaced used a stack array).
+    let form = qname.rsplit('.').next().unwrap_or(qname);
+    let idx = names.iter().position(|k| reflect_field_key(kb, k, form) == sym)?;
+    let name = names[idx];
+    let leaf = |e: Expr| NodeOccurrence::new_expr(e, occ.span, occ.owner);
+    Some(match (expr, name) {
+        (Expr::DotApply { receiver, .. }, "receiver") => Rc::clone(receiver),
+        (Expr::DotApply { name: m, .. }, "name") => leaf(Expr::Ref(*m)),
+        (Expr::DotApply { pos_args, named_args, .. }, "args") => {
+            dot_apply_args_child(occ, kb, pos_args, named_args)
+        }
+        (Expr::VarRef { name: n }, "name") => leaf(Expr::Ref(*n)),
+        (Expr::Lambda { param, .. }, "param") => Rc::clone(param),
+        (Expr::Lambda { body, .. }, "body") => Rc::clone(body),
+        (Expr::If { condition, .. }, "cond") => Rc::clone(condition),
+        (Expr::If { then_branch, .. }, "then_branch") => Rc::clone(then_branch),
+        (Expr::If { else_branch, .. }, "else_branch") => Rc::clone(else_branch),
+        (Expr::Let { pattern, .. }, "pattern") => Rc::clone(pattern),
+        (Expr::Let { value, .. }, "value") => Rc::clone(value),
+        (Expr::Let { body, .. }, "body") => Rc::clone(body),
+        // `Ident`, NOT `Ref` — `LoadBuildFrame::ProofStmt` spells both the
+        // proof target and the strategy as `Term::Ident`, and a synthesized
+        // `Ref` would head as `ViewHead::Ref` against the term's `Ident`.
+        (Expr::Proof { target, .. }, "target") => leaf(Expr::Ident(*target)),
+        (Expr::Proof { strategy: Some(s), .. }, "strategy") => leaf(Expr::Ident(*s)),
+        // The premise set, as the `List[Ident]` the loader now emits.
+        (Expr::Proof { using, .. }, "using") => {
+            let cites = using.iter().map(|s| leaf(Expr::Ident(*s))).collect();
+            synth_cons_list(occ, kb, cites)
+        }
+        (Expr::Proof { body, .. }, "body") => Rc::clone(body),
+        (Expr::Proof { conclude: Some(c), .. }, "conclude") => Rc::clone(c),
+        (Expr::Match { scrutinee, .. }, "scrutinee") => Rc::clone(scrutinee),
+        (Expr::Match { branches, .. }, "branches") => match_branches_child(occ, kb, branches),
+        _ => {
+            debug_assert!(
+                false,
+                "wrapped_expr_child: key `{name}` of {qname} has no child arm — \
+                 `expr_wrapped_shape` declared a key this function does not build, \
+                 which desyncs `named_keys` from the children a discrim walk reads",
+            );
+            return None;
+        }
+    })
+}
+
+/// Synthesize a Match occurrence's `branches` child — the `List[MatchBranch]`
+/// spine mirroring `LoadBuildFrame::MatchBranch`: each cell is
+/// `MatchBranch(pattern, guard, body)` with `guard` ALWAYS present as
+/// `some(g)`/`none()` (unlike `constructor_pattern`'s `named`, which the twin
+/// omits when empty). `pattern` is the branch's Pattern-kind occurrence, which
+/// reads through the WI-814 Pattern arms.
+fn match_branches_child(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    branches: &[MatchBranch],
+) -> Rc<NodeOccurrence> {
+    let branch_sym = reflect_ctor_sym(kb, "anthill.reflect.MatchBranch", "match_expr");
+    let (k_pattern, k_guard, k_body) = (
+        reflect_field_key(kb, "pattern", "match_expr"),
+        reflect_field_key(kb, "guard", "match_expr"),
+        reflect_field_key(kb, "body", "match_expr"),
+    );
+    let cells = branches
+        .iter()
+        .map(|b| {
+            synth_ctor(
+                occ,
+                branch_sym,
+                vec![
+                    (k_pattern, Rc::clone(&b.pattern)),
+                    (k_guard, synth_option(occ, kb, b.guard.as_ref().map(Rc::clone))),
+                    (k_body, Rc::clone(&b.body)),
+                ],
+            )
+        })
+        .collect();
+    synth_cons_list(occ, kb, cells)
+}
+
+// ── Pattern ↔ reflect `Pattern` term isomorphism (WI-814) ───────
+//
+// Reached BECAUSE `Expr::Lambda` became structural: `param` is a Pattern-kind
+// occurrence, and a `Functor` head over an `Opaque` child is worse than no head
+// at all — `views_structurally_equal` would answer false on every lambda (the
+// gap this ticket exists to close) and `GoalKey` would keep the `Opaque` token
+// that makes the goal non-cacheable. So the head and its children land together.
+//
+// The twin is `pattern_to_term` (`node_occurrence.rs`), which `try_occurrence_to_term`
+// already routes to — i.e. the `TermId` carrier of a pattern has been fully
+// structural all along while the occurrence carrier read `Opaque`. This closes a
+// CARRIER ASYMMETRY, it does not invent a representation.
+//
+// Every variant is 0-positional; `wildcard` is nullary and therefore reads as
+// `ViewHead::Ref` through `functor_view_head` on BOTH carriers (WI-436).
+//
+// LOSSY, IDENTICALLY ON BOTH CARRIERS: `Pattern::Tuple.labels` has nowhere to go
+// in the reflect surface (`entity tuple_pattern(elements: List[Pattern])`), so
+// `pattern_to_term` drops it — see the WI-803 "KNOWN LOSSY AND UNCOVERED" note at
+// that arm. This view drops it too, and must: diverging would make a labelled
+// tuple pattern key differently in the two carriers, and a cross-carrier miss is
+// a wrong answer (WI-425) — strictly worse than the shared imprecision, which is
+// a defect of the reflect surface and is tracked at the site that drops it. The
+// consequence to know: `lambda (a: x, b: y) -> e` and `lambda (x, y) -> e`
+// compare structurally EQUAL.
+
+/// Pattern-variant metadata: the twin's functor qualified name and its named
+/// keys IN BUILDER ORDER (`pattern_to_term`). One table so `pattern_head`'s
+/// arity and `pattern_named_keys`' list can never disagree — the desync
+/// `reflect_field_key`'s panic exists to prevent, here made structural.
+/// `Constructor`'s `named` key is present only when non-empty, exactly as the
+/// twin omits it "keeping the positional form byte-identical".
+fn pattern_shape(pat: &Pattern) -> (&'static str, &'static [&'static str]) {
+    let shape = pattern_shape_inner(pat);
+    debug_assert_keys_distinct(shape.0, shape.1);
+    shape
+}
+
+fn pattern_shape_inner(pat: &Pattern) -> (&'static str, &'static [&'static str]) {
+    match pat {
+        Pattern::Var { .. } => ("anthill.reflect.Pattern.var_pattern", &["name", "type_ann"]),
+        Pattern::Wildcard => ("anthill.reflect.Pattern.wildcard", &[]),
+        Pattern::Literal { .. } => ("anthill.reflect.Pattern.literal_pattern", &["value"]),
+        Pattern::Constructor { named_args, .. } => (
+            "anthill.reflect.Pattern.constructor_pattern",
+            if named_args.is_empty() { &["name", "args"] } else { &["name", "args", "named"] },
+        ),
+        Pattern::Tuple { .. } => ("anthill.reflect.Pattern.tuple_pattern", &["elements"]),
+    }
+}
+
+fn pattern_head(pat: &Pattern, kb: &KnowledgeBase) -> ViewHead {
+    let (qname, keys) = pattern_shape(pat);
+    match kb.try_resolve_symbol(qname) {
+        Some(f) => functor_view_head(kb, f, 0, keys.len()),
+        // Reflect not loaded ⇒ no pattern twin exists in this KB (fail-soft,
+        // mirroring the wrapped-form arms); its children then read none, which is
+        // consistent with this head.
+        None => ViewHead::Opaque,
+    }
+}
+
+fn pattern_named_keys(pat: &Pattern, kb: &KnowledgeBase) -> Vec<Symbol> {
+    let (qname, keys) = pattern_shape(pat);
+    if kb.try_resolve_symbol(qname).is_none() {
+        return Vec::new();
+    }
+    keys.iter().map(|k| reflect_field_key(kb, k, "pattern")).collect()
+}
+
+/// A cons/nil spine of occurrences over the prelude List constructors, mirroring
+/// `build_list_termid` (the `pattern_to_term` list builder). NOT
+/// `build_occurrence_cons_list`, for the reason spelled out on
+/// [`dot_apply_args_child`]: that helper emits `nil` as a bare `Expr::Ref`,
+/// while the term twin emits a nullary `Fn{nil}`.
+fn synth_cons_list(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    items: Vec<Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
+    let cons = reflect_ctor_sym(kb, "anthill.prelude.List.cons", "pattern");
+    let nil = reflect_ctor_sym(kb, "anthill.prelude.List.nil", "pattern");
+    let (k_head, k_tail) =
+        (reflect_field_key(kb, "head", "pattern"), reflect_field_key(kb, "tail", "pattern"));
+    let mut acc = synth_ctor(occ, nil, Vec::new());
+    for item in items.into_iter().rev() {
+        acc = synth_ctor(occ, cons, vec![(k_head, item), (k_tail, acc)]);
+    }
+    acc
+}
+
+/// `some(value: inner)` / `none()` as occurrences, mirroring `build_some` /
+/// `build_none`.
+fn synth_option(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    inner: Option<Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
+    match inner {
+        Some(v) => {
+            let some = reflect_ctor_sym(kb, "anthill.prelude.Option.some", "pattern");
+            synth_ctor(occ, some, vec![(reflect_field_key(kb, "value", "pattern"), v)])
+        }
+        None => {
+            let none = reflect_ctor_sym(kb, "anthill.prelude.Option.none", "pattern");
+            synth_ctor(occ, none, Vec::new())
+        }
+    }
+}
+
+/// The named child `sym` of a Pattern-kind occurrence, mirroring the child
+/// `pattern_to_term` builds for the same key. Sub-pattern children are the
+/// EXISTING occurrences (shared `Rc`s, themselves Pattern-kind and so viewed
+/// through these same arms); only leaves (`Ref`/`Const`) and wrappers
+/// (`Option`/`cons`/`NamedPattern`) are synthesized, as in
+/// [`dot_apply_args_child`].
+fn pattern_named_child(
+    occ: &NodeOccurrence,
+    pat: &Pattern,
+    kb: &KnowledgeBase,
+    sym: Symbol,
+) -> Option<Rc<NodeOccurrence>> {
+    let (qname, names) = pattern_shape(pat);
+    kb.try_resolve_symbol(qname)?; // reflect not loaded ⇒ head reads Opaque (no children)
+    // Located by NAME via the shape table, mirroring `wrapped_expr_child` — so
+    // the two halves of the WI-814 view share one dispatch shape, and a key with
+    // no arm is caught by the same tripwire rather than silently yielding `None`.
+    // `Wildcard` declares no keys, so it exits here without needing an arm.
+    let idx = names.iter().position(|k| reflect_field_key(kb, k, "pattern") == sym)?;
+    let name = names[idx];
+    let leaf = |e: Expr| NodeOccurrence::new_expr(e, occ.span, occ.owner);
+    Some(match (pat, name) {
+        (Pattern::Var { name: n, .. }, "name") => leaf(Expr::Ref(*n)),
+        (Pattern::Var { type_ann, .. }, "type_ann") => {
+            synth_option(occ, kb, type_ann.as_ref().map(Rc::clone))
+        }
+        (Pattern::Literal { value }, "value") => leaf(Expr::Const(value.clone())),
+        (Pattern::Constructor { name: n, .. }, "name") => leaf(Expr::Ref(*n)),
+        (Pattern::Constructor { pos_args, .. }, "args") => {
+            synth_cons_list(occ, kb, pos_args.to_vec())
+        }
+        // Declared by `pattern_shape` only when non-empty, exactly as the twin
+        // omits it — so this arm is unreachable for the all-positional form.
+        (Pattern::Constructor { named_args, .. }, "named") => {
+            let named_pattern = reflect_ctor_sym(kb, "anthill.reflect.NamedPattern", "pattern");
+            let (k_name, k_pattern) = (
+                reflect_field_key(kb, "name", "pattern"),
+                reflect_field_key(kb, "pattern", "pattern"),
+            );
+            let items = named_args
+                .iter()
+                .map(|(field, sub)| {
+                    synth_ctor(
+                        occ,
+                        named_pattern,
+                        vec![(k_name, leaf(Expr::Ref(*field))), (k_pattern, Rc::clone(sub))],
+                    )
+                })
+                .collect();
+            synth_cons_list(occ, kb, items)
+        }
+        // `labels` is dropped — see the LOSSY note above (WI-803 / WI-819).
+        (Pattern::Tuple { positional, .. }, "elements") => {
+            synth_cons_list(occ, kb, positional.to_vec())
+        }
+        _ => {
+            debug_assert!(
+                false,
+                "pattern_named_child: key `{name}` of {qname} has no child arm — \
+                 `pattern_shape` declared a key this function does not build, which \
+                 desyncs `named_keys` from the children a discrim walk reads, and \
+                 makes the pattern compare unequal to ITSELF",
+            );
+            return None;
+        }
     })
 }
 
@@ -320,6 +797,19 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
     }
     if let Some(en) = occ.as_effect_expr() {
         return effect_expr_head(en, kb);
+    }
+    // WI-814: a Pattern-kind occurrence reads as its `pattern_to_term` twin —
+    // the carrier asymmetry that made a lambda's `param` child `Opaque`.
+    if let Some(pat) = occ.as_pattern() {
+        return pattern_head(pat, kb);
+    }
+    // WI-814: the reflect-WRAPPED forms (DotApply / VarRef / Lambda / If / Let /
+    // Match) read as the path-A term twin the loader emits — one table owns
+    // functor + keys, so arity and `named_keys` cannot drift apart.
+    if let Some(expr) = occ.as_expr() {
+        if let Some(head) = wrapped_expr_head(expr, kb) {
+            return head;
+        }
     }
     match occ.as_expr() {
         Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
@@ -343,26 +833,6 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Spliced(v)) => v.head(kb),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
-        // A `let` / lambda / op-param binder reference reads as its reflect term
-        // twin `var_ref(name: Ref(name))` — head `Functor{Expr.var_ref}`, one
-        // named child `name` (see the VarRef ↔ var_ref isomorphism above) — so it
-        // indexes/matches byte-identically to that term and stays DISTINCT from a
-        // bare `ident`. `occ_index_var` keeps it off the var-edge (a `VarRef`
-        // carries a name, not a `Var` identity).
-        Some(Expr::VarRef { .. }) => match var_ref_functor(kb) {
-            Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 1 },
-            // Unreachable (a VarRef occurrence implies reflect is loaded): loud in
-            // debug rather than a silent degrade, `Opaque` in release (its
-            // children then read none, consistent with this head).
-            None => {
-                debug_assert!(
-                    false,
-                    "occ_head: VarRef but anthill.reflect.Expr.var_ref unresolved \
-                     — a VarRef occurrence implies reflect is loaded"
-                );
-                ViewHead::Opaque
-            }
-        },
         // A var of ANY kind surfaces its `Var` — the discrim tree keys a flex
         // `Global` / bound `DeBruijn` as a wildcard var-edge and a `Rigid`
         // skolem as a `RigidVar` constant (mirrors `TermIdView`/`Value`). The
@@ -372,18 +842,6 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // WI-520: a concrete nullary leaf whose term twin is `Term::Bottom`
         // (`ViewHead::Bottom`) — not opaque.
         Some(Expr::Bottom) => ViewHead::Bottom,
-        // WI-278 / WI-397 / WI-425: a dot form `r.name(args)` reads
-        // STRUCTURALLY as its `dot_apply(receiver, name, args: List[ApplyArg])`
-        // term twin — always arity-3 named, no positionals, call args folded
-        // into the `args` list child — so a fact embedding a DotApply (e.g. a
-        // compound-projection receiver `s.cell`) indexes/matches identically
-        // to the term the loader emits for the same source.
-        Some(Expr::DotApply { .. }) => match dot_apply_functor(kb) {
-            Some(da) => {
-                ViewHead::Functor { functor: Some(da), pos_arity: 0, named_arity: 3 }
-            }
-            None => ViewHead::Opaque,
-        },
         // WI-683: a `[…]` list literal reads as its `ListLiteral(e…)` term twin —
         // the elements are the positional children, no tail (`occurrence_to_term`
         // builds `Fn{ListLiteral, pos_args: e…}`). Through `functor_view_head`,
@@ -393,8 +851,38 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             Some(f) => functor_view_head(kb, f, es.len(), 0),
             None => ViewHead::Opaque,
         },
-        // Rigid / DeBruijn vars, control-flow and post-elaboration forms,
-        // and rule-head occurrences are opaque to rule-LHS matching.
+        // WHAT IS STILL `Opaque`, AND WHY — each for a NAMED reason, not because
+        // the arm is unwritten (WI-814 retired that catch-all reading):
+        //
+        //  - Rigid / DeBruijn vars and rule-head occurrences, as before.
+        //  - The `*Within` family. Their TERM side is LIVE, not vestigial: the
+        //    requirement-insertion pass (`req_insertion.rs`, WI-231) does rewrite
+        //    a classified call to `apply_within` — but as a `Term::Fn` recorded in
+        //    `kb.dispatch_rewrites` (`record_apply_within_concrete`, typing.rs),
+        //    NOT as an occurrence. The occurrence stays `Expr::Apply` carrying its
+        //    `CallClass` tag, which is what the runtime reads post-WI-248 ("the
+        //    term-keyed redirect is now diagnostic-only"). So `Expr::ApplyWithin`
+        //    is reached only by reading such a term BACK through `visit_fn`, and
+        //    the occurrence↔term pair a head would keep in lockstep is not one the
+        //    pipeline actually produces side by side. `HoApplyWithin` /
+        //    `ConstructorWithin` / `LambdaWithin` go further: NOTHING constructs
+        //    them, in either carrier. `LambdaWithin` is SUPERSEDED — NOT an
+        //    "unimplemented gap", which would predict a failure nobody can
+        //    reproduce. A lambda whose body calls a spec op ALREADY gets its
+        //    dictionaries, by a different mechanism: WI-223 has `reduce_lambda`
+        //    (`eval/eval.rs`) SNAPSHOT the enclosing `frame.requirements` into
+        //    `Closure.requirements` at lambda-CONSTRUCTION time and restore them
+        //    on invocation, so the requirement scope rides the closure VALUE and
+        //    the IR node is not needed. Whether to FINISH that supersession
+        //    (delete the variants) or REVERSE it is WI-816. Either way, a head
+        //    here could not be tested against a producer.
+        //  - `HoApply` / `RequirementAtSort` / `ConstructRequirement`:
+        //    rebuild-only — `visit_fn` materializes them from terms nothing in
+        //    the pipeline emits, so again there is no live pair to align.
+        //  - `SetLit` / `TupleLit`: path-B siblings of `ListLit`. `TupleLit`
+        //    especially is entangled with tuple IDENTITY (WI-788 order, WI-803
+        //    labels, WI-805 distinctness), where a wrong key set is a wrong
+        //    answer about type identity — not a place to guess.
         _ => ViewHead::Opaque,
     }
 }
@@ -441,35 +929,19 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
 /// callers go through [`type_node_named`] / [`effect_expr_named`] (returning a
 /// `ViewItem`) instead. This `Rc`-returning helper stays Expr-only.
 fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Option<Rc<NodeOccurrence>> {
-    // WI-278 / WI-397 / WI-425: a DotApply exposes exactly the term twin's
-    // three named children — `receiver`, `name` (a synthesized `Ref` to the
-    // member symbol), and `args` (the synthesized `List[ApplyArg]` of its call
-    // args). Named call args are NOT directly addressable — they live inside
-    // `args`, as in the term.
-    if let Some(Expr::DotApply { receiver, name, pos_args, named_args }) = occ.as_expr() {
-        // Reflect not loaded ⇒ the head reads `Opaque` (no children).
-        dot_apply_functor(kb)?;
-        let [k_receiver, k_name, k_args] = dot_apply_keys(kb);
-        if sym == k_receiver {
-            return Some(Rc::clone(receiver));
-        }
-        if sym == k_name {
-            return Some(NodeOccurrence::new_expr(Expr::Ref(*name), occ.span, occ.owner));
-        }
-        if sym == k_args {
-            return Some(dot_apply_args_child(occ, kb, pos_args, named_args));
-        }
-        return None;
+    // WI-814: a Pattern-kind occurrence's children mirror its `pattern_to_term`
+    // twin (checked before `as_expr()`, which is `None` for a Pattern).
+    if let Some(pat) = occ.as_pattern() {
+        return pattern_named_child(occ, pat, kb, sym);
     }
-    // WI-537: a `var_ref` exposes its single named child `name` — a synthesized
-    // `Ref` to the binder symbol, mirroring its term twin `Fn{var_ref, name:
-    // Ref(name)}`, exactly as DotApply synthesizes its `name` child above.
-    if let Some(Expr::VarRef { name }) = occ.as_expr() {
-        var_ref_functor(kb)?; // reflect not loaded ⇒ head reads Opaque (no children)
-        if sym == var_ref_name_key(kb) {
-            return Some(NodeOccurrence::new_expr(Expr::Ref(*name), occ.span, occ.owner));
+    // WI-814: the reflect-WRAPPED forms expose exactly their twin's children.
+    // A wrapped form NEVER falls through to the direct-form lookup below — its
+    // `named_args` (a call's arguments) are not addressable at the top level;
+    // they ride inside the twin's `args` list, as in the term.
+    if let Some(expr) = occ.as_expr() {
+        if expr_wrapped_shape(expr).is_some() {
+            return wrapped_expr_child(occ, expr, kb, sym);
         }
-        return None;
     }
     let named = match occ.as_expr()? {
         Expr::Apply { named_args, .. }
@@ -488,6 +960,18 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
     if let Some(en) = occ.as_effect_expr() {
         return effect_expr_keys(en, kb);
     }
+    // WI-814: a Pattern-kind occurrence's keys, in `pattern_to_term`'s builder
+    // order (the discrim walk descends in this order).
+    if let Some(pat) = occ.as_pattern() {
+        return pattern_named_keys(pat, kb);
+    }
+    // WI-814: the reflect-WRAPPED forms' keys, from the same table `head`'s
+    // `named_arity` counts — so the two cannot disagree.
+    if let Some(expr) = occ.as_expr() {
+        if expr_wrapped_shape(expr).is_some() {
+            return wrapped_expr_keys(expr, kb);
+        }
+    }
     match occ.as_expr() {
         Some(Expr::Apply { named_args, .. })
         | Some(Expr::Constructor { named_args, .. })
@@ -495,21 +979,7 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         | Some(Expr::Instantiation { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
         }
-        // WI-425: the dot_apply term twin's keys in the loader's builder slice
-        // order — `receiver`, `name`, `args` (load.rs; the term is NOT sorted
-        // by field name here). The discrim walk descends named children in
-        // `named_keys` order, so matching the term's stored order is what
-        // keeps a term-side insert and an occurrence-side query in lockstep.
-        Some(Expr::DotApply { .. }) => match dot_apply_functor(kb) {
-            Some(_) => dot_apply_keys(kb).to_vec(),
-            // Reflect not loaded ⇒ the head reads `Opaque` (no children).
-            None => Vec::new(),
-        },
-        // WI-537: the single `name` key, mirroring the var_ref term twin.
-        Some(Expr::VarRef { .. }) => match var_ref_functor(kb) {
-            Some(_) => vec![var_ref_name_key(kb)],
-            None => Vec::new(),
-        },
+        // Every reflect-WRAPPED form returned above, from the shape table.
         _ => Vec::new(),
     }
 }

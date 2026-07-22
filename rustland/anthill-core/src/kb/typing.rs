@@ -1073,6 +1073,14 @@ impl FlowEnv {
     /// (the goal heads as a `Functor`), so it could never discharge anything.
     /// We skip it here ([`view_is_indexable`]) rather than weaken
     /// `insert_pattern`'s rule-head invariant (it rightly panics on such heads).
+    ///
+    /// WI-814 SHRANK the skipped set rather than changing this rule: an `if` /
+    /// `let` / `lambda` / `match` condition (and the patterns they bind) now
+    /// heads as a `Functor`, so such a fact is INSERTED where it used to be
+    /// dropped — and the losslessness argument above is what says that is safe,
+    /// since a goal of the same shape now heads as a `Functor` too and can
+    /// actually match it. Γ grows in exchange; the dedup probe below is what
+    /// keeps that from compounding.
     pub fn assume(&self, kb: &KnowledgeBase, fact: Value) -> FlowEnv {
         if !super::discrim::view_is_indexable(kb, &fact) {
             return self.clone();
@@ -4782,44 +4790,60 @@ fn try_relation_projection_tuple(
     let mut projections: Vec<(Symbol, String)> = Vec::with_capacity(named_args.len());
     for (label, field) in named_args {
         let (recv_occ, source) = relation_column_access_parts(kb, field)?;
-        receiver.get_or_insert(recv_occ);
+        match &receiver {
+            None => receiver = Some(recv_occ),
+            // WI-814 made this WRITABLE — see the note below.
+            Some(first) if !views_structurally_equal(kb, first, &recv_occ) => {
+                return Some(Err(projection_type_error(
+                    &TypeErrorContext::DotProjection { member: *label },
+                    Some(occ.span.span),
+                    "internal: this tuple is marked as a distributive projection `.( )`, whose \
+                     fields share ONE receiver by construction, but its fields' receivers are \
+                     structurally different. A rewrite (`[simp]`) changed one field's receiver \
+                     without clearing the mark.",
+                )));
+            }
+            Some(_) => {}
+        }
         projections.push((*label, source));
     }
     let receiver = receiver?;
     let columns =
         projections.iter().map(|(_, src)| src.as_str()).collect::<Vec<_>>().join(", ");
-    // ASSUMED, NOT VERIFIED — every field shares this receiver. `convert.rs` guarantees it
-    // where it desugars, and taking the FIRST field's receiver is what the mark licenses.
-    // The residual hazard, stated because it is not checked: the mark rides through
-    // rewrites (`simp_rewrite::reassemble` carries `from_projection`), so a `[simp]` rule
-    // that rewrote ONE field's receiver would leave a marked tuple whose fields disagree,
-    // and this would project the first and silently drop the rest.
+    // VERIFIED, not assumed (the loop above) — every field shares this receiver, so taking
+    // the FIRST field's receiver is sound and not merely licensed by the mark. The hazard
+    // the check closes: the mark rides through rewrites (`simp_rewrite::reassemble` carries
+    // `from_projection`), so a `[simp]` rule that rewrote ONE field's receiver would leave a
+    // marked tuple whose fields disagree, and this would have projected the first and
+    // SILENTLY DROPPED the rest.
     //
-    // A verifying guard belongs here and is NOT yet written. What it needs is a plain
-    // STRUCTURAL WALK over the two occurrence trees (`for_each_child` gives the spine) —
-    // no allocation, no `&mut kb`, no interning. Two tools were tried instead and both are
-    // the wrong shape for the question; recorded so neither is reached for again:
+    // The comparator is `views_structurally_equal` and there is deliberately NO second one
+    // beside it. It became usable here only with WI-814: a computed receiver
+    // (`r.where(lambda c -> …)`) nests a LAMBDA in its args, and `Expr::Lambda` used to fall
+    // to `occ_head`'s `_ => ViewHead::Opaque` arm, which has no `(Opaque, Opaque)` equal arm
+    // — sound for a MATCHING predicate, a false negative as an IDENTITY test, and it
+    // rejected all ten `wi714_project` tests. WI-814 gave `Lambda` (and the Pattern-kind
+    // `param` it binds) the head its loader-emitted term twin already had.
+    //
+    // Two other tools were tried and are the wrong shape; recorded so neither is reached for
+    // again:
     //  - `cached_term` / `occurrence_to_term`: answers a pure question by MUTATING the KB,
     //    and its cache "owns the single `+1` … and never releases it (pin-for-lifetime)",
     //    so each comparison pins a term for the KB's life. It is also a GOAL-POSITION
     //    reifier — an args-bearing `Expr::DotApply` (`r.where(λ)`) takes its
     //    `debug_assert!(false)` arm and yields `Term::Bottom`, so in RELEASE two DIFFERENT
-    //    computed receivers would both reify to ⊥ and compare EQUAL. (That arm is
-    //    under-written rather than principled — the loader fills the same `args` slot for
-    //    every dot call — but widening it is a separate concern and not needed here.)
-    //  - `views_structurally_equal`: THE right tool, and a second comparator must NOT be
-    //    written beside it. It is sound but INCOMPLETE for an identity question. Not
-    //    because of the dot: `Expr::DotApply` heads as `Functor{Expr.dot_apply, 0, 3}`
-    //    (WI-278/397/425). It is the LAMBDA nested in a computed receiver's args —
-    //    `Expr::Lambda` falls to `occ_head`'s `_ => ViewHead::Opaque` arm ("control-flow
-    //    and post-elaboration forms … are opaque to rule-LHS matching"), and the function
-    //    has no `(Opaque, Opaque)` arm. Refusing to claim equality is CORRECT for a
-    //    matching predicate; as an identity test it yields false negatives, which is why
-    //    it rejected all ten `wi714_project` tests. Completing it means giving `Lambda` a
-    //    head in `occ_head` — its own ticket: `head()` feeds the discrim tree, `GoalKey`
-    //    fingerprints and rule matching, so Opaque→Functor there changes indexing and
-    //    dedup semantics and needs measurement first.
-    // Both measured, not reasoned.
+    //    computed receivers would both reify to ⊥ and compare EQUAL. (Retiring that reifier
+    //    is WI-815.)
+    //  - a hand-rolled `for_each_child` walk: a second comparator, diverging on first
+    //    contact with a carrier `views_structurally_equal` already handles.
+    //
+    // WHY AN ERROR AND NOT A FALL-THROUGH to ordinary tuple typing. Divergence here is an
+    // INTERNAL INVARIANT VIOLATION (convert.rs built the fields from one receiver), not a
+    // program the author could write — an unmarked tuple of two receivers is a tuple and
+    // never reaches this function. So the reachable cause is a compiler bug, and the
+    // "safe reading of a shape this function does not understand" that the positional guard
+    // above takes does not apply: falling through would type a mis-rewritten projection as
+    // two independent single-column relations and say nothing.
     let lowered = receiver.lowered_receiver();
     let recv_ty = projection_receiver_type(kb, env, &receiver);
     let (Some(receiver), Some(recv_ty)) = (lowered, recv_ty) else {

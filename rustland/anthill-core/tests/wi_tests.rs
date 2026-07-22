@@ -783,3 +783,6 @@ mod wi778_zero_width_token_test;
 
 #[path = "include/wi776_one_collapse_diagnostic_test.rs"]
 mod wi776_one_collapse_diagnostic_test;
+
+#[path = "include/wi814_lambda_view_test.rs"]
+mod wi814_lambda_view_test;
