@@ -22,7 +22,7 @@
 //! for a call's named arguments; the construct that can actually MINT such a tuple
 //! was the one place the rule was missing.
 //!
-//! The guard is therefore at the mint — `check_tuple_label_unique`
+//! The guard is therefore at the mint — `check_label_unique`
 //! (parse/convert.rs), one owner shared by the literal and the tuple type — so the
 //! refusal is a PARSE-stage located error and the tuple is never built. Tests read
 //! `parse` directly for that reason, as WI-639's sibling projection tests do.
@@ -31,6 +31,42 @@ use crate::common::{interp_for, parse_errs, parses_clean, try_load_kb_with};
 
 fn load_errs(src: &str) -> Vec<String> {
     try_load_kb_with(src).err().unwrap_or_default()
+}
+
+/// Assert the duplicate-label refusal for a tuple `what` — `"literal"` or `"type"` — is
+/// LOCATED at the second occurrence, which `src` spells as `needle`.
+///
+/// The span is the whole point of these two tests: a `contains` assertion on the message
+/// passes just as well on a diagnostic reported at the tuple node (the opening paren) or
+/// at the FIRST label, and `parse_errs` discards spans — hence reading `parse` directly.
+///
+/// Factored because both MINTS get this pairing, so the two call sites were ~20 verbatim
+/// lines apart only in these three strings. File-private rather than promoted to
+/// `common/`, following WI-778 — which factored its own `errs_at`/`assert_missing` locally
+/// at exactly this threshold, while `parse_errs`/`parses_clean` earned a place in `common/`
+/// only after multiplying across four suites.
+///
+/// Deriving both strings from `what` is deliberate: the two messages share one shape
+/// because they share one owner (`check_label_unique`), and a rename that broke that
+/// symmetry should break this helper rather than silently pass.
+fn assert_duplicate_located(src: &str, what: &str, needle: &str) {
+    let errs = match anthill_core::parse::parse(src) {
+        Ok(_) => panic!("a duplicate-label tuple {what} must not parse"),
+        Err(errs) => errs,
+    };
+    let want = format!("duplicate tuple {what} component label");
+    let dup = errs
+        .iter()
+        .find(|e| e.message.contains(&want))
+        .unwrap_or_else(|| panic!("no `{want}` error; got: {errs:?}"));
+    let second = src.rfind(needle).expect("fixture spells the second occurrence") as u32;
+    assert_eq!(
+        (dup.span.start, dup.span.end),
+        (second, second + 1),
+        "the error must point at the second label (offset {second}); got {:?} — `{}`",
+        dup.span,
+        &src[dup.span.start as usize..dup.span.end as usize],
+    );
 }
 
 // ── the literal ────────────────────────────────────────────────
@@ -61,24 +97,14 @@ end
 /// the opening paren and still satisfy every `contains` assertion above.
 #[test]
 fn the_duplicate_is_located_at_the_second_occurrence() {
-    let src = "namespace test.wi805.loc\n  import anthill.prelude.Int64\n  \
-               operation bad() -> Int64 = (a: 1, b: 2, a: 3)._1\nend\n";
-    let errs = match anthill_core::parse::parse(src) {
-        Ok(_) => panic!("a duplicate-label tuple literal must not parse"),
-        Err(errs) => errs,
-    };
-    let dup = errs
-        .iter()
-        .find(|e| e.message.contains("duplicate tuple literal component label"))
-        .unwrap_or_else(|| panic!("no duplicate-label error; got: {errs:?}"));
-    // The SECOND `a`, not the first and not the tuple's `(`.
-    let second_a = src.rfind("a: 3").expect("fixture spells the second `a`") as u32;
-    assert_eq!(
-        (dup.span.start, dup.span.end),
-        (second_a, second_a + 1),
-        "the error must point at the second `a` (offset {second_a}); got {:?} — `{}`",
-        dup.span,
-        &src[dup.span.start as usize..dup.span.end as usize],
+    // A literal must live in an expression body to exist at all, so this fixture keeps
+    // one — unlike its type-side sibling below.
+    assert_duplicate_located(
+        "namespace test.wi805.loc\n  import anthill.prelude.Int64\n  \
+         operation bad() -> Int64 = (a: 1, b: 2, a: 3)._1\nend\n",
+        "literal",
+        // The SECOND `a`, not the first and not the tuple's `(`.
+        "a: 3",
     );
 }
 
@@ -101,6 +127,33 @@ end
     assert!(
         errs.iter().any(|e| e.contains("duplicate tuple type component label `a`")),
         "the duplicate type label must be refused, naming `a`; got: {errs:?}",
+    );
+}
+
+/// The TYPE side's diagnostic is LOCATED AT THE SECOND COMPONENT, the sibling of
+/// `the_duplicate_is_located_at_the_second_occurrence` above.
+///
+/// Added closing WI-765, which asked for this rule at `convert_tuple_type` and whose
+/// acceptance reads "a loud LOCATED error naming the repeated key". WI-805 had already
+/// delivered it there, but pinned the span only for the LITERAL — the type side
+/// asserted the message alone, which a check reported at the whole tuple node (or at
+/// the first `a`) would satisfy just as well. Measured before pinning: the error lands
+/// on the second `a`, because `convert_tuple_type` reports at the component's `name`
+/// field node rather than at the component or the tuple.
+///
+/// The fixture is BODYLESS, unlike the message-only test above it. That is not cosmetic:
+/// the guard runs while `convert_tuple_type` walks the tuple's `field_decl` children, so
+/// it is reached with no body, no call, and no name resolution — measured, all three of
+/// `= t.a`, the enclosing operation, and the `import` are unnecessary. Dropping the body
+/// keeps the fixture honest about what a PARSE-stage guard actually needs.
+#[test]
+fn the_duplicate_type_component_is_located_at_the_second_occurrence() {
+    assert_duplicate_located(
+        "namespace test.wi805.tyloc\n  import anthill.prelude.{Int64, String}\n  \
+         operation take(t: (a: Int64, a: String)) -> String\nend\n",
+        "type",
+        // The `a` of `a: String`, not the `a` of `a: Int64` and not the tuple's `(`.
+        "a: String",
     );
 }
 
