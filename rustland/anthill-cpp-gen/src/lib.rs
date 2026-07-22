@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 use anthill_core::kb::resolve::ResolveConfig;
@@ -81,6 +82,46 @@ impl std::fmt::Display for CppCodegenError {
 
 impl std::error::Error for CppCodegenError {}
 
+/// WI-771: a bodied-rule refusal (or extent failure) from the values-first
+/// `read_facts` accessor (WI-773/057) renders through cpp-gen's own error
+/// channel — `error: {message}`, exit 1 at `run_codegen_cpp`. With this `From`,
+/// a realization reader in a `Result<_, CppCodegenError>` context routes the
+/// refusal with a bare `?`. This is the graceful successor to the WI-770
+/// `assert!` abort (exit 101, no span) for the readers WI-771 migrated —
+/// `Implementation` / `OperationImpl` / `Generated` / `OperationInfo`. The one
+/// remaining head-match reader, `query_realization_facts`, still refuses via the
+/// WI-770 `assert!` (see its BOUNDARY note); those two mechanisms coexist until
+/// that reader migrates too.
+impl From<ExtentReadError> for CppCodegenError {
+    fn from(e: ExtentReadError) -> Self {
+        CppCodegenError { message: e.to_string() }
+    }
+}
+
+/// WI-771: narrow a `read_facts` row — a fact head `Value` — to the head
+/// `TermId` the term-based realization readers consume. `Implementation`,
+/// `OperationImpl`, and `Generated` are invariantly Term-carried (their facts
+/// are asserted as ground terms; the pre-WI-771 walk read them via
+/// `kb.rule_head`, which panics on a value head), so a value/Node head is a loud
+/// error here — never a silent skip (surface the unexpected carrier). Contrast
+/// the `OperationInfo` readers, which DO carry value heads (WI-348/WI-366) and
+/// so read the row carrier-neutrally via `op_info::head_name_ref`.
+fn expect_term_head(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    row: Value,
+) -> Result<TermId, CppCodegenError> {
+    match row {
+        Value::Term { id, .. } => Ok(id),
+        _ => Err(CppCodegenError {
+            message: format!(
+                "realization functor `{}` has a non-term fact head; cpp-gen reads it as a term",
+                kb.resolve_sym(functor)
+            ),
+        }),
+    }
+}
+
 // ── Carrier table & codegen context ──────────────────────────────────
 
 /// Resolved table of qualified-anthill-sort-name → C++ host type,
@@ -111,10 +152,16 @@ pub struct CarrierTable {
 }
 
 impl CarrierTable {
-    /// Build the table by scanning the KB's `Implementation` facts.
-    /// Returns an empty table if no `Implementation` symbol is in the
-    /// KB (i.e. the realization stdlib wasn't loaded).
-    pub fn from_kb(kb: &KnowledgeBase) -> Self {
+    /// Build the table from the KB's `Implementation` facts, read through the
+    /// values-first `read_facts` accessor (WI-771/773/057). Returns an empty
+    /// table if no `Implementation` symbol is in the KB (i.e. the realization
+    /// stdlib wasn't loaded). A BODIED `Implementation` rule is refused loudly
+    /// through `CppCodegenError` rather than head-matched with its guard silently
+    /// skipped — which would bind carrier / host_type / binding-key
+    /// unconditionally and emit the wrong C++ type and include (WI-770 class).
+    /// Resident today; a mounted `realization.Implementation` store reads through
+    /// the same call, and cpp-gen unchanged.
+    pub fn from_kb(kb: &KnowledgeBase) -> Result<Self, CppCodegenError> {
         let mut by_qualified = HashMap::new();
         let mut artifacts = HashMap::new();
         let mut bindings = HashMap::new();
@@ -123,11 +170,11 @@ impl CarrierTable {
             .try_resolve_symbol("anthill.realization.Implementation")
             .or_else(|| kb.try_resolve_symbol("Implementation"));
         let Some(impl_sym) = impl_sym else {
-            return Self { by_qualified, artifacts, bindings };
+            return Ok(Self { by_qualified, artifacts, bindings });
         };
 
-        for rid in kb.rules_by_functor(impl_sym) {
-            let head = kb.rule_head(rid);
+        for row in kb.read_facts(impl_sym, &[], BodiedRulePolicy::Refuse)? {
+            let head = expect_term_head(kb, impl_sym, row)?;
 
             let target = match named_string(kb, head, "target") {
                 Some(t) => t,
@@ -182,7 +229,7 @@ impl CarrierTable {
             }
         }
 
-        Self { by_qualified, artifacts, bindings }
+        Ok(Self { by_qualified, artifacts, bindings })
     }
 
     /// Look up a host type by the anthill sort's fully qualified name.
@@ -245,14 +292,19 @@ pub struct OpImplTable {
 }
 
 impl OpImplTable {
-    pub fn from_kb(kb: &KnowledgeBase) -> Self {
+    /// Build the table from the KB's `OperationImpl` facts, read through the
+    /// values-first `read_facts` accessor (WI-771/773/057). A BODIED
+    /// `OperationImpl` rule is refused loudly through `CppCodegenError` rather
+    /// than head-matched with its guard silently skipped — which would enroll the
+    /// operation body for emission unconditionally (WI-770 class).
+    pub fn from_kb(kb: &KnowledgeBase) -> Result<Self, CppCodegenError> {
         let mut by_op = HashMap::new();
         let sym = kb.try_resolve_symbol("anthill.realization.OperationImpl")
             .or_else(|| kb.try_resolve_symbol("OperationImpl"));
-        let Some(sym) = sym else { return Self { by_op } };
+        let Some(sym) = sym else { return Ok(Self { by_op }) };
 
-        for rid in kb.rules_by_functor(sym) {
-            let head = kb.rule_head(rid);
+        for row in kb.read_facts(sym, &[], BodiedRulePolicy::Refuse)? {
+            let head = expect_term_head(kb, sym, row)?;
             // operation: Term::Ref(<op_sym>)
             let Some(op_term) = named_arg(kb, head, "operation") else { continue };
             let op_sym = match kb.get_term(op_term) {
@@ -265,7 +317,7 @@ impl OpImplTable {
                 by_op.insert(op_sym, node.clone());
             }
         }
-        Self { by_op }
+        Ok(Self { by_op })
     }
 
     pub fn lookup(&self, op: Symbol)
@@ -321,8 +373,9 @@ pub struct CodegenContext {
 
 impl CodegenContext {
     /// Build a context with no active profile (language base only). Most
-    /// callers; the profile-aware overlays are forward-looking.
-    pub fn new(kb: &KnowledgeBase) -> Self {
+    /// callers; the profile-aware overlays are forward-looking. `Err` when a
+    /// realization table read refuses a bodied rule (WI-771).
+    pub fn new(kb: &KnowledgeBase) -> Result<Self, CppCodegenError> {
         Self::with_profile(kb, None)
     }
 
@@ -331,16 +384,18 @@ impl CodegenContext {
     /// cpp20-stl-only rename) are selected ahead of the language base.
     ///
     /// Takes the KB only to derive the two tables; it is not retained (WI-760).
-    pub fn with_profile(kb: &KnowledgeBase, profile: Option<String>) -> Self {
-        Self {
-            carriers: CarrierTable::from_kb(kb),
-            op_impls: OpImplTable::from_kb(kb),
+    /// `Err` when a realization table read refuses a bodied `Implementation` /
+    /// `OperationImpl` rule (WI-771).
+    pub fn with_profile(kb: &KnowledgeBase, profile: Option<String>) -> Result<Self, CppCodegenError> {
+        Ok(Self {
+            carriers: CarrierTable::from_kb(kb)?,
+            op_impls: OpImplTable::from_kb(kb)?,
             profile,
             requested_includes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_params: std::cell::RefCell::new(Vec::new()),
             value_bindings: std::cell::RefCell::new(Vec::new()),
             emitting_namespace: std::cell::RefCell::new(None),
-        }
+        })
     }
 
     /// WI-089(a): the ordered active-key list for a keyed realization-fact
@@ -619,7 +674,7 @@ pub fn emit_entity_struct(
     kb: &mut KnowledgeBase,
     entity_name: &str,
 ) -> Result<String, CppCodegenError> {
-    let ctx = CodegenContext::new(kb);
+    let ctx = CodegenContext::new(kb)?;
     let sym = kb.try_resolve_symbol(entity_name).ok_or_else(|| {
         CppCodegenError {
             message: format!("entity '{entity_name}' not found in KB"),
@@ -967,7 +1022,7 @@ pub fn emit_traits_struct(
     kb: &mut KnowledgeBase,
     sort_name: &str,
 ) -> Result<String, CppCodegenError> {
-    let ctx = CodegenContext::new(kb);
+    let ctx = CodegenContext::new(kb)?;
     let sym = kb.try_resolve_symbol(sort_name).ok_or_else(|| {
         CppCodegenError {
             message: format!("sort '{sort_name}' not found in KB"),
@@ -1326,13 +1381,18 @@ fn operations_in_sort(
     };
     let qualified = kb.qualified_name_of(sort_sym).to_string();
 
+    // WI-771: read OperationInfo FACTS through the values-first accessor
+    // (WI-773/057), refusing a bodied OperationInfo rule loudly. The rows are
+    // owned Values, so the immutable read releases before the `&mut kb` lowering
+    // calls below (`lower_type`, `template_param_decls`) run.
+    let op_info_rows = kb.read_facts(op_info_sym, &[], BodiedRulePolicy::Refuse)?;
     let mut out = Vec::new();
-    for rid in kb.rules_by_functor(op_info_sym) {
+    for row in &op_info_rows {
         // WI-348: the OperationInfo head may be a *value fact* (Node-carrying)
         // for an op with a `denoted` effect (`Modify[c]`), so it can't be read
         // as a term. Match the fact to its op symbol carrier-agnostically, then
         // read its fields through the `op_info` API rather than walking the head.
-        let op_sym = match anthill_core::kb::op_info::head_name_ref(kb, kb.rule_head_value(rid)) {
+        let op_sym = match anthill_core::kb::op_info::head_name_ref(kb, row) {
             Some(s) => s,
             None => continue,
         };
@@ -1504,12 +1564,15 @@ fn operations_in_sort(
 /// callers driving project-layout scaffolding (one controller per
 /// traits class) can iterate the targets without re-implementing the
 /// classification.
-pub fn traits_classes_in_namespace(kb: &mut KnowledgeBase, namespace: &str) -> Vec<String> {
-    let ctx = CodegenContext::new(kb);
-    let (_, _, traits) = classify_namespace(kb, &ctx, namespace);
-    traits.iter()
+pub fn traits_classes_in_namespace(
+    kb: &mut KnowledgeBase,
+    namespace: &str,
+) -> Result<Vec<String>, CppCodegenError> {
+    let ctx = CodegenContext::new(kb)?;
+    let (_, _, traits) = classify_namespace(kb, &ctx, namespace)?;
+    Ok(traits.iter()
         .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string())
-        .collect()
+        .collect())
 }
 
 /// One `fact Generated(...)` declaration: an anthill sort the
@@ -1527,20 +1590,24 @@ pub struct GeneratedTarget {
     pub description: Option<String>,
 }
 
-/// Scan the KB for `Generated(...)` facts. Returns every fact
-/// regardless of language so callers can filter (cpp-gen wants
-/// `language = "cpp"`; a Rust scaffold would want `"rust"`). Empty
-/// when nothing is declared.
-pub fn generated_targets(kb: &KnowledgeBase) -> Vec<GeneratedTarget> {
+/// Scan the KB for `Generated(...)` facts, read through the values-first
+/// `read_facts` accessor (WI-771/773/057). Returns every fact regardless of
+/// language so callers can filter (cpp-gen wants `language = "cpp"`; a Rust
+/// scaffold would want `"rust"`). Empty when nothing is declared. A BODIED
+/// `Generated` rule is refused loudly through `CppCodegenError` rather than
+/// head-matched with its guard silently skipped — which would emit the artifact
+/// / select the profile overlay unconditionally (WI-770 class; `generated_targets`
+/// feeds CLI profile selection and the target-declaration check).
+pub fn generated_targets(kb: &KnowledgeBase) -> Result<Vec<GeneratedTarget>, CppCodegenError> {
     let sym = match kb.try_resolve_symbol("anthill.realization.Generated")
         .or_else(|| kb.try_resolve_symbol("Generated"))
     {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
     let mut out = Vec::new();
-    for rid in kb.rules_by_functor(sym) {
-        let head = kb.rule_head(rid);
+    for row in kb.read_facts(sym, &[], BodiedRulePolicy::Refuse)? {
+        let head = expect_term_head(kb, sym, row)?;
         let Some(source) = named_arg(kb, head, "source").and_then(|t| as_string(kb, t)) else { continue };
         let Some(artifact) = named_arg(kb, head, "artifact").and_then(|t| as_string(kb, t)) else { continue };
         let Some(language) = named_arg(kb, head, "language").and_then(|t| as_string(kb, t)) else { continue };
@@ -1550,7 +1617,7 @@ pub fn generated_targets(kb: &KnowledgeBase) -> Vec<GeneratedTarget> {
         out.push(GeneratedTarget { source, artifact, language, profile, kind, description });
     }
     out.sort_by(|a, b| a.source.cmp(&b.source));
-    out
+    Ok(out)
 }
 
 /// Unwrap an `Option<String>` term: `some("foo")` → `Some("foo")`,
@@ -1600,7 +1667,7 @@ pub fn emit_namespace_header(
     kb: &mut KnowledgeBase,
     namespace: &str,
 ) -> Result<String, CppCodegenError> {
-    let ctx = CodegenContext::new(kb);
+    let ctx = CodegenContext::new(kb)?;
     emit_namespace_header_in(kb, &ctx, namespace)
 }
 
@@ -1613,7 +1680,7 @@ pub fn emit_namespace_header_with_profile(
     namespace: &str,
     profile: Option<String>,
 ) -> Result<String, CppCodegenError> {
-    let ctx = CodegenContext::with_profile(kb, profile);
+    let ctx = CodegenContext::with_profile(kb, profile)?;
     emit_namespace_header_in(kb, &ctx, namespace)
 }
 
@@ -1636,7 +1703,7 @@ pub fn emit_namespace_header_in(
     // entity must render as `::anthill::geometry::Vec3`). The guard
     // restores the previous value on every exit path.
     let _ns_guard = ctx.enter_namespace(namespace);
-    let (entities, sums, traits) = classify_namespace(kb, ctx, namespace);
+    let (entities, sums, traits) = classify_namespace(kb, ctx, namespace)?;
     // Namespace-level term-level constants (WI-533) declared directly under
     // this namespace (not inside a sort body — those emit as struct members),
     // plus the WI-536 `Sort_NAME` companions for consts inside carrier-bound
@@ -1737,7 +1804,7 @@ pub fn emit_sum(
     kb: &mut KnowledgeBase,
     sort_name: &str,
 ) -> Result<String, CppCodegenError> {
-    let ctx = CodegenContext::new(kb);
+    let ctx = CodegenContext::new(kb)?;
     let sort_sym = kb.try_resolve_symbol(sort_name).ok_or_else(|| {
         CppCodegenError {
             message: format!("sort '{sort_name}' not found in KB"),
@@ -1872,7 +1939,7 @@ fn classify_namespace(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     namespace: &str,
-) -> (Vec<Symbol>, Vec<(Symbol, Vec<Symbol>)>, Vec<Symbol>) {
+) -> Result<(Vec<Symbol>, Vec<(Symbol, Vec<Symbol>)>, Vec<Symbol>), CppCodegenError> {
     let prefix = format!("{namespace}.");
     let mut flat: Vec<Symbol> = Vec::new();
     let mut by_parent: HashMap<String, Vec<Symbol>> = HashMap::new();
@@ -1912,10 +1979,12 @@ fn classify_namespace(
     // deep), aren't carrier-bound, and aren't already a sum sort.
     let mut traits_qns: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
-        for rid in kb.rules_by_functor(op_info_sym) {
+        // WI-771: read OperationInfo FACTS through the values-first accessor
+        // (WI-773/057), refusing a bodied OperationInfo rule loudly.
+        for row in kb.read_facts(op_info_sym, &[], BodiedRulePolicy::Refuse)? {
             // WI-348: carrier-agnostic — the head may be a value fact for an op
             // with a `denoted` effect; match it to its op symbol via `op_info`.
-            let Some(op_sym) = anthill_core::kb::op_info::head_name_ref(kb, kb.rule_head_value(rid))
+            let Some(op_sym) = anthill_core::kb::op_info::head_name_ref(kb, &row)
             else { continue };
             let Some(parent_qn) = parent_qualified_name(kb, op_sym) else { continue };
             if !parent_qn.starts_with(&prefix) { continue; }
@@ -1953,7 +2022,7 @@ fn classify_namespace(
     flat.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
     sums.sort_by(|(a, _), (b, _)| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
     traits.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
-    (flat, sums, traits)
+    Ok((flat, sums, traits))
 }
 
 /// Topologically order the data band so an item's dependencies on
@@ -3786,6 +3855,23 @@ fn select_keyed<T>(
 /// (qualified first, then bare short name). `ground` is `None` for an
 /// ENUMERATION query — every field a placeholder, so every fact of that
 /// functor matches (WI-576 lists a profile's supported effects that way).
+///
+/// WI-771 BOUNDARY: this is the ONE realization reader NOT migrated to
+/// `read_facts` (its siblings — `CarrierTable`/`OpImplTable`/`generated_targets`
+/// and the `OperationInfo` readers — now are). Two reasons keep it here, so its
+/// refusal stays the WI-770 `assert!` below (a bodied realization rule read
+/// through THIS reader still aborts, exit 101, where a migrated reader refuses
+/// gracefully via `CppCodegenError`, exit 1):
+///   - its facts-only callers (`query_type_mappings` / `query_include_mappings`
+///     / `cpp_method_name` — TypeMapping / IncludeMapping / NamingConvention)
+///     want the same `Refuse` policy, but ride a deep `Option`-returning
+///     type-lowering path (`resolve_type_mapping` → `marshal_for_type` →
+///     `is_body_emittable` → …); routing `read_facts`'s `Result` through it is a
+///     wider Option→Result refactor, its own follow-up.
+///   - its `supported_effects` caller (EffectMapping / LanguageMapping) wants the
+///     WI-774 `Resolve` policy (bodied overlay guards HONORED on the deciding
+///     path), which `read_facts` does not yet implement — so it cannot move to
+///     `Refuse` without wrongly rejecting a program WI-774 means to support.
 fn query_realization_facts(
     kb: &KnowledgeBase,
     functor_names: &[&str],
@@ -3930,9 +4016,9 @@ pub fn cpp_host_type(
     anthill_type: &str,
     profile: Option<&str>,
     binding: Option<&str>,
-) -> Option<String> {
-    let ctx = CodegenContext::with_profile(kb, profile.map(str::to_string));
-    resolve_type_mapping(kb, &ctx, &[anthill_type], binding).map(|h| h.host_type)
+) -> Result<Option<String>, CppCodegenError> {
+    let ctx = CodegenContext::with_profile(kb, profile.map(str::to_string))?;
+    Ok(resolve_type_mapping(kb, &ctx, &[anthill_type], binding).map(|h| h.host_type))
 }
 
 

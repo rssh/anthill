@@ -32,7 +32,7 @@ fn generated_facts_are_extracted_with_source_artifact_and_kind() {
     "#;
     let kb = load_kb_with(source);
 
-    let targets = anthill_cpp_gen::generated_targets(&kb);
+    let targets = anthill_cpp_gen::generated_targets(&kb).expect("Generated facts are plain facts");
     let calc = targets.iter()
         .find(|t| t.source == "test.gen_facts.Calc")
         .expect("expected Generated fact for Calc");
@@ -66,6 +66,7 @@ fn generated_facts_with_none_profile_resolve_to_none() {
     "#;
     let kb = load_kb_with(source);
     let t = anthill_cpp_gen::generated_targets(&kb)
+        .expect("Generated facts are plain facts")
         .into_iter()
         .find(|t| t.source == "test.gen_no_profile.Calc")
         .expect("expected target");
@@ -87,7 +88,7 @@ fn no_facts_yields_empty_list() {
     let kb = load_kb_with(source);
     // Stdlib also has no Generated facts (yet), so the result is
     // empty rather than just "no test-namespace targets".
-    let targets = anthill_cpp_gen::generated_targets(&kb);
+    let targets = anthill_cpp_gen::generated_targets(&kb).expect("Generated facts are plain facts");
     let in_namespace: Vec<_> = targets.iter()
         .filter(|t| t.source.starts_with("test.gen_empty."))
         .collect();
