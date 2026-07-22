@@ -186,7 +186,7 @@ fn wildcard_pat() -> Rc<NodeOccurrence> {
 }
 
 fn var_pat(name: Symbol) -> Rc<NodeOccurrence> {
-    NodeOccurrence::new_pattern(Pattern::Var { name, type_ann: None }, span(), None)
+    NodeOccurrence::new_pattern(Pattern::Var { name }, span(), None)
 }
 
 #[test]

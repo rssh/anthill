@@ -124,9 +124,10 @@ namespace test.wi399.let_single
     k
 end
 "#;
+    let errs = load_errors(&[ok]);
     assert!(
-        load_errors(&[ok]).is_empty(),
-        "let k: s.T resolves to String for s: Box[T=String]; binding \"abc\" must conform",
+        errs.is_empty(),
+        "let k: s.T resolves to String for s: Box[T=String]; binding \"abc\" must conform; got: {errs:?}",
     );
 }
 

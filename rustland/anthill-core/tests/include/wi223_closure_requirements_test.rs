@@ -117,6 +117,8 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     let var_pattern_sym = interp.kb()
         .try_resolve_symbol("anthill.reflect.Pattern.var_pattern")
         .unwrap();
+    // `ApplyArg.name` is declared `Option[Symbol]`, so ITS absent value really is
+    // a `none()` payload — unlike the pattern annotation below.
     let none_sym = interp.kb()
         .try_resolve_symbol("anthill.prelude.Option.none")
         .expect("Option.none registered");
@@ -127,14 +129,14 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     });
     let f_ref = interp.kb_mut().alloc(Term::Ref(f_sym));
     let name_field = interp.kb_mut().intern("name");
-    let type_ann_field = interp.kb_mut().intern("type_ann");
+    // WI-819: an UNANNOTATED `var_pattern` carries `name` ONLY. The `type_ann`
+    // key is present just when the pattern is annotated, and its payload is the
+    // type UNWRAPPED — the retired encoding this used to build (`type_ann:
+    // none()`) now reads as "annotated with the type `none`".
     let var_pattern = interp.kb_mut().alloc(Term::Fn {
         functor: var_pattern_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (name_field, f_ref),
-            (type_ann_field, none_term),
-        ]),
+        named_args: SmallVec::from_slice(&[(name_field, f_ref)]),
     });
 
     // apply(fn = f, args = [ApplyArg(name: None, value: int_lit(0))])

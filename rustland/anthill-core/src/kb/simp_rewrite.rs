@@ -881,9 +881,10 @@ pub(super) fn reassemble(
             then_branch: cur.take(then_branch),
             else_branch: cur.take(else_branch),
         },
-        Expr::Let { pattern, type_annotation, value, body } => Expr::Let {
+        // WI-819: three children, no annotation slot to carry across — the
+        // `: T` rides the PATTERN occurrence, so `cur.take(pattern)` brings it.
+        Expr::Let { pattern, value, body } => Expr::Let {
             pattern: cur.take(pattern),
-            type_annotation: type_annotation.clone(),
             value: cur.take(value),
             body: cur.take(body),
         },

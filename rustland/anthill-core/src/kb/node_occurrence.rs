@@ -99,7 +99,14 @@ fn drain_node(occ: &mut NodeOccurrence, stack: &mut Vec<Rc<NodeOccurrence>>) {
             }
             drain_expr_children(expr, stack);
         }
-        NodeKind::Pattern(pat) => drain_pattern_children(pat, stack),
+        NodeKind::Pattern { pattern, type_ann } => {
+            // WI-819: the annotation is an occurrence child like any other —
+            // drain it so a deeply nested type can't overflow the iterative Drop.
+            if let Some(t) = type_ann.take() {
+                stack.push(t);
+            }
+            drain_pattern_children(pattern, stack);
+        }
         NodeKind::Type(tn) => drain_type_node(tn, stack),
         NodeKind::EffectExpr(en) => drain_effect_expr_node(en, stack),
         NodeKind::RuleHead { .. } => {}
@@ -182,12 +189,9 @@ fn drain_effect_expr_node(en: &mut EffectExprNode, stack: &mut Vec<Rc<NodeOccurr
 /// to recurse through.
 fn drain_pattern_children(pat: &mut Pattern, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match pat {
-        Pattern::Var { type_ann, .. } => {
-            if let Some(t) = type_ann.take() {
-                stack.push(t);
-            }
-        }
-        Pattern::Wildcard | Pattern::Literal { .. } => {}
+        // WI-819: `type_ann` moved to the enclosing occurrence; the caller
+        // (`drain_node`) drains it alongside this call.
+        Pattern::Var { .. } | Pattern::Wildcard | Pattern::Literal { .. } => {}
         Pattern::Constructor { pos_args, named_args, .. } => {
             for c in std::mem::take(pos_args) { stack.push(c); }
             for (_, c) in std::mem::take(named_args) { stack.push(c); }
@@ -229,16 +233,12 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             stack.push(std::mem::replace(then_branch, mk_placeholder()));
             stack.push(std::mem::replace(else_branch, mk_placeholder()));
         }
-        Expr::Let { pattern, type_annotation, value, body } => {
+        // WI-819: three children, no annotation slot — the `: T` rides the
+        // PATTERN occurrence and is drained by `drain_node`'s Pattern arm.
+        Expr::Let { pattern, value, body } => {
             stack.push(std::mem::replace(pattern, mk_placeholder()));
             stack.push(std::mem::replace(value, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
-            // WI-342: a denoted-bearing annotation is a `Value::Node` occurrence
-            // — drain it onto the stack so a deeply nested type can't overflow the
-            // iterative Drop this fn exists to prevent.
-            if let Some(Value::Node(occ)) = type_annotation.take() {
-                stack.push(occ);
-            }
         }
         Expr::Match { scrutinee, branches } => {
             stack.push(std::mem::replace(scrutinee, mk_placeholder()));
@@ -402,10 +402,29 @@ impl NodeOccurrence {
         })
     }
 
-    /// Build a pattern occurrence (WI-318).
+    /// Build an UNANNOTATED pattern occurrence (WI-318).
     pub fn new_pattern(pattern: Pattern, span: SourceSpan, owner: Option<Symbol>) -> Rc<Self> {
+        Self::new_pattern_annotated(pattern, None, span, owner)
+    }
+
+    /// Build a pattern occurrence carrying a `: T` annotation (WI-819).
+    ///
+    /// `type_ann` must be an `Expr`-kind occurrence. Callers holding a type
+    /// `Value` go through [`value_to_pattern_annotation`], which enforces it —
+    /// see there for why a `Type`-kind node in this slot breaks collect/close
+    /// lockstep rather than merely being untidy.
+    pub fn new_pattern_annotated(
+        pattern: Pattern,
+        type_ann: Option<Rc<NodeOccurrence>>,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<Self> {
+        debug_assert!(
+            type_ann.as_ref().is_none_or(|t| matches!(t.kind, NodeKind::Expr { .. })),
+            "WI-819: a pattern annotation must be Expr-kind (see value_to_pattern_annotation)"
+        );
         Rc::new(NodeOccurrence {
-            kind: NodeKind::Pattern(pattern),
+            kind: NodeKind::Pattern { pattern, type_ann },
             span,
             owner,
             term_cache: Cell::new(None),
@@ -448,7 +467,17 @@ impl NodeOccurrence {
     /// If this occurrence wraps a pattern (WI-318), return it.
     pub fn as_pattern(&self) -> Option<&Pattern> {
         match &self.kind {
-            NodeKind::Pattern(pat) => Some(pat),
+            NodeKind::Pattern { pattern, .. } => Some(pattern),
+            _ => None,
+        }
+    }
+
+    /// WI-819: this pattern occurrence's `: T` annotation, the ONE annotation
+    /// channel. `None` for an unannotated pattern and for every non-Pattern
+    /// occurrence.
+    pub fn pattern_type_ann(&self) -> Option<&Rc<NodeOccurrence>> {
+        match &self.kind {
+            NodeKind::Pattern { type_ann, .. } => type_ann.as_ref(),
             _ => None,
         }
     }
@@ -643,7 +672,41 @@ pub enum NodeKind {
     /// `for_each_pattern_child` + `reassemble_pattern`, dropping the
     /// per-pattern-field special-case arms that existed in the
     /// term-stored era.
-    Pattern(Pattern),
+    ///
+    /// WI-819: `type_ann` is the pattern's `: T` annotation, and it is the
+    /// ONLY one — `Expr::Let.type_annotation` is gone. It sits HERE, on the
+    /// occurrence, rather than on any `Pattern` variant, and that placement is
+    /// the whole point: an annotation is written about a pattern OCCURRENCE
+    /// (`let p: T = e`), so which variant `p` happens to be must not decide
+    /// whether the annotation has a home. It previously did — `type_ann` was
+    /// declared on `Pattern::Var` ALONE, so `let x: T` landed on the pattern
+    /// while `let (a, b): T` had to land on a second slot on the `let`, and the
+    /// two channels drifted: the outer one rode NEITHER carrier after WI-342 T8
+    /// / WI-814 deleted its term slot, so `let x: Int64 = 1` and
+    /// `let x: String = 1` compared structurally EQUAL and shared a (now
+    /// CACHEABLE) `GoalKey`.
+    ///
+    /// THE RULE, stated because the ticket asked for it: EVERY pattern may be
+    /// annotated, including the ones that bind nothing. `let _: T = e` asserts
+    /// the value's type and binds nothing — meaningful, and the grammar already
+    /// admits it (`let_chain`, grammar.js). `let 5: Int64 = e` is odd but
+    /// harmless. Hanging the slot on the occurrence makes this structural
+    /// rather than a per-variant policy: there is no variant to exclude.
+    ///
+    /// Always an `Expr`-KIND occurrence (a TYPE expression — proposal 027.1
+    /// types-are-terms), never `Type`-kind: the DeBruijn / σ / var-collect
+    /// walkers reach a pattern's children through the generic occurrence walk,
+    /// which asserts on a `Type`-kind node (the type-field→occurrence-child
+    /// migration is still deferred — see `occurrence_has_unbound_var`). A
+    /// `denoted`-bearing annotation therefore lowers through
+    /// `value_to_term` + `term_to_expr_leaf_occ` on the way in, which is
+    /// LOSSLESS since WI-390 and is exactly what the WI-517 binder channel has
+    /// always done. The "a denoted type cannot be hash-consed" reasoning that
+    /// once justified a second `Value`-only channel is false; do not revive it.
+    Pattern {
+        pattern: Pattern,
+        type_ann: Option<Rc<NodeOccurrence>>,
+    },
     /// Type content (WI-342). The `Value`-carried form of a `Type` entity
     /// whose subtree transitively contains a `denoted` (so it cannot be a
     /// hash-consed `Term` — the carrier rule, see
@@ -736,20 +799,24 @@ pub enum Expr {
         else_branch: Rc<NodeOccurrence>,
     },
     /// `let pat = value in body`. WI-318: `pattern` is a Pattern-kind
-    /// occurrence (typically `Pattern::Var { name, type_ann: None }`).
-    /// `type_annotation` is the OUTER `: T` annotation from WI-185
-    /// (`let p: T = …`). WI-342 S4a: a carrier-agnostic `Value` — a non-trivial
-    /// (denoted-bearing) annotation rides as `Value::Node`. A `Value::Node` type
-    /// carries only Ref/literal denoteds (no DeBruijn/Global vars), so the
-    /// DeBruijn open/close + σ walkers treat it as opaque (see `*_value_type`).
+    /// occurrence (typically `Pattern::Var { name }`).
+    ///
+    /// WI-819: there is NO `type_annotation` field. The `let p: T = …`
+    /// annotation (WI-185) rides the PATTERN occurrence's `type_ann`, the one
+    /// annotation channel — see [`NodeKind::Pattern`]. It lived here only
+    /// because `type_ann` used to be declared on `Pattern::Var` alone, which
+    /// left a non-`Var` pattern nowhere to put it; a slot that exists to
+    /// compensate for another slot's narrowness is the defect, not the fix.
+    /// Do not restore it: a second channel would immediately re-open the
+    /// question of which one a reader must consult, and this one had no term
+    /// carrier at all after WI-342 T8 / WI-814.
     Let {
         pattern: Rc<NodeOccurrence>,
-        type_annotation: Option<Value>,
         value: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     },
     /// Lambda — `(param) => body`. WI-318: `param` is a Pattern-kind
-    /// occurrence (typically `Pattern::Var { name, type_ann: None }`
+    /// occurrence (typically `Pattern::Var { name }`
     /// for `lambda x -> ...` or `Pattern::Tuple` for
     /// `lambda (a, b) -> ...`).
     Lambda {
@@ -910,20 +977,17 @@ pub struct MatchBranch {
 /// path (the grammar's `pattern_var` is a bare identifier — see
 /// `tree-sitter-anthill/grammar.js:975`); the binding name is a
 /// `Symbol`, resolved as a frame-local at eval time, not as a rule
-/// logical-var. The `type_ann` slot inside `Var` is an `Expr`-kind
-/// occurrence (a TYPE expression — proposal 027.1 types-are-terms),
-/// not a sub-pattern.
+/// logical-var.
+///
+/// WI-819: a `: T` annotation is NOT a field of any variant here — it hangs on
+/// the enclosing [`NodeKind::Pattern`] occurrence, uniformly for all five
+/// shapes. See that doc for why (`Var`-only was what forced a second,
+/// carrier-less annotation channel onto `Expr::Let`).
 #[derive(Debug)]
 pub enum Pattern {
     /// `pattern_var p` — bind the scrutinee to a frame-local named
-    /// `name`. Optional `type_ann` carries the declared type for
-    /// patterns that admit one (currently only via WI-185 `let p: T`
-    /// at the outer Let.type_annotation; the Pattern's own `type_ann`
-    /// is reserved for future grammar extensions).
-    Var {
-        name: Symbol,
-        type_ann: Option<Rc<NodeOccurrence>>,
-    },
+    /// `name`.
+    Var { name: Symbol },
     /// `_` — match anything, bind nothing.
     Wildcard,
     /// `42`, `"hi"`, `true`, etc. — match by literal value.
@@ -1223,17 +1287,50 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
 }
 
 /// WI-318: mirror of `for_each_child` for `Pattern`. Invokes `f` once
-/// per direct `Rc<NodeOccurrence>` child slot of a pattern, in a fixed
-/// per-variant order (field order: type_ann; then positional then
-/// named). The order is load-bearing — `reassemble_pattern` consumes
-/// children positionally and relies on it matching this enumeration.
+/// per direct `Rc<NodeOccurrence>` child slot of a pattern occurrence, in a
+/// fixed order: the sub-patterns (positional then named), then the WI-819
+/// `type_ann` LAST.
+///
+/// THE ORDER IS LOAD-BEARING TWICE OVER. `reassemble_pattern` consumes children
+/// positionally and relies on it matching this enumeration — and, less
+/// obviously, it must match the order the TERM twin stores its children in,
+/// because the two carriers' var collectors have to agree. `pattern_to_term`
+/// APPENDS `type_ann` (and `pattern_shape` declares it last), so an earlier cut
+/// that enumerated it FIRST here made the carriers disagree for any annotated
+/// `Constructor` / `Tuple`: the occurrence walk reported an annotation's vars
+/// before the sub-pattern binders' while the term walk reported them after,
+/// diverging the `var_order` that `assert_rule_debruijn_with_nodes` requires
+/// both sides to share. `Pattern::Var` hid it — it has no sub-patterns, so both
+/// orders coincide.
+///
+/// Takes the OCCURRENCE, not `(&Pattern, Option<&annotation>)`, so that omitting
+/// the annotation is UNREPRESENTABLE. An earlier cut of WI-819 split the two
+/// arguments and claimed the split forced each caller to pass the annotation
+/// along; that reasoning was simply wrong — `for_each_pattern_child(pat, None,
+/// f)` compiles, so the split PERMITTED the very silent skip it advertised
+/// against (a `Global` inside an annotation left uncollected / unclosed), while
+/// taxing all twelve call sites, none of which ever wants an annotation other
+/// than the occurrence's own. Reading it here is what actually enforces the
+/// invariant. Sub-pattern-only walks that legitimately exclude it call
+/// [`for_each_subpattern`] by name.
 #[inline]
-pub fn for_each_pattern_child(pat: &Pattern, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
+pub fn for_each_pattern_child(occ: &NodeOccurrence, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
+    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else { return };
+    for_each_subpattern(pattern, &mut f);
+    if let Some(t) = type_ann { f(t); }
+}
+
+/// The SUB-PATTERN children of a pattern, excluding the WI-819 annotation —
+/// the per-variant half of [`for_each_pattern_child`]. Separate because two
+/// callers rebuild a pattern from its sub-patterns and supply the annotation
+/// themselves (`with_pattern_annotation` replaces it;
+/// `reassemble_pattern_subpatterns` carries it across), and asking them to
+/// enumerate an annotation only to discard it is what produced the
+/// prepend-then-strip round trip this replaced.
+#[inline]
+pub fn for_each_subpattern(pat: &Pattern, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match pat {
-        Pattern::Var { type_ann, .. } => {
-            if let Some(t) = type_ann { f(t); }
-        }
-        Pattern::Wildcard | Pattern::Literal { .. } => {}
+        Pattern::Var { .. } | Pattern::Wildcard | Pattern::Literal { .. } => {}
         Pattern::Constructor { pos_args, named_args, .. } => {
             for c in pos_args.iter() { f(c); }
             for (_, c) in named_args.iter() { f(c); }
@@ -1265,8 +1362,8 @@ pub fn reassemble_pattern(
     occ: &Rc<NodeOccurrence>,
     new_children: &[Rc<NodeOccurrence>],
 ) -> Rc<NodeOccurrence> {
-    let pat = match &occ.kind {
-        NodeKind::Pattern(p) => p,
+    let (pat, ann) = match &occ.kind {
+        NodeKind::Pattern { pattern, type_ann } => (pattern, type_ann),
         _ => return Rc::clone(occ),
     };
     // Detect any move first; if every new child is ptr-eq to the
@@ -1274,7 +1371,7 @@ pub fn reassemble_pattern(
     let mut changed = false;
     {
         let mut i = 0;
-        for_each_pattern_child(pat, |c| {
+        for_each_pattern_child(occ, |c| {
             if !Rc::ptr_eq(c, &new_children[i]) {
                 changed = true;
             }
@@ -1291,10 +1388,7 @@ pub fn reassemble_pattern(
         c
     };
     let new_pat = match pat {
-        Pattern::Var { name, type_ann } => Pattern::Var {
-            name: *name,
-            type_ann: type_ann.as_ref().map(|_| take()),
-        },
+        Pattern::Var { name } => Pattern::Var { name: *name },
         Pattern::Wildcard => Pattern::Wildcard,
         Pattern::Literal { value } => Pattern::Literal { value: value.clone() },
         Pattern::Constructor { name, pos_args, named_args } => {
@@ -1315,7 +1409,10 @@ pub fn reassemble_pattern(
             Pattern::Tuple { positional: pos, labels: labels.clone() }
         }
     };
-    NodeOccurrence::new_pattern(new_pat, occ.span, occ.owner)
+    // WI-819: the annotation is the LAST child for every variant — taken after
+    // the per-variant arms, exactly as `for_each_pattern_child` enumerates it.
+    let new_ann = ann.as_ref().map(|_| take());
+    NodeOccurrence::new_pattern_annotated(new_pat, new_ann, occ.span, occ.owner)
 }
 
 // ── De Bruijn opening (rule-body atoms) ─────────────────────────
@@ -1344,9 +1441,9 @@ pub fn open_debruijn_node(
     // Symbols, literals are values). DeBruijn vars live only in
     // Expr-kind child slots like the Var's `type_ann`; recurse into
     // those via `for_each_pattern_child` + `reassemble_pattern`.
-    if let Some(pat) = occ.as_pattern() {
+    if occ.as_pattern().is_some() {
         let mut opened: Vec<Rc<NodeOccurrence>> = Vec::new();
-        for_each_pattern_child(pat, |c| opened.push(open_debruijn_node(kb, c, fresh)));
+        for_each_pattern_child(occ, |c| opened.push(open_debruijn_node(kb, c, fresh)));
         return reassemble_pattern(occ, &opened);
     }
     // WI-378 step 2 / WI-342-P3: open DeBruijn vars inside a Type/EffectExpr
@@ -1396,25 +1493,12 @@ pub fn open_debruijn_node(
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
         }
-        // WI-298: Let.type_annotation is a TermId (a type expression — proposal
-        // 027.1) that can carry DeBruijn vars from the rule's shared space —
-        // open it via `term_from_debruijn` alongside the occurrence children,
-        // mirroring the closing side (`node_to_debruijn`).
-        Expr::Let { pattern, type_annotation, value, body } => {
-            let new_pattern = open_debruijn_node(kb, pattern, fresh);
-            let new_value = open_debruijn_node(kb, value, fresh);
-            let new_body = open_debruijn_node(kb, body, fresh);
-            let (new_ta, ta_changed) = open_option_value(kb, type_annotation, fresh);
-            let c1 = !Rc::ptr_eq(&new_pattern, pattern);
-            let c2 = !Rc::ptr_eq(&new_value, value);
-            let c3 = !Rc::ptr_eq(&new_body, body);
-            (c1 || c2 || c3 || ta_changed).then(|| Expr::Let {
-                pattern: new_pattern,
-                type_annotation: new_ta,
-                value: new_value,
-                body: new_body,
-            })
-        }
+        // WI-819: NO explicit `Expr::Let` arm. It existed only for
+        // `type_annotation`, a `Value` field the generic `for_each_child` walk
+        // does not enumerate. The annotation now rides the PATTERN occurrence
+        // as an ordinary Expr-kind child, so the pattern arm at the top of this
+        // function opens it, and `let`'s three occurrence children need nothing
+        // beyond the `_` arm below.
         // WI-298: ApplyWithin.type_args mirrors Apply.type_args; the generic
         // `_` arm below would leave them un-remapped because `for_each_child`
         // doesn't enumerate TermId fields. Explicit arm closes that gap and
@@ -1468,10 +1552,11 @@ pub fn open_debruijn_node(
 /// This is the precise inverse of [`open_debruijn_node`] (the close/open
 /// round-trip the resolver relies on). It rewrites `Var` leaves inside
 /// `Rc<NodeOccurrence>` children AND inside the remaining `TermId`-typed
-/// occurrence fields — `Let.type_annotation`, `Apply`/`ApplyWithin.type_args`
-/// (post-WI-319 the pattern slots — Lambda/LambdaWithin.param, Let.pattern,
-/// MatchBranch.pattern — are themselves Pattern-kind Rc<NodeOccurrence>
-/// children, no longer TermId) — by running those through
+/// occurrence fields — `Apply`/`ApplyWithin.type_args` (post-WI-319 the pattern
+/// slots — Lambda/LambdaWithin.param, Let.pattern, MatchBranch.pattern — are
+/// themselves Pattern-kind Rc<NodeOccurrence> children, no longer TermId; and
+/// WI-819 retired `Let.type_annotation`, whose replacement is an ordinary
+/// Expr-kind child of the pattern occurrence) — by running those through
 /// `KnowledgeBase::term_to_debruijn` (hence `&mut self`). So a body atom is
 /// fully De Bruijn-closed regardless of where its vars live, matching what the
 /// prior `materialize(term_to_debruijn(t))` path produced (a var nested in such
@@ -1486,9 +1571,9 @@ pub fn node_to_debruijn(
 ) -> Rc<NodeOccurrence> {
     // WI-318: pattern occurrences walk uniformly — see the mirror
     // comment on `open_debruijn_node` for the rationale.
-    if let Some(pat) = occ.as_pattern() {
+    if occ.as_pattern().is_some() {
         let mut closed: Vec<Rc<NodeOccurrence>> = Vec::new();
-        for_each_pattern_child(pat, |c| closed.push(node_to_debruijn(kb, c, var_order)));
+        for_each_pattern_child(occ, |c| closed.push(node_to_debruijn(kb, c, var_order)));
         return reassemble_pattern(occ, &closed);
     }
     // WI-378 step 2 / WI-342-P3: close vars inside a Type/EffectExpr occurrence's
@@ -1541,10 +1626,11 @@ pub fn node_to_debruijn(
         // via `term_to_debruijn`), so a var living in a pattern/param is closed
         // to the same De Bruijn space as the rest of the rule.
         // WI-318: pattern is now a Pattern-kind Rc<NodeOccurrence>,
-        // walked structurally via the explicit Let arm below.
-        // WI-298: type_annotation (Option<TermId>) is a type expression
-        // — close DeBruijn vars in it via `term_to_debruijn`, mirroring
-        // `open_debruijn_node` on the opening side.
+        // walked structurally by the pattern arm at the top of this function.
+        // WI-819: `Expr::Let` has no explicit arm any more — its only reason
+        // was the `type_annotation` field, which now rides the pattern
+        // occurrence and closes with it. See the mirror note in
+        // `open_debruijn_node`.
         // WI-318: Lambda / LambdaWithin no longer have a TermId-typed
         // param — the param is now a Pattern-kind Rc<NodeOccurrence>
         // that walks via the generic `for_each_child` + `reassemble`
@@ -1553,21 +1639,6 @@ pub fn node_to_debruijn(
         // WI-318: MatchBranch.pattern is now a Pattern-kind occurrence —
         // close it via the recursive node walker like any other child.
         // (Was: `kb.term_to_debruijn(br.pattern, var_order)`.)
-        Expr::Let { pattern, type_annotation, value, body } => {
-            let new_pattern = node_to_debruijn(kb, pattern, var_order);
-            let new_value = node_to_debruijn(kb, value, var_order);
-            let new_body = node_to_debruijn(kb, body, var_order);
-            let (new_ta, ta_changed) = close_option_value(kb, type_annotation, var_order);
-            let c1 = !Rc::ptr_eq(&new_pattern, pattern);
-            let c2 = !Rc::ptr_eq(&new_value, value);
-            let c3 = !Rc::ptr_eq(&new_body, body);
-            (c1 || c2 || c3 || ta_changed).then(|| Expr::Let {
-                pattern: new_pattern,
-                type_annotation: new_ta,
-                value: new_value,
-                body: new_body,
-            })
-        }
         Expr::Match { scrutinee, branches } => {
             let s = node_to_debruijn(kb, scrutinee, var_order);
             let mut changed = !Rc::ptr_eq(&s, scrutinee);
@@ -1682,22 +1753,6 @@ fn close_value_type(kb: &mut KnowledgeBase, v: &Value, var_order: &[VarId]) -> (
     map_value_type(&CloseTypeRewrite { var_order }, kb, v)
 }
 
-/// WI-298/WI-342: close vars inside an `Option<Value>` type field (today only
-/// `Let.type_annotation`) — twin of `open_option_value`.
-fn close_option_value(
-    kb: &mut KnowledgeBase,
-    item: &Option<Value>,
-    var_order: &[VarId],
-) -> (Option<Value>, bool) {
-    match item {
-        Some(v) => {
-            let (nv, changed) = close_value_type(kb, v, var_order);
-            (Some(nv), changed)
-        }
-        None => (None, false),
-    }
-}
-
 fn open_vec(
     kb: &mut KnowledgeBase,
     items: &[Rc<NodeOccurrence>],
@@ -1750,27 +1805,12 @@ fn open_type_args(
 /// WI-342/WI-378: DeBruijn-open the vars of a carrier-agnostic type `Value` — the
 /// inverse of `close_value_type`, delegating to the shared [`map_value_type`]
 /// (a ground `Value::Term` via `term_from_debruijn`; a `Value::Node` descends the
-/// type spine; a `NamedTuple.fields` cons-list recurses). Shared by
-/// `Let.type_annotation` (`open_option_value`) and `Apply`/`ApplyWithin.type_args`
-/// (`open_type_args`).
+/// type spine; a `NamedTuple.fields` cons-list recurses). Used by
+/// `Apply`/`ApplyWithin.type_args` (`open_type_args`) — the sole remaining type
+/// FIELD, since WI-819 moved a `let`'s annotation onto the pattern occurrence,
+/// where it opens as an ordinary child.
 fn open_value_type(kb: &mut KnowledgeBase, v: &Value, fresh: &[VarId]) -> (Value, bool) {
     map_value_type(&OpenTypeRewrite { fresh }, kb, v)
-}
-
-/// WI-298/WI-342: open DeBruijn vars inside an `Option<Value>` type field (today
-/// only `Let.type_annotation`) — the opener twin of `close_option_value`.
-fn open_option_value(
-    kb: &mut KnowledgeBase,
-    item: &Option<Value>,
-    fresh: &[VarId],
-) -> (Option<Value>, bool) {
-    match item {
-        Some(v) => {
-            let (nv, changed) = open_value_type(kb, v, fresh);
-            (Some(nv), changed)
-        }
-        None => (None, false),
-    }
 }
 
 // ── Type / EffectExpr var rewrite (WI-378 step 2 / WI-342-P3) ────
@@ -2066,14 +2106,14 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
                 Expr::Var(Var::Global(_)) => return true,
                 _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
             },
-            NodeKind::Pattern(pat) => {
-                for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
+            NodeKind::Pattern { .. } => {
+                for_each_pattern_child(&occ, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
             // WI-378 step 2 / WI-342-P3: a var inside a Type/EffectExpr occurrence
             // IS now walked — but via the type-field twins (`collect_value_type` /
             // the `*_value_type` rewriters), reached where a type `Value` sits
-            // (`Apply.type_args` / `Let.type_annotation`). This `for_each_child`-
+            // (`Apply.type_args`). This `for_each_child`-
             // driven walk reaches a Type occurrence only once the deferred
             // type-field→occurrence-child migration routes those fields through
             // `for_each_child` — which must also thread `kb` here (this walker has
@@ -2105,8 +2145,8 @@ pub fn occurrence_has_var_ref(root: &Rc<NodeOccurrence>) -> bool {
                 Expr::VarRef { .. } => return true,
                 _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
             },
-            NodeKind::Pattern(pat) => {
-                for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
+            NodeKind::Pattern { .. } => {
+                for_each_pattern_child(&occ, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
             NodeKind::Type(_) | NodeKind::EffectExpr(_) => {}
@@ -2142,8 +2182,8 @@ pub(super) fn collect_occurrence_global_vars(
                 }
                 _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
             },
-            NodeKind::Pattern(pat) => {
-                for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
+            NodeKind::Pattern { .. } => {
+                for_each_pattern_child(&occ, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
             // WI-378 step 2 / WI-342-P3: see the note in `occurrence_has_unbound_var`
@@ -2204,8 +2244,8 @@ pub(super) fn collect_occurrence_global_vars_ordered(
         // miss it, leaving the rule's `node_to_debruijn` close to misplace
         // the var (or worse, undercount arity). Symmetric with
         // `node_to_debruijn`'s Pattern arm.
-        NodeKind::Pattern(pat) => {
-            for_each_pattern_child(pat, |c| {
+        NodeKind::Pattern { .. } => {
+            for_each_pattern_child(occ, |c| {
                 collect_occurrence_global_vars_ordered(kb, c, vars, seen)
             });
         }
@@ -2223,9 +2263,11 @@ pub(super) fn collect_occurrence_global_vars_ordered(
 }
 
 /// Collect `Var::Global` ids from an `Expr`'s type-positional fields — the
-/// `type_args` / `type_annotation` that `for_each_child` does not descend but
-/// `node_to_debruijn` closes. The COLLECT twin of the closer's `close_type_args`
-/// / `close_option_value`: it walks the SAME fields and reads each type `Value`
+/// `type_args` that `for_each_child` does not descend but `node_to_debruijn`
+/// closes. (WI-819: `Let.type_annotation` was the other one; it is now an
+/// ordinary Expr-kind child of the pattern occurrence, collected by the caller's
+/// `for_each_pattern_child` descent.) The COLLECT twin of the closer's
+/// `close_type_args`: it walks the SAME fields and reads each type `Value`
 /// through [`collect_value_type`] (twin of `close_value_type`), so the var set
 /// gathered here is exactly the set `node_to_debruijn` later closes — the
 /// "keep in lockstep with `node_to_debruijn`" constraint is now structural
@@ -2240,9 +2282,10 @@ fn collect_expr_termid_field_vars(
         Expr::Apply { type_args, .. } | Expr::ApplyWithin { type_args, .. } => {
             collect_type_args_vars(kb, type_args, vars, seen)
         }
-        Expr::Let { type_annotation, .. } => {
-            collect_option_value(kb, type_annotation, vars, seen)
-        }
+        // WI-819: `Expr::Let` has no type-positional field any more. Its
+        // annotation is an ordinary Expr-kind child of the PATTERN occurrence,
+        // so the caller's `for_each_pattern_child` descent collects it — the
+        // same walk, one altitude down.
         // WI-318: Lambda / LambdaWithin params and MatchBranch.pattern are
         // Pattern-kind occurrences walked by `for_each_child` in the caller.
         _ => {}
@@ -2380,18 +2423,6 @@ fn collect_type_args_vars(
     }
 }
 
-/// Collect twin of [`close_option_value`].
-fn collect_option_value(
-    kb: &KnowledgeBase,
-    item: &Option<Value>,
-    vars: &mut Vec<VarId>,
-    seen: &mut std::collections::HashSet<u32>,
-) {
-    if let Some(v) = item {
-        collect_value_type(kb, v, vars, seen);
-    }
-}
-
 /// WI-471: the occurrence's intrinsic structural term form, materialized on
 /// demand and memoized in `occ.term_cache`. Because `alloc` hash-conses, two
 /// structurally-identical occurrences yield the SAME `TermId` — recovering
@@ -2476,7 +2507,7 @@ pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> T
 /// callers — `occurrence_term` builtins in resolve.rs and the typer —
 /// always run on such a KB.)
 pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
-    if let NodeKind::Pattern(_) = &occ.kind {
+    if let NodeKind::Pattern { .. } = &occ.kind {
         return Some(pattern_to_term(kb, occ));
     }
     // WI-390: a Type / EffectExpr occurrence lowers faithfully to its hash-consed
@@ -2787,6 +2818,183 @@ fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
     }
 }
 
+/// WI-819 — lower a type `Value` into the `Expr`-kind occurrence a pattern's
+/// `type_ann` slot holds. THE producer side of the one annotation channel: both
+/// `let p: T = …` and a WI-517 binder `(x: T)` arrive here.
+///
+/// ALWAYS `Expr`-kind, including for a `denoted`-bearing type, and that is a
+/// REQUIREMENT rather than a convenience. The slot is an ordinary occurrence
+/// child, so the DeBruijn / σ / var-collect walkers reach it through the generic
+/// occurrence walk — and that walk is `Type`-BLIND: `node_to_debruijn` closes
+/// vars inside a `Type`-kind node via `rewrite_type_occurrence`, while
+/// `collect_occurrence_global_vars_ordered` asserts on one and collects nothing.
+/// A `Type`-kind occurrence here therefore breaks collect/close lockstep — a
+/// stray `Global` left in a stored rule body, and an undercounted arity.
+/// MEASURED: `wi819_annotation_is_expr_kind_so_collect_and_close_agree` fails on
+/// exactly that when the carrier is passed through instead of lowered.
+///
+/// An earlier cut of WI-819 DID pass `Value::Node` through, to keep a compound
+/// type projection (`s.cell.T`) on the carrier `eliminate_type_projections`
+/// routed to `resolve_compound_projection`. That was fixing the wrong end: the
+/// `Value::Term` arm now delegates compound receivers to the same resolver, so
+/// both carriers give the same answer and the annotation no longer has to carry
+/// a shape merely to be understood downstream.
+///
+/// [`value_to_term`] is the total `Value → Term` boundary (WI-390 — a
+/// `denoted`-bearing type lowers losslessly through `occurrence_to_term`), and
+/// `term_to_expr_leaf_occ` is the inverse `term_to_param_occurrence` has always
+/// used to read a binder's annotation back. The `Err` arm cannot fire for a
+/// loader-built annotation (`type_expr_to_value` yields only `Term`/`Node`, both
+/// total here); it is a debug-assert + `Bottom` rather than a silent drop,
+/// mirroring the guard `load_pattern_var` has carried since WI-517.
+pub fn value_to_pattern_annotation(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    span: SourceSpan,
+) -> Rc<NodeOccurrence> {
+    let tid = value_to_term(kb, v).unwrap_or_else(|e| {
+        debug_assert!(false, "WI-819: pattern annotation not term-representable: {e:?}");
+        kb.alloc(Term::Bottom)
+    });
+    term_to_expr_leaf_occ(kb, tid, span)
+}
+
+/// WI-819 — rebuild a pattern occurrence from its SUB-PATTERNS plus an explicit
+/// annotation. The one owner of the "annotation is the LAST child" layout, so no
+/// caller has to reproduce it.
+///
+/// `new_ann` is what the rebuilt occurrence carries, independent of what `occ`
+/// carried: [`with_pattern_annotation`] passes a replacement,
+/// [`reassemble_pattern_subpatterns`] passes `occ`'s own. Taking it explicitly is
+/// what removes the precondition an earlier cut relied on — that one wrote
+/// `children[0] = ann` over a list it assumed already had an annotation slot,
+/// which in RELEASE (the `debug_assert` being the only guard) silently shifted
+/// every sub-pattern by one and dropped the last, on any unannotated pattern.
+fn rebuild_pattern_with(
+    occ: &Rc<NodeOccurrence>,
+    new_subpatterns: &[Rc<NodeOccurrence>],
+    new_ann: Option<Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
+    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else { return Rc::clone(occ) };
+    debug_assert_eq!(
+        new_subpatterns.len(),
+        { let mut n = 0; for_each_subpattern(pattern, |_| n += 1); n },
+        "rebuild_pattern_with: sub-pattern count must match the pattern's own"
+    );
+    let mut children: Vec<Rc<NodeOccurrence>> =
+        Vec::with_capacity(new_subpatterns.len() + usize::from(new_ann.is_some()));
+    children.extend(new_subpatterns.iter().cloned());
+    // The annotation goes LAST, mirroring `for_each_pattern_child`. When the
+    // annotation is being ADDED or REMOVED, `reassemble_pattern`'s own
+    // "reuse when nothing moved" scan cannot apply (the child COUNT changed), so
+    // that case rebuilds unconditionally below.
+    let ann_changed = match (type_ann, &new_ann) {
+        (Some(a), Some(b)) => !Rc::ptr_eq(a, b),
+        (None, None) => false,
+        _ => true,
+    };
+    if let Some(a) = &new_ann {
+        children.push(Rc::clone(a));
+    }
+    if !ann_changed {
+        return reassemble_pattern(occ, &children);
+    }
+    // Count changed or the annotation was replaced: rebuild through
+    // `reassemble_pattern` on a child list that DOES match the current
+    // enumeration, then swap the annotation in. `reassemble_pattern` rebuilds the
+    // variant (it cannot reuse `occ`, since a rebuilt occurrence is required to
+    // carry the new annotation), so this is one allocation either way.
+    let mut cur: Vec<Rc<NodeOccurrence>> = new_subpatterns.to_vec();
+    if let Some(a) = type_ann {
+        cur.push(Rc::clone(a));
+    }
+    let rebuilt = reassemble_pattern(occ, &cur);
+    let NodeKind::Pattern { pattern: p, .. } = &rebuilt.kind else { return rebuilt };
+    let mut subs: Vec<Rc<NodeOccurrence>> = Vec::new();
+    for_each_subpattern(p, |c| subs.push(Rc::clone(c)));
+    let mut children2: Vec<Rc<NodeOccurrence>> = subs;
+    if let Some(a) = &new_ann {
+        children2.push(Rc::clone(a));
+    }
+    reassemble_pattern_forcing(&rebuilt, &children2, new_ann)
+}
+
+/// Rebuild `occ`'s variant from `children` (sub-patterns, annotation last) with
+/// `new_ann` as the annotation, WITHOUT the reuse-when-unmoved shortcut — used
+/// when the annotation itself changed, which that shortcut cannot detect.
+fn reassemble_pattern_forcing(
+    occ: &Rc<NodeOccurrence>,
+    children: &[Rc<NodeOccurrence>],
+    new_ann: Option<Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
+    let NodeKind::Pattern { pattern: pat, .. } = &occ.kind else { return Rc::clone(occ) };
+    let mut idx = 0;
+    let mut take = || {
+        let c = Rc::clone(&children[idx]);
+        idx += 1;
+        c
+    };
+    let new_pat = match pat {
+        Pattern::Var { name } => Pattern::Var { name: *name },
+        Pattern::Wildcard => Pattern::Wildcard,
+        Pattern::Literal { value } => Pattern::Literal { value: value.clone() },
+        Pattern::Constructor { name, pos_args, named_args } => {
+            let pos: Vec<Rc<NodeOccurrence>> = pos_args.iter().map(|_| take()).collect();
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> =
+                named_args.iter().map(|(s, _)| (*s, take())).collect();
+            Pattern::Constructor { name: *name, pos_args: pos, named_args: named }
+        }
+        Pattern::Tuple { positional, labels } => {
+            let pos: Vec<Rc<NodeOccurrence>> = positional.iter().map(|_| take()).collect();
+            Pattern::Tuple { positional: pos, labels: labels.clone() }
+        }
+    };
+    NodeOccurrence::new_pattern_annotated(new_pat, new_ann, occ.span, occ.owner)
+}
+
+/// WI-819 — rebuild a pattern occurrence with a REPLACED `: T` annotation,
+/// leaving its sub-patterns (and their own annotations) untouched.
+///
+/// Exists for the typer's `let` arm, which rewrites the annotation before
+/// binding: WI-399 discharges an expression-carried projection (`let k: s.T`
+/// ⟹ `String`) and WI-400 canonicalizes the projection's receiver through the
+/// env's let-aliases. The REWRITTEN type is what the binder must be bound at,
+/// and — since WI-819 — the binder reads its type from this very slot, so
+/// leaving the raw `s.T` here makes WI-794's binder-annotation check compare the
+/// eliminated context type against the un-eliminated annotation and report a
+/// contradiction between a type and itself.
+pub fn with_pattern_annotation(
+    occ: &Rc<NodeOccurrence>,
+    ann: Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    let NodeKind::Pattern { pattern, .. } = &occ.kind else { return Rc::clone(occ) };
+    let mut subs: Vec<Rc<NodeOccurrence>> = Vec::new();
+    for_each_subpattern(pattern, |c| subs.push(Rc::clone(c)));
+    rebuild_pattern_with(occ, &subs, Some(ann))
+}
+
+/// WI-819: [`reassemble_pattern`] for a caller that rebuilt only the SUB-PATTERN
+/// children, carrying `occ`'s own annotation across unchanged.
+///
+/// The typer's `bind_and_label_pattern` rebinds sub-patterns and never touches
+/// the annotation, so this is its shape.
+pub fn reassemble_pattern_subpatterns(
+    occ: &Rc<NodeOccurrence>,
+    new_subpatterns: &[Rc<NodeOccurrence>],
+) -> Rc<NodeOccurrence> {
+    let ann = occ.pattern_type_ann().map(Rc::clone);
+    rebuild_pattern_with(occ, new_subpatterns, ann)
+}
+
+/// WI-819 — read a pattern occurrence's `type_ann` back as the type `Value` the
+/// typer consumes. The inverse of [`value_to_pattern_annotation`], carrier for
+/// carrier; the ONE reader, replacing the split between
+/// `Expr::Let.type_annotation` (already a `Value`) and the binder channel's
+/// `occurrence_to_term` re-grounding.
+pub fn pattern_annotation_value(kb: &mut KnowledgeBase, ann: &Rc<NodeOccurrence>) -> Value {
+    Value::term(occurrence_to_term(kb, ann))
+}
+
 /// WI-390 — the faithful, total `Value → Term` boundary. `Ok(term)` for the
 /// **structural subset**: a `Value::Node` lowers via the now-lossless
 /// [`occurrence_to_term`] (so a denoted-bearing type round-trips), an `Entity`
@@ -2937,18 +3145,9 @@ pub fn term_to_param_occurrence(
             // fall through to the Expr-kind term representation so
             // structural matchers see it as data.
             match extract_term_ref_sym(kb, &named_args, "name") {
-                Some(name) => {
-                    // WI-318: preserve `type_ann: some(t)` if present.
-                    // The grammar's `pattern_var` doesn't surface a
-                    // type annotation today (`type_ann: none()` from the
-                    // loader), but proposal 035 and typing_pass_spec
-                    // already reference annotated var_patterns. The
-                    // value is wrapped in `some(value: <type>)` (the
-                    // anthill.prelude.Option.some shape) by the loader.
-                    let type_ann = extract_option_some_value(kb, &named_args, "type_ann")
-                        .map(|t| term_to_expr_leaf_occ(kb, t, span));
-                    Pattern::Var { name, type_ann }
-                }
+                // WI-819: `type_ann` is no longer read here — it is read once,
+                // below, for EVERY variant, and hung on the occurrence.
+                Some(name) => Pattern::Var { name },
                 None => return term_pattern_as_expr_occ(kb, tid, span),
             }
         }
@@ -2996,7 +3195,30 @@ pub fn term_to_param_occurrence(
             // grammar has no way to write one. They are the typer's, resolved from
             // the expected type; a pattern that arrives this way has not been
             // typed, so the matcher's positional fallback is the correct reading.
-            Pattern::Tuple { positional, labels: Vec::new() }
+            // WI-819 / WI-803: `labels` now HAS a term surface
+            // (`tuple_pattern(elements, labels)`, emitted only when non-empty),
+            // so this reads them back instead of always returning `Vec::new()`.
+            // What used to be true — "empty here and can only be empty here" —
+            // was a consequence of the reflect surface having nowhere to put
+            // them, and it meant a pattern lowered after typing and rebuilt here
+            // silently reverted to reading its components BY SLOT: the WI-788
+            // wrong answer on a permuted value. A term carrying no `labels` key
+            // still yields an empty list, which remains the correct reading for
+            // a pattern that was never typed (the matcher's positional
+            // fallback).
+            let labels: Vec<Symbol> = extract_named_list(kb, &named_args, "labels")
+                .iter()
+                .filter_map(|&t| match kb.get_term(t) {
+                    Term::Ref(s) => Some(*s),
+                    _ => None,
+                })
+                .collect();
+            // The matcher's invariant: empty, or exactly one label per binder.
+            // A partially-filled list can only come from a hand-built /
+            // reflection-synthesized term; drop it rather than hand the matcher
+            // a list it `debug_assert`s against.
+            let labels = if labels.len() == positional.len() { labels } else { Vec::new() };
+            Pattern::Tuple { positional, labels }
         }
         _ => {
             // Unknown functor in a pattern slot: surface as Expr-kind so
@@ -3007,33 +3229,44 @@ pub fn term_to_param_occurrence(
             return term_pattern_as_expr_occ(kb, tid, span);
         }
     };
-    NodeOccurrence::new_pattern(pat, span, None)
-}
-
-/// WI-318: read `field: some(value: t)` from `named_args` and return
-/// `Some(t)`; return `None` for `none()` or a missing field. Mirrors
-/// the `Option` cons-list shape the loader emits (load.rs::build_some
-/// / build_none).
-fn extract_option_some_value(
-    kb: &KnowledgeBase,
-    named_args: &[(Symbol, TermId)],
-    field: &str,
-) -> Option<TermId> {
-    let (_, tid) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field)?;
-    match kb.get_term(*tid) {
-        Term::Fn { functor, named_args: inner, .. } => {
-            // `some(value: t)` — Option.some has qualified name
-            // anthill.prelude.Option.some.
-            let qn = kb.qualified_name_of(*functor);
-            if qn != "anthill.prelude.Option.some" {
-                return None;
-            }
-            inner.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "value")
-                .map(|(_, t)| *t)
+    // WI-819: ONE annotation read, for every variant — the term surface carries
+    // `type_ann` only when the pattern is annotated (the `constructor_pattern.
+    // named` / `proof_stmt.strategy` precedent: an absent key and a `none()`
+    // payload carry the same information, and omitting it keeps `wildcard`
+    // NULLARY, which `functor_view_head` relies on to head as `Ref` on both
+    // carriers — WI-436 / WI-511).
+    // WI-819: ONE annotation read, for every variant, off the TERM — the single
+    // source. The loader attaches it to the pattern term before this runs, so
+    // there is no second, occurrence-side channel to reconcile with.
+    let type_ann = get_named_arg(kb, &named_args, "type_ann").and_then(|t| {
+        // WI-819 changed this key's ENCODING: it used to be present-always and
+        // `Option`-WRAPPED (`type_ann: none()` / `some(value: T)`), it is now
+        // present-only-when-annotated and UNWRAPPED. A term still carrying the
+        // old shape would otherwise read as annotated with the TYPE `none` —
+        // an `Expr::Ref(Option.none)` annotation flowing on into the binder's
+        // type and the let's expected type. Both in-tree producers were
+        // migrated, so a wrapped payload can only come from a persisted or
+        // externally-synthesized term; refuse it loudly rather than silently
+        // mistyping the binder (CLAUDE.md: prefer a loud error over a silent
+        // skip).
+        let is_option_wrapper = match kb.get_term(t) {
+            Term::Fn { functor, .. } | Term::Ref(functor) => matches!(
+                kb.qualified_name_of(*functor),
+                "anthill.prelude.Option.none" | "anthill.prelude.Option.some"
+            ),
+            _ => false,
+        };
+        if is_option_wrapper {
+            debug_assert!(
+                false,
+                "WI-819: pattern `type_ann` carries the retired Option-wrapped encoding; \
+                 it is now present-only-when-annotated and unwrapped"
+            );
+            return None;
         }
-        _ => None,
-    }
+        Some(term_to_expr_leaf_occ(kb, t, span))
+    });
+    NodeOccurrence::new_pattern_annotated(pat, type_ann, span, None)
 }
 
 /// WI-318: build an Expr-kind leaf occurrence for a `TermId` that names
@@ -3232,8 +3465,8 @@ fn extract_named_list(
 ///
 /// Panics (debug) if `occ` isn't a Pattern-kind occurrence.
 pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> TermId {
-    let pat = match &occ.kind {
-        NodeKind::Pattern(p) => p,
+    let (pat, ann) = match &occ.kind {
+        NodeKind::Pattern { pattern, type_ann } => (pattern, type_ann),
         // WI-318: `term_to_param_occurrence` legitimately surfaces Expr-
         // kind occurrences for reflection meta-vars (a `lambda(param:
         // ?x, …)` body atom has param kind Expr::Var, not Pattern).
@@ -3261,35 +3494,34 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
     let args_key = kb.intern("args");
     let value_key = kb.intern("value");
     let elements_key = kb.intern("elements");
+    // WI-819: the annotation is lowered ONCE, for every variant, and appended as
+    // a `type_ann` named arg ONLY when present — see the mirror note in
+    // `term_to_param_occurrence` for why omission (not a `none()` payload) is
+    // the encoding. `occurrence_to_term` is total over the Expr-kind occurrence
+    // the slot holds.
+    let ann_tid: Option<TermId> = ann.as_ref().map(|t| occurrence_to_term(kb, t));
+    let with_ann = |kb: &mut KnowledgeBase,
+                    functor: Symbol,
+                    mut na: SmallVec<[(Symbol, TermId); 2]>| {
+        if let Some(t) = ann_tid {
+            na.push((type_ann_key, t));
+        }
+        kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: na })
+    };
     match pat {
-        Pattern::Var { name, type_ann } => {
+        Pattern::Var { name } => {
             let name_ref = kb.alloc(Term::Ref(*name));
-            let type_ann_tid = match type_ann {
-                Some(t) => {
-                    let inner = occurrence_to_term(kb, t);
-                    build_some(kb, inner)
-                }
-                None => build_none(kb),
-            };
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.var_pattern");
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::from_slice(&[(name_key, name_ref), (type_ann_key, type_ann_tid)]),
-            })
+            with_ann(kb, functor, SmallVec::from_slice(&[(name_key, name_ref)]))
         }
         Pattern::Wildcard => {
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.wildcard");
-            kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: SmallVec::new() })
+            with_ann(kb, functor, SmallVec::new())
         }
         Pattern::Literal { value } => {
             let value_tid = kb.alloc(Term::Const(value.clone()));
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.literal_pattern");
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::from_slice(&[(value_key, value_tid)]),
-            })
+            with_ann(kb, functor, SmallVec::from_slice(&[(value_key, value_tid)]))
         }
         Pattern::Constructor { name, pos_args, named_args } => {
             // Constructor patterns canonically lower to
@@ -3319,40 +3551,40 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                 let named_list = build_list_termid(kb, &elems);
                 na.push((named_key, named_list));
             }
-            kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: na })
+            with_ann(kb, functor, na)
         }
-        Pattern::Tuple { positional, .. } => {
-            // WI-803, KNOWN LOSSY AND UNCOVERED — read this before relying on the
-            // round trip. `labels` is DROPPED here, because the reflect surface
-            // (`entity tuple_pattern(elements: List[Pattern])`,
-            // stdlib/anthill/reflect/reflect.anthill) has nowhere to put it. A
+        Pattern::Tuple { positional, labels } => {
+            // WI-819 closes WI-803's remaining gap: `labels` USED to be dropped
+            // here, because the reflect surface had nowhere to put it, so a
             // pattern lowered after typing and rebuilt by
-            // `term_to_pattern_occurrence` therefore comes back with no labels and
-            // silently reverts to reading its components BY SLOT — which is exactly
-            // the WI-788 wrong answer, on a permuted value.
+            // `term_to_param_occurrence` came back label-less and silently
+            // reverted to reading its components BY SLOT — the WI-788 wrong
+            // answer on a permuted value. `tuple_pattern` now declares a
+            // `labels: List[Symbol]` sibling of `elements`, emitted only when
+            // non-empty (so an unlabelled tuple pattern's term is byte-identical
+            // to before, exactly as `constructor_pattern.named` is omitted when
+            // empty).
             //
-            // MEASURED, and the measurement is why this is a comment rather than a
-            // fix or an assert: this arm is reached ZERO times across the whole
-            // workspace suite (instrumented and run — the count is zero for ALL
-            // tuple lowerings, not just labelled ones). So the hazard is real and
-            // has no live witness, an assert here would never fire in tests, and a
-            // reflect-surface change (a `labels` field, or reviving the declared
-            // `named_tuple_pattern` entity) would ship with no coverage either. It
-            // is recorded here, at the site that drops them, rather than only at
-            // `term_to_pattern_occurrence`, which defends the READ direction.
-            //
-            // Tuple patterns lower to `tuple_pattern(elements: List[...])`.
+            // Fixed here rather than left as a comment because WI-819 gives the
+            // reflect entity a second conditional key anyway (`type_ann`): the
+            // surface change that had "no coverage to ship with" is now paid for,
+            // and the two concerns land on the same arm and the same entity.
             let elements: Vec<TermId> = positional
                 .iter()
                 .map(|c| pattern_to_term(kb, c))
                 .collect();
             let elements_list = build_list_termid(kb, &elements);
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern");
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::from_slice(&[(elements_key, elements_list)]),
-            })
+            let mut na: SmallVec<[(Symbol, TermId); 2]> =
+                SmallVec::from_slice(&[(elements_key, elements_list)]);
+            if !labels.is_empty() {
+                let labels_key = kb.intern("labels");
+                let label_terms: Vec<TermId> =
+                    labels.iter().map(|&l| kb.alloc(Term::Ref(l))).collect();
+                let labels_list = build_list_termid(kb, &label_terms);
+                na.push((labels_key, labels_list));
+            }
+            with_ann(kb, functor, na)
         }
     }
 }
@@ -3381,27 +3613,6 @@ fn build_list_termid(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
     acc
 }
 
-/// Internal helper: build `anthill.prelude.Option.some(value: t)` / `none()`.
-fn build_some(kb: &mut KnowledgeBase, t: TermId) -> TermId {
-    use smallvec::SmallVec;
-    let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
-    let value_key = kb.intern("value");
-    kb.alloc(Term::Fn {
-        functor: some_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(value_key, t)]),
-    })
-}
-fn build_none(kb: &mut KnowledgeBase) -> TermId {
-    use smallvec::SmallVec;
-    let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
-    kb.alloc(Term::Fn {
-        functor: none_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    })
-}
-
 pub fn substitute_occurrence(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -3412,9 +3623,9 @@ pub fn substitute_occurrence(
     // but their Expr-kind type_ann children CAN hold a `Var::Global`
     // that the substitution should rewrite. Mirror of the
     // `open_debruijn_node` Pattern arm.
-    if let Some(pat) = occ.as_pattern() {
+    if occ.as_pattern().is_some() {
         let mut subst_children: Vec<Rc<NodeOccurrence>> = Vec::new();
-        for_each_pattern_child(pat, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
+        for_each_pattern_child(occ, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
         return reassemble_pattern(occ, &subst_children);
     }
     // WI-378 step 2 / WI-342-P3: apply σ inside a Type/EffectExpr occurrence's
@@ -3482,32 +3693,10 @@ pub fn substitute_occurrence(
                 NodeOccurrence::new_expr(Expr::HoApply { predicate: p, args: a }, occ.span, occ.owner)
             })
         }
-        // WI-298: Let.type_annotation is a TermId — apply σ to it via
-        // `apply_subst` alongside the occurrence children, mirroring the
-        // opener's explicit Let arm. The generic fall-through below would
-        // leave it un-substituted because `for_each_child` skips TermId
-        // fields.
-        Expr::Let { pattern, type_annotation, value, body } => {
-            let new_pattern = substitute_occurrence(kb, pattern, subst);
-            let new_value = substitute_occurrence(kb, value, subst);
-            let new_body = substitute_occurrence(kb, body, subst);
-            let (new_ta, ta_changed) = subst_option_value(kb, type_annotation, subst);
-            let c1 = !Rc::ptr_eq(&new_pattern, pattern);
-            let c2 = !Rc::ptr_eq(&new_value, value);
-            let c3 = !Rc::ptr_eq(&new_body, body);
-            (c1 || c2 || c3 || ta_changed).then(|| {
-                NodeOccurrence::new_expr(
-                    Expr::Let {
-                        pattern: new_pattern,
-                        type_annotation: new_ta,
-                        value: new_value,
-                        body: new_body,
-                    },
-                    occ.span,
-                    occ.owner,
-                )
-            })
-        }
+        // WI-819: no explicit `Expr::Let` arm — it existed only to σ-apply the
+        // `type_annotation` field, which `for_each_child` does not enumerate.
+        // The annotation is now an Expr-kind child of the PATTERN occurrence,
+        // reached by the pattern arm above. Same walk, one altitude down.
         // WI-298: ApplyWithin.type_args mirrors Apply.type_args. The generic
         // fall-through would leave them un-substituted; explicit arm closes
         // that gap, parallel to the opener.
@@ -3736,23 +3925,6 @@ fn subst_value_type(kb: &mut KnowledgeBase, v: &Value, subst: &Substitution) -> 
     map_value_type(&SubstTypeRewrite { subst }, kb, v)
 }
 
-/// WI-298/WI-342: apply σ to an `Option<Value>` type field (today only
-/// `Let.type_annotation`) — the substitution twin of `open_option_value` /
-/// `close_option_value`.
-fn subst_option_value(
-    kb: &mut KnowledgeBase,
-    item: &Option<Value>,
-    subst: &Substitution,
-) -> (Option<Value>, bool) {
-    match item {
-        Some(v) => {
-            let (nv, changed) = subst_value_type(kb, v, subst);
-            (Some(nv), changed)
-        }
-        None => (None, false),
-    }
-}
-
 /// Resolve a `Expr::Var(Global)` leaf against σ. `None` ⇒ unbound, keep the
 /// leaf (returned as a clone of the original `occ`). See
 /// [`substitute_occurrence`] for the binding-case semantics.
@@ -3941,7 +4113,12 @@ pub(crate) enum BuildFrame {
     /// Empty / missing slot — push a synthesized Bottom occurrence.
     Bottom,
     If { span: SourceSpan },
-    Let { span: SourceSpan, pattern: TermId, type_annotation: Option<Value> },
+    /// WI-819: NO `type_annotation`. A `let`'s `: T` is attached to the PATTERN
+    /// TERM by the loader (`Loader::annotate_let_pattern`) before this frame is
+    /// built, and `term_to_param_occurrence` reads it from there into the pattern
+    /// occurrence's one annotation slot — so the term is the single source and
+    /// the two carriers cannot disagree by construction.
+    Let { span: SourceSpan, pattern: TermId },
     Lambda { span: SourceSpan, param: TermId },
     /// In-body / control-flow proof (WI-538). Children on the result
     /// stack are `[body, conclude?]`; the resolved target / strategy /
@@ -4092,10 +4269,9 @@ fn visit_fn(
             // and the loader lowers it onto the occurrence via
             // `type_expr_to_value`. Different namespace, different direction.
             // Deleting THAT would drop every let annotation.
-            let type_annotation = None;
             let value = get_named_arg(kb, named_args, "value");
             let body = get_named_arg(kb, named_args, "body");
-            work.push(WorkOp::Build(BuildFrame::Let { span, pattern, type_annotation }));
+            work.push(WorkOp::Build(BuildFrame::Let { span, pattern }));
             push_visit_or_bottom(work, body);
             push_visit_or_bottom(work, value);
         }
@@ -4449,13 +4625,15 @@ pub(crate) fn build_frame(
             let expr = Expr::If { condition, then_branch, else_branch };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Let { span, pattern, type_annotation } => {
+        BuildFrame::Let { span, pattern } => {
             // WI-318: build the Pattern-kind pattern occurrence from the
             // TermId carried in the BuildFrame, same as BuildFrame::Lambda.
+            // WI-819: the `: T` annotation rides the pattern TERM and lands on the
+            // pattern occurrence — `Expr::Let` has no annotation slot.
             let body = results.pop().expect("let: missing body");
             let value = results.pop().expect("let: missing value");
             let pattern_occ = term_to_param_occurrence(kb, pattern, span);
-            let expr = Expr::Let { pattern: pattern_occ, type_annotation, value, body };
+            let expr = Expr::Let { pattern: pattern_occ, value, body };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Lambda { span, param } => {
@@ -4716,7 +4894,7 @@ mod tests {
         // descend into it and remap DeBruijn -> Global rather than assert it
         // can't occur (the old `_`-arm panic). WI-298: opener now threads
         // `&mut KnowledgeBase` so it can remap DeBruijn vars inside TermId
-        // fields (Let.type_annotation, Apply/ApplyWithin.type_args).
+        // fields (Apply/ApplyWithin.type_args).
         let mut kb = KnowledgeBase::new();
         let v = kb.intern("v");
         let span = make_span();
@@ -4985,7 +5163,7 @@ mod tests {
         // the De Bruijn closer/opener no longer needs a special arm for
         // it — the structural for_each_child + reassemble walk uniformly
         // handles the param's children (currently always empty for a
-        // typical `Pattern::Var { name: Symbol, type_ann: None }`).
+        // typical unannotated `Pattern::Var { name: Symbol }`).
         // Verify a Lambda built with a Pattern::Var param round-trips
         // through node_to_debruijn unchanged (no vars to remap, but the
         // walker still must accept it).
@@ -4995,7 +5173,7 @@ mod tests {
         let span = make_span();
         let v0 = VarId::new(7, xname);
         let param = NodeOccurrence::new_pattern(
-            Pattern::Var { name: xname, type_ann: None },
+            Pattern::Var { name: xname },
             span,
             None,
         );
@@ -5172,11 +5350,11 @@ mod tests {
     }
 
     #[test]
-    fn wi298_open_remaps_debruijn_inside_let_type_annotation() {
-        // WI-298: a Let occurrence in a rule body whose `type_annotation` and
-        // `body` both contain a leaf `Var::DeBruijn(0)` (the rule's shared
-        // De Bruijn space). Opening with `fresh = [v0]` must remap BOTH the
-        // body leaf and the type_annotation TermId to the same `Global(v0)`,
+    fn wi298_open_remaps_debruijn_inside_let_annotation() {
+        // WI-298 / WI-819: a Let occurrence in a rule body whose PATTERN
+        // ANNOTATION and `body` both contain a leaf `Var::DeBruijn(0)` (the
+        // rule's shared De Bruijn space). Opening with `fresh = [v0]` must remap
+        // BOTH the body leaf and the annotation to the same `Global(v0)`,
         // so a hypothetical `?p` shared between the annotation and the body
         // resolves to one fresh global. Without the WI-298 fix the
         // annotation kept its DeBruijn in place.
@@ -5185,50 +5363,44 @@ mod tests {
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
-        // Pattern: `Pattern::Var { name: x, type_ann: None }`.
-        let pattern = NodeOccurrence::new_pattern(
-            Pattern::Var { name: xname, type_ann: None },
+        // WI-819: the annotation is a DeBruijn(0) standing for ?p in type
+        // position, carried on the PATTERN occurrence — its one home.
+        let ann = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: xname },
+            Some(ann),
             span,
             None,
         );
         // value/body are bare literals — uninteresting for this test.
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
-        // Annotation: a DeBruijn(0) standing for ?p in type position.
-        let ta_db = kb.alloc(Term::Var(Var::DeBruijn(0)));
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let {
-                pattern,
-                type_annotation: Some(Value::term(ta_db)),
-                value,
-                body,
-            },
+            Expr::Let { pattern, value, body },
             span,
             None,
         );
         let opened = open_debruijn_node(&mut kb, &let_occ, &[v0]);
-        let Some(Expr::Let { type_annotation, body, .. }) = opened.as_expr() else {
+        let Some(Expr::Let { pattern, body, .. }) = opened.as_expr() else {
             panic!("expected Let");
         };
-        let Some(Value::Term { id: ta, .. }) = type_annotation else {
-            panic!("type_annotation should still be Some after open");
+        let ta = pattern.pattern_type_ann().expect("annotation must survive open");
+        let Some(Expr::Var(Var::Global(ta_vid))) = ta.as_expr() else {
+            panic!("annotation should open to Global, got {:?}", ta.as_expr());
         };
-        let Term::Var(Var::Global(ta_vid)) = kb.get_term(*ta) else {
-            panic!("type_annotation should open to Global, got {:?}", kb.get_term(*ta));
-        };
-        assert_eq!(*ta_vid, v0, "type_annotation DeBruijn(0) must open to fresh Global(v0)");
+        assert_eq!(*ta_vid, v0, "annotation DeBruijn(0) must open to fresh Global(v0)");
         // And the body's ?p must have opened to the SAME global — the
         // observable property the acceptance criterion calls for.
         let Some(Expr::Var(Var::Global(body_vid))) = body.as_expr() else {
             panic!("body should be Global, got {:?}", body.as_expr());
         };
-        assert_eq!(*body_vid, v0, "body var and type_annotation var must share the same fresh global");
+        assert_eq!(*body_vid, v0, "body var and annotation var must share the same fresh global");
     }
 
     #[test]
-    fn wi298_close_remaps_global_inside_let_type_annotation() {
-        // WI-298: complementing the opener test — node_to_debruijn must also
-        // close a Global living in `Let.type_annotation` into the rule's
+    fn wi298_close_remaps_global_inside_let_annotation() {
+        // WI-298 / WI-819: complementing the opener test — node_to_debruijn must
+        // also close a Global living in the let's PATTERN ANNOTATION into the rule's
         // shared De Bruijn space, mirroring the opener. Without this the
         // stored rule body would carry a stray Global that escaped
         // per-call freshening.
@@ -5237,35 +5409,29 @@ mod tests {
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
-        let pattern = NodeOccurrence::new_pattern(
-            Pattern::Var { name: xname, type_ann: None },
+        let ann = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: xname },
+            Some(ann),
             span,
             None,
         );
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
-        let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let {
-                pattern,
-                type_annotation: Some(Value::term(ta_global)),
-                value,
-                body,
-            },
+            Expr::Let { pattern, value, body },
             span,
             None,
         );
         let closed = node_to_debruijn(&mut kb, &let_occ, &[v0]);
-        let Some(Expr::Let { type_annotation, body, .. }) = closed.as_expr() else {
+        let Some(Expr::Let { pattern, body, .. }) = closed.as_expr() else {
             panic!("expected Let");
         };
-        let Some(Value::Term { id: ta, .. }) = type_annotation else {
-            panic!("type_annotation should still be Some after close");
-        };
+        let ta = pattern.pattern_type_ann().expect("annotation must survive close");
         assert!(
-            matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(0))),
-            "Let.type_annotation Global must close to DeBruijn(0), got {:?}",
-            kb.get_term(*ta),
+            matches!(ta.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
+            "the pattern annotation's Global must close to DeBruijn(0), got {:?}",
+            ta.as_expr(),
         );
         assert!(
             matches!(body.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
@@ -5316,31 +5482,29 @@ mod tests {
     }
 
     #[test]
-    fn wi298_substitute_applies_sigma_to_let_type_annotation() {
-        // WI-298: the substitute_occurrence Let arm must apply σ to
-        // type_annotation, mirroring the Apply arm. Without the explicit Let
-        // arm the generic _ fall-through would skip the TermId field.
+    fn wi298_substitute_applies_sigma_to_let_annotation() {
+        // WI-298 / WI-819: σ must reach a `let`'s annotation. The explicit
+        // `Expr::Let` arm this used to need is GONE — the annotation is an
+        // ordinary Expr-kind child of the PATTERN occurrence, so
+        // `substitute_occurrence`'s pattern arm rewrites it through the same
+        // recursion as every other child. This test now pins that route.
         use crate::kb::term::Var;
         let mut kb = KnowledgeBase::new();
         let int_sym = kb.intern("Int64");
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
-        let pattern = NodeOccurrence::new_pattern(
-            Pattern::Var { name: xname, type_ann: None },
+        let ann = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: xname },
+            Some(ann),
             span,
             None,
         );
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
-        let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let {
-                pattern,
-                type_annotation: Some(Value::term(ta_global)),
-                value,
-                body,
-            },
+            Expr::Let { pattern, value, body },
             span,
             None,
         );
@@ -5349,16 +5513,14 @@ mod tests {
         subst.bind(&kb, v0, int_ref);
 
         let out = substitute_occurrence(&mut kb, &let_occ, &subst);
-        let Some(Expr::Let { type_annotation, .. }) = out.as_expr() else {
+        let Some(Expr::Let { pattern, .. }) = out.as_expr() else {
             panic!("expected Let, got {:?}", out.as_expr());
         };
-        let Some(Value::Term { id: ta, .. }) = type_annotation else {
-            panic!("type_annotation should still be Some after subst");
-        };
-        assert_eq!(
-            *ta, int_ref,
-            "Let.type_annotation must be substituted to Ref(Int) under σ; got {:?}",
-            kb.get_term(*ta),
+        let ta = pattern.pattern_type_ann().expect("annotation must survive subst");
+        assert!(
+            matches!(ta.as_expr(), Some(Expr::Ref(s)) if *s == int_sym),
+            "the pattern annotation must be substituted to Ref(Int64) under σ; got {:?}",
+            ta.as_expr(),
         );
     }
 
@@ -5959,5 +6121,68 @@ mod tests {
 
         let round = occurrence_to_term(&mut kb, &occ);
         assert_eq!(round, tuple_tid, "tuple literal must reify to its original term twin");
+    }
+    /// WI-819: a pattern annotation is `Expr`-kind even when the type it came from
+    /// rode the `Value::Node` (denoted) carrier — and collect/close therefore stay
+    /// in LOCKSTEP over it.
+    ///
+    /// This is a regression pin with a measured history. An earlier cut passed a
+    /// `Value::Node` straight through into the slot, to keep a compound type
+    /// projection on the carrier `eliminate_type_projections` understood. That put
+    /// a `Type`-kind occurrence in an ordinary occurrence-child slot, and the two
+    /// walkers that must agree about a rule body's vars DISAGREE about that kind:
+    /// `node_to_debruijn` closes it (via `rewrite_type_occurrence`), while
+    /// `collect_occurrence_global_vars_ordered` asserts on it and collects
+    /// NOTHING — a stray `Global` left in a stored rule body and an undercounted
+    /// arity. The fix was at the other end: the projection resolver reads its
+    /// receiver carrier-neutrally, so the annotation never needs to carry a shape
+    /// merely to be understood.
+    #[test]
+    fn wi819_annotation_is_expr_kind_so_collect_and_close_agree() {
+        use crate::kb::load::register_prelude;
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        // `value_to_term` on a `Denoted` type resolves prelude entities.
+        register_prelude(&mut kb);
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+
+        // A denoted-bearing (Node-carried) type whose spine holds a Global.
+        let node_ty = Value::Node(NodeOccurrence::new_type(
+            TypeNode::Denoted {
+                value: NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None),
+            },
+            span,
+            None,
+        ));
+        let ann = value_to_pattern_annotation(&mut kb, &node_ty, span);
+        assert!(
+            matches!(ann.kind, NodeKind::Expr { .. }),
+            "a Node-carried type must LOWER to an Expr-kind annotation, got {:?}",
+            std::mem::discriminant(&ann.kind),
+        );
+
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: xname }, Some(ann), span, None,
+        );
+
+        // The closer rewrites the annotation...
+        let closed = node_to_debruijn(&mut kb, &pattern, &[v0]);
+        let closed_ann = closed.pattern_type_ann().expect("annotation survives close");
+        let closer_saw_it = !Rc::ptr_eq(closed_ann, pattern.pattern_type_ann().unwrap());
+
+        // ...and the collector must see the SAME var, or the rule body keeps a
+        // stray Global that escaped per-call freshening.
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect_occurrence_global_vars_ordered(&kb, &pattern, &mut vars, &mut seen);
+
+        assert!(closer_saw_it, "control: the closer must actually rewrite this annotation");
+        assert_eq!(
+            vars, vec![v0],
+            "collect/close LOCKSTEP: the closer rewrote the annotation, so the collector \
+             must have reported its var",
+        );
     }
 }

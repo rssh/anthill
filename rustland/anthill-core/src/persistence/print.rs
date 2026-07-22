@@ -83,8 +83,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
 
     /// WI-318: render a Pattern-kind occurrence in surface form.
     /// Recurses into sub-patterns (Constructor.pos_args /
-    /// Tuple.positional). Var-pattern's optional `type_ann` is rendered
-    /// as `name: <type>` (the type is an Expr-kind occurrence). If a
+    /// Tuple.positional). WI-819: the occurrence's optional `type_ann` is
+    /// rendered as `<pattern>: <type>` (the type is an Expr-kind occurrence),
+    /// uniformly for every pattern shape. If a
     /// sub-occurrence isn't Pattern-kind (the reflection-meta-var case
     /// from term_pattern_as_expr_occ), delegate to `write_occurrence`
     /// so the term shape is rendered as data instead of the literal
@@ -97,14 +98,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             // surfaces faithfully.
             return self.write_occurrence(occ, buf);
         };
-        match pat {
-            Pattern::Var { name, type_ann } => {
-                buf.push_str(self.view.sym_name(*name));
-                if let Some(t) = type_ann {
-                    buf.push_str(": ");
-                    self.write_occurrence(t, buf);
-                }
+        // WI-819: the `: T` annotation hangs on the OCCURRENCE, so every pattern
+        // shape renders it the same way — `let (a, b): (Int64, String)` prints
+        // like `let x: Int64`, which is the point of the single channel.
+        let write_ann = |buf: &mut String| {
+            if let Some(t) = occ.pattern_type_ann() {
+                buf.push_str(": ");
+                self.write_occurrence(t, buf);
             }
+        };
+        match pat {
+            Pattern::Var { name } => buf.push_str(self.view.sym_name(*name)),
             Pattern::Wildcard => buf.push('_'),
             Pattern::Literal { value } => self.write_literal(value, buf),
             Pattern::Constructor { name, pos_args, named_args } => {
@@ -133,6 +137,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push(')');
             }
         }
+        write_ann(buf);
     }
 
     /// Render a `Type`-child — a ground hash-consed type (`write_term`) or a

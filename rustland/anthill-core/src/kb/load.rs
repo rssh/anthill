@@ -360,6 +360,29 @@ pub enum LoadError {
     ArrowTermInExprPosition {
         span: Span,
     },
+    /// WI-819: one pattern annotated TWICE — `let (x: T1): T2 = …`. The
+    /// parenthesized typed binder IS the whole pattern (`pattern_paren` unwraps to
+    /// the `typed_binder`), so both annotations name the ONE `type_ann` slot on
+    /// that pattern and there is nowhere to put the loser. Load-blocking rather
+    /// than silently keeping one: before WI-819 the outer annotation won and the
+    /// inner was dropped without a word, which is the shape-dependent invisible
+    /// choice the ticket removes.
+    ///
+    /// SPANNED (not `LoadError::Other`) because it is user-reachable: an
+    /// unspanned diagnostic renders with no `line:col` at all, and WI-745 made
+    /// file identity part of every load error's contract.
+    PatternAnnotatedTwice {
+        span: Span,
+    },
+    /// WI-819: a `let` annotation on a term that is not a pattern form at all —
+    /// neither a `Fn` nor the nullary `Ref` spelling `KnowledgeBase::alloc`
+    /// canonicalizes a 0-ary constructor into. No grammar path reaches it (the
+    /// `let_chain` pattern slot always lowers to a `pattern_*` functor); surfaced
+    /// loudly rather than dropped so a future producer that breaks the invariant
+    /// is not silently un-annotated.
+    LetAnnotationOnNonPattern {
+        span: Span,
+    },
     /// WI-618: a pratt-minted `pattern -> body` (the keyword-less lambda typo)
     /// in a rule (head or body) / fact / constraint / contract term position.
     /// Unlike an op/const body, an arrow-TYPE term is legitimate here (types
@@ -597,6 +620,8 @@ impl LoadError {
             | LoadError::UnresolvedImport { span, .. }
             | LoadError::AmbiguousSymbol { span, .. }
             | LoadError::ArrowTermInExprPosition { span }
+            | LoadError::PatternAnnotatedTwice { span }
+            | LoadError::LetAnnotationOnNonPattern { span }
             | LoadError::BareArrowInLogicPosition { span, .. }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
@@ -734,6 +759,19 @@ impl LoadError {
             LoadError::ArrowTermInExprPosition { span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: {}", line, col, arrow_expr_hint())
+            }
+            LoadError::PatternAnnotatedTwice { span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: this pattern is annotated twice — `let (x: T1): T2 = …` writes \
+                     two types into the one annotation slot; keep either the binder's \
+                     `: T1` or the let's `: T2`",
+                    line, col
+                )
+            }
+            LoadError::LetAnnotationOnNonPattern { span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: let annotation on a term that is not a pattern form", line, col)
             }
             LoadError::BareArrowInLogicPosition { position, unresolved, span } => {
                 let (line, col) = Span::line_col(source, span.start);
@@ -1047,6 +1085,22 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::ArrowTermInExprPosition { span } => {
                 write!(f, "{} at {}..{}", arrow_expr_hint(), span.start, span.end)
+            }
+            LoadError::PatternAnnotatedTwice { span } => {
+                write!(
+                    f,
+                    "this pattern is annotated twice — `let (x: T1): T2 = …` writes two types \
+                     into the one annotation slot; keep either the binder's `: T1` \
+                     or the let's `: T2` at {}..{}",
+                    span.start, span.end
+                )
+            }
+            LoadError::LetAnnotationOnNonPattern { span } => {
+                write!(
+                    f,
+                    "let annotation on a term that is not a pattern form at {}..{}",
+                    span.start, span.end
+                )
             }
             LoadError::BareArrowInLogicPosition { position, unresolved, span } => {
                 write!(f, "{} at {}..{}",
@@ -8819,20 +8873,23 @@ impl<'a> Loader<'a> {
                 let value = results[drain_start + 1];
                 let body = results[drain_start + 2];
                 results.truncate(drain_start);
+                // WI-819: the `let p : T = e1; e2` annotation is attached to the
+                // PATTERN term, BEFORE the `let_expr` term is built around it, so
+                // both carriers hold it — the whole point of the ticket. WI-342 T8
+                // had dropped the `let_expr`'s own `k_type_name` slot as
+                // write-only and WI-814 finished that deletion, which left the
+                // annotation on NEITHER carrier: `let x: Int64 = 1` and
+                // `let x: String = 1` then compared structurally EQUAL and (with
+                // no `Opaque` token left to make the key uncacheable) shared a
+                // `GoalKey`. Riding the pattern child fixes that with no new slot
+                // on `let_expr` and no new mechanism — the pattern's `type_ann` is
+                // the one the WI-517 binder channel already used.
+                let pattern = self.annotate_let_pattern(outer_parse_id, pattern);
                 let named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
                     (self.expr_syms.k_pattern, pattern),
                     (self.expr_syms.k_value, value),
                     (self.expr_syms.k_body, body),
                 ]);
-                // WI-342 (T8 cleanup): the `let x : T = e1; e2` annotation is
-                // carried ONLY by the occurrence's `Let.type_annotation` (a
-                // carrier-agnostic `Value`, built below via `type_expr_to_value`).
-                // The old term-side `k_type_name` slot on the let_expr `Term::Fn`
-                // (WI-271) was write-only — the typer types the let from the
-                // occurrence, not the term — so it is dropped, removing a
-                // ground-fact caller of the structural type lowering
-                // (`type_expr_to_value`). (`read_parse_type_
-                // annotation` still feeds the occurrence annotation below.)
                 let kb_id = self.kb.alloc(Term::Fn {
                     functor: self.expr_syms.let_expr,
                     pos_args: SmallVec::new(),
@@ -8843,18 +8900,9 @@ impl<'a> Loader<'a> {
                 if self.occ_suppress == 0 {
                     let span = SourceSpan::from_span(
                         self.source_id, self.parsed.terms.span(outer_parse_id));
-                    // WI-342 S4a: the occurrence annotation is a carrier-agnostic
-                    // `Value` (a denoted-bearing `: Modify[c]` rides as
-                    // `Value::Node`) — lowered from the parse annotation via
-                    // `type_expr_to_value`. This is the SOLE carrier of the let
-                    // annotation now (the term-side `k_type_name` slot was dropped
-                    // in T8 cleanup).
-                    let type_annotation = self
-                        .read_parse_type_annotation(outer_parse_id)
-                        .map(|ty_expr| self.type_expr_to_value(&ty_expr));
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Let { span, pattern, type_annotation },
+                        node_occurrence::BuildFrame::Let { span, pattern },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -9358,6 +9406,70 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-819: attach a `let p : T = …` annotation to the PATTERN term, the one
+    /// annotation channel. Returns `pattern` unchanged when the `let` writes no
+    /// annotation.
+    ///
+    /// The TERM is the single source: `term_to_param_occurrence` reads the
+    /// annotation back out of it into the pattern occurrence, so the two carriers
+    /// hold one value by construction rather than by two writes that must agree.
+    ///
+    /// The lowering is `type_expr_to_value` + `value_to_term` — the SAME pair
+    /// `load_pattern_var` has used for a WI-517 typed binder (`(x: T)`) all
+    /// along, which is why the "a denoted-bearing type cannot ride a term"
+    /// reasoning that once justified a second `Value`-only channel is false:
+    /// `value_to_term` is total since WI-390 and a `denoted`-bearing type lowers
+    /// losslessly through `occurrence_to_term`.
+    ///
+    /// A pattern that ALREADY carries a `type_ann` is `let (x: T1): T2 = …` —
+    /// the parenthesized typed binder IS the whole pattern (`pattern_paren`
+    /// unwraps to the `typed_binder`), so both annotations name the same slot.
+    /// Loud error rather than silently keeping one: before WI-819 the outer one
+    /// won and the inner was dropped without a word, which is precisely the kind
+    /// of shape-dependent, invisible choice this ticket removes.
+    fn annotate_let_pattern(&mut self, let_parse_id: TermId, pattern: TermId) -> TermId {
+        let Some(ty_expr) = self.read_parse_type_annotation(let_parse_id) else {
+            return pattern;
+        };
+        let type_ann_key = self.kb.intern("type_ann");
+        // Normalize both spellings of a pattern term up front so the annotation
+        // is appended ONCE. WI-511 collapses a nullary constructor application to
+        // its bare `Ref`, so `wildcard` — i.e. `let _: T = e`, the case the
+        // "every pattern may be annotated" rule exists for — arrives as `Ref`.
+        let (functor, pos_args, mut named_args) = match self.kb.get_term(pattern).clone() {
+            Term::Fn { functor, pos_args, named_args } => (functor, pos_args, named_args),
+            Term::Ref(f) => (f, SmallVec::new(), SmallVec::new()),
+            _ => {
+                let span = self.parsed.terms.span(let_parse_id);
+                self.errors.push(LoadError::LetAnnotationOnNonPattern { span });
+                return pattern;
+            }
+        };
+        if named_args.iter().any(|(k, _)| *k == type_ann_key) {
+            let span = self.parsed.terms.span(let_parse_id);
+            self.errors.push(LoadError::PatternAnnotatedTwice { span });
+            return pattern;
+        }
+        let value = self.type_expr_to_value(&ty_expr);
+        let ann = self.lower_pattern_annotation(&value);
+        named_args.push((type_ann_key, ann));
+        self.kb.alloc(Term::Fn { functor, pos_args, named_args })
+    }
+
+    /// WI-819: lower a type `Value` to the `TermId` a pattern's `type_ann` slot
+    /// holds. Shared by [`Self::annotate_let_pattern`] and `load_pattern_var`
+    /// so the two spellings of an annotation (`let p: T` and `(x: T)`) reach the
+    /// slot through ONE lowering.
+    fn lower_pattern_annotation(&mut self, value: &crate::eval::value::Value) -> TermId {
+        // `type_expr_to_value` yields only `Term`/`Node`, both of which
+        // `value_to_term` lowers without error, so the `Err` branch cannot fire.
+        // Guard it loudly rather than silently dropping the annotation.
+        node_occurrence::value_to_term(self.kb, value).unwrap_or_else(|e| {
+            debug_assert!(false, "WI-819: pattern annotation not term-representable: {e:?}");
+            self.kb.alloc(Term::Bottom)
+        })
+    }
+
     /// WI-271: the `let pat : T = …` annotation child of a let_expr.
     fn read_parse_type_annotation(&self, let_parse_id: TermId) -> Option<crate::parse::ir::TypeExpr> {
         self.read_parse_aux(let_parse_id, "type_name", |aux| match aux {
@@ -9722,35 +9834,32 @@ impl<'a> Loader<'a> {
         } else {
             self.convert_term(pos_args[0])
         };
-        let type_ann = match self.read_parse_aux(parse_id, "type", |aux| match aux {
-            crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
-            _ => None,
-        }) {
-            Some(ty_expr) => {
+        // WI-819: the annotation is emitted ONLY when written, unwrapped —
+        // an absent key and a `none()` payload carry the same information, and
+        // conditional presence is the rule shared by all five pattern entities
+        // (it is what keeps `wildcard` NULLARY). Lowered through the same
+        // `lower_pattern_annotation` the `let p: T` spelling uses.
+        let type_ann = self
+            .read_parse_aux(parse_id, "type", |aux| match aux {
+                crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+                _ => None,
+            })
+            .map(|ty_expr| {
                 let value = self.type_expr_to_value(&ty_expr);
-                // `value_to_term` is the total Value→Term boundary (WI-390):
-                // `type_expr_to_value` yields only `Term`/`Node`, both of which
-                // lower without error (ground types ride through unchanged, a
-                // `denoted`-bearing type lowers losslessly), so the `Err` branch
-                // can't fire. Guard it loudly (debug-assert) rather than
-                // silently dropping the annotation — mirrors the `value_to_term`
-                // call in `node_occurrence::type_node_to_term`.
-                let type_tid = node_occurrence::value_to_term(&mut self.kb, &value)
-                    .unwrap_or_else(|e| {
-                        debug_assert!(false, "WI-517: binder type annotation not term-representable: {e:?}");
-                        self.kb.alloc(Term::Bottom)
-                    });
-                build_some(self.kb, type_tid)
-            }
-            None => build_none(self.kb),
-        };
+                self.lower_pattern_annotation(&value)
+            });
         let var_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.var_pattern");
         let name_key = self.kb.intern("name");
         let type_ann_key = self.kb.intern("type_ann");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> =
+            SmallVec::from_slice(&[(name_key, name_ref)]);
+        if let Some(t) = type_ann {
+            named_args.push((type_ann_key, t));
+        }
         self.kb.alloc(Term::Fn {
             functor: var_pattern_sym,
             pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(name_key, name_ref), (type_ann_key, type_ann)]),
+            named_args,
         })
     }
 
@@ -14702,3 +14811,40 @@ mod wi351_place_tests {
         assert_eq!(role("curry.f.result.result"), Some(SymbolKind::CallbackResult));
     }
 }
+
+#[cfg(test)]
+mod wi819_diagnostic_tests {
+    use super::*;
+
+    /// Both renderings of the WI-819 diagnostics are single-spaced.
+    ///
+    /// `Display` and `format_with_source` are SEPARATE format strings for the
+    /// same error, and a dropped `\`-continuation in one is invisible until
+    /// somebody reads the message: the first cut of the `Display` arm carried two
+    /// literal ~22-space runs. `Display` also feeds `error_identity`, WI-745's
+    /// injective dedup key, so the mangling would have been stored, not merely
+    /// printed.
+    #[test]
+    fn wi819_diagnostics_have_no_collapsed_whitespace() {
+        let span = crate::span::Span { start: 0, end: 1 };
+        let cases = [
+            ("Display/twice", LoadError::PatternAnnotatedTwice { span }.to_string()),
+            ("Display/non-pattern", LoadError::LetAnnotationOnNonPattern { span }.to_string()),
+            (
+                "located/twice",
+                LoadError::PatternAnnotatedTwice { span }.format_with_source("let x = 1"),
+            ),
+            (
+                "located/non-pattern",
+                LoadError::LetAnnotationOnNonPattern { span }.format_with_source("let x = 1"),
+            ),
+        ];
+        for (label, rendered) in cases {
+            assert!(
+                !rendered.contains("  "),
+                "{label} renders with a collapsed-continuation run: {rendered:?}",
+            );
+        }
+    }
+}
+

@@ -11,7 +11,8 @@ use smallvec::SmallVec;
 
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
-    for_each_child, for_each_pattern_child, materialize_from_handle,
+    for_each_child, for_each_pattern_child, materialize_from_handle, pattern_annotation_value,
+    value_to_pattern_annotation, with_pattern_annotation,
     value_to_term, EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild,
     TypeNode,
 };
@@ -6267,7 +6268,7 @@ fn visit_type(
     let occ_span = Some(occ.span.span);
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
-        NodeKind::RuleHead { .. } | NodeKind::Pattern(_)
+        NodeKind::RuleHead { .. } | NodeKind::Pattern { .. }
         | NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
             // RuleHead never appears in op/rule body position; Pattern
             // is reached via its parent Expr's pattern slot and handled
@@ -6280,11 +6281,20 @@ fn visit_type(
     };
     match expr {
         // ── Iterative cases ─────────────────────────────────────
-        Expr::Let { pattern, type_annotation, value, body } => {
+        Expr::Let { pattern, value, body } => {
             // WI-511: pattern is a Pattern-kind occurrence, read occurrence-native
             // by the env-extension helpers — no `pattern_to_term` bridge.
             let pattern = Rc::clone(pattern);
-            let annotation = type_annotation.clone();
+            // WI-819: the `: T` annotation comes off the PATTERN — the one
+            // channel, read through the same `extract_pattern_type_ann` the
+            // lambda arm uses. It used to come off an `Expr::Let.type_annotation`
+            // that only a `let` had, which is why `let x: T` and `let (a, b): T`
+            // behaved differently for no reason the author could see. Everything
+            // downstream of this line (WI-399 projection elimination, WI-400
+            // alias canonicalization, the value's expected type, and the
+            // WI-379 conformance check at `LetAfterValue`) is unchanged.
+            let annotation = extract_pattern_type_ann(&pattern)
+                .map(|ann| pattern_annotation_value(kb, ann));
             // WI-399: discharge an expression-carried projection (`s.cell.T`) in the
             // let annotation HERE, where `env` resolves the receiver's type — the
             // let-binding peer of the op-call elimination in `check_apply_iter`. The
@@ -6297,6 +6307,13 @@ fn visit_type(
             // (which now refuses an un-eliminated projection head, the WI-399 safety
             // net). The env's `var_bindings` is exactly the `Symbol -> type` resolver
             // `eliminate_type_projections` needs (the analog of `param_to_arg_type`).
+            // WI-819: the elimination below REWRITES the annotation, and the
+            // pattern is now where the binder reads it from — so the rewritten
+            // type is written BACK onto the pattern (`pattern` is rebound). Left
+            // un-rewritten, `bind_and_label_pattern` would compare the
+            // eliminated context type against the raw `s.T` and report the WI-794
+            // binder contradiction between a type and itself.
+            let mut pattern = pattern;
             let annotation = match annotation {
                 Some(ann) if value_contains_projection(kb, &ann) => {
                     // WI-400 increment C (eager let-alias): canonicalize the annotation's
@@ -6316,7 +6333,11 @@ fn visit_type(
                     // the in-scope value itself, there is no call argument to re-key to
                     // (`None`).
                     match eliminate_type_projections(kb, &ann, &env.var_bindings, None, &ctx, occ_span) {
-                        Ok(elim) => Some(elim),
+                        Ok(elim) => {
+                            let ann_occ = value_to_pattern_annotation(kb, &elim, occ.span);
+                            pattern = with_pattern_annotation(&pattern, ann_occ);
+                            Some(elim)
+                        }
                         Err(e) => {
                             results.push(Err(e));
                             return;
@@ -6387,13 +6408,24 @@ fn visit_type(
             // WI-342: the param type is carrier-agnostic (`Value`) — the env binds
             // it directly, and `LambdaBody` builds the arrow's param slot from it
             // (a `Value::Node` denoted-bearing param is carried, not re-grounded).
-            // WI-511: a `let p: T` annotation rides the Pattern occurrence's
-            // `type_ann` child; ground it to a `Value::Term` (mirroring the old
-            // `unwrap_option`-of-the-`type_ann`-field path). The grammar's
-            // `pattern_var` doesn't surface one today, so this is normally None.
-            let ann_type: Option<Value> = extract_pattern_type_ann(&param).map(|ann_occ| {
-                Value::term(super::node_occurrence::occurrence_to_term(kb, ann_occ))
-            });
+            // WI-511 / WI-819: the annotation rides the Pattern occurrence's
+            // `type_ann` child — the ONE channel, read through the same
+            // `extract_pattern_type_ann` the `Expr::Let` arm uses, and decoded by
+            // the same `pattern_annotation_value`.
+            //
+            // The comment this replaces claimed "the grammar's `pattern_var`
+            // doesn't surface one today, so this is normally None". That was
+            // FALSE before WI-819 and is doubly so now: WI-517's `typed_binder`
+            // (`lambda (x: T) -> …`, `lambda (a: A, b: B) -> …`) has surfaced one
+            // since it landed — it is the very feature this ladder's rung (1)
+            // exists for.
+            //
+            // Reads through `pattern_annotation_value` rather than a bare
+            // `occurrence_to_term`, so a `denoted`-bearing annotation keeps its
+            // `Value::Node` carrier instead of being flattened to `Value::Term`
+            // (the carrier is information — see that function).
+            let ann_type: Option<Value> = extract_pattern_type_ann(&param)
+                .map(|ann_occ| pattern_annotation_value(kb, ann_occ));
             let param_type: Value = ann_type
                 .or_else(|| {
                     // Checking direction: the expected arrow's param slot, as-is.
@@ -20932,12 +20964,45 @@ fn resolve_receiver_path_type(
     }
     // A field access `base.field` — a `DotApply` with no call args. Resolve `base`,
     // then project `field`'s type off it.
-    if let Value::Node(occ) = receiver {
-        if let Some(Expr::DotApply { receiver: base, name, pos_args, named_args }) = occ.as_expr() {
-            if pos_args.is_empty() && named_args.is_empty() {
-                let base_val = Value::Node(std::rc::Rc::clone(base));
-                let field = *name;
-                let (base_ty, _) = resolve_receiver_path_type(kb, &base_val, arg_types, ctx, span)?;
+    //
+    // WI-819: read through `TermView`, so the SAME code serves both carriers. This
+    // arm used to match `Value::Node(occ)` + `Expr::DotApply` structurally, which
+    // meant a compound receiver was resolvable only when the annotation happened
+    // to ride the Node carrier — and once a `let`'s annotation moved onto its
+    // pattern TERM, the identical type arrived here as a `Value::Term` and was
+    // refused. WI-814 gave `Expr::DotApply` and its `dot_apply` term twin ONE view
+    // head with the same three keys, which is exactly what makes the neutral read
+    // possible: `head` / `named_arg` see through either carrier, so the verdict no
+    // longer depends on which one the type is written on (WI-425).
+    if let Some(dot_sym) = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply") {
+        let is_dot = matches!(
+            receiver.head(kb),
+            ViewHead::Functor { functor: Some(f), .. } if f == dot_sym
+        );
+        if is_dot {
+            let (k_receiver, k_name, k_args) =
+                (kb.intern("receiver"), kb.intern("name"), kb.intern("args"));
+            // A bare field access carries an EMPTY `args` list — ABSENT, or the
+            // `nil` constructor, which heads as a bare `Ref` (WI-436 / WI-511:
+            // a nullary constructor is stored as `Ref(c)`). Anything else — a
+            // `cons` spine (a method CALL `s.f(x)`, not a type path) OR an
+            // unresolved reflection `?args` Var — is NOT a bare access. The Var
+            // case is spelled out rather than folded into a "not a Functor" test:
+            // that test admitted it silently, and treating a call with unknown
+            // arguments as a field path is the kind of quiet acceptance CLAUDE.md
+            // rules out.
+            let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil");
+            let args_empty = match receiver.named_arg(kb, k_args) {
+                None => true,
+                Some(a) => matches!(
+                    (a.head(kb), nil_sym),
+                    (ViewHead::Ref(r), Some(n)) if r == n
+                ),
+            };
+            let base = receiver.named_arg(kb, k_receiver).map(|b| b.to_value());
+            let field = receiver.named_arg(kb, k_name).and_then(|n| extract_sort_ref_sym(kb, &n));
+            if let (true, Some(base), Some(field)) = (args_empty, base, field) {
+                let (base_ty, _) = resolve_receiver_path_type(kb, &base, arg_types, ctx, span)?;
                 return resolve_field_type(kb, &base_ty, field, ctx, span);
             }
         }
@@ -21042,12 +21107,30 @@ fn eliminate_expr_carried_projection(
     let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &TermIdView(t)) else {
         return Ok(Value::term(t));
     };
-    // A supported projection's receiver is a single value reference `Ref(s)`
-    // (classified as `SortRef`); a compound receiver is rejected at load, so this
-    // is defensive.
-    let receiver = extract_sort_ref_sym(kb, &value).ok_or_else(|| {
-        projection_type_error(ctx, span, "type projection receiver is not a simple value reference")
-    })?;
+    // A single value reference `Ref(s)` (classified as `SortRef`) is the common
+    // receiver and is resolved below.
+    //
+    // WI-819: a COMPOUND receiver (`s.cell.T`, a field-access path) is delegated
+    // to `resolve_compound_projection` — the SAME resolver the `Value::Node` arm
+    // of `eliminate_type_projections` uses for the same shape. It used to be a
+    // loud error here, on the stated ground that "a compound receiver is rejected
+    // at load, so this is defensive"; that was true only because a compound
+    // projection could reach this function on the NODE carrier alone. Once a
+    // `let`'s annotation rides its pattern term (WI-819), the identical type
+    // arrives here as a `Value::Term`, and refusing it made the answer depend on
+    // WHICH CARRIER the annotation happened to have — a carrier-dependent
+    // verdict, which is the thing carrier-neutrality exists to prevent (WI-425).
+    // Delegating makes the two carriers agree; it can only turn a former error
+    // into the answer the Node carrier already gave, never accept more than that
+    // arm does.
+    let Some(receiver) = extract_sort_ref_sym(kb, &value) else {
+        return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
+            ProjResult::Grounded(v) => Ok(v),
+            // Abstract receiver with the member declared: keep the original
+            // `ExprCarried` as the rigid neutral, exactly as the Node arm does.
+            ProjResult::Neutral => Ok(Value::term(t)),
+        };
+    };
     let arg_ty = match arg_types.get(&receiver) {
         Some(v) => v.clone(),
         None => {
@@ -21924,8 +22007,11 @@ fn bind_and_label_pattern(
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
     let Some(pat) = pattern.as_pattern() else { return Rc::clone(pattern); };
+    // WI-819: the binder's own annotation hangs on the pattern OCCURRENCE, not
+    // on `Pattern::Var` — so it is read the same way for every variant.
+    let type_ann = pattern.pattern_type_ann();
     match pat {
-        Pattern::Var { name, type_ann } => {
+        Pattern::Var { name } => {
             // Bind the pattern var even when its type is unknown — a
             // pattern-bound name is in scope regardless. Without this,
             // tuple-destructuring lambda params (`lambda (a, b) -> ...`, whose
@@ -21983,9 +22069,11 @@ fn bind_and_label_pattern(
             // One term per annotated binder is therefore the price of the check, and
             // nothing is wasted: when the context wins, this term answers the comparison;
             // when it does not, the same term becomes the binder's type below.
-            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann
-                .as_ref()
-                .map(|ann| (ann, Value::term(super::node_occurrence::occurrence_to_term(kb, ann))));
+            // WI-819: decoded by `pattern_annotation_value`, the one reader —
+            // carrier-preserving, so a `denoted`-bearing binder annotation is
+            // compared as itself rather than flattened.
+            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> =
+                type_ann.map(|ann| (ann, pattern_annotation_value(kb, ann)));
             if let (Some(ctx), Some((ann_occ, ann))) = (scrutinee_type.as_ref(), ann_ty.as_ref()) {
                 if let Some(err) =
                     binder_annotation_conflict(kb, *name, ctx, ann, Some(ann_occ.span.span))
@@ -22068,7 +22156,10 @@ fn bind_and_label_pattern(
                 };
                 rebuilt.push(bind_and_label_pattern(kb, env, sub_pat, field_type, errors));
             }
-            crate::kb::node_occurrence::reassemble_pattern(pattern, &rebuilt)
+            // WI-819: `rebuilt` holds SUB-PATTERNS only — the pattern's own `: T`
+            // is carried across by the reassembler, since binding rewrites
+            // sub-patterns and never the annotation.
+            crate::kb::node_occurrence::reassemble_pattern_subpatterns(pattern, &rebuilt)
         }
         Pattern::Tuple { positional, labels: old_labels } => {
             // When the scrutinee is a tuple type, bind each sub-pattern to its
@@ -22138,10 +22229,15 @@ fn bind_and_label_pattern(
                 // rule stays under its owner — the same call the Constructor arm
                 // above makes. Hand-rolling the `Rc::ptr_eq` scan here as well left
                 // two copies of that rule in one function, free to drift apart.
-                crate::kb::node_occurrence::reassemble_pattern(pattern, &rebuilt)
+                crate::kb::node_occurrence::reassemble_pattern_subpatterns(pattern, &rebuilt)
             } else {
-                NodeOccurrence::new_pattern(
+                // The labels changed, so `reassemble_pattern`'s "reuse when no
+                // child moved" rule cannot apply — rebuild directly. WI-819: the
+                // annotation is read straight off the occurrence, not recovered
+                // from `rebuilt`, which holds sub-patterns only.
+                NodeOccurrence::new_pattern_annotated(
                     Pattern::Tuple { positional: rebuilt, labels },
+                    type_ann.map(Rc::clone),
                     pattern.span,
                     pattern.owner,
                 )
@@ -22207,13 +22303,17 @@ fn binder_annotation_conflict(
     })
 }
 
-/// WI-511 (WI-348): the optional type annotation occurrence of a `var_pattern`
-/// (`let p: T`), read off the `Pattern` enum directly.
+/// WI-511 (WI-348): the optional type-annotation occurrence of a pattern
+/// (`let p: T`, `lambda (x: T) -> …`).
+///
+/// WI-819: THE reader of THE annotation channel. It used to answer only for a
+/// `Pattern::Var`, because that was the only variant with a slot — so a `let`
+/// over any other pattern shape had to reach a second, `Expr::Let`-only field
+/// instead. Both callers (the `Expr::Let` arm and the `Expr::Lambda` arm) now
+/// come here, which is what makes `let x: Int64 = 1` and
+/// `let (a, b): (Int64, String) = p` the same mechanism.
 fn extract_pattern_type_ann(pattern: &Rc<NodeOccurrence>) -> Option<&Rc<NodeOccurrence>> {
-    match pattern.as_pattern()? {
-        Pattern::Var { type_ann, .. } => type_ann.as_ref(),
-        _ => None,
-    }
+    pattern.pattern_type_ann()
 }
 
 /// WI-791: how many PARAMETERS a lambda writes — the arity its arrow type
@@ -32034,7 +32134,7 @@ fn collect_covered_entities(
     covered: &mut Vec<Symbol>,
     has_wildcard: &mut bool,
 ) {
-    let NodeKind::Pattern(pat) = &pattern.kind else { return; };
+    let NodeKind::Pattern { pattern: pat, .. } = &pattern.kind else { return; };
     match pat {
         Pattern::Wildcard => { *has_wildcard = true; }
         Pattern::Var { name, .. } => {
@@ -32135,8 +32235,8 @@ fn check_ho_apply_pattern_occ(
         // the rules-1/2/3/3b pattern-fragment check instead of evading it via
         // the `as_expr()` early-return. Mirror of `collect_occurrence_global_vars`'s
         // Pattern arm — recurse via `for_each_pattern_child`.
-        if let Some(pat) = occ.as_pattern() {
-            for_each_pattern_child(pat, |c| {
+        if occ.as_pattern().is_some() {
+            for_each_pattern_child(occ, |c| {
                 check_ho_apply_pattern_occ(kb, c, ho_apply_sym, rule_sym, span, errors);
             });
         }
@@ -32231,13 +32331,25 @@ fn occurrence_contains_functor(occ: &Rc<NodeOccurrence>, target: Symbol) -> bool
                 return true;
             }
             for_each_child(expr, |c| stack.push(Rc::clone(c)));
-        } else if let Some(pat) = o.as_pattern() {
+        } else if o.as_pattern().is_some() {
             // WI-323: descend into Pattern children so a target functor nested
             // in a Pattern.type_ann Expr leaf is found. Without this the rules-1/3b
             // head-vs-body co-occurrence test (`check_pattern_fragment`) would
             // miss a functor smuggled inside a Pattern-kind occurrence. Mirror of
             // `collect_occurrence_global_vars`'s Pattern arm.
-            for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
+            //
+            // `o`, NOT `occ`: `occ` is this function's ROOT parameter, still in
+            // scope, so passing it compiles and then walks the wrong node. That
+            // was a live defect — from an Expr root (the production shape: this
+            // runs over a rule BODY) `for_each_pattern_child` took its
+            // non-Pattern early return and pushed NOTHING, silently disabling the
+            // descent this arm exists for; from a Pattern root with a nested
+            // Pattern child it re-pushed the root's children forever. Pinned by
+            // `witness_a_expr_root_finds_functor_in_pattern_annotation` and
+            // `witness_b_nested_pattern_terminates` — the pre-existing test above
+            // could not catch it, because it passes the pattern ITSELF as root,
+            // where `o` and `occ` are the same node.
+            for_each_pattern_child(&o, |c| stack.push(Rc::clone(c)));
         }
     }
     false
@@ -32269,8 +32381,10 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 /// symmetric with the collector). `set_inferred_type` no-ops on non-`Expr`
 /// occurrences, so a rule head / pattern node is unaffected.
 fn stamp_rule_body_var_types(occ: &Rc<NodeOccurrence>, var_types: &HashMap<u32, Value>) {
-    if let Some(pat) = occ.as_pattern() {
-        for_each_pattern_child(pat, |c| stamp_rule_body_var_types(c, var_types));
+    if occ.as_pattern().is_some() {
+        for_each_pattern_child(occ, |c| {
+            stamp_rule_body_var_types(c, var_types)
+        });
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
@@ -33947,8 +34061,8 @@ fn collect_occurrence_type_constraints(
     // nested type-annotation Expr leaf gets the same op-arg / entity-field
     // constraint walk applied to the rest of the rule. Symmetric with
     // `node_to_debruijn` and `collect_occurrence_global_vars_ordered`.
-    if let Some(pat) = occ.as_pattern() {
-        for_each_pattern_child(pat, |c| {
+    if occ.as_pattern().is_some() {
+        for_each_pattern_child(occ, |c| {
             collect_occurrence_type_constraints(kb, c, var_types, subst)
         });
         return;
@@ -33962,17 +34076,11 @@ fn collect_occurrence_type_constraints(
         | Expr::Instantiation { name, pos_args, named_args } => {
             constrain_application(kb, *name, pos_args, named_args, var_types, subst);
         }
-        // WI-318: pattern is now a Pattern-kind child reached by
-        // `for_each_child` below. Only `type_annotation` remains a
-        // TermId-typed field needing the term-collector.
-        Expr::Let { type_annotation, .. } => {
-            // WI-342: a ground `Value::Term` annotation can carry nested op/entity
-            // calls to constrain; a `Value::Node` (denoted) annotation is a pure
-            // type occurrence with none, so it contributes no constraints.
-            if let Some(Value::Term { id: t, .. }) = type_annotation {
-                collect_term_type_constraints(kb, *t, var_types, subst);
-            }
-        }
+        // WI-819: `Expr::Let` no longer has a type-positional field. Its
+        // annotation is an Expr-kind child of the PATTERN occurrence, and the
+        // pattern arm at the top of this function already descends into it — so
+        // a ground annotation's nested op/entity calls are constrained through
+        // the SAME recursion, not a parallel term-collector call.
         // WI-318: Lambda / LambdaWithin params AND MatchBranch.pattern
         // are now Pattern-kind occurrences walked by `for_each_child`
         // below. Any nested TermId-typed children (e.g. a Var pattern's
@@ -34087,15 +34195,16 @@ mod wi323_pattern_type_ann_walker_tests {
         let span = make_span();
 
         let ho = dup_var_ho_apply(ho_apply_sym, span);
-        let pattern = NodeOccurrence::new_pattern(
-            Pattern::Var { name: pat_name, type_ann: Some(ho) },
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: pat_name },
+            Some(ho),
             span,
             None,
         );
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let { pattern, type_annotation: None, value, body },
+            Expr::Let { pattern, value, body },
             span,
             None,
         );
@@ -34104,7 +34213,7 @@ mod wi323_pattern_type_ann_walker_tests {
         check_ho_apply_pattern_occ(&kb, &let_occ, ho_apply_sym, rule_sym, Some(span.span), &mut errors);
         assert!(
             !errors.is_empty(),
-            "ho_apply in Pattern.Var.type_ann must trigger the rule-fragment violation (WI-323)"
+            "ho_apply in a pattern's type_ann must trigger the rule-fragment violation (WI-323)"
         );
     }
 
@@ -34118,19 +34227,20 @@ mod wi323_pattern_type_ann_walker_tests {
         let span = make_span();
 
         let ho = dup_var_ho_apply(ho_apply_sym, span);
-        let pattern = NodeOccurrence::new_pattern(
-            Pattern::Var { name: pat_name, type_ann: Some(ho) },
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: pat_name },
+            Some(ho),
             span,
             None,
         );
         assert!(
             occurrence_contains_functor(&pattern, ho_apply_sym),
-            "occurrence_contains_functor must find a functor nested in Pattern.Var.type_ann (WI-323)"
+            "occurrence_contains_functor must find a functor nested in a pattern's type_ann (WI-323)"
         );
 
         // A pattern with no type_ann must still report false (no spurious match).
         let plain = NodeOccurrence::new_pattern(
-            Pattern::Var { name: pat_name, type_ann: None },
+            Pattern::Var { name: pat_name },
             span,
             None,
         );
@@ -34139,6 +34249,60 @@ mod wi323_pattern_type_ann_walker_tests {
             "a pattern with no nested functor must not spuriously match"
         );
     }
+
+    /// WITNESS A: root is an EXPR whose pattern carries the annotation — the
+    /// PRODUCTION shape (`check_pattern_fragment` runs over a rule body, not
+    /// over a bare pattern). The existing test above passes the PATTERN itself
+    /// as root, where the popped item and the root coincide.
+    #[test]
+    fn witness_a_expr_root_finds_functor_in_pattern_annotation() {
+        let mut kb = KnowledgeBase::new();
+        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let pat_name = kb.intern("p");
+        let span = make_span();
+
+        let ho = dup_var_ho_apply(ho_apply_sym, span);
+        let pattern = NodeOccurrence::new_pattern_annotated(
+            Pattern::Var { name: pat_name },
+            Some(ho),
+            span,
+            None,
+        );
+        let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
+        let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let let_occ = NodeOccurrence::new_expr(
+            Expr::Let { pattern, value, body },
+            span,
+            None,
+        );
+
+        assert!(
+            occurrence_contains_functor(&let_occ, ho_apply_sym),
+            "an ho_apply inside the let's PATTERN annotation must be found from an Expr root"
+        );
+    }
+
+    /// WITNESS B: a nested pattern. If the walk pushes the ROOT's children
+    /// instead of the popped node's, this never terminates.
+    #[test]
+    fn witness_b_nested_pattern_terminates() {
+        let mut kb = KnowledgeBase::new();
+        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let c = kb.intern("C");
+        let span = make_span();
+
+        let leaf = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
+        let inner = NodeOccurrence::new_pattern(
+            Pattern::Constructor { name: c, pos_args: vec![leaf], named_args: Vec::new() },
+            span, None,
+        );
+        let outer = NodeOccurrence::new_pattern(
+            Pattern::Constructor { name: c, pos_args: vec![inner], named_args: Vec::new() },
+            span, None,
+        );
+        assert!(!occurrence_contains_functor(&outer, ho_apply_sym), "must terminate and report false");
+    }
+
 }
 
 #[cfg(test)]

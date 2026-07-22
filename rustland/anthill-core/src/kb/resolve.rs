@@ -6464,7 +6464,7 @@ impl KnowledgeBase {
             let Some(arg) = node_first_pos_arg(node) else { continue };
 
             // TYPE-position delay (WI-322): a caller var inside the first arg's
-            // own `type_args` / `type_annotation` (`f[T = ?caller_var](…)`)
+            // own `type_args` (`f[T = ?caller_var](…)`)
             // blocks a type-dispatching builtin even when its value structure is
             // ground — resolving the typed call needs `T` bound first. This
             // propagates UNCONDITIONALLY: head unification binds value args, but
@@ -6691,8 +6691,8 @@ impl KnowledgeBase {
         subst: &Substitution,
         out: &mut Vec<VarId>,
     ) {
-        if let Some(pat) = arg.as_pattern() {
-            node_occurrence::for_each_pattern_child(pat, |c| {
+        if arg.as_pattern().is_some() {
+            node_occurrence::for_each_pattern_child(arg, |c| {
                 self.collect_unbound_vars_node(c, subst, out)
             });
             return;
@@ -6714,7 +6714,7 @@ impl KnowledgeBase {
                     self.collect_unbound_vars_node(c, subst, out)
                 });
                 // WI-322: `for_each_child` walks the value children but NOT the
-                // TermId-typed type fields (`type_args` / `type_annotation`);
+                // TermId-typed type fields (`type_args`);
                 // descend them too so a caller var living inside an op type-arg
                 // (`f[T = ?caller_var](…)`) is counted. Symmetric with the
                 // loader's `collect_occurrence_global_vars_ordered`, which pairs
@@ -6743,8 +6743,10 @@ impl KnowledgeBase {
     }
 
     /// WI-322: collect the unbound `Global` vars living in an `Expr`'s
-    /// TermId-typed type fields — the `type_args` of an `Apply`/`ApplyWithin`
-    /// and the `type_annotation` of a `Let`. The subst-aware twin of the
+    /// TermId-typed type fields — the `type_args` of an `Apply`/`ApplyWithin`.
+    /// (WI-819: a `Let`'s annotation was the other one; it is now an ordinary
+    /// Expr-kind child of the PATTERN occurrence, so `collect_unbound_vars_node`'s
+    /// pattern arm reaches it by recursion.) The subst-aware twin of the
     /// loader's [`node_occurrence::collect_expr_termid_field_vars`]: it walks
     /// the SAME fields, but reads each type `Value` through the substitution so
     /// only vars still unbound here are reported. A `Value::Node` type spine /
@@ -6762,9 +6764,10 @@ impl KnowledgeBase {
                     self.collect_type_value_unbound_vars(v, subst, out);
                 }
             }
-            Expr::Let { type_annotation: Some(v), .. } => {
-                self.collect_type_value_unbound_vars(v, subst, out);
-            }
+            // WI-819: `Expr::Let` no longer has a type-positional field — its
+            // annotation is an ordinary Expr-kind child of the PATTERN
+            // occurrence, so `collect_unbound_vars_node`'s pattern arm above
+            // reaches it through the same recursion as every other child.
             _ => {}
         }
     }

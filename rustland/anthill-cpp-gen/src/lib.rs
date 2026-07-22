@@ -2281,7 +2281,7 @@ fn lower_node(
             message: "rule-head occurrence in expression body — \
                       should never reach cpp-gen".into(),
         }),
-        NodeKind::Pattern(_) => return Err(CppCodegenError {
+        NodeKind::Pattern { .. } => return Err(CppCodegenError {
             message: "pattern occurrence in expression body — \
                       should be consumed by parent let/lambda/match (WI-318)".into(),
         }),

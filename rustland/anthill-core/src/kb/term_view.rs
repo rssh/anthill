@@ -625,43 +625,80 @@ fn match_branches_child(
 // Every variant is 0-positional; `wildcard` is nullary and therefore reads as
 // `ViewHead::Ref` through `functor_view_head` on BOTH carriers (WI-436).
 //
-// LOSSY, IDENTICALLY ON BOTH CARRIERS: `Pattern::Tuple.labels` has nowhere to go
-// in the reflect surface (`entity tuple_pattern(elements: List[Pattern])`), so
-// `pattern_to_term` drops it — see the WI-803 "KNOWN LOSSY AND UNCOVERED" note at
-// that arm. This view drops it too, and must: diverging would make a labelled
-// tuple pattern key differently in the two carriers, and a cross-carrier miss is
-// a wrong answer (WI-425) — strictly worse than the shared imprecision, which is
-// a defect of the reflect surface and is tracked at the site that drops it. The
-// consequence to know: `lambda (a: x, b: y) -> e` and `lambda (x, y) -> e`
-// compare structurally EQUAL.
+// NO LONGER LOSSY (WI-819 closed WI-803's remaining gap): `Pattern::Tuple.labels`
+// and the pattern's `type_ann` BOTH have a reflect surface now, so this view and
+// `pattern_to_term` expose the same information. The rule they share, and which
+// keeps them from diverging: a key is declared exactly when the twin EMITS it —
+// `labels` when non-empty, `type_ann` when the pattern is annotated, `named` when
+// non-empty. Divergence would make a labelled or annotated pattern key
+// differently in the two carriers, and a cross-carrier miss is a wrong answer
+// (WI-425), not a precision loss.
+//
+// The consequence that USED to hold and no longer does, recorded so nobody
+// relies on the old note: `lambda (a: x, b: y) -> e` and `lambda (x, y) -> e`
+// compared structurally EQUAL. They do not now.
 
 /// Pattern-variant metadata: the twin's functor qualified name and its named
 /// keys IN BUILDER ORDER (`pattern_to_term`). One table so `pattern_head`'s
 /// arity and `pattern_named_keys`' list can never disagree — the desync
 /// `reflect_field_key`'s panic exists to prevent, here made structural.
-/// `Constructor`'s `named` key is present only when non-empty, exactly as the
-/// twin omits it "keeping the positional form byte-identical".
-fn pattern_shape(pat: &Pattern) -> (&'static str, &'static [&'static str]) {
-    let shape = pattern_shape_inner(pat);
+/// A key is declared exactly when the twin EMITS it: `Constructor`'s `named` when
+/// non-empty ("keeping the positional form byte-identical"), `Tuple`'s `labels`
+/// when non-empty, and — WI-819 — every variant's `type_ann` when the occurrence
+/// carries an annotation. That last one is why an unannotated `wildcard` stays
+/// NULLARY and so keeps heading as a bare `Ref` on both carriers (WI-436).
+fn pattern_shape(pat: &Pattern, annotated: bool) -> (&'static str, &'static [&'static str]) {
+    let shape = pattern_shape_inner(pat, annotated);
     debug_assert_keys_distinct(shape.0, shape.1);
     shape
 }
 
-fn pattern_shape_inner(pat: &Pattern) -> (&'static str, &'static [&'static str]) {
-    match pat {
-        Pattern::Var { .. } => ("anthill.reflect.Pattern.var_pattern", &["name", "type_ann"]),
-        Pattern::Wildcard => ("anthill.reflect.Pattern.wildcard", &[]),
-        Pattern::Literal { .. } => ("anthill.reflect.Pattern.literal_pattern", &["value"]),
-        Pattern::Constructor { named_args, .. } => (
+/// WI-819: `annotated` is whether the enclosing occurrence carries a `type_ann`.
+/// The key is declared for EVERY variant and only when present, exactly as the
+/// twin emits it — which is what keeps an unannotated `wildcard` NULLARY, so it
+/// still heads as `ViewHead::Ref` on both carriers (WI-436).
+fn pattern_shape_inner(
+    pat: &Pattern,
+    annotated: bool,
+) -> (&'static str, &'static [&'static str]) {
+    match (pat, annotated) {
+        (Pattern::Var { .. }, false) => ("anthill.reflect.Pattern.var_pattern", &["name"]),
+        (Pattern::Var { .. }, true) => {
+            ("anthill.reflect.Pattern.var_pattern", &["name", "type_ann"])
+        }
+        (Pattern::Wildcard, false) => ("anthill.reflect.Pattern.wildcard", &[]),
+        (Pattern::Wildcard, true) => ("anthill.reflect.Pattern.wildcard", &["type_ann"]),
+        (Pattern::Literal { .. }, false) => {
+            ("anthill.reflect.Pattern.literal_pattern", &["value"])
+        }
+        (Pattern::Literal { .. }, true) => {
+            ("anthill.reflect.Pattern.literal_pattern", &["value", "type_ann"])
+        }
+        (Pattern::Constructor { named_args, .. }, ann) => (
             "anthill.reflect.Pattern.constructor_pattern",
-            if named_args.is_empty() { &["name", "args"] } else { &["name", "args", "named"] },
+            match (named_args.is_empty(), ann) {
+                (true, false) => &["name", "args"],
+                (true, true) => &["name", "args", "type_ann"],
+                (false, false) => &["name", "args", "named"],
+                (false, true) => &["name", "args", "named", "type_ann"],
+            },
         ),
-        Pattern::Tuple { .. } => ("anthill.reflect.Pattern.tuple_pattern", &["elements"]),
+        // WI-803 / WI-819: `labels` IS a key now — see the `pattern_to_term`
+        // tuple arm. Present only when non-empty, as the twin emits it.
+        (Pattern::Tuple { labels, .. }, ann) => (
+            "anthill.reflect.Pattern.tuple_pattern",
+            match (labels.is_empty(), ann) {
+                (true, false) => &["elements"],
+                (true, true) => &["elements", "type_ann"],
+                (false, false) => &["elements", "labels"],
+                (false, true) => &["elements", "labels", "type_ann"],
+            },
+        ),
     }
 }
 
-fn pattern_head(pat: &Pattern, kb: &KnowledgeBase) -> ViewHead {
-    let (qname, keys) = pattern_shape(pat);
+fn pattern_head(pat: &Pattern, annotated: bool, kb: &KnowledgeBase) -> ViewHead {
+    let (qname, keys) = pattern_shape(pat, annotated);
     match kb.try_resolve_symbol(qname) {
         Some(f) => functor_view_head(kb, f, 0, keys.len()),
         // Reflect not loaded ⇒ no pattern twin exists in this KB (fail-soft,
@@ -671,8 +708,8 @@ fn pattern_head(pat: &Pattern, kb: &KnowledgeBase) -> ViewHead {
     }
 }
 
-fn pattern_named_keys(pat: &Pattern, kb: &KnowledgeBase) -> Vec<Symbol> {
-    let (qname, keys) = pattern_shape(pat);
+fn pattern_named_keys(pat: &Pattern, annotated: bool, kb: &KnowledgeBase) -> Vec<Symbol> {
+    let (qname, keys) = pattern_shape(pat, annotated);
     if kb.try_resolve_symbol(qname).is_none() {
         return Vec::new();
     }
@@ -731,7 +768,7 @@ fn pattern_named_child(
     kb: &KnowledgeBase,
     sym: Symbol,
 ) -> Option<Rc<NodeOccurrence>> {
-    let (qname, names) = pattern_shape(pat);
+    let (qname, names) = pattern_shape(pat, occ.pattern_type_ann().is_some());
     kb.try_resolve_symbol(qname)?; // reflect not loaded ⇒ head reads Opaque (no children)
     // Located by NAME via the shape table, mirroring `wrapped_expr_child` — so
     // the two halves of the WI-814 view share one dispatch shape, and a key with
@@ -740,11 +777,16 @@ fn pattern_named_child(
     let idx = names.iter().position(|k| reflect_field_key(kb, k, "pattern") == sym)?;
     let name = names[idx];
     let leaf = |e: Expr| NodeOccurrence::new_expr(e, occ.span, occ.owner);
+    // WI-819: `type_ann` is a key of EVERY variant (declared only when present),
+    // so it is served here, before the per-variant arms — it hangs on the
+    // occurrence, not on the pattern. The child is the annotation occurrence
+    // ITSELF, whose `occurrence_to_term` is exactly what `pattern_to_term` emits
+    // for the key: the two carriers agree by construction, not by parallel code.
+    if name == "type_ann" {
+        return occ.pattern_type_ann().map(Rc::clone);
+    }
     Some(match (pat, name) {
-        (Pattern::Var { name: n, .. }, "name") => leaf(Expr::Ref(*n)),
-        (Pattern::Var { type_ann, .. }, "type_ann") => {
-            synth_option(occ, kb, type_ann.as_ref().map(Rc::clone))
-        }
+        (Pattern::Var { name: n }, "name") => leaf(Expr::Ref(*n)),
         (Pattern::Literal { value }, "value") => leaf(Expr::Const(value.clone())),
         (Pattern::Constructor { name: n, .. }, "name") => leaf(Expr::Ref(*n)),
         (Pattern::Constructor { pos_args, .. }, "args") => {
@@ -770,9 +812,15 @@ fn pattern_named_child(
                 .collect();
             synth_cons_list(occ, kb, items)
         }
-        // `labels` is dropped — see the LOSSY note above (WI-803 / WI-819).
         (Pattern::Tuple { positional, .. }, "elements") => {
             synth_cons_list(occ, kb, positional.to_vec())
+        }
+        // WI-803 / WI-819: declared by `pattern_shape` only when non-empty,
+        // exactly as the twin emits it — so this arm is unreachable for an
+        // untyped (label-less) tuple pattern.
+        (Pattern::Tuple { labels, .. }, "labels") => {
+            let items = labels.iter().map(|&l| leaf(Expr::Ref(l))).collect();
+            synth_cons_list(occ, kb, items)
         }
         _ => {
             debug_assert!(
@@ -801,7 +849,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
     // WI-814: a Pattern-kind occurrence reads as its `pattern_to_term` twin —
     // the carrier asymmetry that made a lambda's `param` child `Opaque`.
     if let Some(pat) = occ.as_pattern() {
-        return pattern_head(pat, kb);
+        return pattern_head(pat, occ.pattern_type_ann().is_some(), kb);
     }
     // WI-814: the reflect-WRAPPED forms (DotApply / VarRef / Lambda / If / Let /
     // Match) read as the path-A term twin the loader emits — one table owns
@@ -963,7 +1011,7 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
     // WI-814: a Pattern-kind occurrence's keys, in `pattern_to_term`'s builder
     // order (the discrim walk descends in this order).
     if let Some(pat) = occ.as_pattern() {
-        return pattern_named_keys(pat, kb);
+        return pattern_named_keys(pat, occ.pattern_type_ann().is_some(), kb);
     }
     // WI-814: the reflect-WRAPPED forms' keys, from the same table `head`'s
     // `named_arity` counts — so the two cannot disagree.

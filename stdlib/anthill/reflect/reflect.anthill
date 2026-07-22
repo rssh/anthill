@@ -548,16 +548,60 @@ namespace anthill.reflect
     value: Term
   )
 
+  -- WI-819: `type_ann` is declared on EVERY variant, and it is the ONE
+  -- annotation channel — `let_expr` has no annotation slot and must not regrow
+  -- one. It hangs on the PATTERN because that is what a `: T` is written about
+  -- (`let p: T = e`): declaring it on `var_pattern` ALONE, as this surface used
+  -- to, left `let (a, b): (Int64, String) = p` nowhere to put its type, which
+  -- forced a second channel onto the `let` occurrence — and that one rode
+  -- NEITHER carrier after WI-342 T8 / WI-814 removed its term slot, so two
+  -- `let`s differing only in their annotation compared structurally EQUAL and
+  -- shared a (cacheable) GoalKey.
+  --
+  -- Every variant, including the ones that bind nothing: `let _: T = e` asserts
+  -- the value's type and binds nothing, and the grammar already admits it.
+  --
+  -- OMITTED when the pattern is unannotated, rather than carried as `none()`.
+  -- The KEY'S PRESENCE carries the optionality and the declared type describes
+  -- the payload when present — so `type_ann: Term`, not `Option[Term]`.
+  --
+  -- STATE THE TRADEOFF, because this deviates from the surface's usual idiom for
+  -- an optional field (`MatchBranch.guard: Option[NodeOccurrence]`,
+  -- `ApplyArg.name: Option[Symbol]`, and `var_pattern.type_ann` itself before
+  -- WI-819): a declared `Term` that is sometimes absent is less type-honest than
+  -- a declared `Option[Term]` that is always there. It is chosen anyway because
+  -- always-present would make `wildcard` a UNARY application instead of a
+  -- nullary one, and `KnowledgeBase::alloc` (WI-511) stores a nullary
+  -- constructor as the bare `Ref(c)` so `Fn{c}` and `Ref(c)` share one TermId —
+  -- which is what lets a wildcard head identically on the term and occurrence
+  -- carriers (WI-436). A cross-carrier head divergence is a wrong answer
+  -- (WI-425); a declaration that reads as total when it is conditional is a
+  -- documentation cost. The nearest surface precedent is
+  -- `constructor_pattern.named`, omitted when empty — though that one is
+  -- type-honest in a way this is not, since `nil` inhabits `List[…]` and no
+  -- value of `Term` means "absent".
   enum Pattern
-    entity var_pattern(name: Symbol, type_ann: Option[Term])
-    entity tuple_pattern(elements: List[Pattern])
-    entity named_tuple_pattern(fields: List[NamedPattern])
+    entity var_pattern(name: Symbol, type_ann: Term)
+    -- `labels` (WI-803, surfaced by WI-819) records which COMPONENT each binder
+    -- selects, resolved by the typer from the pattern's expected named-tuple
+    -- type. Omitted when empty (an untyped pattern, whose matcher correctly
+    -- falls back to reading the value's own component order). It exists because
+    -- dropping it made a pattern that round-tripped through this surface revert
+    -- to reading BY SLOT — the WI-788 wrong answer on a permuted value.
+    entity tuple_pattern(elements: List[Pattern], labels: List[Symbol], type_ann: Term)
+    -- No producer builds this today (no Rust `Pattern` variant corresponds to it;
+    -- see WI-816 on declared-but-unbuilt IR), so its `type_ann` cannot be
+    -- covered by a test. Declared anyway so the enum has NO annotation-less
+    -- variant: a pattern shape that cannot carry a `: T` is precisely the
+    -- WI-819 defect, and reviving this entity without the slot would re-plant it.
+    entity named_tuple_pattern(fields: List[NamedPattern], type_ann: Term)
     -- `named` carries `Foo(field: pat)` sub-patterns (WI-445); omitted (empty)
     -- for the all-positional form. Field→position is resolved by the typer/eval,
     -- so it is robust to the constructor's declaration order.
-    entity constructor_pattern(name: Symbol, args: List[Pattern], named: List[NamedPattern])
-    entity literal_pattern(value: Term)
-    entity wildcard
+    entity constructor_pattern(name: Symbol, args: List[Pattern],
+                               named: List[NamedPattern], type_ann: Term)
+    entity literal_pattern(value: Term, type_ann: Term)
+    entity wildcard(type_ann: Term)
   end
 
   entity NamedPattern(

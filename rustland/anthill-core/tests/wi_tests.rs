@@ -786,3 +786,6 @@ mod wi776_one_collapse_diagnostic_test;
 
 #[path = "include/wi814_lambda_view_test.rs"]
 mod wi814_lambda_view_test;
+
+#[path = "include/wi819_annotation_channel_test.rs"]
+mod wi819_annotation_channel_test;

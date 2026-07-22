@@ -75,19 +75,21 @@ fn fn_term(kb: &mut KnowledgeBase, functor: Symbol, named: &[(Symbol, TermId)]) 
 
 /// The TERM twin for `lambda b -> b`, built exactly as the loader does:
 /// `LoadBuildFrame::Lambda` → `Fn{lambda_expr, param: <pattern_to_term>,
-/// body: <var_ref>}`, the param through `pattern_to_term`'s `Var` arm
-/// (`var_pattern(name: Ref(b), type_ann: none())`).
+/// body: <var_ref>}`, the param through `pattern_to_term`'s `Var` arm.
+///
+/// WI-819: the param is `var_pattern(name: Ref(b))` — arity ONE. `type_ann` is
+/// emitted only when the pattern is actually annotated (an absent key and a
+/// `none()` payload say the same thing), which is also what keeps an
+/// unannotated `wildcard` nullary.
 fn lambda_term(kb: &mut KnowledgeBase, binder: Symbol) -> TermId {
     let lambda = kb.try_resolve_symbol("anthill.reflect.Expr.lambda_expr").unwrap();
     let var_pattern = kb.try_resolve_symbol("anthill.reflect.Pattern.var_pattern").unwrap();
     let var_ref = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref").unwrap();
-    let none = kb.try_resolve_symbol("anthill.prelude.Option.none").unwrap();
     let (k_param, k_body) = (kb.intern("param"), kb.intern("body"));
-    let (k_name, k_type_ann) = (kb.intern("name"), kb.intern("type_ann"));
+    let k_name = kb.intern("name");
 
     let name_ref = kb.alloc(Term::Ref(binder));
-    let none_t = fn_term(kb, none, &[]);
-    let param = fn_term(kb, var_pattern, &[(k_name, name_ref), (k_type_ann, none_t)]);
+    let param = fn_term(kb, var_pattern, &[(k_name, name_ref)]);
     let body_name = kb.alloc(Term::Ref(binder));
     let body = fn_term(kb, var_ref, &[(k_name, body_name)]);
     fn_term(kb, lambda, &[(k_param, param), (k_body, body)])
@@ -97,7 +99,7 @@ fn lambda_term(kb: &mut KnowledgeBase, binder: Symbol) -> TermId {
 /// `node_occurrence::BuildFrame::Lambda` builds it.
 fn lambda_occ(binder: Symbol) -> Rc<NodeOccurrence> {
     occ(Expr::Lambda {
-        param: pat(Pattern::Var { name: binder, type_ann: None }),
+        param: pat(Pattern::Var { name: binder }),
         body: occ(Expr::VarRef { name: binder }),
     })
 }
@@ -133,8 +135,8 @@ fn lambda_view_is_isomorphic_to_term_twin() {
         term.named_arg(&kb, kb.lookup_symbol("param").unwrap()).expect("term param"),
     );
     assert!(
-        matches!(occ_param.head(&kb), ViewHead::Functor { named_arity: 2, .. }),
-        "param reads as var_pattern(name, type_ann), not Opaque: {:?}",
+        matches!(occ_param.head(&kb), ViewHead::Functor { named_arity: 1, .. }),
+        "param reads as var_pattern(name), not Opaque: {:?}",
         occ_param.head(&kb),
     );
     assert!(views_structurally_equal(&kb, &occ_param, &term_param), "param ≡ its twin");
@@ -153,7 +155,8 @@ fn every_pattern_variant_has_a_structural_head() {
     let sub = || pat(Pattern::Wildcard);
 
     let cases: Vec<(&str, Rc<NodeOccurrence>, usize)> = vec![
-        ("var", pat(Pattern::Var { name: x, type_ann: None }), 2),
+        // WI-819: arity ONE — `type_ann` is emitted only when written.
+        ("var", pat(Pattern::Var { name: x }), 1),
         ("literal", pat(Pattern::Literal { value: Literal::Int(1) }), 1),
         ("constructor", pat(Pattern::Constructor {
             name: c,
@@ -223,7 +226,7 @@ fn one_source_lambda_equal_two_distinct_sources_not() {
 
     // Divergence in the BODY is caught too — the walk descends under the binder.
     let same_binder_other_body = Value::Node(occ(Expr::Lambda {
-        param: pat(Pattern::Var { name: shared, type_ann: None }),
+        param: pat(Pattern::Var { name: shared }),
         body: occ(Expr::Const(Literal::Int(0))),
     }));
     assert!(
@@ -263,10 +266,12 @@ fn lambda_cross_carrier_discrim_match() {
 /// binds nothing at all, and is structurally simpler than `DotApply`, which has
 /// had a head since WI-278.
 ///
-/// `let_expr` is arity-3: WI-342 T8 deleted the term-side `type_name` slot, so a
-/// faithful view must NOT expose `Expr::Let.type_annotation` (a `Value` living
-/// only on the occurrence). Exposing it would give the occurrence a key its twin
-/// lacks — a cross-carrier key divergence, which is a wrong answer (WI-425).
+/// `let_expr` is arity-3, and that is now EXACT rather than lossy: WI-342 T8
+/// deleted the term-side `type_name` slot and WI-819 deleted the occurrence-side
+/// `Expr::Let.type_annotation` that outlived it. A `let`'s `: T` rides its
+/// PATTERN child on BOTH carriers, so neither carrier has a fourth key to
+/// diverge over — see `let_annotation_separates_goal_keys` below for the defect
+/// that arrangement fixes.
 #[test]
 fn control_flow_forms_read_as_their_loader_twins() {
     let mut kb = stdlib_kb();
@@ -279,8 +284,7 @@ fn control_flow_forms_read_as_their_loader_twins() {
         else_branch: one(),
     });
     let let_occ = occ(Expr::Let {
-        pattern: pat(Pattern::Var { name: x, type_ann: None }),
-        type_annotation: None,
+        pattern: pat(Pattern::Var { name: x }),
         value: one(),
         body: occ(Expr::VarRef { name: x }),
     });
@@ -333,40 +337,35 @@ fn control_flow_forms_read_as_their_loader_twins() {
 /// when the occurrence carries them, mirroring the twin, which pushes those
 /// slots conditionally.
 ///
-/// `let_expr` deliberately has NONE. WI-342 deleted the term-side `type_name`
-/// slot as write-only and WI-814 finished the job — the reflect field and
-/// `visit_fn`'s reader are gone — so no `let_expr` term can carry an
-/// annotation and a conditional 4th key would describe a shape that no longer
-/// exists. The consequence is pinned below: two `let`s differing only in
-/// annotation compare EQUAL through the view, because the term carrier truly
-/// does not distinguish them.
+/// `let_expr` still has NONE, and after WI-819 that is EXACT rather than lossy.
+/// WI-342 deleted the term-side `type_name` slot as write-only, WI-814 finished
+/// that job, and WI-819 deleted the occurrence-side `Expr::Let.type_annotation`
+/// that had outlived it — so a `let` is arity-3 on BOTH carriers and its `: T`
+/// rides the PATTERN child, where both carriers can see it. Two `let`s differing
+/// only in annotation are therefore UNEQUAL now, which is what
+/// `wi819_annotation_channel_test.rs` pins; here we only check the arity.
 #[test]
 fn conditional_keys_track_the_occurrence() {
     let mut kb = stdlib_kb();
     let (x, goal) = (kb.intern("x#1"), kb.intern("my_goal"));
     let int64 = kb.try_resolve_symbol("anthill.prelude.Int64").unwrap();
     let one = || occ(Expr::Const(Literal::Int(1)));
-    let mk_let = |ann: Option<Value>| {
-        occ(Expr::Let {
-            pattern: pat(Pattern::Var { name: x, type_ann: None }),
-            type_annotation: ann,
-            value: one(),
-            body: occ(Expr::VarRef { name: x }),
-        })
+    let mk_let = |p: Rc<NodeOccurrence>| {
+        occ(Expr::Let { pattern: p, value: one(), body: occ(Expr::VarRef { name: x }) })
     };
 
-    let bare = mk_let(None);
-    let annotated = mk_let(Some(Value::Node(occ(Expr::Ref(int64)))));
+    let bare = mk_let(pat(Pattern::Var { name: x }));
+    let annotated = mk_let(NodeOccurrence::new_pattern_annotated(
+        Pattern::Var { name: x },
+        Some(occ(Expr::Ref(int64))),
+        span(),
+        None,
+    ));
     for (label, l) in [("unannotated", &bare), ("annotated", &annotated)] {
         let got: Vec<String> =
             l.named_keys(&kb).iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
         assert_eq!(got, ["pattern", "value", "body"], "{label} let is arity-3");
     }
-    assert!(
-        views_structurally_equal(&kb, &bare, &annotated),
-        "the annotation is absent from the TERM carrier, so the view must not \
-         distinguish them — distinguishing would be a cross-carrier miss",
-    );
     assert!(
         kb.lookup_symbol("type_name").is_none_or(|k| annotated.named_arg(&kb, k).is_none()),
         "there is no `type_name` child to reach",
@@ -517,8 +516,8 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
     let (k_head, k_tail, k_value) = (kb.intern("head"), kb.intern("tail"), kb.intern("value"));
     let (k_cond, k_then, k_else) =
         (kb.intern("cond"), kb.intern("then_branch"), kb.intern("else_branch"));
-    let (k_pattern, k_body, k_name, k_type_ann) =
-        (kb.intern("pattern"), kb.intern("body"), kb.intern("name"), kb.intern("type_ann"));
+    let (k_pattern, k_body, k_name) =
+        (kb.intern("pattern"), kb.intern("body"), kb.intern("name"));
     let (k_scrut, k_branches, k_guard) =
         (kb.intern("scrutinee"), kb.intern("branches"), kb.intern("guard"));
     let (k_target, k_using) = (kb.intern("target"), kb.intern("using"));
@@ -539,14 +538,13 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
 
     // ── let_expr(pattern, value, body); pattern via pattern_to_term's Var arm ──
     let x_ref = kb.alloc(Term::Ref(x));
-    let var_pat_t = fn_term(&mut kb, s_varpat, &[(k_name, x_ref), (k_type_ann, none_t)]);
+    let var_pat_t = fn_term(&mut kb, s_varpat, &[(k_name, x_ref)]);
     let x_ref2 = kb.alloc(Term::Ref(x));
     let vref_t = fn_term(&mut kb, s_vref, &[(k_name, x_ref2)]);
     let let_t =
         fn_term(&mut kb, s_let, &[(k_pattern, var_pat_t), (k_value, one_t), (k_body, vref_t)]);
     let let_o = Value::Node(occ(Expr::Let {
-        pattern: pat(Pattern::Var { name: x, type_ann: None }),
-        type_annotation: None,
+        pattern: pat(Pattern::Var { name: x }),
         value: one(),
         body: occ(Expr::VarRef { name: x }),
     }));

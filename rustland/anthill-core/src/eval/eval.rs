@@ -131,7 +131,7 @@ impl Interpreter {
                     "unexpected RuleHead occurrence in expression position".into(),
                 ));
             }
-            NodeKind::Pattern(_) => {
+            NodeKind::Pattern { .. } => {
                 // Patterns are consumed by `match_pattern` at let/lambda/
                 // match dispatch — they should never reach `reduce_node`
                 // as a top-level expression target (WI-318).
