@@ -771,3 +771,6 @@ mod wi805_duplicate_tuple_label_test;
 
 #[path = "include/wi808_entity_field_labels_test.rs"]
 mod wi808_entity_field_labels_test;
+
+#[path = "include/wi809_duplicate_named_arg_test.rs"]
+mod wi809_duplicate_named_arg_test;

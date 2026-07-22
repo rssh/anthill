@@ -38,6 +38,27 @@ const TUPLE_LABELS_DISTINCT: &str = "a named tuple's component names must be dis
     is reachable by neither its name nor its position, and its declared type is never \
     checked against anything";
 
+/// The `why` clause for a repeated NAMED ARGUMENT label in one argument list (WI-809).
+/// A third distinct harm, stated as its own: the two earlier rules are about a
+/// DECLARATION naming one thing twice, this is about a CALL SITE binding one slot twice
+/// and thereby leaving another unbound.
+///
+/// Measured on `entity mk(a: Int64, b: Int64)`: `mk(a: 1, a: 2)` loaded with zero errors
+/// and built an entity with TWO `a` fields and NO `b` — `.a` read the first, `.b` raised
+/// `Internal("field_access: entity has no field 'b'")` at run time, and a positional
+/// pattern saw the second `a` sitting in `b`'s slot. The operation path already refused
+/// the same spelling (`named_arg_coverage_errors`); entity construction, facts and
+/// rule-body atoms did not, because they never route through it.
+///
+/// Checked HERE rather than at the typer because it needs no type information — it is
+/// the purely syntactic question of whether one argument list repeats a label — so one
+/// rule at the syntax layer covers every callee shape at once. `named_arg_coverage_errors`
+/// keeps both of its own reasons, which this cannot see: an UNKNOWN label, and a label
+/// colliding with a parameter already filled POSITIONALLY (`f(3, acc: 10)`, WI-783).
+const NAMED_ARGS_DISTINCT: &str = "a named-argument list may not repeat a label — the \
+    second one names a slot the first already bound, so it cannot be read back by name, \
+    and the slot it displaces is left unbound";
+
 /// The `why` clause for a repeated ENTITY field name (WI-808). A NARROWER harm than
 /// [`TUPLE_LABELS_DISTINCT`], and the message says so rather than overstating it: the
 /// field is still built and read POSITIONALLY — measured, `mk(1, 2)` type-checks both
@@ -937,6 +958,19 @@ impl<'a> Converter<'a> {
                     let val_node = self.field(child, "value");
                     if let (Some(k), Some(v)) = (key_node, val_node) {
                         let sym = self.intern(self.text(k));
+                        // WI-809: no label twice in one argument list. Checked against
+                        // the labels already in `slots`, inside the loop that fills it,
+                        // so a component cannot be added without being checked.
+                        self.check_label_unique(
+                            "named argument",
+                            NAMED_ARGS_DISTINCT,
+                            slots.iter().filter_map(|s| match s {
+                                ArgSlot::Named(prev) => Some(*prev),
+                                ArgSlot::Positional => None,
+                            }),
+                            sym,
+                            k,
+                        );
                         slots.push(ArgSlot::Named(sym));
                         child_nodes.push(v);
                     }
@@ -982,6 +1016,19 @@ impl<'a> Converter<'a> {
                     let val_node = self.field(child, "value");
                     if let (Some(k), Some(v)) = (key_node, val_node) {
                         let sym = self.intern(self.text(k));
+                        // WI-809: no label twice in one argument list. Checked against
+                        // the labels already in `slots`, inside the loop that fills it,
+                        // so a component cannot be added without being checked.
+                        self.check_label_unique(
+                            "named argument",
+                            NAMED_ARGS_DISTINCT,
+                            slots.iter().filter_map(|s| match s {
+                                ArgSlot::Named(prev) => Some(*prev),
+                                ArgSlot::Positional => None,
+                            }),
+                            sym,
+                            k,
+                        );
                         slots.push(ArgSlot::Named(sym));
                         child_nodes.push(v);
                     }
@@ -1242,13 +1289,13 @@ impl<'a> Converter<'a> {
     /// collide with one another; a user `_`-prefixed label (`_b`, `_0`, a `_2` off
     /// its slot) is an ordinary name and compares as one (WI-790).
     ///
-    /// THIS IS NOT THE WHOLE RULE — it is the SOURCE-SYNTAX half. Two other producers
-    /// key a named tuple on names, each guarded where it builds:
-    ///  * a `...rest: R` VARIADIC CAPTURE folds a call's leftover NAMED ARGUMENTS into
-    ///    a tuple (`normalize_variadic_capture`, kb/typing.rs). Those labels are
-    ///    written in source but never as a tuple, so this guard cannot see them — the
-    ///    hole a `/code-review` altitude pass found by enumerating `named_tuple_value`'s
-    ///    callers rather than trusting "literal + type" to be exhaustive.
+    /// THIS IS NOT THE WHOLE RULE. A named tuple can also be built from labels no author
+    /// wrote as a tuple, and those are guarded where they are built:
+    ///  * a `...rest: R` VARIADIC CAPTURE folds a call's leftover NAMED ARGUMENTS into a
+    ///    tuple (`normalize_variadic_capture`, kb/typing.rs) — found by a `/code-review`
+    ///    altitude pass that enumerated `named_tuple_value`'s callers rather than
+    ///    trusting "literal + type" to be exhaustive. WI-809's named-argument rule below
+    ///    now catches every source-written spelling of it first;
     ///  * a DERIVED schema — `Concat` / `Project` — where no author wrote the labels at
     ///    all (`concat_named_tuple_types`, `keep_spec_projections`).
     /// Enforcing centrally in `named_tuple_value` was considered and rejected: it
@@ -1264,8 +1311,8 @@ impl<'a> Converter<'a> {
     /// a tuple reader takes. What makes it not this defect is that the unreachable
     /// parameter is still APPLIED POSITIONALLY, so its declared type is checked against
     /// an argument at every call; nothing is silently unchecked, which is what this rule
-    /// is for. (The one channel that does resolve those names, a named argument, refuses
-    /// a duplicate at the call — `named_arg_coverage_errors`.) Rejecting duplicate
+    /// is for. (The one channel that does resolve those names, a named argument, cannot
+    /// repeat a label at all — [`NAMED_ARGS_DISTINCT`].) Rejecting duplicate
     /// binder names is a separate decision about SHADOWING, to be taken on its own
     /// terms.
     ///
@@ -1567,9 +1614,28 @@ impl<'a> Converter<'a> {
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "named_pattern_field" {
-                        let field_name = self.field(child, "field_name")
+                        let name_node = self.field(child, "field_name");
+                        let field_name = name_node
                             .map(|n| self.intern(self.text(n)))
                             .unwrap_or_else(|| self.intern("_"));
+                        // WI-809: same rule, third production. A duplicate here is
+                        // NOT merely loud at run time: `match_constructor_pattern`'s
+                        // WI-445 double-cover check makes the arm fail to match, so
+                        // with another `case` following it the arm is SILENTLY DEAD —
+                        // measured, `case mk(a: p, a: q) -> 111` under a `case _ -> 999`
+                        // loaded clean and returned 999. Only a fallback-less match
+                        // raises. A silently-skipped arm is exactly what this codebase
+                        // treats as worse than a loud error.
+                        self.check_label_unique(
+                            "named pattern field",
+                            NAMED_ARGS_DISTINCT,
+                            slots.iter().filter_map(|s| match s {
+                                ArgSlot::Named(prev) => Some(*prev),
+                                ArgSlot::Positional => None,
+                            }),
+                            field_name,
+                            name_node.unwrap_or(child),
+                        );
                         slots.push(ArgSlot::Named(field_name));
                         match self.field(child, "field_pattern") {
                             Some(p) => child_ops.push(WorkOp::Visit(WorkKind::Pattern, p)),
@@ -3558,10 +3624,28 @@ impl<'a> Converter<'a> {
         let mut args: Vec<TermId> = Vec::new();
         let mut tactic_args: Vec<TacticArg> = Vec::new();
         let mut explicit_tactic: Option<Tactic> = None;
+        let mut seen_strategy_labels: SmallVec<[Symbol; 4]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
                 "named_arg" => {
+                    // WI-809: same rule, and the same production (`named_arg`). Without
+                    // it a top-level strategy argument could repeat a label while the
+                    // NESTED spelling was refused — the nested one routes its value
+                    // through `convert_term` → `push_fn_term`. `prove.rs` reads these
+                    // last-wins AND pushes both into the proof-cache canon, so the
+                    // duplicate silently changed what was proved and what was cached.
+                    if let Some(k) = self.field(child, "name") {
+                        let sym = self.intern(self.text(k));
+                        self.check_label_unique(
+                            "proof strategy argument",
+                            NAMED_ARGS_DISTINCT,
+                            seen_strategy_labels.iter().copied(),
+                            sym,
+                            k,
+                        );
+                        seen_strategy_labels.push(sym);
+                    }
                     args.push(self.convert_named_arg(child));
                     let arg = self.convert_tactic_named_arg(child);
                     if let Some(arg) = arg {

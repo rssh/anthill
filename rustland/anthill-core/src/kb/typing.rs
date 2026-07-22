@@ -8550,13 +8550,10 @@ fn normalize_variadic_capture(
             Err(_) => return Ok(None),
         };
         // WI-805 §4.5: the captured record is a NAMED TUPLE, and its component names
-        // must be distinct. This is the third producer that keys a tuple on labels the
-        // author WROTE — after the tuple literal and the tuple type, both refused at
-        // parse (`check_tuple_label_unique`) — and the only one the parse guard cannot
-        // see, because the labels are written as a call's NAMED ARGUMENTS and only
-        // become a tuple here. `named_arg_coverage_errors`' duplicate rule does not
-        // reach them either: a leftover matches no declared parameter, which is
-        // precisely what routed it into the capture.
+        // must be distinct. It is built from a call's NAMED ARGUMENTS, which is why the
+        // tuple-literal and tuple-type guards did not cover it when this was written.
+        // WI-809 has since made the whole named-argument LIST subject to the same rule at
+        // parse, which covers this case too — see the note below on what that leaves.
         //
         // Measured before this check, on a clean load:
         //   operation cap[R](x: Int64, ...rest: R) -> R = rest
@@ -8571,6 +8568,24 @@ fn normalize_variadic_capture(
         // Refused rather than declined (`return Ok(None)`): falling back to ordinary
         // typing would report that the label names no parameter, which is true of every
         // captured field and so says nothing about the actual fault.
+        //
+        // NO LONGER THE FIRST LINE OF DEFENCE, and NOT KNOWN TO BE REACHABLE. WI-809 made
+        // "one argument list may not repeat a label" a SYNTACTIC rule
+        // (`check_label_unique`, parse/convert.rs), which catches every source-written
+        // spelling before the typer runs — including the fixture this check was added for.
+        //
+        // An earlier version of this comment justified keeping it by claiming a WI-722
+        // compile-time macro could synthesize an `Expr::Apply` carrying named args and so
+        // bypass the parser. THAT IS FALSE, and a /code-review pass caught it: both
+        // occurrence builders hardcode an empty list (`reflect_make_apply` /
+        // `reflect_make_fn`, eval/builtins.rs) and `try_expand_macro` (kb/simp_rewrite.rs)
+        // DECLINES any template carrying named args. The one synthesizer that does carry
+        // them, `substitute_to_occurrence`, copies its keys from a source-parsed `Term::Fn`
+        // — which the syntactic rule has already checked.
+        //
+        // So this is retained as defence-in-depth against a FUTURE occurrence synthesizer,
+        // with no reachable path today — stated plainly, because a rationale that sounds
+        // reachable is worse than none: it is what stops the next reader from re-checking.
         if captured_fields.iter().any(|(prev, _)| same_label(kb, *prev, *label)) {
             let name = short_name_of(kb.resolve_sym(*label)).to_string();
             return Err(TypeError::Other {

@@ -1986,6 +1986,20 @@ are different sorts even though they share a short name. Short-name matching in 
 kernel therefore survives only for name resolution against a scoped set, never as a
 test of whether two sorts are the same.
 
+**Distinct labels within one argument list** (WI-809). A named-argument list may not
+repeat a label, whatever the callee is: an operation, an entity constructor, a
+function value, a `fact`, or a rule-body atom. The second occurrence names a slot the
+first already bound, so it cannot be read back by name and the slot it displaces is
+left unbound — measured, `mk(a: 1, a: 2)` against `entity mk(a: Int64, b: Int64)` used
+to build a value with two `a` fields and no `b`, with `.b` failing only at run time.
+
+This is checked as **syntax**, since whether one list repeats a label needs no type
+information; one rule therefore covers every callee shape at once, and it is the same
+distinctness principle as §4.5's tuple components and §6.3's entity fields. Two
+related checks remain *semantic*, because neither is decidable from the argument list
+alone: an **unknown** label (it must be matched against the callee's parameters), and
+a label that re-binds a parameter already filled **positionally** (`f(3, acc: 10)`).
+
 **Named arguments to a function value.** Where the callee is not a named operation
 but a **variable of arrow type**, the label resolves against that *arrow type's*
 declared binder names: with `f: (acc: Int64, x: Int64) -> Int64`, both `f(x: 10,
@@ -1993,8 +2007,9 @@ acc: 3)` and `f(acc: 3, x: 10)` bind `acc` to the first parameter and `x` to the
 second. The **declared** names govern, not those of whichever function is finally
 passed — an arrow's parameter list is applied positionally, so an operation whose
 own binders read `(a, b)` remains a legal argument for `(acc, x)` (§ arrow
-conformance) and declared slot *i* is that callee's slot *i*. An unknown or
-duplicated label is a load error, as for an operation call.
+conformance) and declared slot *i* is that callee's slot *i*. An unknown label is a
+load error, as for an operation call; a duplicated one is refused earlier still, by
+the syntactic rule above.
 
 Two arrow types record **no** binder names, and a label there is rejected with a
 located error rather than resolved: a **one-parameter** arrow, whose binder name the

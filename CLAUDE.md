@@ -133,6 +133,16 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   applied to an arrow's PARAMETER LIST: a repeated binder name there DOES shadow (the
   body reads the LAST one), but params are applied positionally so the shadowed one's
   type is still checked at every call — nothing is silently unchecked.
+- **A named-argument list may not REPEAT A LABEL** (WI-809), for ANY callee — operation,
+  entity constructor, function value, `fact`, rule-body atom — checked at
+  `push_fn_term` + `push_dot_method_call` (two producers; the dot-call one is easy to miss).
+  Done as SYNTAX because repetition within one list needs no type info, so one rule
+  covers every callee. `mk(a: 1, a: 2)` on `entity mk(a: Int64, b: Int64)` built two
+  `a` fields and NO `b`, failing only at run time. Still SEMANTIC in
+  `named_arg_coverage_errors`, since neither is decidable from the list alone: an
+  UNKNOWN label, and one re-binding a parameter already filled POSITIONALLY
+  (`f(3, acc: 10)`). `normalize_variadic_capture`'s duplicate check is kept as the
+  backstop for occurrences a MACRO synthesizes without passing through the parser.
 - **An entity's field names are DISTINCT too** (WI-808), refused at `convert_entity`
   through the same owner (`check_label_unique`, which takes a per-kind rationale).
   NARROWER HARM than the tuple rule, and the comment says so: an entity's duplicate

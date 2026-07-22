@@ -129,20 +129,26 @@ end
 // ── the third producer: variadic capture ───────────────────────
 
 /// A `...rest: R` capture folds a call's LEFTOVER NAMED ARGUMENTS into a named tuple
-/// (WI-727), so it keys a tuple on labels the author wrote — and the parse guard
-/// cannot see them, because they are written as call arguments and only become a
-/// tuple in the typer.
+/// (WI-727), so it keys a tuple on labels the author wrote. Found by the WI-805
+/// `/code-review` altitude pass, which refused to accept "literal + type = every
+/// producer" and enumerated `named_tuple_value`'s callers instead. Measured then: this
+/// program loaded CLEAN and `drive()` returned `Int(2)`, having built
+/// `(a: Int64, a: String)` — the very type the parse guard forbids writing — with the
+/// `a: String` column unreachable and its type never checked.
 ///
-/// Found by the WI-805 `/code-review` altitude pass, which refused to accept
-/// "literal + type = every producer" and enumerated the callers of
-/// `named_tuple_value` instead. Measured live before the guard: this program loaded
-/// CLEAN and `drive()` returned `Int(2)`, having built `(a: Int64, a: String)` — the
-/// very type the parse guard forbids writing — with the `a: String` column
-/// unreachable and its type never checked.
+/// REFUSED A STAGE EARLIER SINCE WI-809, which made "one argument list may not repeat a
+/// label" a SYNTACTIC rule covering every callee at once. That subsumes this spelling:
+/// the duplicate never reaches the typer, so the assertion follows the diagnostic rather
+/// than pinning a message the program no longer produces.
 ///
-/// `named_arg_coverage_errors`' "binds a parameter already given" does NOT cover
-/// this: a captured leftover matches no declared parameter, which is what routed it
-/// into the capture in the first place.
+/// `normalize_variadic_capture`'s own check is KEPT but has NO KNOWN REACHABLE PATH. An
+/// earlier version of this note claimed a WI-722 compile-time macro could synthesize an
+/// `Expr::Apply` carrying named args and so bypass the parser; a `/code-review` pass
+/// showed that is FALSE — the occurrence builders hardcode an empty named-arg list and
+/// `try_expand_macro` declines any template carrying one. The guard is retained as
+/// defence-in-depth against a future synthesizer, and the reasoning is recorded at the
+/// guard itself. Stated plainly rather than dressed up: a justification that sounds
+/// reachable is worse than none, because it stops the next reader from re-checking.
 #[test]
 fn duplicate_captured_named_argument_is_refused() {
     let src = r#"
@@ -152,11 +158,11 @@ namespace test.wi805.cap
   operation drive() -> Int64 = cap(1, a: 2, a: "ess").a
 end
 "#;
-    let errs = load_errs(src);
+    let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("captured twice into the `...` record")
-            && e.contains('a')),
-        "a label captured twice must be refused at load, naming it; got: {errs:?}",
+        errs.iter().any(|e| e.contains("duplicate named argument `a`")),
+        "a label written twice in one argument list must be refused, naming it; \
+         got: {errs:?}",
     );
 }
 
@@ -182,11 +188,11 @@ namespace test.wi805.cap2
     q
 end
 "#;
-    let errs = load_errs(src);
+    let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("captured twice into the `...` record")),
-        "the duplicate is refused at the capture, before it can reach the matcher; \
-         got: {errs:?}",
+        errs.iter().any(|e| e.contains("duplicate named argument `a`")),
+        "the duplicate is refused before it can reach the capture, let alone the \
+         matcher; got: {errs:?}",
     );
 }
 
