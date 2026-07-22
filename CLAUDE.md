@@ -119,7 +119,7 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   its identity, hence the exemption. See `docs/kernel-language.md` §4.5.
 - **A tuple's component labels are DISTINCT** (WI-805), refused at each of the THREE
   producers that key a tuple on labels the author WROTE: the literal and the tuple
-  TYPE (`check_tuple_label_unique`, `parse/convert.rs`), and a `...rest: R` VARIADIC
+  TYPE (`check_label_unique`, `parse/convert.rs`), and a `...rest: R` VARIADIC
   CAPTURE's leftover named args (`normalize_variadic_capture`, `kb/typing.rs`) —
   whose labels are written as call arguments and only become a tuple in the typer, so
   the parse guard cannot see them. Same rule the projection `x.(a, a)` and a call's

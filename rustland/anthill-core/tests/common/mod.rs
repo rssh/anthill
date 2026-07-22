@@ -121,7 +121,7 @@ pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<Str
 ///
 /// Shared because the checks that report here have multiplied: the projection
 /// well-formedness rules (`validate_projection_labels`, WI-639) and the tuple
-/// component-label distinctness rule (`check_tuple_label_unique`, WI-805),
+/// component-label distinctness rule (`check_label_unique`, WI-805),
 /// whose fixtures live in four suites. Assert on the returned messages; the
 /// panic here only says the source parsed at all.
 #[allow(dead_code)]

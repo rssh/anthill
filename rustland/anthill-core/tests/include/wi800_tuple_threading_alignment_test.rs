@@ -133,7 +133,7 @@ fn width_threads_around_a_dropped_component() {
 //
 // The test that drove it lived here and is gone. WI-803 made both walks look up
 // from the START, and WI-805 then refused the duplicate where the tuple is MINTED
-// (`check_tuple_label_unique`, parse/convert.rs), so the program is now a PARSE
+// (`check_label_unique`, parse/convert.rs), so the program is now a PARSE
 // error and never reaches the relation. All that remained to assert was a message
 // string that `wi805_duplicate_tuple_label_test` owns, over a fixture that no
 // longer discriminates — the guard runs on labels alone, so the second `a`'s type

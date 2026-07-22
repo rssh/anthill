@@ -258,7 +258,7 @@ fn match_tuple_pattern(
     //
     // WI-805 closed the EQUAL mode at every producer that keys a tuple on labels the
     // author wrote: the literal and the tuple type, refused at parse
-    // (`check_tuple_label_unique`, parse/convert.rs), and a `...rest: R` capture's
+    // (`check_label_unique`, parse/convert.rs), and a `...rest: R` capture's
     // leftover named arguments, refused in `normalize_variadic_capture`
     // (kb/typing.rs). The capture is the one that mattered HERE — until WI-805 it was
     // this guard's only end-to-end witness in the corpus, and it was live:

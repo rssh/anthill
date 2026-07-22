@@ -4486,7 +4486,7 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
     // Checked here so the invariant holds for BOTH surfaces of the same spec rather than only
     // the one that happens to route through the parser.
     // WI-805 added the same rule to the tuple TYPE and the tuple LITERAL
-    // (`check_tuple_label_unique`), which is where this comment used to say "a named-tuple
+    // (`check_label_unique`), which is where this comment used to say "a named-tuple
     // TYPE carries duplicate field names without complaint". That is now true only of a
     // DERIVED schema — one this code builds — which is exactly what this check covers, and
     // `concat_named_tuple_types` covers for the merging case.
@@ -25983,7 +25983,7 @@ pub(super) enum TupleOrder {
     ///
     /// WI-805 has since refused a duplicate label at every producer that keys a tuple
     /// on labels the author WROTE — the literal and the tuple type at parse
-    /// (`check_tuple_label_unique`), and a `...rest: R` capture's leftover named
+    /// (`check_label_unique`), and a `...rest: R` capture's leftover named
     /// arguments in `normalize_variadic_capture` — so no such tuple can put the two
     /// walks in that position again. The discipline is still load-bearing, not
     /// vestigial: labels reaching here may be DERIVED rather than written (a `Concat`
