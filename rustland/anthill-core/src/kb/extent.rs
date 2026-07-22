@@ -497,10 +497,11 @@ impl KnowledgeBase {
     }
 
     /// The mounted arm of [`Self::read_facts`]: push `selection` down as the query
-    /// `bound`, pick the mode, drain the owner's cursor, and re-filter each row
-    /// against `selection` (the source may over-return past the pushed-down
-    /// equalities — sound; only under-return is a bug, 057 §"The query contract"
-    /// rule 3). Caller has already confirmed `functor` is mounted.
+    /// `bound`, select the mode, ride the shared [`Self::drain_extent_query`], and
+    /// re-filter each returned row against `selection` (the source may over-return
+    /// past the pushed-down equalities — sound; only under-return is a bug, 057
+    /// §"The query contract" rule 3). Caller has already confirmed `functor` is
+    /// mounted.
     fn read_mounted_facts(
         &self,
         functor: Symbol,
@@ -515,37 +516,68 @@ impl KnowledgeBase {
         let mode = profile.select_mode(&ground).ok_or_else(|| {
             ExtentReadError::NoSupportedMode { functor: self.resolve_sym(functor).to_string() }
         })?;
+        // `bound` moves into the pattern; the drain borrows `&pattern` and hands
+        // back owned rows (the cursor does not borrow it), so the re-filter below
+        // reads `&pattern.bound` — no second clone of the selection values
+        // (`named_selection_as_bound` already cloned once).
+        let pattern = QueryPattern { mode, bound };
+        let rows = self.drain_extent_query(functor, &pattern).map_err(|source| {
+            ExtentReadError::Extent { functor: self.resolve_sym(functor).to_string(), source }
+        })?;
+        // The source may over-return, and read_facts hands rows straight to the
+        // consumer with no further matching — so narrow here. Keep a row only if it
+        // is OF `functor` AND satisfies the selection. The functor check mirrors the
+        // resolver's re-unification, which drops a row whose head functor differs
+        // from the goal's (`match_view_value_pattern`, resolve.rs) — a mounted
+        // source that over-returns (057 §"query contract" rule 3) must over-return
+        // rows of ITS functor, never a foreign one, and the accessor promises "rows
+        // of `functor`". `bound_matches` alone is functor-blind, so both guards are
+        // load-bearing.
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row_has_functor(self, row, functor) && bound_matches(self, row, &pattern.bound)
+            })
+            .collect())
+    }
+
+    /// The single place that speaks [`ExtentSource::query`] (WI-811): open the
+    /// mounted owner's cursor for `pattern` and drain it into a `Vec` of its ground
+    /// rows. Both mount readers ride this — the values-first fact accessor
+    /// ([`Self::read_mounted_facts`], which then re-filters the over-returned
+    /// superset) and the resolver's per-frame candidate gather
+    /// (`SearchStream::gather_extent_rows`, which defers re-filtering to its lazy
+    /// per-row match against the full goal). NO re-filtering and NO error
+    /// decoration here: it returns the source's (possibly over-returned) superset
+    /// verbatim and the raw [`ExtentError`], so each caller narrows and names the
+    /// failure in its own vocabulary (read_facts → [`ExtentReadError`]; the
+    /// resolver → a lenient `[extent]` log + empty). Caller has already selected the
+    /// mode into `pattern` and confirmed `functor` is mounted.
+    ///
+    /// A drain error drops every row — the whole read fails / the frame offers no
+    /// candidates — rather than returning a partial set, because a partial extent
+    /// read silently treated as complete would be unsound. In-memory sources never
+    /// error per row; this is the contract for the fallible backends the write seam
+    /// (WI-780) adds.
+    ///
+    /// When the `read_facts` Resolve policy lands (WI-774) it delegates to the
+    /// resolver — which already rides this drain — rather than adding a THIRD mount
+    /// path; `Resolve` IS SLD.
+    pub(crate) fn drain_extent_query(
+        &self,
+        functor: Symbol,
+        pattern: &QueryPattern,
+    ) -> Result<Vec<Value>, ExtentError> {
         // A materialized profile implies a mounted owner (registration writes both
-        // atomically).
+        // atomically), so this lookup cannot be `None`.
         let owner = self
             .extents
             .owner(functor)
             .expect("mounted profile implies a mounted owner");
-        let mk_err = |source| ExtentReadError::Extent {
-            functor: self.resolve_sym(functor).to_string(),
-            source,
-        };
-        // `bound` moves into the pattern; the cursor is owned (no borrow of
-        // `pattern`), so the re-filter reads `&pattern.bound` — no second clone of
-        // the selection values (`named_selection_as_bound` already cloned once).
-        let pattern = QueryPattern { mode, bound };
-        let mut cursor = owner.query(self, &pattern).map_err(mk_err)?;
+        let mut cursor = owner.query(self, pattern)?;
         let mut out = Vec::new();
         while let Some(next) = cursor.next(self) {
-            let row = next.map_err(mk_err)?;
-            // Keep a row only if it is OF `functor` AND satisfies the selection.
-            // The functor check mirrors the resolver's re-unification, which drops
-            // a row whose head functor differs from the goal's
-            // (`match_view_value_pattern`, resolve.rs) — a mounted source that
-            // over-returns (057 §"query contract" rule 3) must over-return rows of
-            // ITS functor, never a foreign one, and the accessor promises "rows of
-            // `functor`". `bound_matches` alone is functor-blind, so both guards
-            // are load-bearing.
-            if row_has_functor(self, &row, functor)
-                && bound_matches(self, &row, &pattern.bound)
-            {
-                out.push(row);
-            }
+            out.push(next?);
         }
         Ok(out)
     }

@@ -2274,30 +2274,22 @@ impl SearchStream {
             );
             return Vec::new();
         };
-        // A materialized profile implies a mounted owner (registration writes
-        // both atomically), so this lookup cannot be `None`.
-        let owner = kb
-            .extent_owner(functor)
-            .expect("mounted profile implies a mounted owner");
         let pattern = QueryPattern { mode, bound };
-        let mut cursor = match owner.query(kb, &pattern) {
-            Ok(c) => c,
+        // Ride the ONE mount-drain helper (WI-811): it opens the owner's cursor and
+        // drains the source's (over-returned) superset. The drain does NOT re-filter
+        // — the resolver re-unifies each row against the FULL goal one at a time
+        // (`pump_extent_row`), a strictly stronger narrowing than the ground
+        // `bound`, so the real work stays lazy per-row rather than eager here. A
+        // query/row failure is surfaced loud and the frame's extent then offers no
+        // candidates (the lenient SLD-source policy — one source among many; WI-300
+        // will make this a proper delay/flounder).
+        match kb.drain_extent_query(functor, &pattern) {
+            Ok(rows) => rows,
             Err(e) => {
-                eprintln!("[extent] `{}`: query failed: {e}", kb.resolve_sym(functor));
-                return Vec::new();
-            }
-        };
-        let mut rows = Vec::new();
-        while let Some(next) = cursor.next(kb) {
-            match next {
-                Ok(row) => rows.push(row),
-                Err(e) => {
-                    eprintln!("[extent] `{}`: row error: {e}", kb.resolve_sym(functor));
-                    break;
-                }
+                eprintln!("[extent] `{}`: {e}", kb.resolve_sym(functor));
+                Vec::new()
             }
         }
-        rows
     }
 
     /// Digest `goal`'s fully-ground argument slots into the extent query's
