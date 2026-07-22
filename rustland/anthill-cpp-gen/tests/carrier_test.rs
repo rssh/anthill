@@ -35,7 +35,7 @@ fn carrier_table_picks_up_implementation_facts() {
     "#;
 
     let kb = load_kb_with(source);
-    let table = CarrierTable::from_kb(&kb);
+    let table = CarrierTable::from_kb(&kb).expect("Implementation facts are plain facts");
 
     assert!(!table.is_empty(), "expected at least one carrier from the Money fact");
     assert_eq!(
@@ -175,7 +175,7 @@ fn lf1_carriers_loaded_from_realization_facts() {
     let lf1 = rustland_root().join("examples/webots-modelling/lf1/webots");
     let kb = load_kb_with_extras("namespace test.lf1_carriers end", &collect_anthill_files(&lf1));
 
-    let table = CarrierTable::from_kb(&kb);
+    let table = CarrierTable::from_kb(&kb).expect("Implementation facts are plain facts");
 
     // The lf1 realization.anthill declares these (as of the carrier slice).
     let expected = [

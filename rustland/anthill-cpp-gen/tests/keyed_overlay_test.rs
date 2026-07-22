@@ -39,38 +39,38 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
     let mut kb = load_kb_with(source);
 
     // No profile, no binding (declared-signature position) → language base.
-    assert_eq!(cpp_host_type(&mut kb, "Widget", None, None).as_deref(), Some("Base"));
+    assert_eq!(cpp_host_type(&mut kb, "Widget", None, None).unwrap().as_deref(), Some("Base"));
 
     // Profile active, no binding → the profile overlay shadows the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), None).as_deref(),
+        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), None).unwrap().as_deref(),
         Some("Profile")
     );
 
     // Binding active (carrier-dispatch boundary) → the binding overlay shadows
     // both the profile overlay and the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), Some("gadget")).as_deref(),
+        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), Some("gadget")).unwrap().as_deref(),
         Some("Bound")
     );
 
     // Binding active with no profile → binding still shadows the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, Some("gadget")).as_deref(),
+        cpp_host_type(&mut kb, "Widget", None, Some("gadget")).unwrap().as_deref(),
         Some("Bound")
     );
 
     // A profile with no matching overlay falls through to the base — an
     // unrelated profile must not accidentally pick another profile's entry.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp17-stl"), None).as_deref(),
+        cpp_host_type(&mut kb, "Widget", Some("cpp17-stl"), None).unwrap().as_deref(),
         Some("Base")
     );
 
     // A binding with no matching overlay falls through (no profile here) to the
     // base — the base sentinel is always last in the active-key list.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, Some("no-such-binding")).as_deref(),
+        cpp_host_type(&mut kb, "Widget", None, Some("no-such-binding")).unwrap().as_deref(),
         Some("Base")
     );
 }

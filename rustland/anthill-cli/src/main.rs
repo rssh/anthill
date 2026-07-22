@@ -912,9 +912,13 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
 /// disagree we take the lexicographically-first profile deterministically rather
 /// than guess by fact order — a multi-profile namespace is a project smell the
 /// per-controller project-layout path handles instead.
-fn profile_for_namespace(kb: &KnowledgeBase, namespace: &str) -> Option<String> {
+fn profile_for_namespace(
+    kb: &KnowledgeBase,
+    namespace: &str,
+) -> Result<Option<String>, anthill_cpp_gen::CppCodegenError> {
     let ns_prefix = format!("{namespace}.");
-    let mut profiles: Vec<String> = anthill_cpp_gen::generated_targets(kb)
+    // WI-771: `generated_targets` now refuses a bodied `Generated` rule loudly.
+    let mut profiles: Vec<String> = anthill_cpp_gen::generated_targets(kb)?
         .into_iter()
         .filter(|t| t.language == "cpp")
         .filter(|t| t.source == namespace || t.source.starts_with(&ns_prefix))
@@ -922,7 +926,7 @@ fn profile_for_namespace(kb: &KnowledgeBase, namespace: &str) -> Option<String> 
         .collect();
     profiles.sort();
     profiles.dedup();
-    profiles.into_iter().next()
+    Ok(profiles.into_iter().next())
 }
 
 fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
@@ -933,7 +937,11 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // TypeMapping / EffectMapping overlays. Read it from the namespace's
     // `Generated` fact (the spec-side declaration of what to emit); None when
     // nothing is declared, in which case only the language base applies.
-    let profile = profile_for_namespace(&kb, &args.namespace);
+    let profile = profile_for_namespace(&kb, &args.namespace)
+        .map_err(|e| {
+            eprintln!("error: {}", e.message);
+            1
+        })?;
 
     let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
         .map_err(|e| {
@@ -1000,14 +1008,22 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     // CLI flow working until projects opt into spec-declared
     // generation.
     let ns_prefix = format!("{}.", args.namespace);
+    // WI-771: `generated_targets` / `traits_classes_in_namespace` now refuse a
+    // bodied `Generated` / `OperationInfo` rule loudly (exit 1) rather than
+    // head-matching it with its guard skipped.
+    let render_err = |e: anthill_cpp_gen::CppCodegenError| {
+        eprintln!("error: {}", e.message);
+        1
+    };
     let declared: Vec<anthill_cpp_gen::GeneratedTarget> = anthill_cpp_gen::generated_targets(&kb)
+        .map_err(render_err)?
         .into_iter()
         .filter(|t| t.language == "cpp")
         .filter(|t| t.kind == "controller")
         .filter(|t| t.source == args.namespace || t.source.starts_with(&ns_prefix))
         .collect();
     let controllers: Vec<String> = if declared.is_empty() {
-        anthill_cpp_gen::traits_classes_in_namespace(&mut kb, &args.namespace)
+        anthill_cpp_gen::traits_classes_in_namespace(&mut kb, &args.namespace).map_err(render_err)?
     } else {
         declared.iter()
             .map(|t| t.source.rsplit('.').next().unwrap_or(&t.source).to_string())
@@ -1027,7 +1043,7 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     // distinct profile of the `Generated` facts at/under this namespace. Same
     // helper as `run_codegen_cpp` so both entry points agree. None on the
     // traits-class fallback (no Generated facts declared).
-    let profile = profile_for_namespace(&kb, &args.namespace);
+    let profile = profile_for_namespace(&kb, &args.namespace).map_err(render_err)?;
     let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
         .map_err(|e| { eprintln!("error: {}", e.message); 1 })?;
     let geometry = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, "anthill.geometry", profile).ok();
