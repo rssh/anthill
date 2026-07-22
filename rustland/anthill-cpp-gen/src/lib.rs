@@ -88,10 +88,12 @@ impl std::error::Error for CppCodegenError {}
 /// a realization reader in a `Result<_, CppCodegenError>` context routes the
 /// refusal with a bare `?`. This is the graceful successor to the WI-770
 /// `assert!` abort (exit 101, no span) for the readers WI-771 migrated —
-/// `Implementation` / `OperationImpl` / `Generated` / `OperationInfo`. The one
-/// remaining head-match reader, `query_realization_facts`, still refuses via the
-/// WI-770 `assert!` (see its BOUNDARY note); those two mechanisms coexist until
-/// that reader migrates too.
+/// `Implementation` / `OperationImpl` / `Generated` / `OperationInfo` — and, via
+/// [`read_realization_facts`], the WI-810 type-lowering readers `TypeMapping` /
+/// `IncludeMapping` / `NamingConvention`. The one remaining head-match reader,
+/// `query_realization_facts`, still refuses via the WI-770 `assert!` (see its
+/// BOUNDARY note); it has a single caller left (`supported_effects`), and the two
+/// mechanisms coexist until it migrates too (WI-774, the `Resolve` policy).
 impl From<ExtentReadError> for CppCodegenError {
     fn from(e: ExtentReadError) -> Self {
         CppCodegenError { message: e.to_string() }
@@ -1141,26 +1143,38 @@ struct ParamInfo {
 /// False for project-local entities (we don't know what the carrier
 /// method returns — a Vec3-from-`const double *` shape needs WI-088
 /// marshalling) and for anything else exotic.
-fn is_body_emittable(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId) -> bool {
+fn is_body_emittable(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+    type_term: TermId,
+) -> Result<bool, CppCodegenError> {
     if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
         let qualified = kb.qualified_name_of(sym).to_string();
         if ctx.carriers.lookup(&qualified).is_some() {
-            return true;
+            return Ok(true);
         }
         let short = short_name_of(&qualified);
-        return resolve_type_mapping(kb, ctx, &[short], None).is_some();
+        return Ok(resolve_type_mapping(kb, ctx, &[short], None)?.is_some());
     }
     let Some((base_sym, binding_values)) = unpack_parameterized(kb, type_term) else {
-        return false;
+        return Ok(false);
     };
     let base_qn = kb.qualified_name_of(base_sym).to_string();
     let base_short = short_name_of(&base_qn);
     let base_known = ctx.carriers.lookup(&base_qn).is_some()
-        || resolve_type_mapping(kb, ctx, &[base_short], None).is_some();
+        || resolve_type_mapping(kb, ctx, &[base_short], None)?.is_some();
     if !base_known {
-        return false;
+        return Ok(false);
     }
-    binding_values.iter().all(|(_, v)| is_body_emittable(kb, ctx, *v))
+    // Every binding value must be body-emittable. A fallible recursive check, so
+    // a plain `.all()` won't do: short-circuit on the first non-emittable value,
+    // and a bodied-rule refusal in a nested `resolve_type_mapping` propagates.
+    for (_, v) in &binding_values {
+        if !is_body_emittable(kb, ctx, *v)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// If `type_term` is a `parameterized(base: sort_ref(<sort>), bindings:
@@ -1222,20 +1236,28 @@ fn snake_to_camel(snake: &str) -> String {
 /// binding key active) never sees it. A hit that carries no adapter (`lift` and
 /// `lower` both absent) is a plain rename, not a marshalled rep, so it returns
 /// `None`: the value passes through bare.
-fn marshal_for_type(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId, binding: Option<&str>) -> Option<Marshal> {
+fn marshal_for_type(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+    type_term: TermId,
+    binding: Option<&str>,
+) -> Result<Option<Marshal>, CppCodegenError> {
     let sym = extract_sort_ref_sym(kb, &TermIdView(type_term)).or_else(|| {
         match kb.get_term(type_term) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),
             _ => None,
         }
-    })?;
+    });
+    let Some(sym) = sym else { return Ok(None) };
     let qualified = kb.qualified_name_of(sym).to_string();
     let short = short_name_of(&qualified);
-    let hit = resolve_type_mapping(kb, ctx, &[&qualified, short], binding)?;
+    let Some(hit) = resolve_type_mapping(kb, ctx, &[&qualified, short], binding)? else {
+        return Ok(None);
+    };
     if hit.lift.is_none() && hit.lower.is_none() {
-        return None;
+        return Ok(None);
     }
-    Some(Marshal { lift: hit.lift, lower: hit.lower })
+    Ok(Some(Marshal { lift: hit.lift, lower: hit.lower }))
 }
 
 /// Synthesise a method body for an operation. Lookup order:
@@ -1258,37 +1280,37 @@ fn synthesise_body_for(
     params: &[ParamInfo],
     return_type: &str,
     return_term: TermId,
-) -> Option<String> {
+) -> Result<Option<String>, CppCodegenError> {
     // (1) Expression body via OperationImpl — sourced from
     // `kb.op_body_node` as a NodeOccurrence tree after WI-249.
     if let Some(body_node) = ctx.op_impls.lookup(op_sym) {
         match lower_node(kb, ctx, &body_node) {
-            Ok(expr) => return Some(if return_type == "void" {
+            Ok(expr) => return Ok(Some(if return_type == "void" {
                 format!("{expr};")
             } else {
                 format!("return {expr};")
-            }),
+            })),
             Err(e) => {
                 // Surface the failure as a TODO comment in the body
                 // rather than silently falling through. The user sees
                 // "this op has a body but cpp-gen can't lower it yet"
                 // immediately at codegen time, not as a compile error
                 // about a missing body later.
-                return Some(format!(
+                return Ok(Some(format!(
                     "// TODO: cannot lower expression body — {}\n        \
                      return {{}};", e.message,
-                ));
+                )));
             }
         }
     }
 
     // Carrier-dispatch paths (2) and (3) require a `self` first param.
-    let self_param = params.first()?;
+    let Some(self_param) = params.first() else { return Ok(None) };
     if self_param.name != "self" {
-        return None;
+        return Ok(None);
     }
     let arrow = if self_param.cpp_type.contains('*') { "->" } else { "." };
-    let cpp_method = cpp_method_name(kb, name);
+    let cpp_method = cpp_method_name(kb, name)?;
 
     // WI-089(a): the carrier we dispatch onto is the operation's parent sort;
     // its `Implementation.binding` (if any) names the marshalling overlay
@@ -1308,14 +1330,14 @@ fn synthesise_body_for(
     // through bare; only the "marshalled, but no anthill->foreign adapter"
     // case is the unhandleable one.
     for p in params.iter().skip(1) {
-        if matches!(marshal_for_type(kb, ctx, p.type_term, binding), Some(m) if m.lower.is_none()) {
+        if matches!(marshal_for_type(kb, ctx, p.type_term, binding)?, Some(m) if m.lower.is_none()) {
             let tail = if return_type == "void" { "" } else { "\n        return {};" };
-            return Some(format!(
+            return Ok(Some(format!(
                 "// TODO: WI-088: parameter '{}' has a marshalled type with no `lower` adapter — \
                  add a `lower` to its TypeMapping fact so the anthill value converts to the \
                  host's foreign representation{tail}",
                 p.name
-            ));
+            )));
         }
     }
 
@@ -1323,13 +1345,17 @@ fn synthesise_body_for(
     // `lower` adapter, the host API wants the foreign rep, so wrap the
     // argument before passing it (`Vec3 -> const double *`). After the
     // guard above, a `None` here means the type is not marshalled at all,
-    // so the argument passes through bare.
+    // so the argument passes through bare. The `marshal_for_type` read is
+    // fallible (a bodied TypeMapping refusal), so collect a `Result` rather
+    // than mapping infallibly.
     let non_self_args = params.iter().skip(1)
-        .map(|p| match marshal_for_type(kb, ctx, p.type_term, binding).and_then(|m| m.lower) {
-            Some(lower) => format!("{lower}({})", p.name),
-            None => p.name.clone(),
+        .map(|p| -> Result<String, CppCodegenError> {
+            Ok(match marshal_for_type(kb, ctx, p.type_term, binding)?.and_then(|m| m.lower) {
+                Some(lower) => format!("{lower}({})", p.name),
+                None => p.name.clone(),
+            })
         })
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let call = format!("self{arrow}{cpp_method}({non_self_args})");
 
@@ -1338,29 +1364,29 @@ fn synthesise_body_for(
     // to lift it back to the anthill type (`const double * -> Vec3`).
     // Takes precedence over plain dispatch — the lift applies even when
     // the return would otherwise have been body-emittable.
-    if let Some(lift) = marshal_for_type(kb, ctx, return_term, binding).and_then(|m| m.lift) {
+    if let Some(lift) = marshal_for_type(kb, ctx, return_term, binding)?.and_then(|m| m.lift) {
         if return_type == "void" {
             // Nothing to lift from a void return — a `lift` here is a
             // spec error. Surface it loudly rather than emitting
             // `lift(call);`, which would discard the lifted value.
-            return Some(format!(
+            return Ok(Some(format!(
                 "// TODO: WI-088: `lift` adapter '{lift}' declared for the return type of \
                  void-returning operation '{name}' — a lift converts a returned value; \
                  drop the lift or give the operation a non-void return\n        {call};"
-            ));
+            )));
         }
-        return Some(format!("return {lift}({call});"));
+        return Ok(Some(format!("return {lift}({call});")));
     }
 
     // (3) Plain carrier dispatch (no return marshalling).
-    if !is_body_emittable(kb, ctx, return_term) {
-        return None;
+    if !is_body_emittable(kb, ctx, return_term)? {
+        return Ok(None);
     }
-    Some(if return_type == "void" {
+    Ok(Some(if return_type == "void" {
         format!("{call};")
     } else {
         format!("return {call};")
-    })
+    }))
 }
 
 /// Walk the KB's `OperationInfo` facts and return all that belong to
@@ -1534,7 +1560,7 @@ fn operations_in_sort(
         } else {
             return_type_cpp
         };
-        let body = synthesise_body_for(kb, ctx, op_sym, &name, &params, &return_type_cpp, return_term);
+        let body = synthesise_body_for(kb, ctx, op_sym, &name, &params, &return_type_cpp, return_term)?;
         let template_prefix =
             member_template_prefix(&op_param_decls, &params, &return_type_cpp, &body);
         out.push(OperationSig { name, params, return_type_cpp, body, template_prefix });
@@ -1748,7 +1774,7 @@ pub fn emit_namespace_header_in(
     traits_band.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
 
     let mut items = String::new();
-    let mut needs = Includes::from_kb(kb);
+    let mut needs = Includes::from_kb(kb)?;
     // Namespace-scope constants (incl. companions) first, so any later struct
     // or method body that references one sees its declaration (a const of a
     // primitive type carries no forward dependency on a same-namespace struct).
@@ -2181,14 +2207,17 @@ struct Includes {
 
 impl Includes {
     /// Build from the cpp `IncludeMapping` facts, sorted by include directive.
-    fn from_kb(kb: &KnowledgeBase) -> Self {
-        let mut probes = query_include_mappings(kb, "cpp");
+    /// A BODIED `IncludeMapping` rule is refused loudly through `CppCodegenError`
+    /// (WI-810) rather than head-matched — the same `read_facts(Refuse)` guard
+    /// the other realization readers carry.
+    fn from_kb(kb: &KnowledgeBase) -> Result<Self, CppCodegenError> {
+        let mut probes = query_include_mappings(kb, "cpp")?;
         probes.sort_by(|a, b| a.1.cmp(&b.1));
-        Includes {
+        Ok(Includes {
             probes,
             needed: std::collections::BTreeSet::new(),
             extras: std::collections::BTreeSet::new(),
-        }
+        })
     }
 
     fn scan(&mut self, text: &str) {
@@ -3658,7 +3687,7 @@ fn lower_parameterized(
         .or_else(|| ctx.carriers.lookup(&qualified).map(str::to_string))
     {
         Some(name) => name,
-        None => resolve_type_mapping(kb, ctx, &[short], None)
+        None => resolve_type_mapping(kb, ctx, &[short], None)?
             .map(|h| h.host_type)
             .ok_or_else(|| CppCodegenError {
                 message: format!(
@@ -3748,7 +3777,7 @@ fn sort_to_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> Res
     // `[profile?, none]` selects a profile overlay or the language base (never
     // a binding's marshalling overlay). `cpp_base_host_type` (base-only) is the
     // profile-agnostic special case of this.
-    if let Some(hit) = resolve_type_mapping(kb, ctx, &[short], None) {
+    if let Some(hit) = resolve_type_mapping(kb, ctx, &[short], None)? {
         return Ok(hit.host_type);
     }
     // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
@@ -3856,22 +3885,19 @@ fn select_keyed<T>(
 /// ENUMERATION query — every field a placeholder, so every fact of that
 /// functor matches (WI-576 lists a profile's supported effects that way).
 ///
-/// WI-771 BOUNDARY: this is the ONE realization reader NOT migrated to
-/// `read_facts` (its siblings — `CarrierTable`/`OpImplTable`/`generated_targets`
-/// and the `OperationInfo` readers — now are). Two reasons keep it here, so its
-/// refusal stays the WI-770 `assert!` below (a bodied realization rule read
-/// through THIS reader still aborts, exit 101, where a migrated reader refuses
-/// gracefully via `CppCodegenError`, exit 1):
-///   - its facts-only callers (`query_type_mappings` / `query_include_mappings`
-///     / `cpp_method_name` — TypeMapping / IncludeMapping / NamingConvention)
-///     want the same `Refuse` policy, but ride a deep `Option`-returning
-///     type-lowering path (`resolve_type_mapping` → `marshal_for_type` →
-///     `is_body_emittable` → …); routing `read_facts`'s `Result` through it is a
-///     wider Option→Result refactor, its own follow-up.
-///   - its `supported_effects` caller (EffectMapping / LanguageMapping) wants the
-///     WI-774 `Resolve` policy (bodied overlay guards HONORED on the deciding
-///     path), which `read_facts` does not yet implement — so it cannot move to
-///     `Refuse` without wrongly rejecting a program WI-774 means to support.
+/// WI-774 BOUNDARY: this is the ONE realization reader still on the WI-770
+/// `assert!` below (a bodied realization rule read through THIS reader aborts,
+/// exit 101, where a migrated reader refuses gracefully via `CppCodegenError`,
+/// exit 1). Its former type-lowering callers (`query_type_mappings` /
+/// `query_include_mappings` / `cpp_method_name` — TypeMapping / IncludeMapping /
+/// NamingConvention) moved to [`read_realization_facts`] (`read_facts(Refuse)`,
+/// WI-810), which routed the Option→Result refactor of the type-lowering path
+/// (`resolve_type_mapping` → `marshal_for_type` → `is_body_emittable` → …). Its
+/// SOLE remaining caller is `supported_effects` (EffectMapping / LanguageMapping),
+/// which wants the WI-774 `Resolve` policy — bodied overlay guards HONORED on the
+/// deciding path, most-specific-first — not `Refuse`. It cannot move to `Refuse`
+/// without wrongly rejecting a program WI-774 means to support, so it stays here
+/// (head match + assert-abort) until `read_facts` gains the `Resolve` policy.
 fn query_realization_facts(
     kb: &KnowledgeBase,
     functor_names: &[&str],
@@ -3923,6 +3949,48 @@ fn query_realization_facts(
         .collect()
 }
 
+/// WI-810: the values-first successor to [`query_realization_facts`] for the
+/// `Refuse`-policy readers — the head `TermId` of each FACT of `functor_names`
+/// (tried in order, qualified first) whose named `selection` fields hold the
+/// given values, read through `kb.read_facts(functor, .., Refuse)` (WI-773/057)
+/// over resident AND mounted extents uniformly. A BODIED candidate for the
+/// functor is refused loudly through `CppCodegenError` (via the `?` on
+/// [`ExtentReadError`]) — the graceful successor to the WI-770 `assert!`-abort
+/// this reader's callers used to ride.
+///
+/// `selection` is `field = value` ground equality pushed down as the read's
+/// `bound` (057 §"query contract"): a mounted host-mapping store INDEXES on it
+/// rather than scanning. Only fields that are PLAIN strings on the fact are
+/// selectable this way (an `Option`-typed `lang: some("cpp")` cannot be grounded
+/// structurally — its callers post-filter instead). Empty when the functor isn't
+/// loaded, or when a selection field name isn't interned (no fact carries it, so
+/// nothing could match) — matching `query_realization_facts`' bail-empty.
+///
+/// Each row is narrowed `Value::Term` → `TermId` via [`expect_term_head`]:
+/// TypeMapping / IncludeMapping / NamingConvention are invariantly Term-carried
+/// (plain ground facts), so a value/Node head is a loud error, never a silent
+/// skip — unlike the `OperationInfo` readers, which carry value heads.
+fn read_realization_facts(
+    kb: &KnowledgeBase,
+    functor_names: &[&str],
+    selection: &[(&str, &str)],
+) -> Result<Vec<TermId>, CppCodegenError> {
+    let Some(functor) = functor_names.iter().find_map(|n| kb.try_resolve_symbol(n)) else {
+        return Ok(Vec::new());
+    };
+    let mut sel: Vec<(Symbol, Value)> = Vec::with_capacity(selection.len());
+    for (field, value) in selection {
+        let Some(fsym) = kb.lookup_symbol(field) else {
+            return Ok(Vec::new());
+        };
+        sel.push((fsym, Value::Str(value.to_string())));
+    }
+    kb.read_facts(functor, &sel, BodiedRulePolicy::Refuse)?
+        .into_iter()
+        .map(|row| expect_term_head(kb, functor, row))
+        .collect()
+}
+
 /// WI-089: resolve host-type mappings for `anthill_type` under `lang` over the
 /// keyed `TypeMapping` facts (the discrim tree IS the table). `lang`/`key` are
 /// `Option` fields read back from each matched head — grounding `some("cpp")`
@@ -3935,15 +4003,17 @@ fn query_realization_facts(
 /// Only facts with `lang: some("cpp")` are selected; the active-key priority
 /// then picks among the matches by `key`. A `TypeMapping` for another language,
 /// or one with no `lang`, is simply not a cpp mapping and is not selected.
-fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Vec<TypeMappingHit> {
-    const FIELDS: &[&str] = &["anthill_type", "host_type", "lift", "lower", "lang", "key"];
+fn query_type_mappings(
+    kb: &KnowledgeBase,
+    lang: &str,
+    anthill_type: &str,
+) -> Result<Vec<TypeMappingHit>, CppCodegenError> {
     let mut hits = Vec::new();
-    for head in query_realization_facts(
+    for head in read_realization_facts(
         kb,
         &["anthill.realization.TypeMapping", "TypeMapping"],
-        FIELDS,
-        Some(("anthill_type", anthill_type)),
-    ) {
+        &[("anthill_type", anthill_type)],
+    )? {
         let fact_lang = named_optional_string(kb, head, "lang");
         if fact_lang.as_deref() != Some(lang) {
             continue;
@@ -3956,7 +4026,7 @@ fn query_type_mappings(kb: &KnowledgeBase, lang: &str, anthill_type: &str) -> Ve
         let key = named_optional_string(kb, head, "key");
         hits.push(TypeMappingHit { host_type, lift, lower, key });
     }
-    hits
+    Ok(hits)
 }
 
 /// WI-089(a): resolve the single best `TypeMapping` entry for an anthill type
@@ -3973,7 +4043,7 @@ fn resolve_type_mapping(
     ctx: &CodegenContext,
     names: &[&str],
     binding: Option<&str>,
-) -> Option<TypeMappingHit> {
+) -> Result<Option<TypeMappingHit>, CppCodegenError> {
     let mut hits: Vec<TypeMappingHit> = Vec::new();
     let mut queried: Vec<&str> = Vec::with_capacity(names.len());
     for name in names {
@@ -3984,9 +4054,9 @@ fn resolve_type_mapping(
             continue;
         }
         queried.push(name);
-        hits.extend(query_type_mappings(kb, "cpp", name));
+        hits.extend(query_type_mappings(kb, "cpp", name)?);
     }
-    select_keyed(hits, |h| &h.key, &ctx.active_keys(binding))
+    Ok(select_keyed(hits, |h| &h.key, &ctx.active_keys(binding)))
 }
 
 /// WI-089: the C++ language-base host type for `anthill_type` (the
@@ -3994,13 +4064,16 @@ fn resolve_type_mapping(
 /// hardcoded `prim_lower` / `param_lower` tables: primitives lower to a
 /// leaf type (`Int64 -> int64_t`); parameterized stdlib sorts lower to a
 /// bare template name (`List -> std::vector`) the caller wraps with args.
-pub fn cpp_base_host_type(kb: &KnowledgeBase, anthill_type: &str) -> Option<String> {
+pub fn cpp_base_host_type(
+    kb: &KnowledgeBase,
+    anthill_type: &str,
+) -> Result<Option<String>, CppCodegenError> {
     // The language base is the `key = none` entry — i.e. selection over the
     // single-element active-key list `[none]`. Routed through the shared
     // `select_keyed` so there is one implementation of "pick the entry for this
     // key", not a divergent `.find(key.is_none())` spelling.
-    select_keyed(query_type_mappings(kb, "cpp", anthill_type), |h| &h.key, &[None])
-        .map(|h| h.host_type)
+    Ok(select_keyed(query_type_mappings(kb, "cpp", anthill_type)?, |h| &h.key, &[None])
+        .map(|h| h.host_type))
 }
 
 /// WI-089(a): resolve the cpp host type for `anthill_type` under the active-key
@@ -4018,7 +4091,7 @@ pub fn cpp_host_type(
     binding: Option<&str>,
 ) -> Result<Option<String>, CppCodegenError> {
     let ctx = CodegenContext::with_profile(kb, profile.map(str::to_string))?;
-    Ok(resolve_type_mapping(kb, &ctx, &[anthill_type], binding).map(|h| h.host_type))
+    Ok(resolve_type_mapping(kb, &ctx, &[anthill_type], binding)?.map(|h| h.host_type))
 }
 
 
@@ -4224,14 +4297,16 @@ fn describe_supported_effects(kb: &mut KnowledgeBase, ctx: &CodegenContext) -> S
 /// WI-089(c): the cpp `(host_type spelling, include directive)` probe pairs from
 /// the keyed `IncludeMapping` facts — replaces the hardcoded `INCLUDE_PROBES`
 /// array. Grounds the plain-String `lang`; caller sorts for deterministic output.
-fn query_include_mappings(kb: &KnowledgeBase, lang: &str) -> Vec<(String, String)> {
+fn query_include_mappings(
+    kb: &KnowledgeBase,
+    lang: &str,
+) -> Result<Vec<(String, String)>, CppCodegenError> {
     let mut out = Vec::new();
-    for head in query_realization_facts(
+    for head in read_realization_facts(
         kb,
         &["anthill.realization.IncludeMapping", "IncludeMapping"],
-        &["host_type", "include", "lang"],
-        Some(("lang", lang)),
-    ) {
+        &[("lang", lang)],
+    )? {
         let (Some(host_type), Some(include)) =
             (named_string(kb, head, "host_type"), named_string(kb, head, "include"))
         else {
@@ -4239,7 +4314,7 @@ fn query_include_mappings(kb: &KnowledgeBase, lang: &str) -> Vec<(String, String
         };
         out.push((host_type, include));
     }
-    out
+    Ok(out)
 }
 
 /// WI-089(b): the host method spelling for an anthill `source` identifier under
@@ -4250,13 +4325,12 @@ fn query_include_mappings(kb: &KnowledgeBase, lang: &str) -> Vec<(String, String
 /// the convention is the source of truth, not a hardcoded default. Per-operation
 /// acronym irregulars (get_gps -> getGPS) ride a CppName override (WI-087), not
 /// this default.
-fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> String {
-    let facts = query_realization_facts(
+fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> Result<String, CppCodegenError> {
+    let facts = read_realization_facts(
         kb,
         &["anthill.realization.NamingConvention", "NamingConvention"],
-        &["language", "method_case", "source_case"],
-        Some(("language", "cpp")),
-    );
+        &[("language", "cpp")],
+    )?;
     // cpp_std supplies exactly one cpp NamingConvention. Zero (misconfigured or
     // unloaded profile) or >1 (an ambiguous overlay — per-op irregulars ride a
     // CppName attribute (WI-087), not a second fact) is a profile bug: fail
@@ -4268,9 +4342,9 @@ fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> String {
         facts.len()
     );
     let Some(head) = facts.first().copied() else {
-        return source.to_string();
+        return Ok(source.to_string());
     };
-    match (
+    Ok(match (
         named_string(kb, head, "source_case").as_deref(),
         named_string(kb, head, "method_case").as_deref(),
     ) {
@@ -4289,5 +4363,5 @@ fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> String {
             );
             source.to_string()
         }
-    }
+    })
 }
