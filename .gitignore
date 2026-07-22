@@ -1,6 +1,8 @@
 # Rust
 rustland/target/
 rustland/anthill-core/generated/
+# Local build tuning (job caps etc.) — machine-specific, not shared
+rustland/.cargo/
 
 # Scala
 scaland/target/
