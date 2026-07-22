@@ -5395,6 +5395,17 @@ impl KnowledgeBase {
     // ── Entity field registry ──────────────────────────────────
 
     /// Register the ordered field names for an entity functor.
+    ///
+    /// FIELD NAMES ARE EXPECTED DISTINCT (WI-808) and this does NOT check it — the rule
+    /// is enforced at the syntax layer, in `convert_entity`, which is the only place a
+    /// user-written entity comes from (`register_entity_field_names_scan` maps that
+    /// `Entity`'s own fields). It is stated here because the other callers are SYNTHETIC
+    /// kernel entities built in Rust with hardcoded field vectors, which the parse guard
+    /// cannot see: they are distinct today, and a future one that is not would reintroduce
+    /// the defect silently — `x.f`, a named argument, and a rule pattern all resolve a
+    /// field name to its FIRST match, so the later field becomes unaddressable by name.
+    /// No check here because there is no span or error channel at this layer to report
+    /// against; the constraint belongs to whoever writes the vector.
     pub fn register_entity_fields(&mut self, functor: Symbol, fields: Vec<Symbol>) {
         self.entity_fields.insert(functor, fields);
     }

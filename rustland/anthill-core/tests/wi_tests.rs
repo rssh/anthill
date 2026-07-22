@@ -768,3 +768,6 @@ mod wi801_function_slot_arity_test;
 
 #[path = "include/wi805_duplicate_tuple_label_test.rs"]
 mod wi805_duplicate_tuple_label_test;
+
+#[path = "include/wi808_entity_field_labels_test.rs"]
+mod wi808_entity_field_labels_test;

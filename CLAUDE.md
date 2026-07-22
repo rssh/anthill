@@ -133,6 +133,14 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   applied to an arrow's PARAMETER LIST: a repeated binder name there DOES shadow (the
   body reads the LAST one), but params are applied positionally so the shadowed one's
   type is still checked at every call — nothing is silently unchecked.
+- **An entity's field names are DISTINCT too** (WI-808), refused at `convert_entity`
+  through the same owner (`check_label_unique`, which takes a per-kind rationale).
+  NARROWER HARM than the tuple rule, and the comment says so: an entity's duplicate
+  field is still built and read POSITIONALLY (`mk(1, 2)`, `case mk(p, q)`), so its
+  type IS checked — what it loses is its ACCESS PATH, since `x.f` / named args / rule
+  patterns all take the FIRST match. Refused because a field name is the field's
+  public interface. Field names are scoped PER ENTITY — sibling entities in one sort
+  may each declare `a`, which is the ordinary variant shape.
 - **Destructuring binds by LABEL** (WI-803): the typer records which component
   name each binder takes into `Pattern::Tuple.labels`, and `match_tuple_pattern`
   fetches by name via `TupleComponents::by_label` — the same reader `t.x` uses.

@@ -28,6 +28,28 @@ fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol])
 use super::error::ParseError;
 use super::ir::*;
 
+/// The `why` clause [`Converter::check_label_unique`] reports for a repeated TUPLE
+/// component name (WI-805). Kept apart from [`ENTITY_FIELDS_DISTINCT`] because the two
+/// rules bite for DIFFERENT reasons, and a reader who hit one should not be handed the
+/// other's: a tuple component under a repeated name is unreachable ENTIRELY — by name
+/// (every reader takes the first match) AND by position (the relation is name-keyed).
+const TUPLE_LABELS_DISTINCT: &str = "a named tuple's component names must be distinct \
+    (spec §4.5) — every reader resolves a name to its FIRST match, so the later component \
+    is reachable by neither its name nor its position, and its declared type is never \
+    checked against anything";
+
+/// The `why` clause for a repeated ENTITY field name (WI-808). A NARROWER harm than
+/// [`TUPLE_LABELS_DISTINCT`], and the message says so rather than overstating it: the
+/// field is still built and read POSITIONALLY — measured, `mk(1, 2)` type-checks both
+/// slots against their declarations and `case mk(p, q)` reads the second — so what it
+/// loses is its ACCESS PATH, not its type check. Refused anyway because a field name is
+/// the field's public interface, so a name identifying two fields addresses neither.
+const ENTITY_FIELDS_DISTINCT: &str = "an entity's field names must be distinct — a field \
+    name is how the field is addressed (`x.f`, a named argument, a rule pattern), and all \
+    of those resolve a name to its FIRST match, so the later field can never be read by \
+    name (it remains reachable positionally, which is why this is not a silently \
+    unchecked value)";
+
 /// Work-stack opcode for the iterative CST → IR walker covering
 /// term / expression-body / pattern subtrees. `Visit` dispatches a
 /// tree-sitter node (leaf → emit TermId; non-leaf → push a `Build`
@@ -1134,14 +1156,15 @@ impl<'a> Converter<'a> {
     /// otherwise emit into its result tuple, each a silent-corruption footgun
     /// (WI-639 review).
     ///
-    /// DELIBERATELY SEPARATE from `check_tuple_label_unique` below, which enforces
-    /// the same distinctness rule where a tuple is written rather than projected.
-    /// The two loops look alike and are not worth merging: this one reports against
-    /// a `ProjEntry`'s `Span` (not a `Node`, which `self.err` takes), and its message
-    /// ends in the only fix available here — a rename — while the tuple one explains
-    /// reader semantics. Sharing would mean a struct change plus a second string
-    /// knob, for a three-line loop. The `_`-prefix half below is a genuinely
-    /// different and BROADER rule (see its note) and could not be shared at all.
+    /// DELIBERATELY SEPARATE from `check_label_unique` below, which enforces the same
+    /// distinctness rule where a tuple or an entity is DECLARED rather than projected.
+    /// The remaining obstacle is the SPAN: this reports against a `ProjEntry`'s `Span`,
+    /// while `self.err` — and so that helper — takes a `Node`, which `ProjEntry` does not
+    /// carry. Merging would mean changing that struct to share a three-line loop.
+    /// (The message difference is no longer an argument: WI-808 gave the helper a `why`
+    /// knob, and this rule's tail — rename the collision — would fit it. Only the span
+    /// keeps them apart.) The `_`-prefix half below is a genuinely different and BROADER
+    /// rule (see its note) and could not be shared at all.
     ///  - A DUPLICATE label (`x.(a, a)`, or a rename collision
     ///    `x.(k: f1, k: f2)`) would build a duplicate-key named tuple whose
     ///    later columns are silently dropped — both the tuple typer and the
@@ -1244,11 +1267,15 @@ impl<'a> Converter<'a> {
     /// is for. (The one channel that does resolve those names, a named argument, refuses
     /// a duplicate at the call — `named_arg_coverage_errors`.) Rejecting duplicate
     /// binder names is a separate decision about SHADOWING, to be taken on its own
-    /// terms; it would also have to answer for entity fields, where `entity mk(a: Int64,
-    /// a: Int64)` loads today.
-    fn check_tuple_label_unique(
+    /// terms.
+    ///
+    /// ENTITY FIELDS are a different case and ARE covered, via `convert_entity` (WI-808)
+    /// — see [`ENTITY_FIELDS_DISTINCT`] for why the harm there is narrower than the
+    /// tuple one and still decisive.
+    fn check_label_unique(
         &mut self,
         what: &'static str,
+        why: &'static str,
         seen: impl Iterator<Item = Symbol>,
         sym: Symbol,
         at: Node,
@@ -1257,15 +1284,7 @@ impl<'a> Converter<'a> {
             return;
         }
         let nm = self.symbols.name(sym).to_string();
-        self.err(
-            format!(
-                "duplicate {what} component label `{nm}`; a named tuple's component names \
-                 must be distinct (spec §4.5) — both readers resolve a name to its first \
-                 match, so this later `{nm}` would be reachable by neither its name nor its \
-                 position, and its type never checked"
-            ),
-            at,
-        );
+        self.err(format!("duplicate {what} `{nm}`; {why}"), at);
     }
 
     fn push_set_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
@@ -1312,8 +1331,9 @@ impl<'a> Converter<'a> {
                         // Spec §4.5 distinctness, against the labels already in
                         // `slots` — reported at the key node `k`, so the error
                         // points at the offending component and not at the `(`.
-                        self.check_tuple_label_unique(
-                            "tuple literal",
+                        self.check_label_unique(
+                            "tuple literal component label",
+                            TUPLE_LABELS_DISTINCT,
                             slots.iter().filter_map(|s| match s {
                                 ArgSlot::Named(prev) => Some(*prev),
                                 ArgSlot::Positional => None,
@@ -2283,8 +2303,9 @@ impl<'a> Converter<'a> {
                             // Spec §4.5 distinctness, against the components
                             // already collected — reported at this component's
                             // name node.
-                            self.check_tuple_label_unique(
-                                "tuple type",
+                            self.check_label_unique(
+                                "tuple type component label",
+                                TUPLE_LABELS_DISTINCT,
                                 named.iter().map(|(prev, _)| *prev),
                                 sym,
                                 n,
@@ -3242,10 +3263,26 @@ impl<'a> Converter<'a> {
         let visibility = self.convert_visibility(node);
         let span = self.span(node);
 
-        let fields = self.children_by_kind(node, "field_decl")
-            .into_iter()
-            .map(|f| self.convert_field_decl(f))
-            .collect();
+        // WI-808: an entity's field names must be DISTINCT, checked here because this is
+        // where they are declared and the only place with a node to point at. Built in a
+        // loop rather than `.map().collect()` so the check runs against the fields already
+        // collected — one place a field is added, so a later branch cannot add one that
+        // skips the check (the lockstep failure a parallel vector invited in WI-805).
+        let mut fields: Vec<FieldDecl> = Vec::new();
+        for f in self.children_by_kind(node, "field_decl") {
+            let decl = self.convert_field_decl(f);
+            // Point at the field's NAME when the grammar gave us one, so the error marks
+            // the offending field rather than the whole declaration.
+            let at = self.field(f, "name").unwrap_or(f);
+            self.check_label_unique(
+                "entity field",
+                ENTITY_FIELDS_DISTINCT,
+                fields.iter().map(|d: &FieldDecl| d.name),
+                decl.name,
+                at,
+            );
+            fields.push(decl);
+        }
 
         let meta = self.convert_meta_block(node);
 

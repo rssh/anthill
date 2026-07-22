@@ -1345,6 +1345,20 @@ entity Marker
 →  sort Marker { entity Marker }
 ```
 
+**Distinct field names** (WI-808): an entity's field names must be distinct —
+`entity mk(a: Int64, a: Int64)` is a located error naming the repeated field. A field
+name is how the field is *addressed* — `x.f`, a named argument, a rule pattern — and
+all of those resolve a name to its **first** match, so a second field under an
+already-used name can never be read by name.
+
+This is the same principle as §4.5's distinct tuple component names, and deliberately
+*not* the same harm. A tuple component under a repeated name is unreachable entirely,
+so its declared type is never checked against anything. An entity's second field is
+still constructed and read **positionally** (`mk(1, 2)` type-checks both fields,
+`case mk(p, q)` reads the second), so what it loses is its access path, not its type
+check. It is refused anyway, because a field name is the field's public interface and
+a name identifying two fields addresses neither.
+
 > **Omitted optional fields (surface semantics, WI-716).** Omitting an
 > `Option[…]`-typed field is position-dependent: in a **value position** (a
 > `fact`, or the head of an entity-deriving rule) the absent field denotes
