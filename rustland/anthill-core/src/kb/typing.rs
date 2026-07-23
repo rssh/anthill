@@ -5436,8 +5436,14 @@ fn param_sym_for_arg_index(
 /// STAGING IS NARROW, and each condition earns its place:
 ///  - the call must have a higher-order argument at all (the caller's gate) — a hint is
 ///    only load-bearing for a lambda;
-///  - the parameter must be one some OTHER parameter's type actually PROJECTS, which is
-///    what `projected` computes; a signature that projects nothing stages nothing;
+///  - the parameter must be one some OTHER parameter's type actually PROJECTS (what
+///    `projected` computes), or — WI-821 — one that PINS a callee TYPE PARAM some
+///    hof-shaped argument's param type mentions (what `tp_pinning` computes): in
+///    `apply_fn(fn: Function[A = X, B = Int64], a: X)` the lambda's binder types from
+///    `X`, and only the `a` argument can pin it, so `a` must be typed first or the
+///    lambda body types against an unconstrained wildcard — and a requires-carrying
+///    call inside it builds its dispatch dict against that wildcard (the WI-817
+///    witness measured exactly that);
 ///  - the no-typing readers must have MISSED, so a var-ref receiver still costs nothing;
 ///  - and the argument must not itself be [`is_hof_shaped`]. That last one is not
 ///    hypothetical: `foo(g: (x: Int64) -> Int64, h: (y: g.T) -> Int64)` puts a CALLBACK
@@ -5446,16 +5452,23 @@ fn param_sym_for_arg_index(
 fn known_arg_types_and_staged(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    ps: &[(Symbol, Value)],
+    functor: Symbol,
+    op: &OperationInfoFull,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> (HashMap<Symbol, Value>, Vec<usize>) {
+    let ps = &op.params;
     // The params some param type PROJECTS. ONE walk of the signature; empty ⟹ this call
     // eliminates nothing, so no argument is worth staging.
     let mut projected: Vec<Symbol> = Vec::new();
     for (_, t) in ps.iter() {
         collect_projection_receivers(kb, t, &mut projected);
     }
+    // WI-821: the params that can PIN a callee type param a hof-shaped argument's
+    // declared type mentions (see the doc above). Disjoint from `projected` in
+    // mechanism (type-param identity, not path projection) but identical in
+    // treatment: their arguments are typed first so the hint map can be completed.
+    let tp_pinning = op_tp_pinning_params(kb, functor, op, pos_args, named_args);
     let mut known: HashMap<Symbol, Value> = HashMap::new();
     let mut staged: Vec<usize> = Vec::new();
     for (j, (psym, _)) in ps.iter().enumerate() {
@@ -5495,7 +5508,7 @@ fn known_arg_types_and_staged(
         // path already composes.
         if let Some(t) = projection_receiver_type(kb, env, a) {
             known.insert(*psym, t);
-        } else if projected.contains(psym) && !is_hof_shaped(a) {
+        } else if (projected.contains(psym) || tp_pinning.contains(psym)) && !is_hof_shaped(a) {
             staged.push(unified);
         }
     }
@@ -5508,16 +5521,140 @@ fn known_arg_types_and_staged(
     (known, staged)
 }
 
+/// WI-821: the params of the callee whose declared type can PIN a callee TYPE
+/// PARAM that some hof-shaped argument's declared param type mentions — the
+/// type-param sibling of `collect_projection_receivers`' path-projection
+/// trigger. In `apply_fn(fn: Function[A = X, B = Int64], a: X)` a lambda in
+/// the `fn` slot is hinted from `X`, and only the `a` argument determines it,
+/// so `a` is worth staging. Covers the callee's op-scoped `[X]` params (their
+/// declared-type mentions ARE `Var::Global` terms — `extract_type_params`'
+/// invariant) and its parent sort's params (the same pinning shape one scope
+/// up, mentioned as `Ref`/nullary-`Fn` through the sort alias — both spellings
+/// via [`elem_var_step`]). Empty whenever nothing is pinnable, no hof-shaped
+/// argument mentions a pinnable param, or the mention walk cannot see the
+/// spelling (a `Value::Node` param type) — staging then simply does not
+/// extend, today's order stands.
+fn op_tp_pinning_params(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    op: &OperationInfoFull,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Vec<Symbol> {
+    let mut tp_vars: Vec<VarId> = op
+        .type_params
+        .iter()
+        .filter_map(|(_, t)| match kb.get_term(*t) {
+            Term::Var(Var::Global(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    if let Some(parent) = impl_parent_of_op(kb, functor) {
+        for sym in impl_param_symbols(kb, parent) {
+            if let Some(v) = type_param_global_var(kb, sym) {
+                tp_vars.push(v);
+            }
+        }
+    }
+    if tp_vars.is_empty() {
+        return Vec::new();
+    }
+    let ps = &op.params;
+    // ONE walk per param type, shared by the hof-side scan and the collect.
+    let mentions: Vec<bool> =
+        ps.iter().map(|(_, t)| type_mentions_op_tp(kb, t, &tp_vars)).collect();
+    let some_hof_mentions_tp = ps.iter().enumerate().any(|(j, (psym, _))| {
+        mentions[j]
+            && param_arg_index(kb, *psym, j, pos_args.len(), named_args)
+                .and_then(|u| arg_at(pos_args, named_args, u))
+                .is_some_and(is_hof_shaped)
+    });
+    if !some_hof_mentions_tp {
+        return Vec::new();
+    }
+    ps.iter()
+        .zip(&mentions)
+        .filter(|(_, m)| **m)
+        .map(|((s, _), _)| *s)
+        .collect()
+}
+
+/// WI-821: does a declared param type mention one of the callee's pinnable
+/// type params? Leaves classify through [`elem_var_step`] — the shared
+/// "element term → canonical var" primitive — so an op-tp's direct
+/// `Var::Global` and a sort param's `Ref`/`Ident`/nullary-`Fn` alias spelling
+/// answer uniformly (a `Var::Rigid` can never be in `tp_vars`, so its arm is
+/// inert here). A `Value::Node`-carried type answers `false` (no staging
+/// extension — sound, just not extended).
+fn type_mentions_op_tp(kb: &KnowledgeBase, ty: &Value, tp_vars: &[VarId]) -> bool {
+    match ty {
+        Value::Term { id, .. } => type_term_mentions_op_tp(kb, *id, tp_vars),
+        _ => false,
+    }
+}
+
+/// The `TermId` walk under [`type_mentions_op_tp`].
+fn type_term_mentions_op_tp(kb: &KnowledgeBase, tid: TermId, tp_vars: &[VarId]) -> bool {
+    if elem_var_step(kb, tid).is_some_and(|(v, _)| tp_vars.contains(&v)) {
+        return true;
+    }
+    match kb.get_term(tid) {
+        Term::Fn { pos_args, named_args, .. } => pos_args
+            .iter()
+            .chain(named_args.iter().map(|(_, t)| t))
+            .any(|c| type_term_mentions_op_tp(kb, *c, tp_vars)),
+        _ => false,
+    }
+}
+
+/// WI-821: the substitution that instantiates a hof param type's callee type
+/// params from the KNOWN sibling argument types — unify each known param's
+/// DECLARED type against its argument's type (`a: X` vs `Wrap[A = GT]` pins
+/// `X`), exactly the pinning the call itself performs later at argument
+/// unification, done early so a lambda's hint can carry it. `None` when
+/// nothing is known or nothing BINDS (a monomorphic callee's pairs unify
+/// without binding, and an empty σ would only buy every hint a no-op deep
+/// rebuild) — the hint then stays as declared.
+fn hint_instantiation_subst(
+    kb: &mut KnowledgeBase,
+    ps: &[(Symbol, Value)],
+    known: &HashMap<Symbol, Value>,
+) -> Option<Substitution> {
+    if known.is_empty() {
+        return None;
+    }
+    let mut s = Substitution::new();
+    for (psym, declared) in ps {
+        if let Some(arg_ty) = known.get(psym) {
+            // Probe on a scratch σ first: a FAILED pair mutates as it goes, and
+            // its partial bindings must not ride into the hint (they would move
+            // a plain argument type error onto a corrupted lambda binder).
+            // Success-proven pairs re-unify into the accumulated σ.
+            let mut probe = Substitution::new();
+            if unify_types(kb, &mut probe, declared, arg_ty) {
+                unify_types(kb, &mut s, declared, arg_ty);
+            }
+        }
+    }
+    (!s.is_empty()).then_some(s)
+}
+
 /// WI-275/427/707: the top-down hint for ONE argument, given its declared parameter type.
 /// Shared by the positional and named channels (they differ only in how `pt` is looked
 /// up) and by both staging phases, so a hint cannot be computed one way before the
 /// receiver is typed and another way after.
+///
+/// WI-821: `inst` — the [`hint_instantiation_subst`] pinning callee type params from
+/// known sibling argument types — is applied to a HOF hint only, mirroring how the
+/// projection elimination is: the other hint kinds are gated on ground declared types
+/// and never mention a callee type param.
 fn one_arg_hint(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     arg: &Rc<NodeOccurrence>,
     pt: Option<Value>,
     known: &HashMap<Symbol, Value>,
+    inst: Option<&Substitution>,
 ) -> Option<Value> {
     // WI-485: eliminate a callback param projection for the lambda hint (`s.T ⟹ Int64`);
     // keep the original `pt` for the nested-call hint (that path is gated on a ground
@@ -5526,6 +5663,12 @@ fn one_arg_hint(
         .as_ref()
         .and_then(|t| eliminate_callback_hint_projection(kb, t, known, functor))
         .or_else(|| pt.clone());
+    // Only a hof-shaped arg consumes `pt_hof` (`hof_arg_hint`'s own gate), so
+    // the deep rebuild is skipped for every other argument.
+    let pt_hof = match (inst, pt_hof) {
+        (Some(s), Some(t)) if is_hof_shaped(arg) => Some(resolve_type_deep_value(kb, s, &t)),
+        (_, t) => t,
+    };
     hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
@@ -5548,6 +5691,10 @@ fn apply_arg_hints(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     known: &HashMap<Symbol, Value>,
 ) -> (Vec<Option<Value>>, Vec<Option<Value>>) {
+    // WI-821: pin callee type params from the known sibling argument types once,
+    // so every HOF hint below carries the instantiation (`Function[A = X]` hints
+    // as `Function[A = Wrap[…]]` when the sibling `a: X` argument is known).
+    let inst = op_params.and_then(|ps| hint_instantiation_subst(kb, ps, known));
     let mut pos_hints = Vec::with_capacity(pos_args.len());
     for (i, arg) in pos_args.iter().enumerate() {
         // WI-707: inside a sort application every argument is a type.
@@ -5556,7 +5703,7 @@ fn apply_arg_hints(
             continue;
         }
         let pt = op_params.and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
-        pos_hints.push(one_arg_hint(kb, functor, arg, pt, known));
+        pos_hints.push(one_arg_hint(kb, functor, arg, pt, known, inst.as_ref()));
     }
     let mut named_hints = Vec::with_capacity(named_args.len());
     for (name, arg) in named_args.iter() {
@@ -5568,7 +5715,7 @@ fn apply_arg_hints(
         let pt = op_params
             .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
             .map(|(_, t)| t.clone());
-        named_hints.push(one_arg_hint(kb, functor, arg, pt, known));
+        named_hints.push(one_arg_hint(kb, functor, arg, pt, known, inst.as_ref()));
     }
     (pos_hints, named_hints)
 }
@@ -6577,8 +6724,11 @@ fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| arg_names_sort(kb, a));
-            let op_params = if has_hof_arg || has_call_arg || has_sort_arg {
-                lookup_operation_info_full(kb, functor).map(|op| op.params)
+            // WI-821: keep the WHOLE record — `known_arg_types_and_staged` reads
+            // `type_params` besides `params`, and re-looking the record up there
+            // would clone every field a second time per hof-bearing call.
+            let op_info = if has_hof_arg || has_call_arg || has_sort_arg {
+                lookup_operation_info_full(kb, functor)
             } else {
                 None
             };
@@ -6588,10 +6738,13 @@ fn visit_type(
             // `known_arg_types_and_staged` for the ordering problem and why staging is the
             // fix; built only when a higher-order argument is present, since a hint is only
             // load-bearing for a lambda.
-            let (known_param_arg_types, staged) = match (&op_params, has_hof_arg) {
-                (Some(ps), true) => known_arg_types_and_staged(kb, &env, ps, pos_args, named_args),
+            let (known_param_arg_types, staged) = match (&op_info, has_hof_arg) {
+                (Some(op), true) => {
+                    known_arg_types_and_staged(kb, &env, functor, op, pos_args, named_args)
+                }
                 _ => (HashMap::new(), Vec::new()),
             };
+            let op_params = op_info.map(|op| op.params);
             if staged.is_empty() {
                 // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
                 // argument's type, so hint everything and visit everything.
@@ -6648,7 +6801,10 @@ fn visit_type(
                                 .map(|(_, t)| t.clone());
                             (arg, pt)
                         };
-                        one_arg_hint(kb, functor, arg, pt, &known_param_arg_types)
+                        // A staged argument is never hof-shaped, so the WI-821
+                        // instantiation subst (a HOF-hint-only input) is not
+                        // computed for it.
+                        one_arg_hint(kb, functor, arg, pt, &known_param_arg_types, None)
                     })
                     .collect();
                 work.push(TypeWorkOp::Build(TypeBuildFrame::ApplyHints {
@@ -11045,7 +11201,7 @@ fn same_qname(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
 ///      selector, or a scope variable — matched against a parameter, field, or binder
 ///      whose registered name may be qualified;
 ///   2. a type-param binding key matched WITHIN an already-established same-spec context
-///      (`entries_cover` / `entry_sigma_matches` / `goals_equal`, each gated on the spec
+///      (`entries_cover` / `goals_equal`, each gated on the spec
 ///      sort first). The key may be bare `T` from one producer and qualified `Spec.T` from
 ///      another (the cross-producer divergence `goal_binding_value` documents), so it must
 ///      match by short name — and the same-spec gate makes short names unique, so this
@@ -11408,10 +11564,12 @@ pub fn build_dep_projection(
     caller_requires: &[RequiresEntry],
     caller_sub_chains: &[Vec<RequiresEntry>],
     syms: &ProjectionSyms,
-    // WI-419: the call-site context, when available (the WI-415/418
-    // concrete-dispatch path). Used ONLY to disambiguate Strategy 1 when two+
-    // same-spec caller requires cover the dep; `None` (the req-insertion
-    // diagnostic path) keeps the original first-match behavior.
+    // WI-419/WI-821: the call-site context, when available (the WI-415/418
+    // concrete-dispatch path). σ-class agreement GATES forwarding in
+    // Strategies 1 & 2 — a covering entry whose element disagrees with the
+    // dep's under the call-site subst is NO cover and falls through to
+    // Strategy 3's construction. `None` (the req-insertion diagnostic path)
+    // keeps the original coarse first-match behavior.
     disambig: Option<&SigmaCtx>,
 ) -> Option<TermId> {
     // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
@@ -11437,27 +11595,25 @@ pub fn build_dep_projection(
     // (WI-226 correctness fix).
     //
     // WI-419: `entries_cover` is wildcard-tolerant — a caller `Eq[A]` covers a
-    // dep `Eq[B]` whenever either element is a type param. With a SINGLE
-    // covering entry that is correct (and is the only shape any code exercised
-    // before WI-419). But a caller declaring TWO `requires` of the same spec
-    // over DISTINCT element params (`requires Eq[A], Eq[B]`) has BOTH cover a
-    // dep over one of them, and a blind first-match forwards the wrong
-    // dictionary (a soundness bug — wrong runtime dispatch). When more than one
-    // entry covers, disambiguate by σ-class: prefer the unique covering entry
-    // whose element resolves, through the call-site `subst`, to the SAME
-    // unification variable as the dep's element. A single covering entry, or an
-    // ambiguous / subst-less tie, keeps the original first-match.
-    let covering: SmallVec<[usize; 2]> = caller_requires
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| entries_cover(kb, c, dep))
-        .map(|(i, _)| i)
-        .collect();
-    let chosen = match covering.as_slice() {
-        [] => None,
-        [only] => Some(*only),
-        many => disambiguate_covering_by_sigma(kb, disambig, caller_requires, dep, many),
-    };
+    // dep `Eq[B]` whenever either element is a type param. A caller declaring
+    // TWO `requires` of the same spec over DISTINCT element params (`requires
+    // Eq[A], Eq[B]`) has BOTH cover a dep over one of them, and a blind
+    // first-match forwards the wrong dictionary (a soundness bug — wrong
+    // runtime dispatch).
+    //
+    // WI-821: with a call-site σ in hand, σ-class agreement is a GATE on
+    // forwarding, not just a tie-break — a SOLE covering wildcard entry whose
+    // element the call-site subst maps to a DIFFERENT type (polymorphic
+    // recursion re-entering at `FT := Wrap[GT]`, or a concrete `BT := Pebble`
+    // hand-off) used to blindly forward the caller's dictionary, shadowing
+    // Strategy 3's construction of the correct one. A disagreeing entry is NO
+    // cover; no agreeing entry falls through to Strategies 2/3. Same-class
+    // forwarding (wi418 abstract delegation, wi419 disambiguation) still
+    // forwards BY NAME. On the σ-less diagnostic path the coarse first-match
+    // stands — there is no subst to consult. Both modes are ONE scan with the
+    // mode-selecting `entries_cover` (σ-precise implies coarse).
+    let chosen = (0..caller_requires.len())
+        .find(|&i| entries_cover(kb, &caller_requires[i], dep, disambig));
     if let Some(i) = chosen {
         let name = req_name_for_chain_index(kb, caller_sort?, i)?;
         return Some(build_req_var_ref(kb, syms, name));
@@ -11470,20 +11626,29 @@ pub fn build_dep_projection(
     // second level is not found here and falls through to Strategy 3's
     // SLD construction.
     for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
-        // WI-613: same σ-class tie-break as Strategy 1 — a single caller slot's
-        // DIRECT sub-requires can itself hold two entries of the same spec over
-        // distinct element params, so a blind first-match would project the wrong
-        // nested requirement.
-        let covering: SmallVec<[usize; 2]> = sub_chain
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| entries_cover(kb, s, dep))
-            .map(|(k, _)| k)
-            .collect();
-        let chosen = match covering.as_slice() {
-            [] => None,
-            [only] => Some(*only),
-            many => disambiguate_covering_by_sigma(kb, disambig, sub_chain, dep, many),
+        // WI-613/WI-821: same σ-class gate as Strategy 1 (same predicate). A
+        // sub-chain entry is written in the SLOT sort's own param space
+        // (`direct_requires_chain(slot)` roots at the slot — `Eq[T = Eq.T]`
+        // under a caller `requires Ordered[T = CT]`), whose vars the call-site
+        // subst never binds — compared raw, a correct nested forward would
+        // σ-disagree. So the σ gate compares the sub-entry COMPOSED into
+        // caller scope through the slot entry's own bindings (`Eq[T = CT]`) —
+        // the same one-level composition `requires_tree` applies — which is
+        // also the element the slot's RUNTIME bundle actually carries at
+        // index `k`. The composition map depends only on the slot, so it is
+        // built once per slot, not per candidate.
+        let chosen = match disambig {
+            Some(ctx) => {
+                let slot_map = build_child_subst_map(kb, &caller_requires[i]);
+                (0..sub_chain.len()).find(|&k| {
+                    let composed = RequiresEntry {
+                        required_sort: sub_chain[k].required_sort,
+                        spec: substitute_in_spec(kb, &sub_chain[k].spec, &slot_map),
+                    };
+                    entries_cover(kb, &composed, dep, Some(ctx))
+                })
+            }
+            None => (0..sub_chain.len()).find(|&k| entries_cover(kb, &sub_chain[k], dep, None)),
         };
         if let Some(k) = chosen {
             let name = req_name_for_chain_index(kb, caller_sort?, i)?;
@@ -11493,9 +11658,13 @@ pub fn build_dep_projection(
     }
 
     // Strategy 3 — static construction via SortProvidesInfo. Build a
-    // SortGoal from the dep's spec bindings and run SLD resolution.
+    // SortGoal from the dep's spec bindings and run SLD resolution. WI-821:
+    // the σ context rides into the scope so the resolution's own
+    // `FromScope` lookup is gated the same way Strategies 1/2 are — without
+    // it, the wildcard-tolerant scope cover would resurrect the exact
+    // forward the gate above refused.
     let goal = goal_from_requires_entry(kb, dep)?;
-    let scope = ResolutionScope { available_requires: caller_requires };
+    let scope = ResolutionScope { available_requires: caller_requires, sigma: disambig };
     match resolve(kb, &goal, &scope) {
         ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_sort, &tree, syms),
         _ => None,
@@ -11505,10 +11674,25 @@ pub fn build_dep_projection(
 /// WI-226: binding-aware predicate for slot matching in
 /// `build_dep_projection`. True iff `caller`'s spec covers `dep`'s spec
 /// — same `required_sort` AND every type-param binding of `dep` is
-/// satisfied by `caller`'s binding for the same key (either identical
-/// or with one side being a type-param wildcard, mirroring
-/// `requires_entry_covers_goal`'s flexibility).
-fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry) -> bool {
+/// satisfied by `caller`'s binding for the same key.
+///
+/// `sigma` selects the per-pair verdict (WI-821 folded the former
+/// `entry_sigma_matches` clone into this one walk so the coarse and σ-precise
+/// covers cannot drift):
+///   - `None` — the coarse wildcard walk: identical bindings match, and either
+///     side being a type-param wildcard is unconstrained (mirroring
+///     `requires_entry_covers_goal`'s flexibility). The req-insertion
+///     diagnostic path's behavior.
+///   - `Some(ctx)` — the σ-precise GATE ([`sigma_pair_precise`], WI-419/821):
+///     two type-params must share a σ-class under the call-site subst, a mixed
+///     concrete/wildcard pair is NO cover, concrete/concrete stays
+///     `dispatch_values_match`. σ-precise implies coarse, so one walk decides.
+fn entries_cover(
+    kb: &mut KnowledgeBase,
+    caller: &RequiresEntry,
+    dep: &RequiresEntry,
+    sigma: Option<&SigmaCtx>,
+) -> bool {
     // WI-672: canonical sort identity. `required_sort` is RESOLVED — stdlib specs resolve
     // to their qualified name (`requires Eq` → `anthill.prelude.Eq`; a probe found NO bare
     // `Eq`), and the only bare `required_sort`s are top-level USER specs (`Ring`, …) with
@@ -11545,14 +11729,23 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
         let Some(caller_val) = caller_val else {
             return false;
         };
-        // Either side a type-param wildcard ⇒ unconstrained, accept.
-        if is_type_param_value(kb, caller_val) || is_type_param_value(kb, *dep_val) {
-            continue;
-        }
-        if !dispatch_values_match(kb, caller_val, *dep_val)
-            && !dispatch_values_match(kb, *dep_val, caller_val)
-        {
-            return false;
+        match sigma {
+            Some(ctx) => {
+                if !sigma_pair_precise(kb, ctx, caller_val, *dep_val) {
+                    return false;
+                }
+            }
+            None => {
+                // Either side a type-param wildcard ⇒ unconstrained, accept.
+                if is_type_param_value(kb, caller_val) || is_type_param_value(kb, *dep_val) {
+                    continue;
+                }
+                if !dispatch_values_match(kb, caller_val, *dep_val)
+                    && !dispatch_values_match(kb, *dep_val, caller_val)
+                {
+                    return false;
+                }
+            }
         }
     }
     true
@@ -11574,8 +11767,8 @@ fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresE
 /// parameter lands on one id from either side.
 ///
 /// Used by both requirement-attribution paths: same-spec forwarding
-/// (`build_dep_projection` → [`entry_sigma_matches`], WI-419) and direct-body
-/// dispatch (`find_requires_slot` / `find_requires_location` →
+/// (`build_dep_projection` → [`entries_cover`]'s σ mode, WI-419/821) and
+/// direct-body dispatch (`find_requires_slot` / `find_requires_location` →
 /// [`entry_sigma_matches_subst`], WI-613).
 pub struct SigmaCtx<'a> {
     subst: &'a Substitution,
@@ -11624,10 +11817,11 @@ fn sigma_same(kb: &KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermId) -> bool 
     }
 }
 
-/// WI-613 — the σ-precise verdict for ONE `(a, b)` element pair: the tie-break
-/// policy shared by [`entry_sigma_matches`] (entry-vs-entry, the forwarding path)
-/// and [`entry_sigma_matches_subst`] (entry-vs-subst, the direct-dispatch path)
-/// so the two attribution paths cannot disagree on what "same element" means. Two
+/// WI-613 — the σ-precise verdict for ONE `(a, b)` element pair: the policy
+/// shared by [`entries_cover`] / [`requires_entry_covers_goal`]'s σ modes
+/// (the forwarding paths, where it GATES — WI-821) and
+/// [`entry_sigma_matches_subst`] (entry-vs-subst, the direct-dispatch path)
+/// so the attribution paths cannot disagree on what "same element" means. Two
 /// type-params must share a σ-class ([`sigma_same`]); a mixed concrete/wildcard
 /// pair does NOT pin the element (a wildcard covers loosely but is not precise);
 /// two concretes use the same symmetric `dispatch_values_match` as the coarse
@@ -11642,90 +11836,23 @@ fn sigma_pair_precise(kb: &mut KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: Term
     }
 }
 
-/// WI-613 — the σ-precise selection policy shared by all three same-spec
-/// attribution matchers (flat chain, requires tree, cross-sort sub-chain), so
-/// they resolve ambiguity identically. From `candidates` (all coarse-covering one
+/// WI-613 — the σ-precise selection policy shared by the same-spec DIRECT
+/// attribution matchers (flat chain and requires tree), so they resolve
+/// ambiguity identically. From `candidates` (all coarse-covering one
 /// deferred call), return the FIRST that satisfies `is_precise` — every precise
 /// candidate shares the call's element σ-class, so they denote the same
 /// requirement and the first is a deterministic, correct choice — else the first
 /// candidate (no precise match / no σ context: genuinely ambiguous, so no worse
-/// than the pre-WI-613 first-match). `is_precise` is `FnMut` because the σ check
-/// borrows `kb` mutably.
+/// than the pre-WI-613 first-match). The FORWARDING matchers
+/// (`build_dep_projection` Strategies 1/2) shared this policy until WI-821
+/// replaced their fall-back with a strict σ-gate (disagreement = no cover).
+/// `is_precise` is `FnMut` because the σ check borrows `kb` mutably.
 fn pick_precise<T: Copy>(candidates: &[T], mut is_precise: impl FnMut(T) -> bool) -> Option<T> {
     candidates
         .iter()
         .copied()
         .find(|&c| is_precise(c))
         .or_else(|| candidates.first().copied())
-}
-
-/// WI-419: among the `covering` caller-requirement indices that all
-/// `entries_cover` the same `dep` (which only happens when the caller declares
-/// two+ `requires` of the same spec over distinct element params), pick the one
-/// whose element σ-class matches the dep's under the call-site context — via the
-/// shared [`pick_precise`] policy (first σ-precise, else first covering). No call
-/// context keeps the first covering index (the pre-WI-419 behavior).
-fn disambiguate_covering_by_sigma(
-    kb: &mut KnowledgeBase,
-    disambig: Option<&SigmaCtx>,
-    caller_requires: &[RequiresEntry],
-    dep: &RequiresEntry,
-    covering: &[usize],
-) -> Option<usize> {
-    let Some(ctx) = disambig else { return covering.first().copied() };
-    pick_precise(covering, |i| entry_sigma_matches(kb, ctx, &caller_requires[i], dep))
-}
-
-/// WI-419: σ-class-precise variant of [`entries_cover`], used ONLY to
-/// tie-break among same-spec covering entries. Identical to `entries_cover`
-/// EXCEPT the type-param-vs-type-param case: rather than accepting any two
-/// wildcards, it requires the caller's and the dep's element to resolve to the
-/// SAME unification variable under `subst` (the dep's callee-param element
-/// having been unified with one of the caller's element params at the call
-/// site). A mixed concrete/wildcard pair — which `entries_cover` accepts
-/// loosely — is NOT a precise match. Concrete/concrete bindings use the same
-/// `dispatch_values_match` as `entries_cover`.
-fn entry_sigma_matches(
-    kb: &mut KnowledgeBase,
-    ctx: &SigmaCtx,
-    caller: &RequiresEntry,
-    dep: &RequiresEntry,
-) -> bool {
-    // WI-672: canonical sort identity. `required_sort` is RESOLVED — stdlib specs resolve
-    // to their qualified name (`requires Eq` → `anthill.prelude.Eq`; a probe found NO bare
-    // `Eq`), and the only bare `required_sort`s are top-level USER specs (`Ring`, …) with
-    // no qualified twin, so canonical is self-consistent for them. It correctly
-    // de-conflates a testcase `Ring` from stdlib `anthill.prelude.algebra.Ring`, which the
-    // old `same_symbol` last-segment bridge (WI-420, now vestigial) wrongly merged.
-    if !same_sort_canonical(kb, caller.required_sort, dep.required_sort) {
-        return false;
-    }
-    let Some((_, caller_bindings)) = unwrap_spec_view_value(kb, &caller.spec) else {
-        return false;
-    };
-    let Some((_, dep_bindings)) = unwrap_spec_view_value(kb, &dep.spec) else {
-        return false;
-    };
-    if dep_bindings.is_empty() {
-        return true;
-    }
-    let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
-    for (dep_k, dep_val) in &dep_bindings {
-        if !is_type_param_binding(kb, *dep_k, &spec_qn) {
-            continue;
-        }
-        let Some(caller_val) = caller_bindings
-            .iter()
-            .find(|(ck, _)| same_label(kb, *ck, *dep_k))
-            .map(|(_, v)| *v)
-        else {
-            return false;
-        };
-        if !sigma_pair_precise(kb, ctx, caller_val, *dep_val) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Map an element term to a logical var, returning `(var, is_rigid)`.
@@ -11958,7 +12085,7 @@ pub(crate) fn resolve_bridge_requirements(
         }
         // Empty scope: the bridge has no caller frame, so a slot can only resolve by
         // CONSTRUCTION (`Leaf`/`Conditional`), never `FromScope`.
-        let scope = ResolutionScope { available_requires: &[] };
+        let scope = ResolutionScope { available_requires: &[], sigma: None };
         match resolve(kb, &goal, &scope) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             _ => return BridgeRequirements::Unresolvable,
@@ -12598,8 +12725,11 @@ pub fn find_requires_slot(
 /// same spec over distinct element params), pick the one whose element σ-class
 /// matches the per-call value's — via the shared [`pick_precise`] policy (first
 /// σ-precise, else first covering). No σ context keeps the first covering index
-/// (the pre-WI-613 behavior). Mirrors [`disambiguate_covering_by_sigma`] on the
-/// forwarding path.
+/// (the pre-WI-613 behavior). The forwarding path (`build_dep_projection`
+/// Strategies 1/2) used to mirror this tie-break; WI-821 strengthened it there
+/// into a σ-GATE (a disagreeing cover, sole included, is no cover). Slot
+/// attribution here deliberately keeps the softer policy: it names the frame's
+/// OWN dictionary for a body call, it does not forward across a call boundary.
 fn disambiguate_slot_by_sigma(
     kb: &mut KnowledgeBase,
     disambig: Option<&SigmaCtx>,
@@ -12752,8 +12882,9 @@ fn entry_matches_subst(
 /// mixed concrete/wildcard pair does not PIN the element and is not precise;
 /// concrete/concrete uses the same `dispatch_values_match` as the coarse cover. A
 /// vacuous entry (no constraining binding) is not a precise disambiguator.
-/// Mirrors [`entry_sigma_matches`] (the entry-vs-entry forwarding analog) but
-/// reads the per-call element from the substitution rather than a second entry.
+/// Mirrors [`entries_cover`]'s σ mode (the entry-vs-entry forwarding analog)
+/// but reads the per-call element from the substitution rather than a second
+/// entry.
 fn entry_sigma_matches_subst(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
@@ -12929,9 +13060,20 @@ enum ReceiverCarrier {
 /// Context for `resolve` — the `requires` entries already in scope
 /// (matched at scope_index `i` so the requirement-insertion pass can
 /// emit `requirement_at_current(i)`).
+///
+/// WI-821: `sigma` is the call-site σ context when the resolution serves a
+/// CALL-SITE dict build (`build_dep_projection` Strategy 3). The scope lookup
+/// is wildcard-tolerant exactly like `entries_cover`, so without a gate an
+/// abstract caller entry (`Desc[AT]`) covers a CONCRETE goal (`Desc[Pebble]`)
+/// and short-circuits construction with the same wrong forward Strategy 1
+/// was just gated out of. With `sigma` present a scope entry covers only on
+/// σ-class agreement ([`requires_entry_covers_goal`]'s σ mode); `None` (every
+/// other `resolve` consumer: bridges, dispatch leniency, diagnostics, tests)
+/// keeps the coarse cover.
 #[derive(Clone)]
 pub struct ResolutionScope<'a> {
     pub available_requires: &'a [RequiresEntry],
+    pub sigma: Option<&'a SigmaCtx<'a>>,
 }
 
 /// The synthesized resolution chain. Returned to the requirement-
@@ -13024,7 +13166,13 @@ fn resolve_inner(
         if ar.required_sort != goal.spec_sort {
             continue;
         }
-        if requires_entry_covers_goal(kb, ar, goal) {
+        // WI-821: with a call-site σ in hand, a scope entry covers only on
+        // σ-class agreement — the coarse wildcard cover alone would hand a
+        // concrete or re-instantiated goal back to the caller's dictionary,
+        // re-creating the forward the Strategy-1 gate just refused. The
+        // agreeing case (a sub-goal over the SAME param, e.g. the conditional
+        // WrapDesc's `Desc[E := GT]`) still resolves FromScope.
+        if requires_entry_covers_goal(kb, ar, goal, scope.sigma) {
             return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                 scope_index: i,
                 spec_sort: goal.spec_sort,
@@ -13862,10 +14010,40 @@ fn match_candidate_against_goal(
         // the carrier-concrete / sibling-abstract mix — matching the wildcard
         // tolerance the parametric arm below and `entries_cover` already apply.
         if is_type_param_value(kb, per_call_value) {
+            // WI-821: a RIGID per-call value is a definite per-body skolem
+            // (the enclosing sort's own param), not an unpinned wildcard —
+            // RECORD it (first writer wins, never rejecting the match) so a
+            // resolution sub-goal instantiates at it (`Desc[T = Wrap[A = E]]`
+            // matched at `A := rigid GT` must yield sub-goal `Desc[rigid GT]`,
+            // which resolves FromScope against the caller's chain). Left
+            // unbound, the sub-goal keeps the raw impl param, matches the
+            // SAME parametric fact again, and dies Cyclic. Other type-param
+            // spellings (an unpinned `Ref(Sort.Element)` sibling) stay
+            // unconstraining exactly as WI-507 established.
+            if matches!(kb.get_term(per_call_value), Term::Var(Var::Rigid(_)))
+                && !impl_subst.iter().any(|(k, _)| *k == p)
+            {
+                impl_subst.push((p, per_call_value));
+            }
             return true;
         }
-        if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| *k == p) {
-            return values_structurally_equal(kb, *prev, per_call_value);
+        if let Some(slot) = impl_subst.iter_mut().find(|(k, _)| *k == p) {
+            if values_structurally_equal(kb, slot.1, per_call_value) {
+                return true;
+            }
+            // WI-821 order symmetry: a stored RIGID yields to an incoming
+            // CONCRETE, exactly as an incoming rigid already yields to a
+            // stored concrete (the type-param early-return above skips the
+            // slot). Without this, a provider binding one impl param in two
+            // spec slots was accepted or SILENTLY DROPPED depending on which
+            // binding the fact happened to declare first. Either order now
+            // ends with the concrete in the slot; only concrete/concrete
+            // disagreement rejects.
+            if matches!(kb.get_term(slot.1), Term::Var(Var::Rigid(_))) {
+                slot.1 = per_call_value;
+                return true;
+            }
+            return false;
         }
         impl_subst.push((p, per_call_value));
         // An impl-param ref contributes no specificity weight.
@@ -15983,10 +16161,18 @@ fn substitute_impl_params_alloc(
 /// `available_requires` lookup step (step 1 of `resolve`).
 /// Filters out op-bindings (auto-bound `eq`, `neq`, …) — only type-
 /// param bindings constrain matching.
+///
+/// `sigma` selects the per-pair verdict, exactly as in the entry-vs-entry
+/// twin [`entries_cover`] (WI-821 folded the former σ-precise clone into
+/// this one walk): `None` keeps the coarse wildcard cover; `Some(ctx)` is
+/// the σ-precise GATE ([`sigma_pair_precise`]) a scope entry must pass when
+/// the resolution serves a call-site dict build (`ResolutionScope.sigma`).
+/// σ-precise implies coarse, so one walk decides either mode.
 fn requires_entry_covers_goal(
     kb: &mut KnowledgeBase,
     entry: &RequiresEntry,
     goal: &SortGoal,
+    sigma: Option<&SigmaCtx>,
 ) -> bool {
     let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
         return false;
@@ -16003,13 +16189,22 @@ fn requires_entry_covers_goal(
             Some(v) => v,
             None => return false,
         };
-        if is_type_param_value(kb, *e_val) || is_type_param_value(kb, g_val) {
-            continue;
-        }
-        if !dispatch_values_match(kb, g_val, *e_val)
-            && !dispatch_values_match(kb, *e_val, g_val)
-        {
-            return false;
+        match sigma {
+            Some(ctx) => {
+                if !sigma_pair_precise(kb, ctx, *e_val, g_val) {
+                    return false;
+                }
+            }
+            None => {
+                if is_type_param_value(kb, *e_val) || is_type_param_value(kb, g_val) {
+                    continue;
+                }
+                if !dispatch_values_match(kb, g_val, *e_val)
+                    && !dispatch_values_match(kb, *e_val, g_val)
+                {
+                    return false;
+                }
+            }
         }
     }
     true
@@ -17519,7 +17714,7 @@ fn resolve_at_goal(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
-    let scope = ResolutionScope { available_requires: enclosing_requires };
+    let scope = ResolutionScope { available_requires: enclosing_requires, sigma: None };
 
     // No matching candidate ⇒ NoCandidates (permissive fall-through).
     // An unrelated `SortProvidesInfo` record for the same spec — e.g.
@@ -17530,7 +17725,9 @@ fn resolve_at_goal(
     let candidates = collect_provides_candidates(kb, &goal);
     if candidates.is_empty() {
         for ar in scope.available_requires {
-            if ar.required_sort == goal.spec_sort && requires_entry_covers_goal(kb, ar, &goal) {
+            if ar.required_sort == goal.spec_sort
+                && requires_entry_covers_goal(kb, ar, &goal, None)
+            {
                 return (DispatchOutcome::Deferred, None);
             }
         }
@@ -31397,7 +31594,7 @@ fn spec_resolves_at_bindings(
     // Field validation resolves a spec at declared bindings — no call-site
     // receiver, so no carrier discrimination (WI-350).
     let goal = SortGoal { spec_sort, bindings, carrier: None };
-    let scope = ResolutionScope { available_requires: &[] };
+    let scope = ResolutionScope { available_requires: &[], sigma: None };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }
 

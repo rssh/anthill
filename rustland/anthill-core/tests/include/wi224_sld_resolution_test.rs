@@ -103,7 +103,7 @@ fn parametric_carrier(
 /// Empty scope (no available_requires). Substitution is unused by the
 /// scope itself — the goal already carries the per-call values.
 fn empty_scope<'a>(_subst: &'a Substitution) -> ResolutionScope<'a> {
-    ResolutionScope { available_requires: &[] }
+    ResolutionScope { available_requires: &[], sigma: None }
 }
 
 // ── (1) Leaf instance resolution ─────────────────────────────────
@@ -487,7 +487,7 @@ fn available_requires_match_short_circuits_resolution() {
         .expect("Wi224Holder registered");
     let chain = requires_chain_flat(&kb, holder);
     let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int64");
-    let scope = ResolutionScope { available_requires: &chain };
+    let scope = ResolutionScope { available_requires: &chain, sigma: None };
     match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(ResolvedRequiresNode::FromScope { scope_index, .. }) => {
             assert_eq!(scope_index, 0,

@@ -8,47 +8,52 @@
 //! changing requirement and resolve-once-at-creation cannot, so the case
 //! should be EXPRESSIBLE AS AN OPERATION and INEXPRESSIBLE AS A LAMBDA.
 //!
-//! THE MEASURED VERDICT: the prediction is NOT OBSERVABLE TODAY — the
-//! operation-only CONTROL fails in every expressible spelling, and the lambda
-//! witness NEVER fails differently from its control. A shared defect upstream
-//! of any operation/lambda asymmetry decides every outcome: the CALL-SITE
-//! REQUIREMENT SUPPLY for a requirement instantiated at a CHANGED type.
-//! Concretely (`build_dep_projection`, kb/typing.rs): Strategy 1's
+//! THE MEASURED VERDICT (at WI-817 time): the prediction was NOT OBSERVABLE —
+//! the operation-only CONTROL failed in every expressible spelling, and the
+//! lambda witness NEVER failed differently from its control. A shared defect
+//! upstream of any operation/lambda asymmetry decided every outcome: the
+//! CALL-SITE REQUIREMENT SUPPLY for a requirement instantiated at a CHANGED
+//! type. Concretely (`build_dep_projection`, kb/typing.rs): Strategy 1's
 //! `entries_cover` is wildcard-tolerant — a caller `requires Desc[GT]` covers
 //! a callee dep `Desc[FT]` whenever either element is a type param — and its
-//! σ-class check (WI-419) only disambiguates 2+ covering entries, so a SOLE
-//! covering wildcard entry blindly FORWARDS the caller's dictionary even when
+//! σ-class check (WI-419) only disambiguated 2+ covering entries, so a SOLE
+//! covering wildcard entry blindly FORWARDED the caller's dictionary even when
 //! the call-site substitution maps the dep's element to a COMPOUND of the
-//! caller's element (FT := Wrap[GT]). Strategy 3 — SLD construction of the
-//! conditional-instance tree, which handles the changed type CORRECTLY when
-//! reached (see `sort_level_single_conditional_level_is_correct`) — is
-//! shadowed by that early return. Op-scoped `requires` chains additionally
-//! have NO call-site supply channel at all (`ConcreteApplyWithin` gates on
-//! the callee's PARENT SORT chain), and value-directed dispatch pushes an
-//! impl frame without the impl's own requires.
+//! caller's element (FT := Wrap[GT]).
+//!
+//! WI-821 FIXED the sort-level half: σ-class agreement now GATES forwarding —
+//! in Strategies 1/2 (a disagreeing cover, sole included, is no cover), in
+//! Strategy 3's own scope lookup (`resolve_inner`'s `FromScope` step, which
+//! would otherwise resurrect the same forward one layer down), and the
+//! provider-head match records a RIGID per-call element so the conditional
+//! instance's sub-goal instantiates at it instead of dying Cyclic. The
+//! sort-level rows below now measure their CORRECT values. Op-scoped
+//! `requires` chains still have NO call-site supply channel at all
+//! (`ConcreteApplyWithin` gates on the callee's PARENT SORT chain), and
+//! value-directed dispatch pushes an impl frame without the impl's own
+//! requires — those rows stay pinned under their own tickets (WI-822 sphere).
 //!
 //! Outcome matrix (all pinned below; letters are the ticket's outcome codes —
-//! (b) load error, (c) eval error, (d) silently wrong answer):
+//! (b) load error, (c) eval error):
 //!
 //! | requires channel                  | 1 cond. level | mutual recursion | + lambda leg |
 //! |-----------------------------------|---------------|------------------|--------------|
 //! | op-scoped over OP type param      | (b) load err  | (b) load err     | (b) load err |
 //! | op-scoped over SORT param         | (c) unbound   | (c) unbound      | (c) unbound  |
-//! | SORT-level                        | CORRECT (12)  | (d) WRONG (1)    | (d) WRONG (1)|
+//! | SORT-level                        | CORRECT (12)  | CORRECT 1/12/122 | CORRECT      |
 //!
 //! The `requires`-eval-path hazard flagged by the ticket ("sort-level
 //! `requires` makes ops untrappable"; two competing error spellings, neither
 //! established) is SETTLED: neither reported error reproduces; sort-level
 //! requires works end-to-end through a conditional instance (V8 pins the
-//! correct 12). The real failures are the two supply defects above, plus a
-//! bonus hazard: an UNCONDITIONED parametric provider fact silently mis-pins
-//! an abstract spec-op call at load (see
+//! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above,
+//! plus a bonus hazard — an UNCONDITIONED parametric provider fact silently
+//! mis-pins an abstract spec-op call at load (see
 //! `unconditioned_parametric_fact_mispins_abstract_call`).
 //!
-//! Tests here PIN CURRENT DEFECTS on purpose (the ticket's instruction): the
-//! (b)/(c)/(d) rows are wrong behaviour, named as such — the correct values
-//! are stated beside each pin. When the supply defect is fixed, the (d) pins
-//! must flip to 12/122/1222 and the (c) pins to values; the (b) pins flip to
+//! The (b)/(c) rows still PIN CURRENT DEFECTS on purpose: wrong behaviour,
+//! named as such, correct values stated beside each pin. The (c) pins flip
+//! to values under the op-scoped supply-channel ticket; the (b) pins flip to
 //! clean loads when the separate §5.4 op-param-requires gap closes.
 
 use anthill_core::eval::Value;
@@ -342,19 +347,20 @@ fn sort_level_single_conditional_level_is_correct() {
     assert!(matches!(got, Ok(Value::Int(12))), "expected Ok(Int(12)); got {got:?}");
 }
 
-/// PINS A CURRENT DEFECT — outcome (d), SILENTLY WRONG ANSWER, the worst
-/// case, CONTROL and WITNESS identical. Sort-level requires + the mutual
-/// recursion: loads clean, evaluates, and returns 1 AT EVERY DEPTH — the
-/// caller's `Desc[GT]` dictionary is forwarded UNCHANGED into f's
-/// `Desc[FT := Wrap[GT]]` slot (the Strategy-1 wildcard forward — see the
-/// module header for the mechanism), so the final describe dispatches the
-/// LEAF impl on a WRAPPED value. The conditional
-/// instance is never consulted. CORRECT would be drive(1) = 12,
-/// drive(2) = 122 (proven reachable by the V8 pin above). The lambda leg
-/// changes nothing: the closure faithfully restores its creation scope, and
-/// the creation scope already holds the wrong dictionary.
+/// FIXED BY WI-821 (was outcome (d), silently wrong at every depth), CONTROL
+/// and WITNESS identical. Sort-level requires + the mutual recursion now
+/// computes the depth-coded values 1/12/122: the g→f leg's `Desc[FT :=
+/// Wrap[GT]]` dep σ-DISAGREES with g's covering `Desc[GT]` entry (mixed
+/// param/compound), so instead of forwarding g's dictionary unchanged the
+/// call site constructs `construct_requirement(WrapDesc,
+/// [var_ref(__req_desc)])` — the conditional instance wrapping the caller's
+/// own dictionary one level deeper each round — while the f→g leg (same
+/// σ-class, FT ↦ GT) keeps forwarding BY NAME. Before WI-821 the wildcard
+/// forward returned 1 at EVERY depth, running the Leaf impl on wrapped
+/// values. The lambda leg changes nothing: the closure faithfully restores
+/// its creation scope, whose dictionary is now the correct one.
 #[test]
-fn sort_level_recursion_silently_wrong_control_and_lambda_identical() {
+fn sort_level_recursion_correct_control_and_lambda_identical() {
     let control = with_instances(
         "wi817.v9",
         r#"  sort FHolder
@@ -400,12 +406,13 @@ fn sort_level_recursion_silently_wrong_control_and_lambda_identical() {
         // (no trap ever occurs), so the poisoning footgun does not apply and
         // two of the three stdlib loads are saved.
         let mut interp = crate::common::interp_for(src);
-        for (n, wrong_today, correct) in [(0, 1, 1), (1, 1, 12), (2, 1, 122)] {
+        for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
             let got = interp.call(&entry, &[Value::Int(n)]);
             assert!(
-                matches!(got, Ok(Value::Int(v)) if v == wrong_today),
-                "{label} drive({n}): pinning TODAY'S value Ok(Int({wrong_today})) \
-                 (CURRENT DEFECT for n ≥ 1; correct = {correct}); got {got:?}"
+                matches!(got, Ok(Value::Int(v)) if v == correct),
+                "{label} drive({n}): expected the depth-coded Ok(Int({correct})) \
+                 (WI-821 σ-gated supply; pre-fix wildcard forward measured 1 at \
+                 every depth); got {got:?}"
             );
         }
     }
@@ -413,30 +420,31 @@ fn sort_level_recursion_silently_wrong_control_and_lambda_identical() {
 
 // ── Multi-hop: lambda relayed through ops holding DIFFERENT dicts ────
 
-/// PINS A CURRENT DEFECT — and one correct half. The lambda is created under
-/// one dictionary (Desc[Leaf], describe→1) and RELAYED through two further
-/// operations that each hold their OWN, DIFFERENT `Desc` dictionary
-/// (Desc[Pebble], describe→5) before being invoked two frames from its
-/// creation scope. Every requirement binding is CONCRETE, so this isolates
-/// the dictionary-FLOW question from the changed-type recursion.
+/// FIXED BY WI-821 (was 111 — hop dicts wrongly forwarded). The lambda is
+/// created under one dictionary (Desc[Leaf], describe→1) and RELAYED through
+/// two further operations that each hold their OWN, DIFFERENT `Desc`
+/// dictionary (Desc[Pebble], describe→5) before being invoked two frames
+/// from its creation scope. Every requirement binding is CONCRETE, so this
+/// isolates the dictionary-FLOW question from the changed-type recursion.
 ///
 /// Value coding, CORRECT = 551: invoke = fn(0) + 10·describe(pebble)
 /// = 1 + 50 = 51; relay = invoke + 100·describe(pebble) = 51 + 500 = 551
-/// (a hop-dict leak INTO the closure would read 555).
+/// (a hop-dict leak INTO the closure would read 555; a pre-WI-821 wildcard
+/// forward of the Maker's Leaf dict into both hops read 111).
 ///
-/// MEASURED TODAY = 111 = 1 + 10·1 + 100·1, which decomposes as:
-///   - fn(0) = 1 — the CLOSURE IS CORRECT: it reads its creation dictionary
-///     even two frames away (creation-scope capture holds through the chain);
-///   - each hop's OWN describe reads 1, not 5 — the MAKER's Leaf dictionary
-///     is FORWARDED into Relay's and Invoker's frames over each call site's
-///     concrete Pebble resolution. Same Strategy-1 wildcard-forward defect as
-///     the recursion pins, here proven to hit ALL-CONCRETE bindings whenever
-///     the caller holds a same-spec wildcard `requires` (the V8 pin works
-///     only because its driver holds NO requires, so Strategy 3 is reached).
+/// The two halves after the σ-gate:
+///   - fn(0) = 1 — the closure reads its creation dictionary even two frames
+///     away (creation-scope capture holds through the chain; this half was
+///     correct before WI-821 too);
+///   - each hop's OWN describe reads 5 — the make→relay hand-off's dep
+///     (`Desc[RT := Pebble]`) σ-DISAGREES with Maker's `Desc[MT]` entry
+///     (mixed param/concrete → no cover), so Strategy 3 constructs the
+///     Pebble dictionary; the relay→invoke hand-off (same σ-class, IT ↦ RT)
+///     keeps forwarding BY NAME, carrying that constructed dict onward.
 ///     wi419 measured the 2-covering-entries disambiguation; the SOLE-entry
-///     different-instantiation forward was unmeasured — and is wrong.
+///     different-instantiation forward was the WI-821 gap.
 #[test]
-fn lambda_relay_chain_closure_correct_but_hop_dicts_forwarded() {
+fn lambda_relay_chain_closure_and_hop_dicts_correct() {
     let src = format!(
         r#"
 namespace wi817.hops
@@ -477,26 +485,28 @@ end
     );
     let got = eval_fresh(&src, "wi817.hops.Driver.drive", 0);
     assert!(
-        matches!(got, Ok(Value::Int(111))),
-        "pinning TODAY'S value Ok(Int(111)) = correct closure (1) + hop dicts \
-         wrongly forwarded (10 + 100) — CURRENT DEFECT; correct = 551; got {got:?}"
+        matches!(got, Ok(Value::Int(551))),
+        "expected Ok(Int(551)) = correct closure (1) + each hop reading its \
+         OWN Pebble dict (50 + 500) under the WI-821 σ-gate (pre-fix wildcard \
+         forward measured 111); got {got:?}"
     );
 }
 
-/// THE SEARCHED CASE (user framing), measured — and the answer INVERTS the
-/// sort-level twin above. The relay chain's requirements are OP-SCOPED and
-/// their instantiation CHANGES at each hand-off (make holds Desc[Leaf],
-/// relay/invoke each hold Desc[Pebble]); the sort-based mechanism can only
-/// pass a dictionary AS IS, which the twin above shows arrives WRONG (111).
+/// THE SEARCHED CASE (user framing), measured. The relay chain's
+/// requirements are OP-SCOPED and their instantiation CHANGES at each
+/// hand-off (make holds Desc[Leaf], relay/invoke each hold Desc[Pebble]);
+/// the sort-level twin above measured 111 until WI-821's σ-gate made the
+/// hand-offs construct (now 551 there too).
 /// This op-scoped spelling measures the CORRECT 551 TODAY — but NOT because
 /// the op-scoped supply works (it supplies nothing; see the unbound pins):
 /// every describe here resolves VALUE-DIRECTED — the runtime value itself
 /// picks Leaf/Pebble.describe, no dictionary is ever consulted — so the
-/// changed instantiation is served by the values. The two channels fail on
-/// COMPLEMENTARY shapes: dict-directed pass-as-is is wrong the moment the
-/// instantiation changes; value-directed no-supply is right until a
-/// dictionary is semantically REQUIRED (a conditional impl's own chain),
-/// where it dies unbound. WI-822's supply channel must KEEP this 551 green.
+/// changed instantiation is served by the values. Pre-WI-821 the two
+/// channels failed on COMPLEMENTARY shapes: dict-directed pass-as-is was
+/// wrong the moment the instantiation changed (now σ-gated to construct);
+/// value-directed no-supply remains right until a dictionary is semantically
+/// REQUIRED (a conditional impl's own chain), where it still dies unbound.
+/// WI-822's supply channel must KEEP this 551 green.
 #[test]
 fn op_scoped_relay_chain_correct_via_value_direction() {
     let src = format!(
@@ -636,7 +646,7 @@ end
     );
 }
 
-/// PINS A CURRENT DEFECT — the essence-of-the-bug measurement (user
+/// FIXED BY WI-821 (was 31001) — the essence-of-the-bug measurement (user
 /// framing: every earlier fixture gave all operations the SAME singleton
 /// set, so as-is frame inheritance and correct per-callee supply were
 /// indistinguishable; the essence is that the SETS DIFFER and a hand-off
@@ -644,20 +654,16 @@ end
 /// requires {Desc[BT], Tagd[BT]} — overlapping in Desc, disjoint in Tagd —
 /// and the call instantiates BT := Pebble concretely while a holds
 /// AT := Leaf. CORRECT: b(pebble) = 5 + 10·3 = 35, drive = 1 + 1000·35
-/// = 35001.
-///
-/// MEASURED TODAY = 31001 = 1 + 1000·(1 + 10·3): in the SAME call, the
-/// OVERLAPPING dep is wrong — a's Leaf dictionary is wildcard-forwarded
-/// into b's Desc[BT := Pebble] slot, so describe(pebble) runs the LEAF
-/// impl (1) — while the DISJOINT dep is correct — a has no Tagd entry to
-/// falsely cover it, so Strategy 3 statically constructs the PebbleTag
-/// dictionary (tag = 3). The callee's set is rebuilt exactly where the
-/// caller's set does NOT overlap, and inherited as-is exactly where it
-/// does. This is also live proof that the WI-821 σ-gate's fall-through
-/// (Strategy-3 construction) already works in this shape — the gate only
-/// needs to stop the overlap-forward. Flips to 35001 under WI-821.
+/// = 35001, and both deps now measure it: the OVERLAPPING dep's wildcard
+/// cover (a's `Desc[AT]` over `Desc[BT := Pebble]`) σ-DISAGREES, so it is
+/// no cover and Strategy 3 constructs the Pebble dictionary (describe = 5)
+/// — the same construction the DISJOINT dep always took (a has no Tagd
+/// entry to falsely cover it; tag = 3). Pre-WI-821 the overlap was
+/// wildcard-forwarded (a's Leaf dict, describe = 1 → 31001): the callee's
+/// set was rebuilt exactly where the caller's set did NOT overlap, and
+/// inherited as-is exactly where it did — in ONE call.
 #[test]
-fn different_sets_overlapping_dep_forwarded_disjoint_dep_constructed() {
+fn different_sets_overlapping_dep_and_disjoint_dep_both_constructed() {
     let src = r#"
 namespace wi817.dsets
   import anthill.prelude.{Int64, Bool}
@@ -704,9 +710,10 @@ end
 "#;
     let got = eval_fresh(src, "wi817.dsets.Driver.drive", 0);
     assert!(
-        matches!(got, Ok(Value::Int(31001))),
-        "pinning TODAY'S value Ok(Int(31001)) = overlap dep forwarded wrong (1) + \
-         disjoint dep constructed right (3) — CURRENT DEFECT; correct = 35001; got {got:?}"
+        matches!(got, Ok(Value::Int(35001))),
+        "expected Ok(Int(35001)) = overlap dep σ-gated to the Pebble construction \
+         (5) + disjoint dep constructed (3) under WI-821 (pre-fix forward measured \
+         31001); got {got:?}"
     );
 }
 
