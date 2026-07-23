@@ -550,7 +550,9 @@ end
 /// it and describes the same value itself (scoped-correct would be
 /// 5 + 10·7 = 75; both-loud 55; both-quiet 77).
 ///
-/// PINS A CURRENT DEFECT (direction DECIDED — WI-825). MEASURED: the
+/// PINS A CURRENT DEFECT (direction DECIDED — WI-648, modular typeclasses:
+/// scoped/named non-canonical instances, SortedSet/sorted-Map-by-chosen-
+/// comparator as its standing example). MEASURED: the
 /// configuration is REJECTED AT LOAD — DispatchAmbiguous at BOTH describe
 /// sites ("multiple impls match (coherence rule)") plus the global witness
 /// check ("ambiguous witness: 2 distinct witness sorts provide ... (keep
@@ -565,10 +567,10 @@ end
 /// one carrier — and the VALUE cannot select between them (5 does not say
 /// which group it is in); only a requirement/scope can. Today the stdlib
 /// dodges Num-style (algebra.Ring bundles both operation families in one
-/// spec). Until WI-825 lands, the provider-selection dimension of the
+/// spec). Until WI-648 lands, the provider-selection dimension of the
 /// WI-816/817 question is unconstructible and dictionaries vary only along
 /// the TYPE dimension (the polymorphic-recursion pins above). CORRECT
-/// (WI-825 acceptance): this program LOADS and computes 75 — lambda keeps
+/// (WI-648 implement-phase acceptance): this program LOADS and computes 75 — lambda keeps
 /// its creation-scope provider (5), the quiet hop uses its own (7);
 /// 55/77 would betray a both-one-way selection.
 #[test]
