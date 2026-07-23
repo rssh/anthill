@@ -930,6 +930,8 @@ sort banking {
 
 When loaded into the KB, a `requires` declaration emits a `Requirement` fact scoped to the enclosing sort or namespace.
 
+**Requirement supply at a call site is checked at load** (WI-828). A cross-sort call to (or function-value use of) an operation whose parent sort carries `requires` must be able to supply each requirement: either *constructed* from a provider fact at the call's instantiation, or *forwarded* from a covering `requires` of the enclosing scope whose element denotes the **same** type parameter under the call-site substitution (σ-class agreement, WI-821 — a wildcard cover over a *different* parameter is no cover). A requirement element left **genuinely unconstrained** at the call (nothing in the call pins it — e.g. an element appearing only in the callee's return type, called with nothing that determines it) is a **load-time error** naming the requirement, the unconstrained element, any σ-refused covering entry, and the construction outcome. There is no fallback semantics: silently instantiating the element from the caller's (different) parameter was the pre-WI-821 unsoundness, and deferring the failure to evaluation would be a clean load that crashes at run time.
+
 **Standalone `entity`** is syntactic sugar for a single-constructor sort (see §6.3):
 
 ```

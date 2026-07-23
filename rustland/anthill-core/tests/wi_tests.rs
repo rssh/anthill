@@ -795,3 +795,6 @@ mod wi818_executable_backing_test;
 
 #[path = "include/wi817_polyrec_requirement_test.rs"]
 mod wi817_polyrec_requirement_test;
+
+#[path = "include/wi828_unconstrained_requirement_test.rs"]
+mod wi828_unconstrained_requirement_test;

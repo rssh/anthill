@@ -146,6 +146,26 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
     },
+    /// WI-828: a cross-sort call (direct or op-as-function-value) to an
+    /// operation of a `requires`-carrying sort whose requirement the call site
+    /// can neither CONSTRUCT (no unique provider at the call's instantiation)
+    /// nor FORWARD (every coarsely-covering caller entry σ-disagrees — the
+    /// WI-821 gate) because a requirement element is genuinely UNCONSTRAINED
+    /// at the call. Pre-WI-821 a sole covering wildcard entry silently
+    /// forwarded a σ-disagreeing dictionary here (unsound); post-gate the
+    /// refusal landed as a silent `dispatch_dict: None` that loaded clean and
+    /// died at EVAL reading the unbound `__req_*`. This is the load-time face
+    /// the loud-error principle demands. `eta` marks the function-value
+    /// spelling (the WI-420 site) so the message names the usage.
+    UnsatisfiableRequirement {
+        span: Option<Span>,
+        op: Symbol,
+        callee_sort: Symbol,
+        eta: bool,
+        /// Boxed so the cold refusal payload doesn't widen every
+        /// `Result<_, TypeError>` on the typer's hot faces.
+        refusal: Box<RequirementRefusal>,
+    },
     /// WI-583: a NON-Bool-returning operation used bare as a rule-body goal
     /// (goal position) — e.g. `:- length(?l)` where `length: List -> Int`. A
     /// Bool-returning op in goal position IS meaningful: it is the operation's
@@ -431,6 +451,9 @@ impl TypeError {
                     params_list.join(", "),
                 )
             }
+            TypeError::UnsatisfiableRequirement { op, callee_sort, eta, refusal, .. } => {
+                refusal.render(kb, *op, *callee_sort, *eta)
+            }
             TypeError::NonBoolOpInGoalPosition { op_sym, return_sort, .. } => {
                 let op_qn = kb.qualified_name_of(*op_sym);
                 format!(
@@ -501,6 +524,7 @@ impl TypeError {
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
+            | TypeError::UnsatisfiableRequirement { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
@@ -670,6 +694,16 @@ impl TypeError {
                     field_name: "requires".to_string(),
                     expected_type: format!("`requires {}[…]` covering abstract type parameter", spec_short),
                     actual_type: suggestion,
+                    span: self.span(kb),
+                }
+            }
+            TypeError::UnsatisfiableRequirement { op, callee_sort, eta, refusal, .. } => {
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*op).to_string(),
+                    field_name: "requires".to_string(),
+                    expected_type: "a requirement suppliable at this call site".to_string(),
+                    actual_type: refusal.render(kb, *op, *callee_sort, *eta),
                     span: self.span(kb),
                 }
             }
@@ -5229,11 +5263,22 @@ fn attach_eta_dispatch_dict(
     let caller_requires: Vec<RequiresEntry> =
         env.enclosing_requires().map(|r| r.to_vec()).unwrap_or_default();
     match build_concrete_dispatch_dict(kb, &subst, parent, env.enclosing_sort(), &caller_requires, env.enclosing_sort_param_rigids()) {
-        Some(dict) => {
+        Ok(Some(dict)) => {
             occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
             Ok(())
         }
-        None => {
+        // WI-828: the σ-refusal signature (a σ-refused cover / an Ambiguous
+        // construction of an unconstrained element) names WHY the eta is
+        // unsatisfiable — the bare WI-420 error below told the author neither
+        // the refused entry nor the unconstrained element.
+        Err(refusal) => Err(TypeError::UnsatisfiableRequirement {
+            span: Some(occ.span.span),
+            op: sym,
+            callee_sort: parent,
+            eta: true,
+            refusal,
+        }),
+        Ok(None) => {
             // Cross-sort op with a non-empty direct `requires` chain that we
             // could resolve neither concretely (no `fact`) nor by forwarding
             // from the enclosing scope: unsatisfiable in this eta context.
@@ -10692,10 +10737,20 @@ fn check_apply_iter(
                     let enclosing_sort = env.enclosing_sort();
                     let caller_requires: Vec<RequiresEntry> =
                         env.enclosing_requires().unwrap_or(&[]).to_vec();
+                    // WI-828: a σ-refused requirement is a LOAD diagnostic —
+                    // classifying `dispatch_dict: None` here loaded clean and
+                    // died at eval reading the unbound `__req_*`.
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb, &subst, parent_sym, enclosing_sort, &caller_requires,
                         env.enclosing_sort_param_rigids(),
-                    );
+                    )
+                    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
+                        span,
+                        op: fn_sym,
+                        callee_sort: parent_sym,
+                        eta: false,
+                        refusal,
+                    })?;
                     classify(
                         kb,
                         occ,
@@ -11311,6 +11366,182 @@ fn build_dispatching_dict_direct(
         // here, so Strategy 1 keeps its first-match behavior.
         None,
     )
+    // WI-828: a refusal needs the σ context (`disambig = Some`), so the σ-less
+    // diagnostic path cannot produce one.
+    .expect("σ-less dict build (disambig = None) never refuses")
+}
+
+/// WI-828: the structured reason the WI-415 concrete dict build REFUSED a
+/// requirement, carried to the call site so the refusal surfaces as a located
+/// load diagnostic instead of the silent `dispatch_dict: None` that loaded
+/// clean and died at eval reading an unbound `__req_*` (or, on the eta path,
+/// a WI-420 error naming neither the σ refusal nor the element). Produced by
+/// [`explain_dep_refusal`] on the failure path only, so the fields are
+/// pre-rendered Strings.
+#[derive(Clone, Debug)]
+pub struct RequirementRefusal {
+    /// The requirement that failed to project, rendered (`Desc[T = MT]`).
+    dep_text: String,
+    /// Dep elements still an UNBOUND type param under the call-site σ
+    /// (`T = MT`) — what makes neither forwarding nor construction pickable.
+    unconstrained: Vec<String>,
+    /// Caller `requires` entries covering the dep COARSELY but σ-refused
+    /// (WI-821) — the entries the pre-gate code would have blindly forwarded.
+    refused_covers: Vec<String>,
+    /// How Strategy-3 construction terminated, rendered — the `Ambiguous`
+    /// provider set when there is one, else the `NoMatch`/`Cyclic` account.
+    construction: String,
+}
+
+impl RequirementRefusal {
+    /// One renderer for both error faces ([`TypeError::format`] and
+    /// [`TypeError::to_load_error`]): name the dep, the unconstrained
+    /// element(s), the σ-refused covering entries (or the ambiguous provider
+    /// set), and the author-side fix.
+    fn render(&self, kb: &KnowledgeBase, op: Symbol, callee_sort: Symbol, eta: bool) -> String {
+        let op_qn = kb.qualified_name_of(op);
+        let usage = if eta {
+            format!("`{}` used as a function value", op_qn)
+        } else {
+            format!("call to `{}`", op_qn)
+        };
+        let mut msg = format!(
+            "requirement `{}` of `{}` cannot be supplied for {}",
+            self.dep_text,
+            kb.qualified_name_of(callee_sort),
+            usage,
+        );
+        if !self.unconstrained.is_empty() {
+            msg.push_str(&format!(
+                ": element {} is unconstrained at this call site",
+                self.unconstrained.join(", "),
+            ));
+        }
+        if !self.refused_covers.is_empty() {
+            let list: Vec<String> =
+                self.refused_covers.iter().map(|e| format!("`requires {e}`")).collect();
+            msg.push_str(&format!(
+                "; the enclosing scope's {} covers only as a wildcard and is not forwarded — its element is a different type parameter under this call (WI-821)",
+                list.join(", "),
+            ));
+        }
+        if !self.construction.is_empty() {
+            msg.push_str(&format!("; {}", self.construction));
+        }
+        msg.push_str(" — pin the element at the call site (bind it through an argument or an explicit type argument), or align the enclosing `requires` element with the callee's");
+        msg
+    }
+}
+
+/// Render a `RequiresEntry` for a diagnostic (`Desc[T = MT]`) via the same
+/// goal rendering Strategy 3's own diagnostics use; entries that do not form
+/// a goal fall back to the spec sort's name.
+fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
+    match goal_from_requires_entry(kb, entry) {
+        Some(goal) => format_goal(kb, &goal),
+        None => kb.qualified_name_of(entry.required_sort).to_string(),
+    }
+}
+
+/// WI-828: classify WHY a `require_complete` dict build failed a dep on the
+/// σ-gated path. Returns `Some` only for the σ-refusal signature this ticket
+/// surfaces as a load diagnostic — a coarsely-covering entry the σ-gate
+/// refused (WI-821), directly (Strategy 1) or through a slot's composed
+/// sub-chain (Strategy 2), or an `Ambiguous` Strategy-3 construction (an
+/// unconstrained element among multiple providers). The pre-existing
+/// silent-`None` classes — bare `NoMatch` (the WI-415/418 uncovered abstract
+/// call) and `Cyclic` (WI-827's sphere) — keep today's behavior and return
+/// `None`.
+///
+/// `s3_failure` is the terminal `resolve` outcome the projection search
+/// itself observed, threaded out of `build_dep_projection` — never re-run
+/// here. The cover re-scan, by contrast, MIRRORS Strategies 1/2's walks
+/// (Strategy-2 candidates compared COMPOSED into caller scope, the same
+/// one-level composition the strategy matches with): a walk-shape change
+/// there (WI-826/WI-827's sphere) must be mirrored here, or the diagnostic
+/// silently stops firing for that spelling. Diagnostic strings are built
+/// only after the refusal signature is confirmed.
+fn explain_dep_refusal(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    caller_requires: &[RequiresEntry],
+    caller_sub_chains: &[Vec<RequiresEntry>],
+    ctx: &SigmaCtx,
+    s3_failure: Option<ResolutionResult>,
+) -> Option<RequirementRefusal> {
+    // A cover that holds coarsely but not under σ is precisely the entry the
+    // pre-WI-821 code would have blindly forwarded.
+    let mut refused_entries: Vec<RequiresEntry> = Vec::new();
+    for entry in caller_requires {
+        if entries_cover(kb, entry, dep, None) && !entries_cover(kb, entry, dep, Some(ctx)) {
+            refused_entries.push(entry.clone());
+        }
+    }
+    for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
+        let mut slot_map: Option<HashMap<Symbol, TermId>> = None;
+        for sub in sub_chain {
+            if !same_sort_canonical(kb, sub.required_sort, dep.required_sort) {
+                continue;
+            }
+            if slot_map.is_none() {
+                slot_map = Some(build_child_subst_map(kb, &caller_requires[i]));
+            }
+            let map = slot_map.as_ref().expect("filled on the preceding line");
+            let composed = RequiresEntry {
+                required_sort: sub.required_sort,
+                spec: substitute_in_spec(kb, &sub.spec, map),
+            };
+            if entries_cover(kb, &composed, dep, None)
+                && !entries_cover(kb, &composed, dep, Some(ctx))
+            {
+                refused_entries.push(composed);
+            }
+        }
+    }
+    let ambiguous = matches!(s3_failure, Some(ResolutionResult::Ambiguous { .. }));
+    if refused_entries.is_empty() && !ambiguous {
+        return None;
+    }
+    // Refusal confirmed — everything below is cold diagnostic rendering.
+    let construction = match s3_failure {
+        Some(ResolutionResult::Ambiguous { goal_text, candidate_impl_qns }) => format!(
+            "constructing `{goal_text}` is ambiguous among providers: {}",
+            candidate_impl_qns.join(", "),
+        ),
+        // The first reader of NoMatch's purpose-built hint (eagerly formatted
+        // since WI-821, previously consumed by nothing).
+        Some(ResolutionResult::NoMatch { hint, .. }) => hint,
+        Some(ResolutionResult::Cyclic { path }) => {
+            format!("construction is cyclic: {}", path.join(" -> "))
+        }
+        Some(ResolutionResult::Resolved(_)) | None => String::new(),
+    };
+    let goal = goal_from_requires_entry(kb, dep);
+    let dep_text = match &goal {
+        Some(g) => format_goal(kb, g),
+        None => kb.qualified_name_of(dep.required_sort).to_string(),
+    };
+    // The dep elements still unbound under σ — `goal.bindings` is already
+    // type-param-filtered by `goal_from_requires_entry`, the same extraction
+    // the resolution itself used.
+    let mut unconstrained: Vec<String> = Vec::new();
+    if let Some(g) = &goal {
+        for (k, v) in &g.bindings {
+            if !is_type_param_value(kb, *v) {
+                continue;
+            }
+            if matches!(sigma_class_terminal(kb, ctx, *v), Some((_, false))) {
+                unconstrained.push(format!(
+                    "`{} = {}`",
+                    kb.resolve_sym(*k),
+                    format_term_for_goal(kb, *v),
+                ));
+            }
+        }
+    }
+    let refused_covers: Vec<String> =
+        refused_entries.iter().map(|e| render_requires_entry(kb, e)).collect();
+    Some(RequirementRefusal { dep_text, unconstrained, refused_covers, construction })
 }
 
 /// Shared core of the Direct-path dict build (`build_dispatching_dict_direct`)
@@ -11329,10 +11560,13 @@ fn build_dispatching_dict_direct(
 /// concretely.
 ///
 /// `require_complete`: when true, a dep that fails to project aborts the whole
-/// dict (`None`) — WI-415 needs every slot present (a short dict fails eval's
-/// arity check), so it emits no dict and falls back rather than a broken one.
-/// The Direct path passes false and silently drops un-projected deps (its
-/// output is the diagnostic-only `dispatch_rewrites` term).
+/// dict — WI-415 needs every slot present (a short dict fails eval's arity
+/// check). WI-828: on the σ-gated path (`disambig` present) an abort with the
+/// σ-refusal signature is returned as `Err(RequirementRefusal)` so the call
+/// site surfaces a located load diagnostic; every other abort stays the
+/// silent `Ok(None)` fall-back. The Direct path passes false and silently
+/// drops un-projected deps (its output is the diagnostic-only
+/// `dispatch_rewrites` term), so it can never see `Err`.
 fn build_dispatching_dict_from_chain(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
@@ -11344,7 +11578,7 @@ fn build_dispatching_dict_from_chain(
     // WI-419: call-site context for Strategy 1 same-spec disambiguation; `None`
     // on the req-insertion diagnostic path (`build_dispatching_dict_direct`).
     disambig: Option<&SigmaCtx>,
-) -> Option<TermId> {
+) -> Result<Option<TermId>, Box<RequirementRefusal>> {
     // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
     // it depends only on `caller_requires`, not on the current dep, so the
     // worst-case cost drops from O(deps × slots × |SortRequiresInfo|) to
@@ -11358,18 +11592,38 @@ fn build_dispatching_dict_from_chain(
         .collect();
     let mut proj_terms: Vec<TermId> = Vec::with_capacity(chain.len());
     for dep in chain {
+        // WI-828: have Strategy 3 hand out its terminal failure so a refusal
+        // is explained from what the search itself saw, not a re-run.
+        // Requested only where the explanation has a consumer.
+        let mut s3_failure: Option<ResolutionResult> = None;
+        let s3_slot =
+            (require_complete && disambig.is_some()).then_some(&mut s3_failure);
         match build_dep_projection(
             kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms, disambig,
+            s3_slot,
         ) {
             Some(t) => proj_terms.push(t),
-            None if require_complete => return None,
+            None if require_complete => {
+                // WI-828: with a σ in hand, a refusal-signature failure (a
+                // σ-refused cover / an Ambiguous construction of an
+                // unconstrained element) is a load diagnostic, not a silent
+                // no-dict classification that dies at eval.
+                if let Some(refusal) = disambig.and_then(|ctx| {
+                    explain_dep_refusal(
+                        kb, dep, caller_requires, &caller_sub_chains, ctx, s3_failure,
+                    )
+                }) {
+                    return Err(Box::new(refusal));
+                }
+                return Ok(None);
+            }
             None => {}
         }
     }
     let sub_reqs_list = super::load::build_cons_list(
         kb, &proj_terms, syms.nil, syms.cons, syms.head, syms.tail,
     );
-    Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list))
+    Ok(Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list)))
 }
 
 /// WI-415/WI-418: build, at COMPILE stage, the parent-bundle dispatching dict a
@@ -11392,11 +11646,15 @@ fn build_dispatching_dict_from_chain(
 /// bindings are substituted into the callee chain FIRST — which is why this runs
 /// here, in the typer, where the subst is alive (it is gone by `req_insertion`).
 ///
-/// Returns `None` (⇒ no dict; eval keeps its same-sort-inherit / plain-apply
-/// behavior) for a SAME-SORT call (eval inherits the enclosing frame's
-/// requirements) or when any requirement fails to project — neither a concrete
-/// `fact` nor a covering caller `requires` — rather than emit an under-arity
-/// dict eval would reject.
+/// Returns `Ok(None)` (⇒ no dict; eval keeps its same-sort-inherit /
+/// plain-apply behavior) for a SAME-SORT call (eval inherits the enclosing
+/// frame's requirements) or when a requirement fails to project outside the
+/// WI-828 refusal signature — rather than emit an under-arity dict eval would
+/// reject. A projection failure WITH the refusal signature (a σ-refused
+/// cover / an Ambiguous construction of an unconstrained element) is
+/// `Err(RequirementRefusal)`: the call site must surface it as a located
+/// load diagnostic (WI-828) instead of classifying a dict-less call that
+/// loads clean and dies at eval.
 fn build_concrete_dispatch_dict(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -11407,7 +11665,7 @@ fn build_concrete_dispatch_dict(
     // rigids()`), needed to disambiguate a forward among two+ same-spec caller
     // requires (a callee element unified with a rigidified caller param).
     sort_param_rigids: &[(VarId, TermId)],
-) -> Option<TermId> {
+) -> Result<Option<TermId>, Box<RequirementRefusal>> {
     // WI-418: a SAME-SORT call inherits the enclosing frame's requirements at
     // eval (`start_apply_same_sort` checks `inherit` — callee parent == caller
     // sort — first), so any dict built here would be ignored. Skip it. Every
@@ -11418,11 +11676,11 @@ fn build_concrete_dispatch_dict(
     // `Coll requires Eq[T]` whose op delegates to `List.member` on its abstract
     // element, so `member` needs `Coll`'s `__req_eq` threaded onward).
     if caller_sort == Some(callee_spec_sort) {
-        return None;
+        return Ok(None);
     }
     let abstract_chain = direct_requires_chain(kb, callee_spec_sort);
     if abstract_chain.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Substitute the call-site bindings into each direct requirement so a
     // concretely-pinned dep (`Eq[T]` ⇒ `Eq[Int]`) resolves against its `fact`;
@@ -11434,7 +11692,9 @@ fn build_concrete_dispatch_dict(
             spec: substitute_spec_via_subst(kb, &entry.spec, subst),
         })
         .collect();
-    let syms = ProjectionSyms::resolve(kb)?;
+    let Some(syms) = ProjectionSyms::resolve(kb) else {
+        return Ok(None);
+    };
     // `require_complete = true`: every direct requirement must project into the
     // dict, else fall back to no dict (a short dict fails eval's arity check).
     // WI-419: pass the call-site context so Strategy 1 can disambiguate a caller
@@ -11584,6 +11844,12 @@ pub fn build_dep_projection(
     // Strategy 3's construction. `None` (the req-insertion diagnostic path)
     // keeps the original coarse first-match behavior.
     disambig: Option<&SigmaCtx>,
+    // WI-828: when present, receives Strategy 3's TERMINAL failure
+    // (`NoMatch`/`Ambiguous`/`Cyclic`) so the caller can explain a refusal
+    // without re-running the resolution. Written only when Strategy 3 runs
+    // and does not resolve; left `None` on success or when an earlier
+    // strategy served the dep.
+    s3_failure_out: Option<&mut Option<ResolutionResult>>,
 ) -> Option<TermId> {
     // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
     // E = ?`) is satisfied STRUCTURALLY by the effect-row machinery — there is
@@ -11695,7 +11961,12 @@ pub fn build_dep_projection(
     let scope = ResolutionScope { available_requires: caller_requires, sigma: disambig };
     match resolve(kb, &goal, &scope) {
         ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_sort, &tree, syms),
-        _ => None,
+        failure => {
+            if let Some(out) = s3_failure_out {
+                *out = Some(failure);
+            }
+            None
+        }
     }
 }
 
@@ -11804,15 +12075,35 @@ pub struct SigmaCtx<'a> {
 /// param→rigid map so a written `Var::Global(B)` and a call-site `Var(Rigid(B))`
 /// land on the same id. Bounded against a pathological cycle.
 fn sigma_class(kb: &KnowledgeBase, ctx: &SigmaCtx, value: TermId) -> Option<VarId> {
+    sigma_class_terminal(kb, ctx, value).map(|(vid, _)| vid)
+}
+
+/// [`sigma_class`] plus HOW the chase terminated: `true` = at a rigid — direct
+/// (`Var::Rigid`) or via the enclosing-sort param→rigid canonicalization —
+/// meaning the element IS an enclosing-scope parameter, constrained in
+/// context; `false` = at an unbound global nothing at this call determines.
+/// WI-828's refusal explanation keys on that distinction to name the
+/// genuinely-unconstrained elements.
+fn sigma_class_terminal(
+    kb: &KnowledgeBase,
+    ctx: &SigmaCtx,
+    value: TermId,
+) -> Option<(VarId, bool)> {
     let mut cur = value;
     for _ in 0..128 {
         let (vid, is_rigid) = elem_var_step(kb, cur)?;
         if is_rigid {
-            return Some(vid);
+            return Some((vid, true));
         }
         match ctx.subst.resolve_as_value(vid) {
             Some(Value::Term { id: t, .. }) => cur = *t,
-            _ => return Some(canonical_global_var(kb, vid, ctx.sort_param_rigids)),
+            _ => {
+                let canon = canonical_global_var(kb, vid, ctx.sort_param_rigids);
+                // Canonicalized ⇒ the global aliases an enclosing-sort param's
+                // rigid (rigids are freshly minted, so the id changed exactly
+                // when a mapping existed).
+                return Some((canon, canon != vid));
+            }
         }
     }
     None

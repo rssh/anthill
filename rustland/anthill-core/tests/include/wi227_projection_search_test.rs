@@ -187,7 +187,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None,
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None, None,
     );
     assert!(
         projection.is_none(),
@@ -250,7 +250,7 @@ fn ground_dep_emits_construct_requirement() {
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None,
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None, None,
     )
         .expect("Strategy 3 must resolve Eq[T=Int64] via SortProvidesInfo");
 
