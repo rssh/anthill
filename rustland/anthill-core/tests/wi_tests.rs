@@ -798,3 +798,6 @@ mod wi817_polyrec_requirement_test;
 
 #[path = "include/wi828_unconstrained_requirement_test.rs"]
 mod wi828_unconstrained_requirement_test;
+
+#[path = "include/wi825_compound_element_test.rs"]
+mod wi825_compound_element_test;
