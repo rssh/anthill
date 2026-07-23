@@ -46,9 +46,11 @@
 //! `requires` makes ops untrappable"; two competing error spellings, neither
 //! established) is SETTLED: neither reported error reproduces; sort-level
 //! requires works end-to-end through a conditional instance (V8 pins the
-//! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above,
-//! plus a bonus hazard — an UNCONDITIONED parametric provider fact silently
-//! mis-pins an abstract spec-op call at load (see
+//! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above;
+//! the global two-provider rejection where the spec prescribes SCOPED
+//! selection (`two_describers_for_one_carrier_rejected_globally`, flips
+//! under WI-648); and a bonus hazard — an UNCONDITIONED parametric provider
+//! fact silently mis-pins an abstract spec-op call at load (see
 //! `unconditioned_parametric_fact_mispins_abstract_call`).
 //!
 //! The (b)/(c) rows still PIN CURRENT DEFECTS on purpose: wrong behaviour,
@@ -415,6 +417,49 @@ fn sort_level_recursion_correct_control_and_lambda_identical() {
                  every depth); got {got:?}"
             );
         }
+    }
+}
+
+/// WI-821 /code-review follow-up: the PARENT-SORT-param half of the staging
+/// trigger, measured. `op_tp_pinning_params` claims to cover a callee whose
+/// pinnable param is its parent SORT's (`sort X = ?` on Applier) exactly like
+/// the op-scoped `[X]` spelling the v10 witness drives — this is the witness
+/// twin for that half: the lambda's binder must type from the staged sibling
+/// (`a: X` pinned by `wrap(x)`), so its inner f-call constructs the same
+/// conditional dict and the recursion stays depth-coded. A wildcard-typed
+/// binder would measure 1 at every depth (the WI-817 defect) or die unbound.
+#[test]
+fn sort_param_applier_witness_matches_control() {
+    let witness = with_instances(
+        "wi817.v11",
+        r#"  sort Applier
+    sort X = ?
+    operation apply_fn(fn: Function[A = X, B = Int64], a: X) -> Int64 = fn(a)
+  end
+  sort FHolder
+    sort FT = ?
+    requires Desc[FT]
+    operation f(n: Int64, x: FT) -> Int64 =
+      if eq(n, 0) then Desc.describe(x) else GHolder.g(n, x)
+  end
+  sort GHolder
+    sort GT = ?
+    requires Desc[GT]
+    operation g(n: Int64, x: GT) -> Int64 =
+      Applier.apply_fn(lambda w -> FHolder.f(sub(n, 1), w), wrap(x))
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = FHolder.f(n, leaf())
+  end"#,
+    );
+    let mut interp = crate::common::interp_for(&witness);
+    for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
+        let got = interp.call("wi817.v11.Driver.drive", &[Value::Int(n)]);
+        assert!(
+            matches!(got, Ok(Value::Int(v)) if v == correct),
+            "sort-param applier drive({n}): expected the depth-coded \
+             Ok(Int({correct})); got {got:?}"
+        );
     }
 }
 

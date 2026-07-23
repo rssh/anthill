@@ -5549,10 +5549,19 @@ fn op_tp_pinning_params(
             _ => None,
         })
         .collect();
+    // (code-review) Kind-gate + memoized read. `impl_parent_of_op` returns a
+    // NAMESPACE for a free op, and the uncached `impl_param_symbols` →
+    // `type_params_of_sort` walk scans the whole symbol table per call — paid
+    // on every call with any lambda-or-VarRef argument just to learn a
+    // namespace has no params. `sort_type_params_as_pairs` is the same filter
+    // chain (qualified param symbol → sort alias → keep `Var::Global`),
+    // memoized on `sort_param_pairs_cache`.
     if let Some(parent) = impl_parent_of_op(kb, functor) {
-        for sym in impl_param_symbols(kb, parent) {
-            if let Some(v) = type_param_global_var(kb, sym) {
-                tp_vars.push(v);
+        if kb.kind_of(parent) == Some(crate::intern::SymbolKind::Sort) {
+            for (_, target) in sort_type_params_as_pairs(kb, parent).iter() {
+                if let Term::Var(Var::Global(v)) = kb.get_term(*target) {
+                    tp_vars.push(*v);
+                }
             }
         }
     }
@@ -5626,13 +5635,17 @@ fn hint_instantiation_subst(
     let mut s = Substitution::new();
     for (psym, declared) in ps {
         if let Some(arg_ty) = known.get(psym) {
-            // Probe on a scratch σ first: a FAILED pair mutates as it goes, and
-            // its partial bindings must not ride into the hint (they would move
-            // a plain argument type error onto a corrupted lambda binder).
-            // Success-proven pairs re-unify into the accumulated σ.
-            let mut probe = Substitution::new();
+            // Probe on a CLONE of the accumulated σ and commit atomically: a
+            // failed pair mutates as it goes and its partial bindings must not
+            // ride into the hint (they would move a plain argument type error
+            // onto a corrupted lambda binder). The clone sees earlier pairs'
+            // bindings, so a pair that unifies alone but conflicts CROSS-pair
+            // is also discarded whole — the fresh-probe version was blind to
+            // that (code-review). `Substitution::clone` is O(1) (imbl), so
+            // this is one unification per pair, not two.
+            let mut probe = s.clone();
             if unify_types(kb, &mut probe, declared, arg_ty) {
-                unify_types(kb, &mut s, declared, arg_ty);
+                s = probe;
             }
         }
     }
@@ -11639,11 +11652,26 @@ pub fn build_dep_projection(
         // built once per slot, not per candidate.
         let chosen = match disambig {
             Some(ctx) => {
-                let slot_map = build_child_subst_map(kb, &caller_requires[i]);
+                // (code-review) Compose lazily, and only for a SAME-SORT
+                // candidate: the pre-filter is the identical first check
+                // `entries_cover` applies (composition never changes
+                // `required_sort`), so a sort-mismatched entry skips the
+                // allocating `substitute_in_spec` walk entirely, and the map —
+                // a function of the slot alone — is built at most once and
+                // never for a chain with no same-sort entry (leaf-spec slots
+                // have EMPTY chains).
+                let mut slot_map: Option<HashMap<Symbol, TermId>> = None;
                 (0..sub_chain.len()).find(|&k| {
+                    if !same_sort_canonical(kb, sub_chain[k].required_sort, dep.required_sort) {
+                        return false;
+                    }
+                    if slot_map.is_none() {
+                        slot_map = Some(build_child_subst_map(kb, &caller_requires[i]));
+                    }
+                    let map = slot_map.as_ref().expect("filled on the preceding line");
                     let composed = RequiresEntry {
                         required_sort: sub_chain[k].required_sort,
-                        spec: substitute_in_spec(kb, &sub_chain[k].spec, &slot_map),
+                        spec: substitute_in_spec(kb, &sub_chain[k].spec, map),
                     };
                     entries_cover(kb, &composed, dep, Some(ctx))
                 })
@@ -11676,17 +11704,16 @@ pub fn build_dep_projection(
 /// — same `required_sort` AND every type-param binding of `dep` is
 /// satisfied by `caller`'s binding for the same key.
 ///
-/// `sigma` selects the per-pair verdict (WI-821 folded the former
-/// `entry_sigma_matches` clone into this one walk so the coarse and σ-precise
-/// covers cannot drift):
-///   - `None` — the coarse wildcard walk: identical bindings match, and either
-///     side being a type-param wildcard is unconstrained (mirroring
-///     `requires_entry_covers_goal`'s flexibility). The req-insertion
-///     diagnostic path's behavior.
-///   - `Some(ctx)` — the σ-precise GATE ([`sigma_pair_precise`], WI-419/821):
-///     two type-params must share a σ-class under the call-site subst, a mixed
-///     concrete/wildcard pair is NO cover, concrete/concrete stays
-///     `dispatch_values_match`. σ-precise implies coarse, so one walk decides.
+/// `sigma` selects the per-pair verdict via the shared
+/// [`binding_pair_covers`] (WI-821 folded the former `entry_sigma_matches`
+/// clone into this walk; the code-review pass then hoisted the pair verdict
+/// itself so this and `requires_entry_covers_goal` cannot drift):
+///   - `None` — the coarse wildcard rule: either side a type-param wildcard
+///     is unconstrained. The req-insertion diagnostic path's behavior.
+///   - `Some(ctx)` — the σ-precise GATE (WI-419/821): two type-params must
+///     share a σ-class under the call-site subst, a mixed concrete/wildcard
+///     pair is NO cover, concrete/concrete stays `dispatch_values_match`.
+///     σ-precise implies coarse, so one walk decides.
 fn entries_cover(
     kb: &mut KnowledgeBase,
     caller: &RequiresEntry,
@@ -11729,23 +11756,8 @@ fn entries_cover(
         let Some(caller_val) = caller_val else {
             return false;
         };
-        match sigma {
-            Some(ctx) => {
-                if !sigma_pair_precise(kb, ctx, caller_val, *dep_val) {
-                    return false;
-                }
-            }
-            None => {
-                // Either side a type-param wildcard ⇒ unconstrained, accept.
-                if is_type_param_value(kb, caller_val) || is_type_param_value(kb, *dep_val) {
-                    continue;
-                }
-                if !dispatch_values_match(kb, caller_val, *dep_val)
-                    && !dispatch_values_match(kb, *dep_val, caller_val)
-                {
-                    return false;
-                }
-            }
+        if !binding_pair_covers(kb, sigma, caller_val, *dep_val) {
+            return false;
         }
     }
     true
@@ -11818,8 +11830,8 @@ fn sigma_same(kb: &KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermId) -> bool 
 }
 
 /// WI-613 — the σ-precise verdict for ONE `(a, b)` element pair: the policy
-/// shared by [`entries_cover`] / [`requires_entry_covers_goal`]'s σ modes
-/// (the forwarding paths, where it GATES — WI-821) and
+/// shared by [`binding_pair_covers`]' σ mode (the forwarding paths, where it
+/// GATES — WI-821) and
 /// [`entry_sigma_matches_subst`] (entry-vs-subst, the direct-dispatch path)
 /// so the attribution paths cannot disagree on what "same element" means. Two
 /// type-params must share a σ-class ([`sigma_same`]); a mixed concrete/wildcard
@@ -11832,6 +11844,35 @@ fn sigma_pair_precise(kb: &mut KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: Term
         (true, false) | (false, true) => false,
         (false, false) => {
             dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a)
+        }
+    }
+}
+
+/// WI-821 (code-review): THE one per-pair cover verdict for the forwarding
+/// walks — `None` is the coarse rule (either side a type-param wildcard is
+/// unconstrained; concrete/concrete via symmetric `dispatch_values_match`),
+/// `Some(ctx)` the σ-precise gate ([`sigma_pair_precise`]). Owned once so
+/// [`entries_cover`] (entry-vs-entry) and [`requires_entry_covers_goal`]
+/// (entry-vs-goal) cannot drift — a per-pair rule change lands here or
+/// nowhere. Symmetric in `a`/`b` in both modes.
+///
+/// KNOWN LIMIT (filed follow-up): the verdict is HEAD-only — a COMPOUND
+/// element (`Wrap[A = GT]`) classifies concrete, so two same-head compounds
+/// with different interiors compare via `dispatch_values_match`'s
+/// head-symbol fallback and can wrongly cover under σ.
+fn binding_pair_covers(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    a: TermId,
+    b: TermId,
+) -> bool {
+    match sigma {
+        Some(ctx) => sigma_pair_precise(kb, ctx, a, b),
+        None => {
+            is_type_param_value(kb, a)
+                || is_type_param_value(kb, b)
+                || dispatch_values_match(kb, a, b)
+                || dispatch_values_match(kb, b, a)
         }
     }
 }
@@ -16162,12 +16203,13 @@ fn substitute_impl_params_alloc(
 /// Filters out op-bindings (auto-bound `eq`, `neq`, …) — only type-
 /// param bindings constrain matching.
 ///
-/// `sigma` selects the per-pair verdict, exactly as in the entry-vs-entry
-/// twin [`entries_cover`] (WI-821 folded the former σ-precise clone into
-/// this one walk): `None` keeps the coarse wildcard cover; `Some(ctx)` is
-/// the σ-precise GATE ([`sigma_pair_precise`]) a scope entry must pass when
-/// the resolution serves a call-site dict build (`ResolutionScope.sigma`).
-/// σ-precise implies coarse, so one walk decides either mode.
+/// `sigma` selects the per-pair verdict via the shared
+/// [`binding_pair_covers`], exactly as in the entry-vs-entry twin
+/// [`entries_cover`] (this function's σ mode is NEW in WI-821 — it never had
+/// a standalone σ twin): `None` keeps the coarse wildcard cover; `Some(ctx)`
+/// is the σ-precise GATE a scope entry must pass when the resolution serves
+/// a call-site dict build (`ResolutionScope.sigma`). σ-precise implies
+/// coarse, so one walk decides either mode.
 fn requires_entry_covers_goal(
     kb: &mut KnowledgeBase,
     entry: &RequiresEntry,
@@ -16189,22 +16231,8 @@ fn requires_entry_covers_goal(
             Some(v) => v,
             None => return false,
         };
-        match sigma {
-            Some(ctx) => {
-                if !sigma_pair_precise(kb, ctx, *e_val, g_val) {
-                    return false;
-                }
-            }
-            None => {
-                if is_type_param_value(kb, *e_val) || is_type_param_value(kb, g_val) {
-                    continue;
-                }
-                if !dispatch_values_match(kb, g_val, *e_val)
-                    && !dispatch_values_match(kb, *e_val, g_val)
-                {
-                    return false;
-                }
-            }
+        if !binding_pair_covers(kb, sigma, *e_val, g_val) {
+            return false;
         }
     }
     true
