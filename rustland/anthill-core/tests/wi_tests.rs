@@ -789,3 +789,6 @@ mod wi814_lambda_view_test;
 
 #[path = "include/wi819_annotation_channel_test.rs"]
 mod wi819_annotation_channel_test;
+
+#[path = "include/wi818_executable_backing_test.rs"]
+mod wi818_executable_backing_test;

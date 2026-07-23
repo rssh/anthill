@@ -1625,13 +1625,15 @@ impl Interpreter {
         // Resolves an impl the *operation interpreter* can run: a carrier-
         // defined body, or a builtin-backed declaration (e.g. the body-less
         // `LogicalStream.splitFirst`, registered as a builtin). A spec op whose
-        // only definition is equational rules (`Stream.head`, given by `rule
-        // head(?s) = … :- splitFirst(?s) = …`) is evaluated by the SLD resolver,
-        // not here — the interpreter has no equational-rewrite fallback. Such an
-        // op has no own `sort_ops` entry, so the inherited entry points back at
-        // the body-less spec op (`impl_target == target`); the guard below skips
-        // it and it falls through to `UnknownOperation`, exactly as before this
-        // change.
+        // only definition is law rules is evaluated by the SLD resolver, not
+        // here — the interpreter has no equational-rewrite fallback.
+        // (`Stream.head` was the example until WI-818 gave it a default body;
+        // the shape now arises only in a KB the load-time backing check did
+        // not cover.) Such an op has no own `sort_ops` entry, so the inherited
+        // entry points back at the body-less spec op (`impl_target ==
+        // target`); the guard below skips it and it falls through to the
+        // WI-818 classifier — `OperationBodyMissing` for a declared op,
+        // `UnknownOperation` otherwise.
         if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values) {
             if impl_target != target {
                 // WI-455: same as the carrier-override arm above — the ring must
@@ -1662,9 +1664,13 @@ impl Interpreter {
             return self.prove_rule_predicate_value(pred, &arg_values).map(StepOutcome::Deliver);
         }
 
-        Err(EvalError::UnknownOperation {
-            name: self.kb.resolve_sym(target).to_string(),
-        })
+        // WI-818: a DECLARED op reaching this fall-through has a signature but
+        // no executable backing (no body, no builtin, no resolvable impl) —
+        // e.g. a spec op dispatched through `requires` in a KB whose provider
+        // set the load-time backing check never covered. Classified by the
+        // shared helper so this path and the host-entry direct path report the
+        // SAME verdict for the same target.
+        Err(self.unrunnable_target_error(target))
     }
 
     /// WI-275: adapt the arguments of an eta'd operation reference (a

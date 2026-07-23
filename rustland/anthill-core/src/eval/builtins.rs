@@ -3428,7 +3428,20 @@ effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "epri
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
 effect_dispatcher!(modify_get, "anthill.prelude.ModifyRuntime.get", "get", "anthill.prelude.Modify");
 effect_dispatcher!(modify_set, "anthill.prelude.ModifyRuntime.set", "set", "anthill.prelude.Modify");
-effect_dispatcher!(error_raise, "anthill.prelude.Error.raise", "raise", "anthill.prelude.Error");
+
+// `Error.raise` deliberately does NOT use the generic dispatcher. An unhandled
+// Console/Modify effect is a missing-capability `Internal` fault, but an
+// unhandled `Error` DEFAULTS to Throw — [`Interpreter::raise_error`]'s
+// no-handler arm is `Raised { payload }` (WI-467: the payload is never lost),
+// the same channel a native builtin's declared `effects Error` takes. The
+// generic dispatcher's no-handler `Internal` became reachable from surface
+// code the moment `Stream.head`'s default body raised (WI-818).
+fn error_raise(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [payload] = args else {
+        return Err(EvalError::ArityMismatch { op: "Error.raise", expected: 1, got: args.len() });
+    };
+    Err(interp.raise_error(payload.clone()))
+}
 
 // ── Fact monotonicity guard (proposal 053) ─────────────────────
 //

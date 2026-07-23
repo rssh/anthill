@@ -5,7 +5,8 @@
 --
 -- Satisfies Stream — head, tail, splitFirst, takeN, collect, isEmpty
 -- are inherited via fact Stream[T]. LogicalStream provides splitFirst
--- as the primitive; the rest derive from Stream's rules.
+-- as the primitive; the rest run through Stream's default bodies over it
+-- (WI-818 — laws alone are SLD-world specification, not evaluable backing).
 --
 -- Pending arrow sorts (proposal 002): flatMap, map, filter, fairFlatMap, ifte
 --
@@ -27,7 +28,7 @@ sort anthill.prelude.LogicalStream
   -- Stream operations (head, tail, splitFirst, takeN, collect, isEmpty)
   -- are inherited — not redeclared here.
   -- LogicalStream must provide splitFirst (Stream's primitive);
-  -- head, tail, isEmpty derive from Stream's rules.
+  -- head, tail, isEmpty run through Stream's default bodies over it (WI-818).
   -- WI-714: binds Stream.E = LogicalStream.E (not a bare `fact Stream[T]`), so
   -- LogicalStream.splitFirst's `effects s.E` REFINES Stream.splitFirst's `effects
   -- s.E` (same row) instead of widening a decoupled fresh row — and so the row

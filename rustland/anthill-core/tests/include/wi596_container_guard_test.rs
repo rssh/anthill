@@ -54,6 +54,13 @@ namespace test.wi596
     entity ibag
     provides Bag[T = Int64]
     operation insert(s: IntBag, x: Int64) -> IntBag = s
+    -- WI-818: executable backing for the law-only spec ops. The LAWS stay on
+    -- `Bag` (they are what these tests exercise, keyed on the SPEC-headed
+    -- terms); the bodies live here so the provision passes the backing check
+    -- without adding a second rewrite route on the spec ops themselves.
+    operation peek(s: IntBag) -> Bool = true
+    operation holds(x: Int64, s: IntBag) -> Bool = true
+    operation member(x: Int64, s: IntBag) -> Bool = true
   end
 
   sort Plain

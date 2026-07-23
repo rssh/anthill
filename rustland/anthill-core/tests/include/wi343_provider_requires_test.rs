@@ -48,14 +48,12 @@ fn provider_missing_required_subspec_errors() {
         namespace wi343.missing
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int64
-            rule tag(?x) = 0
+            operation tag(x: T) -> Int64 = 0
           end
           sort Comparable
             sort T = ?
             requires Nameable[T = T]
-            operation pick(a: T, b: T) -> T
-            rule pick(?a, ?b) = ?a
+            operation pick(a: T, b: T) -> T = a
           end
           sort Widget
             entity widget(id: Int64)
@@ -83,14 +81,12 @@ fn provider_with_required_subspec_loads() {
         namespace wi343.complete
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int64
-            rule tag(?x) = 0
+            operation tag(x: T) -> Int64 = 0
           end
           sort Comparable
             sort T = ?
             requires Nameable[T = T]
-            operation pick(a: T, b: T) -> T
-            rule pick(?a, ?b) = ?a
+            operation pick(a: T, b: T) -> T = a
           end
           sort Widget
             entity widget(id: Int64)
@@ -116,8 +112,7 @@ fn provider_of_requireless_spec_loads() {
         namespace wi343.requireless
           sort Tagged
             sort T = ?
-            operation label(x: T) -> Int64
-            rule label(?x) = 0
+            operation label(x: T) -> Int64 = 0
           end
           sort Gizmo
             entity gizmo(id: Int64)
@@ -147,15 +142,13 @@ fn provider_satisfies_subspec_at_wrong_bindings_errors() {
         namespace wi356.wrongbind
           sort Ring
             sort F = ?
-            operation rtag(x: F) -> Int64
-            rule rtag(?x) = 0
+            operation rtag(x: F) -> Int64 = 0
           end
           sort VS
             sort V = ?
             sort F = ?
             requires Ring[F = F]
-            operation vtag(v: V) -> Int64
-            rule vtag(?v) = 0
+            operation vtag(v: V) -> Int64 = 0
           end
           sort NonRing
             entity nonring(id: Int64)
@@ -190,20 +183,17 @@ fn provider_transitive_requires_gap_errors() {
         namespace wi356.transitive
           sort B
             sort T = ?
-            operation btag(x: T) -> Int64
-            rule btag(?x) = 0
+            operation btag(x: T) -> Int64 = 0
           end
           sort A
             sort T = ?
             requires B[T = T]
-            operation atag(x: T) -> Int64
-            rule atag(?x) = 0
+            operation atag(x: T) -> Int64 = 0
           end
           sort Spec
             sort T = ?
             requires A[T = T]
-            operation stag(x: T) -> Int64
-            rule stag(?x) = 0
+            operation stag(x: T) -> Int64 = 0
           end
           sort Thing
             entity thing(id: Int64)
@@ -237,15 +227,13 @@ fn shorthand_requires_binding_precise_wrong_field_errors() {
         namespace wi359.shorthand
           sort Ring
             sort T = ?
-            operation rtag(x: T) -> Int64
-            rule rtag(?x) = 0
+            operation rtag(x: T) -> Int64 = 0
           end
           sort VS
             sort V = ?
             sort F = ?
             requires Ring[F]
-            operation vtag(v: V) -> Int64
-            rule vtag(?v) = 0
+            operation vtag(v: V) -> Int64 = 0
           end
           sort NonRing
             entity nonring(id: Int64)
@@ -276,15 +264,13 @@ fn shorthand_requires_binding_precise_right_field_loads() {
         namespace wi359.shorthand_ok
           sort Ring
             sort T = ?
-            operation rtag(x: T) -> Int64
-            rule rtag(?x) = 0
+            operation rtag(x: T) -> Int64 = 0
           end
           sort VS
             sort V = ?
             sort F = ?
             requires Ring[F]
-            operation vtag(v: V) -> Int64
-            rule vtag(?v) = 0
+            operation vtag(v: V) -> Int64 = 0
           end
           sort Carrier
             entity carrier(id: Int64)

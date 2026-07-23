@@ -121,10 +121,11 @@ namespace anthill.prelude
   -- `isEmpty(s)`. A nullary marker — the stream is empty by definition, so there
   -- is nothing to carry (cf. `DivisionByZero`). This sort is the TYPE-level
   -- witness the typer threads through callers' rows. NOTE: unlike `DivisionByZero`
-  -- (a native builtin the evaluator raises as `EvalError::DivisionByZero`), `head`
-  -- is rule-defined with NO eval-side raise yet — surfacing head-of-empty as a
-  -- dedicated `EvalError` is a WI-567 follow-on (today an empty `head` has no
-  -- matching rule).
+  -- (a native builtin the evaluator raises as `EvalError::DivisionByZero`), the
+  -- eval-side raise is ordinary surface code (WI-818, delivering the WI-567
+  -- follow-on): `Stream.head`/`tail`'s default bodies — and `List.head`'s
+  -- override — `Error.raise(empty_stream)` on the empty case, so unhandled it
+  -- surfaces as `EvalError::Raised` carrying this payload.
   sort EmptyStream
     entity empty_stream
   end

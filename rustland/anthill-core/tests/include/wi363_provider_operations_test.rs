@@ -2,11 +2,14 @@
 //!
 //! The op-level twin of WI-343 (`check_provider_requires`). When a carrier
 //! provides a spec (`fact Spec[X]`), every *operation* the spec declares must
-//! be backed for `X`: a spec-level default (an `operation … = …` body or a
-//! derivation rule on `Spec`), a registered builtin, or an op `X` supplies
-//! itself. A declared op with none of these makes the satisfaction fact unsound
-//! — a call resolves to nothing at runtime — so the loader rejects it with a
-//! hard `UnbackedProviderOperation` error.
+//! be backed for `X` by something EXECUTABLE (WI-818): a spec-level default
+//! BODY (`operation … = …`), a registered builtin, or an op `X` supplies
+//! itself. A derivation RULE on `Spec` no longer counts — a rule is a LAW the
+//! SLD world resolves, not a body the evaluator can dispatch to, so counting
+//! it (as this file pinned before WI-818) certified programs that loaded
+//! clean and then died at run time. A declared op with no executable backing
+//! makes the satisfaction fact unsound, so the loader rejects it with a hard
+//! `UnbackedProviderOperation` error.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver, LoadError};
@@ -70,13 +73,18 @@ fn provider_missing_op_backing_errors() {
         "expected the diagnostic to name Carrier, Spec, and needed; got:\n{text}");
 }
 
-// ── A spec-level default rule backs the op for every provider ──────────
+// ── A spec-level default RULE is a law, not backing (WI-818 reversal) ───
 
 #[test]
-fn provider_with_spec_default_rule_loads() {
-    // `Spec.needed` has a derivation rule on `Spec` (`rule needed(?x) = 0`),
-    // so providing `Spec` is complete without the carrier redefining it. Pins
-    // that the check recognizes spec-level equational defaults.
+fn provider_with_spec_default_rule_is_rejected() {
+    // REVERSED by WI-818 — this test previously pinned the opposite. `rule
+    // needed(?x) = 0` on `Spec` is a LAW: the SLD resolver can use it, but the
+    // evaluator cannot (a rule is not a body), so counting it as backing let
+    // exactly this program load clean and then die at run time
+    // (`UnknownOperation` through the `requires` path, `OperationBodyMissing`
+    // on a direct call). The rejection message is (A)'s from the WI-818
+    // measurement: its "no default on <spec>" condition now means no
+    // EXECUTABLE default.
     let src = r#"
         namespace wi363.specdefault
           sort Spec
@@ -91,9 +99,12 @@ fn provider_with_spec_default_rule_loads() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(unbacked(&errs).is_empty(),
-        "Spec.needed has a spec-level default rule; provider should load clean; got:\n{}",
-        errors_text(&errs));
+    let text = errors_text(&errs);
+    assert!(!unbacked(&errs).is_empty(),
+        "a rule-only spec default must NOT back Spec.needed (WI-818: a rule is \
+         not executable backing); the load passed clean instead");
+    assert!(text.contains("Carrier") && text.contains("needed"),
+        "expected the diagnostic to name Carrier and needed; got:\n{text}");
 }
 
 // ── A carrier supplying its own op backs it (carrier-refined) ──────────

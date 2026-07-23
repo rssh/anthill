@@ -35,9 +35,12 @@ fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
 /// abstract `E` (the self-receiver path pinned `FiniteStream` as a concrete
 /// carrier and demanded a `requires Stream[…]`); WI-601 defers instead.
 ///
-/// - `g_headOption` / `g_tail`: `headOption` / `tail` are law-only (no body, no
-///   equational-rewrite fallback) — the pure typecheck-defer case the ticket
-///   names. Loading them here IS the assertion.
+/// - `g_headOption` / `g_tail`: at WI-601 time `headOption` / `tail` were
+///   law-only (no body); WI-818 gave them default bodies over `splitFirst`.
+///   The load-time deferral these consumers pin is unchanged — the receiver is
+///   an abstract `FiniteStream` either way. Loading them IS the assertion
+///   (`g_tail` now also declares the guarded `Error[EmptyStream]` that
+///   WI-818's `tail` row carries).
 /// - `g_split`: the QUALIFIED `Stream.splitFirst` (`spec_sort = Stream`, forced
 ///   over the `FiniteStream` override) — the SAME deferral, but `splitFirst` has
 ///   a concrete body on the runtime carrier, so it also EVALS: `ev_head` passes a
@@ -51,7 +54,7 @@ fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
 fn bare_stream_op_on_abstract_finite_stream_defers_and_evals() {
     let src = r#"
 namespace test.wi601
-  import anthill.prelude.{FiniteStream, Stream, Option, Pair, List, Int64}
+  import anthill.prelude.{FiniteStream, Stream, Option, Pair, List, Int64, EmptyStream}
   import anthill.prelude.Stream.{headOption, tail}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
@@ -62,7 +65,11 @@ namespace test.wi601
   -- provides Stream). Both defer to value-directed dispatch instead of erroring.
   operation g_headOption[T](fs: FiniteStream[T = T]) -> Option[T] effects fs.E =
     headOption(fs)
-  operation g_tail[T](fs: FiniteStream[T = T]) -> Stream[T = T, E = fs.E] effects fs.E =
+  -- WI-818: `tail` now declares the guarded `Error[EmptyStream]` (tail of an
+  -- empty stream is partial), and the guard is not statically refutable on an
+  -- abstract receiver — so this generic consumer declares the label.
+  operation g_tail[T](fs: FiniteStream[T = T]) -> Stream[T = T, E = fs.E]
+    effects { fs.E, Error[EmptyStream] } =
     tail(fs)
 
   -- The evaluable witness: the QUALIFIED bare-Stream `splitFirst` (spec_sort =

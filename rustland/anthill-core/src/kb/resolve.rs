@@ -5692,7 +5692,8 @@ impl KnowledgeBase {
     /// Returns `Some(value)` only when the interpreter DECIDED a concrete value.
     /// Note the reflect builtins (`anthill.reflect.*`) live in the downstream
     /// `anthill-stl` crate and are NOT registered here, so a body dispatching to
-    /// one hits `UnknownOperation` → residualize (a benign capability gap).
+    /// one hits the dispatch fall-through — `OperationBodyMissing` for these
+    /// declared ops since WI-818 — → residualize (a benign capability gap).
     fn bridge_op_to_eval(
         &mut self,
         op: Symbol,

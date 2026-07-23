@@ -179,8 +179,7 @@ namespace anthill.test.wi622specdot
   import anthill.prelude.{Int64}
   sort Comparable
     sort T = ?
-    operation pick(a: T, b: T) -> T
-    rule pick(?a, ?b) = ?a
+    operation pick(a: T, b: T) -> T = a
   end
   sort Widget
     entity widget(id: Int64)

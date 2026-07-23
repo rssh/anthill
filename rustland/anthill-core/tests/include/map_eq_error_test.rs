@@ -270,10 +270,11 @@ fn set_eq_compound_operand_loads_clean() {
 // own `eq` via an equational `Carrier.eq(?a,?b) = rhs` that WI-139 unindexes — is
 // NOT separately unit-tested here: `is_equational_head` (WI-627) fires only for the
 // CANONICAL `PartialEq.eq` head, so the trigger requires an esoteric namespace-level
-// equational rule over a carrier's own `eq`, not a realistic user shape. The leg's
-// correctness rides on `op_backed_one` parity with `op_backed` (whose `eq_defined`
-// leg the provider-operation suite exercises) and on the Map cases above staying a
-// load error (Map's `eq` is NOT in `eq_defined`, so the leg does not unmask it).
+// equational rule over a carrier's own `eq`, not a realistic user shape. Since
+// WI-818, `eq_override_backed` is the leg's ONLY reader (`op_backed` counts
+// body│builtin and nothing else — the old parity anchor is gone), so its
+// correctness rides solely on the Map cases above staying a load error
+// (Map's `eq` is NOT in `eq_defined`, so the leg does not unmask it).
 
 #[test]
 fn abstract_spec_redeclaring_eq_loads_clean() {

@@ -194,6 +194,28 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
     None
 }
 
+/// WI-818 (review): does `op_sym` have a DECLARED signature — an `OperationInfo`
+/// fact / cached record — without materializing the full [`OpInfoRecord`]
+/// (whose construction clones every per-field Vec)? The dispatch fall-through
+/// needs only PRESENCE to pick its error variant, and it sits on a path the
+/// resolver bridge probes speculatively per candidate and residualizes, where
+/// a full record build per probe is pure waste. Same two tiers as
+/// [`lookup_operation_info`]: the WI-656 record fast path, then the
+/// pre-`build_op_signatures` fact scan.
+pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    if let Some(rec) = kb.op_record(op_sym) {
+        if rec.signature.is_some() {
+            return true;
+        }
+    }
+    let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
+        return false;
+    };
+    kb.rules_by_functor(op_info_sym)
+        .into_iter()
+        .any(|rid| kb.is_fact(rid) && head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
+}
+
 /// WI-656 — decode the body-independent [`OpSignature`] from an `OperationInfo`
 /// fact head. The SINGLE field-decode, shared by [`lookup_operation_info`]'s
 /// fallback and [`build_op_signatures`], so a cached signature and a scanned one

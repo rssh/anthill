@@ -6,6 +6,7 @@
 sort anthill.prelude.Stream
   import anthill.prelude.{Option, Pair, List, Bool, Int64}
   import anthill.prelude.Option.{some, none}
+  import anthill.prelude.EmptyStream.{empty_stream}
   import anthill.prelude.Pair.{pair, fst, snd}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.PartialOrd.{gt}
@@ -27,20 +28,34 @@ sort anthill.prelude.Stream
   -- is added separately and discharges only where a concrete carrier makes
   -- `isEmpty` foldable.
   operation headOption(s: Stream) -> Option[s.T]
-    effects s.E
+    effects s.E =
+    match splitFirst(s)
+      case none() -> none
+      case some(pair(h, _)) -> some(h)
   -- WI-567: the ERGONOMIC form — returns the element directly. PARTIAL: it incurs
   -- `Error[EmptyStream]` GUARDED by `isEmpty(s)` (proposal 048), so a call
   -- discharges to PURE exactly where a concrete carrier makes `isEmpty` statically
   -- refutable (`head(cons(h,t))` on a `List`, or a call under `if not(isEmpty(s))`);
   -- on an abstract/lazy stream the guard stays present and the caller must handle
-  -- it. Body-less like `div` (WI-066): the happy path derives from `splitFirst`
-  -- (the law below); the empty case has no rule — it is the declared (TYPE-level)
-  -- `Error[EmptyStream]`. (A value-level `raise` in the body was rejected — it
-  -- needs `Nothing <: s.T`. The eval-side raise of an empty `head` is a WI-567
-  -- follow-on, NOT yet wired: today an empty `head` simply has no matching rule.)
-  operation head(s: Stream) -> s.T effects { s.E, Error[EmptyStream] :- isEmpty(s) }
+  -- it. WI-818: the default body is the EVAL-side semantics — the WI-567
+  -- follow-on ("no eval-side raise yet") lands as the `none` arm's raise,
+  -- typed by `Nothing <: s.T` (bottom) and admitted by the declared guarded
+  -- row conservatively CONTAINING its label. The law below stays the
+  -- SPECIFICATION the body is read against; a law alone is not backing
+  -- (only a body or a builtin is — WI-818's rule).
+  operation head(s: Stream) -> s.T effects { s.E, Error[EmptyStream] :- isEmpty(s) } =
+    match splitFirst(s)
+      case none() -> Error.raise(empty_stream)
+      case some(pair(h, _)) -> h
+  -- WI-818: `tail` of an empty stream is as partial as `head` of one — the row
+  -- now says so (guarded, so it discharges wherever `isEmpty` statically
+  -- refutes), where it used to promise a totality the some-case-only law never
+  -- delivered.
   operation tail(s: Stream) -> Stream[T = s.T, E = s.E]
-    effects s.E
+    effects { s.E, Error[EmptyStream] :- isEmpty(s) } =
+    match splitFirst(s)
+      case none() -> Error.raise(empty_stream)
+      case some(pair(_, rest)) -> rest
   -- Default definitions over the primitive `splitFirst` (WI-362, enabled by
   -- WI-365 abstract spec-op self-typing). A carrier supplies only `splitFirst`;
   -- these derive `takeN` once for every `fact Stream[X]` provider. (The eager
@@ -93,11 +108,13 @@ sort anthill.prelude.Stream
   provides Iterable[C = Stream, Element = T, E = E]
   operation iterator(s: Stream) -> Stream = s
 
-  -- Laws (derived from splitFirst)
+  -- Laws (derived from splitFirst). WI-818: laws are SPECIFICATION, not
+  -- backing — the eval-side semantics (including the empty-case raises) live
+  -- in the default bodies above; only a body or a builtin backs an operation.
   rule headOption(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
   rule headOption(?s) = none :- splitFirst(?s) = none
-  -- WI-567: `head`'s happy path. The empty case has no rule — it is the declared
-  -- (TYPE-level) `Error[EmptyStream]`; the eval-side raise is a follow-on.
+  -- WI-567: `head`'s happy path. The empty case has no law — at the TYPE level
+  -- it is the declared `Error[EmptyStream]`; at EVAL it is the body's raise.
   rule head(?s) = fst(?p) :- splitFirst(?s) = some(?p)
   rule tail(?s) = snd(?p) :- splitFirst(?s) = some(?p)
   rule isEmpty(?s) = true :- splitFirst(?s) = none

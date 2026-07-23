@@ -591,11 +591,16 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // spec with ≥2 carriers, so the carrier discriminates (WI-350): supplying
     // the receiver's carrier (`LogicalStream`) picks that impl uniquely at
     // T = Int64, while the carrier-less compat path is genuinely Ambiguous.
+    //
+    // WI-818: the probe op is `splitFirst` — Stream's still-ABSTRACT primitive.
+    // It was `head`, but `head` now carries a default body, and a DEFAULTED
+    // spec op is directly runnable rather than a dispatch placeholder, so
+    // `lookup_spec_op_dispatch` correctly declines it (WI-444).
     let mut kb = load_with("");
-    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
-        .expect("Stream.head registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, head_sym)
-        .expect("Stream.head is a spec op");
+    let split_sym = kb.try_resolve_symbol("anthill.prelude.Stream.splitFirst")
+        .expect("Stream.splitFirst registered");
+    let spec_sort = lookup_spec_op_dispatch(&kb, split_sym)
+        .expect("Stream.splitFirst is a body-less spec op");
     let logical_stream = kb.try_resolve_symbol("anthill.prelude.LogicalStream")
         .expect("LogicalStream registered");
     let subst = subst_with_param(
@@ -604,7 +609,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         "T",
         "anthill.prelude.Int64",
     );
-    let op_short = kb.intern("head");
+    let op_short = kb.intern("splitFirst");
 
     // Carrier = LogicalStream: the universal `fact Stream[T]` candidate
     // matches the per-call T = Int64 and the carrier filter keeps only it.
@@ -612,14 +617,14 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         &mut kb, &subst, spec_sort, op_short, &[], Some(logical_stream),
     );
     assert!(matches!(with_carrier, DispatchOutcome::Unique(_)),
-        "expected Unique dispatch for Stream.head at carrier=LogicalStream, T=Int64; \
+        "expected Unique dispatch for Stream.splitFirst at carrier=LogicalStream, T=Int64; \
          got {with_carrier:?}");
 
     // Carrier-less compat path: ≥2 Stream impls both match the universal
     // binding, so dispatch is Ambiguous without a carrier to discriminate.
     let no_carrier = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert_eq!(no_carrier, DispatchOutcome::Ambiguous,
-        "expected Ambiguous for carrier-less Stream.head with ≥2 impls; got {no_carrier:?}");
+        "expected Ambiguous for carrier-less Stream.splitFirst with ≥2 impls; got {no_carrier:?}");
 }
 
 #[test]

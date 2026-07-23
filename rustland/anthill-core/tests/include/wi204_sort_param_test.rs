@@ -179,28 +179,45 @@ end
     let handle = interp.alloc_cell(wis_value);
     let cell_value = Value::Cell(handle);
 
-    let result = interp.call(
+    // WI-818: supply a REAL impl-rooted dictionary for ConcreteCaller's
+    // `requires WorkItemStore[WIS]` chain. Plain `interp.call` seeds a
+    // self-referential placeholder, which `call`'s own doc says cannot reach a
+    // cross-sort impl — the dispatch fell through and errored. The old assert
+    // never saw that: it compared the DEBUG rendering against DISPLAY strings
+    // (`UnknownOperation { name: "lookup" }` does not contain
+    // "unknown operation: lookup"), so the test passed vacuously until the
+    // fall-through's variant changed to `OperationBodyMissing` (whose name the
+    // assert did catch).
+    let fbws = interp
+        .kb_mut()
+        .try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore")
+        .expect("FileBasedWorkitemStore is loaded");
+    let dict = interp.alloc_requirement(fbws, smallvec::SmallVec::new());
+    let result = interp.call_with_requirements(
         "test.wi204_form_c_runtime.ConcreteCaller.call_drive",
         &[cell_value, Value::Str("WI-001".to_string())],
+        smallvec::smallvec![dict],
     );
     println!("[form_c_runtime] result: {result:?}");
-    // We expect either Ok(Value::Entity with functor `none`) or an
-    // Err whose message proves the call REACHED inside the lookup
-    // body (not 'unknown operation: lookup' at the top).
+    // MEASURED with the real dictionary: dispatch reaches
+    // FileBasedWorkitemStore.lookup, retrieve no-ops on the empty store, and
+    // the call returns the empty Option. Pin that outcome positively — the
+    // previous deny-list assert ("not UnknownOperation / not
+    // OperationBodyMissing") still passed on any OTHER pre-dispatch failure
+    // (a requirement-slot Internal, a DeferToRequirement projection error),
+    // which is the vacuous-pass class this test already fell into once.
     match result {
-        Ok(v) => {
-            println!("[form_c_runtime] OK value: {v:?}");
-        }
-        Err(e) => {
-            let msg = format!("{e:?}");
-            println!("[form_c_runtime] err: {msg}");
+        Ok(Value::Entity { functor, ref pos, ref named }) => {
+            let qn = interp.kb().qualified_name_of(functor);
             assert!(
-                !msg.contains("unknown operation: lookup")
-                    && !msg.contains("unknown operation: drive")
-                    && !msg.contains("OperationBodyMissing"),
-                "expected dispatch to reach an impl body; got {msg}"
+                qn == "anthill.prelude.Option.none" && pos.is_empty() && named.is_empty(),
+                "expected the empty Option from a dispatched lookup on an empty store; got {qn}"
             );
         }
+        other => panic!(
+            "expected Ok(none()) — dispatch reaching FileBasedWorkitemStore.lookup \
+             on an empty store; got {other:?}"
+        ),
     }
 }
 

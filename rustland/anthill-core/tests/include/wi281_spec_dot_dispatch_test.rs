@@ -56,8 +56,7 @@ fn dot_method_dispatches_via_provided_spec() {
         namespace wi281.provided
           sort Comparable
             sort T = ?
-            operation pick(a: T, b: T) -> T
-            rule pick(?a, ?b) = ?a
+            operation pick(a: T, b: T) -> T = a
           end
           sort Widget
             entity widget(id: Int64)
@@ -86,14 +85,12 @@ fn dot_spec_method_threads_requires() {
         namespace wi281.requires
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int64
-            rule tag(?x) = 0
+            operation tag(x: T) -> Int64 = 0
           end
           sort Comparable
             sort T = ?
             requires Nameable[T = T]
-            operation pick(a: T, b: T) -> T
-            rule pick(?a, ?b) = ?a
+            operation pick(a: T, b: T) -> T = a
           end
           sort Widget
             entity widget(id: Int64)
@@ -121,8 +118,7 @@ fn dot_no_provided_spec_still_reports_no_match() {
         namespace wi281.nomatch
           sort Comparable
             sort T = ?
-            operation pick(a: T, b: T) -> T
-            rule pick(?a, ?b) = ?a
+            operation pick(a: T, b: T) -> T = a
           end
           sort Widget
             entity widget(id: Int64)
@@ -197,14 +193,12 @@ fn dot_spec_method_unsatisfied_requires_errors_wi343() {
         namespace wi281.unsat
           sort Nameable
             sort T = ?
-            operation tag(x: T) -> Int64
-            rule tag(?x) = 0
+            operation tag(x: T) -> Int64 = 0
           end
           sort Comparable
             sort T = ?
             requires Nameable[T = T]
-            operation pick(a: T, b: T) -> T
-            rule pick(?a, ?b) = ?a
+            operation pick(a: T, b: T) -> T = a
           end
           sort Gadget
             entity gadget(id: Int64)

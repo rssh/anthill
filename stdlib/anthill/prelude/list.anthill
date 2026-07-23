@@ -10,6 +10,8 @@ enum anthill.prelude.List
   import anthill.prelude.PartialEq.{eq}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
+  import anthill.prelude.Stream.{isEmpty}
+  import anthill.prelude.EmptyStream.{empty_stream}
   import anthill.prelude.Numeric.{add, sub}
   import anthill.prelude.PartialOrd.{gt}
 
@@ -146,8 +148,9 @@ enum anthill.prelude.List
   -- provides Stream (WI-344 provider admissibility). Stream's primitive is
   -- `splitFirst` (distinct from Iteration's `split`: it returns a `Pair`,
   -- and its tail is itself a Stream); List provides it below over cons/nil,
-  -- so head / tail / isEmpty derive from it on a List (takeN / collect are
-  -- declared on Stream but have no derivation rule yet).
+  -- so Stream's default bodies (isEmpty / takeN / find, and since WI-818
+  -- head / headOption / tail) all run on a List — with List's own
+  -- `head`/`headOption` below overriding two of them (WI-444).
   --
   -- WI-387: the provision WRITES the observation effect `E = {}` (a pure
   -- carrier — `splitFirst` over cons/nil is pure), so the effect row is carried
@@ -207,6 +210,25 @@ enum anthill.prelude.List
     match xs
       case nil() -> none
       case cons(h, t) -> some(pair(h, t))
+
+  -- WI-818: List's OWN `head`/`headOption`, overriding the inherited Stream
+  -- defaults (a carrier's own member wins over a defaulted spec op, WI-444).
+  -- `headOption` is the direct cons read; `head` derives from it (one `some`
+  -- box, cheaper than the inherited default's `splitFirst` pair). `head` is
+  -- NOT a direct cons read because a bare pattern binder in RETURN position
+  -- does not thread the field's `T` to `xs.T` (`expected xs.T, got ?_`) — the
+  -- same wall as `nth`'s cons-tail note below; a CONSTRUCTOR-wrapped binder
+  -- (`some(h)`) does thread, which is what `headOption` relies on. `tail` is
+  -- deliberately NOT overridden — the via-`splitFirst` spelling would be the
+  -- inherited default verbatim.
+  operation head(xs: List) -> xs.T effects { Error[EmptyStream] :- isEmpty(xs) } =
+    match headOption(xs)
+      case none() -> Error.raise(empty_stream)
+      case some(h) -> h
+  operation headOption(xs: List) -> Option[xs.T] =
+    match xs
+      case nil() -> none
+      case cons(h, _) -> some(h)
 
   -- List satisfies IndexedSeq (no effects). Cost is O(N) per `nth` —
   -- callers that need O(1) should depend on a future RandomAccess

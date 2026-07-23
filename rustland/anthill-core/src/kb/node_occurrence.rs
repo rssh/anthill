@@ -2531,11 +2531,11 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         Some(Expr::Ref(s)) => kb.alloc(Term::Ref(*s)),
         Some(Expr::Ident(s)) => kb.alloc(Term::Ident(*s)),
         Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-            occ_build_fn(kb, *functor, pos_args, named_args)
+            return occ_build_fn(kb, *functor, pos_args, named_args);
         }
         Some(Expr::Constructor { name, pos_args, named_args, .. })
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
-            occ_build_fn(kb, *name, pos_args, named_args)
+            return occ_build_fn(kb, *name, pos_args, named_args);
         }
         // WI-302 (WI-390 lossless lowering): a value FIELD-PATH (`c.contents`,
         // the carried value of a compound `denoted`) lowers to its `dot_apply`
@@ -2549,7 +2549,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         Some(Expr::DotApply { receiver, name, pos_args, named_args })
             if pos_args.is_empty() && named_args.is_empty() =>
         {
-            let recv = occurrence_to_term(kb, receiver);
+            let recv = try_occurrence_to_term(kb, receiver)?;
             let dot_apply = kb.resolve_symbol("anthill.reflect.Expr.dot_apply");
             let name_ref = kb.alloc(Term::Ref(*name));
             let args_nil = build_list_termid(kb, &[]);
@@ -2600,7 +2600,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // of asserting to ⊥. Pure data, legitimately hash-consable.
         Some(Expr::ListLit(elems)) => {
             let functor = kb.resolve_symbol("anthill.reflect.ListLiteral");
-            occ_build_fn(kb, functor, elems, &[])
+            return occ_build_fn(kb, functor, elems, &[]);
         }
         // WI-559: a set literal `{…}` reifies to its `SetLiteral(…)` term twin
         // (elements in `pos_args`, like `ListLiteral`) — the inverse of the
@@ -2609,7 +2609,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // hit `occurrence_to_term`'s debug_assert / silent ⊥.
         Some(Expr::SetLit(elems)) => {
             let functor = kb.resolve_symbol("anthill.reflect.SetLiteral");
-            occ_build_fn(kb, functor, elems, &[])
+            return occ_build_fn(kb, functor, elems, &[]);
         }
         // WI-559: a tuple literal `(…)` reifies to its `TupleLiteral(…)` term
         // twin — elements ride in `named_args` (positional → `_1`/`_2` labels),
@@ -2617,7 +2617,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // motivation as `SetLit` above.
         Some(Expr::TupleLit { positional, named }) => {
             let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
-            occ_build_fn(kb, functor, positional, named)
+            return occ_build_fn(kb, functor, positional, named);
         }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.
@@ -2664,21 +2664,28 @@ pub fn build_occurrence_cons_list(
     list
 }
 
+/// `None` when any CHILD is a non-goal form — the try contract is RECURSIVE
+/// (WI-818 review). A guard σ maps a callee param to its whole argument
+/// expression, which may carry a lambda (`head(map(xs, lambda (x: …) -> …))`);
+/// converting children through the asserting [`occurrence_to_term`] tripped
+/// its debug_assert (release: silently reified the child to ⊥) instead of
+/// letting [`build_call_guard_sigma`] decline the arg and keep the guarded
+/// effect conservatively.
 fn occ_build_fn(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-) -> TermId {
+) -> Option<TermId> {
     let mut pos: smallvec::SmallVec<[TermId; 4]> = smallvec::SmallVec::new();
     for c in pos_args {
-        pos.push(occurrence_to_term(kb, c));
+        pos.push(try_occurrence_to_term(kb, c)?);
     }
     let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
     for (s, c) in named_args {
-        named.push((*s, occurrence_to_term(kb, c)));
+        named.push((*s, try_occurrence_to_term(kb, c)?));
     }
-    kb.alloc(Term::Fn { functor, pos_args: pos, named_args: named })
+    Some(kb.alloc(Term::Fn { functor, pos_args: pos, named_args: named }))
 }
 
 // ── WI-390: faithful Value/occurrence → Term lowering ───────────

@@ -14863,17 +14863,13 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
 
 /// WI-363: provider-side **operation** coverage — the op-level twin of
 /// [`check_provider_requires`]. For each `fact Spec[X]` (a `SortProvidesInfo`
-/// fact), every operation `Spec` declares must be *backed* for `X`: either a
-/// spec-level default on `Spec` (an `operation … = …` body, a derivation rule,
-/// or a registered builtin) OR an operation `X` itself supplies. An op with
-/// neither resolves to nothing at runtime, so the satisfaction fact is unsound
-/// — reported as a load-blocking [`LoadError::UnbackedProviderOperation`].
+/// fact), every operation `Spec` declares must be *backed* for `X` by something
+/// the EVALUATOR can dispatch to (WI-818): a runnable body or a builtin. An op
+/// with neither resolves to nothing at runtime, so the satisfaction fact is
+/// unsound — reported as a load-blocking
+/// [`LoadError::UnbackedProviderOperation`].
 ///
-/// Backing detection is deliberately *conservative* (it errs toward "backed").
-/// The goal is the egregious gap — an op with no implementation anywhere (e.g.
-/// `Stream.takeN` before WI-362, or a carrier that forgot the `splitFirst`
-/// primitive) — without false-positiving on the many legitimate shapes a
-/// definition takes:
+/// The accepted backing kinds:
 ///   - **host carriers** (`Int`/`Float`/… via `provides X language rust`): their
 ///     ops are backed by the host artifact (`Int.compare` is `i64`'s `Ord`), so
 ///     the whole provision is skipped — detected by an
@@ -14881,14 +14877,22 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
 ///     [`check_provider_requires`] skips `EffectsRuntime`.
 ///   - **spec/carrier op body**: a runnable `operation … = …` on `Spec` or `X`
 ///     (resolved via `sort_ops` + `op_has_runnable_body`).
-///   - **equational rule** `op(args) = rhs` (guarded or not): stored under the
-///     `eq` functor with `op` as the LHS head — covers `Stream.head/tail`,
-///     `Ordered.gt`, the spec laws, etc.
-///   - **relational rule** `op(args, result) :- body`: stored under `op`'s own
-///     functor — covers `anthill.geometry.vec_add` & friends, whose head functor
-///     is the *namespace*-level `vec_add`, distinct from the spec op
-///     `VectorSpace.vec_add` (so it's found by resolving `{X-namespace}.op`).
 ///   - **builtin**: an op mapped to a resolver builtin (`PartialEq.eq`, `Numeric.add`).
+///   - **instance-fact op binding** (WI-431, checked by the caller): a
+///     provision that BINDS the op (`fact Spec[X, op = boundOp]`) backs it with
+///     the bound operation.
+///
+/// A RULE does not back an operation (WI-818, reversing WI-363's original
+/// reading): an equational law (`rule op(args) = rhs`) or a relational clause
+/// (`op(args, r) :- body`) is SPECIFICATION the SLD world resolves against, not
+/// something the evaluator can run — counting them certified programs that
+/// loaded clean and then died at run time (`UnknownOperation`). See
+/// [`op_backed`].
+///
+/// SCOPE: only provisions whose carrier is CONCRETE (has constructors —
+/// `sorts_with_constructors`) are checked; an abstract/value-less carrier
+/// (`Set`, `Map`, namespace-level provision heads like geometry's `Vec3`) is
+/// skipped, since no runtime value can dispatch through it.
 pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -14910,10 +14914,6 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             }
         }
     }
-
-    // Op symbols that have an EQUATIONAL definition `op(args) = rhs` — the shared
-    // WI-652 helper (also read by the unbacked-eq guard).
-    let eq_defined = collect_eq_defined_ops(kb);
 
     // Every sort's own declared operations (one shared `SortInfo` scan).
     let own_ops: HashMap<Symbol, Vec<Symbol>> =
@@ -14950,13 +14950,11 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         if !concrete.contains(&p.carrier) { continue; }
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
         if host_targets.contains(&carrier_qn) { continue; }
-        let carrier_ns = carrier_qn.rsplit_once('.').map(|(ns, _)| ns.to_string());
         let Some(spec_ops) = own_ops.get(&p.spec) else { continue };
         for &spec_op in spec_ops {
             let op_short = kb.qualified_name_of(spec_op)
                 .rsplit('.').next().unwrap_or("").to_string();
-            if op_backed(kb, p.carrier, &carrier_qn, carrier_ns.as_deref(),
-                spec_op, &op_short, &eq_defined)
+            if op_backed(kb, p.carrier, &carrier_qn, spec_op, &op_short)
             {
                 continue;
             }
@@ -15265,8 +15263,9 @@ pub(crate) fn witness_op_for_carrier(
 /// equational rules from the functor index (they're cite-required), so a functor
 /// walk would miss every one. `is_equation` is likewise unusable — it rejects
 /// guarded equations (`rule head(?s) = … :- …`), which are real definitions.
-/// Shared by [`op_backed`] (provider-op coverage) and [`check_eq_override_backing`]
-/// (the unbacked-eq guard) so both read the SAME notion of "backed by an equation".
+/// Sole consumer: [`check_eq_override_backing`]'s [`eq_override_backed`] (its
+/// `eq=` leg) — WI-818 removed the other reader; [`op_backed`] no longer counts
+/// any rule shape as backing.
 fn collect_eq_defined_ops(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
     let mut eq_defined: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     for rid in kb.live_rule_ids() {
@@ -15283,90 +15282,104 @@ fn collect_eq_defined_ops(kb: &KnowledgeBase) -> std::collections::HashSet<Symbo
     eq_defined
 }
 
-/// WI-652 — which rule leg counts as backing when [`op_backed_one`] probes an op.
-enum RuleBacking {
-    /// ANY non-fact rule under the functor ([`op_backed`]'s relational-definition
-    /// leg — a rule `op(args, r) :- body`).
-    AnyNonFact,
-    /// Only a GENERAL catch-all eq clause (all-var positional head, per
-    /// [`rule_is_general_eq_clause`]) — so `Map.eq`'s mis-attributed compound
-    /// `get`-rewrite law does NOT mask the empty override.
-    GeneralEqClause,
-}
-
-/// WI-652 — is the single op symbol `op` backed? The shared core of [`op_backed`]
-/// (multi-candidate provider-op coverage) and [`carrier_has_unbacked_eq_override`]
-/// (single own-op eq guard), which differ only in which legs they admit:
-///   - `op_backed`:                        runnable body │ eq= │ builtin │ any non-fact rule
-///   - `carrier_has_unbacked_eq_override`: runnable body │ eq= │  —      │ general eq clause
+/// WI-652 — is the carrier's own `eq` override backed? Sole probe of
+/// [`carrier_has_unbacked_eq_override`].
 ///
-/// `allow_builtin = false` drops the builtin leg — admitting `PartialEq.eq`'s
-/// builtin-ness would mask exactly the empty `Map.eq` override the guard exists to
-/// catch. `rule_backing` picks the rule leg: `op_backed` counts any non-fact rule;
-/// the eq guard tightens to a general catch-all clause so Map's compound-headed
-/// `get`-rewrite law under `Map.eq` doesn't read as backing. The `eq=` leg is
-/// admitted by BOTH — a carrier that backs `eq` via an equational `eq(?a,?b) = rhs`
-/// (unindexed from `rules_by_functor`, WI-139) is genuinely backed and must not be
-/// flagged; this does NOT unmask Map, whose equational `get`-rewrite law contributes
-/// `get` (its LHS head), never `Map.eq`, to [`collect_eq_defined_ops`].
-fn op_backed_one(
+/// WI-818 narrowed [`op_backed`] to EXECUTABLE backing only (body │ builtin) and
+/// with it took away this helper's second caller, so the two flags that used to
+/// select between them (`allow_builtin`, `RuleBacking`) are gone — each had one
+/// reachable setting left. The legs kept here are the eq guard's own, and they are
+/// deliberately NOT [`op_backed`]'s:
+///   - the BUILTIN leg stays dropped — admitting `PartialEq.eq`'s builtin-ness
+///     would mask exactly the empty `Map.eq` override this guard exists to catch;
+///   - the `eq=` leg stays admitted — a carrier backing `eq` via an equational
+///     `eq(?a, ?b) = rhs` (invisible to the general-clause probe, unindexed by
+///     WI-139) must not be flagged spuriously. This does not unmask Map, whose
+///     equational `get`-rewrite law contributes `get` (its LHS head), never
+///     `Map.eq`, to [`collect_eq_defined_ops`];
+///   - the RULE leg stays tightened to a GENERAL catch-all clause (all-var
+///     positional head), so Map's compound-headed `get`-rewrite law under `Map.eq`
+///     does not read as backing.
+///
+/// That this guard still counts rules while `op_backed` no longer does is not a
+/// drift: it asks a DIFFERENT question. `op_backed` asks "can the evaluator run
+/// this?"; this asks "did the author leave an override empty?" — a rule is
+/// evidence of authorship either way.
+fn eq_override_backed(
     kb: &KnowledgeBase,
     op: Symbol,
     eq_defined: &std::collections::HashSet<Symbol>,
-    allow_builtin: bool,
-    rule_backing: RuleBacking,
 ) -> bool {
-    if op_has_runnable_body(kb, op) { return true; }
-    if eq_defined.contains(&op) { return true; }
-    if allow_builtin && kb.is_builtin(op) { return true; }
-    match rule_backing {
-        RuleBacking::AnyNonFact => kb.rules_by_functor_iter(op).any(|r| !kb.is_fact(r)),
-        RuleBacking::GeneralEqClause => kb
+    op_has_runnable_body(kb, op)
+        || eq_defined.contains(&op)
+        || kb
             .rules_by_functor_iter(op)
-            .any(|r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, op)),
-    }
+            .any(|r| !kb.is_fact(r) && rule_is_general_eq_clause(kb, r, op))
 }
 
 /// True iff the operation `op_short` (declared by the provided spec, as
 /// `spec_op`) is backed for carrier `X`. See [`check_provider_operations`] for
 /// the backing kinds. Conservative: any one source suffices.
+///
+/// WI-818 — "backed" means **EXECUTABLE**: a runnable body, or a builtin. A RULE
+/// does not count, and that is the whole point of the ticket.
+///
+/// A spec is ABSTRACT, and so is an operation it only declares. A `rule` on the
+/// spec (`rule head(?s) = fst(?p) :- splitFirst(?s) = some(?p)`) is a LAW relating
+/// that abstract operation to another — it says what `head` MEANS, not how to
+/// compute it for any particular carrier. The implementation is the PROVIDER's
+/// job. This check exists to enforce exactly that obligation on a concrete
+/// carrier, so admitting a law as if it discharged the obligation made the check
+/// certify something it had not verified: the program loaded clean and then died
+/// at run time with `UnknownOperation`, because the evaluator can only dispatch to
+/// a body or a builtin — it cannot run a rule.
+///
+/// MEASURED, and the stdlib was the proof: with the rule legs admitted,
+/// `List`/`MappedStream`/`FilteredStream` all passed this check for
+/// `Stream.head`/`tail`/`headOption` while `head(cons(7, nil))` failed at run time
+/// with `UnknownOperation { "head" }` — no user code involved. Dropping the rule
+/// legs turns those three carriers × three operations into the load errors they
+/// always should have been, which is why this change ships WITH executable
+/// backing for them: default BODIES over `splitFirst` on the Stream spec (the
+/// WI-362 pattern `isEmpty` already used, `tail`'s row gaining the guarded
+/// `Error[EmptyStream]` it always incurred) plus `List`'s own `head`/
+/// `headOption` overrides (WI-444).
+///
+/// This does NOT make the laws pointless: they remain the specification `head`
+/// is proved against, and `Stream`'s own default BODIES (`isEmpty`/`takeN`/
+/// `collect`, the WI-362 pattern) still back their ops — a spec-level default
+/// body is runnable, so a carrier may still inherit it and supply nothing.
 fn op_backed(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
     carrier_qn: &str,
-    carrier_ns: Option<&str>,
     spec_op: Symbol,
     op_short: &str,
-    eq_defined: &std::collections::HashSet<Symbol>,
 ) -> bool {
     // Candidate definition symbols: the spec op itself, the carrier's resolved
-    // op (own override or inherited spec default, via `sort_ops`), the carrier's
-    // own op by QN, and the carrier-namespace op (the geometry relational-rule
-    // shape, whose head functor is `{namespace}.op`, not `{Spec}.op`).
-    let mut cands: SmallVec<[Symbol; 6]> = SmallVec::new();
+    // op (own override or inherited spec default, via `sort_ops`), and the
+    // carrier's own op by QN. NO namespace-level candidate: that leg existed
+    // for the relational-rule shape (head functor `{namespace}.op`), which
+    // WI-818 made non-backing — and a namespace-level operation BODY at
+    // `{ns}.{op_short}` must not count either, because no dispatch table
+    // (`sort_ops`, instance-fact binding, witness sort) can ever route a
+    // spec-op call to it: counting it certified programs that loaded clean and
+    // died at run time with `OperationBodyMissing` (measured; the review probe
+    // is pinned as `ns_level_body_is_not_backing`).
+    let mut cands: SmallVec<[Symbol; 4]> = SmallVec::new();
     cands.push(spec_op);
     let short_sym = kb.intern(op_short);
     if let Some(t) = kb.sort_ops_lookup(carrier, short_sym) {
         cands.push(t);
     }
-    let mut qns: SmallVec<[String; 2]> = SmallVec::new();
-    qns.push(format!("{carrier_qn}.{op_short}"));
-    if let Some(ns) = carrier_ns {
-        qns.push(format!("{ns}.{op_short}"));
+    if let Some(s) = kb.try_resolve_symbol(&format!("{carrier_qn}.{op_short}")) {
+        cands.push(s);
     }
-    for qn in &qns {
-        if let Some(s) = kb.try_resolve_symbol(qn) {
-            cands.push(s);
-        }
-    }
-    for &c in &cands {
-        // Relational definition (`AnyNonFact`): a non-fact rule (`op(args, r) :-
-        // body`) whose head functor is `c` counts, and the builtin leg is admitted.
-        if op_backed_one(kb, c, eq_defined, true, RuleBacking::AnyNonFact) {
-            return true;
-        }
-    }
-    false
+    // WI-818: the two EXECUTABLE kinds, and only those. A rule under `c` — whether
+    // an equational law (`eq(op(args), rhs)`) or a relational clause
+    // (`op(args, r) :- body`) — is not something the evaluator can dispatch to, so
+    // it no longer reads as backing.
+    cands.iter().any(|&c| op_has_runnable_body(kb, c) || kb.is_builtin(c))
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.
@@ -15594,6 +15607,24 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else { continue };
             let Some(impl_info) = super::op_info::lookup_operation_info(kb, impl_op) else { continue };
 
+            // Impl-param → spec-param alignment, shared by the effects leg and
+            // the contract leg below. A GUARDED effect atom's guard is a
+            // predicate over the op's own params (`Error[EmptyStream] :-
+            // isEmpty(xs)`), so without the alignment an override restating the
+            // spec's own guarded row verbatim — modulo its param name — read as
+            // a widening and was refused (WI-818: `List.head` vs `Stream.head`,
+            // the first carrier override to carry one).
+            let align: Vec<(Symbol, TermId)> = {
+                let mut a = Vec::new();
+                for ((ip, _), (sp, _)) in impl_info.params.iter().zip(spec_info.params.iter()) {
+                    if ip != sp {
+                        let sp_ref = kb.alloc(Term::Ref(*sp));
+                        a.push((*ip, sp_ref));
+                    }
+                }
+                a
+            };
+
             // ── effects-⊆ (confident-ground only; fail-open otherwise) ──────
             let spec_effs: Vec<Value> = spec_info.effects.iter()
                 .map(|se| sigma_subst_effect(kb, se, &p.sigma))
@@ -15604,9 +15635,14 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 && spec_effs.iter().all(|e| ground(kb, e));
             if confident {
                 for ie in &impl_info.effects {
+                    // Compare ALIGNED (spec param vocabulary); DIAGNOSE with the
+                    // author's own spelling — the message must quote a guard the
+                    // override actually wrote, not one rewritten to the spec's
+                    // param names (WI-818 review).
+                    let ie_aligned = substitute_clause(kb, ie, &align);
                     let covered = spec_effs.iter().any(|se| {
                         let mut subst = Substitution::new();
-                        types_compatible(kb, &mut subst, ie, se)
+                        types_compatible(kb, &mut subst, &ie_aligned, se)
                     });
                     if !covered {
                         errors.push(LoadError::IncompatibleOverride {
@@ -15623,26 +15659,16 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             }
 
             // ── contract refinement (requires/ensures, structural subset) ───
-            // Compare in the spec op's param vocabulary: align the impl op's
-            // params to the spec's positionally (contracts are predicates over
-            // op params, not the spec type-param, so σ is not applied). The
-            // loader's auto-`EffectsRuntime` requires are filtered out — those
-            // are the effects check's concern. Conservative: clauses match by
+            // Compare in the spec op's param vocabulary via the shared `align`
+            // (contracts are predicates over op params, not the spec
+            // type-param, so σ is not applied). The loader's auto-
+            // `EffectsRuntime` requires are filtered out — those are the
+            // effects check's concern. Conservative: clauses match by
             // carrier-agnostic structural equality (`views_structurally_equal`;
             // for the ground clauses here == hash-consed `TermId` equality); a
             // logically-equivalent but syntactically-different refinement is not
             // yet recognized (a future SMT-backed entailment check would subsume
             // this).
-            let align: Vec<(Symbol, TermId)> = {
-                let mut a = Vec::new();
-                for ((ip, _), (sp, _)) in impl_info.params.iter().zip(spec_info.params.iter()) {
-                    if ip != sp {
-                        let sp_ref = kb.alloc(Term::Ref(*sp));
-                        a.push((*ip, sp_ref));
-                    }
-                }
-                a
-            };
             // precondition no-stronger: every impl precondition must be one the
             // spec also requires (the override demands no more than the spec).
             let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
@@ -15879,7 +15905,11 @@ fn is_effects_runtime_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
 /// recognized as covered, never falsely accepted).
 fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, TermId)]) -> Value {
     match clause {
-        Value::Term { id: t, .. } => Value::term(substitute_impl_params_alloc(kb, *t, subst)),
+        // Empty-subst guard like [`sigma_subst_effect`]'s: same-named params
+        // need no rewrite, and the deep walk re-allocs every node.
+        Value::Term { id: t, .. } if !subst.is_empty() => {
+            Value::term(substitute_impl_params_alloc(kb, *t, subst))
+        }
         other => other.clone(),
     }
 }
@@ -29330,6 +29360,17 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
             None => TypeHead::Error,
         },
         "anthill.prelude.TypeExtractor.Nothing" => TypeHead::Nothing,
+        // WI-818: the SAME bottom under its surface spelling. Two producers
+        // exist for one concept: `anthill.prelude.Nothing` is the stdlib's
+        // declared bottom SORT (nothing.anthill — what `Error.raise`'s declared
+        // return resolves to via `import anthill.prelude.{Nothing}`), while
+        // `TypeExtractor.Nothing` is the typer/reflect extractor tag
+        // (register_prelude's scoped define + `make_nothing_type`). Without
+        // this arm a body ending in a raise never typed (`Nothing <: s.T`
+        // failed), which is why `Stream.head` stayed body-less from WI-567
+        // until WI-818. Collapsing the two spellings into ONE symbol is the
+        // deeper fix (they still differ for structural-identity readers).
+        "anthill.prelude.Nothing" => TypeHead::Nothing,
         "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
         "anthill.prelude.TypeExtractor.ExprCarried" => TypeHead::ExprCarried,
         "anthill.prelude.TypeExtractor.RigidTypeProjection" => TypeHead::RigidProjection,
@@ -30781,8 +30822,17 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 /// same over-approximation [`decompose_effect_row_raw`] makes (guarded contributes its
 /// label exactly like `present` until discharge lands) — so the co-occurrence gate
 /// peeks past the guard to the underlying sort rather than silently missing it.
+///
+/// Matched by QUALIFIED functor (WI-818 review), like
+/// [`explode_incurred_effect_row`]'s row-algebra recognition and unlike the
+/// short-name decompose walk: this helper also feeds the op-effects
+/// conformance ADMISSION (a declared guarded atom admits a body incurring its
+/// raw label), where a user sort that merely SHARES the short name `guarded`
+/// must not be read as the kernel algebra atom — that would admit an effect
+/// the row never declared.
 fn guarded_effect_label(kb: &KnowledgeBase, v: &Value) -> Option<Value> {
-    if resolved_functor_name(kb, v) == Some("guarded") {
+    let sym = v.head(kb).functor_sym()?;
+    if kb.qualified_name_of(sym) == "anthill.prelude.EffectExpression.guarded" {
         named_child_value(kb, v, kb.lookup_symbol("label")?)
     } else {
         None
@@ -32077,8 +32127,20 @@ fn check_operation_bodies(
                         };
                     for comp in &components {
                         let comp_canon = walk_type_deep_value(kb, &canon_subst, comp);
-                        let declared = declared_canon.iter()
-                            .any(|d| views_structurally_equal(kb, &comp_canon, d));
+                        // WI-818: a declared GUARDED atom `L :- g` conservatively
+                        // CONTAINS its label ([`guarded_effect_label`]'s reading),
+                        // so a body incurring raw `L` — `head`'s raise under the
+                        // declared `Error[EmptyStream] :- isEmpty(s)` — is within
+                        // the declaration. The guard is a CALL-SITE discharge
+                        // device (WI-067), not a body-side obligation — the
+                        // author's asserted claim, exactly as for the body-less
+                        // partial primitive `div`.
+                        let declared = declared_canon.iter().any(|d| {
+                            views_structurally_equal(kb, &comp_canon, d)
+                                || guarded_effect_label(kb, d).is_some_and(|lbl| {
+                                    views_structurally_equal(kb, &comp_canon, &lbl)
+                                })
+                        });
                         if !declared {
                             errors.push(TypeError::Other {
                                 site: TypeError::here(),
@@ -33277,7 +33339,7 @@ struct EqFamilySyms {
 /// BARE-VAR operand inside a CONSTRAINT (`constraint c :- eq(?m, ?n)`) has no stamped
 /// type — a guard stores an untyped `Value`, so only the compound/dot channels reach
 /// it. A future WI-625 host bridge that registers `Map.eq` AS a resolver builtin
-/// must update the backing predicate ([`op_backed_one`] deliberately drops the
+/// must update the backing predicate ([`eq_override_backed`] deliberately drops the
 /// builtin leg today, so it would then read a bridged `Map.eq` as still-unbacked).
 fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
@@ -33307,8 +33369,10 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // not escape (the `Map.K` an earlier note worried about was Map's own KEY
     // comparison `neq(?k, ?k2)`, correctly typed `K` and correctly not flagged).
     let is_eq_call = |f: Symbol| f == syms.eq_spec || Some(f) == syms.neq_spec;
-    // WI-652 — equational-definition backing set, shared with `op_backed`, so a
-    // carrier that defines `eq` via `eq(?a,?b) = rhs` is not flagged spuriously.
+    // WI-652 — equational-definition backing set (this guard's `eq=` leg; since
+    // WI-818 narrowed `op_backed` to body│builtin, [`eq_override_backed`] is its
+    // only reader), so a carrier that defines `eq` via `eq(?a,?b) = rhs` is not
+    // flagged spuriously.
     let eq_defined = collect_eq_defined_ops(kb);
     // Memo per carrier sort — the same sort recurs across many call sites, and
     // the backing probe allocates a `rules_by_functor` Vec.
@@ -33578,11 +33642,8 @@ fn own_eq_op_carrier(
 /// operands, never for two normal-form (`put`/`empty`) maps, so it provides no
 /// general map equality — Map.eq stays genuinely unbacked.
 ///
-/// WI-652 — shares [`op_backed_one`] with [`op_backed`]. The `eq_defined` leg is
-/// admitted so a carrier that backs `eq` via an equational `eq(?a,?b) = rhs`
-/// (invisible to the general-clause probe, unindexed by WI-139) is NOT flagged
-/// spuriously; the builtin leg is dropped and the rule leg tightened to a general
-/// eq clause (see [`op_backed_one`]).
+/// WI-652 — probes via [`eq_override_backed`], whose legs (eq= admitted, builtin
+/// dropped, rule tightened to a general clause) are documented there.
 fn carrier_has_unbacked_eq_override(
     kb: &KnowledgeBase,
     carrier: Symbol,
@@ -33601,7 +33662,7 @@ fn carrier_has_unbacked_eq_override(
     let Some(own) = carrier_own_op(kb, carrier, syms.eq_spec, syms.eq_short) else {
         return false;
     };
-    !op_backed_one(kb, own, eq_defined, false, RuleBacking::GeneralEqClause)
+    !eq_override_backed(kb, own, eq_defined)
 }
 
 /// WI-652 — does `carrier` SELF-PROVIDE an `Eq` or `PartialEq` instance (a

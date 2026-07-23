@@ -728,6 +728,35 @@ impl Interpreter {
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
+    /// WI-818 (review): the ONE classifier for "this call target cannot run",
+    /// shared by the host-entry direct path
+    /// ([`Self::invoke_op_with_requirements`]) and the in-body dispatch
+    /// fall-through (`dispatch_resolved_operation`), so the two paths report
+    /// the SAME verdict for the same target and cannot drift:
+    ///   - a DECLARED operation (it has an `OperationInfo` signature) with no
+    ///     runnable backing → [`EvalError::OperationBodyMissing`], qualified —
+    ///     a missing implementation, not an unknown name;
+    ///   - anything else (a sort, an entity, a rule label, a truly unknown
+    ///     symbol) → [`EvalError::UnknownOperation`].
+    ///
+    /// Presence-only signature probe + `Backtrace::capture()` (env-gated), not
+    /// a full record build + `force_capture`: the dispatch fall-through sits
+    /// on a path the resolver bridge hits speculatively per candidate and
+    /// residualizes (`bridge_op_to_eval`), where an unconditional stack walk
+    /// and six discarded Vec clones per probe are pure cost.
+    pub(crate) fn unrunnable_target_error(&self, sym: Symbol) -> EvalError {
+        if crate::kb::op_info::operation_is_declared(&self.kb, sym) {
+            EvalError::OperationBodyMissing {
+                name: self.kb.qualified_name_of(sym).to_string(),
+                backtrace: std::backtrace::Backtrace::capture(),
+            }
+        } else {
+            EvalError::UnknownOperation {
+                name: self.kb.qualified_name_of(sym).to_string(),
+            }
+        }
+    }
+
     /// Shared body of [`Self::call`] and [`Self::call_with_requirements`]:
     /// validate arity, build the frame's locals, push, run.
     fn invoke_op_with_requirements(
@@ -741,16 +770,14 @@ impl Interpreter {
             // WI-625 (eval→SLD bridge): a host-invoked body-less carrier `eq` op
             // (e.g. `Set.eq`/`Map.eq` resolved from a dictionary — gap 4) has no
             // body to run, but the SLD resolver can prove it. The host-entry twin
-            // of the in-body dispatch bridge; anything else stays a loud
-            // `OperationBodyMissing`.
+            // of the in-body dispatch bridge; anything else classifies through
+            // the shared [`Self::unrunnable_target_error`] (WI-818): a declared
+            // op is a loud `OperationBodyMissing`, a resolvable NON-operation (a
+            // sort, an entity, a rule label) is `UnknownOperation` — not a
+            // missing-body claim about something that never was an operation.
             None => match self.eq_bridge_target(sym, args) {
                 Some(pred) => return self.prove_rule_predicate_value(pred, args),
-                None => {
-                    return Err(EvalError::OperationBodyMissing {
-                        name: self.kb.qualified_name_of(sym).to_string(),
-                        backtrace: std::backtrace::Backtrace::force_capture(),
-                    });
-                }
+                None => return Err(self.unrunnable_target_error(sym)),
             },
         };
         if args.len() != params.len() {

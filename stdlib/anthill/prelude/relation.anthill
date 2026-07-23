@@ -30,9 +30,10 @@
 --
 --     foldLeft(r.takeN(100000), empty(), add)   -- bound → List → fold
 --
--- (`head` / `headOption` / `tail` are given by equational RULES, so they resolve
--- under SLD but do not evaluate — the interpreter has no equational-rewrite
--- fallback. Reach the first solution through `splitFirst` instead.)
+-- (`head` / `headOption` / `tail` carry default BODIES over `splitFirst` since
+-- WI-818, so they evaluate on a Relation like on any Stream carrier; their law
+-- rules remain the SLD-world specification. `splitFirst` is still the one
+-- lazy primitive — the bodies above are single peels of it.)
 --
 -- A FLOUNDERED answer RAISES rather than yielding a row (WI-737): if the search
 -- delayed a goal on variables that never got bound, it never DECIDED, and there is
