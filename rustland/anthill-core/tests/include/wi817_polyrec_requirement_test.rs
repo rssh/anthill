@@ -483,6 +483,225 @@ end
     );
 }
 
+/// THE SEARCHED CASE (user framing), measured — and the answer INVERTS the
+/// sort-level twin above. The relay chain's requirements are OP-SCOPED and
+/// their instantiation CHANGES at each hand-off (make holds Desc[Leaf],
+/// relay/invoke each hold Desc[Pebble]); the sort-based mechanism can only
+/// pass a dictionary AS IS, which the twin above shows arrives WRONG (111).
+/// This op-scoped spelling measures the CORRECT 551 TODAY — but NOT because
+/// the op-scoped supply works (it supplies nothing; see the unbound pins):
+/// every describe here resolves VALUE-DIRECTED — the runtime value itself
+/// picks Leaf/Pebble.describe, no dictionary is ever consulted — so the
+/// changed instantiation is served by the values. The two channels fail on
+/// COMPLEMENTARY shapes: dict-directed pass-as-is is wrong the moment the
+/// instantiation changes; value-directed no-supply is right until a
+/// dictionary is semantically REQUIRED (a conditional impl's own chain),
+/// where it dies unbound. WI-822's supply channel must KEEP this 551 green.
+#[test]
+fn op_scoped_relay_chain_correct_via_value_direction() {
+    let src = format!(
+        r#"
+namespace wi817.ophops
+  import anthill.prelude.{{Int64, Bool, Function}}
+{INSTANCES}
+  sort Pebble
+    entity pebble
+    fact Desc[T = Pebble]
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+
+  sort Invoker
+    sort IT = ?
+    operation invoke(fn: Function[A = Int64, B = Int64], z: IT) -> Int64 requires Desc[IT] =
+      add(fn(0), mul(10, Desc.describe(z)))
+  end
+
+  sort Relay
+    sort RT = ?
+    operation relay(fn: Function[A = Int64, B = Int64], y: RT) -> Int64 requires Desc[RT] =
+      add(Invoker.invoke(fn, y), mul(100, Desc.describe(y)))
+  end
+
+  sort Maker
+    sort MT = ?
+    operation make(x: MT) -> Int64 requires Desc[MT] =
+      Relay.relay(lambda ignored -> Desc.describe(x), pebble())
+  end
+
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Maker.make(leaf())
+  end
+end
+"#
+    );
+    let got = eval_fresh(&src, "wi817.ophops.Driver.drive", 0);
+    assert!(
+        matches!(got, Ok(Value::Int(551))),
+        "the op-scoped relay chain must compute 551 (today via value-directed \
+         dispatch, no dictionaries; must SURVIVE the WI-822 supply channel); got {got:?}"
+    );
+}
+
+/// TWO DESCRIBERS FOR ONE CARRIER (user requirement: with a single
+/// describer the system just discovers the only candidate and pins it —
+/// nothing about selection is tested). Providers for Desc[Pebble] in TWO
+/// scopes: LoudDesc (describe→5) in wi817.tdl, QuietDesc (describe→7) in
+/// wi817.tdq; a loud-scope op creates the lambda, a quiet-scope op invokes
+/// it and describes the same value itself (scoped-correct would be
+/// 5 + 10·7 = 75; both-loud 55; both-quiet 77).
+///
+/// MEASURED: the configuration is REJECTED AT LOAD — DispatchAmbiguous at
+/// BOTH describe sites ("multiple impls match (coherence rule)") plus the
+/// global witness check ("ambiguous witness: 2 distinct witness sorts
+/// provide ... (keep exactly one)"). PINS A SPEC-VS-IMPLEMENTATION
+/// DIVERGENCE: kernel-language.md §Instance coherence specifies SCOPED
+/// selection ("different scopes may resolve the same Spec[carrier] to
+/// different providers, the per-import choice"); the implementation
+/// enforces GLOBAL one-provider-per-carrier. Until that fork is resolved
+/// (implement scoped selection, or amend the spec to global coherence),
+/// the provider-selection dimension of the WI-816/817 question — same
+/// carrier, requirement decides the impl — is UNCONSTRUCTIBLE; dictionaries
+/// can vary only along the TYPE dimension (conditional instances, the
+/// polymorphic-recursion pins above). Whichever way the fork is decided,
+/// this pin flips consciously: to 75 (scoped selection implemented) or
+/// stays as the documented global rule (spec amended).
+#[test]
+fn two_describers_for_one_carrier_rejected_globally() {
+    let src = r#"
+namespace wi817.tds
+  import anthill.prelude.{Int64}
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Pebble
+    entity pebble
+  end
+  sort Mk
+    operation mk() -> Pebble = pebble()
+  end
+end
+
+namespace wi817.tdq
+  import anthill.prelude.{Int64, Function}
+  import wi817.tds.{Desc, Pebble}
+  sort QuietDesc
+    fact Desc[T = Pebble]
+    operation describe(x: Pebble) -> Int64 = 7
+  end
+  sort QuietOps
+    operation invoke(fn: Function[A = Pebble, B = Int64], z: Pebble) -> Int64 =
+      add(fn(z), mul(10, Desc.describe(z)))
+  end
+end
+
+namespace wi817.tdl
+  import anthill.prelude.{Int64, Function}
+  import wi817.tds.{Desc, Pebble}
+  import wi817.tdq.{QuietOps}
+  sort LoudDesc
+    fact Desc[T = Pebble]
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+  sort LoudOps
+    operation run(z: Pebble) -> Int64 =
+      QuietOps.invoke(lambda w -> Desc.describe(w), z)
+  end
+end
+
+namespace wi817.tdd
+  import anthill.prelude.{Int64}
+  import wi817.tds.{Mk}
+  import wi817.tdl.{LoudOps}
+  sort Driver
+    operation drive(n: Int64) -> Int64 = LoudOps.run(Mk.mk())
+  end
+end
+"#;
+    let errs = load_errs(src);
+    let text = errs.join("\n");
+    assert!(
+        text.contains("multiple impls match")
+            && text.contains("ambiguous witness: 2 distinct witness sorts provide"),
+        "expected the global two-provider rejection (DispatchAmbiguous at the \
+         describe sites + the ambiguous-witness check); got:\n{text}"
+    );
+}
+
+/// PINS A CURRENT DEFECT — the essence-of-the-bug measurement (user
+/// framing: every earlier fixture gave all operations the SAME singleton
+/// set, so as-is frame inheritance and correct per-callee supply were
+/// indistinguishable; the essence is that the SETS DIFFER and a hand-off
+/// must REBUILD the callee's set). Caller a requires {Desc[AT]}; callee b
+/// requires {Desc[BT], Tagd[BT]} — overlapping in Desc, disjoint in Tagd —
+/// and the call instantiates BT := Pebble concretely while a holds
+/// AT := Leaf. CORRECT: b(pebble) = 5 + 10·3 = 35, drive = 1 + 1000·35
+/// = 35001.
+///
+/// MEASURED TODAY = 31001 = 1 + 1000·(1 + 10·3): in the SAME call, the
+/// OVERLAPPING dep is wrong — a's Leaf dictionary is wildcard-forwarded
+/// into b's Desc[BT := Pebble] slot, so describe(pebble) runs the LEAF
+/// impl (1) — while the DISJOINT dep is correct — a has no Tagd entry to
+/// falsely cover it, so Strategy 3 statically constructs the PebbleTag
+/// dictionary (tag = 3). The callee's set is rebuilt exactly where the
+/// caller's set does NOT overlap, and inherited as-is exactly where it
+/// does. This is also live proof that the WI-821 σ-gate's fall-through
+/// (Strategy-3 construction) already works in this shape — the gate only
+/// needs to stop the overlap-forward. Flips to 35001 under WI-821.
+#[test]
+fn different_sets_overlapping_dep_forwarded_disjoint_dep_constructed() {
+    let src = r#"
+namespace wi817.dsets
+  import anthill.prelude.{Int64, Bool}
+
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Tagd
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+
+  sort Leaf
+    entity leaf
+    fact Desc[T = Leaf]
+    operation describe(x: Leaf) -> Int64 = 1
+  end
+  sort Pebble
+    entity pebble
+    fact Desc[T = Pebble]
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+  sort PebbleTag
+    fact Tagd[T = Pebble]
+    operation tag(x: Pebble) -> Int64 = 3
+  end
+
+  sort BOps
+    sort BT = ?
+    requires Desc[BT]
+    requires Tagd[BT]
+    operation b(y: BT) -> Int64 = add(Desc.describe(y), mul(10, Tagd.tag(y)))
+  end
+  sort AOps
+    sort AT = ?
+    requires Desc[AT]
+    operation a(x: AT) -> Int64 = add(Desc.describe(x), mul(1000, BOps.b(pebble())))
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = AOps.a(leaf())
+  end
+end
+"#;
+    let got = eval_fresh(src, "wi817.dsets.Driver.drive", 0);
+    assert!(
+        matches!(got, Ok(Value::Int(31001))),
+        "pinning TODAY'S value Ok(Int(31001)) = overlap dep forwarded wrong (1) + \
+         disjoint dep constructed right (3) — CURRENT DEFECT; correct = 35001; got {got:?}"
+    );
+}
+
 // ── Bonus hazard found while constructing the witness ────────────────
 
 /// PINS A CURRENT DEFECT. With WrapDesc's `requires Desc[T = E]` REMOVED —
