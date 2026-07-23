@@ -792,3 +792,6 @@ mod wi819_annotation_channel_test;
 
 #[path = "include/wi818_executable_backing_test.rs"]
 mod wi818_executable_backing_test;
+
+#[path = "include/wi817_polyrec_requirement_test.rs"]
+mod wi817_polyrec_requirement_test;
