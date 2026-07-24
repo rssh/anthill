@@ -1,8 +1,8 @@
 # 057: Extent Seam
 
-## Status: Draft (2026-07-23). The implementable slice of the [extent-sources vision](future/extent-sources.md), extracted under its "complete interface, not a partial one" rule. **One seam, both directions:** a functor's extent — its ground facts — is owned by one source, read *and* written through it. It is one `ExtentSource` trait, one `ExtentProfile`, one identity model — read and write are two halves of one thing, so one proposal. The **read half is delivered** (WI-796/797/773/771/806/810/811/774/812 — the trait read half, mounts, the `read_facts` accessor, cpp-gen migration); the **write half is design** (WI-780 — the write seam + store-native identity + the declared-API cutover; WI-779 — the one early resident slice, the fact-shape refusal). Written for the **end state**: the boundary identity is store-native, and no `RuleId`/`FactId` appears in any interface signature.
+## Status: Draft (2026-07-23). The implementable slice of the [extent-sources vision](future/extent-sources.md), extracted under its "complete interface, not a partial one" rule. **One seam, both directions:** a functor's extent — its ground facts — is owned by one source, read *and* written through it. It is one `ExtentSource` trait, one `ExtentProfile`, one identity model — read and write are two halves of one thing, so one proposal. The **value-facing read half is delivered** (WI-796/797/773/771/806/810/811/774/812 — the trait read half, mounts, the `read_facts` accessor, cpp-gen migration); lifting its Rust cursor from `Value` to `StoredRow` belongs with the **write design** (WI-780 — the write seam + store-native identity + the declared-API cutover; WI-779 — the one early resident slice, the fact-shape refusal). Written for the **end state**: the boundary identity is store-native, and no `RuleId`/`FactId` appears in any interface signature.
 
-## Tracks: (read, delivered) WI-773 accessor, WI-771 cpp-gen migration; (write, design) WI-780 the seam + cutover, WI-779 the resident fact-shape refusal. Carries `RuleId`/`FactId` retirement **R1** (readers off the raw walk — done), **R2** (one home), **R3** (declared-API cutover), **R4** (visibility ratchet).
+## Tracks: (read, delivered at the `Value` boundary) WI-773 accessor, WI-771 cpp-gen migration; (write, design) WI-780 the `StoredRow` lift, seam + cutover, WI-779 the resident fact-shape refusal. Carries `RuleId`/`FactId` retirement **R1** (readers off the raw walk — done), **R2** (one home), **R3** (declared-API cutover), **R4** (visibility ratchet).
 
 ## Relates to: [the extent-sources vision](future/extent-sources.md) (broader model — the deferred capabilities: volatile/oracle/cache/constraints; this is its implementable read+write slice), 007 (persistence — the `Store`/`NonMonotonicStore` trait + monotonicity policy this realizes, the config-in-file idea §8), 053 (the monotonicity ladder *is* the writability axis; `retract` gated on `non_monotone`), 037 (`Modify`; `update` named so as not to shadow it), 026.1 Q4 / `kb/route.rs` (the `RouteHandler` prototype this retires), WI-772 (blanket bodied-rule refusal — the safe polarity the fact-shape refusal reuses), WI-696 (carrier-neutral `Value` goals).
 
@@ -19,15 +19,15 @@ So the **boundary identity is store-native** — content (the canonical ground r
 
 ## Scope
 
-**In.** One owner per functor, reads *and* writes; the `ExtentSource` trait (read half `owned`+`query`, write half `persist`/`retract`/`update`/`flush`); the profile; the query contract + the values-first `read_facts` accessor (delivered); the write seam (`assert`/`update`/`retract_persistent`) + store-native identity + the fact-shape refusal (design); single-owner discrim mounts; the two registration roles (owner/mirror); declarative configuration; `RuleId`/`FactId` retirement R1–R4; one shipped reference owner (`InMemoryExtentSource`).
+**In.** One owner per functor, reads *and* writes; the `ExtentSource` trait (read half `owned`+`query`, write half `persist`/`retract`/`update`/`flush`); the profile; the query contract + the values-first `read_facts` accessor (delivered); the `StoredRow` Rust-carrier lift, write seam (`assert`/`update`/`retract_persistent`) + store-native identity + the fact-shape refusal (design); single-owner discrim mounts; the two registration roles (owner/mirror); declarative configuration; `RuleId`/`FactId` retirement R1–R4; one shipped reference owner (`InMemoryExtentSource`).
 
 **Out (→ the [vision](future/extent-sources.md), loud-refused behind the complete interface).** Volatile sources + observation memo, the oracle archetype, the cache matrix + epochs, constraint delta-checking — named open problems, not designed here. External-owner *writes* through a real backend exist in the trait but loud-refuse `NotWritable` until a real writable backend lands.
 
-"Complete interface" binds per **caller**: a read caller migrates onto the final read contract (values-first, resident + mounted) with nothing changing when writes land; a write caller migrates once at the write cutover. The trait is never larger than the code — each method-set arrives with its implementation.
+"Complete interface" binds per **caller**: a value-facing read caller migrates onto the final read contract (values-first, resident + mounted) with nothing changing when writes land; the Rust cursor gains its `StoredRow` locator at the write cutover without changing that boundary. A write caller migrates once at the cutover. The trait is never larger than the code — each method-set arrives with its implementation.
 
 ## The interface
 
-One `ExtentSource` trait; the read half is delivered, the write half designed. `Value` rows both directions — no `RuleId`/`FactId`/`TermId` anywhere.
+One `ExtentSource` trait; the read half is delivered, the write half designed. The Rust extent seam carries a `StoredRow`: visible `Value` content paired with an opaque, store-native `RowKey`. The resolver and value-facing accessors project the `Value`; the key never crosses into an `.anthill` signature. No `RuleId`/`FactId`/`TermId` appears anywhere.
 
 ```rust
 pub trait ExtentSource {
@@ -44,24 +44,32 @@ pub trait ExtentSource {
     // ── write half (design; capability-gated — the profile is the plan-time
     //    authority, these defaults the loud NotWritable backstop) ──
     fn persist(&mut self, kb: &KnowledgeBase, row: &Value, meta: Option<&Value>)
-        -> Result<RowKey, ExtentError> { Err(ExtentError::NotWritable) }   // returns the row's key (minting: the assigned one)
+        -> Result<StoredRow, ExtentError> { Err(ExtentError::NotWritable) }
     fn retract(&mut self, kb: &KnowledgeBase, key: &RowKey)
         -> Result<bool, ExtentError> { Err(ExtentError::NotWritable) }
+    /// Atomically replace the row identified by `key`. On failure the old row
+    /// remains observable; there is no retract-then-persist default.
     fn update(&mut self, kb: &KnowledgeBase, key: &RowKey, new: &Value, meta: Option<&Value>)
-        -> Result<bool, ExtentError> { /* default: retract(key)? then persist(new) */ }
+        -> Result<Option<StoredRow>, ExtentError> { Err(ExtentError::NotWritable) }
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), ExtentError> { Ok(()) }
 }
 
-pub trait ExtentCursor {   // lazy, carrier-neutral, ground rows; per-row errors fail loud
-    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<Value, ExtentError>>;
+pub struct StoredRow {
+    pub row: Value,       // ground content: resolver / read_facts project this
+    pub key: RowKey,      // opaque source-native locator: only the extent seam uses this
 }
 
-/// A read query and a write key are both a digested `bound` — the engine walks the
-/// goal/row, the store never sees a raw `Term`. DISTINCT types because the contracts
-/// differ: `QueryPattern` = SUPERSET (over-return sound, the engine re-filters);
-/// `RowKey` = a declared UNIQUE key ⇒ EXACTLY ONE row (over-return is data loss).
+pub trait ExtentCursor {   // lazy, carrier-neutral, ground rows; per-row errors fail loud
+    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<StoredRow, ExtentError>>;
+}
+
+/// `QueryPattern` is a digested read bound: the engine walks the goal, the store
+/// never sees a raw `Term`. A source returns its own opaque `RowKey` alongside each
+/// result. It may be a primary key, a file span, a remote revision token, or another
+/// native locator; it is deliberately *not* required to be reconstructible from the
+/// row's `Value`.
 pub struct QueryPattern { pub mode: usize, pub bound: Vec<(ArgKey, Value)> }
-pub struct RowKey       { bound: Vec<(ArgKey, Value)> }   // the store's key fields, ground
+pub struct RowKey(/* source-private, opaque store-native data */);
 pub enum ArgKey { Named(Symbol), Pos(u32) }
 
 pub struct ExtentProfile {
@@ -71,7 +79,7 @@ pub struct ExtentProfile {
     pub complete: bool,
     pub stability: Stability,
     // write axes
-    pub key: Option<Vec<ArgKey>>,          // the identifying fields — the store's notion of Id; None = read-only
+    pub lookup_key: Option<Vec<ArgKey>>,   // optional row-derived locator for content-only callers; opaque keys ride StoredRow
     pub writability: Option<Monotonicity>, // 053's ladder; None = policy from project reflect rules
 }
 pub struct QueryMode { pub required_ground: Vec<ArgKey> }
@@ -81,19 +89,19 @@ pub enum ExtentError { NoSupportedMode, NotWritable, Backend(String) }  // grows
 
 **The query contract (read)** — three rules: (1) capability is declared (`query_modes`, matched at registration; a goal meeting no mode delays (WI-300) or flounders loud — a backend never re-derives groundness); (2) pushdown is ground equality only (`bound = slot=value`; richer predicates extend the struct, never re-parse a blob); (3) soundness stated once — `query` returns a **superset** of the rows satisfying `bound`, the engine re-unifies each against the full goal (`match_view_value_pattern`), so over-return is sound and only under-return is a bug.
 
-**The write contract** — the anthill surface speaks `Term` (content); the engine digests the store's declared key into a `RowKey`:
+**The write contract** — the anthill surface speaks `Term` (content). Rust extent operations retain the `RowKey` returned with a `StoredRow`; they never infer that every store-native key lives in the row. A source may additionally declare `lookup_key` for a content-only caller, but that is an optimization/convenience, not the identity model:
 
 ```
 operation persist(store: Store, fact: Term, meta: Meta) -> Term          -- the canonical row, store-assigned key filled in
-operation retract(store: NonMonotonicStore, fact: Term) -> Bool          -- content; the engine digests its key
+operation retract(store: NonMonotonicStore, fact: Term) -> Bool          -- content-only adapter where a lookup_key is declared
 operation update(store: NonMonotonicStore, old: Term, new: Term) -> Option[T = Term]
 ```
 
-`find_fact` + the `FactId` sort are **deleted** — the row a caller holds *is* the key. **Writability ⟹ the store declares a `key`** (its notion of Id); a write addresses a row by that key's ground values, mapped to the store's native location (SQL `WHERE pk=…`, `by_id → span`, a GitHub issue number). **Minting** rides the return channel: a store assigning a key absent from the input row fills it in and `persist` returns the completed row. Bulk "delete WHERE" is *not* the identity primitive — it is read-then-retract-each sugar over a `QueryPattern`.
+`find_fact` + the `FactId` sort are **deleted** — a source-native `RowKey`, carried with the `StoredRow`, is the Rust mutation locator. A writable source need not encode that locator in its row: SQL may use a primary key, an indexed file a span, and a service a revision token. **Minting** rides the `StoredRow` return channel: a store may return a canonical row with a visible assigned field, an opaque key, or both. **Update is atomic:** either the old row is replaced and the returned `StoredRow` names the replacement, or an error leaves the old row observable; a backend must use its native transaction/buffered replacement/rollback mechanism and may not implement update as an exposed retract followed by persist. Bulk "delete WHERE" is *not* the identity primitive — it is read-then-retract-each `StoredRow` selected by a `QueryPattern`.
 
 ## The accessor and the write seam (on `KnowledgeBase`)
 
-The engine side: content in, content out; digests to `QueryPattern`/`RowKey` internally. `Stability::Volatile`, a non-enumerable oracle mode, and external-owner writes are loud errors/refusals until their slices land.
+The engine side: `StoredRow` in the extent seam, `Value` at its value-facing boundary. `read_facts` projects each `StoredRow.row`; resolver matching likewise sees only the row. The seam retains `StoredRow.key` for mutation instead of re-digesting it from content. `Stability::Volatile`, a non-enumerable oracle mode, and external-owner writes are loud errors/refusals until their slices land.
 
 ```rust
 impl KnowledgeBase {
@@ -108,22 +116,26 @@ impl KnowledgeBase {
 
     // ── write (design; WI-780) ──
     /// THE write seam. Owns internally, in order: 053 guard → fact-shape refusal
-    /// (resident) → digest the row's key (owner path) → owner write (buffered) or
-    /// resident write + mirror shadow → write-overlay bookkeeping → epoch bump. The
+    /// (resident) → owner persist (which returns a `StoredRow`) or resident write +
+    /// mirror shadow → write-overlay bookkeeping → epoch bump. An update/retract
+    /// carries the `StoredRow.key` returned by an earlier extent read/write. The
     /// store-before-kb ordering that today is a comment protocol lives inside.
-    /// Returns the canonical row. Errors seam-typed; the builtin adapter renders them
+    /// `update_persistent` is one atomic store/overlay transition: readers never
+    /// observe the transient absence that a retract+persist decomposition creates.
+    /// Returns the canonical row and its opaque mutation locator. Errors seam-typed;
+    /// the builtin adapter renders them
     /// into the `Error` effect (the seam stays evaluator-free).
-    pub fn assert_persistent(&mut self, row: Value, meta: Option<Value>) -> Result<Value, ExtentError>;
-    pub fn update_persistent(&mut self, old: &Value, new: Value, meta: Option<Value>) -> Result<Option<Value>, ExtentError>;
-    pub fn retract_persistent(&mut self, row: &Value) -> Result<bool, ExtentError>;
+    pub fn assert_persistent(&mut self, row: Value, meta: Option<Value>) -> Result<StoredRow, ExtentError>;
+    pub fn update_persistent(&mut self, old: &StoredRow, new: Value, meta: Option<Value>) -> Result<Option<StoredRow>, ExtentError>;
+    pub fn retract_persistent(&mut self, row: &StoredRow) -> Result<bool, ExtentError>;
 }
 ```
 
-The branch (resident discrim vs mount `query`; resident write vs owner buffer) is internal; callers never see it. An empty `selection`/row = enumeration. `read_facts` keeps the accessor `RuleId`-free (R1) so the R4 ratchet can privatize the raw walk.
+The branch (resident discrim vs mount `query`; resident write vs owner buffer) is internal; value-facing callers never see a key. An empty `selection` = enumeration. `read_facts` maps the internal stream to `Vec<Value>` and keeps the accessor `RuleId`-free (R1) so the R4 ratchet can privatize the raw walk.
 
 ## Mounts, single owner, registration roles
 
-A store-owned functor is **mounted** at its discrim functor node; retrieval delegates to `query`, yielding tagged candidates `Resident(RuleId)` | `Row(Value)` on the one seam (`RouteHandler`/`Store::retrieve` retire into it — R2). Ownership is exclusive: an owner for a functor with resident entries, two owners for one functor, or a source-file `fact`/same-head bodied `rule` for an owned functor — each a loud error / `LoadError`. The registries merge into `kb.extents`, off `Interpreter` (R2). Two **roles**, composed by registration:
+A store-owned functor is **mounted** at its discrim functor node; retrieval delegates to `query`, yielding tagged candidates `Resident(RuleId)` | `Row(StoredRow)` on the one seam (`RouteHandler`/`Store::retrieve` retire into it — R2). The resolver binds `StoredRow.row` and keeps its key only for the write seam. Ownership is exclusive: an owner for a functor with resident entries, two owners for one functor, or a source-file `fact`/same-head bodied `rule` for an owned functor — each a loud error / `LoadError`. The registries merge into `kb.extents`, off `Interpreter` (R2). Two **roles**, composed by registration:
 
 - **owner** (`register_extent_owner`) — the store owns the extent; reads go through the mount → `query`, the resident subtree is empty. External table / SQL / GitHub.
 - **mirror** (`register_mirror`) — the functor is resident (`kb.rules` answers reads); the store is a write-through durability mirror (`pull` at load, shadow resident writes; `query` never consulted). Today's `FileStore` is exactly this.
@@ -147,13 +159,13 @@ This can only happen where facts and bodied rules coexist under one functor — 
 
 ## `InMemoryExtentSource` — the reference owner
 
-The shipped reference `ExtentSource`: an enumerable + complete + stable table, seeded at construction. Read half delivered (drives the read conformance suite — declared mode answers, undeclared pattern delays, under-return fails / over-return passes); the write half + a `by_id`-style key land with the write seam (exercising the write overlay + content↔key mapping without a filesystem/SQL engine). It is the owner-swap fixture and the proof "complete interface" is a fact, not a claim. The **resident** default source stays the discrim path (not a `dyn ExtentSource` — the discrim tree already *is* its query structure), unified with mounted extents only at the accessor/seam.
+The shipped reference `ExtentSource`: an enumerable + complete + stable table, seeded at construction. Its value-facing read half is delivered (drives the read conformance suite — declared mode answers, undeclared pattern delays, under-return fails / over-return passes); its cursor gains `StoredRow` and its write half + a `by_id`-style opaque key land with the write seam (exercising the write overlay + content↔key mapping without a filesystem/SQL engine). It is the owner-swap fixture and the proof "complete interface" is a fact, not a claim. The **resident** default source stays the discrim path (not a `dyn ExtentSource` — the discrim tree already *is* its query structure), unified with mounted extents only at the accessor/seam.
 
 ## `RuleId`/`FactId` retirement — R1–R4
 
 - **R1 — readers off the raw walk** (done): no fact reader outside kb traffics in `RuleId`; the accessor is values-first.
 - **R2 — one home**: `RouteHandler`/`Store::retrieve` retire into `query`; `store_registry`/`store_monotonicity` move off `Interpreter` onto `kb.extents`; `register_store` → `register_mirror`/`register_extent_owner`.
-- **R3 — the declared-API cutover** (atomic): the `store.anthill`/`reflect.anthill` signatures above; `FactId`/`find_fact`/`Handle`/`HandleKind` deletion; `IndexedStore::location_of` rekeyed to the store-internal `RowKey → Location`; the seam as the sole caller of the store write half; every in-tree `.anthill` consumer migrated together. No shims — loud stragglers.
+- **R3 — the declared-API cutover** (atomic): the `store.anthill`/`reflect.anthill` signatures above; `FactId`/`find_fact`/`Handle`/`HandleKind` deletion; `IndexedStore::location_of` rekeyed to the store-internal `RowKey → Location`; `StoredRow` on every Rust extent read/write path, projected to `Value` for `read_facts` and resolver matching; the seam as the sole caller of the store write half; every in-tree `.anthill` consumer migrated together. No shims — loud stragglers.
 - **R4 — the visibility ratchet**: `kb.retract(RuleId)` → `pub(crate)` (seam-only); head-as-answer enumeration privatized. Sequences after R1.
 
 End state: `RuleId` addresses resident IDB program text only; the rule-browse surface (`rule_ids_by_qn`, CLI `--match`, `is_fact`/`is_rule_alive`) stays public.
@@ -161,14 +173,14 @@ End state: `RuleId` addresses resident IDB program text only; the rule-browse su
 ## Decomposition
 
 **Read (delivered):**
-1. the trait read half + mounts + `QueryPattern` + `RouteHandler`/`Store::retrieve` retirement (R2-read) + loader refusal;
+1. the value-row trait read half + mounts + `QueryPattern` + `RouteHandler`/`Store::retrieve` retirement (R2-read) + loader refusal;
 2. `InMemoryExtentSource` + read conformance suite + owner-swap harness;
 3. `read_facts` (WI-773, R1) + cpp-gen facts-only migration (WI-771).
 
 **Write (forthcoming):**
 4. **resident fact-shape refusal (WI-779)** — content-keyed, ahead of the identity cutover, fixing the live desync;
 5. **one write home (R2-write)** — `store_registry`/`store_monotonicity` → `kb.extents`, registration roles;
-6. **the write seam + identity cutover (WI-780, R3)** — `assert`/`update`/`retract_persistent`, store-native identity + `RowKey` digestion, `NonMonotonicStore.update`, the write overlay, `FactId`/`find_fact`/`Handle` deletion, the config binding, every `.anthill` consumer migrated (anthill-todo's `store.anthill`);
+6. **the write seam + identity cutover (WI-780, R3)** — lift the Rust cursor to `StoredRow` / opaque store-native `RowKey`, then `assert`/`update`/`retract_persistent`, `NonMonotonicStore.update`, the write overlay, `FactId`/`find_fact`/`Handle` deletion, the config binding, every `.anthill` consumer migrated (anthill-todo's `store.anthill`);
 7. **ratchet + reference write impl (R4 tail)** — `kb.retract` → `pub(crate)`, `InMemoryExtentSource` write half + write conformance suite, the end-state-invariant review check.
 
 Each lands green via `scripts/test.sh`. The deferred capabilities (volatile, oracle, cache, constraints) follow as direction in the [vision](future/extent-sources.md).
