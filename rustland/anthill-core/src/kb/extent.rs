@@ -1,4 +1,4 @@
-//! Extent sources — the read seam of proposal 057 (`docs/proposals/057-extent-read-seam.md`).
+//! Extent sources — the read half of proposal 057 (`docs/proposals/057-extent-seam.md`).
 //!
 //! An **extent source** owns the *reads* of one or more functors: retrieval of
 //! a mounted functor delegates to the source's [`ExtentSource::query`] instead

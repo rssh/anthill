@@ -6,7 +6,7 @@
 
 > **Status update (2026-07-21) — partly superseded.** The read / routing / retrieval design below predates the extent-sources work and is revised by it. Current direction:
 >
-> - **[057 — Extent Read Seam](057-extent-read-seam.md)** (implementable) and **[the extent-sources vision](future/extent-sources.md)** (full model) replace the **read side**. §3's routing becomes single-owner **extent ownership** — a functor is *mounted* at its discrim node, not selected by precedence `route` rules; §5's store-aware backward chaining and §11's `RouteHandler` value-integration seam collapse into **one** `ExtentSource::lookup` reached through the mount (no retrieve-beside-unification, one tagged-candidate path); and the eager Rust `retrieve -> Vec<TermId>` is retired for the declared streaming cursor.
+> - **[057 — Extent Seam](057-extent-seam.md)** (implementable) and **[the extent-sources vision](future/extent-sources.md)** (full model) replace the **read side**. §3's routing becomes single-owner **extent ownership** — a functor is *mounted* at its discrim node, not selected by precedence `route` rules; §5's store-aware backward chaining and §11's `RouteHandler` value-integration seam collapse into **one** `ExtentSource::lookup` reached through the mount (no retrieve-beside-unification, one tagged-candidate path); and the eager Rust `retrieve -> Vec<TermId>` is retired for the declared streaming cursor.
 > - **[053 — Fact Mutability](053-fact-mutability.md)** owns the write-policy ladder; `monotonicity` here is that query.
 > - **WI-780 (write seam)** retires the **`FactId` identity** of §4: `persist` returns the content / domain key and `retract` is content-keyed, so `FactId = Handle(RuleId)` is dropped.
 >
@@ -122,7 +122,7 @@ The `retrieve` / `pull` distinction determines how the backward chaining engine
 
 ### 3. Routing: 1-to-1 Mapping from Fact Sort to Store
 
-> **Superseded by [057](057-extent-read-seam.md) §Model / the vision.** Single ownership is now *structural*: the discrim **mount** occupies the functor position, bound at **registration**, not chosen by precedence `route` rules. The specific-before-default precedence and the catch-all `rule route(?)` below are gone — content-based sharding lives *inside* one composite source, never as competing owners of one functor. The 1-to-1 principle stated here survives; the rule-precedence *mechanism* does not.
+> **Superseded by [057](057-extent-seam.md) §Model / the vision.** Single ownership is now *structural*: the discrim **mount** occupies the functor position, bound at **registration**, not chosen by precedence `route` rules. The specific-before-default precedence and the catch-all `rule route(?)` below are gone — content-based sharding lives *inside* one composite source, never as competing owners of one functor. The 1-to-1 principle stated here survives; the rule-precedence *mechanism* does not.
 
 Each fact sort is owned by exactly one store. No fact lives in two places. Routing is an operation — the kernel dispatches facts to the right store:
 
@@ -171,7 +171,7 @@ The operations are declared on the sorts of §2 — `persist` / `flush` /
 
 ### 5. Backward Chaining Integration
 
-> **Superseded by [057](057-extent-read-seam.md).** There is no retrieve-*beside*-unification: a store-owned functor is **mounted** at its discrim node, and retrieval reaching the mount delegates to `ExtentSource::lookup`, yielding tagged `Resident(RuleId)` / `Row(Value)` candidates on the *one* seam. The queryable-vs-bulk dichotomy below becomes owner-role (`lookup` through the mount) vs mirror-role (`pull` rehydrates into resident) — a registration choice, not two engine paths. The "external oracle" framing survives only as the vision's *oracle archetype* (deferred).
+> **Superseded by [057](057-extent-seam.md).** There is no retrieve-*beside*-unification: a store-owned functor is **mounted** at its discrim node, and retrieval reaching the mount delegates to `ExtentSource::lookup`, yielding tagged `Resident(RuleId)` / `Row(Value)` candidates on the *one* seam. The queryable-vs-bulk dichotomy below becomes owner-role (`lookup` through the mount) vs mirror-role (`pull` rehydrates into resident) — a registration choice, not two engine paths. The "external oracle" framing survives only as the vision's *oracle archetype* (deferred).
 
 This is the key architectural point. The reasoning engine's backward chaining (kernel spec §8.3) is extended to be **store-aware**.
 
@@ -236,7 +236,7 @@ The filesystem backend is the **bootstrap store** — it is always available and
 
 ### 7. Concrete Backend: SQL (with Dialect)
 
-> **Illustrative example, not a requirement.** No SQL backend is implemented — `sql.anthill` is an anthill-level *sketch* of what a queryable store could declare, kept for the dialect / marshalling ideas. Its `queryable` / `retrieve` read design predates [057](057-extent-read-seam.md): under the extent model a SQL store is an `ExtentSource` **owner** — mounted at its functor node, answering `lookup` with `LookupQuery.bound` pushed down to a WHERE clause — not a retrieve-beside-unification `QueryableStore`. Read this for the dialect layering, not as a read-path spec.
+> **Illustrative example, not a requirement.** No SQL backend is implemented — `sql.anthill` is an anthill-level *sketch* of what a queryable store could declare, kept for the dialect / marshalling ideas. Its `queryable` / `retrieve` read design predates [057](057-extent-seam.md): under the extent model a SQL store is an `ExtentSource` **owner** — mounted at its functor node, answering `lookup` with `LookupQuery.bound` pushed down to a WHERE clause — not a retrieve-beside-unification `QueryableStore`. Read this for the dialect layering, not as a read-path spec.
 
 The SQL backend stores facts as table rows. It is `queryable` — backward chaining translates KB patterns to SQL queries. PostgreSQL, MySQL, SQLite, DuckDB etc. are **dialects** of a single `SqlStore`, not separate store types.
 
@@ -430,7 +430,7 @@ Concrete store backends (FileStore, SqlStore) are implementations of the abstrac
 
 ### 11. Value integration and ingestion contract (post-026.1)
 
-> **Superseded by [057](057-extent-read-seam.md) (retirement stage R2).** The `RouteHandler` read seam this section motivates retires into `ExtentSource::lookup`; the single-mount read path *is* the reconciled implementation contract, with rows entering σ as carrier-neutral `Value`s and the lookup contract (values-first, ground-equality pushdown, superset soundness) pinning the `Store`↔resolver boundary 026.1 left open.
+> **Superseded by [057](057-extent-seam.md) (retirement stage R2).** The `RouteHandler` read seam this section motivates retires into `ExtentSource::lookup`; the single-mount read path *is* the reconciled implementation contract, with rows entering σ as carrier-neutral `Value`s and the lookup contract (values-first, ground-equality pushdown, superset soundness) pinning the `Store`↔resolver boundary 026.1 left open.
 
 This proposal predates [026.1 Value-integrated KB queries](026.1-value-integrated-kb-queries.md). The abstract algebra (sections 1–10) holds, but the **implementation contract** between a `Store` and the resolver needs to align with 026.1's `Value` / `TermView` boundary. WI-168 records this reconciliation.
 
