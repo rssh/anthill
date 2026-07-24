@@ -13610,7 +13610,12 @@ fn resolve_inner(
     }
     stack.push(goal.clone());
 
-    let candidates = collect_provides_candidates(kb, goal);
+    // WI-827: the same call-site σ that gates the scope `FromScope` lookup
+    // above rides into candidate matching, so a per-call element's rigid /
+    // wildcard / concrete role is classified once, spelling-neutrally, rather
+    // than by the head-only `Var::Rigid` test. `None` (the `resolve_at_goal`
+    // dispatch/diagnostic path) keeps today's behaviour.
+    let candidates = collect_provides_candidates(kb, goal, scope.sigma);
 
     if candidates.is_empty() {
         stack.pop();
@@ -14136,6 +14141,10 @@ fn nullary_carrier_impl_op(
 fn collect_provides_candidates(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
+    // WI-827: the call-site σ (`ResolutionScope.sigma`), threaded through so a
+    // per-call element is classified by its σ-role (rigid / wildcard /
+    // concrete) not its surface spelling. `None` keeps the head-only match.
+    sigma: Option<&SigmaCtx>,
 ) -> Vec<Candidate> {
     let spec_canon = kb.canonical_sort_sym(goal.spec_sort);
     // WI-660: the spec-base bucket (built index) or the full scan. The bucket keys on
@@ -14276,6 +14285,7 @@ fn collect_provides_candidates(
                 &impl_param_set,
                 &mut impl_subst,
                 &mut head_specificity,
+                sigma,
             ) {
                 all_match = false;
                 break;
@@ -14414,63 +14424,15 @@ fn match_candidate_against_goal(
     impl_params: &[Symbol],
     impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
     specificity: &mut u32,
+    // WI-827: the call-site σ (`None` on the σ-less dispatch/diagnostic path).
+    sigma: Option<&SigmaCtx>,
 ) -> bool {
-    // (1) Candidate side is an impl-param ref → bind it (or check
-    // consistency with an earlier binding).
+    // (1) Candidate side is an impl-param ref → bind it (or check consistency
+    // with an earlier binding). Both σ modes live in [`match_impl_param`] so
+    // they cannot drift (mirrors [`binding_pair_covers`]); an impl-param ref
+    // contributes no specificity weight.
     if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
-        // WI-507: a type-param WILDCARD on the per-call side — the enclosing
-        // sort's own param left unpinned because no call arg determined it
-        // (a carrier-only `clear(c)` pins only the carrier `C`, so the spec's
-        // sibling `Element` arrives as `Ref(Sort.Element)`) — matches any
-        // impl-param binding WITHOUT constraining it: the concrete carrier
-        // already pins the shared impl param `T`, and this sibling is whatever
-        // that pinning implies via the provider's `provides` fact. Without this
-        // the sibling clashes with the already-bound `T` (`values_structurally_
-        // equal(Int64, Ref(Sort.Element))`), defeating dispatch-dict resolution
-        // and leaving the body's deferred spec-op call with no `__req_*` to
-        // read at eval. The all-wildcard call already resolves (its carrier is
-        // a wildcard too, so `T` never pins); this extends the same leniency to
-        // the carrier-concrete / sibling-abstract mix — matching the wildcard
-        // tolerance the parametric arm below and `entries_cover` already apply.
-        if is_type_param_value(kb, per_call_value) {
-            // WI-821: a RIGID per-call value is a definite per-body skolem
-            // (the enclosing sort's own param), not an unpinned wildcard —
-            // RECORD it (first writer wins, never rejecting the match) so a
-            // resolution sub-goal instantiates at it (`Desc[T = Wrap[A = E]]`
-            // matched at `A := rigid GT` must yield sub-goal `Desc[rigid GT]`,
-            // which resolves FromScope against the caller's chain). Left
-            // unbound, the sub-goal keeps the raw impl param, matches the
-            // SAME parametric fact again, and dies Cyclic. Other type-param
-            // spellings (an unpinned `Ref(Sort.Element)` sibling) stay
-            // unconstraining exactly as WI-507 established.
-            if matches!(kb.get_term(per_call_value), Term::Var(Var::Rigid(_)))
-                && !impl_subst.iter().any(|(k, _)| *k == p)
-            {
-                impl_subst.push((p, per_call_value));
-            }
-            return true;
-        }
-        if let Some(slot) = impl_subst.iter_mut().find(|(k, _)| *k == p) {
-            if values_structurally_equal(kb, slot.1, per_call_value) {
-                return true;
-            }
-            // WI-821 order symmetry: a stored RIGID yields to an incoming
-            // CONCRETE, exactly as an incoming rigid already yields to a
-            // stored concrete (the type-param early-return above skips the
-            // slot). Without this, a provider binding one impl param in two
-            // spec slots was accepted or SILENTLY DROPPED depending on which
-            // binding the fact happened to declare first. Either order now
-            // ends with the concrete in the slot; only concrete/concrete
-            // disagreement rejects.
-            if matches!(kb.get_term(slot.1), Term::Var(Var::Rigid(_))) {
-                slot.1 = per_call_value;
-                return true;
-            }
-            return false;
-        }
-        impl_subst.push((p, per_call_value));
-        // An impl-param ref contributes no specificity weight.
-        return true;
+        return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
     // (2) Candidate side is a parametric Fn — recurse into its bindings.
     if let Some((c_base, c_bindings)) = parametric_value_parts(kb, candidate_value) {
@@ -14528,6 +14490,7 @@ fn match_candidate_against_goal(
                 impl_params,
                 impl_subst,
                 specificity,
+                sigma,
             ) {
                 return false;
             }
@@ -14572,7 +14535,19 @@ fn match_candidate_against_goal(
                         continue;
                     };
                     aligned = true;
-                    if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| k == ip) {
+                    // WI-827 (defect d): under σ, give this self-provides
+                    // alignment the same slot discipline arm (1) uses — an
+                    // incoming concrete threaded into a slot arm (1) filled with
+                    // a rigid must YIELD (order symmetry), not be rejected by a
+                    // raw `values_structurally_equal(rigid, concrete)`. The
+                    // σ-less path keeps today's bare structural check (verified
+                    // no divergence there — it is NARROWER than arm (1)'s coarse
+                    // rule, so it is not routed through `match_impl_param`).
+                    if sigma.is_some() {
+                        if !match_impl_param(kb, sigma, *ip, *p_val, impl_subst) {
+                            return false;
+                        }
+                    } else if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| k == ip) {
                         if !values_structurally_equal(kb, *prev, *p_val) {
                             return false;
                         }
@@ -14597,6 +14572,128 @@ fn match_candidate_against_goal(
         return true;
     }
     false
+}
+
+/// WI-827 — reconcile an impl param `p` against a per-call element, recording
+/// the binding into `impl_subst` (or checking consistency with an earlier one).
+/// Both σ modes live here so they cannot drift, mirroring [`binding_pair_covers`].
+///
+/// **`Some(ctx)` — σ-PRESENT (call-site dict build).** Classify the element by
+/// its σ-ROLE, spelling-neutrally (the head-only `Var::Rigid` test below
+/// mis-reads a compound requirement's `Ref`-spelled interior — an abstract
+/// element `substitute_spec_via_subst` preserved — as a non-rigid wildcard and
+/// skips recording it):
+///  - unbound-global sibling wildcard (WI-507): accept WITHOUT recording;
+///  - empty slot: first writer records (rigid-terminal or concrete alike) —
+///    recording a `Ref`-spelled skolem lets the conditional sub-goal instantiate
+///    at it and resolve `FromScope` instead of keeping the raw impl param and
+///    dying Cyclic (defect a);
+///  - occupied slot: one slot names ONE type, so the two values reconcile only
+///    when they ARE the same type — the same rigid class (defect b), or
+///    σ-structural equality for concretes (a compound interior compared
+///    component-wise, defect c). A rigid meeting a distinct rigid or ANY
+///    concrete disagrees (a skolem is never provably a specific concrete); a
+///    concrete meeting a different concrete disagrees. Every disagreement
+///    REFUSES — never a yield, which would drop a slot's constraint and build an
+///    unsound dict (`diagonal_distinct_rigids_refused`,
+///    `diagonal_mixed_rigid_concrete_refused`).
+///
+/// **`None` — σ-LESS (dispatch / diagnostic path).** The pre-WI-827 head-only
+/// rule, verbatim — verified no divergence, this path never builds a dict.
+fn match_impl_param(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    p: Symbol,
+    per_call_value: TermId,
+    impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
+) -> bool {
+    let Some(ctx) = sigma else {
+        // WI-507: a type-param WILDCARD on the per-call side — the enclosing
+        // sort's own param left unpinned because no call arg determined it
+        // (a carrier-only `clear(c)` pins only the carrier `C`, so the spec's
+        // sibling `Element` arrives as `Ref(Sort.Element)`) — matches any
+        // impl-param binding WITHOUT constraining it: the concrete carrier
+        // already pins the shared impl param `T`, and this sibling is whatever
+        // that pinning implies via the provider's `provides` fact. Without this
+        // the sibling clashes with the already-bound `T` (`values_structurally_
+        // equal(Int64, Ref(Sort.Element))`), defeating dispatch-dict resolution
+        // and leaving the body's deferred spec-op call with no `__req_*` to
+        // read at eval. The all-wildcard call already resolves (its carrier is
+        // a wildcard too, so `T` never pins); this extends the same leniency to
+        // the carrier-concrete / sibling-abstract mix — matching the wildcard
+        // tolerance the parametric arm and `entries_cover` already apply.
+        if is_type_param_value(kb, per_call_value) {
+            // WI-821: a RIGID per-call value is a definite per-body skolem
+            // (the enclosing sort's own param), not an unpinned wildcard —
+            // RECORD it (first writer wins, never rejecting the match) so a
+            // resolution sub-goal instantiates at it (`Desc[T = Wrap[A = E]]`
+            // matched at `A := rigid GT` must yield sub-goal `Desc[rigid GT]`,
+            // which resolves FromScope against the caller's chain). Left
+            // unbound, the sub-goal keeps the raw impl param, matches the
+            // SAME parametric fact again, and dies Cyclic. Other type-param
+            // spellings (an unpinned `Ref(Sort.Element)` sibling) stay
+            // unconstraining exactly as WI-507 established.
+            if matches!(kb.get_term(per_call_value), Term::Var(Var::Rigid(_)))
+                && !impl_subst.iter().any(|(k, _)| *k == p)
+            {
+                impl_subst.push((p, per_call_value));
+            }
+            return true;
+        }
+        if let Some(slot) = impl_subst.iter_mut().find(|(k, _)| *k == p) {
+            if values_structurally_equal(kb, slot.1, per_call_value) {
+                return true;
+            }
+            // WI-821 order symmetry: a stored RIGID yields to an incoming
+            // CONCRETE, exactly as an incoming rigid already yields to a
+            // stored concrete (the type-param early-return above skips the
+            // slot). Without this, a provider binding one impl param in two
+            // spec slots was accepted or SILENTLY DROPPED depending on which
+            // binding the fact happened to declare first. Either order now
+            // ends with the concrete in the slot; only concrete/concrete
+            // disagreement rejects.
+            if matches!(kb.get_term(slot.1), Term::Var(Var::Rigid(_))) {
+                slot.1 = per_call_value;
+                return true;
+            }
+            return false;
+        }
+        impl_subst.push((p, per_call_value));
+        return true;
+    };
+
+    // σ-PRESENT — classify by σ-role.
+    let incoming = sigma_class_terminal(kb, ctx, per_call_value);
+    // Unbound-global sibling wildcard (WI-507): accept, do not constrain.
+    if matches!(incoming, Some((_, false))) {
+        return true;
+    }
+    // Empty slot — first writer records (rigid-terminal or concrete alike).
+    let Some(i) = impl_subst.iter().position(|(k, _)| *k == p) else {
+        impl_subst.push((p, per_call_value));
+        return true;
+    };
+    let stored = impl_subst[i].1;
+    // One impl-param slot names ONE type. Two per-call values reconcile only
+    // when they ARE the same type — never by yielding one to the other, which
+    // would silently drop a slot's constraint and build an unsound dict (a
+    // diagonal `Spec[T = E, U = E]` at `T := rigidCT, U := Pebble` cannot be one
+    // `E`: `rigidCT` is a universally-quantified skolem, never provably that
+    // concrete). So:
+    //  - incoming rigid vs stored: the SAME rigid class agrees; a distinct
+    //    rigid OR any concrete disagrees (a rigid ≠ a concrete);
+    //  - incoming concrete vs stored: σ-structural equality
+    //    ([`sigma_pair_precise`]) agrees; anything else — a different concrete
+    //    OR a rigid — disagrees.
+    // Either disagreement REFUSES the candidate (the sound outcome — see
+    // `diagonal_distinct_rigids_refused` / `diagonal_mixed_rigid_concrete_refused`).
+    if let Some((vid, true)) = incoming {
+        return matches!(
+            sigma_class_terminal(kb, ctx, stored),
+            Some((svid, true)) if svid == vid
+        );
+    }
+    sigma_pair_precise(kb, ctx, stored, per_call_value)
 }
 
 /// If `value` is `Ref(sym)` / `Ident(sym)` where `sym` is one of
@@ -18132,7 +18229,15 @@ fn resolve_at_goal(
     // dispatch: those are distinct specifications about distinct
     // sorts. Per-binding matching in `collect_provides_candidates` is
     // the only mechanism that decides relevance.
-    let candidates = collect_provides_candidates(kb, &goal);
+    // WI-827: σ-less — this DISPATCH-CLASSIFICATION path has no call-site subst
+    // in hand (`scope.sigma = None`), so candidate matching keeps the head-only
+    // `Var::Rigid` classification (the pre-WI-827 behaviour, deliberately
+    // unchanged). It DOES resolve a `ResolvedRequiresNode` below (for a Deferred
+    // / direct-dispatch outcome), but it is NOT a call-site dict BUILD (that is
+    // `build_dep_projection`, which passes `Some`); the head-only leniency here
+    // is guarded downstream (a direct unconstrained requirement surfaces as a
+    // WI-828 diagnostic), so the σ-precise gate is confined to the build path.
+    let candidates = collect_provides_candidates(kb, &goal, None);
     if candidates.is_empty() {
         for ar in scope.available_requires {
             if ar.required_sort == goal.spec_sort

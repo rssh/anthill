@@ -801,3 +801,6 @@ mod wi828_unconstrained_requirement_test;
 
 #[path = "include/wi825_compound_element_test.rs"]
 mod wi825_compound_element_test;
+
+#[path = "include/wi827_candidate_matching_sigma_test.rs"]
+mod wi827_candidate_matching_sigma_test;
