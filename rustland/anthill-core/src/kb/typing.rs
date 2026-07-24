@@ -11981,11 +11981,9 @@ pub fn build_dep_projection(
 /// itself so this and `requires_entry_covers_goal` cannot drift):
 ///   - `None` — the coarse wildcard rule: either side a type-param wildcard
 ///     is unconstrained. The req-insertion diagnostic path's behavior.
-///   - `Some(ctx)` — the σ-precise GATE (WI-419/821): two type-params must
-///     share a σ-class under the call-site subst, a mixed concrete/wildcard
-///     pair is NO cover, concrete/concrete per [`sigma_pair_precise`]
-///     (σ-structural for a both-compound pair — WI-825; else
-///     `dispatch_values_match`). σ-precise implies coarse, so one walk decides.
+///   - `Some(ctx)` — the σ-precise GATE (WI-419/821): the per-pair verdict is
+///     [`sigma_pair_precise`] (which owns the type-param / mixed / concrete /
+///     both-compound rules). σ-precise implies coarse, so one walk decides.
 fn entries_cover(
     kb: &mut KnowledgeBase,
     caller: &RequiresEntry,
@@ -12141,45 +12139,47 @@ fn sigma_pair_precise(kb: &mut KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: Term
             // (`Wrap[A = CT]` vs `Wrap[A = Wrap[A = CT]]`) compares
             // σ-STRUCTURALLY — same base sort AND each argument pair
             // recursively σ-covering (σ-classes at param leaves,
-            // `dispatch_values_match` at ground leaves). The symmetric
-            // dispatch match below ends in a head-symbol fallback with the
-            // interiors IGNORED (`types_lesseq` rejects such a pair first,
-            // so the fallback was the accepting leg), which let a caller
-            // entry cover a dep σ-instantiated one constructor DEEPER and
-            // forwarded the shallower dict. Mixed compound/bare pairs keep
-            // the dispatch match unchanged.
+            // `dispatch_values_match` at ground leaves). The head-symbol
+            // fallback in `dispatch_values_match` ignores the interiors
+            // (`types_lesseq` rejects such a pair first, so the fallback was
+            // the accepting leg), which let a caller entry cover a dep
+            // σ-instantiated one constructor DEEPER and forward the shallower
+            // dict. Any pair not both-parameterized keeps that dispatch match.
+            //
+            // The `a == b` short-circuit stays INSIDE this arm, not hoisted
+            // above the `is_type_param_value` match: the `(true, true)` arm
+            // deliberately REFUSES an identical but σ-unclassifiable param
+            // pair (`sigma_same` is false when `sigma_class` is `None`), so a
+            // top-level identity fast path would silently widen the gate.
             if a == b {
                 // Identical terms are the same instantiation on both sides —
-                // the pre-WI-825 verdict (`types_lesseq`'s equality fast
-                // path) in O(1), skipping the structural walk.
+                // the pre-WI-825 verdict (`types_lesseq`'s equality leg) in
+                // O(1), skipping the structural walk.
                 return true;
             }
-            if let Some((base_a, pos_a, named_a)) = parameterized_parts(kb, a) {
-                // `b` is decomposed only once `a` took the structural path —
-                // most concrete elements are bare sorts.
-                if let Some((base_b, pos_b, named_b)) = parameterized_parts(kb, b) {
-                    if !same_sort_canonical(kb, base_a, base_b)
-                        || pos_a.len() != pos_b.len()
-                        || named_a.len() != named_b.len()
-                    {
-                        return false;
-                    }
-                    // The same-base gate above makes `for_bases` = `Label`;
-                    // spelled through the shared binding-key rule
-                    // (WI-726/764/768, `binding_for_param`) rather than a
-                    // fifth hand-rolled lookup of it.
+            match (parameterized_parts(kb, a), parameterized_parts(kb, b)) {
+                (Some((base_a, pos_a, named_a)), Some((base_b, pos_b, named_b))) => {
+                    // `for_bases` IS the same-base decision (`Label` iff the two
+                    // bases are one canonical sort), so it doubles as the base
+                    // gate and the key-match mode — spelled through the shared
+                    // binding-key rule (WI-726/764/768, `binding_for_param`)
+                    // rather than a fifth hand-rolled lookup. Mirrors the
+                    // `match_candidate_against_goal` arm-2 spelling.
                     let key_match = BindingKeyMatch::for_bases(kb, base_a, base_b);
-                    return pos_a
-                        .iter()
-                        .zip(pos_b.iter())
-                        .all(|(pa, pb)| sigma_pair_precise(kb, ctx, *pa, *pb))
+                    key_match == BindingKeyMatch::Label
+                        && pos_a.len() == pos_b.len()
+                        && named_a.len() == named_b.len()
+                        && pos_a
+                            .iter()
+                            .zip(pos_b.iter())
+                            .all(|(pa, pb)| sigma_pair_precise(kb, ctx, *pa, *pb))
                         && named_a.iter().all(|(k_a, v_a)| {
                             binding_for_param(kb, &named_b, *k_a, key_match)
                                 .is_some_and(|v_b| sigma_pair_precise(kb, ctx, *v_a, *v_b))
-                        });
+                        })
                 }
+                _ => dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a),
             }
-            dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a)
         }
     }
 }
@@ -12189,10 +12189,14 @@ fn sigma_pair_precise(kb: &mut KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: Term
 /// [`TypeHead::Parameterized`] — the term backing `Fn{S, named}`, never the
 /// `TypeExtractor` meta-ctors). Every other form (bare sort, type param,
 /// arrow, tuple, …) returns `None` and keeps its existing pair verdict —
-/// NOTE for a both-arrow / both-tuple pair that verdict retains
-/// `dispatch_values_match`'s head-fallback acceptance (both heads are the
-/// same meta-ctor symbol, interiors ignored): the WI-825 residual, unclosed
-/// because no σ-gated path is known to carry those forms as elements.
+/// NOTE a both-arrow / both-tuple / both-effects-row pair (whether a
+/// top-level element OR an interior leaf of the recursion in
+/// [`sigma_pair_precise`]) retains `dispatch_values_match`'s head-fallback
+/// acceptance: both heads are the same `TypeExtractor` meta-ctor symbol, so
+/// `types_lesseq` rejects and the head fallback accepts with the interiors
+/// IGNORED — the WI-825 residual for non-parameterized structural forms (e.g.
+/// `Wrap[A = (Int)->Int]` vs `Wrap[A = (Int)->String]`, or
+/// `Relation[T = (a, b)]` vs `Relation[T = (c, d)]`), tracked under WI-829.
 /// Positional args ride along and are compared strictly — a mixed
 /// positional+named application is not provably canonicalized away before
 /// this path, and an ignored channel is exactly the bug class WI-825
@@ -12203,15 +12207,22 @@ fn parameterized_parts(
     kb: &KnowledgeBase,
     t: TermId,
 ) -> Option<(Symbol, SmallVec<[TermId; 4]>, SmallVec<[(Symbol, TermId); 2]>)> {
+    // Shape-filter first: only a `Fn` with named args can classify
+    // `TypeHead::Parameterized`, and a bare-sort `Ref` (the common element)
+    // fails here before `type_head`'s meta-ctor qualified-name ladder runs.
+    let Term::Fn { pos_args, named_args, .. } = kb.get_term(t) else {
+        return None;
+    };
+    if named_args.is_empty() {
+        return None;
+    }
+    // `type_head` excludes the `TypeExtractor` meta-ctors (Arrow / NamedTuple /
+    // EffectsRows / …), which are also `Fn{sym, named}`; only a user-sort
+    // application is a structural-comparison target, and its base is the functor.
     let TypeHead::Parameterized { base } = type_head(kb, &TermIdView(t)) else {
         return None;
     };
-    match kb.get_term(t) {
-        Term::Fn { pos_args, named_args, .. } => {
-            Some((base, pos_args.clone(), named_args.clone()))
-        }
-        _ => None,
-    }
+    Some((base, pos_args.clone(), named_args.clone()))
 }
 
 /// WI-821 (code-review): THE one per-pair cover verdict for the forwarding
@@ -12222,9 +12233,15 @@ fn parameterized_parts(
 /// (entry-vs-goal) cannot drift — a per-pair rule change lands here or
 /// nowhere. Symmetric in `a`/`b` in both modes.
 ///
-/// The σ mode is COMPOUND-aware (WI-825, see [`sigma_pair_precise`]); the
-/// coarse (`None`) mode deliberately keeps the head tolerance — it is the
-/// req-insertion diagnostic path's wildcard rule, not a gate.
+/// The σ mode is COMPOUND-aware (WI-825, see [`sigma_pair_precise`]). The
+/// coarse (`None`) mode deliberately keeps the head tolerance. That tolerance
+/// IS behaviour-bearing, not diagnostic-only: `requires_entry_covers_goal`'s
+/// `None` call decides `DispatchOutcome::Deferred` vs `NoCandidates` in live
+/// op dispatch (`resolve_at_goal`, `resolve_inner` step 1), so a same-head
+/// different-interior compound still coarse-covers and defers there — the
+/// residual head-only cover, tracked under WI-829. Only the forwarding
+/// strategies' `None` caller (`build_dispatching_dict_direct`) is the
+/// req-insertion diagnostic path.
 fn binding_pair_covers(
     kb: &mut KnowledgeBase,
     sigma: Option<&SigmaCtx>,
@@ -13284,10 +13301,9 @@ fn entry_matches_subst(
 /// WI-613 — σ-class-precise variant of [`entry_matches_subst`], used ONLY to
 /// tie-break among same-spec entries that all wildcard-cover a body spec-op call.
 /// For every CONSTRAINING binding the entry's element and the per-call value must
-/// share a σ-class under `ctx` (the same parameter, bridging rigid↔global). A
-/// mixed concrete/wildcard pair does not PIN the element and is not precise;
-/// concrete/concrete follows [`sigma_pair_precise`] (σ-structural for a
-/// both-compound pair — WI-825; else the coarse cover's `dispatch_values_match`). A
+/// share a σ-class under `ctx` (the same parameter, bridging rigid↔global). The
+/// per-pair verdict is [`sigma_pair_precise`] (which owns the mixed / concrete /
+/// both-compound rules); a
 /// vacuous entry (no constraining binding) is not a precise disambiguator.
 /// Mirrors [`entries_cover`]'s σ mode (the entry-vs-entry forwarding analog)
 /// but reads the per-call element from the substitution rather than a second
@@ -23316,6 +23332,11 @@ impl BindingKeyMatch {
 /// ticket's "binding matcher executed by ZERO tests" measurement was an artifact of scoping
 /// to the `wi_tests` binary: at workspace scope the WI-464 lattice unit tests drive the
 /// matcher directly (4 hits, all bare/bare keys — which is why the miss stayed invisible).
+///
+/// WI-825 enrolled the σ-cover verdict (`sigma_pair_precise`'s both-compound arm): the
+/// recursive per-argument named-binding lookup routes through this rule, its `key_match`
+/// derived once from `for_bases` (which is `Label` under the same-base gate the arm already
+/// applies), so the σ-structural compound comparison cannot drift from the unify/subtype ones.
 ///
 /// STILL NOT enrolled — one site. Enumerated deliberately: WI-726 and WI-764
 /// diverged precisely because `0f31beb2` had consolidated that pair *to keep them in

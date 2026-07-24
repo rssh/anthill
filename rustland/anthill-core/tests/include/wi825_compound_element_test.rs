@@ -22,8 +22,9 @@
 //! whose sub-goal (`Desc[T = Wrap[A = CT]]` vs the caller's identical entry)
 //! still covers σ-precisely through the same recursion.
 //!
-//! Depth coding (same `Desc`/`Leaf`/`Wrap`/`WrapDesc` block as the wi817
-//! suite — own copy, per the suite's self-contained-file convention):
+//! Depth coding (`Desc`/`Leaf`/`Wrap`/`WrapDesc` block copied from the wi817
+//! suite — the two copies MUST stay in sync; the depth-coding meaning is
+//! shared, and lifting the block into `tests/common` is tracked under WI-829):
 //! describe(wrapⁿ(leaf)) = 1, 12, 122, 1222 — a wrong
 //! dictionary at any step produces a detectably different number. Pre-fix
 //! measurements: single hand-off 12 (correct 122); recursion 12 at EVERY
