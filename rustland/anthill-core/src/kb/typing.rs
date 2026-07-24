@@ -8601,8 +8601,12 @@ fn classify(_kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass)
 /// (WI-444), HK instance-fact (WI-453), unqualified-concrete-carrier (WI-606), and
 /// `Unique` arms — which differ only in the impl symbol and whether a `resolved_-
 /// tree` was resolved (`None` except on the `Unique` arm). `dispatch_dict` is
-/// always `None` here (the pin-now path threads the requirement via `resolved_-
-/// tree`; the compile-built dict is the Direct-call dual, WI-415).
+/// `None` for a SAME-SORT call (the callee inherits the caller's frame
+/// requirements at eval) and for a `resolved_tree`-less arm; WI-829 sets it for a
+/// CROSS-SORT call that CONSTRUCTS a dictionary (the resolved tree emitted AS the
+/// dict via `emit_tree_as_projection`, since eval threads `dispatch_dict`, not the
+/// diagnostic-only `resolved_tree`). The WI-415 compile-built dict is the
+/// Direct-call (non-spec-op) dual.
 fn classify_pin_or_apply_within(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -8614,13 +8618,45 @@ fn classify_pin_or_apply_within(
     let impl_sort = impl_parent_of_op(kb, impl_op);
     let needs_reqs = impl_sort.map(|s| !requires_chain(kb, s).is_empty()).unwrap_or(false);
     let class = if needs_reqs {
+        // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
+        // requirement dictionary (a `resolved_tree` with a `FromScope` — the
+        // deeper dict built around the enclosing frame's own requirement) cannot
+        // be threaded at eval by same-sort inheritance (the callee's parent is
+        // not the enclosing sort). The eval `ConcreteApplyWithin` path installs a
+        // `dispatch_dict` TermId, not the `resolved_tree` (diagnostic-only), so
+        // emit the tree AS that dict here — the same `emit_tree_as_projection`
+        // req-insertion uses; its `FromScope` `var_ref(__req_*)` reads the
+        // enclosing frame at eval. A same-sort call keeps `None` (eval inherits
+        // the caller's frame requirements). `None` on `emit`/no-tree preserves
+        // the pre-WI-829 behaviour (inherit or the WI-415 Direct-call dict).
+        let dispatch_dict = match &resolved_tree {
+            Some(tree) if impl_sort != enclosing_sort => {
+                let dict = ProjectionSyms::resolve(kb)
+                    .and_then(|syms| emit_tree_as_projection(kb, enclosing_sort, tree, &syms));
+                // A cross-sort constructing tree that fails to emit would degrade
+                // to `None` → plain apply → the callee's own `requires` reads an
+                // absent frame dict at eval — the wrong-dict class WI-829 fixes.
+                // Every input here is well-formed (reflect is loaded and a
+                // resolved `FromScope`'s scope_index names a real chain slot), so
+                // a `None` is an internal inconsistency, not a supported case:
+                // surface it loudly rather than silently reintroduce the bug.
+                debug_assert!(
+                    dict.is_some(),
+                    "WI-829: cross-sort constructing tree for {} failed to emit a \
+                     dispatch dict (ProjectionSyms / emit_tree_as_projection)",
+                    kb.resolve_sym(impl_op),
+                );
+                dict
+            }
+            _ => None,
+        };
         CallClass::ConcreteApplyWithin {
             fn_target_sym: impl_op,
             callee_spec_sort: impl_sort.unwrap(),
             spec_op_sym: fn_sym,
             enclosing_sort,
             resolved_tree,
-            dispatch_dict: None,
+            dispatch_dict,
         }
     } else {
         CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
@@ -10378,8 +10414,17 @@ fn check_apply_iter(
                 ReceiverCarrier::NotApplicable | ReceiverCarrier::Abstract => None,
             };
 
+            // WI-829: thread the call-site σ into the dispatch defer trigger so a
+            // sole coarse cover whose compound element σ-disagrees (shallow-vs-deep)
+            // does NOT re-defer here after `find_requires_location` above already
+            // refused it — construction of the deeper dictionary runs instead.
+            let dispatch_sigma = SigmaCtx {
+                subst: &subst,
+                sort_param_rigids: env.enclosing_sort_param_rigids(),
+            };
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires, carrier_sym,
+                Some(&dispatch_sigma),
             );
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
@@ -10647,9 +10692,10 @@ fn check_apply_iter(
                     if impl_op_sym != fn_sym
                         && op_has_runnable_body(kb, impl_op_sym)
                     {
-                        // Pin-now path: the `resolved_tree` (when threaded by eval)
-                        // carries the requirement; WI-415's compile-built dict is the
-                        // Direct-call dual, so `dispatch_dict` stays `None` here.
+                        // Pass the `resolved_tree` to the shared tail: a same-sort
+                        // callee inherits the frame at eval; a CROSS-SORT one that
+                        // constructs a dictionary has it emitted AS `dispatch_dict`
+                        // there (WI-829), since eval threads the dict, not the tree.
                         classify_pin_or_apply_within(
                             kb, occ, fn_sym, impl_op_sym, enclosing_sort, resolved_tree.clone(),
                         );
@@ -12051,7 +12097,7 @@ fn entries_cover(
 /// Used by both requirement-attribution paths: same-spec forwarding
 /// (`build_dep_projection` → [`entries_cover`]'s σ mode, WI-419/821) and
 /// direct-body dispatch (`find_requires_slot` / `find_requires_location` →
-/// [`entry_sigma_matches_subst`], WI-613).
+/// [`entry_sigma_verdict`], WI-613/829).
 pub struct SigmaCtx<'a> {
     subst: &'a Substitution,
     sort_param_rigids: &'a [(VarId, TermId)],
@@ -12121,7 +12167,7 @@ fn sigma_same(kb: &KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermId) -> bool 
 
 /// WI-613 — the σ-precise verdict for ONE `(a, b)` element pair: the policy
 /// shared by [`binding_pair_covers`]' σ mode (the forwarding paths, where it
-/// GATES — WI-821), [`entry_sigma_matches_subst`] (entry-vs-subst, the
+/// GATES — WI-821), [`entry_sigma_verdict`] (entry-vs-subst, the
 /// direct-dispatch path) and [`reached_carrier_matches_call`] (the WI-653
 /// transitive-coverage alignment)
 /// so the attribution paths cannot disagree on what "same element" means. Two
@@ -13130,39 +13176,31 @@ pub fn find_requires_slot(
     disambig: Option<&SigmaCtx>,
 ) -> Option<usize> {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let covering: SmallVec<[usize; 2]> = chain
+    // Each coarse-covering chain entry paired with its σ verdict (`Vacuous` with
+    // no σ context). WI-829: a `Refutes` cover (a shallow-vs-deep compound the
+    // head fallback coarse-accepted) is dropped — NO cover — the flat-chain twin
+    // of [`find_requires_location`] and of the forwarding dual (`entries_cover`,
+    // which gates a σ-disagreeing cover at every arity). Among the survivors the
+    // WI-613 soft tie-break picks the first σ-precise, else the first: slot
+    // attribution names the frame's OWN dictionary for a body call and does not
+    // forward across a call boundary, so a genuinely-ambiguous (non-refuting)
+    // cover set keeps the softer policy. No σ context ⇒ all `Vacuous` ⇒ nothing
+    // refutes and none is precise ⇒ the first covering index (pre-WI-613).
+    let survivors: SmallVec<[(usize, SigmaVerdict); 2]> = chain
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry))
-        .map(|(i, _)| i)
+        .filter_map(|(i, entry)| {
+            if !entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry) {
+                return None;
+            }
+            let v = disambig.map_or(SigmaVerdict::Vacuous, |ctx| {
+                entry_sigma_verdict(kb, ctx, spec_sort, &spec_qn, entry)
+            });
+            (v != SigmaVerdict::Refutes).then_some((i, v))
+        })
         .collect();
-    match covering.as_slice() {
-        [] => None,
-        [only] => Some(*only),
-        many => disambiguate_slot_by_sigma(kb, disambig, spec_sort, &spec_qn, chain, many),
-    }
-}
-
-/// WI-613: among `covering` chain indices that all wildcard-cover the same
-/// deferred call (only possible when the sort declares two+ `requires` of the
-/// same spec over distinct element params), pick the one whose element σ-class
-/// matches the per-call value's — via the shared [`pick_precise`] policy (first
-/// σ-precise, else first covering). No σ context keeps the first covering index
-/// (the pre-WI-613 behavior). The forwarding path (`build_dep_projection`
-/// Strategies 1/2) used to mirror this tie-break; WI-821 strengthened it there
-/// into a σ-GATE (a disagreeing cover, sole included, is no cover). Slot
-/// attribution here deliberately keeps the softer policy: it names the frame's
-/// OWN dictionary for a body call, it does not forward across a call boundary.
-fn disambiguate_slot_by_sigma(
-    kb: &mut KnowledgeBase,
-    disambig: Option<&SigmaCtx>,
-    spec_sort: Symbol,
-    spec_qn: &str,
-    chain: &[RequiresEntry],
-    covering: &[usize],
-) -> Option<usize> {
-    let Some(ctx) = disambig else { return covering.first().copied() };
-    pick_precise(covering, |i| entry_sigma_matches_subst(kb, ctx, spec_sort, spec_qn, &chain[i]))
+    let idxs: SmallVec<[usize; 2]> = (0..survivors.len()).collect();
+    pick_precise(&idxs, |k| survivors[k].1 == SigmaVerdict::Precise).map(|k| survivors[k].0)
 }
 
 /// WI-613 — resolve `entry`'s type-param bindings against the per-call `subst`,
@@ -13185,8 +13223,8 @@ fn disambiguate_slot_by_sigma(
 /// type-params (`T`) and auto-bound operations (`eq`, `neq`); only the type-param
 /// bindings constrain the substitution, detected via SortAlias resolution (only a
 /// spec param produces a `Term::Var` alias target). Shared by
-/// [`entry_matches_subst`] (wildcard cover) and [`entry_sigma_matches_subst`]
-/// (σ-class tie-break) so the two agree on which bindings constrain the call.
+/// [`entry_matches_subst`] (wildcard cover) and [`entry_sigma_verdict`]
+/// (σ-class verdict) so the two agree on which bindings constrain the call.
 fn entry_type_param_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -13262,7 +13300,7 @@ fn entry_type_param_bindings(
 ///
 /// Wildcard-tolerant by design: either side may be a type-param (the entry uses
 /// the enclosing open `T`, or the call is on an abstract param). WI-613 layers a
-/// σ-class tie-break ([`entry_sigma_matches_subst`]) ON TOP for when two entries
+/// σ-class verdict ([`entry_sigma_verdict`]) ON TOP for when two entries
 /// both cover — this predicate stays the coarse candidate filter.
 fn entry_matches_subst(
     kb: &mut KnowledgeBase,
@@ -13298,35 +13336,54 @@ fn entry_matches_subst(
     true
 }
 
-/// WI-613 — σ-class-precise variant of [`entry_matches_subst`], used ONLY to
-/// tie-break among same-spec entries that all wildcard-cover a body spec-op call.
-/// For every CONSTRAINING binding the entry's element and the per-call value must
-/// share a σ-class under `ctx` (the same parameter, bridging rigid↔global). The
-/// per-pair verdict is [`sigma_pair_precise`] (which owns the mixed / concrete /
-/// both-compound rules); a
-/// vacuous entry (no constraining binding) is not a precise disambiguator.
-/// Mirrors [`entries_cover`]'s σ mode (the entry-vs-entry forwarding analog)
-/// but reads the per-call element from the substitution rather than a second
-/// entry.
-fn entry_sigma_matches_subst(
+/// WI-613 / WI-829 — the σ verdict for a coarse-covering `entry` against the
+/// per-call substitution, computed in ONE pass over its constraining bindings
+/// (each pair judged by [`sigma_pair_precise`], which owns the mixed / concrete /
+/// both-compound rules). The three states drive the two same-spec DIRECT
+/// attribution decisions:
+///   * `Precise` — ≥1 constraining pair, ALL σ-precise: the entry pins the SAME
+///     element the call has, so among several covers it is the WI-613 tie-break
+///     winner (the [`find_requires_slot`] / [`find_requires_location`] survivor
+///     pick, via [`pick_precise`]).
+///   * `Refutes` — ≥1 constraining pair NOT σ-precise: a σ-DISAGREEING cover (the
+///     shallow-vs-deep compound `entry_matches_subst`'s head fallback coarse-
+///     accepted). WI-829 treats it as NO cover, so the caller constructs the
+///     deeper dictionary instead of forwarding the frame's wrong-depth one.
+///   * `Vacuous` — no constraining binding (a bindingless `requires Paintable`,
+///     or all-non-constraining): neither a precise disambiguator NOR a refusal,
+///     so a vacuous sole cover still defers. A structural non-match (`None`
+///     pairs) can't reach a covering entry, but maps here too.
+/// `(Precise, Refutes)` cannot co-occur — precise is "all agree", refutes is
+/// "some disagrees". Mirrors [`entries_cover`]'s σ mode (the entry-vs-entry
+/// forwarding analog) but reads the per-call element from the substitution.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SigmaVerdict {
+    /// No constraining binding — neither disambiguates nor refuses.
+    Vacuous,
+    /// ≥1 constraining pair, all σ-precise — the tie-break winner.
+    Precise,
+    /// ≥1 constraining pair σ-disagrees — no cover (WI-829).
+    Refutes,
+}
+
+fn entry_sigma_verdict(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
     spec_sort: Symbol,
     spec_qn: &str,
     entry: &RequiresEntry,
-) -> bool {
+) -> SigmaVerdict {
     let Some(pairs) = entry_type_param_bindings(kb, ctx.subst, spec_sort, spec_qn, entry) else {
-        return false;
+        return SigmaVerdict::Vacuous;
     };
     if pairs.is_empty() {
-        return false;
+        return SigmaVerdict::Vacuous;
     }
-    for (per_call_value, entry_value) in &pairs {
-        if !sigma_pair_precise(kb, ctx, *per_call_value, *entry_value) {
-            return false;
-        }
+    if pairs.iter().all(|(pc, ev)| sigma_pair_precise(kb, ctx, *pc, *ev)) {
+        SigmaVerdict::Precise
+    } else {
+        SigmaVerdict::Refutes
     }
-    true
 }
 
 /// WI-239 — locate the spec a deferred call needs within `sort_sym`'s
@@ -13361,36 +13418,36 @@ pub fn find_requires_location(
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let tree = requires_tree(kb, sort_sym);
     let mut path: SmallVec<[usize; 2]> = SmallVec::new();
-    let mut matches: Vec<(SmallVec<[usize; 2]>, bool)> = Vec::new();
+    // Each coarse cover paired with its σ verdict (`Vacuous` with no σ context).
+    let mut matches: Vec<(SmallVec<[usize; 2]>, SigmaVerdict)> = Vec::new();
     collect_requires_matches(
         kb, subst, disambig, spec_sort, &spec_qn, &tree, &mut path, &mut matches,
     );
-    match matches.as_slice() {
-        [] => None,
-        [(only, _)] => Some(only.clone()),
-        _ => {
-            // Same [`pick_precise`] policy as the flat-chain / sub-chain matchers,
-            // over the node indices with their precomputed σ-precise flag: the
-            // first σ-precise node, else the first pre-order match (identical to
-            // the pre-WI-613 first-match when there is no σ context — no node is
-            // then precise).
-            let idxs: SmallVec<[usize; 2]> = (0..matches.len()).collect();
-            let chosen = pick_precise(&idxs, |i| matches[i].1).unwrap_or(0);
-            Some(matches[chosen].0.clone())
-        }
-    }
+    // WI-829: drop `Refutes` covers (a shallow-vs-deep compound the head fallback
+    // coarse-accepted is NO cover), then pick among the survivors — the same
+    // "σ-disagreement is not a cover" rule the forwarding dual (`entries_cover`)
+    // applies at every arity, and the flat-chain [`find_requires_slot`] mirrors.
+    // A sole survivor is returned; zero survivors refuse (→ construct the deeper
+    // dict); ≥2 keep the WI-613 soft `pick_precise` tie-break (first σ-precise,
+    // else first). A vacuous / σ-agreeing cover survives; no σ context ⇒ all
+    // `Vacuous` ⇒ nothing refutes, none is precise ⇒ the first pre-order match.
+    let survivors: SmallVec<[usize; 2]> = (0..matches.len())
+        .filter(|&i| matches[i].1 != SigmaVerdict::Refutes)
+        .collect();
+    pick_precise(&survivors, |i| matches[i].1 == SigmaVerdict::Precise)
+        .map(|i| matches[i].0.clone())
 }
 
-/// WI-239 / WI-613 — pre-order DFS collector for [`find_requires_location`].
-/// Pushes each node's index onto `path`, and for every node whose entry
-/// `entry_matches_subst` (the coarse cover) records `(path, is_σ_precise)`.
-/// Preserves the original DFS short-circuit: a matching entry does NOT descend
-/// into its own `sub_requires` (the entry IS the target; its sub-requires are the
-/// required spec's OWN transitive requires — a different spec). `is_σ_precise` is
-/// computed only when a σ context is present ([`entry_sigma_matches_subst`]);
-/// with none it is `false`, so the caller falls back to the first pre-order
-/// match. `nodes` comes from the substitution-composed `requires_tree`, so it
-/// does not alias `kb`.
+/// WI-239 / WI-613 / WI-829 — pre-order DFS collector for
+/// [`find_requires_location`]. Pushes each node's index onto `path`, and for
+/// every node whose entry `entry_matches_subst` (the coarse cover) records
+/// `(path, σ_verdict)`. Preserves the original DFS short-circuit: a matching
+/// entry does NOT descend into its own `sub_requires` (the entry IS the target;
+/// its sub-requires are the required spec's OWN transitive requires — a different
+/// spec). The [`SigmaVerdict`] is computed only when a σ context is present (else
+/// `Vacuous`), so with none nothing refutes and the caller falls back to the
+/// first pre-order match. `nodes` comes from the substitution-composed
+/// `requires_tree`, so it does not alias `kb`.
 fn collect_requires_matches(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -13399,16 +13456,15 @@ fn collect_requires_matches(
     spec_qn: &str,
     nodes: &[RequiresNode],
     path: &mut SmallVec<[usize; 2]>,
-    out: &mut Vec<(SmallVec<[usize; 2]>, bool)>,
+    out: &mut Vec<(SmallVec<[usize; 2]>, SigmaVerdict)>,
 ) {
     for (i, node) in nodes.iter().enumerate() {
         path.push(i);
         if entry_matches_subst(kb, subst, spec_sort, spec_qn, &node.entry) {
-            let precise = match disambig {
-                Some(ctx) => entry_sigma_matches_subst(kb, ctx, spec_sort, spec_qn, &node.entry),
-                None => false,
-            };
-            out.push((path.clone(), precise));
+            let verdict = disambig.map_or(SigmaVerdict::Vacuous, |ctx| {
+                entry_sigma_verdict(kb, ctx, spec_sort, spec_qn, &node.entry)
+            });
+            out.push((path.clone(), verdict));
         } else {
             collect_requires_matches(
                 kb, subst, disambig, spec_sort, spec_qn, &node.sub_requires, path, out,
@@ -18164,8 +18220,9 @@ pub fn dispatch_spec_op_with_tree(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
-    // Compat entry — no call-site receiver, so no carrier discrimination.
-    dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires, None)
+    // Compat entry — no call-site receiver, so no carrier discrimination, and no
+    // call-site σ context (WI-829 gate off — keeps the coarse defer trigger).
+    dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires, None, None)
 }
 
 /// WI-226 — cached variant of `dispatch_spec_op_with_tree`. Repeated
@@ -18174,6 +18231,14 @@ pub fn dispatch_spec_op_with_tree(
 /// check (which depends on `subst` via `find_requires_slot`) runs
 /// uncached because it reads typer-side vars; the rest is keyed on the
 /// canonicalized goal + scope.
+///
+/// WI-829: `disambig` is the call-site σ context (present on the classification
+/// path, `None` on the compat wrapper). It σ-gates ONLY the direct defer trigger
+/// below — a sole coarse cover whose compound element σ-DISAGREES no longer
+/// short-circuits to `Deferred`, so control falls through to `resolve_at_goal` and
+/// the deeper dictionary is constructed. The gate runs BEFORE the memo, and only
+/// the (σ-independent) `resolve_at_goal` result is cached, so σ never taints the
+/// cache key.
 pub fn dispatch_spec_op_cached(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -18181,6 +18246,7 @@ pub fn dispatch_spec_op_cached(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
     carrier: Option<Symbol>,
+    disambig: Option<&SigmaCtx>,
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     // Direct defer trigger: a spec that is a *direct* `requires` of the
     // enclosing sort (i.e. present in `enclosing_requires`) is dispatched
@@ -18189,8 +18255,12 @@ pub fn dispatch_spec_op_cached(
     // `find_requires_location` before reaching here, so this trigger only
     // needs the direct chain. The compat API (`find_unique_impl_op`,
     // exercised by the WI-221 tests with synthetic chains) relies on it.
+    // WI-829: `disambig` σ-gates the sole cover here exactly as
+    // `find_requires_location` did on the classification path — otherwise the
+    // shallow-vs-deep compound cover would re-defer here after the tree walk
+    // refused it, and construction would never run.
     if !enclosing_requires.is_empty()
-        && find_requires_slot(kb, subst, spec_sort, enclosing_requires, None).is_some()
+        && find_requires_slot(kb, subst, spec_sort, enclosing_requires, disambig).is_some()
     {
         return (DispatchOutcome::Deferred, None);
     }
@@ -18203,25 +18273,54 @@ pub fn dispatch_spec_op_cached(
     // resolves the impl op via `sort_ops_lookup(impl_sort, op_short_sym)`, so
     // two carrier-only ops on the same carrier (`clear(s)` / `insert(s, x)` on
     // a `MutableStack`) share a goal but must NOT share a memo entry.
-    let key = (op_short_sym, goal.clone(), enclosing_requires.to_vec());
-    if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
-        return cached.clone();
+    // WI-829: the σ-present and σ-less regimes can resolve the same (op, goal,
+    // scope) differently (the σ-precise scope cover), so `disambig.is_some()`
+    // rides in the key to keep their memo entries apart.
+    //
+    // But the key is NOT sufficient on the σ-present path when the goal is
+    // NON-GROUND: `resolve_at_goal` now reads `ctx.subst` (via `sigma_class`,
+    // which chases vars NESTED inside a goal binding), and `sort_goal_from_subst`
+    // stores only the shallow `resolve_as_value` — it does not deep-resolve a
+    // nested `Global`. So two σ-present dispatches sharing this goal `TermId` but
+    // binding a nested var differently would resolve differently yet collide on
+    // the key. A FULLY-GROUND goal has nothing for σ to chase, so its result is
+    // determined by the key and stays cacheable; a non-ground σ-present goal
+    // bypasses the memo (recomputed, always sound). Every σ-less caller (the
+    // compat wrapper, the pre-WI-829 behaviour) keeps the cache unconditionally.
+    let cacheable = disambig.is_none()
+        || goal.bindings.iter().all(|(_, v)| type_value_is_ground(kb, *v));
+    let key = (op_short_sym, goal.clone(), enclosing_requires.to_vec(), disambig.is_some());
+    if cacheable {
+        if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
+            return cached.clone();
+        }
     }
-    let result = resolve_at_goal(kb, &goal, op_short_sym, enclosing_requires);
-    kb.resolve_cache.borrow_mut().insert(key, result.clone());
+    let result = resolve_at_goal(kb, &goal, op_short_sym, enclosing_requires, disambig);
+    if cacheable {
+        kb.resolve_cache.borrow_mut().insert(key, result.clone());
+    }
     result
 }
 
 /// Resolve a pre-built `SortGoal` to a `(DispatchOutcome, Option<ResolvedRequiresNode>)`.
 /// Shared body of `dispatch_spec_op_with_tree` and `dispatch_spec_op_cached`
 /// — they differ only in pre-check (defer trigger) and memoization.
+///
+/// WI-829: `disambig` is the call-site σ context (`Some` on the classification
+/// path, `None` on the compat wrapper). When present it makes the scope
+/// `FromScope` check σ-precise, so a shallow-vs-deep compound frame entry no
+/// longer coarse-covers a DEEPER goal and re-defers it — the outer goal
+/// constructs its deeper dictionary while a sub-goal that σ-AGREES with the
+/// frame entry still resolves `FromScope`. Without it (`None`) the head-only
+/// leniency the WI-827 dispatch path relied on is preserved.
 fn resolve_at_goal(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
+    disambig: Option<&SigmaCtx>,
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
-    let scope = ResolutionScope { available_requires: enclosing_requires, sigma: None };
+    let scope = ResolutionScope { available_requires: enclosing_requires, sigma: disambig };
 
     // No matching candidate ⇒ NoCandidates (permissive fall-through).
     // An unrelated `SortProvidesInfo` record for the same spec — e.g.
@@ -18229,19 +18328,16 @@ fn resolve_at_goal(
     // dispatch: those are distinct specifications about distinct
     // sorts. Per-binding matching in `collect_provides_candidates` is
     // the only mechanism that decides relevance.
-    // WI-827: σ-less — this DISPATCH-CLASSIFICATION path has no call-site subst
-    // in hand (`scope.sigma = None`), so candidate matching keeps the head-only
-    // `Var::Rigid` classification (the pre-WI-827 behaviour, deliberately
-    // unchanged). It DOES resolve a `ResolvedRequiresNode` below (for a Deferred
-    // / direct-dispatch outcome), but it is NOT a call-site dict BUILD (that is
-    // `build_dep_projection`, which passes `Some`); the head-only leniency here
-    // is guarded downstream (a direct unconstrained requirement surfaces as a
-    // WI-828 diagnostic), so the σ-precise gate is confined to the build path.
-    let candidates = collect_provides_candidates(kb, &goal, None);
+    // WI-827/WI-829: `disambig` (the call-site σ, `None` on the compat path)
+    // rides into candidate matching and the scope cover check so the whole
+    // dispatch resolution is σ-consistent — a σ-disagreeing frame entry does not
+    // coarse-cover an empty-candidate goal, and the compound sole-cover gate the
+    // caller applied is not re-widened here.
+    let candidates = collect_provides_candidates(kb, &goal, disambig);
     if candidates.is_empty() {
         for ar in scope.available_requires {
             if ar.required_sort == goal.spec_sort
-                && requires_entry_covers_goal(kb, ar, &goal, None)
+                && requires_entry_covers_goal(kb, ar, &goal, disambig)
             {
                 return (DispatchOutcome::Deferred, None);
             }

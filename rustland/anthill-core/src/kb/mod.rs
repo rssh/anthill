@@ -804,9 +804,17 @@ pub struct KnowledgeBase {
     // Same lifetime caveat as Cache A: callers asserting new
     // `SortProvidesInfo` post-typing must call
     // `invalidate_resolve_cache`.
+    //
+    // WI-829: the trailing `bool` records whether the resolution ran with a
+    // call-site σ context (`dispatch_spec_op_cached`'s `disambig`). σ makes the
+    // scope `FromScope` check σ-precise (a shallow-vs-deep compound frame entry
+    // no longer coarse-covers a deeper goal), so the σ-present and σ-less regimes
+    // can produce DIFFERENT outcomes for the same `(op, goal, scope)` and must
+    // not share a memo entry. Within one regime the result is goal-determined
+    // (body-local rigids appear in the goal), so caching stays sound.
     pub(crate) resolve_cache: RefCell<
         HashMap<
-            (Symbol, crate::kb::typing::SortGoal, Vec<crate::kb::typing::RequiresEntry>),
+            (Symbol, crate::kb::typing::SortGoal, Vec<crate::kb::typing::RequiresEntry>, bool),
             (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedRequiresNode>),
         >,
     >,

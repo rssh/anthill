@@ -804,3 +804,6 @@ mod wi825_compound_element_test;
 
 #[path = "include/wi827_candidate_matching_sigma_test.rs"]
 mod wi827_candidate_matching_sigma_test;
+
+#[path = "include/wi829_defer_sole_cover_sigma_test.rs"]
+mod wi829_defer_sole_cover_sigma_test;
