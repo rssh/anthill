@@ -11504,9 +11504,15 @@ fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
 /// here. The cover re-scan, by contrast, MIRRORS Strategies 1/2's walks
 /// (Strategy-2 candidates compared COMPOSED into caller scope, the same
 /// one-level composition the strategy matches with): a walk-shape change
-/// there (WI-826/WI-827's sphere) must be mirrored here, or the diagnostic
-/// silently stops firing for that spelling. Diagnostic strings are built
-/// only after the refusal signature is confirmed.
+/// there must be mirrored here, or the diagnostic silently stops firing for
+/// that spelling. Diagnostic strings are built only after the refusal
+/// signature is confirmed.
+///
+/// WI-826's orientation fix landed on the OTHER walk
+/// ([`requires_entry_covers_goal`], Strategy 3's scope cover), which this
+/// function does not re-scan — a refusal there surfaces through `s3_failure`
+/// instead. What `entries_cover` decides is unchanged, so this mirror still
+/// holds.
 fn explain_dep_refusal(
     kb: &mut KnowledgeBase,
     dep: &RequiresEntry,
@@ -12030,6 +12036,21 @@ pub fn build_dep_projection(
 ///   - `Some(ctx)` — the σ-precise GATE (WI-419/821): the per-pair verdict is
 ///     [`sigma_pair_precise`] (which owns the type-param / mixed / concrete /
 ///     both-compound rules). σ-precise implies coarse, so one walk decides.
+///
+/// WI-826 moved the KEY ITERATION out to the shared
+/// [`supply_covers_demanded_keys`], so this and [`requires_entry_covers_goal`]
+/// can no longer disagree about which keys a cover answers for — the same
+/// consolidation WI-821 did for the per-pair verdict. Nothing this function
+/// decides changed: it always walked the DEMAND (`dep`), and its
+/// `dep_bindings.is_empty() => true` early return was redundant with the walk,
+/// which falls through to `true` on an empty demand (and on one carrying only
+/// op-bindings, which the early return never caught).
+///
+/// A demand naming NO type param stays a cover here, deliberately: `dep` is what
+/// the CALLEE WROTE, so an unnamed element is the author's wildcard — a bare
+/// `requires Desc` slot takes any `Desc` dictionary because nothing in the callee
+/// says which one it wants. [`requires_entry_covers_goal`] reads its own empty
+/// demand differently, and says why.
 fn entries_cover(
     kb: &mut KnowledgeBase,
     caller: &RequiresEntry,
@@ -12051,28 +12072,62 @@ fn entries_cover(
     let Some((_, dep_bindings)) = unwrap_spec_view_value(kb, &dep.spec) else {
         return false;
     };
-    // Bindingless `requires X` matches any dep; no constraints to check.
-    if dep_bindings.is_empty() {
-        return true;
-    }
     let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
-    for (dep_k, dep_val) in &dep_bindings {
-        if !is_type_param_binding(kb, *dep_k, &spec_qn) {
+    supply_covers_demanded_keys(
+        kb,
+        sigma,
+        &spec_qn,
+        Supply(&caller_bindings),
+        Demand(&dep_bindings),
+    )
+}
+
+/// The two sides of a cover question, as DISTINCT types (WI-826). Both are the
+/// same `&[(Symbol, TermId)]`, and which one is which IS the whole semantics of
+/// [`supply_covers_demanded_keys`] — this ticket exists because one walk had them
+/// the wrong way round. Newtyped so a transposed call is a compile error rather
+/// than a silent re-creation of the defect.
+#[derive(Clone, Copy)]
+struct Supply<'a>(&'a [(Symbol, TermId)]);
+/// The demand side of a cover question — see [`Supply`].
+#[derive(Clone, Copy)]
+struct Demand<'a>(&'a [(Symbol, TermId)]);
+
+/// WI-826 — THE key iteration shared by the two cover walks, the way WI-821
+/// hoisted the per-pair verdict into [`binding_pair_covers`]: for every
+/// type-param key the DEMAND names, the SUPPLY must name it too and the pair must
+/// cover. A supply that says LESS than the demand is no cover, in either mode. A
+/// demand that names nothing is answered vacuously — what that MEANS differs per
+/// caller, so each states its own reading rather than this one guessing.
+///
+/// The key lookup goes through [`binding_for_param`], the shared binding-key rule
+/// (WI-726/764/768/769/825) — NOT the `find(same_label)` this walk used before
+/// being hoisted, which lacked the identity-first pass that makes an exact key
+/// beat a merely same-labelled one. `BindingKeyMatch::Label` is
+/// [`BindingKeyMatch::for_bases`]' verdict under the same-spec gate every caller
+/// already applies (`entries_cover`'s `same_sort_canonical`;
+/// `requires_entry_covers_goal`'s two callers compare `required_sort` to
+/// `goal.spec_sort` before calling) — a PRECONDITION of this function, since one
+/// spec's type-param short names are unique but two specs both have a `T`.
+///
+/// Non-type-param keys (auto-bound `eq`, `neq`, …) constrain nothing and are
+/// skipped on the demand side.
+fn supply_covers_demanded_keys(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    spec_qn: &str,
+    supply: Supply,
+    demand: Demand,
+) -> bool {
+    for (d_key, d_val) in demand.0 {
+        if !is_type_param_binding(kb, *d_key, spec_qn) {
             continue;
         }
-        // Find the caller's binding for the same key. The `same_sort_canonical`
-        // gate above already confined this to ONE spec, whose type-param short
-        // names are unique — so `same_label` (short name) matches the same key
-        // even across the bare/qualified interning divergence between producers,
-        // and cannot collide two specs' `T`. Mirrors `goal_binding_value`.
-        let caller_val = caller_bindings
-            .iter()
-            .find(|(ck, _)| same_label(kb, *ck, *dep_k))
-            .map(|(_, v)| *v);
-        let Some(caller_val) = caller_val else {
+        let supplied = binding_for_param(kb, supply.0, *d_key, BindingKeyMatch::Label).copied();
+        let Some(s_val) = supplied else {
             return false;
         };
-        if !binding_pair_covers(kb, sigma, caller_val, *dep_val) {
+        if !binding_pair_covers(kb, sigma, s_val, *d_val) {
             return false;
         }
     }
@@ -16286,8 +16341,10 @@ fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bo
 /// different `Symbol` copy (resolved in the fact's scope), against which
 /// `substitute_impl_params_alloc`'s `Symbol`-equality match is a silent no-op.
 fn type_param_sym_of_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> Option<Symbol> {
-    let short_name = kb.resolve_sym(short).to_string();
-    let qn = format!("{spec_qn}.{short_name}");
+    // `resolve_sym` borrows from `kb`, which is only read here — no `to_string()`
+    // needed to build the qualified name (this runs per binding key, per cover
+    // walk, on the dispatch path).
+    let qn = format!("{spec_qn}.{}", kb.resolve_sym(short));
     let s = kb.try_resolve_symbol(&qn)?;
     resolve_sort_alias(kb, s).map(|_| s)
 }
@@ -16745,6 +16802,39 @@ fn substitute_impl_params_alloc(
 /// is the σ-precise GATE a scope entry must pass when the resolution serves
 /// a call-site dict build (`ResolutionScope.sigma`). σ-precise implies
 /// coarse, so one walk decides either mode.
+///
+/// WI-826 — THE FIX, and it is leg 1 below: this walk used to visit only the
+/// ENTRY's keys, so a key the GOAL named and the entry did NOT was never examined.
+/// A bare bindingless `requires Desc` — no `SortView`, hence genuinely no
+/// bindings, the one spelling that produces a missing key (a BRACKETED `requires
+/// Pair[P = MT]` is filled by the loader with `Q = Pair.Q`, so it has no holes) —
+/// therefore covered ANY goal of that spec, returning true before the σ mode was
+/// ever consulted and handing a concrete downstream goal the caller's abstract
+/// dictionary. Leg 1 is now the shared [`supply_covers_demanded_keys`], the
+/// orientation [`entries_cover`] always had.
+///
+/// Leg 2 (every key the ENTRY names must be named by the goal; the PAIRS are
+/// already decided by leg 1, so it only asks presence) has no counterpart in
+/// [`entries_cover`], because the two walks answer DIFFERENT QUESTIONS — not
+/// because their demands have different provenance (they can be the very same
+/// written entry: Strategy 3 derives its goal via `goal_from_requires_entry(dep)`
+/// from the `dep` Strategy 1 just handed to `entries_cover`):
+///
+/// * `entries_cover` asks "does this dictionary SATISFY that requirement slot?".
+///   A slot naming no element accepts any dictionary of the spec — forwarding is
+///   the only answer available, and the callee said nothing to contradict it.
+/// * this asks "IS the scope's dictionary THE ONE for this goal?", and answering
+///   yes SHORT-CIRCUITS construction. Under a goal that leaves an element unnamed
+///   the honest answer is "cannot tell", so it must not short-circuit: let the
+///   candidates decide, and let WI-828 refuse if the element is genuinely
+///   unconstrained. Silently taking the scope's dictionary for an undetermined
+///   element is the pre-WI-821 unsoundness in miniature.
+///
+/// Consequence, deliberate and currently unobservable: for the dual shape (entry
+/// names a key, goal names none) the two walks give OPPOSITE verdicts. Strategy 1
+/// runs first and returns, so `entries_cover`'s answer is the reachable one; a
+/// future path that reads a bare slot's forwarded dictionary for a determinate
+/// call would have to revisit this pair.
 fn requires_entry_covers_goal(
     kb: &mut KnowledgeBase,
     entry: &RequiresEntry,
@@ -16754,19 +16844,24 @@ fn requires_entry_covers_goal(
     let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
         return false;
     };
-    if entry_bindings.is_empty() {
-        return true;
-    }
     let spec_qn = kb.qualified_name_of(goal.spec_sort).to_string();
-    for (k, e_val) in &entry_bindings {
+    if !supply_covers_demanded_keys(
+        kb,
+        sigma,
+        &spec_qn,
+        Supply(&entry_bindings),
+        Demand(&goal.bindings),
+    ) {
+        return false;
+    }
+    // Leg 2, through the same `binding_for_param` key rule leg 1 uses, so one
+    // function cannot decide "entry names goal's key" and "goal names entry's
+    // key" by two different rules.
+    for (k, _) in &entry_bindings {
         if !is_type_param_binding(kb, *k, &spec_qn) {
             continue;
         }
-        let g_val = match goal_binding_value(kb, goal, *k) {
-            Some(v) => v,
-            None => return false,
-        };
-        if !binding_pair_covers(kb, sigma, *e_val, g_val) {
+        if binding_for_param(kb, &goal.bindings, *k, BindingKeyMatch::Label).is_none() {
             return false;
         }
     }
@@ -23538,6 +23633,13 @@ impl BindingKeyMatch {
 /// recursive per-argument named-binding lookup routes through this rule, its `key_match`
 /// derived once from `for_bases` (which is `Label` under the same-base gate the arm already
 /// applies), so the σ-structural compound comparison cannot drift from the unify/subtype ones.
+///
+/// WI-826 enrolled the requirement-cover KEY ITERATION — `supply_covers_demanded_keys`
+/// (both cover walks: `entries_cover` and `requires_entry_covers_goal`, the latter's
+/// second leg too). It had been a hand-rolled `find(same_label)` inside `entries_cover`,
+/// i.e. label-ONLY, and consolidating the two walks was about to give that spelling a
+/// second reader. `Label` is `for_bases`' verdict under the same-spec gate every caller
+/// applies, so enrolling only ADDS the identity-first pass.
 ///
 /// STILL NOT enrolled — one site. Enumerated deliberately: WI-726 and WI-764
 /// diverged precisely because `0f31beb2` had consolidated that pair *to keep them in
