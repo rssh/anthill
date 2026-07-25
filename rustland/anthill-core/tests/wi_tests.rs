@@ -810,3 +810,6 @@ mod wi829_defer_sole_cover_sigma_test;
 
 #[path = "include/wi826_cover_walk_orientation_test.rs"]
 mod wi826_cover_walk_orientation_test;
+
+#[path = "include/wi824_abstract_mispin_test.rs"]
+mod wi824_abstract_mispin_test;

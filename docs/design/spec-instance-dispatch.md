@@ -200,6 +200,45 @@ Step 3 reuses the existing `by_functor` index keyed by `SortProvidesInfo`'s symb
 
 This makes the dispatch a **typer pass**, not a runtime mechanism. The runtime sees a direct call to the impl's symbol — same path as any other function call.
 
+### Step 3 is MATCHING, not unification (WI-824)
+
+Step 3 says "unify", but the two sides are not symmetric. The **candidate** side may
+carry impl parameters, which the match instantiates (`fact Desc[T = Wrap[A = E]]`
+binds `E`). The **goal** side is what the call already fixed; a goal element that is
+a **rigid skolem** — the enclosing operation's or sort's own type parameter,
+universally quantified at every call — instantiates to nothing.
+
+| goal element | candidate head | verdict |
+|---|---|---|
+| concrete (`Wrap[A = Leaf]`) | structured (`Wrap[A = E]`) | match, `E := Leaf` |
+| abstract (`FT`) | concrete (`Leaf`) | no match |
+| abstract (`FT`) | structured (`Wrap[A = E]`) | **no match** |
+| abstract (`FT`) | variable (an impl param) | match, binds the param |
+
+Row 3 is the WI-824 rule; it used to match. `FT` is not provably `Wrap[A = E]` for
+any `E`, so accepting pinned the call to an impl the caller never chose — and since
+the result was `Unique`, the abstract-call protection (which guards "no candidates" /
+"no match") never saw it. The failure was silent: an eval crash on a field the value
+lacks, or, for a signature-compatible impl, a wrong value. A **conditional** provider
+(same head + `requires`) never mis-pinned — its own sub-goal is unresolvable at an
+abstract element — so refusing row 3 makes conditional and unconditioned providers
+agree. An abstract call then takes the ladder it always should have: rejected at load
+when no `requires` covers it, deferred to the runtime dictionary when one does.
+
+Row 4 is why "no match" in rows 2–3 is not "abstract elements never dispatch": a
+provider quantified over the element (`fact Eq[T]`) still applies, because a variable
+is what an unknown type *can* match. The rule is about STRUCTURE on the candidate
+side, not about the goal being abstract.
+
+**Precondition: rows 2–3 hold where a call-site substitution (σ) is in hand** — every
+live typer dispatch, since that is where "which type parameter is this, really?" is
+answerable. Four entries resolve without one and keep the older, lenient reading:
+`find_unique_impl_op` / `dispatch_spec_op_with_tree` (a compatibility API with no
+`src/` caller), the requirement-insertion diagnostic dict build, the eval-side bridge
+(which resolves only fully-ground goals, so no abstract element reaches the rule), and
+declared-binding validation. A port should implement the σ-present rule and keep the
+σ-less entries' scope as narrow as it is here.
+
 ## Dynamic dispatch (deferred)
 
 Multi-impl scenarios — the same Spec satisfied by different impls keyed by something other than the State type — would need runtime dispatch. Examples:

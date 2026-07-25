@@ -12597,6 +12597,10 @@ pub(crate) fn resolve_bridge_requirements(
         // leaves it abstract, and `match_candidate_against_goal` treats an abstract
         // binding as a WILDCARD that matches ANY provider — which would build a WRONG
         // dictionary and let the bridged op mis-decide. Residualize instead.
+        // STILL TRUE after WI-824, which refuses that match for a rigid skolem: the
+        // refusal is σ-GATED and this resolve is σ-less (`sigma: None` below), so the
+        // wildcard leniency is fully in force here. This gate is what keeps an
+        // abstract element off it — do not relax one without the other.
         let spec_tparams = kb.type_params_of_sort(goal.spec_sort);
         let all_pinned = spec_tparams.iter().all(|tp| {
             goal.bindings
@@ -14550,13 +14554,62 @@ fn match_candidate_against_goal(
         let (p_base, p_bindings) = match parametric_value_parts(kb, per_call_value) {
             Some(parts) => parts,
             None => {
-                // A type-param wildcard on the per-call side can match
-                // a structured candidate — accept (the WI-218 path
-                // already treats this case as `Deferred`).
-                if is_type_param_value(kb, per_call_value) {
-                    return true;
-                }
-                return false;
+                // WI-824: with a call-site σ in hand, a BARE TYPE-PARAM element
+                // does NOT match a STRUCTURED candidate head. Matching a var
+                // against a structure is unification; dispatch is MATCHING, and
+                // the goal side is what the call already fixed. `FT` is not
+                // provably `Wrap[A = E]` for any `E` — accepting PINNED the
+                // call to an impl the caller never chose, and since the result
+                // was `Unique`, WI-325's abstract-call protection (which guards
+                // `NoCandidates` / `NoMatch`) never saw it: the program died at
+                // eval reading a field the value lacks, or computed a WRONG
+                // VALUE silently. The rule, the conditional twin that never
+                // mis-pinned, and the row this changes are in
+                // `docs/design/spec-instance-dispatch.md` §"Step 3 is MATCHING,
+                // not unification"; the witnesses are
+                // `wi824_abstract_mispin_test.rs`.
+                //
+                // ONE rule for the whole branch, deliberately — not "refuse a
+                // rigid skolem, keep the leniency for an element nothing pins".
+                // The narrower form was written first and is MEASURED IDENTICAL
+                // (of 17 678 σ-present firings here, every one classifies
+                // rigid), so the two differ only in what they claim. The
+                // narrow claim does not hold up: WI-507's unpinned-sibling
+                // case, which the leniency exists for, meets an impl-param REF
+                // and so is decided by arm (1) — not by this branch, whose
+                // candidate side is a parameterized application; and an element
+                // nothing determines is exactly what WI-828 calls genuinely
+                // unconstrained and refuses to guess at. Keying on σ-PRESENCE
+                // rather than on a σ-CLASS also drops a dependency on the
+                // classifier: it cannot see an OPERATION's own type param
+                // (`sort_param_rigids` is built from parent-sort params only),
+                // it returns `None` on chase-bound exhaustion, and it chases a
+                // KB-wide canonical global — three ways a spelling-sensitive
+                // rule could silently not fire.
+                //
+                // The neighbours this agrees with, neither a duplicate of it:
+                //  - step (3) refuses a rigid against a CONCRETE candidate
+                //    (`dispatch_values_match`) — the same rule one candidate
+                //    shape over, emergent there rather than stated.
+                //  - [`match_impl_param`] refuses a rigid meeting a DISAGREEING
+                //    stored value (WI-827), i.e. slot RECONCILIATION. A rigid
+                //    still RECORDS into an empty slot there — arm (1)'s
+                //    candidate side is a VARIABLE, which a skolem does match.
+                //
+                // The σ-LESS path keeps today's leniency verbatim (WI-827's
+                // discipline). Its FOUR entries, since "compat-only" is the
+                // easy thing to assume and is wrong: `find_unique_impl_op` /
+                // `dispatch_spec_op_with_tree` (no `src/` caller — tests);
+                // `build_dispatching_dict_direct` (the req-insertion DIAGNOSTIC
+                // dict, whose call-site subst is gone by then);
+                // `resolve_bridge_requirements` (eval, RUNTIME dicts — but it
+                // resolves only FULLY-GROUND goals, so no abstract element
+                // reaches here, and its own guard says so); and
+                // `spec_resolves_at_bindings` (declared-binding validation —
+                // probed at delivery: its verdict on an abstract binding is the
+                // same with and without a parametric provider in scope, so this
+                // branch is not what decides it).
+                return is_type_param_value(kb, per_call_value) && sigma.is_none();
             }
         };
         // WI-768: this arm requires ONE base, and that is exactly the question
@@ -18478,6 +18531,15 @@ fn dispatch_values_match(
     // A universally-quantified candidate matches any per-call value. The
     // fact-loading path stores type-params as `Term::Ref`, the op-signature
     // path as `Term::Var`; both shapes mean "for any T."
+    //
+    // The CANDIDATE side only. This function also owns half of WI-824's rule —
+    // a per-call RIGID does not match a CONCRETE candidate — but owns it
+    // EMERGENTLY, via `types_lesseq` refusing a var against a sort and
+    // `sort_sym_of_term` finding no symbol for a var; nothing below states it.
+    // A var-tolerant widening of either would silently re-open that half (the
+    // `Leaf` candidate would start matching an abstract `Desc[T = FT]` goal),
+    // which the sibling guard in `match_candidate_against_goal` arm (2) cannot
+    // catch — it sees only parameterized candidate heads.
     if is_type_param_value(kb, candidate_value) {
         return true;
     }

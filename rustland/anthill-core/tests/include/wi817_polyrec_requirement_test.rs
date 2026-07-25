@@ -49,9 +49,11 @@
 //! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above;
 //! the global two-provider rejection where the spec prescribes SCOPED
 //! selection (`two_describers_for_one_carrier_rejected_globally`, flips
-//! under WI-648); and a bonus hazard — an UNCONDITIONED parametric provider
-//! fact silently mis-pins an abstract spec-op call at load (see
-//! `unconditioned_parametric_fact_mispins_abstract_call`).
+//! under WI-648). The bonus hazard found here — an UNCONDITIONED parametric
+//! provider fact silently MIS-PINNING an abstract spec-op call at load — is
+//! FIXED by WI-824 (`unconditioned_parametric_fact_refused_at_abstract_call`;
+//! the rule and its second, silently-wrong-VALUE witness live in
+//! `wi824_abstract_mispin_test.rs`).
 //!
 //! The (b)/(c) rows still PIN CURRENT DEFECTS on purpose: wrong behaviour,
 //! named as such, correct values stated beside each pin. The (c) pins flip
@@ -113,6 +115,11 @@ fn eval_fresh(src: &str, entry: &str, n: i64) -> Result<Value, anthill_core::eva
     interp.call(entry, &[Value::Int(n)])
 }
 
+/// The WI-325 ladder's suggestion for this spec — asserted by the three pins
+/// WI-824 moved onto that ladder. Spelled once: it carries a U+2026, easy to
+/// mistype and awkward to grep for when the diagnostic is reworded.
+const MISSING_REQUIRES: &str = "missing `requires Desc[T = …]`";
+
 fn load_errs(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src)
         .err()
@@ -148,10 +155,17 @@ fn positive_control_eval_error_is_reported() {
 /// PINS A CURRENT GAP. An op-scoped `requires Desc[PT]` over the operation's
 /// OWN `[PT]` type param does not license the abstract spec-op call the way
 /// the same clause over a SORT param does (`op_requires_covers_call` misses
-/// it): the covered call is rejected at load with DispatchNoMatch. Both
-/// binding spellings (`Desc[PT]`, `Desc[T = PT]`) fail identically. The
-/// kernel spec (§5.4) says operation type parameters may appear in requires
-/// positions, so this is a gap, not a rule.
+/// it): the covered call is rejected at load. Both binding spellings
+/// (`Desc[PT]`, `Desc[T = PT]`) fail identically. The kernel spec (§5.4) says
+/// operation type parameters may appear in requires positions, so this is a
+/// gap, not a rule.
+///
+/// WI-824 changed WHICH rejection: the uncovered call used to reach dispatch,
+/// match the parametric `WrapDesc` head var-to-structure and fail on that
+/// impl's own unresolvable `requires` (DispatchNoMatch); with the mis-match
+/// refused there are no candidates at all, so the call lands on the WI-325
+/// ladder (`MissingRequiresForSpecOp`). Same gap, same site, better
+/// diagnostic — it now names the clause that would license the call.
 #[test]
 fn op_param_requires_is_rejected_at_load() {
     for req in ["requires Desc[PT]", "requires Desc[T = PT]"] {
@@ -164,9 +178,9 @@ fn op_param_requires_is_rejected_at_load() {
         let errs = load_errs(&src);
         let text = errs.join("\n");
         assert!(
-            text.contains("wi817.opparam.Desc.describe.dispatch")
-                && text.contains("no impl matches"),
-            "expected DispatchNoMatch on the covered describe call ({req}); got:\n{text}"
+            text.contains("wi817.opparam.Desc.describe.requires")
+                && text.contains(MISSING_REQUIRES),
+            "expected the WI-325 ladder on the covered describe call ({req}); got:\n{text}"
         );
     }
 }
@@ -177,6 +191,8 @@ fn op_param_requires_is_rejected_at_load() {
 /// for BOTH forms, at the same site (f's covered describe call), so the
 /// lambda changes nothing. CORRECT would be: both load clean and evaluate
 /// (drive → 1, 12, 122, …); when the op-param gap closes, this pin flips.
+/// WI-824 moved the rejection from DispatchNoMatch to the WI-325 ladder — see
+/// the sibling test above for why.
 #[test]
 fn op_param_control_and_witness_rejected_identically() {
     let control = with_instances(
@@ -204,8 +220,9 @@ fn op_param_control_and_witness_rejected_identically() {
         let errs = load_errs(src);
         let text = errs.join("\n");
         assert!(
-            text.contains(&format!("{ns}.Desc.describe.dispatch")) && text.contains("no impl matches"),
-            "{label}: expected DispatchNoMatch at f's describe; got:\n{text}"
+            text.contains(&format!("{ns}.Desc.describe.requires"))
+                && text.contains(MISSING_REQUIRES),
+            "{label}: expected the WI-325 ladder at f's describe; got:\n{text}"
         );
     }
 }
@@ -764,16 +781,21 @@ end
 
 // ── Bonus hazard found while constructing the witness ────────────────
 
-/// PINS A CURRENT DEFECT. With WrapDesc's `requires Desc[T = E]` REMOVED —
-/// leaving an UNCONDITIONED parametric provider `fact Desc[T = Wrap[A = E]]`
-/// with free `E` — the abstract `Desc.describe(x)` call inside f is silently
-/// MIS-PINNED to `WrapDesc.describe` at load (var-var unification makes the
-/// parametric head match the abstract binding; the WI-325 protection only
-/// guards NoCandidates/NoMatch, not a bogus Unique). The program then dies at
-/// eval doing `w.inner` on a `leaf` entity. A load-time rejection (or a
-/// MissingRequires-style diagnostic) would be the sound behaviour.
+/// FIXED BY WI-824 (was: loads clean, dies at eval on `no field 'inner'`).
+/// With WrapDesc's `requires Desc[T = E]` REMOVED — leaving an UNCONDITIONED
+/// parametric provider `fact Desc[T = Wrap[A = E]]` with free `E` — the
+/// abstract `Desc.describe(x)` call inside f was silently MIS-PINNED to
+/// `WrapDesc.describe` at load: candidate matching let the structured head
+/// match the abstract per-call binding var-to-structure, dispatch returned a
+/// bogus `Unique`, and WI-325's protection never fired (it guards
+/// `NoCandidates`/`NoMatch`, not a `Unique`). WI-824 refuses that match — a
+/// rigid skolem is not provably a `Wrap` — so the call falls into the WI-325
+/// ladder and is REJECTED AT LOAD, naming the spec op and the `requires`
+/// clause that would license it. Both sites are named: f's covered call (the
+/// op-param §5.4 gap keeps it uncovered — see the (b) rows above) and
+/// WrapDesc's own body, which genuinely lost its `requires` here.
 #[test]
-fn unconditioned_parametric_fact_mispins_abstract_call() {
+fn unconditioned_parametric_fact_refused_at_abstract_call() {
     let src = with_instances(
         "wi817.v5",
         r#"  sort Poly
@@ -786,14 +808,12 @@ fn unconditioned_parametric_fact_mispins_abstract_call() {
     )
     .replace("    requires Desc[T = E]\n", "");
     assert!(!src.contains("requires Desc[T = E]"), "the conditional's requires must be removed");
-    let got = eval_fresh(&src, "wi817.v5.Poly.drive", 0);
-    match got {
-        Err(anthill_core::eval::EvalError::Internal(ref msg)) => assert!(
-            msg.contains("no field 'inner'"),
-            "expected the mis-pin to die on field 'inner' (CURRENT DEFECT; sound = load rejection); got {msg}"
-        ),
-        other => panic!(
-            "expected Err(Internal(no field 'inner')) (CURRENT DEFECT; sound = load rejection); got {other:?}"
-        ),
-    }
+    let errs = load_errs(&src);
+    let text = errs.join("\n");
+    assert!(
+        text.contains("wi817.v5.Desc.describe.requires")
+            && text.contains(MISSING_REQUIRES),
+        "expected the WI-325 ladder to name the spec op and the missing requires \
+         (WI-824: no bogus Unique); got:\n{text}"
+    );
 }
