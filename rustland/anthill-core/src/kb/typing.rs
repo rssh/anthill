@@ -11554,19 +11554,10 @@ fn explain_dep_refusal(
         return None;
     }
     // Refusal confirmed — everything below is cold diagnostic rendering.
-    let construction = match s3_failure {
-        Some(ResolutionResult::Ambiguous { goal_text, candidate_impl_qns }) => format!(
-            "constructing `{goal_text}` is ambiguous among providers: {}",
-            candidate_impl_qns.join(", "),
-        ),
-        // The first reader of NoMatch's purpose-built hint (eagerly formatted
-        // since WI-821, previously consumed by nothing).
-        Some(ResolutionResult::NoMatch { hint, .. }) => hint,
-        Some(ResolutionResult::Cyclic { path }) => {
-            format!("construction is cyclic: {}", path.join(" -> "))
-        }
-        Some(ResolutionResult::Resolved(_)) | None => String::new(),
-    };
+    let construction = s3_failure
+        .as_ref()
+        .map(describe_resolution_failure)
+        .unwrap_or_default();
     let goal = goal_from_requires_entry(kb, dep);
     let dep_text = match &goal {
         Some(g) => format_goal(kb, g),
@@ -12518,13 +12509,26 @@ fn build_construct_requirement(
     })
 }
 
-/// WI-625 Layer B (WI-300 Tier B) — the requirement dictionaries a GROUND-arg
-/// bridged op needs, resolved at the CONCRETE types of its arguments. The resolver
-/// bridges a concrete op as an `eq`/`cmp` operand; if the op's parent sort declares
-/// `requires Spec[T]` and its body dispatches a (non-builtin) `Spec` op, that
-/// dispatch reads the frame's `__req_<spec>` dictionary — which the bridge's empty
-/// floor (WI-625 gap 1) does not supply, so the op residualizes. This resolves the
-/// real provider so the bridge can thread it.
+/// WI-625 Layer B (WI-300 Tier B) — the requirement dictionaries an op needs,
+/// resolved at the CONCRETE types of its arguments. Two consumers, both of which
+/// hold a concrete op and its runtime argument VALUES but no caller dictionary:
+///
+///  * the resolver→eval bridge ([`super::KnowledgeBase::bridge_op_to_eval`], the
+///    original driver): it bridges a concrete op as an `eq`/`cmp` operand; if the
+///    op's parent sort declares `requires Spec[T]` and its body dispatches a
+///    (non-builtin) `Spec` op, that dispatch reads the frame's `__req_<spec>`
+///    dictionary — which the bridge's empty floor (WI-625 gap 1) does not supply,
+///    so the op residualizes;
+///  * WI-822 LEG 2, VALUE-DIRECTED DISPATCH: an abstract spec-op call the typer
+///    could not pin resolves its impl from the receiver VALUE at runtime
+///    (`resolve_spec_op_target_by_value`) and used to enter that impl's frame with
+///    the spec call's own (empty) channel — so a CONDITIONAL impl's own `requires`
+///    died on the first dictionary read.
+///
+/// The two differ only in what an unresolvable requirement MEANS — the bridge
+/// residualizes (it must not run at all on a wrong answer), while a dispatch enters
+/// the frame unsupplied and lets the body's own read raise if it needs one — so they
+/// share this one resolution and each maps the outcome itself.
 pub(crate) enum BridgeRequirements {
     /// The op's parent sort has no `requires` chain — run with empty dicts (the
     /// gap-1 behavior; a requirement-free body decides).
@@ -12533,9 +12537,15 @@ pub(crate) enum BridgeRequirements {
     /// `synth_req_names` order, for the eval bridge to port into `RequirementHandle`s.
     Resolved(Symbol, Vec<(Symbol, ResolvedRequiresNode)>),
     /// A required dictionary is unresolvable at these arg types (no / ambiguous /
-    /// cyclic provider, or an under-determined carrier) — the bridge must
-    /// residualize rather than run with a wrong or missing dict.
-    Unresolvable,
+    /// cyclic provider, or an under-determined carrier) — the caller must
+    /// residualize or raise rather than run with a wrong or missing dict.
+    ///
+    /// WI-822: `detail` NAMES the requirement and the types it failed at. Both
+    /// consumers report it; previously the variant was opaque and each site could
+    /// only say "a required dictionary" — which is precisely the unattributable
+    /// message WI-822's own investigation had to work around. Built only on this
+    /// (immediately-returning) failure edge, never on the resolving path.
+    Unresolvable { detail: String },
 }
 
 /// Resolve the requirement dictionaries for a bridged op call over GROUND args (see
@@ -12562,7 +12572,12 @@ pub(crate) fn resolve_bridge_requirements(
     let Some(parent) = impl_parent_of_op(kb, op) else {
         return BridgeRequirements::NoneNeeded;
     };
-    let chain = direct_requires_chain(kb, parent);
+    // WI-822: the `_rc` read, not `direct_requires_chain`'s owned clone. This is now
+    // on the per-dispatch path (every value-directed spec-op call reaches it), where
+    // the dominant case is a LEAF impl that only needs `is_empty()` — and paying a
+    // full `Vec<RequiresEntry>` clone to answer that is the whole cost. Holding the
+    // `Rc` alongside `&mut kb` is fine: the arena owns the chain, not the borrow.
+    let chain = direct_requires_chain_rc(kb, parent);
     if chain.is_empty() {
         return BridgeRequirements::NoneNeeded;
     }
@@ -12572,7 +12587,14 @@ pub(crate) fn resolve_bridge_requirements(
     // arg's type-args (`Box[T = Tag]` ⇒ `Box.T := Tag`); a parameter typed with a
     // sort-param directly (`x: T`) binds it from the arg's own type.
     let Some(rec) = super::op_info::lookup_operation_info(kb, op) else {
-        return BridgeRequirements::Unresolvable;
+        return BridgeRequirements::Unresolvable {
+            detail: format!(
+                "`{}` has no recorded signature, so its parameter types cannot pin \
+                 `{}`'s requires chain",
+                kb.qualified_name_of(op),
+                kb.qualified_name_of(parent),
+            ),
+        };
     };
     let params = rec.params;
     let mut subst = Substitution::new();
@@ -12589,7 +12611,13 @@ pub(crate) fn resolve_bridge_requirements(
         let concrete_spec = substitute_spec_via_subst(kb, &entry.spec, &subst);
         let concrete = RequiresEntry { required_sort: entry.required_sort, spec: concrete_spec };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
-            return BridgeRequirements::Unresolvable;
+            return BridgeRequirements::Unresolvable {
+                detail: format!(
+                    "`{}`'s `requires {}` clause carries no readable spec bindings",
+                    kb.qualified_name_of(parent),
+                    kb.qualified_name_of(entry.required_sort),
+                ),
+            };
         };
         // SOUNDNESS: only resolve a FULLY-PINNED goal — every one of the spec's
         // type-parameters bound to a fully-GROUND type. An argument that fails to
@@ -12601,6 +12629,14 @@ pub(crate) fn resolve_bridge_requirements(
         // refusal is σ-GATED and this resolve is σ-less (`sigma: None` below), so the
         // wildcard leniency is fully in force here. This gate is what keeps an
         // abstract element off it — do not relax one without the other.
+        // WI-822 inherits exactly this guarantee for VALUE-DIRECTED DISPATCH, whose
+        // WI-824 feedback asks that an op-scoped construction path meeting an
+        // ABSTRACT element land on a refusal rather than build a dictionary: it does,
+        // HERE, and for this reason. Pinned by
+        // `unpinnable_impl_requirement_is_refused_before_it_can_run` (which also
+        // measures the OUTER guard: to be unpinnable a requirement must range over a
+        // type-param the parameters do not mention, which then fails to cover the
+        // body's own dictionary read, so WI-325 refuses the program at LOAD).
         let spec_tparams = kb.type_params_of_sort(goal.spec_sort);
         let all_pinned = spec_tparams.iter().all(|tp| {
             goal.bindings
@@ -12608,14 +12644,31 @@ pub(crate) fn resolve_bridge_requirements(
                 .any(|(k, v)| kb.resolve_sym(*k) == tp && type_value_is_ground(kb, *v))
         });
         if !all_pinned {
-            return BridgeRequirements::Unresolvable;
+            return BridgeRequirements::Unresolvable {
+                detail: format!(
+                    "`{}` is not fully pinned by the argument types — a spec \
+                     type-parameter stayed abstract, and an abstract binding matches \
+                     ANY provider (which would build a WRONG dictionary)",
+                    format_goal(kb, &goal),
+                ),
+            };
         }
-        // Empty scope: the bridge has no caller frame, so a slot can only resolve by
+        // Empty scope: neither consumer has a caller frame to read (the bridge has no
+        // frame at all; value-directed dispatch reached an impl the caller could not
+        // pin, so no caller slot names it), so a slot can only resolve by
         // CONSTRUCTION (`Leaf`/`Conditional`), never `FromScope`.
         let scope = ResolutionScope { available_requires: &[], sigma: None };
         match resolve(kb, &goal, &scope) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
-            _ => return BridgeRequirements::Unresolvable,
+            other => {
+                return BridgeRequirements::Unresolvable {
+                    detail: format!(
+                        "`{}` has no unique provider: {}",
+                        format_goal(kb, &goal),
+                        describe_resolution_failure(&other),
+                    ),
+                }
+            }
         }
     }
     BridgeRequirements::Resolved(parent, trees)
@@ -16940,6 +16993,31 @@ fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
             .find(|(kk, _)| same_label(kb, *kk, *k))
             .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
     })
+}
+
+/// Render WHY a [`ResolutionResult`] is not a `Resolved` — one owner, so every
+/// reader of a failed instance synthesis words it identically.
+///
+/// WI-822 factored this out of the WI-821 σ-refusal diagnostic (its sole reader
+/// then) when [`resolve_bridge_requirements`] gained the same need: a value-directed
+/// dispatch that cannot construct its impl's dictionary must say what the resolver
+/// actually decided, not just "unresolvable". A `Resolved` maps to the empty string
+/// — callers reach here only on the failure edge, and an empty tail reads as "no
+/// further detail" rather than asserting something false.
+fn describe_resolution_failure(result: &ResolutionResult) -> String {
+    match result {
+        ResolutionResult::Ambiguous { goal_text, candidate_impl_qns } => format!(
+            "constructing `{goal_text}` is ambiguous among providers: {}",
+            candidate_impl_qns.join(", "),
+        ),
+        // The reader of NoMatch's purpose-built hint (eagerly formatted since
+        // WI-821, previously consumed by nothing).
+        ResolutionResult::NoMatch { hint, .. } => hint.clone(),
+        ResolutionResult::Cyclic { path } => {
+            format!("construction is cyclic: {}", path.join(" -> "))
+        }
+        ResolutionResult::Resolved(_) => String::new(),
+    }
 }
 
 /// Human-readable goal text for diagnostics ("Eq[T = Int]").

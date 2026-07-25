@@ -27,11 +27,21 @@
 //! would otherwise resurrect the same forward one layer down), and the
 //! provider-head match records a RIGID per-call element so the conditional
 //! instance's sub-goal instantiates at it instead of dying Cyclic. The
-//! sort-level rows below now measure their CORRECT values. Op-scoped
-//! `requires` chains still have NO call-site supply channel at all
-//! (`ConcreteApplyWithin` gates on the callee's PARENT SORT chain), and
-//! value-directed dispatch pushes an impl frame without the impl's own
-//! requires — those rows stay pinned under their own tickets (WI-822 sphere).
+//! sort-level rows below now measure their CORRECT values.
+//!
+//! WI-822 FIXED the op-scoped-over-SORT-param rows. Their failure was NOT the
+//! missing call-site supply channel the ticket predicted (that channel is still
+//! absent — `ConcreteApplyWithin` gates on the callee's PARENT SORT chain, and
+//! an op-scoped chain has no frame slots at all): the frame that died was the
+//! IMPL's, entered by VALUE-DIRECTED dispatch without the impl's own `requires`.
+//! That impl's chain is now resolved at the receiver's runtime type and seeded
+//! at dispatch, so the op-scoped rows measure the sort-level rows' values.
+//! Op-scoped requirements are therefore served BY VALUE-DIRECTION, not by
+//! dictionaries — correct wherever a receiver value can direct them (the 551
+//! relay chain below), and pinned as a defect where none can
+//! (`wi822_op_scoped_supply_test.rs`: a receiver-less spec op is rejected at
+//! LOAD under an op-scoped `requires` while its sort-level twin is correct —
+//! the residue WI-822 LEG 1 would close).
 //!
 //! Outcome matrix (all pinned below; letters are the ticket's outcome codes —
 //! (b) load error, (c) eval error):
@@ -39,7 +49,7 @@
 //! | requires channel                  | 1 cond. level | mutual recursion | + lambda leg |
 //! |-----------------------------------|---------------|------------------|--------------|
 //! | op-scoped over OP type param      | (b) load err  | (b) load err     | (b) load err |
-//! | op-scoped over SORT param         | (c) unbound   | (c) unbound      | (c) unbound  |
+//! | op-scoped over SORT param         | CORRECT (12)  | CORRECT 1/12/122 | CORRECT      |
 //! | SORT-level                        | CORRECT (12)  | CORRECT 1/12/122 | CORRECT      |
 //!
 //! The `requires`-eval-path hazard flagged by the ticket ("sort-level
@@ -55,10 +65,10 @@
 //! the rule and its second, silently-wrong-VALUE witness live in
 //! `wi824_abstract_mispin_test.rs`).
 //!
-//! The (b)/(c) rows still PIN CURRENT DEFECTS on purpose: wrong behaviour,
-//! named as such, correct values stated beside each pin. The (c) pins flip
-//! to values under the op-scoped supply-channel ticket; the (b) pins flip to
-//! clean loads when the separate §5.4 op-param-requires gap closes.
+//! The (b) rows still PIN CURRENT DEFECTS on purpose: wrong behaviour, named
+//! as such, correct values stated beside each pin. They flip to clean loads
+//! when the separate §5.4 op-param-requires gap closes. (The (c) rows flipped
+//! under WI-822 and now assert their correct values.)
 
 use anthill_core::eval::Value;
 
@@ -248,14 +258,22 @@ fn op_scoped_sort_param_simple_concrete_works() {
     assert!(matches!(got, Ok(Value::Int(1))), "expected Ok(Int(1)); got {got:?}");
 }
 
-/// PINS A CURRENT DEFECT — outcome (c). One conditional level
-/// (`probe(wrap(leaf()))`), no recursion, no lambda: loads clean, then dies
-/// at eval. Value-directed dispatch finds `WrapDesc.describe` from the wrap
-/// value, but pushes its frame WITHOUT the impl's own `requires Desc[T = E]`
-/// dictionary, so the body's inner describe read fails. CORRECT would be
-/// Ok(Int(12)).
+/// FIXED BY WI-822 (was: loads clean, then died
+/// `Internal(DeferToRequirement: … __req_desc not bound)`). One conditional
+/// level (`probe(wrap(leaf()))`), no recursion, no lambda. Value-directed
+/// dispatch finds `WrapDesc.describe` from the wrap value; it now also
+/// resolves that impl's OWN `requires Desc[T = E]` at the receiver's runtime
+/// type (`E := Leaf`) and seeds the frame, so the body's inner describe read
+/// finds its dictionary. 12 = 10·1 + 2.
+///
+/// The frame that died was the IMPL's (`WrapDesc.describe`), NOT the
+/// op-scoped caller's (`Holder.probe`) — established by probe, since the
+/// message named no frame; it does now. `probe`'s own frame holds no
+/// dictionary even after this fix and does not need one: WI-562 licensing
+/// leaves its `Desc.describe(x)` for value-directed eval, which reads no
+/// slot.
 #[test]
-fn op_scoped_single_conditional_level_dies_unbound() {
+fn op_scoped_single_conditional_level_is_correct() {
     let src = with_instances(
         "wi817.v6",
         r#"  sort Holder
@@ -267,24 +285,22 @@ fn op_scoped_single_conditional_level_dies_unbound() {
   end"#,
     );
     let got = eval_fresh(&src, "wi817.v6.Driver.drive", 0);
-    match got {
-        Err(anthill_core::eval::EvalError::Internal(ref msg)) => assert!(
-            msg.contains("__req_desc") && msg.contains("not bound"),
-            "expected the unbound-__req_desc message (CURRENT DEFECT; correct = Ok(Int(12))); got {msg}"
-        ),
-        other => panic!(
-            "expected Err(Internal(unbound __req_desc)) (CURRENT DEFECT; correct = Ok(Int(12))); got {other:?}"
-        ),
-    }
+    assert!(
+        matches!(got, Ok(Value::Int(12))),
+        "expected Ok(Int(12)) — the conditional impl's own requires resolved at \
+         the receiver's runtime type (WI-822 LEG 2; pre-fix died unbound); got {got:?}"
+    );
 }
 
-/// PINS A CURRENT DEFECT — outcome (c), CONTROL and WITNESS identical. The
-/// mutual recursion on op-scoped sort-param requires: depth 0 works (no
-/// changed type yet), depth ≥ 1 dies at the same unbound-dictionary read —
-/// with the lambda leg (witness) and without it (control), indistinguishably.
-/// CORRECT would be drive(1) = 12, drive(2) = 122.
+/// FIXED BY WI-822 (was: depth 0 worked, depth ≥ 1 died unbound) — CONTROL
+/// and WITNESS identical, with the lambda leg and without it. The mutual
+/// recursion on op-scoped sort-param `requires`: each step wraps the value,
+/// so each `Desc.describe` selects `WrapDesc.describe` one level deeper and
+/// its chain resolves at the value's own (concrete, deeper) type. Depth-coded
+/// 1 / 12 / 122, the same values the sort-level twin measures — so the
+/// op-scoped channel now agrees with the sort-level one on this witness.
 #[test]
-fn op_scoped_recursion_control_and_lambda_witness_fail_identically() {
+fn op_scoped_recursion_correct_control_and_lambda_identical() {
     let control = with_instances(
         "wi817.v4",
         r#"  sort FHolder
@@ -322,21 +338,18 @@ fn op_scoped_recursion_control_and_lambda_witness_fail_identically() {
     );
     for (label, src, ns) in [("control", &control, "wi817.v4"), ("witness", &witness, "wi817.v7")] {
         let entry = format!("{ns}.Driver.drive");
-        // One interpreter for both depths: the trapped call is the LAST one,
-        // so the poisoning footgun (a trapped call breaks LATER calls on the
-        // same interpreter) cannot bite, and the second stdlib load is saved.
+        // One interpreter for all three depths: every call is asserted Ok
+        // (no trap ever occurs), so the poisoning footgun does not apply and
+        // two of the three stdlib loads are saved.
         let mut interp = crate::common::interp_for(src);
-        let d0 = interp.call(&entry, &[Value::Int(0)]);
-        assert!(matches!(d0, Ok(Value::Int(1))), "{label} drive(0): expected Ok(Int(1)); got {d0:?}");
-        let d1 = interp.call(&entry, &[Value::Int(1)]);
-        match d1 {
-            Err(anthill_core::eval::EvalError::Internal(ref msg)) => assert!(
-                msg.contains("__req_desc") && msg.contains("not bound"),
-                "{label} drive(1): expected the unbound-__req_desc message (CURRENT DEFECT; correct = Ok(Int(12))); got {msg}"
-            ),
-            other => panic!(
-                "{label} drive(1): expected Err(Internal(unbound __req_desc)) (CURRENT DEFECT; correct = Ok(Int(12))); got {other:?}"
-            ),
+        for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
+            let got = interp.call(&entry, &[Value::Int(n)]);
+            assert!(
+                matches!(got, Ok(Value::Int(v)) if v == correct),
+                "{label} drive({n}): expected the depth-coded Ok(Int({correct})) \
+                 (WI-822 LEG 2 seeds the value-selected impl's own requires; \
+                 pre-fix depth 0 gave 1 and depth ≥ 1 died unbound); got {got:?}"
+            );
         }
     }
 }

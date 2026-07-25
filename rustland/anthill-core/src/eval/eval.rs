@@ -1235,10 +1235,21 @@ impl Interpreter {
         let mut dispatching_dict = {
             let top = self.stack.top().ok_or_else(|| EvalError::Internal(
                 "start_apply_deferred without a current frame".into()))?;
+            // WI-822: NAME THE FRAME. The unbound-slot message used to say only
+            // which `__req_*` name was missing, so the failure could not be
+            // attributed to a caller without re-deriving it by hand — WI-822's
+            // own investigation had to establish, by probe, that the frame at
+            // fault was the value-directed-dispatched IMPL's (`WrapDesc.describe`),
+            // not the op-scoped caller's (`Holder.probe`). The running op and its
+            // requires-chain owner are both in hand here; print them.
+            let running_op = self.kb.qualified_name_of(top.op).to_string();
             find_requirement(&top.requirements, name_sym)
                 .ok_or_else(|| EvalError::Internal(format!(
-                    "DeferToRequirement: requirement param `{}` not bound in caller frame",
-                    self.kb.resolve_sym(name_sym))))?
+                    "DeferToRequirement: requirement param `{}` not bound in caller frame \
+                     (running `{running_op}`, requires-chain owner `{}`)",
+                    self.kb.resolve_sym(name_sym),
+                    self.kb.qualified_name_of(encl),
+                )))?
                 .clone()
         };
         // WI-239: descend into the direct requirement's bundled value for
@@ -1597,6 +1608,9 @@ impl Interpreter {
                     }
                     if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target) {
                         self.note_dispatch(impl_target);
+                        let requirements = self.requirements_for_value_directed_impl(
+                            impl_target, &arg_values, requirements,
+                        )?;
                         return self.enter_operation(
                             impl_target, impl_body, &impl_params, arg_values, requirements, type_args,
                         );
@@ -1614,13 +1628,14 @@ impl Interpreter {
         // only fires where step 3 found no body, turning what would be an
         // `UnknownOperation` on a spec op into a concrete impl call.
         //
-        // The resolved impl is entered with the spec call's own
-        // `requirements`/`type_args` channel (empty for the plain abstract
-        // call that reaches here via `start_apply`). This covers leaf impls
-        // whose bodies are self-contained; an impl whose parent sort itself
-        // declares a `requires` chain would need that chain threaded (the
-        // rewrite path's `construct_requirement` machinery) — surfaced as a
-        // requirement-read error rather than silently mis-dispatched.
+        // The resolved impl is entered with the spec call's own `type_args`
+        // channel and — WI-822 LEG 2 — with the impl's OWN `requires` chain
+        // resolved at the runtime argument types
+        // ([`Self::requirements_for_value_directed_impl`]). Before that, the impl
+        // was entered with the SPEC call's channel (empty for the plain abstract
+        // call reaching here via `start_apply`), which covered only leaf impls
+        // whose bodies are self-contained: a CONDITIONAL impl
+        // (`WrapDesc requires Desc[T = E]`) died on its first dictionary read.
         //
         // Resolves an impl the *operation interpreter* can run: a carrier-
         // defined body, or a builtin-backed declaration (e.g. the body-less
@@ -1646,6 +1661,9 @@ impl Interpreter {
                 }
                 if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
                     self.note_dispatch(impl_target);
+                    let requirements = self.requirements_for_value_directed_impl(
+                        impl_target, &arg_values, requirements,
+                    )?;
                     return self.enter_operation(
                         impl_target, body_node, &params, arg_values, requirements, type_args,
                     );
@@ -1671,6 +1689,121 @@ impl Interpreter {
         // shared helper so this path and the host-entry direct path report the
         // SAME verdict for the same target.
         Err(self.unrunnable_target_error(target))
+    }
+
+    /// WI-822 LEG 2 — the frame requirements for an impl reached by VALUE-DIRECTED
+    /// dispatch (the two arms above: the WI-444 carrier override and the WI-350
+    /// abstract-receiver resolution).
+    ///
+    /// Both arms resolve the impl from a runtime RECEIVER VALUE, precisely because
+    /// the typer could not pin it — so no call site built the impl a dictionary and
+    /// no caller slot names it. They used to enter the impl's frame with the SPEC
+    /// call's own channel, empty for the ordinary abstract call. That is adequate
+    /// only while every reachable impl is a LEAF: the moment the value selects a
+    /// CONDITIONAL impl — one whose own sort declares `requires` — its body's first
+    /// dictionary read hit an empty frame and died
+    /// `Internal(DeferToRequirement: requirement param __req_… not bound)`, blaming
+    /// a frame the author never wrote (WI-817's outcome-(c) pins: `Desc.describe`
+    /// on a `wrap(leaf())` selects `WrapDesc.describe`, whose `requires Desc[T = E]`
+    /// was never supplied).
+    ///
+    /// At dispatch the receiver's type IS concrete, so the chain is resolvable here:
+    /// [`crate::kb::typing::resolve_bridge_requirements`] unifies each argument's
+    /// runtime type against the impl op's declared parameter types (pinning the impl
+    /// sort's own params — `WrapDesc.E := Leaf`), substitutes them into the chain,
+    /// and SLD-resolves each slot with an EMPTY scope. Shared verbatim with WI-625's
+    /// resolver→eval bridge, which faced the identical "concrete op, real argument
+    /// values, no caller dictionary" problem; the two differ only in what an
+    /// unresolvable requirement means, and each maps that itself.
+    ///
+    /// WHY THIS AND NOT A CALL-SITE SUPPLY CHANNEL (WI-822 records the choice): an
+    /// OP-SCOPED `requires` chain (WI-448/WI-562) has no frame slots at all —
+    /// `synth_req_names` is keyed by the parent SORT — so the op-scoped requirement
+    /// is served by value-direction, not by a dictionary, and demonstrably serves it
+    /// correctly (`op_scoped_relay_chain_correct_via_value_direction` computes its
+    /// 551 with no dictionary anywhere). The defect was never that value-direction
+    /// is the wrong channel; it was that the channel stopped at the impl's door.
+    /// Its one genuine blind spot is a spec op with NO receiver argument to direct
+    /// it (`operation zero() -> T`), which no value can select and which therefore
+    /// needs a real op-scoped dictionary channel — WI-822's undelivered LEG 1,
+    /// pinned as a current defect by
+    /// `receiverless_spec_op_op_scoped_rejected_sort_level_correct` (the op-scoped
+    /// spelling is REJECTED AT LOAD where its sort-level twin is correct). Not
+    /// papered over here.
+    ///
+    /// WHEN THE CHAIN CANNOT BE RESOLVED at these argument types, this ENTERS THE
+    /// FRAME UNSUPPLIED (the pre-WI-822 behaviour) rather than raising. WI-822
+    /// specified a loud dispatch error here; MEASURED, that broke 29 previously
+    /// green stdlib tests (the Stream / Iterable / FiniteCollection families —
+    /// `wi435`, `wi439`, `wi492`, `wi588`, `wi614`, …). The shape is ordinary:
+    /// `Map.iterator` is reached
+    /// value-directed on a `Value::Map` HANDLE, which names its carrier sort but
+    /// carries no element type, so `Map`'s `requires Eq[T = Map.K]` cannot be
+    /// pinned — and `iterator`'s body never reads that dictionary, so it runs
+    /// correctly with none. "Has an unpinnable chain" and "needs it" are different
+    /// questions, and only the body answers the second.
+    ///
+    /// This is not the silent skip the loud-error rule guards against: the failure
+    /// stays LOUD, at the point where it is actually a failure. A body that DOES
+    /// read a dictionary it was not given raises
+    /// `Internal(DeferToRequirement: … not bound …)` from `start_apply_deferred`,
+    /// which now NAMES the running operation and the requires-chain owner — the
+    /// attribution whose absence forced WI-822 to establish its own failing frame
+    /// by probe. Raising at dispatch would move that error EARLIER at the cost of
+    /// making it fire for bodies that never had a problem.
+    ///
+    /// What must never happen — entering with a WRONG dictionary — cannot: the
+    /// resolution's fully-pinned gate rejects an abstract element BEFORE
+    /// candidate matching, so an unpinnable chain yields no dictionary at all
+    /// rather than one built against a wildcard.
+    fn requirements_for_value_directed_impl(
+        &mut self,
+        impl_target: Symbol,
+        arg_values: &[Value],
+        incoming: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+    ) -> Result<SmallVec<[(Symbol, super::value::RequirementHandle); 2]>, EvalError> {
+        use crate::kb::typing::BridgeRequirements;
+        // An incoming channel was built FOR THIS CALL by a caller that knew the
+        // callee (an `apply_within` dict, a same-sort inherit). It is the more
+        // specific supply; leave it. Only the empty channel — the abstract call
+        // that reached value-direction precisely because nothing was known
+        // statically — is the one this fills.
+        if !incoming.is_empty() {
+            return Ok(incoming);
+        }
+        match crate::kb::typing::resolve_bridge_requirements(
+            &mut self.kb, impl_target, arg_values,
+        ) {
+            // No chain to supply: the pre-WI-822 behaviour for every leaf impl,
+            // which is the overwhelming majority of value-directed dispatches.
+            BridgeRequirements::NoneNeeded => Ok(incoming),
+            // Unpinnable at these argument types — enter unsupplied, deliberately
+            // (see the doc comment: measured against the stdlib, and still loud at
+            // the read). Traced, not swallowed: `ANTHILL_TRACE_REQ` prints what
+            // could not be built, so the deferred unbound error further in can be
+            // tied back to its cause without a source edit.
+            BridgeRequirements::Unresolvable { detail } => {
+                if self.trace_requirements {
+                    eprintln!(
+                        "[req] value-directed dispatch to `{}` entered UNSUPPLIED: {detail}",
+                        self.kb.qualified_name_of(impl_target),
+                    );
+                }
+                Ok(incoming)
+            }
+            BridgeRequirements::Resolved(parent, trees) => {
+                self.frame_requirements_from_trees(parent, &trees).map_err(|name| {
+                    // `resolve_bridge_requirements` resolves with an EMPTY scope,
+                    // so `FromScope` — the only failure — cannot arise.
+                    EvalError::Internal(format!(
+                        "value-directed dispatch to `{}`: requirement `{}` resolved \
+                         to a caller-scope slot, but the resolution ran with no scope",
+                        self.kb.qualified_name_of(impl_target),
+                        self.kb.resolve_sym(name),
+                    ))
+                })
+            }
+        }
     }
 
     /// WI-275: adapt the arguments of an eta'd operation reference (a

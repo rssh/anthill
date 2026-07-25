@@ -813,3 +813,6 @@ mod wi826_cover_walk_orientation_test;
 
 #[path = "include/wi824_abstract_mispin_test.rs"]
 mod wi824_abstract_mispin_test;
+
+#[path = "include/wi822_op_scoped_supply_test.rs"]
+mod wi822_op_scoped_supply_test;

@@ -307,6 +307,11 @@ pub struct Interpreter {
     /// and per-dispatch profiling gates are a plain field test, not an env
     /// lookup. See `eval::OP_PROF` / `Self::dump_profile`.
     pub(crate) profiling: bool,
+    /// Whether `ANTHILL_TRACE_REQ` requirement tracing is active. Read once at
+    /// construction for the same reason as `profiling`: the gate sits on the
+    /// per-dispatch path in `requirements_for_value_directed_impl`, where every
+    /// leaf-impl call would otherwise pay an env lookup to print nothing.
+    pub(crate) trace_requirements: bool,
     pub(crate) config: EvalConfig,
     /// Monotonically increasing step counter, reset on each `call()`.
     /// `run()` increments it once per `step()` and compares against
@@ -367,6 +372,7 @@ impl Interpreter {
             op_body_cache: HashMap::new(),
             const_cache: HashMap::new(),
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
+            trace_requirements: std::env::var_os("ANTHILL_TRACE_REQ").is_some(),
             config,
             step_count: 0,
             recent_dispatches: std::collections::VecDeque::new(),
@@ -546,10 +552,11 @@ impl Interpreter {
         use crate::kb::typing::BridgeRequirements;
         let requirements = match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, sym, args) {
             BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
-            BridgeRequirements::Unresolvable => {
+            BridgeRequirements::Unresolvable { detail } => {
                 return Err(EvalError::Suspended {
                     detail: format!(
-                        "bridge: cannot resolve a required dictionary for `{}` at these argument types",
+                        "bridge: cannot resolve a required dictionary for `{}` at these \
+                         argument types: {detail}",
                         self.kb.qualified_name_of(sym),
                     ),
                     // A missing dictionary is a flounder, not a truncated search.
@@ -557,31 +564,50 @@ impl Interpreter {
                 });
             }
             BridgeRequirements::Resolved(parent, trees) => {
-                let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
-                    smallvec::SmallVec::with_capacity(trees.len() + 1);
-                // Slot 0 = Self placeholder (the op's own parent sort), then one
-                // real provider handle per `requires` slot — the same layout
-                // `call_with_requirements` assembles for a host caller.
-                out.push((self.fields.req_self, self.requirements.alloc(parent, smallvec::SmallVec::new())));
-                for (name, tree) in &trees {
-                    match self.port_resolved_tree(tree) {
-                        Some(handle) => out.push((*name, handle)),
-                        None => {
-                            return Err(EvalError::Suspended {
-                                detail: format!(
-                                    "bridge: requirement for `{}` resolved to a caller-scope slot with no caller frame",
-                                    self.kb.qualified_name_of(sym),
-                                ),
-                                // A missing caller frame is a flounder, not truncation.
-                                truncated: false,
-                            });
-                        }
+                self.frame_requirements_from_trees(parent, &trees).map_err(|name| {
+                    EvalError::Suspended {
+                        detail: format!(
+                            "bridge: requirement `{}` for `{}` resolved to a caller-scope \
+                             slot with no caller frame",
+                            self.kb.resolve_sym(name),
+                            self.kb.qualified_name_of(sym),
+                        ),
+                        // A missing caller frame is a flounder, not truncation.
+                        truncated: false,
                     }
-                }
-                out
+                })?
             }
         };
         self.invoke_op_with_requirements(sym, args, requirements)
+    }
+
+    /// The frame `requirements` channel for a [`BridgeRequirements::Resolved`]
+    /// payload: slot 0 = the Self placeholder over the op's own parent sort, then
+    /// one real provider handle per `requires` slot, keyed by the
+    /// `synth_req_names` name each tree came back under. The same layout
+    /// `call_with_requirements` assembles for a host caller and
+    /// `expand_dispatching_dict` assembles from a dispatching dict.
+    ///
+    /// `Err(name)` is the requirement whose tree would not port — only ever a
+    /// `FromScope`, which cannot arise from an empty-scope resolution. The SPELLING
+    /// of that failure is the caller's: the WI-625 bridge residualizes
+    /// (`Suspended`), WI-822's value-directed dispatch raises (`Internal`). Both
+    /// otherwise built this list identically, so it has one owner.
+    fn frame_requirements_from_trees(
+        &self,
+        parent: Symbol,
+        trees: &[(Symbol, crate::kb::typing::ResolvedRequiresNode)],
+    ) -> Result<smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>, Symbol> {
+        let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
+            smallvec::SmallVec::with_capacity(trees.len() + 1);
+        out.push((
+            self.fields.req_self,
+            self.requirements.alloc(parent, smallvec::SmallVec::new()),
+        ));
+        for (name, tree) in trees {
+            out.push((*name, self.port_resolved_tree(tree).ok_or(*name)?));
+        }
+        Ok(out)
     }
 
     /// WI-625 Layer B: port a resolved requirement tree
