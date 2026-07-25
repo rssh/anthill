@@ -33,7 +33,7 @@ use crate::common::interp_for;
 // Unlike the filesystem backends (whose per-functor policy IS the project's
 // reflect rules, so `owned_monotonicity` returns `[]`), this mock is the
 // authority for its own functor: it declares the functor's policy intrinsically
-// via `owned_monotonicity`, which `register_store` materializes into the
+// via `owned_monotonicity`, which `register_mirror` materializes into the
 // facade. Also lets `retract` be forced to fail, exercising acceptance (3).
 struct PolicyStore {
     /// Qualified functor name this store owns and its declared write policy.
@@ -82,7 +82,7 @@ fn register_policy_store(interp: &mut Interpreter, mock: PolicyStore) -> Value {
         named: vec![].into(),
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_store(key, Box::new(mock));
+    interp.register_mirror(key, Box::new(mock));
     store_val
 }
 
@@ -104,7 +104,7 @@ fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Valu
         ].into(),
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_store(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
+    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
     store_val
 }
 
@@ -124,8 +124,15 @@ fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value
     interp.call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
 }
 
-fn retract(interp: &mut Interpreter, store: &Value, id: Value) -> Result<Value, EvalError> {
-    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), id])
+fn retract(interp: &mut Interpreter, store: &Value, stored: Value) -> Result<Value, EvalError> {
+    let reference = interp.kb_mut().intern("reference");
+    let reference = match &stored {
+        Value::Entity { named, .. } => named.iter().find(|(name, _)| *name == reference)
+            .map(|(_, value)| value.clone())
+            .expect("StoredRef carries reference"),
+        other => panic!("persist must return StoredRef, got {other:?}"),
+    };
+    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
 }
 
 /// Assert the reflect `Monotonicity` entity `v` is the `<variant>` variant.
@@ -255,7 +262,7 @@ fn append_only_default_store_cannot_retract() {
     let functor = interp.kb_mut().intern("AppendOnly");
     let store = Value::Entity { functor, pos: vec![].into(), named: vec![].into() };
     let key = interp.store_canonical_key(&store).expect("key");
-    interp.register_store(key, Box::new(AppendOnly));
+    interp.register_mirror(key, Box::new(AppendOnly));
 
     let fact = functor_value(&mut interp, "test.syn.Ghost");
     let id = persist(&mut interp, &store, fact).expect("persist ok");

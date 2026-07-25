@@ -2234,8 +2234,8 @@ namespace anthill.todo
 
     -- ── cmd_delete ───────────────────────────────────────────────
     -- `delete <id>` retracts the WorkItem fact entirely (no
-    -- replacement). The impl's forget routes through find_fact +
-    -- retract so the IndexedFileStore drops the on-disk block.
+    -- replacement). The impl's forget selects a StoredRef, then retracts
+    -- through its opaque reference so the IndexedFileStore drops the on-disk block.
 
     operation cmd_delete(args: List[Binding],
                           store: FileStore,

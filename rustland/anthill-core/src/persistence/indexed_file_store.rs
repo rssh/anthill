@@ -136,6 +136,22 @@ impl Store for IndexedFileStore {
         }
     }
 
+    fn update(
+        &mut self,
+        kb: &KnowledgeBase,
+        id: RuleId,
+        new: TermId,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> Result<bool, PersistenceError> {
+        if !self.retract(kb, id)? {
+            return Ok(false);
+        }
+        self.persist(kb, new, sort, domain, meta)?;
+        Ok(true)
+    }
+
     fn retrieve(
         &self,
         kb: &KnowledgeBase,

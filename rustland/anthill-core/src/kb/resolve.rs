@@ -2284,7 +2284,7 @@ impl SearchStream {
         // candidates (the lenient SLD-source policy — one source among many; WI-300
         // will make this a proper delay/flounder).
         match kb.drain_extent_query(functor, &pattern) {
-            Ok(rows) => rows,
+            Ok(rows) => rows.into_iter().map(|row| row.row).collect(),
             Err(e) => {
                 eprintln!("[extent] `{}`: {e}", kb.resolve_sym(functor));
                 Vec::new()

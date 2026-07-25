@@ -2903,7 +2903,6 @@ fn literal_display(lit: &Literal) -> String {
             buf
         }
         Literal::Bool(b) => if *b { "true" } else { "false" }.to_string(),
-        Literal::Handle(kind, id) => format!("<handle:{kind:?}:{id}>"),
     }
 }
 
@@ -30678,8 +30677,6 @@ fn literal_sort(kb: &mut KnowledgeBase, lit: &Literal) -> Value {
         Literal::Float(_) => "Float",
         Literal::Bool(_) => "Bool",
         Literal::String(_) => "String",
-        // An opaque handle (OccurrenceId / FactId) has no literal sort.
-        Literal::Handle(..) => return fresh_type_var(kb),
     };
     Value::term(kb.make_sort_ref_by_name(name))
 }

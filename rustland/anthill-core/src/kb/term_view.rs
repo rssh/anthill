@@ -1663,6 +1663,7 @@ impl TermView for Value {
             | Value::Map(_)
             | Value::Cell(_)
             | Value::Requirement(_)
+            | Value::FactRef(_)
             // WI-714: a `Relation` is an intensional query value, not structural
             // data — opaque to the term view (it never unifies or indexes; it is
             // consumed only through `Relation.splitFirst`).
@@ -1943,8 +1944,6 @@ impl ReflectedExpr {
             Literal::Float(_) => self.syms.float_lit,
             Literal::String(_) => self.syms.string_lit,
             Literal::Bool(_) => self.syms.bool_lit,
-            // Opaque handle literals have no reflect `*_lit` form.
-            Literal::Handle(_, _) => None,
         }
     }
 }

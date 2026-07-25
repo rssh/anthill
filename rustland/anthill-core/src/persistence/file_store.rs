@@ -137,6 +137,24 @@ impl Store for FileStore {
         Ok(true)
     }
 
+    fn update(
+        &mut self,
+        kb: &KnowledgeBase,
+        id: RuleId,
+        new: TermId,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> Result<bool, PersistenceError> {
+        if !self.retract(kb, id)? {
+            return Ok(false);
+        }
+        // Both mutations are still buffered; the next flush rewrites each
+        // affected file once, so no on-disk observer sees an intermediate row.
+        self.persist(kb, new, sort, domain, meta)?;
+        Ok(true)
+    }
+
     fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> {
         // Group pending operations by path. Retracts apply first; persists
         // append after.

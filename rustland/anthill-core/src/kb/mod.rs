@@ -68,9 +68,6 @@ impl RuleId {
     }
 }
 
-/// Backwards-compatible alias.
-pub type FactId = RuleId;
-
 // ── Constraint handle ───────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

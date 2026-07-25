@@ -22,7 +22,6 @@ use std::collections::HashMap;
 
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
-use crate::persistence::Store;
 
 pub use error::EvalError;
 pub use eval::value_functor;
@@ -200,6 +199,7 @@ impl ReflectSymbols {
 #[allow(dead_code)]  // params/type_name/guard are reserved for future arms
 pub(crate) struct FieldSymbols {
     pub value: Symbol,
+    pub reference: Symbol,
     pub name: Symbol,
     pub cond: Symbol,
     pub then_branch: Symbol,
@@ -239,6 +239,7 @@ impl FieldSymbols {
     fn resolve(kb: &mut KnowledgeBase) -> Self {
         Self {
             value: kb.intern("value"),
+            reference: kb.intern("reference"),
             name: kb.intern("name"),
             cond: kb.intern("cond"),
             then_branch: kb.intern("then_branch"),
@@ -286,22 +287,6 @@ pub struct Interpreter {
     pub(crate) cells: CellArenaRef,
     pub(crate) requirements: RequirementArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
-    /// Registered persistence backends (proposal 007). Keyed by the
-    /// canonical printed form of the store's `Value::Entity` so anthill
-    /// code referencing the same shape (e.g. `FileStore(root: "x",
-    /// convention: Flat)`) routes to the same instance across calls.
-    /// The shim populates this before invoking `main` (see
-    /// `Self::register_store`); persistence builtins look entries up.
-    pub(crate) store_registry: HashMap<String, Box<dyn Store>>,
-    /// Per-functor write policy provided by registered stores (proposal 053 /
-    /// 007 §2), keyed by the functor's QUALIFIED NAME. Materialized at
-    /// `register_store` from each store's `Store::owned_monotonicity`. The
-    /// `fact_monotonicity` guard consults this as the fallback when no
-    /// in-memory reflect rule fired — so a functor owned by an external store
-    /// resolves to that store's policy, not the in-memory `monotone` default.
-    /// String-keyed (not `Symbol`) so a store can name a functor whose symbol
-    /// is interned later; the guard resolves against `qualified_name_of`.
-    pub(crate) store_monotonicity: HashMap<String, crate::persistence::Monotonicity>,
     /// Memoized operation-body lookups. `lookup_operation_body` linear-scans
     /// every `OperationInfo` fact to find the one matching the op symbol, so
     /// without this cache every operation call is O(num_operations) — which
@@ -379,8 +364,6 @@ impl Interpreter {
             cells: CellArenaRef::new(),
             requirements: RequirementArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
-            store_registry: HashMap::new(),
-            store_monotonicity: HashMap::new(),
             op_body_cache: HashMap::new(),
             const_cache: HashMap::new(),
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
@@ -416,21 +399,17 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Register a persistence backend, keyed by its canonical store-value
+    /// Register a durability mirror, keyed by its canonical store-value
     /// form. Anthill code that calls `persist`/`retract`/`flush` with a
     /// `Value::Entity` whose canonical form matches `key` routes to this
     /// instance. Replaces any prior registration under the same key.
     /// Use [`Self::store_canonical_key`] to compute the key from the
     /// store's value representation.
     ///
-    /// Materializes the store's per-functor write policy (proposal 053 /
-    /// 007 §2) into `store_monotonicity` so the `fact_monotonicity` guard can
-    /// resolve an externally-owned functor to its owning store's answer.
-    pub fn register_store(&mut self, key: String, store: Box<dyn Store>) {
-        for (functor_name, mono) in store.owned_monotonicity() {
-            self.store_monotonicity.insert(functor_name, mono);
-        }
-        self.store_registry.insert(key, store);
+    /// Its intrinsic per-functor write policy is held by `kb.extents`, alongside
+    /// the mirror itself; the evaluator owns neither persistence registry.
+    pub fn register_mirror(&mut self, key: String, mirror: Box<dyn crate::persistence::Store>) {
+        self.kb.register_mirror(key, mirror);
     }
 
     /// Compute the canonical-key string for a store value (`Value::Entity`).
@@ -491,6 +470,7 @@ impl Interpreter {
             | Value::Map(_)
             | Value::Cell(_)
             | Value::Requirement(_)
+            | Value::FactRef(_)
             | Value::Node(_)
             // WI-714: a `Relation` is a query value, never persisted store data.
             | Value::Relation { .. }

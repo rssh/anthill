@@ -467,15 +467,6 @@ impl<'a> RustCodegen<'a> {
             return None;
         };
         match self.terms.get(tid) {
-            // A handle (FactId/OccurrenceId) has no const-expressible literal form.
-            Term::Const(Literal::Handle(..)) => {
-                self.errors.push(CodegenError {
-                    message: format!(
-                        "const `{name}`: a handle literal is not a valid Rust const value"
-                    ),
-                });
-                None
-            }
             Term::Const(lit) => Some(lower_literal_rust(lit, rust_ty)),
             other => {
                 self.errors.push(CodegenError {
@@ -1751,7 +1742,6 @@ fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> String {
         Literal::Float(f) => with_point(f.into_inner().to_string()),
         Literal::Bool(b) => b.to_string(),
         Literal::String(s) => format!("{s:?}"),
-        Literal::Handle(kind, id) => format!("/* handle {kind:?}:{id} */"),
     }
 }
 
@@ -1766,7 +1756,6 @@ fn map_primitive_type(name: &str) -> String {
         "Timestamp" => "String".to_owned(),
         "Term" => "Term".to_owned(),
         "Meta" => "Meta".to_owned(),
-        "FactId" => "FactId".to_owned(),
         _ => name.to_owned(),
     }
 }

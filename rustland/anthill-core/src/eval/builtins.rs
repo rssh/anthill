@@ -112,6 +112,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
+    register_if_present(interp, "anthill.reflect.KB.stored_facts_of", kb_stored_facts_of)?;
     register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
     register_if_present(interp, "anthill.reflect.unify", reflect_unify)?;
     register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
@@ -143,7 +144,6 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.sub_occurrences", reflect_sub_occurrences)?;
     register_if_present(interp, "anthill.reflect.occurrence_type", reflect_occurrence_type)?;
     register_if_present(interp, "anthill.reflect.is_modifiable", reflect_is_modifiable)?;
-    register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
     register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
     register_if_present(interp, "anthill.prelude.Int64.to_string", int_to_string)?;
@@ -151,13 +151,14 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // Persistence (proposal 007). The operations are declared inside
     // `sort Store { operation persist … }` so their qualified names are
     // `anthill.persistence.Store.<op>`. Stores must be registered via
-    // `Interpreter::register_store` before these dispatch.
+    // `Interpreter::register_mirror` before these dispatch.
     register_if_present(interp, "anthill.persistence.Store.persist", persistence_persist)?;
     register_if_present(interp, "anthill.persistence.Store.flush",   persistence_flush)?;
     register_if_present(interp, "anthill.persistence.Store.monotonicity", persistence_monotonicity)?;
     // `retract` is a NonMonotonicStore-trait op (proposal 053 / 007 §2): only a
     // backend that declares `fact NonMonotonicStore[X]` provides it.
     register_if_present(interp, "anthill.persistence.NonMonotonicStore.retract", persistence_retract)?;
+    register_if_present(interp, "anthill.persistence.NonMonotonicStore.update", persistence_update)?;
     register_if_present(interp, "anthill.persistence.QueryableStore.retrieve",
                         persistence_retrieve)?;
 
@@ -2540,7 +2541,6 @@ pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::Term
         Decision::Literal(Literal::Float(f)) => Value::Float(f.into_inner()),
         Decision::Literal(Literal::Bool(b)) => Value::Bool(b),
         Decision::Literal(Literal::String(s)) => Value::Str(s),
-        Decision::Literal(Literal::Handle(_, _)) => Value::term(tid),
         Decision::TryFn(functor) => {
             if interp.kb.constructor_parent_sort(functor).is_some() {
                 materialize_entity(interp, tid).unwrap_or(Value::term(tid))
@@ -2836,59 +2836,6 @@ fn reflect_occurrence_type(interp: &mut Interpreter, args: &[Value]) -> Result<V
     }
 }
 
-/// `anthill.reflect.find_fact(t: Term) -> Option[FactId]`.
-/// Look up the asserted fact whose head term-id structurally equals `t`,
-/// returning a `Term::Const(Literal::Handle(Fact, rule_id))` wrapped in
-/// `some(...)`. Used by mutating commands (claim / deliver / verify /
-/// update / delete) to obtain a FactId for `Store.retract` after a
-/// `facts_of`-style query has yielded the matching head.
-///
-/// The KB hash-conses term ids, so equality of the head TermId is
-/// equality of the head term — no recursive structural compare needed.
-fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::term::{HandleKind, Literal, Term};
-    let [term_arg] = expect_args::<1>("find_fact", args)?;
-    let target = match &term_arg {
-        Value::Term { id: t, .. } => *t,
-        other => return Err(type_mismatch("Term", other, None)),
-    };
-    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
-    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
-    let value_key = interp.kb.intern("value");
-
-    let functor = match interp.kb.get_term(target) {
-        Term::Fn { functor, .. } => Some(*functor),
-        Term::Ref(sym) => Some(*sym),
-        _ => None,
-    };
-    let found = functor.and_then(|f| {
-        interp.kb.rules_by_functor_iter(f)
-            // A value-fact head (WI-348/WI-366) is not a `TermId`, so it can never
-            // equal the ground `target` — skip it (avoids the term-only
-            // `rule_head` panic on a value head).
-            .find(|rid| matches!(interp.kb.rule_head_value(*rid),
-                crate::eval::value::Value::Term { id: t, .. } if *t == target))
-    });
-
-    match found {
-        Some(rid) => {
-            let handle = interp.kb.alloc(Term::Const(Literal::Handle(
-                HandleKind::Fact, rid.raw(),
-            )));
-            Ok(Value::Entity {
-                functor: some_sym,
-                pos: Vec::new().into(),
-                named: vec![(value_key, Value::term(handle))].into(),
-            })
-        }
-        None => Ok(Value::Entity {
-            functor: none_sym,
-            pos: Vec::new().into(),
-            named: Vec::new().into(),
-        }),
-    }
-}
-
 /// `anthill.reflect.replace_named_arg(t: Term, name: String, value: Term)
 /// -> Term`. Return a fresh `Term::Fn` cloned from `t` with the named arg
 /// matching `name` replaced by `value`. If `t` has no such named arg the
@@ -2974,6 +2921,46 @@ fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         .collect();
 
     interp.build_list_value(elements, &[])
+}
+
+/// `anthill.reflect.KB.stored_facts_of(kb, sort) -> List[StoredRef[Term]]`.
+/// The capability-carrying companion to [`kb_facts_of`]: each visible row is
+/// paired with the source-neutral reference its owner minted, so callers can
+/// later pass `.reference` to retract/update without rediscovering identity.
+fn kb_stored_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [_kb_arg, sort_arg] = expect_args::<2>("KB.stored_facts_of", args)?;
+    let functor_sym = crate::eval::eval::value_functor(&interp.kb, &sort_arg)
+        .ok_or_else(|| type_mismatch("Type (entity reference)", &sort_arg, None))?;
+    let rows = interp
+        .kb
+        .read_stored_facts(functor_sym, crate::kb::extent::BodiedRulePolicy::Refuse)
+        .map_err(|e| EvalError::Internal(format!("stored_facts_of: {e}")))?;
+    let elements = rows
+        .into_iter()
+        .map(|row| stored_ref_value(interp, row))
+        .collect::<Result<Vec<_>, _>>()?;
+    interp.build_list_value(elements, &[])
+}
+
+/// Materialize the declared `StoredRef[T]` pair around an extent-seam row.
+/// `FactRef` itself stays a native opaque carrier — it is never lowered into a
+/// `Term` or a resident-only handle literal.
+fn stored_ref_value(interp: &mut Interpreter, row: crate::kb::extent::StoredRow)
+    -> Result<Value, EvalError>
+{
+    let stored_ref = require_symbol(
+        interp,
+        "anthill.reflect.StoredRef.stored_ref",
+        "stored_ref",
+    )?;
+    Ok(Value::Entity {
+        functor: stored_ref,
+        pos: Vec::new().into(),
+        named: vec![
+            (interp.fields.value, row.row),
+            (interp.fields.reference, Value::FactRef(row.reference)),
+        ].into(),
+    })
 }
 
 /// `anthill.reflect.is_modifiable(t: Type) -> Bool` (WI-206). True iff `t`'s head
@@ -3530,7 +3517,7 @@ impl Interpreter {
     ///   1. an in-memory `fact_monotonicity` reflect rule ("by reflect rule in
     ///      memory"), then
     ///   2. the owning external store's materialized policy ("by its API
-    ///      externally"; `store_monotonicity`, filled at `register_store`),
+    ///      externally"; materialized in `kb.extents` at `register_mirror`),
     ///      then
     ///   3. the `monotone` append-only default.
     fn resolve_fact_monotonicity(
@@ -3540,21 +3527,16 @@ impl Interpreter {
         if let Some(m) = reflect_fact_monotonicity(&mut self.kb, functor)? {
             return Ok(m);
         }
-        // No in-memory rule: fall back to the owning store's policy, keyed by
-        // the functor's qualified name (materialized at registration). Skip the
-        // name allocation entirely when no store declared a policy (the common
-        // case — the filesystem backends contribute none).
-        if self.store_monotonicity.is_empty() {
-            return Ok(Monotonicity::Monotone);
-        }
+        // No in-memory rule: fall back to the owning mirror's policy, keyed by
+        // its qualified functor name and materialized in the KB at registration.
         let qname = self.kb.qualified_name_of(functor).to_string();
-        Ok(self.store_monotonicity.get(&qname).copied().unwrap_or(Monotonicity::Monotone))
+        Ok(self.kb.mirror_monotonicity(&qname).unwrap_or(Monotonicity::Monotone))
     }
 }
 
 // ── Persistence builtins (proposal 007 §4) ─────────────────────
 
-/// `anthill.persistence.Store.persist(store, fact, meta) -> FactId`.
+/// `anthill.persistence.Store.persist(store, fact, meta) -> StoredRef[Term]`.
 /// `meta` is accepted but not yet consumed — pass `none()`.
 fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [store_val, fact_val, _meta_val] = expect_args::<3>("persist", args)?;
@@ -3582,26 +3564,11 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         ))));
     }
 
-    let sort = interp.kb.make_name_term("Fact");
-    let domain = interp.kb.make_name_term("anthill.todo");
-    let rule_id = interp.kb.assert_fact(fact_term, sort, domain, None);
-
-    let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
-        EvalError::Internal(format!("persist: no store registered for key `{key}`"))
-    })?;
-    // The store I/O failure is what `persist`'s `effects Error` declares —
-    // deliver it through the Error effect (a custom handler can intercept;
-    // default Throws -> Raised). The "no store registered" case above is a
-    // host-setup fault not covered by `effects Error`, so it stays Internal.
-    let outcome = store.persist(&interp.kb, fact_term, sort, domain, None);
-    if let Err(e) = outcome {
-        return Err(interp.raise_error(Value::Str(format!("persist failed: {e}"))));
-    }
-
-    let handle = interp.kb.alloc(crate::kb::term::Term::Const(
-        crate::kb::term::Literal::Handle(crate::kb::term::HandleKind::Fact, rule_id.raw()),
-    ));
-    Ok(Value::term(handle))
+    // The KB seam owns mirror-before-resident ordering and mints the
+    // source-neutral reference that future writes must carry.
+    let row = interp.kb.persist_mirrored(&key, Value::term(fact_term), None)
+        .map_err(|e| interp.raise_error(Value::Str(format!("persist failed: {e}"))))?;
+    stored_ref_value(interp, row)
 }
 
 /// `anthill.persistence.Store.monotonicity(store, functor) -> Monotonicity`.
@@ -3651,34 +3618,41 @@ fn persistence_monotonicity(interp: &mut Interpreter, args: &[Value]) -> Result<
     })
 }
 
-/// `anthill.persistence.NonMonotonicStore.retract(store, fact_id) -> Bool`.
-/// `Store::retract` must run before `kb.retract` — the store needs the
-/// head's canonical printed form, and the rule's TermIds may become
-/// invalid after the KB-side retract releases them.
+/// `anthill.persistence.NonMonotonicStore.retract(store, reference) -> Bool`.
 fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [store_val, id_val] = expect_args::<2>("retract", args)?;
     let key = interp.store_canonical_key(&store_val)?;
 
-    let rule_raw = match &id_val {
-        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
-            crate::kb::term::Term::Const(crate::kb::term::Literal::Handle(
-                crate::kb::term::HandleKind::Fact,
-                raw,
-            )) => *raw,
-            _ => return Err(EvalError::TypeMismatch {
-                expected: "FactId handle",
-                got: id_val.type_name().to_string(),
-            }),
-        },
-        _ => return Err(EvalError::TypeMismatch {
-            expected: "FactId",
-            got: id_val.type_name().to_string(),
+    let reference = match id_val {
+        Value::FactRef(reference) => reference,
+        other => return Err(EvalError::TypeMismatch {
+            expected: "FactRef",
+            got: other.type_name().to_string(),
         }),
     };
-    let rule_id = crate::kb::RuleId::from_raw(rule_raw);
+
+    // An external owner receives its native key through the KB seam. For a
+    // mirrored resident row, the reference also carries the mirror it came
+    // from; accepting a different `store` argument would silently route a
+    // mutation to the wrong durable extent.
+    let Some(rule_id) = reference.resident_rule() else {
+        let outcome = interp.kb.retract_persistent(&reference)
+            .map_err(|e| EvalError::Internal(format!("retract: {e}")))?;
+        return Ok(Value::Bool(outcome));
+    };
+
+    if reference.resident_mirror() != Some(key.as_str()) {
+        return Err(EvalError::Internal(
+            "retract: FactRef does not belong to the supplied store".into(),
+        ));
+    }
 
     if !interp.kb.is_rule_alive(rule_id) {
         return Ok(Value::Bool(false));
+    }
+    let head = interp.kb.rule_head_value(rule_id).clone();
+    if let Err(error) = interp.kb.check_fact_mutation_target(&head) {
+        return Err(interp.raise_error(Value::Str(error.to_string())));
     }
 
     // Proposal 053: retract is the SOLE guard — refuse (loud) unless the functor
@@ -3702,17 +3676,62 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         ))));
     }
 
-    {
-        let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
-            EvalError::Internal(format!("retract: no store registered for key `{key}`"))
-        })?;
-        let outcome = store.retract(&interp.kb, rule_id);
-        if let Err(e) = outcome {
-            return Err(interp.raise_error(Value::Str(format!("retract failed: {e}"))));
+    let outcome = interp.kb.retract_persistent(&reference)
+        .map_err(|e| interp.raise_error(Value::Str(format!("retract failed: {e}"))))?;
+    Ok(Value::Bool(outcome))
+}
+
+/// `anthill.persistence.NonMonotonicStore.update(store, reference, new) ->
+/// Option[StoredRef[Term]]`.
+///
+/// Both mounted owners and resident mirrors implement this through the KB's
+/// single update seam; callers never compose retract and persist themselves.
+fn persistence_update(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [store_val, reference_val, new] = expect_args::<3>("update", args)?;
+    let key = interp.store_canonical_key(&store_val)?;
+    let reference = match reference_val {
+        Value::FactRef(reference) => reference,
+        other => return Err(EvalError::TypeMismatch {
+            expected: "FactRef",
+            got: other.type_name().to_string(),
+        }),
+    };
+    if let Some(rule_id) = reference.resident_rule() {
+        if reference.resident_mirror() != Some(key.as_str()) {
+            return Err(EvalError::Internal(
+                "update: FactRef does not belong to the supplied store".into(),
+            ));
+        }
+        if !interp.kb.is_rule_alive(rule_id) {
+            let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+            return Ok(option_none(none_sym));
+        }
+        let old = interp.kb.rule_head_value(rule_id).clone();
+        if let Err(error) = interp.kb.check_fact_mutation_target(&old) {
+            return Err(interp.raise_error(Value::Str(error.to_string())));
+        }
+        let Some(functor) = crate::kb::term_view::TermView::head(&old, &interp.kb).functor_sym() else {
+            return Err(EvalError::Internal(
+                "update: rule head has no functor — cannot apply the monotonicity guard (proposal 053)".into(),
+            ));
+        };
+        if interp.resolve_fact_monotonicity(functor)? != Monotonicity::NonMonotone {
+            let name = interp.kb.qualified_name_of(functor).to_string();
+            return Err(interp.raise_error(Value::Str(format!(
+                "update refused: functor `{name}` is not non_monotone (proposal 053)"
+            ))));
         }
     }
-    interp.kb.retract(rule_id);
-    Ok(Value::Bool(true))
+    let row = interp
+        .kb
+        .update_persistent(&reference, new, None)
+        .map_err(|e| interp.raise_error(Value::Str(format!("update failed: {e}"))))?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    Ok(match row {
+        Some(row) => option_some(some_sym, interp.fields.value, stored_ref_value(interp, row)?),
+        None => option_none(none_sym),
+    })
 }
 
 /// `anthill.persistence.Store.flush(store, delta) -> Bool`.
@@ -3722,10 +3741,11 @@ fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let [store_val, _delta_val] = expect_args::<2>("flush", args)?;
     let key = interp.store_canonical_key(&store_val)?;
 
-    let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
+    let mut store = interp.kb.take_mirror(&key).ok_or_else(|| {
         EvalError::Internal(format!("flush: no store registered for key `{key}`"))
     })?;
     let outcome = store.flush(&interp.kb);
+    interp.kb.put_mirror(key, store);
     if let Err(e) = outcome {
         return Err(interp.raise_error(Value::Str(format!("flush failed: {e}"))));
     }
@@ -3780,7 +3800,7 @@ fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         .map_err(|e| EvalError::Internal(format!("retrieve: lower pattern: {e:?}")))?;
 
     let outcome = {
-        let store = interp.store_registry.get(&key).ok_or_else(|| {
+        let store = interp.kb.mirror(&key).ok_or_else(|| {
             EvalError::Internal(format!("retrieve: no store registered for key `{key}`"))
         })?;
         store.retrieve(&interp.kb, pattern_term)

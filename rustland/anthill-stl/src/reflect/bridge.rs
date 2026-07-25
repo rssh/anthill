@@ -31,8 +31,7 @@ fn term(id: TermId) -> Term {
 
 /// Map a core [`Literal`] to its host [`LiteralRepr`] (struct-variant form).
 /// A `BigInt` maps to the first-class `BigIntLiteral` (WI-543) — carrier-
-/// faithful, so it is no longer indistinguishable from a real string. A
-/// `Handle` lowers to its id.
+/// faithful, so it is no longer indistinguishable from a real string.
 fn literal_to_repr(lit: Literal) -> LiteralRepr {
     match lit {
         Literal::String(s) => LiteralRepr::StringLiteral { value: s },
@@ -40,7 +39,6 @@ fn literal_to_repr(lit: Literal) -> LiteralRepr {
         Literal::BigInt(n) => LiteralRepr::BigIntLiteral { value: n },
         Literal::Float(f) => LiteralRepr::FloatLiteral { value: f.into() },
         Literal::Bool(b) => LiteralRepr::BoolLiteral { value: b },
-        Literal::Handle(_, id) => LiteralRepr::IntLiteral { value: id as i64 },
     }
 }
 
@@ -766,6 +764,29 @@ impl KB for KbBridge {
             .collect()
     }
 
+    fn stored_facts_of(&self, sort: Type) -> Vec<StoredRef<Term>> {
+        // The capability-carrying companion to `facts_of`: do not reconstruct a
+        // reference from the row's content here. `read_stored_facts` returns the
+        // owner-minted opaque reference alongside the visible row, uniformly for
+        // resident and mounted extents.
+        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+            .unwrap_or_else(|| {
+                panic!(
+                    "KB.stored_facts_of: `sort` is not an entity reference (expected a \
+                     Ref / Fn / Entity carrier that names a functor)"
+                )
+            });
+        let kb = self.kb.borrow();
+        kb.read_stored_facts(functor, anthill_core::kb::extent::BodiedRulePolicy::Refuse)
+            .unwrap_or_else(|e| panic!("KB.stored_facts_of: {e}"))
+            .into_iter()
+            .map(|row| StoredRef::StoredRef {
+                value: rterm(row.row),
+                reference: ReflectFactRef::new(row.reference),
+            })
+            .collect()
+    }
+
     fn sort_template(&self, sort: Type) -> LogicalQuery {
         // WI-632: the sort arrives by reference (a `Type` carrying a `Ref`),
         // stored verbatim as the `sort_query.sort` payload — resolution already
@@ -780,20 +801,18 @@ impl KB for KbBridge {
     /// computation the loader uses for a constraint, so a registered guard
     /// fires); the explicit `sort` reference is the fallback when the head names
     /// no sort. Runtime-asserted facts take that sort as their own domain.
-    /// Returns the new fact's id, or `None` when a registered constraint rejects
+    /// Returns the stored row, or `None` when a registered constraint rejects
     /// the fact (which is then retracted) — the spec's "violated constraint → none".
-    fn assert(&mut self, term: Term, sort: Type) -> Option<FactId> {
+    fn assert(&mut self, term: Term, sort: Type) -> Option<StoredRef<Term>> {
         let head = term.into_value();
-        let term_tid = head.clone().expect_term();
         let arg_sort_sym = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value());
         let mut kb = self.kb.borrow_mut();
-        let sort_tid = kb.fact_trigger_sort(&head).unwrap_or_else(|| {
-            let sym = arg_sort_sym.unwrap_or_else(|| {
-                panic!("KB.assert: cannot determine the fact's sort from its head or the `sort` arg")
-            });
-            kb.make_name_term_from_sym(sym)
-        });
-        kb.assert_checked(term_tid, sort_tid, sort_tid, None)
+        kb.assert_checked_persistent(head, arg_sort_sym)
+            .unwrap_or_else(|e| panic!("KB.assert: {e}"))
+            .map(|row| StoredRef::StoredRef {
+                value: rterm(row.row),
+                reference: ReflectFactRef::new(row.reference),
+            })
     }
 
     fn add_guard(&mut self, guard: LogicalQuery) -> ConstraintId {

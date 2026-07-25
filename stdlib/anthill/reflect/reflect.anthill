@@ -6,7 +6,7 @@
 --
 -- Defines the kernel's abstract types:
 --   Term    — opaque handle to a term in the KB
---   FactId  — opaque handle to a stored fact
+--   FactRef — opaque, session-scoped reference to a stored row
 -- These are abstract sorts: implementations bind them to concrete
 -- Rust types via Implementation facts.
 namespace anthill.reflect
@@ -28,8 +28,19 @@ namespace anthill.reflect
   -- but to inspect its structure, use reify() to get a TermRepr.
   sort Term = ?
 
-  -- Handle to a stored fact. Returned by persist(), used by retract().
-  sort FactId = ?
+  -- Source-neutral row reference. A Rust `FactRef` privately selects either
+  -- a resident entry or an extent owner's native row key; application code can
+  -- pass it to persistence mutation operations but cannot construct, print, or
+  -- persist it as a durable identifier.
+  sort FactRef = ?
+
+  -- The visible stored value paired with its opaque mutation capability. The
+  -- value is ordinary data; the reference is valid only in this KB session and
+  -- is replaced after update.
+  enum StoredRef
+    sort T = ?
+    entity stored_ref(value: T, reference: FactRef)
+  end
 
   -- Opaque handle to an interned name (stored as Term::Ref internally).
   -- Use for identifiers/references; use Term for complex type expressions.
@@ -272,13 +283,6 @@ namespace anthill.reflect
   -- occurrences — a reused argument, a lambda body — cannot be a `Term`.
   operation make_apply(name: String, args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence
 
-  -- Look up the asserted fact whose head term equals `t`, returning the
-  -- backing FactId so callers can hand it to `NonMonotonicStore.retract`. Mutating
-  -- commands (claim / deliver / verify / update / delete) walk
-  -- `facts_of` to find a target term, then call `find_fact` to get its
-  -- FactId before retracting + asserting the replacement.
-  operation find_fact(t: Term) -> Option[T = FactId]
-
   -- Return a fresh Term::Fn cloned from `t` with the named arg whose
   -- short name matches `name` replaced by `value`. Used by status-
   -- transition commands to swap one field on a WorkItem (e.g. `status`)
@@ -394,6 +398,12 @@ namespace anthill.reflect
     -- to inspect them.
     operation facts_of(kb: KB, sort: Type) -> List[T = Term]
 
+    -- Capability-carrying companion to `facts_of`: enumerate stored rows as
+    -- their visible terms paired with opaque session references. Use this only
+    -- when a selected row will be retracted or updated; ordinary readers use
+    -- `facts_of` and never retain mutation authority.
+    operation stored_facts_of(kb: KB, sort: Type) -> List[T = StoredRef[T = Term]]
+
     -- Extract a sort's fact template as a query. The sort is passed by
     -- reference (e.g. `sort_template(kb(), WorkItem)`), resolved to its
     -- qualified symbol via the caller's import — no name-string resolution
@@ -404,7 +414,7 @@ namespace anthill.reflect
     -- If a constraint is violated, returns none.
     -- The KB analyzes constraint clauses and optimizes recognizable
     -- patterns (e.g. functional dependencies → unique index check).
-    operation assert(kb: KB, term: Term, sort: Type) -> Option[T = FactId]
+    operation assert(kb: KB, term: Term, sort: Type) -> Option[T = StoredRef[T = Term]]
       effects Modify[kb]
 
     -- Register a guard on the KB: a LogicalQuery that must always hold.

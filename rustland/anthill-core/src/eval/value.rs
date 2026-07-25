@@ -8,6 +8,7 @@
 use std::rc::Rc;
 
 use crate::intern::Symbol;
+use crate::kb::extent::FactRef;
 use crate::kb::node_occurrence::NodeOccurrence;
 use crate::kb::term::{TermId, Var, VarId};
 
@@ -115,6 +116,12 @@ pub enum Value {
     /// channels. See `docs/design/operation-call-model.md` §"Runtime:
     /// frame, requirement value, closure".
     Requirement(RequirementHandle),
+
+    /// WI-780 / proposal 057 — an opaque, KB-session-scoped locator for one
+    /// stored row. Unlike the former literal handle it never exposes a
+    /// resident `RuleId`: its private payload selects either the resident
+    /// implementation or an extent owner's native row key.
+    FactRef(FactRef),
 
     // KB-sourced or already-committed data (hash-consed).
     //
@@ -344,6 +351,7 @@ impl Value {
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
             Value::Requirement(_) => "Requirement",
+            Value::FactRef(_) => "FactRef",
             Value::Term { .. } => "Term",
             Value::Node(_) => "Node",
             Value::Var(_) => "Var",

@@ -350,6 +350,7 @@ impl KnowledgeBase {
             Value::Map(_) => Err(LowerError::UnsupportedVariant("Map")),
             Value::Cell(_) => Err(LowerError::UnsupportedVariant("Cell")),
             Value::Requirement(_) => Err(LowerError::UnsupportedVariant("Requirement")),
+            Value::FactRef(_) => Err(LowerError::UnsupportedVariant("FactRef")),
             Value::Node(_) => Err(LowerError::UnsupportedVariant("Node")),
             // WI-714: a `Relation` is an intensional query value — it is RUN
             // (`Relation.splitFirst` → `execute_logical_query`), never lowered to a

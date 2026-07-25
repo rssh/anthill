@@ -2475,12 +2475,6 @@ impl Interpreter {
             Literal::Bool(b) => Value::Bool(b),
             Literal::String(s) => Value::Str(s),
             Literal::BigInt(n) => Value::BigInt(n),
-            Literal::Handle(_, _) => {
-                return Err(EvalError::Internal(
-                    "Handle literal in expression value position — \
-                     unexpected after WI-251 NodeOccurrence cleanup".into(),
-                ));
-            }
         })
     }
 }
@@ -2627,6 +2621,7 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         // provides a spec, that route would need `carrier_override_op`'s
         // runnable-body gate to avoid a short-name collision (`sub` ↔ `Numeric.sub`).
         Value::Requirement(_) => Some("anthill.realization.runtime.Dictionary"),
+        Value::FactRef(_) => Some("anthill.reflect.FactRef"),
         Value::Closure(_) | Value::OpRef { .. } => Some("anthill.prelude.Function"),
         Value::Int(_) => Some("anthill.prelude.Int64"),
         Value::BigInt(_) => Some("anthill.prelude.BigInt"),

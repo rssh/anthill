@@ -12,12 +12,10 @@
 //! WI-797 wired the mount into resolution and load — the resolver's discrim-mount
 //! delegation (`SearchStream::gather_extent_rows`), retiring `RouteHandler` into
 //! `query`, and the loader / registration single-owner refusals on resident
-//! collisions. (The read-beside-discrim `Store::retrieve` retirement — the other
-//! half of R2 — waits on the store-registry→`kb.extents` move in the write seam,
-//! WI-780: it backs the still-declared `QueryableStore.retrieve` op.) The
-//! values-first `read_facts` accessor is WI-773. The write half
-//! of the trait (`persist`/`update`/`retract`) arrives with the write seam
-//! (WI-780); the trait grows one method-set per slice, never ahead of the code.
+//! collisions. The values-first `read_facts` accessor is WI-773. WI-780 begins
+//! the write half: `StoredRow`/`FactRef`, capability-gated source mutation, and
+//! the KB-owned mirror registry. The declared API cutover and `Store::retrieve`
+//! retirement follow once every client can carry `FactRef`.
 //!
 //! ## The query contract (057 §"The query contract")
 //!
@@ -39,15 +37,77 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::kb::term::{Var, VarId};
 use crate::kb::term_view::{views_structurally_equal, TermView};
+use crate::persistence::{Monotonicity, Store};
 
-use super::KnowledgeBase;
+use super::{KnowledgeBase, RuleId};
 
 // ── The read interface ─────────────────────────────────────────
 
-/// One owner per functor, for *reads*. This slice is the READ HALF only —
-/// `owned` + `query`. Write / mirror / sync methods are not in the trait yet;
-/// each arrives in the slice that implements it (writes with the write seam,
-/// WI-780), with its caller. The trait grows with the code, never ahead of it.
+/// Source-private row locator. The current reference owner uses a stable row
+/// slot; other owners may use a primary key, file span, or revision token.
+#[derive(Clone, Debug)]
+pub struct RowKey(RowKeyInner);
+
+#[derive(Clone, Debug)]
+enum RowKeyInner { InMemory(usize) }
+
+impl RowKey {
+    pub(crate) fn in_memory(id: usize) -> Self { Self(RowKeyInner::InMemory(id)) }
+    pub(crate) fn in_memory_id(&self) -> Option<usize> {
+        match self.0 { RowKeyInner::InMemory(id) => Some(id) }
+    }
+}
+
+/// Opaque session reference to a stored row. A resident row keeps its RuleId
+/// private to the KB; external rows carry only their owner's name and native key.
+#[derive(Clone, Debug)]
+pub struct FactRef(FactRefInner);
+
+#[derive(Clone, Debug)]
+enum FactRefInner {
+    Resident { rule: RuleId, mirror: Option<String> },
+    External { functor: String, key: RowKey },
+}
+
+impl FactRef {
+    pub(crate) fn resident(rule: RuleId) -> Self {
+        Self(FactRefInner::Resident { rule, mirror: None })
+    }
+    pub(crate) fn resident_mirrored(rule: RuleId, mirror: String) -> Self {
+        Self(FactRefInner::Resident { rule, mirror: Some(mirror) })
+    }
+    pub(crate) fn external(functor: impl Into<String>, key: RowKey) -> Self {
+        Self(FactRefInner::External { functor: functor.into(), key })
+    }
+    pub(crate) fn resident_rule(&self) -> Option<RuleId> {
+        match self.0 {
+            FactRefInner::Resident { rule, .. } => Some(rule),
+            FactRefInner::External { .. } => None,
+        }
+    }
+    pub(crate) fn resident_mirror(&self) -> Option<&str> {
+        match &self.0 {
+            FactRefInner::Resident { mirror, .. } => mirror.as_deref(),
+            FactRefInner::External { .. } => None,
+        }
+    }
+    pub(crate) fn external_parts(&self) -> Option<(&str, &RowKey)> {
+        match &self.0 {
+            FactRefInner::External { functor, key } => Some((functor, key)),
+            FactRefInner::Resident { .. } => None,
+        }
+    }
+}
+
+/// Visible row content paired with the only valid mutation locator.
+#[derive(Clone, Debug)]
+pub struct StoredRow {
+    pub row: Value,
+    pub reference: FactRef,
+}
+
+/// One owner per functor. `owned` + `query` provide the read half; mutation
+/// defaults are the loud capability backstop for the write seam.
 pub trait ExtentSource {
     /// Registration authority: the `(fully-qualified functor name, profile)`
     /// pairs this source owns. Names resolve to `Symbol`s once, at registration
@@ -67,12 +127,24 @@ pub trait ExtentSource {
         kb: &KnowledgeBase,
         pattern: &QueryPattern,
     ) -> Result<Box<dyn ExtentCursor>, ExtentError>;
+
+    fn persist(&mut self, _row: &Value, _meta: Option<&Value>) -> Result<StoredRow, ExtentError> {
+        Err(ExtentError::NotWritable)
+    }
+    fn retract(&mut self, _key: &RowKey) -> Result<bool, ExtentError> {
+        Err(ExtentError::NotWritable)
+    }
+    fn update(&mut self, _key: &RowKey, _new: &Value, _meta: Option<&Value>)
+        -> Result<Option<StoredRow>, ExtentError>
+    {
+        Err(ExtentError::NotWritable)
+    }
 }
 
 /// Lazy, carrier-neutral, ground rows. Errors are per-row so a fallible backend
 /// fails loud, never truncates silent. In-memory sources never error per row.
 pub trait ExtentCursor {
-    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<Value, ExtentError>>;
+    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<StoredRow, ExtentError>>;
 }
 
 // ── The query-contract types ───────────────────────────────────
@@ -104,10 +176,9 @@ pub struct QueryMode {
     pub required_ground: Vec<ArgKey>,
 }
 
-/// The read profile of a functor's extent. This slice's axes only; `writability`
-/// (per-functor `Monotonicity`, subsuming `store_monotonicity`) arrives with the
-/// write seam (WI-780), so a materialized profile is NOT yet the home of write
-/// policy — see [`ExtentRegistry::profiles`].
+/// The read profile of a functor's extent. This slice's axes only; intrinsic
+/// mirror policy is materialized separately in [`ExtentRegistry`] because it
+/// is keyed by a backend's qualified functor name, not a mounted `Symbol`.
 #[derive(Clone, Debug)]
 pub struct ExtentProfile {
     /// The store's pattern descriptions, read at registration.
@@ -160,6 +231,7 @@ pub enum Stability {
 pub enum ExtentError {
     /// No declared query mode applies to the requested pattern.
     NoSupportedMode,
+    NotWritable,
     /// A backend-specific failure (I/O, a remote error), carrying its message.
     Backend(String),
 }
@@ -170,6 +242,7 @@ impl std::fmt::Display for ExtentError {
             ExtentError::NoSupportedMode => {
                 write!(f, "extent source: no declared query mode applies to this pattern")
             }
+            ExtentError::NotWritable => write!(f, "extent source is not writable"),
             ExtentError::Backend(msg) => write!(f, "extent source backend error: {msg}"),
         }
     }
@@ -260,11 +333,17 @@ pub(crate) struct ExtentRegistry {
     sources: Vec<Box<dyn ExtentSource>>,
     /// Functor → owning source. The exclusive read-ownership table.
     mounts: HashMap<Symbol, SourceId>,
-    /// Functor → materialized read profile, resolved once at registration. The
-    /// eventual home of per-functor storage metadata (subsuming
-    /// `store_monotonicity` when the write seam adds `writability`); in this read
-    /// slice it holds read axes only.
+    /// Functor → materialized read profile, resolved once at registration.
     profiles: HashMap<Symbol, ExtentProfile>,
+    /// Resident extents' durability mirrors, keyed by the host's canonical
+    /// store value. Mirrors never answer reads: `kb.rules` remains their one
+    /// extent owner. Keeping them here makes that role KB-owned rather than an
+    /// evaluator side table.
+    mirrors: HashMap<String, Box<dyn Store>>,
+    /// Intrinsic policies declared by mirrors, materialized at registration.
+    /// Names remain strings because a backend may name a functor that is only
+    /// interned after bootstrap.
+    mirror_monotonicity: HashMap<String, Monotonicity>,
 }
 
 impl ExtentRegistry {
@@ -279,6 +358,46 @@ impl ExtentRegistry {
         Some(self.sources[id.0 as usize].as_ref())
     }
 
+    fn owner_mut(&mut self, functor: Symbol) -> Option<&mut dyn ExtentSource> {
+        let id = *self.mounts.get(&functor)?;
+        Some(self.sources[id.0 as usize].as_mut())
+    }
+
+    fn register_mirror(&mut self, key: String, mirror: Box<dyn Store>) {
+        for (functor, policy) in mirror.owned_monotonicity() {
+            self.mirror_monotonicity.insert(functor, policy);
+        }
+        self.mirrors.insert(key, mirror);
+    }
+
+    pub(crate) fn take_mirror(&mut self, key: &str) -> Option<Box<dyn Store>> {
+        self.mirrors.remove(key)
+    }
+
+    pub(crate) fn put_mirror(&mut self, key: String, mirror: Box<dyn Store>) {
+        let replaced = self.mirrors.insert(key, mirror);
+        debug_assert!(replaced.is_none(), "mirror put without a matching take");
+    }
+
+    pub(crate) fn mirror(&self, key: &str) -> Option<&dyn Store> {
+        Some(self.mirrors.get(key)?.as_ref())
+    }
+
+    pub(crate) fn mirror_monotonicity(&self, functor: &str) -> Option<Monotonicity> {
+        self.mirror_monotonicity.get(functor).copied()
+    }
+
+    /// Until declarative owner bindings name a mirror per functor, a resident
+    /// stored-row read can attach a mirror only when there is exactly one. More
+    /// than one is deliberately ambiguous rather than silently picking one.
+    fn sole_mirror_key(&self) -> Result<Option<String>, usize> {
+        match self.mirrors.len() {
+            0 => Ok(None),
+            1 => Ok(self.mirrors.keys().next().cloned()),
+            count => Err(count),
+        }
+    }
+
     /// The materialized read profile of `functor`, or `None` when unowned.
     pub(crate) fn profile(&self, functor: Symbol) -> Option<&ExtentProfile> {
         self.profiles.get(&functor)
@@ -291,6 +410,165 @@ impl ExtentRegistry {
 }
 
 impl KnowledgeBase {
+    /// Assert a resident fact with guard checking and return its source-neutral
+    /// reference. `sort_hint` is used only when the row head has no trigger
+    /// sort, matching the reflect `KB.assert` contract; no `TermId` or `RuleId`
+    /// crosses this write boundary.
+    pub fn assert_checked_persistent(
+        &mut self,
+        row: Value,
+        sort_hint: Option<Symbol>,
+    ) -> Result<Option<StoredRow>, ExtentError> {
+        self.check_fact_mutation_target(&row)
+            .map_err(|e| ExtentError::Backend(e.to_string()))?;
+        let term = self.alloc_from_value(&row)
+            .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
+        let sort = self.fact_trigger_sort(&row).or_else(|| {
+            sort_hint.map(|sym| self.make_name_term_from_sym(sym))
+        }).ok_or_else(|| {
+            ExtentError::Backend("persistent assert: row has no trigger sort and no sort hint".into())
+        })?;
+        Ok(self.assert_checked(term, sort, sort, None).map(|rule| StoredRow {
+            row,
+            reference: FactRef::resident(rule),
+        }))
+    }
+
+    /// Register a durability mirror for resident facts. A mirror receives
+    /// write-through persistence traffic but never becomes a read owner.
+    pub fn register_mirror(&mut self, key: String, mirror: Box<dyn Store>) {
+        self.extents.register_mirror(key, mirror);
+    }
+
+    pub(crate) fn take_mirror(&mut self, key: &str) -> Option<Box<dyn Store>> {
+        self.extents.take_mirror(key)
+    }
+
+    pub(crate) fn put_mirror(&mut self, key: String, mirror: Box<dyn Store>) {
+        self.extents.put_mirror(key, mirror);
+    }
+
+    pub(crate) fn mirror(&self, key: &str) -> Option<&dyn Store> {
+        self.extents.mirror(key)
+    }
+
+    pub(crate) fn mirror_monotonicity(&self, functor: &str) -> Option<Monotonicity> {
+        self.extents.mirror_monotonicity(functor)
+    }
+
+    /// Assert through the mounted owner when one exists, otherwise into the
+    /// resident extent. The returned reference is the sole mutation locator.
+    pub fn assert_persistent(&mut self, row: Value, meta: Option<Value>) -> Result<StoredRow, ExtentError> {
+        let functor = row.head(self).functor_sym().ok_or_else(|| {
+            ExtentError::Backend("persistent assert requires a functor-headed row".into())
+        })?;
+        if self.extents.owner(functor).is_some() {
+            return self.extents.owner_mut(functor).expect("mounted owner disappeared")
+                .persist(&row, meta.as_ref());
+        }
+        self.check_fact_mutation_target(&row)
+            .map_err(|e| ExtentError::Backend(e.to_string()))?;
+        let term = self.alloc_from_value(&row)
+            .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
+        let sort = self.make_name_term("Fact");
+        let domain = self.make_name_term("anthill.todo");
+        let rule = self.assert_fact(term, sort, domain, None);
+        Ok(StoredRow { row, reference: FactRef::resident(rule) })
+    }
+
+    /// Persist through a registered resident-extent mirror, then assert the
+    /// resident shadow. The durable write precedes the KB mutation and both the
+    /// mirror association and private RuleId stay inside the returned FactRef.
+    pub(crate) fn persist_mirrored(
+        &mut self,
+        mirror_key: &str,
+        row: Value,
+        _meta: Option<Value>,
+    ) -> Result<StoredRow, ExtentError> {
+        self.check_fact_mutation_target(&row)
+            .map_err(|e| ExtentError::Backend(e.to_string()))?;
+        let term = self.alloc_from_value(&row)
+            .map_err(|e| ExtentError::Backend(format!("persistent persist: lower row: {e:?}")))?;
+        let sort = self.make_name_term("Fact");
+        let domain = self.make_name_term("anthill.todo");
+        let mut mirror = self.take_mirror(mirror_key).ok_or_else(|| {
+            ExtentError::Backend(format!("persistent persist: no mirror registered for key `{mirror_key}`"))
+        })?;
+        let outcome = mirror.persist(self, term, sort, domain, None);
+        self.put_mirror(mirror_key.to_owned(), mirror);
+        outcome.map_err(|e| ExtentError::Backend(e.to_string()))?;
+        let rule = self.assert_fact(term, sort, domain, None);
+        Ok(StoredRow {
+            row,
+            reference: FactRef::resident_mirrored(rule, mirror_key.to_owned()),
+        })
+    }
+
+    pub fn retract_persistent(&mut self, reference: &FactRef) -> Result<bool, ExtentError> {
+        if let Some(rule) = reference.resident_rule() {
+            if !self.is_rule_alive(rule) { return Ok(false) }
+            let row = self.rule_head_value(rule).clone();
+            self.check_fact_mutation_target(&row)
+                .map_err(|e| ExtentError::Backend(e.to_string()))?;
+            if let Some(mirror_key) = reference.resident_mirror() {
+                let mirror_key = mirror_key.to_owned();
+                let mut mirror = self.take_mirror(&mirror_key).ok_or_else(|| {
+                    ExtentError::Backend(format!("persistent retract: no mirror registered for key `{mirror_key}`"))
+                })?;
+                let outcome = mirror.retract(self, rule);
+                self.put_mirror(mirror_key, mirror);
+                outcome.map_err(|e| ExtentError::Backend(e.to_string()))?;
+            }
+            self.retract(rule);
+            return Ok(true);
+        }
+        let (name, key) = reference.external_parts().expect("known FactRef form");
+        let functor = self.resolve_name_in_global(name).ok_or_else(|| {
+            ExtentError::Backend(format!("persistent retract: unknown owner `{name}`"))
+        })?;
+        self.extents.owner_mut(functor).ok_or_else(|| {
+            ExtentError::Backend(format!("persistent retract: `{name}` is not mounted"))
+        })?.retract(key)
+    }
+
+    pub fn update_persistent(&mut self, reference: &FactRef, new: Value, meta: Option<Value>)
+        -> Result<Option<StoredRow>, ExtentError>
+    {
+        if let Some(rule) = reference.resident_rule() {
+            if !self.is_rule_alive(rule) { return Ok(None) }
+            let old = self.rule_head_value(rule).clone();
+            self.check_fact_mutation_target(&old).map_err(|e| ExtentError::Backend(e.to_string()))?;
+            self.check_fact_mutation_target(&new).map_err(|e| ExtentError::Backend(e.to_string()))?;
+            let term = self.alloc_from_value(&new)
+                .map_err(|e| ExtentError::Backend(format!("persistent update: lower row: {e:?}")))?;
+            let sort = self.rule_sort(rule);
+            let domain = self.rule_domain(rule);
+            let mirror_key = reference.resident_mirror().map(str::to_owned);
+            if let Some(key) = &mirror_key {
+                let mut mirror = self.take_mirror(key).ok_or_else(|| {
+                    ExtentError::Backend(format!("persistent update: no mirror registered for key `{key}`"))
+                })?;
+                let outcome = mirror.update(self, rule, term, sort, domain, None);
+                self.put_mirror(key.clone(), mirror);
+                outcome.map_err(|e| ExtentError::Backend(e.to_string()))?;
+            }
+            self.retract(rule);
+            let replacement = self.assert_fact(term, sort, domain, None);
+            let reference = match mirror_key {
+                Some(key) => FactRef::resident_mirrored(replacement, key),
+                None => FactRef::resident(replacement),
+            };
+            return Ok(Some(StoredRow { row: new, reference }));
+        }
+        let (name, key) = reference.external_parts().expect("known FactRef form");
+        let functor = self.resolve_name_in_global(name).ok_or_else(|| {
+            ExtentError::Backend(format!("persistent update: unknown owner `{name}`"))
+        })?;
+        self.extents.owner_mut(functor).ok_or_else(|| {
+            ExtentError::Backend(format!("persistent update: `{name}` is not mounted"))
+        })?.update(key, &new, meta.as_ref())
+    }
+
     /// Register `source` as the exclusive read owner of every functor its
     /// `owned()` names. Resolves each name to a `Symbol` ONCE, here (loud on an
     /// unresolvable name), and enforces the read-side registration rules. All or
@@ -388,6 +666,28 @@ pub enum BodiedRulePolicy {
     // `&self` candidate-read `Refuse` rides.
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct FactWriteShapeError { functor: String, rule: String }
+
+impl std::fmt::Display for FactWriteShapeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fact mutation refused: `{}` has bodied rule `{}`", self.functor, self.rule)
+    }
+}
+
+impl KnowledgeBase {
+    pub(crate) fn check_fact_mutation_target(&self, target: &Value) -> Result<(), FactWriteShapeError> {
+        let Some(functor) = target.head(self).functor_sym() else { return Ok(()) };
+        if !self.has_bodied_rule(functor) { return Ok(()) }
+        let rid = self.rules_by_functor_iter(functor).find(|&rid| !self.is_fact(rid))
+            .expect("has_bodied_rule implies a bodied rule");
+        Err(FactWriteShapeError {
+            functor: self.resolve_sym(functor).to_string(),
+            rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
+        })
+    }
+}
+
 /// Error from [`KnowledgeBase::read_facts`]. Result-over-panic so a CLI / codegen
 /// caller renders it through its own channel (`error: {msg}`, exit 1) rather than
 /// aborting (the WI-770 assert path).
@@ -417,6 +717,9 @@ pub enum ExtentReadError {
     /// `selection` naming a field the functor lacks — the Resolve read needs the
     /// full field set to build a matching full-arity goal, so it cannot proceed.
     NoFieldSchema { functor: String },
+    /// More than one resident durability mirror is registered, but the current
+    /// pre-config binding cannot determine which one owns this functor's rows.
+    AmbiguousResidentMirror { functor: String, mirrors: usize },
 }
 
 impl std::fmt::Display for ExtentReadError {
@@ -444,6 +747,11 @@ impl std::fmt::Display for ExtentReadError {
                 "read_facts_resolved(`{functor}`): no declared field schema (or a selection \
                  names an undeclared field); cannot build a full-arity resolution goal"
             ),
+            ExtentReadError::AmbiguousResidentMirror { functor, mirrors } => write!(
+                f,
+                "read_stored_facts(`{functor}`): {mirrors} resident mirrors are registered; \
+                 the mirror owner is ambiguous until an extent binding names it"
+            ),
         }
     }
 }
@@ -451,6 +759,77 @@ impl std::fmt::Display for ExtentReadError {
 impl std::error::Error for ExtentReadError {}
 
 impl KnowledgeBase {
+    /// Enumerate a functor's stored rows with their source-neutral mutation
+    /// references. This is deliberately distinct from [`Self::read_facts`]:
+    /// values-only readers do not pay for or accidentally retain capabilities,
+    /// while a caller that intends to update/retract receives the sole valid
+    /// locator with the row it selected.
+    pub fn read_stored_facts(
+        &self,
+        functor: Symbol,
+        policy: BodiedRulePolicy,
+    ) -> Result<Vec<StoredRow>, ExtentReadError> {
+        if self.extents.profile(functor).is_some() {
+            let profile = self.extents.profile(functor).expect("profile checked above");
+            let mode = profile.select_mode(&[]).ok_or_else(|| ExtentReadError::NoSupportedMode {
+                functor: self.resolve_sym(functor).to_string(),
+            })?;
+            let pattern = QueryPattern { mode, bound: Vec::new() };
+            return self
+                .drain_extent_query(functor, &pattern)
+                .map_err(|source| ExtentReadError::Extent {
+                    functor: self.resolve_sym(functor).to_string(),
+                    source,
+                })
+                .map(|rows| rows
+                    .into_iter()
+                    .filter(|row| row_has_functor(self, &row.row, functor))
+                    .collect());
+        }
+
+        match policy {
+            BodiedRulePolicy::Refuse if self.has_bodied_rule(functor) => {
+                let rid = self
+                    .rules_by_functor_iter(functor)
+                    .find(|&rid| !self.is_fact(rid))
+                    .expect("has_bodied_rule ⇒ a bodied rule is in the bucket");
+                return Err(ExtentReadError::BodiedRule {
+                    functor: self.resolve_sym(functor).to_string(),
+                    rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
+                });
+            }
+            BodiedRulePolicy::Refuse => {}
+        }
+
+        let mirror = self.extents.sole_mirror_key().map_err(|mirrors| {
+            ExtentReadError::AmbiguousResidentMirror {
+                functor: self.resolve_sym(functor).to_string(),
+                mirrors,
+            }
+        })?;
+
+        Ok(self
+            .rules_by_functor_iter(functor)
+            .filter_map(|rid| {
+                if !self.is_fact(rid) {
+                    debug_assert!(
+                        false,
+                        "read_stored_facts: has_bodied_rule was false but a bodied rule slipped through"
+                    );
+                    return None;
+                }
+                let reference = match &mirror {
+                    Some(key) => FactRef::resident_mirrored(rid, key.clone()),
+                    None => FactRef::resident(rid),
+                };
+                Some(StoredRow {
+                    row: self.rule_head_value(rid).clone(),
+                    reference,
+                })
+            })
+            .collect())
+    }
+
     /// The values-first read primitive every fact-reader migrates onto (057
     /// §"The accessor"): the rows of `functor` under the ground `selection`, over
     /// resident AND mounted extents uniformly. Returns row **`Value`s, never a
@@ -761,8 +1140,10 @@ impl KnowledgeBase {
         Ok(rows
             .into_iter()
             .filter(|row| {
-                row_has_functor(self, row, functor) && bound_matches(self, row, &pattern.bound)
+                row_has_functor(self, &row.row, functor)
+                    && bound_matches(self, &row.row, &pattern.bound)
             })
+            .map(|row| row.row)
             .collect())
     }
 
@@ -792,7 +1173,7 @@ impl KnowledgeBase {
         &self,
         functor: Symbol,
         pattern: &QueryPattern,
-    ) -> Result<Vec<Value>, ExtentError> {
+    ) -> Result<Vec<StoredRow>, ExtentError> {
         // A materialized profile implies a mounted owner (registration writes both
         // atomically), so this lookup cannot be `None`.
         let owner = self
@@ -879,7 +1260,10 @@ fn row_has_functor(kb: &KnowledgeBase, row: &Value, functor: Symbol) -> bool {
 pub struct InMemoryExtentSource {
     functor_name: String,
     profile: ExtentProfile,
-    rows: Vec<Value>,
+    /// Stable row ids deliberately do not track vector slots: retracting one
+    /// row must not retarget a `FactRef` returned for any other row.
+    rows: Vec<(usize, Value)>,
+    next_row_id: usize,
 }
 
 impl InMemoryExtentSource {
@@ -913,7 +1297,9 @@ impl InMemoryExtentSource {
             complete: true,
             stability: Stability::Stable,
         };
-        Ok(Self { functor_name: functor_name.into(), profile, rows })
+        let next_row_id = rows.len();
+        let rows = rows.into_iter().enumerate().collect();
+        Ok(Self { functor_name: functor_name.into(), profile, rows, next_row_id })
     }
 }
 
@@ -936,23 +1322,73 @@ impl ExtentSource for InMemoryExtentSource {
         // This returns EXACTLY the matching rows (a complete table can afford the
         // strong end of the superset contract); a slower backend could ignore
         // `bound` and stream its whole extent, still sound.
-        let matched: Vec<Value> = self
+        let matched: Vec<StoredRow> = self
             .rows
             .iter()
-            .filter(|row| bound_matches(kb, row, &pattern.bound))
-            .cloned()
+            .filter(|(_, row)| bound_matches(kb, row, &pattern.bound))
+            .map(|(id, row)| StoredRow {
+                row: row.clone(),
+                reference: FactRef::external(self.functor_name.clone(), RowKey::in_memory(*id)),
+            })
             .collect();
         Ok(Box::new(VecCursor { iter: matched.into_iter() }))
     }
+
+    fn persist(&mut self, row: &Value, _meta: Option<&Value>) -> Result<StoredRow, ExtentError> {
+        let id = self.next_row_id;
+        self.next_row_id = self.next_row_id.checked_add(1).ok_or_else(|| {
+            ExtentError::Backend("InMemoryExtentSource row id exhausted".into())
+        })?;
+        self.rows.push((id, row.clone()));
+        Ok(StoredRow {
+            row: row.clone(),
+            reference: FactRef::external(self.functor_name.clone(), RowKey::in_memory(id)),
+        })
+    }
+
+    fn retract(&mut self, key: &RowKey) -> Result<bool, ExtentError> {
+        let id = key.in_memory_id().ok_or_else(|| {
+            ExtentError::Backend("InMemoryExtentSource received a foreign row key".into())
+        })?;
+        let Some(index) = self.rows.iter().position(|(row_id, _)| *row_id == id) else {
+            return Ok(false);
+        };
+        self.rows.remove(index);
+        Ok(true)
+    }
+
+    fn update(&mut self, key: &RowKey, new: &Value, _meta: Option<&Value>)
+        -> Result<Option<StoredRow>, ExtentError>
+    {
+        let id = key.in_memory_id().ok_or_else(|| {
+            ExtentError::Backend("InMemoryExtentSource received a foreign row key".into())
+        })?;
+        let Some((_, slot)) = self.rows.iter_mut().find(|(row_id, _)| *row_id == id) else {
+            return Ok(None);
+        };
+        *slot = new.clone();
+        Ok(Some(StoredRow {
+            row: new.clone(),
+            reference: FactRef::external(self.functor_name.clone(), RowKey::in_memory(id)),
+        }))
+    }
 }
 
-/// A cursor over a materialized `Vec<Value>`. In-memory rows never error.
+/// A cursor over a materialized `Vec<StoredRow>`. In-memory rows never error.
 struct VecCursor {
-    iter: std::vec::IntoIter<Value>,
+    iter: std::vec::IntoIter<StoredRow>,
+}
+
+#[cfg(test)]
+fn test_cursor_rows(rows: Vec<Value>) -> std::vec::IntoIter<StoredRow> {
+    rows.into_iter().enumerate().map(|(index, row)| StoredRow {
+        row,
+        reference: FactRef::external("test.cursor", RowKey::in_memory(index)),
+    }).collect::<Vec<_>>().into_iter()
 }
 
 impl ExtentCursor for VecCursor {
-    fn next(&mut self, _kb: &KnowledgeBase) -> Option<Result<Value, ExtentError>> {
+    fn next(&mut self, _kb: &KnowledgeBase) -> Option<Result<StoredRow, ExtentError>> {
         self.iter.next().map(Ok)
     }
 }
@@ -1053,7 +1489,7 @@ mod tests {
     ) -> Result<Vec<Value>, ExtentError> {
         let mut out = Vec::new();
         while let Some(r) = cursor.next(kb) {
-            out.push(r?);
+            out.push(r?.row);
         }
         Ok(out)
     }
@@ -1191,7 +1627,7 @@ mod tests {
                 .filter(|row| !bound_matches(kb, row, &pattern.bound))
                 .cloned()
                 .collect();
-            Ok(Box::new(VecCursor { iter: kept.into_iter() }))
+            Ok(Box::new(VecCursor { iter: test_cursor_rows(kept) }))
         }
     }
 
@@ -1208,7 +1644,7 @@ mod tests {
             _kb: &KnowledgeBase,
             _pattern: &QueryPattern,
         ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
-            Ok(Box::new(VecCursor { iter: self.rows.clone().into_iter() }))
+            Ok(Box::new(VecCursor { iter: test_cursor_rows(self.rows.clone()) }))
         }
     }
 
@@ -1289,7 +1725,7 @@ mod tests {
             _kb: &KnowledgeBase,
             _pattern: &QueryPattern,
         ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
-            Ok(Box::new(VecCursor { iter: Vec::new().into_iter() }))
+            Ok(Box::new(VecCursor { iter: test_cursor_rows(Vec::new()) }))
         }
     }
 
@@ -1723,6 +2159,37 @@ mod tests {
         assert_eq!(ids(&kb, &one), vec![2]);
     }
 
+    #[test]
+    fn mounted_write_seam_uses_source_native_stable_references() {
+        // A source-native reference is not a vector position: remove the first
+        // row, then update the second one through the reference returned before
+        // the retract. This pins the one mutation locator returned by the seam.
+        let mut kb = KnowledgeBase::new();
+        let item = define(&mut kb, "test.Item");
+        let src = InMemoryExtentSource::new(&kb, "test.Item", ArgKey::Named(ID), Vec::new())
+            .expect("an empty table is well-formed");
+        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+
+        let first = kb
+            .assert_persistent(row_f(item, 1, "alpha"), None)
+            .expect("source accepts an insert");
+        let second = kb
+            .assert_persistent(row_f(item, 2, "beta"), None)
+            .expect("source accepts an insert");
+
+        assert!(kb.retract_persistent(&first.reference).expect("source accepts retract"));
+        let replacement = kb
+            .update_persistent(&second.reference, row_f(item, 2, "gamma"), None)
+            .expect("source accepts update")
+            .expect("second row remains live");
+
+        let rows = kb.read_facts(item, &[], BodiedRulePolicy::Refuse).expect("enumerable");
+        assert_eq!(ids(&kb, &rows), vec![2]);
+        assert!(views_structurally_equal(&kb, &rows[0], &replacement.row));
+        assert!(kb.retract_persistent(&replacement.reference).expect("replacement retracts"));
+        assert!(kb.read_facts(item, &[], BodiedRulePolicy::Refuse).unwrap().is_empty());
+    }
+
     /// A mounted owner that OVER-returns — it ignores `bound` and streams its
     /// whole table (a sound backend, 057 §"query contract" rule 3). Distinct from
     /// the test-only `OverReturnSource` above in that it `owned()`s a functor, so
@@ -1749,7 +2216,7 @@ mod tests {
             _kb: &KnowledgeBase,
             _pattern: &QueryPattern,
         ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
-            Ok(Box::new(VecCursor { iter: self.rows.clone().into_iter() }))
+            Ok(Box::new(VecCursor { iter: test_cursor_rows(self.rows.clone()) }))
         }
     }
 

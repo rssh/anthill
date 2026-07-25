@@ -58,7 +58,6 @@ pub(crate) fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
         CoreTerm::Const(Literal::BigInt(n)) => n.to_string(),
         CoreTerm::Const(Literal::Float(f)) => f.to_string(),
         CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
-        CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
         CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
         CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
         CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
@@ -502,4 +501,3 @@ pub(crate) fn reflect_walk<R: ReflectReader>(
         }
     }
 }
-

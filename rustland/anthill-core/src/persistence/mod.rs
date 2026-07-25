@@ -129,6 +129,23 @@ pub trait Store {
         Err(PersistenceError::NotMutable)
     }
 
+    /// Atomically stage the replacement of one resident row. This remains an
+    /// internal mirror adapter: the public write boundary carries `FactRef`,
+    /// while the resident RuleId stays confined to the KB/seam implementation.
+    /// Implementations must not expose this as a caller-composed retract then
+    /// persist sequence.
+    fn update(
+        &mut self,
+        _kb: &KnowledgeBase,
+        _id: RuleId,
+        _new: TermId,
+        _sort: TermId,
+        _domain: TermId,
+        _meta: Option<TermId>,
+    ) -> Result<bool, PersistenceError> {
+        Err(PersistenceError::NotMutable)
+    }
+
     /// Flush all buffered writes to storage.
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), PersistenceError>;
 
@@ -137,7 +154,7 @@ pub trait Store {
     /// *provides* monotonicity — the store is the single authority (007 §2).
     ///
     /// Materialized into the reflect `fact_monotonicity` facade at
-    /// registration (`Interpreter::register_store`): for a functor with no
+    /// registration (`Interpreter::register_mirror`): for a functor with no
     /// in-memory reflect rule, the guard falls back to the owning store's
     /// answer here rather than the in-memory `monotone` default.
     ///

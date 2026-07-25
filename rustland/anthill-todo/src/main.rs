@@ -760,7 +760,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             }
         }
 
-        interp.register_store(key, Box::new(store));
+        interp.register_mirror(key, Box::new(store));
         v
     };
 

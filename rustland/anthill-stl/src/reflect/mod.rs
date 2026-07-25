@@ -6,6 +6,7 @@ pub(crate) mod reader;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol as CoreSymbol;
+use anthill_core::kb::extent::FactRef as CoreFactRef;
 
 // ── Distinct reflect carriers (WI-540) ──────────────────────────
 //
@@ -43,6 +44,28 @@ impl ReflectSymbol {
         ReflectSymbol(s)
     }
     pub(crate) fn symbol(&self) -> CoreSymbol {
+        self.0
+    }
+}
+
+/// Host realization of the opaque, KB-session-scoped stored-row reference.
+/// It is intentionally private to the bridge boundary: generated API clients
+/// can pass it back to a mutation operation but cannot inspect a resident
+/// `RuleId` or an external owner's native key.
+#[derive(Clone, Debug)]
+#[allow(dead_code)] // consumed by the forthcoming FactRef write bridge
+pub struct ReflectFactRef(CoreFactRef);
+
+impl ReflectFactRef {
+    pub(crate) fn new(reference: CoreFactRef) -> Self {
+        Self(reference)
+    }
+
+    /// Consume the reflect wrapper at the bridge boundary. Kept crate-private:
+    /// a host implementation may hand it back to the KB write seam, but library
+    /// clients still cannot inspect its owner/key payload.
+    #[allow(dead_code)] // used when persist/retract/update cut over together
+    pub(crate) fn into_core(self) -> CoreFactRef {
         self.0
     }
 }

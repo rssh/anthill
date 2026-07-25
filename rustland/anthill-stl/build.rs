@@ -18,7 +18,6 @@ fn main() {
         // without lowering it to a hash-consed id.
         carrier_bindings: HashMap::from([
             ("Term".into(), "anthill_core::eval::Value".into()),
-            ("FactId".into(), "anthill_core::kb::RuleId".into()),
         ]),
         namespace_map: HashMap::from([
             ("anthill".into(), "crate".into()),
@@ -45,12 +44,12 @@ fn main() {
         carrier_bindings: HashMap::from([
             ("Term".into(), "ReflectTerm".into()),
             ("Symbol".into(), "ReflectSymbol".into()),
+            ("FactRef".into(), "ReflectFactRef".into()),
             // WI-545: `NodeOccurrence` (declared in reflect.anthill, so the
             // codegen carrier-alias fires) binds to an opaque `Value` carrier so
             // `OperationInfo.requires`/`ensures` can hold the loader's stored
             // clause Values.
             ("NodeOccurrence".into(), "ReflectNodeOccurrence".into()),
-            ("FactId".into(), "anthill_core::kb::RuleId".into()),
         ]),
         boxed_trait_objects: true,
         // Generate only the KB-bridge subset of reflect.anthill — the `KB` /
@@ -58,7 +57,7 @@ fn main() {
         // data types + the opaque carriers they reference. The occurrence IR
         // (`Expr` / `Pattern` / …) and the free reflect ops stay interpreter-only.
         emit_only: Some(vec![
-            "Term".into(), "Symbol".into(), "FactId".into(),
+            "Term".into(), "Symbol".into(), "FactRef".into(), "StoredRef".into(),
             "ConstraintId".into(), "NodeOccurrence".into(),
             "KB".into(), "Substitution".into(),
             "Solution".into(), "LogicalQuery".into(),

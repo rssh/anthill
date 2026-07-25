@@ -9792,9 +9792,6 @@ impl<'a> Loader<'a> {
                     "anthill.reflect.Expr.bool_lit",
                     self.kb.alloc(Term::Const(super::term::Literal::Bool(*b))),
                 ),
-                super::term::Literal::Handle(_, _) => {
-                    unreachable!("Handle literals cannot appear in source expressions")
-                }
             };
             let entity_sym = self.kb.resolve_symbol(entity_name);
             let value_key = self.kb.intern("value");
@@ -14847,4 +14844,3 @@ mod wi819_diagnostic_tests {
         }
     }
 }
-

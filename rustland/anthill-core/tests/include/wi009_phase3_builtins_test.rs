@@ -1,4 +1,4 @@
-//! WI-009 phase 3 prerequisites — `find_fact` / `replace_named_arg`.
+//! WI-009 phase 3 prerequisites — `stored_facts_of` / `replace_named_arg`.
 //!
 //! These are the building blocks for the retract+assert mutating
 //! commands (claim / deliver / verify / update / delete /
@@ -12,10 +12,10 @@ use anthill_core::eval::Value;
 use crate::common::interp_for;
 
 #[test]
-fn find_fact_locates_asserted_fact_by_head() {
-    // Sanity: assert a fact, look up its head via facts_of, then call
-    // find_fact to recover a FactId. The returned Term should be a
-    // Const(Handle(Fact, _)) — Store.retract accepts that shape.
+fn stored_facts_of_pairs_an_asserted_fact_with_a_native_reference() {
+    // Sanity: assert a fact, then enumerate it through the capability-carrying
+    // read. The row arrives with its opaque FactRef — no content-to-RuleId
+    // lookup or Handle literal is involved.
     let src = r#"
 namespace test.find_fact
   sort Item
@@ -30,34 +30,26 @@ end
     // `facts_of(kb(), WorkItem)` source form.
     let box_ref = Value::term(interp.kb_mut().resolve_qualified_name_term("test.find_fact.Item.Box"));
     let facts = interp.call(
-        "anthill.reflect.KB.facts_of",
+        "anthill.reflect.KB.stored_facts_of",
         &[Value::Unit, box_ref],
     ).expect("facts_of");
 
     // Drill down to the first cons head.
-    let head = match &facts {
+    let stored = match &facts {
         Value::Entity { named, .. } => named.iter()
             .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
             .map(|(_, v)| v.clone())
             .expect("cons.head"),
         _ => panic!("expected list, got {facts:?}"),
     };
-
-    let result = interp.call("anthill.reflect.find_fact", &[head]).expect("find_fact");
-    match result {
-        Value::Entity { functor, named, .. } => {
-            let name = interp.kb().resolve_sym(functor);
-            assert!(name == "some" || name.ends_with(".some"),
-                "expected some(...), got {name}: {named:?}");
-            let inner = named.iter().find(|(s, _)| interp.kb().resolve_sym(*s) == "value")
-                .map(|(_, v)| v.clone()).expect("some.value");
-            // Inner is a Term wrapping a Const(Handle).
-            match inner {
-                Value::Term { .. } => (),
-                other => panic!("expected Term, got {other:?}"),
-            }
+    match stored {
+        Value::Entity { functor, ref named, .. } => {
+            assert_eq!(interp.kb().resolve_sym(functor), "stored_ref");
+            assert!(named.iter().any(|(s, v)| {
+                interp.kb().resolve_sym(*s) == "reference" && matches!(v, Value::FactRef(_))
+            }));
         }
-        other => panic!("expected Entity, got {other:?}"),
+        other => panic!("expected StoredRef entity, got {other:?}"),
     }
 }
 

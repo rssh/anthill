@@ -30,7 +30,7 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         ].into(),
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_store(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
+    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
     store_val
 }
 
@@ -47,9 +47,20 @@ fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value
     interp.call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
 }
 
-fn retract(interp: &mut Interpreter, store: &Value, id: Value) -> Result<Value, anthill_core::eval::EvalError> {
+fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
+    let reference = interp.kb_mut().intern("reference");
+    match stored {
+        Value::Entity { named, .. } => named.iter().find(|(name, _)| *name == reference)
+            .map(|(_, value)| value.clone())
+            .expect("StoredRef carries reference"),
+        other => panic!("persist must return StoredRef, got {other:?}"),
+    }
+}
+
+fn retract(interp: &mut Interpreter, store: &Value, stored: Value) -> Result<Value, anthill_core::eval::EvalError> {
+    let reference = stored_reference(interp, &stored);
     // `retract` moved to the NonMonotonicStore trait (proposal 053 / 007 §2).
-    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), id])
+    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
 }
 
 #[test]
@@ -59,8 +70,8 @@ fn assert_of_monotone_functor_succeeds() {
     let mut interp = interp_for("namespace test.mono\n  entity Widget\nend\n");
     let store = setup_store(&mut interp, dir.path());
     let fact = declared_fact(&mut interp, "test.mono.Widget");
-    let id = persist(&mut interp, &store, fact).expect("monotone functor asserts");
-    assert!(matches!(id, Value::Term { .. }), "persist returns a FactId handle");
+    let stored = persist(&mut interp, &store, fact).expect("monotone functor asserts");
+    assert!(matches!(stored, Value::Entity { .. }), "persist returns StoredRef");
 }
 
 #[test]

@@ -494,16 +494,13 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
 
     fn on_literal(&mut self, _kb: &mut KnowledgeBase, lit: Literal) -> Value {
         let syms = self.syms;
-        // A `LiteralRepr` rides inside the `ConstRepr`'s `value` field; a runtime
-        // handle lowers to its raw id as an `IntLiteral` (parity with the
-        // bridge's `literal_to_repr`).
+        // A `LiteralRepr` rides inside the `ConstRepr`'s `value` field.
         let (ctor, inner) = match lit {
             Literal::Int(n) => (syms.int_lit, Value::Int(n)),
             Literal::BigInt(n) => (syms.bigint_lit, Value::BigInt(n)),
             Literal::Float(f) => (syms.float_lit, Value::Float(f.into_inner())),
             Literal::String(s) => (syms.str_lit, Value::Str(s)),
             Literal::Bool(b) => (syms.bool_lit, Value::Bool(b)),
-            Literal::Handle(_, raw) => (syms.int_lit, Value::Int(raw as i64)),
         };
         Value::Entity {
             functor: syms.const_repr,

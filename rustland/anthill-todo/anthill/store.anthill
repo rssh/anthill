@@ -12,7 +12,7 @@
 namespace anthill.todo.store
   import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag, StoreFormat}
   import anthill.persistence.filesystem.{IndexedFileStore}
-  import anthill.persistence.{persist, retract, flush}
+  import anthill.persistence.{persist, retract, update, flush}
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
   import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
@@ -21,10 +21,11 @@ namespace anthill.todo.store
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Option.{none, some}
   import anthill.prelude.List.{nil, cons}
-  import anthill.reflect.{Term, term_as_entity, term_field, term_as_string,
-                          term_functor_name, find_fact, as_term}
+  import anthill.reflect.{Term, StoredRef, term_as_entity, term_field, term_as_string,
+                          term_functor_name, as_term}
+  import anthill.reflect.StoredRef.{stored_ref}
   import anthill.reflect.{fact_monotonicity, non_monotone}
-  import anthill.reflect.KB.{kb, facts_of}
+  import anthill.reflect.KB.{kb, facts_of, stored_facts_of}
 
   -- ─── 0. Fact monotonicity (proposal 053) ───────────────────────
   -- This store owns WorkItem and Tag and RETRACTS them at runtime
@@ -181,6 +182,24 @@ namespace anthill.todo.store
                   if eq(id_str, target) then some(t)
                   else find_term_by_id(rest, target)
 
+    -- The reference-carrying counterpart for mutation. Identity comes from
+    -- `stored_facts_of`, never a second content-to-handle lookup.
+    operation find_stored_by_id(rows: List[T = StoredRef[T = Term]], target: String)
+      -> Option[T = StoredRef[T = Term]] =
+      match rows
+        case nil() -> none()
+        case cons(row, rest) ->
+          match row
+            case stored_ref(t, _) ->
+              match term_field(t, "id")
+                case none() -> find_stored_by_id(rest, target)
+                case some(id_term) ->
+                  match term_as_string(id_term)
+                    case none() -> find_stored_by_id(rest, target)
+                    case some(id_str) ->
+                      if eq(id_str, target) then some(row)
+                      else find_stored_by_id(rest, target)
+
     -- Identify the status functor short name of a WorkItem term; "" when
     -- the term lacks a recognizable status field.
     -- NOTE arm order: the `none` arm comes FIRST because a trailing `case`
@@ -246,20 +265,19 @@ namespace anthill.todo.store
           ()
 
     -- Buffer a retract of the WorkItem fact whose `id` field matches
-    -- `target` (via facts_of + find_term_by_id + find_fact). No-op if no
+    -- `target` through its owner-minted StoredRef. No-op if no
     -- such fact. Does NOT flush.
     operation forget_buffer(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
       match Cell.get(s)
         case wis(b, _) ->
-          match find_term_by_id(facts_of(kb(), WorkItem), target)
+          match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
             case none() -> ()
-            case some(t) ->
-              match find_fact(t)
-                case none() -> ()
-                case some(fid) ->
-                  let _ = retract(b, fid)
+            case some(row) ->
+              match row
+                case stored_ref(_, reference) ->
+                  let _ = retract(b, reference)
                   ()
 
     operation flush_backend(s: Cell[V = WIS]) -> Unit
@@ -302,18 +320,22 @@ namespace anthill.todo.store
       let _ = flush_backend(s)
       ()
 
-    -- Atomic update: buffer the retract of `target`'s block and the
-    -- persist of `new_wi`, then flush ONCE. Collapses forget+commit's two
-    -- flushes into one, so an update can't half-apply (drop the old block
-    -- yet fail to write the new). On a store I/O failure the Error effect
-    -- fires at the single flush, before anything is written.
+    -- Select the owner-minted reference, then use the single update boundary.
+    -- The backend stages/replaces the old block atomically; this body never
+    -- spells a retract-plus-persist sequence.
     operation replace(s: Cell[V = WIS], target: String, new_wi: WorkItem) -> Unit
       effects {Modify[s], Error}
     =
-      let _ = forget_buffer(s, target)
-      let _ = persist_buffer(s, as_term(new_wi))
-      let _ = flush_backend(s)
-      ()
+      match Cell.get(s)
+        case wis(b, _) ->
+          match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
+            case none() -> ()
+            case some(row) ->
+              match row
+                case stored_ref(_, reference) ->
+                  let _ = update(b, reference, as_term(new_wi))
+                  let _ = flush(b, nil())
+                  ()
 
     -- True when `t` is a Tag fact term carrying workitem == id AND
     -- name == name (both string-literal fields); non-string slots
@@ -342,6 +364,17 @@ namespace anthill.todo.store
         case cons(t, rest) ->
           if tag_term_matches(t, id, name) then some(t)
           else find_tag_term(rest, id, name)
+
+    operation find_stored_tag(rows: List[T = StoredRef[T = Term]], id: String, name: String)
+      -> Option[T = StoredRef[T = Term]]
+    =
+      match rows
+        case nil() -> none()
+        case cons(row, rest) ->
+          match row
+            case stored_ref(t, _) ->
+              if tag_term_matches(t, id, name) then some(row)
+              else find_stored_tag(rest, id, name)
 
     operation has_tag(s: Cell[V = WIS], id: String, name: String) -> Bool
       effects Error
@@ -434,13 +467,12 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(b, _) ->
-          match find_tag_term(facts_of(kb(), Tag), id, name)
+          match find_stored_tag(stored_facts_of(kb(), Tag), id, name)
             case none() -> ()
-            case some(t) ->
-              match find_fact(t)
-                case none() -> ()
-                case some(fid) ->
-                  let _ = retract(b, fid)
+            case some(row) ->
+              match row
+                case stored_ref(_, reference) ->
+                  let _ = retract(b, reference)
                   let _ = flush(b, nil())
                   ()
   end
