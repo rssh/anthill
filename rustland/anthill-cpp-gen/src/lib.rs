@@ -3503,7 +3503,6 @@ fn lower_literal(lit: &Literal) -> String {
             out.push('"');
             out
         }
-        Literal::Handle(kind, id) => format!("/* handle {kind:?}:{id} */"),
         // BigInt has no native C++17 stdlib mapping — caller would
         // need a custom carrier. Emitted as a comment so the failure
         // is loud.
