@@ -294,6 +294,8 @@ pub struct ProgramClause {
     pub sort: TermId,
     pub domain: TermId,
     pub meta: Option<TermId>,
+    /// Leading De Bruijn slots borrowed from a parent rule frame.
+    pub shared_arity: u32,
 }
 
 impl ProgramClause {
@@ -2944,6 +2946,7 @@ impl KnowledgeBase {
             sort: rule.sort,
             domain: rule.domain,
             meta: rule.meta,
+            shared_arity: rule.shared_arity,
         }
     }
 
@@ -4080,6 +4083,17 @@ impl KnowledgeBase {
             }
         }
         self.rules_by_functor(sym)
+    }
+
+    /// Snapshot every active source clause resolved by `qn`: labeled clauses
+    /// first, then the head-functor fallback. This is the value-facing peer of
+    /// [`Self::rule_ids_by_qn`] for program inspection outside the resolver.
+    pub fn program_clauses_by_qn(&self, qn: &str) -> Vec<ProgramClause> {
+        self.rule_ids_by_qn(qn)
+            .into_iter()
+            .filter(|rid| self.is_rule_alive(*rid))
+            .map(|rid| self.program_clause(rid))
+            .collect()
     }
 
     /// Citation handle for labeled rules. `None` for unlabeled rules

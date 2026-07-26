@@ -27,7 +27,7 @@ use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::{KnowledgeBase, ProgramClause};
 use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
 
 #[derive(Debug)]
@@ -206,19 +206,19 @@ pub fn lift_rule_to_implication_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
 ) -> Result<Vec<String>, SmtGenError> {
-    let rids = kb.rule_ids_by_qn(rule_qn);
-    if rids.is_empty() {
+    let clauses = kb.program_clauses_by_qn(rule_qn);
+    if clauses.is_empty() {
         return Err(SmtGenError::new(format!("rule '{rule_qn}' not found")));
     }
-    rids.into_iter()
-        .map(|rid| lift_one_rid(kb, rule_qn, rid))
+    clauses.into_iter()
+        .map(|clause| lift_one_clause(kb, rule_qn, clause))
         .collect()
 }
 
-fn lift_one_rid(
+fn lift_one_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
-    rid: anthill_core::kb::RuleId,
+    clause: ProgramClause,
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
     // Cited-rule lifts are inherently abstract: chasing the cited
@@ -226,7 +226,7 @@ fn lift_one_rid(
     // doesn't quote (unsound for a universal claim) and would also
     // drag in transitive nonlinearity that breaks LRA discharges.
     emitter.abstract_mode = true;
-    emitter.collect_rule_for_rid(rule_qn, rid)?;
+    emitter.collect_rule_clause(rule_qn, &clause)?;
     emitter.collect_facts_for_referenced_entities()?;
 
     if emitter.conclusion_assertions.is_empty() {
@@ -255,7 +255,7 @@ fn lift_one_rid(
     // to be emitted, as fresh declare-consts, alongside a ground
     // implication. shared_arity == 0 falls through to a classic
     // universally-quantified lift.
-    let shared_arity = kb.rule_shared_arity(rid);
+    let shared_arity = clause.shared_arity;
 
     if shared_arity == 0 {
         if emitter.free_vars.is_empty() {
@@ -392,20 +392,20 @@ impl<'kb> Emitter<'kb> {
     /// the SMT-LIB equation that defines the head's result variable.
     /// Picks the first rule resolved by label / by-functor — for
     /// labeled multi-head rules (multiple rids per label) the
-    /// per-rid path [`Self::collect_rule_for_rid`] should be used by
-    /// the caller iterating over `kb.rule_ids_by_qn(rule_qn)`.
+    /// per-clause path [`Self::collect_rule_clause`] should be used by
+    /// the caller iterating over `kb.program_clauses_by_qn(rule_qn)`.
     fn collect_rule(&mut self, rule_qn: &str) -> Result<(), SmtGenError> {
-        let rid = self.kb.rule_id_by_qn(rule_qn)
+        let clause = self.kb.program_clauses_by_qn(rule_qn).into_iter().next()
             .ok_or_else(|| SmtGenError::new(format!("rule '{rule_qn}' not found")))?;
-        self.collect_rule_for_rid(rule_qn, rid)
+        self.collect_rule_clause(rule_qn, &clause)
     }
 
     /// Walk the given rule's body. Used by the lift fanout to
     /// process each rid of a labeled multi-head rule independently.
-    fn collect_rule_for_rid(
+    fn collect_rule_clause(
         &mut self,
         rule_qn: &str,
-        rid: anthill_core::kb::RuleId,
+        clause: &ProgramClause,
     ) -> Result<(), SmtGenError> {
         self.visited_rules.insert(rule_qn.to_string());
 
@@ -424,8 +424,12 @@ impl<'kb> Emitter<'kb> {
         //    encoding); routed through `process_body_goal` and split
         //    off into `conclusion_assertions`.
         //  - `⊥` (Bottom) — denial form, conclusion stays empty.
-        let head = self.kb.rule_head(rid);
-        let head_shape = self.classify_head(rid);
+        let Value::Term { id: head, .. } = &clause.head else {
+            return Err(SmtGenError::new(format!(
+                "SMT v0 cannot compile a non-term rule head for `{rule_qn}`"
+            )));
+        };
+        let head_shape = self.classify_head(*head);
         if let HeadShape::FunctionLike { result_idx } = head_shape {
             self.result_var = synthetic_var_name(result_idx);
         } else if let HeadShape::Unsupported(msg) = &head_shape {
@@ -438,9 +442,8 @@ impl<'kb> Emitter<'kb> {
         //   <Ordered.op>(a, b)         — inequality assertion
         //                                  (lte/lt/gte/gt)
         // Plus rule calls (`<rule_qn>(?var)`) — chase the dependency.
-        let body = self.kb.rule_body_nodes(rid);
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
-        for goal in body {
+        for goal in &clause.body_nodes {
             self.process_body_goal(goal, &mut local_bindings)?;
         }
 
@@ -459,7 +462,7 @@ impl<'kb> Emitter<'kb> {
         let conclusion_goals: Vec<Rc<NodeOccurrence>> = match head_shape {
             HeadShape::Bottom => Vec::new(),
             HeadShape::FunctionLike { .. } => Vec::new(),
-            HeadShape::Predicate => vec![materialize_from_handle(self.kb, head)],
+            HeadShape::Predicate => vec![materialize_from_handle(self.kb, *head)],
             HeadShape::Unsupported(_) => unreachable!("returned above"),
         };
         if !conclusion_goals.is_empty() {
@@ -636,8 +639,8 @@ impl<'kb> Emitter<'kb> {
         // that yields one inline SMT expression. Used by call sites
         // like `step_distance_bound(?delta)`.
         if pos_args.len() == 1 && named_args.is_empty()
-            && self.kb.rules_by_functor(functor).iter()
-                .any(|rid| !self.kb.is_fact(*rid))
+            && self.kb.program_clauses_by_functor(functor).iter()
+                .any(|clause| !clause.is_fact())
         {
             let bind_idx = match pos_args[0].as_expr() {
                 Some(Expr::Var(Var::DeBruijn(i))) => *i,
@@ -693,15 +696,20 @@ impl<'kb> Emitter<'kb> {
         call_args: &[Rc<NodeOccurrence>],
         bindings: &mut BTreeMap<String, String>,
     ) -> Result<bool, SmtGenError> {
-        let candidates = self.kb.rules_by_functor(functor);
+        let candidates = self.kb.program_clauses_by_functor(functor);
         // Record the functor's QN in visited_rules so the cache key
         // observes any change to its defining facts (initial-geometry
         // edits invalidate downstream proofs).
         let functor_qn = self.kb.qualified_name_of(functor).to_string();
-        for rid in candidates {
-            if !self.kb.is_fact(rid) { continue; }
+        for clause in candidates {
+            if !clause.is_fact() { continue; }
             self.visited_rules.insert(functor_qn.clone());
-            let head_occ = materialize_from_handle(self.kb, self.kb.rule_head(rid));
+            let Value::Term { id: head, .. } = clause.head else {
+                return Err(SmtGenError::new(format!(
+                    "v0: fact call `{functor_qn}` has a non-term program head"
+                )));
+            };
+            let head_occ = materialize_from_handle(self.kb, head);
             let Some((_, fpos, fnamed)) = occ_as_fn(&head_occ) else { continue };
             if !fnamed.is_empty() { continue; }
             if fpos.len() != call_args.len() { continue; }
@@ -766,17 +774,22 @@ impl<'kb> Emitter<'kb> {
             Some(s) => s,
             None => return Ok(false),
         };
-        let rid = match self.kb.rules_by_functor(sym).into_iter()
-            .find(|r| !self.kb.is_fact(*r))
+        let clause = match self.kb.program_clauses_by_functor(sym).into_iter()
+            .find(|clause| !clause.is_fact())
         {
-            Some(r) => r,
+            Some(clause) => clause,
             None => return Ok(false),
         };
         self.visited_rules.insert(callee_qn.to_string());
 
         // Head stays a term (searched in the discrim tree); materialize it to
         // the occurrence substrate to read its De Bruijn param vars (WI-246).
-        let head_occ = materialize_from_handle(self.kb, self.kb.rule_head(rid));
+        let Value::Term { id: head, .. } = clause.head else {
+            return Err(SmtGenError::new(format!(
+                "v0: inlined rule '{callee_qn}' has a non-term head"
+            )));
+        };
+        let head_occ = materialize_from_handle(self.kb, head);
         let head_pos: Vec<Rc<NodeOccurrence>> = match occ_as_fn(&head_occ) {
             Some((_, pos, named)) if named.is_empty() => pos.to_vec(),
             _ => return Err(SmtGenError::new(format!(
@@ -824,7 +837,7 @@ impl<'kb> Emitter<'kb> {
         // give the callee its own bindings + entity_bindings so its
         // local DeBruijn indices stay isolated. After processing we
         // restore the caller's entity_bindings.
-        let body_goals: Vec<Rc<NodeOccurrence>> = self.kb.rule_body_nodes(rid).to_vec();
+        let body_goals = clause.body_nodes;
         let saved_ent = std::mem::take(&mut self.entity_bindings);
         self.entity_bindings = callee_ent;
         let mut local = callee_str;
@@ -1069,12 +1082,17 @@ impl<'kb> Emitter<'kb> {
         self.visited_rules.insert(callee_qn.to_string());
         let sym = self.kb.try_resolve_symbol(callee_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
-        let rid = self.kb.rules_by_functor(sym).into_iter()
-            .find(|r| !self.kb.is_fact(*r))
+        let clause = self.kb.program_clauses_by_functor(sym).into_iter()
+            .find(|clause| !clause.is_fact())
             .ok_or_else(|| SmtGenError::new(format!(
                 "rule call '{callee_qn}' has no defining clauses")))?;
 
-        let head_occ = materialize_from_handle(self.kb, self.kb.rule_head(rid));
+        let Value::Term { id: head, .. } = clause.head else {
+            return Err(SmtGenError::new(format!(
+                "v0: called rule '{callee_qn}' has a non-term head"
+            )));
+        };
+        let head_occ = materialize_from_handle(self.kb, head);
         let result_idx = match occ_as_fn(&head_occ) {
             Some((_, pos_args, _)) if pos_args.len() == 1 => {
                 match pos_args[0].as_expr() {
@@ -1087,7 +1105,7 @@ impl<'kb> Emitter<'kb> {
                 "v0: called rule '{callee_qn}' must have exactly one pos arg in head"))),
         };
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
-        for goal in self.kb.rule_body_nodes(rid) {
+        for goal in &clause.body_nodes {
             self.process_body_goal(goal, &mut local_bindings)?;
         }
         local_bindings.get(&synthetic_var_name(result_idx))
@@ -1489,8 +1507,7 @@ impl<'kb> Emitter<'kb> {
     /// (`gte/lte/eq/...` or entity destructures) become the
     /// conclusion under proposal 032; function-like heads
     /// (`rule_qn(?result)`) drive upper-bound mode.
-    fn classify_head(&self, rid: anthill_core::kb::RuleId) -> HeadShape {
-        let head = self.kb.rule_head(rid);
+    fn classify_head(&self, head: anthill_core::kb::term::TermId) -> HeadShape {
         let term = self.kb.get_term(head);
         let (functor, pos_args) = match term {
             Term::Bottom => return HeadShape::Bottom,
