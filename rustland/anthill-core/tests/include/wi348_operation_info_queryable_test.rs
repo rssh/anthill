@@ -114,14 +114,14 @@ fn modify_op_operation_info_is_a_sld_queryable_value_fact() {
 
     // (c) Discrimination-tree match resolves the value fact and binds `?e` to its
     // effects field carrier-faithfully (the `extract_value_at_path` Named arm).
-    let results = kb.query(goal);
-    let matched: Vec<_> = results.iter().filter(|(r, _)| *r == rid).collect();
+    let results = kb.browse_program_clauses_matching(&goal);
+    let matched: Vec<_> = results.iter().collect();
     assert_eq!(
         matched.len(), 1,
         "the OperationInfo value fact must be found exactly once by the goal",
     );
     assert!(
-        matched[0].1.resolve_as_value(effects_var).is_some(),
+        matched[0].bindings.resolve_as_value(effects_var).is_some(),
         "`?e` must bind to the value fact's effects field — carrier-faithful \
          binding extraction from a Value::Entity head",
     );

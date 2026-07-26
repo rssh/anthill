@@ -10,8 +10,7 @@ use anthill_core::codegen::generate_rust;
 use anthill_core::fs_util;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
-use anthill_core::kb::subst::Substitution;
-use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
 use anthill_core::parse;
 use anthill_core::parse::ir::{Item, ParsedFile};
 use anthill_core::persistence::print::TermPrinter;
@@ -1296,12 +1295,12 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
             // Try both make_name_term (for kernel meta-sorts like Sort, Fact)
             // and resolve_qualified_name_term (for user-defined sorts)
             let sort_term = kb.make_name_term(name);
-            let mut results = kb.by_sort(sort_term);
+            let mut results = kb.program_clauses_by_sort(sort_term);
             if results.is_empty() {
                 let alt = kb.resolve_qualified_name_term(name);
-                results = kb.by_sort(alt);
+                results = kb.program_clauses_by_sort(alt);
             }
-            print_rule_results(&kb, &results, args.max_results);
+            print_program_clause_results(&kb, &results, args.max_results);
         }
         QueryMode::Functor => {
             let name = args.pattern.as_deref().ok_or_else(|| {
@@ -1309,8 +1308,8 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 1
             })?;
             let sym = kb.try_resolve_symbol(name).unwrap_or_else(|| kb.intern(name));
-            let results = kb.rules_by_functor(sym);
-            print_rule_results(&kb, &results, args.max_results);
+            let results = kb.program_clauses_by_functor(sym);
+            print_program_clause_results(&kb, &results, args.max_results);
         }
         QueryMode::Domain => {
             let name = args.pattern.as_deref().ok_or_else(|| {
@@ -1318,8 +1317,8 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 1
             })?;
             let domain_term = kb.resolve_qualified_name_term(name);
-            let results = kb.by_domain(domain_term);
-            print_rule_results(&kb, &results, args.max_results);
+            let results = kb.program_clauses_by_domain(domain_term);
+            print_program_clause_results(&kb, &results, args.max_results);
         }
         QueryMode::Pattern => {
             let queries = collect_queries(args, &mut kb)?;
@@ -1334,8 +1333,8 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                     if args.match_heads {
                         // Structural browse: which facts / rule heads unify
                         // with the pattern, no body evaluation.
-                        let results = kb.query(qt);
-                        print_query_results(&kb, &results, args.max_results);
+                        let results = kb.browse_program_clauses_matching(&qt);
+                        print_program_clause_match_results(&kb, &results, args.max_results);
                     } else {
                         // WI-767: SLD resolution is the default — the old
                         // head-match default reported a rule-head unification
@@ -1601,15 +1600,14 @@ fn render_value(
     }
 }
 
-fn print_rule_results(kb: &KnowledgeBase, results: &[RuleId], max: usize) {
+fn print_program_clause_results(kb: &KnowledgeBase, results: &[ProgramClause], max: usize) {
     let printer = TermPrinter::new(kb);
     let limit = if max == 0 { results.len() } else { max.min(results.len()) };
 
-    for &rid in &results[..limit] {
-        // WI-348: a head may be a value fact (Node-carrying); read it as a Value.
-        let head = render_value(&printer, kb, kb.rule_head_value(rid));
+    for clause in &results[..limit] {
+        let head = render_value(&printer, kb, &clause.head);
         // Facts have no body; rule body atoms are occurrences (WI-246).
-        let body = kb.rule_body_nodes(rid);
+        let body = &clause.body_nodes;
         if body.is_empty() {
             println!("  {head}");
         } else {
@@ -1627,28 +1625,28 @@ fn print_rule_results(kb: &KnowledgeBase, results: &[RuleId], max: usize) {
     }
 }
 
-fn print_query_results(
+fn print_program_clause_match_results(
     kb: &KnowledgeBase,
-    results: &[(RuleId, Substitution)],
+    results: &[ProgramClauseMatch],
     max: usize,
 ) {
     let printer = TermPrinter::new(kb);
     let limit = if max == 0 { results.len() } else { max.min(results.len()) };
 
-    for (rid, subst) in &results[..limit] {
-        // WI-348: read the head as a Value (may be a Node-carrying value fact).
-        print!("  {}", render_value(&printer, kb, kb.rule_head_value(*rid)));
+    for matched in &results[..limit] {
+        let clause = &matched.clause;
+        print!("  {}", render_value(&printer, kb, &clause.head));
         // A bodied rule's head match is NOT an answer — show the body so the
         // row reads as the rule it is, not as bindings that failed to ground
         // (the WI-767 misread).
-        let body = kb.rule_body_nodes(*rid);
+        let body = &clause.body_nodes;
         if !body.is_empty() {
             let body_strs: Vec<String> =
                 body.iter().map(|atom| printer.print_occurrence(atom)).collect();
             print!(" :- {}", body_strs.join(", "));
         }
         // Print bindings if any — carrier-agnostic (a binding may be a Node).
-        let bindings: Vec<String> = subst
+        let bindings: Vec<String> = matched.bindings
             .iter()
             .map(|(vid, val)| {
                 format!("?{} = {}", kb.resolve_sym(vid.name()), render_value(&printer, kb, val))

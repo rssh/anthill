@@ -156,14 +156,14 @@ fn dotapply_cross_carrier_discrim_match() {
     // Index the TERM carrier, query with the OCCURRENCE carrier: must match.
     let node = Value::Node(dot_occ(&mut kb, occ(Expr::Const(Literal::Int(1)))));
     assert_eq!(
-        kb.query_view(&node).len(),
+        kb.browse_program_clauses_matching(&node).len(),
         1,
         "occurrence query matches the term-indexed fact",
     );
 
     // Precision: a different call arg must NOT match.
     let other = Value::Node(dot_occ(&mut kb, occ(Expr::Const(Literal::Int(9)))));
-    assert_eq!(kb.query_view(&other).len(), 0, "different arg does not match");
+    assert_eq!(kb.browse_program_clauses_matching(&other).len(), 0, "different arg does not match");
 
     // Term-side pattern unified against the occurrence target (the temp-tree
     // direction `match_view` exercises): must also match.
@@ -188,10 +188,10 @@ fn dotapply_occurrence_goal_var_binds_through_args_list() {
     let x = kb.intern("x");
     let vid = kb.fresh_var(x);
     let goal = Value::Node(dot_occ(&mut kb, occ(Expr::Var(Var::Global(vid)))));
-    let hits = kb.query_view(&goal);
+    let hits = kb.browse_program_clauses_matching(&goal);
     assert_eq!(hits.len(), 1, "var-arg occurrence goal matches the fact");
     assert_eq!(
-        hits[0].1.resolve_as_value(vid).map(|v| v.expect_term()),
+        hits[0].bindings.resolve_as_value(vid).map(|v| v.expect_term()),
         Some(one),
         "?x bound to the fact's positional arg value through the args list",
     );

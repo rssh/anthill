@@ -304,6 +304,20 @@ impl ProgramClause {
     }
 }
 
+/// A structural program-browse match, without exposing the resident rule slot.
+///
+/// This is deliberately narrower than the resolver's candidate interface: it
+/// is for tools that display matching source clauses (for example CLI
+/// `query --match`), not for evaluating facts. Ordinary fact readers use
+/// [`KnowledgeBase::read_facts`] / [`KnowledgeBase::read_facts_resolved`] and
+/// receive values only. The resolver retains its `RuleId` candidates privately,
+/// because it must open the selected rule body.
+#[derive(Clone, Debug)]
+pub struct ProgramClauseMatch {
+    pub clause: ProgramClause,
+    pub bindings: subst::Substitution,
+}
+
 /// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
 /// the value-fact refcount helpers. Recurses through `Value::Entity` / `Tuple`
 /// children directly and through a `Value::Node` occurrence via `TermView`.
@@ -2879,6 +2893,15 @@ impl KnowledgeBase {
             .collect()
     }
 
+    /// Snapshot every active program clause in `domain`, preserving the
+    /// historical `by_domain` enumeration order without exposing `RuleId`.
+    pub fn program_clauses_by_domain(&self, domain: TermId) -> Vec<ProgramClause> {
+        self.by_domain(domain)
+            .into_iter()
+            .map(|rid| self.program_clause(rid))
+            .collect()
+    }
+
     /// WI-812: whether `functor` currently has ANY indexed bodied rule (a rule
     /// with a non-empty body). O(1) — a single lookup of the `bodied_rule_counts`
     /// gate maintained at assert / retract / unindex, so [`Self::read_facts`]'s
@@ -3373,30 +3396,14 @@ impl KnowledgeBase {
             .find(|s| !s.is_contradiction())
     }
 
-    /// Find all active rules/facts whose head matches the given pattern.
-    ///
-    /// Uses the discrimination tree for multi-level structural dispatch.
-    /// Variable bindings are resolved via path extraction from head terms.
-    /// Representation-neutral (WI-349): the pattern is anything implementing
-    /// [`term_view::TermView`] — a `TermId` ground pattern, a `Value`, or a
-    /// `Value::Node` occurrence — so there is no term-only query door. Thin
-    /// alias for [`Self::query_view`] (the established `TermView` core), which
-    /// reads the pattern against the structurally-keyed discrimination tree (no
-    /// hash-cons identity required).
-    pub fn query<V: term_view::TermView>(
-        &self,
-        pattern: V,
-    ) -> Vec<(RuleId, subst::Substitution)> {
-        self.query_view(&pattern)
-    }
-
-    /// `query` generic over the goal representation: `pattern` is anything
+    /// Resolver-only candidate selection, generic over the goal representation:
+    /// `pattern` is anything
     /// viewable as a term — `TermIdView(TermId)` for the term-goal path, or a
     /// `Value` / `Value::Node` occurrence goal (WI-246), since the matcher
     /// reads the goal only through [`TermView`] and the discrim tree indexes
     /// rule heads structurally. Avoids lowering an occurrence goal to a
     /// hash-consed term just to look up candidates.
-    pub fn query_view<V: term_view::TermView>(
+    pub(crate) fn query_view<V: term_view::TermView>(
         &self,
         pattern: &V,
     ) -> Vec<(RuleId, subst::Substitution)> {
@@ -3424,6 +3431,26 @@ impl KnowledgeBase {
         // before recursive rules to find base-case solutions first.
         results.sort_by_key(|(rid, _)| if rules[rid.index()].body_nodes.is_empty() { 0 } else { 1 });
         results
+    }
+
+    /// Structurally browse active source clauses whose heads match `pattern`.
+    ///
+    /// Unlike the resolver's crate-private [`Self::query_view`], this returns
+    /// immutable clause snapshots and bindings, never resident `RuleId`s. It is
+    /// the public inspection API for tools such as `anthill query --match`.
+    /// It is not a fact-read API: callers that need data rows must use
+    /// [`Self::read_facts`] or [`Self::read_facts_resolved`].
+    pub fn browse_program_clauses_matching<V: term_view::TermView>(
+        &self,
+        pattern: &V,
+    ) -> Vec<ProgramClauseMatch> {
+        self.query_view(pattern)
+            .into_iter()
+            .map(|(rid, bindings)| ProgramClauseMatch {
+                clause: self.program_clause(rid),
+                bindings,
+            })
+            .collect()
     }
 
     /// WI-812: the head `Value`s of resident, non-retracted FACTS whose head
@@ -3461,18 +3488,6 @@ impl KnowledgeBase {
                 !self.rules[rid.index()].retracted && self.rules[rid.index()].body_nodes.is_empty()
             })
             .map(|(rid, _)| self.rules[rid.index()].head.clone())
-            .collect()
-    }
-
-    /// Find all active rules (non-empty body) whose head matches the pattern.
-    /// Representation-neutral over the pattern carrier (WI-349).
-    pub fn query_rules<V: term_view::TermView>(
-        &self,
-        pattern: V,
-    ) -> Vec<(RuleId, subst::Substitution)> {
-        self.query(pattern)
-            .into_iter()
-            .filter(|(rid, _)| !self.rules[rid.index()].body_nodes.is_empty())
             .collect()
     }
 
@@ -6080,7 +6095,7 @@ mod tests {
             pos_args: SmallVec::from_elem(var_t, 1),
             named_args: SmallVec::new(),
         });
-        let results = kb.query(query);
+        let results = kb.query_view(&query);
         assert_eq!(results.len(), 1, "value fact should be found by f(?x)");
         assert_eq!(results[0].0, rid);
         match results[0].1.resolve_as_value(xv) {
@@ -6094,7 +6109,7 @@ mod tests {
         // Retract removes it from the active indexes.
         kb.retract(rid);
         assert!(kb.by_sort(sort).is_empty(), "retracted value fact left in by_sort");
-        assert!(kb.query(query).is_empty(), "retracted value fact still queryable");
+        assert!(kb.query_view(&query).is_empty(), "retracted value fact still queryable");
     }
 
     #[test]
@@ -6149,7 +6164,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(alpha, xt), (beta, yt)]),
         });
-        let results = kb.query(query);
+        let results = kb.query_view(&query);
         assert_eq!(results.len(), 1, "named-arg value fact should be found");
         assert_eq!(results[0].0, rid);
 
@@ -6603,7 +6618,7 @@ mod tests {
             pos_args: SmallVec::from_elem(yt, 1),
             named_args: SmallVec::new(),
         });
-        let found = kb.query(query);
+        let found = kb.query_view(&query);
         assert!(
             found.iter().any(|(r, _)| *r == rid),
             "the De Bruijn-bearing value head must be indexed + queryable",
@@ -6671,7 +6686,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         assert!(
-            kb.query(query).iter().any(|(r, _)| *r == rid),
+            kb.query_view(&query).iter().any(|(r, _)| *r == rid),
             "the var-bearing value rule head must be indexed + queryable",
         );
     }
@@ -7635,7 +7650,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let results = kb.query(pattern);
+        let results = kb.query_view(&pattern);
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
         assert_eq!(s.resolve_as_value(vid).map(|v| v.expect_term()), Some(alice));
@@ -7679,7 +7694,7 @@ mod tests {
             pos_args: SmallVec::from_slice(&[var_x, bob]),
             named_args: SmallVec::new(),
         });
-        let term_hits = kb.query(pattern);
+        let term_hits = kb.query_view(&pattern);
 
         let occ = node_occurrence::materialize_from_handle(&kb, pattern);
         let node_hits = kb.query_view(&Value::Node(occ));
@@ -7773,7 +7788,7 @@ mod tests {
         });
         kb.assert_rule(rule_head, vec![body_lit], sort, domain, None);
 
-        // query() should find both
+        // candidate selection should find both
         let q_sym = kb.intern("q");
         let qv = kb.fresh_var(q_sym);
         let var_q = kb.alloc(Term::Var(Var::Global(qv)));
@@ -7782,10 +7797,17 @@ mod tests {
             pos_args: SmallVec::from_elem(var_q, 1),
             named_args: SmallVec::new(),
         });
-        assert_eq!(kb.query(pattern).len(), 2);
+        let candidates = kb.query_view(&pattern);
+        assert_eq!(candidates.len(), 2);
 
-        // query_rules() should find only the rule
-        assert_eq!(kb.query_rules(pattern).len(), 1);
+        // The resolver sees one fact and one bodied rule.
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|(rid, _)| !kb.is_fact(*rid))
+                .count(),
+            1,
+        );
     }
 
     #[test]

@@ -249,13 +249,13 @@ fn lambda_cross_carrier_discrim_match() {
     kb.assert_fact(term, fact_sort, domain, None);
 
     let node = Value::Node(lambda_occ(b));
-    assert_eq!(kb.query_view(&node).len(), 1, "occurrence query matches the term-indexed fact");
+    assert_eq!(kb.browse_program_clauses_matching(&node).len(), 1, "occurrence query matches the term-indexed fact");
 
     // Precision: a different binder must NOT match — the candidate set really is
     // keyed on the lambda's structure, not merely widened.
     let other_b = kb.intern("b#2");
     let other = Value::Node(lambda_occ(other_b));
-    assert_eq!(kb.query_view(&other).len(), 0, "a different binder does not match");
+    assert_eq!(kb.browse_program_clauses_matching(&other).len(), 0, "a different binder does not match");
 
     assert!(kb.match_view(term, &node).is_some(), "term pattern matches the occurrence target");
 }
