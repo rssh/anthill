@@ -638,14 +638,26 @@ fn check_scope_axiom_witness(
                 "ScopeAxiom(requires): SortRequiresInfo schema not loaded".into()
             ),
         };
+        let requires = match kb.read_facts(requires_sym, &[], BodiedRulePolicy::Refuse) {
+            Ok(rows) => rows,
+            Err(e) => return CheckStatus::Failed(format!("ScopeAxiom(requires): {e}")),
+        };
         let mut scope_seen = false;
-        for rid in kb.rules_by_functor(requires_sym) {
-            if !kb.is_fact(rid) { continue; }
-            // A value-fact SortRequiresInfo (denoted-bearing spec, WI-366) carries
-            // no term-form named args; occurrence-based scope-axiom checking is
-            // gated effect-expressions-as-types work, so skip rather than hit the
-            // term-only `rule_head` panic on a value head.
-            let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
+        for row in requires {
+            // This proof checker currently decodes `sort_ref` / `spec` with
+            // term-only helpers. A carrier it cannot inspect is unsupported,
+            // not evidence that the cited declaration disappeared.
+            let Value::Term { id: head, .. } = row else {
+                return CheckStatus::Failed(
+                    "ScopeAxiom(requires): non-term SortRequiresInfo row is unsupported; \
+                     decode it through TermView".into(),
+                );
+            };
+            let Term::Fn { named_args: head_named, .. } = kb.get_term(head) else {
+                return CheckStatus::Failed(
+                    "ScopeAxiom(requires): SortRequiresInfo row is not function-shaped".into(),
+                );
+            };
             let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
                 Some(t) => t,
                 None => continue,

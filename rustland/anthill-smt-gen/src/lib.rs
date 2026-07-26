@@ -23,11 +23,12 @@ pub mod tactic_emit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
+use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
-use anthill_core::persistence::print::TermPrinter;
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -38,35 +39,6 @@ impl SmtGenError {
     fn new(s: impl Into<String>) -> Self {
         Self { message: s.into() }
     }
-}
-
-/// Refuse `rid` if it is a bodied rule (WI-772). smt-gen's fact readers
-/// head-match rule heads and never evaluate bodies, so a guarded rule
-/// reaching one of them must be a loud error, not a silent skip.
-/// `subject` names what is being read ("TranslationPolicy rule", "rule
-/// for referenced entity `X`"); `consequence` states what the silent
-/// skip would have done at that site. Callers pre-scan ALL candidates
-/// through this BEFORE acting on any of them, so whether the refusal
-/// fires cannot depend on where the bodied rule sits in the candidate
-/// list relative to a matching fact (`rules_by_functor` enumerates in
-/// insertion order — source/file-load order, an authoring accident no
-/// refusal should hang on).
-pub(crate) fn refuse_if_bodied(
-    kb: &KnowledgeBase,
-    rid: RuleId,
-    subject: &str,
-    consequence: &str,
-) -> Result<(), SmtGenError> {
-    if kb.is_fact(rid) {
-        return Ok(());
-    }
-    Err(SmtGenError::new(format!(
-        "bodied {subject} refused: `{}` — the reader head-matches facts \
-         and never evaluates the rule body (guard), so {consequence} \
-         (WI-772). Assert the entries as facts; guarded/derived \
-         selection is unsupported.",
-        TermPrinter::new(kb).print_rule(rid),
-    )))
 }
 
 /// Caller-supplied overrides forwarded to the SMT preamble.
@@ -1566,25 +1538,29 @@ impl<'kb> Emitter<'kb> {
     fn collect_facts_for_referenced_entities(&mut self) -> Result<(), SmtGenError> {
         for entity_qn in self.referenced_entities.clone() {
             let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else { continue };
-            let candidates = self.kb.rules_by_functor(sym);
-            for &rid in &candidates {
-                refuse_if_bodied(
-                    self.kb,
-                    rid,
-                    &format!("rule for referenced entity `{entity_qn}`"),
-                    "guarded field values would enter the SMT encoding \
-                     unconditionally — a proof could be discharged from a \
-                     premise the source guarded",
-                )?;
-            }
+            let candidates = self.kb.read_facts(sym, &[], BodiedRulePolicy::Refuse)
+                .map_err(|e| match e {
+                    ExtentReadError::BodiedRule { .. } => SmtGenError::new(format!(
+                        "bodied rule for referenced entity `{entity_qn}` refused: {e} — \
+                         guarded field values would enter the SMT encoding unconditionally (WI-772)"
+                    )),
+                    _ => SmtGenError::new(format!(
+                        "referenced entity `{entity_qn}` read failed: {e}"
+                    )),
+                })?;
             // Accept the first fact whose named_args resolve to numeric
             // literals — that's a ground data fact. (WI-515: only data
             // facts remain; the entity-declaration row with abstract
             // field types is no longer asserted.) Multi-fact
             // disambiguation is a v1 concern; for v0 we expect at most
             // one fact per entity.
-            for rid in candidates {
-                let head = self.kb.rule_head(rid);
+            for row in candidates {
+                let Value::Term { id: head, .. } = row else {
+                    return Err(SmtGenError::new(format!(
+                        "referenced entity `{entity_qn}` has a non-term fact row; \
+                         SMT v0 requires term-carried numeric fields"
+                    )));
+                };
                 let Term::Fn { named_args, .. } = self.kb.get_term(head) else { continue };
                 let any_concrete = named_args.iter().any(|(_, t)|
                     literal_as_real(self.kb.get_term(*t)).is_some());

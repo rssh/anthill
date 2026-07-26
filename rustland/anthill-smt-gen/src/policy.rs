@@ -30,11 +30,13 @@
 
 use std::collections::BTreeSet;
 
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::eval::Value;
+use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
+use anthill_core::kb::KnowledgeBase;
 
-use crate::{lift_rule_to_implication_clause, refuse_if_bodied, SmtGenError};
+use crate::{lift_rule_to_implication_clause, SmtGenError};
 
 /// The backend identifier the z3 SMT path presents to policy lookup —
 /// the `backend` field a `TranslationPolicy` fact must carry to apply
@@ -215,18 +217,22 @@ fn lookup_explicit_policy(
     ) else {
         return Ok(None);
     };
-    let candidates = kb.rules_by_functor(policy_sym);
-    for &rid in &candidates {
-        refuse_if_bodied(
-            kb,
-            rid,
-            "TranslationPolicy rule",
-            "a guarded policy would silently fall back to the \
-             per-backend default",
-        )?;
-    }
-    for rid in candidates {
-        let head = kb.rule_head(rid);
+    let candidates = kb
+        .read_facts(policy_sym, &[], BodiedRulePolicy::Refuse)
+        .map_err(|e| match e {
+            ExtentReadError::BodiedRule { .. } => SmtGenError::new(format!(
+                "bodied TranslationPolicy rule refused: {e} — the reader head-matches \
+                 facts and never evaluates the rule body (guard), so a guarded policy \
+                 would silently fall back to the per-backend default (WI-772)."
+            )),
+            _ => SmtGenError::new(format!("TranslationPolicy read failed: {e}")),
+        })?;
+    for row in candidates {
+        let Value::Term { id: head, .. } = row else {
+            return Err(SmtGenError::new(
+                "TranslationPolicy row has a non-term head; policy records must be ground terms",
+            ));
+        };
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,

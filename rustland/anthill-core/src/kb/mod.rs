@@ -282,6 +282,26 @@ struct RuleEntry {
     dedup_key: Option<TermId>,
 }
 
+/// Immutable, value-facing view of one loaded program clause.
+///
+/// This intentionally describes source-resident program text: a body, domain,
+/// and metadata have no representation in an extent-owned row. It is the
+/// inspection seam for callers that need clauses without exposing `RuleId`.
+#[derive(Clone, Debug)]
+pub struct ProgramClause {
+    pub head: crate::eval::value::Value,
+    pub body_nodes: Vec<Rc<NodeOccurrence>>,
+    pub sort: TermId,
+    pub domain: TermId,
+    pub meta: Option<TermId>,
+}
+
+impl ProgramClause {
+    pub fn is_fact(&self) -> bool {
+        self.body_nodes.is_empty()
+    }
+}
+
 /// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
 /// the value-fact refcount helpers. Recurses through `Value::Entity` / `Tuple`
 /// children directly and through a `Value::Node` occurrence via `TermView`.
@@ -1238,6 +1258,23 @@ impl KnowledgeBase {
     /// Scope symbol that owns `sym`. Delegates to the symbol table.
     pub fn scope_of(&self, sym: Symbol) -> Option<Symbol> {
         self.symbols.scope_of(sym)
+    }
+
+    /// The symbol that owns the lexical scope in which `sym` was declared.
+    ///
+    /// `scope_raw` is currently stored internally as the raw id of the owning
+    /// nullary name term. Keep that representation private: callers need the
+    /// owner (`Tank` for `Tank.fill`), never its term-store identity.
+    pub fn declaring_scope_symbol(&self, sym: Symbol) -> Option<Symbol> {
+        let scope_raw = match self.symbols.get(sym) {
+            SymbolDef::Resolved { scope_raw, .. } => *scope_raw,
+            SymbolDef::Unresolved { .. } => return None,
+        };
+        match self.terms.get(TermId::from_raw(scope_raw)) {
+            Term::Fn { functor, pos_args, named_args }
+                if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
+            _ => None,
+        }
     }
 
     /// Type-parameter names declared inside a sort's body (`sort T = ?`
@@ -2833,6 +2870,13 @@ impl KnowledgeBase {
             .filter(move |rid| !self.rules[rid.index()].retracted)
     }
 
+    /// Snapshot every active, indexed program clause under `sym`.
+    pub fn program_clauses_by_functor(&self, sym: Symbol) -> Vec<ProgramClause> {
+        self.rules_by_functor_iter(sym)
+            .map(|rid| self.program_clause(rid))
+            .collect()
+    }
+
     /// WI-812: whether `functor` currently has ANY indexed bodied rule (a rule
     /// with a non-empty body). O(1) — a single lookup of the `bodied_rule_counts`
     /// gate maintained at assert / retract / unindex, so [`Self::read_facts`]'s
@@ -2881,7 +2925,27 @@ impl KnowledgeBase {
             .unwrap_or_default()
     }
 
+    /// Snapshot every active program clause in `sort`, including direct entity
+    /// children, with exactly [`Self::by_sort`]'s enumeration semantics.
+    pub fn program_clauses_by_sort(&self, sort: TermId) -> Vec<ProgramClause> {
+        self.by_sort(sort)
+            .into_iter()
+            .map(|rid| self.program_clause(rid))
+            .collect()
+    }
+
     // ── Rule accessors ───────────────────────────────────────────
+
+    fn program_clause(&self, id: RuleId) -> ProgramClause {
+        let rule = &self.rules[id.index()];
+        ProgramClause {
+            head: rule.head.clone(),
+            body_nodes: rule.body_nodes.clone(),
+            sort: rule.sort,
+            domain: rule.domain,
+            meta: rule.meta,
+        }
+    }
 
     /// Get the head of a rule/fact as a hash-consed `TermId`. The head is stored
     /// carrier-agnostically (`Value`, WI-348 Phase B); the universal case is

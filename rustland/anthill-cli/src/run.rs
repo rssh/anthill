@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anthill::{runner, stdlib};
-use anthill_core::eval::Interpreter;
+use anthill_core::eval::{Interpreter, Value};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::term::{Term, TermId};
@@ -44,32 +44,45 @@ pub struct RunArgs {
 /// Return the fully-qualified symbol of every sort whose
 /// `SortRequiresInfo` spec names `anthill.cli.Main`. Deterministically
 /// sorted by qualified name.
-fn find_main_providers(kb: &mut KnowledgeBase) -> Vec<Symbol> {
+fn find_main_providers(kb: &mut KnowledgeBase) -> Result<Vec<Symbol>, String> {
     let main_sym = match kb.try_resolve_symbol("anthill.cli.Main") {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
     let requires_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
     let view_sym = match kb.try_resolve_symbol("anthill.reflect.SortView") {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
     let sort_ref_field = kb.intern("sort_ref");
     let spec_field = kb.intern("spec");
 
     let mut providers: Vec<Symbol> = Vec::new();
-    for rid in kb.rules_by_functor(requires_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // WI-366: a value-fact SortRequiresInfo (denoted-bearing spec) has no
-        // term-form head; entry-point discovery is term-only, so skip it rather
-        // than hit the term-only `rule_head` panic on a value head.
-        let Some(named_args) = kb.fact_head_named_args(rid) else { continue };
+    let requires = kb
+        .read_facts(
+            requires_sym,
+            &[],
+            anthill_core::kb::extent::BodiedRulePolicy::Refuse,
+        )
+        .map_err(|e| format!("reading SortRequiresInfo facts: {e}"))?;
+    for row in requires {
+        // Entry discovery still reads the `sort_ref` / `spec` fields through
+        // term-only helpers. A non-term row is not "no provider": surface the
+        // unsupported carrier until this reader is made TermView-native.
+        let Value::Term { id: head, .. } = row else {
+            return Err(
+                "SortRequiresInfo entry discovery does not yet support a non-term row; \
+                 it must be decoded carrier-neutrally"
+                    .into(),
+            );
+        };
+        let Term::Fn { named_args, .. } = kb.get_term(head) else {
+            return Err("SortRequiresInfo row is not a function-shaped record".into());
+        };
         let sort_ref_tid = named_args.iter().find(|(s, _)| *s == sort_ref_field).map(|(_, t)| *t);
         let spec_tid = named_args.iter().find(|(s, _)| *s == spec_field).map(|(_, t)| *t);
         let (Some(sr), Some(sp)) = (sort_ref_tid, spec_tid) else { continue };
@@ -94,7 +107,7 @@ fn find_main_providers(kb: &mut KnowledgeBase) -> Vec<Symbol> {
 
     providers.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
     providers.dedup();
-    providers
+    Ok(providers)
 }
 
 /// Extract the head symbol of a Term that represents a sort reference
@@ -233,7 +246,10 @@ pub fn run(args: &RunArgs) -> i32 {
 fn run_inner(args: &RunArgs) -> Result<i32, i32> {
     let mut kb = build_kb(&args.paths)?;
 
-    let providers = find_main_providers(&mut kb);
+    let providers = find_main_providers(&mut kb).map_err(|e| {
+        eprintln!("error: {e}");
+        runner::EXIT_COMPILE
+    })?;
     let chosen = select_entry(&kb, &providers, args.entry.as_deref())?;
     let main_qname = format!("{}.main", kb.qualified_name_of(chosen));
 

@@ -222,9 +222,16 @@ impl KbBridge {
         if let Some(fields) = kb.entity_field_types(functor) {
             return Some(fields.iter().map(|&(sym, _)| sym).collect());
         }
-        for rid in kb.rules_by_functor(functor) {
-            let head = match kb.rule_head_value(rid) {
-                anthill_core::eval::Value::Term { id: t, .. } => *t,
+        let rows = kb
+            .read_facts(
+                functor,
+                &[],
+                anthill_core::kb::extent::BodiedRulePolicy::Refuse,
+            )
+            .unwrap_or_else(|e| panic!("KB.fields: {e}"));
+        for row in rows {
+            let head = match row {
+                anthill_core::eval::Value::Term { id: t, .. } => t,
                 _ => continue,
             };
             if let CoreTerm::Fn { named_args, .. } = kb.get_term(head) {
@@ -758,9 +765,14 @@ impl KB for KbBridge {
             )
         });
         let kb = self.kb.borrow();
-        kb.rules_by_functor(functor)
+        kb.read_facts(
+            functor,
+            &[],
+            anthill_core::kb::extent::BodiedRulePolicy::Refuse,
+        )
+            .unwrap_or_else(|e| panic!("KB.facts_of: {e}"))
             .into_iter()
-            .map(|rid| rterm(kb.rule_head_value(rid).clone()))
+            .map(rterm)
             .collect()
     }
 
@@ -1183,6 +1195,24 @@ fact blue(shade: 3)
             Value::term(kb.alloc(CoreTerm::Const(Literal::Int(7))))
         };
         let _ = bridge.facts_of(Type::new(lit));
+    }
+
+    #[test]
+    #[should_panic(expected = "a bodied rule was read where only facts are allowed")]
+    fn facts_of_refuses_a_bodied_rule() {
+        let bridge = load_source_bridge(
+            r#"
+sort Color { entity red(shade: Int64) }
+fact enabled()
+fact red(shade: 1)
+rule red(shade: 2) :- enabled()
+"#,
+        );
+        let red_ref = {
+            let mut kb = bridge.kb.borrow_mut();
+            Value::term(kb.resolve_qualified_name_term("Color.red"))
+        };
+        let _ = bridge.facts_of(Type::new(red_ref));
     }
 
     #[test]

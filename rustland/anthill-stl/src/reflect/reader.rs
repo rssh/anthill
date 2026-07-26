@@ -38,7 +38,7 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::op_info;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
 use anthill_core::kb::term_view::{TermView, ViewHead};
-use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::KnowledgeBase;
 
 // ── Leaf helpers ────────────────────────────────────────────────
 
@@ -137,15 +137,23 @@ pub(crate) fn term_pos_args(kb: &KnowledgeBase, head: &Value) -> Vec<TermId> {
     out
 }
 
-/// Every fact in a sort bucket, with its head read carrier-agnostically as a
-/// [`Value`] (a `Value::Term` for a ground fact, a `Value::Entity`/`Value::Node`
-/// for a value fact). Callers that are `Term`-only filter on the carrier.
-pub(crate) fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec<(RuleId, Value)> {
-    let sort_term = kb.make_name_term(sort_name);
-    kb.by_sort(sort_term)
-        .into_iter()
-        .map(|rid| (rid, kb.rule_head_value(rid).clone()))
-        .collect()
+/// Every asserted row of the declared fact functor `qualified_functor`.
+///
+/// Reflection's historical `Member` / `Description` *sort* buckets are resident
+/// RuleEntry metadata, not information an extent-owned row carries. Their rows
+/// nevertheless have stable declared functors (`anthill.reflect.member` and
+/// `Description`), so fact readers enumerate them through the extent seam by
+/// functor rather than leaking the resident `RuleId` bucket.
+fn facts_by_functor(kb: &KnowledgeBase, qualified_functor: &str, reader: &str) -> Vec<Value> {
+    let Some(functor) = kb.try_resolve_symbol(qualified_functor) else {
+        return Vec::new();
+    };
+    kb.read_facts(
+        functor,
+        &[],
+        anthill_core::kb::extent::BodiedRulePolicy::Refuse,
+    )
+    .unwrap_or_else(|e| panic!("reflect {reader} read: {e}"))
 }
 
 /// Collect the names of every `Member` of a given `kind` (`Constructor`,
@@ -153,7 +161,7 @@ pub(crate) fn facts_by_sort_name(kb: &mut KnowledgeBase, sort_name: &str) -> Vec
 /// matched by functor symbol, not by display-name string).
 pub(crate) fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -> Vec<String> {
     let mut results = vec![];
-    for (_rid, head) in facts_by_sort_name(kb, "Member") {
+    for head in facts_by_functor(kb, "anthill.reflect.member", "Member") {
         let pos = term_pos_args(kb, &head);
         if pos.len() == 3 {
             let member_kind = term_display_name(kb, pos[1]);
@@ -187,12 +195,13 @@ pub(crate) fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -
     let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
         return Vec::new();
     };
-    let facts: Vec<Value> = kb
-        .rules_by_functor(sort_info)
-        .into_iter()
-        .filter(|rid| kb.is_fact(*rid))
-        .map(|rid| kb.rule_head_value(rid).clone())
-        .collect();
+    let facts = kb
+        .read_facts(
+            sort_info,
+            &[],
+            anthill_core::kb::extent::BodiedRulePolicy::Refuse,
+        )
+        .unwrap_or_else(|e| panic!("reflect SortInfo read: {e}"));
     let f_name = kb.intern("name");
     let f_definition = kb.intern("definition");
     let f_kind = kb.intern("kind");
@@ -252,20 +261,20 @@ pub(crate) struct OperationRecord {
 /// Read the `OperationInfo` facts whose domain is the resolved sort `sort_sym`
 /// (WI-632: matched by functor symbol, not by display-name string).
 pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<OperationRecord> {
-    let op_sort = kb.make_name_term("Operation");
     let meta_default_sym = kb.intern("meta");
     let mut out = Vec::new();
-    for rid in kb.by_sort(op_sort) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let head = kb.rule_head_value(rid).clone();
+    for head in facts_by_functor(kb, "anthill.reflect.OperationInfo", "OperationInfo") {
         let name = match op_info::head_field_term(kb, &head, "name") {
             Some(t) => t,
             None => continue,
         };
-        let domain = kb.fact_domain(rid);
-        if term_head_sym(kb, domain) != Some(sort_sym) {
+        let Some(op_sym) = op_info::head_name_ref(kb, &head) else {
+            continue;
+        };
+        let Some(scope_sym) = kb.declaring_scope_symbol(op_sym) else {
+            continue;
+        };
+        if scope_sym != sort_sym {
             continue;
         }
         let return_type = match op_info::head_field_term(kb, &head, "return_type") {
@@ -311,7 +320,7 @@ pub(crate) fn read_descriptions(
     target: Option<&str>,
 ) -> Vec<DescriptionRecord> {
     let mut out = Vec::new();
-    for (_rid, head) in facts_by_sort_name(kb, "Description") {
+    for head in facts_by_functor(kb, "Description", "Description") {
         let pos = term_pos_args(kb, &head);
         if pos.len() < 3 {
             continue;
@@ -339,13 +348,13 @@ pub(crate) fn read_descriptions(
 /// `sort_sym` (WI-632: matched by functor symbol, not by display-name string).
 /// Each realization reifies these to its own term-repr form.
 pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Value> {
+    let rule_sort = kb.make_name_term("Rule");
     let mut out = Vec::new();
-    for (rid, head) in facts_by_sort_name(kb, "Rule") {
-        let domain = kb.fact_domain(rid);
-        if term_head_sym(kb, domain) != Some(sort_sym) {
+    for clause in kb.program_clauses_by_sort(rule_sort) {
+        if term_head_sym(kb, clause.domain) != Some(sort_sym) {
             continue;
         }
-        out.push(head);
+        out.push(clause.head);
     }
     out
 }
