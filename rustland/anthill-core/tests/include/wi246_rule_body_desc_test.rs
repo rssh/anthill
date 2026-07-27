@@ -1,5 +1,5 @@
 //! WI-246 regression: dropping the term-based rule body must NOT drop the
-//! Description facts the old `convert_term` walk emitted for inline VARIABLE
+//! DescriptionInfo facts the old `convert_term` walk emitted for inline VARIABLE
 //! descriptions (`?x {< … >}?`) appearing inside a rule body. In a GENERIC
 //! (non-entity, non-reflect) body atom the loader now builds the body natively
 //! via `build_body_atom_occurrence` and never calls `convert_term` on the atom,
@@ -11,17 +11,20 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term, Literal};
 use anthill_core::kb::load::{self, NullResolver};
 
-/// True iff the KB holds a `Description(_, text, _)` fact whose middle (text)
-/// argument is the given string literal.
+/// True iff the KB holds a `DescriptionInfo(content: text, …)` fact.
 fn has_description_fact(kb: &KnowledgeBase, text: &str) -> bool {
-    let Some(desc_sym) = kb.try_resolve_symbol("Description") else {
+    let Some(desc_sym) = kb.try_resolve_symbol("anthill.reflect.DescriptionInfo") else {
         return false;
     };
     kb.rules_by_functor(desc_sym).iter().any(|&rid| {
         let head = kb.rule_head(rid);
         match kb.get_term(head) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 3 => {
-                matches!(kb.get_term(pos_args[1]), Term::Const(Literal::String(s)) if s == text)
+            Term::Fn { named_args, .. } => {
+                let content = named_args
+                    .iter()
+                    .find(|(field, _)| kb.resolve_sym(*field) == "content")
+                    .map(|(_, value)| *value);
+                matches!(content.map(|value| kb.get_term(value)), Some(Term::Const(Literal::String(s))) if s == text)
             }
             _ => false,
         }
@@ -48,6 +51,6 @@ end
     assert!(
         has_description_fact(&kb, "the input value"),
         "the inline description on the body variable `?x` must be emitted as a \
-         Description fact (WI-246 must not drop it with the term body)",
+         DescriptionInfo fact (WI-246 must not drop it with the term body)",
     );
 }

@@ -445,7 +445,7 @@ fn kb_descriptions(
     let target = option_string_arg(target)?;
     let kb = interp.kb_mut();
 
-    // The reader yields `Description(target, content, index)` records; the index
+    // The reader yields `DescriptionInfo(target, content, index)` records; the index
     // is the STORED 0-based per-target index (WI-438), not a global enumeration.
     let mut items: Vec<Value> = Vec::new();
     for rec in reader::read_descriptions(kb, target.as_deref()) {
@@ -1160,9 +1160,9 @@ end
 
     #[test]
     fn kb_descriptions_index_is_per_target_not_global() {
-        // WI-438: Description(target, text, index) stores a 0-based PER-TARGET
+        // WI-438: DescriptionInfo(target, text, index) stores a 0-based PER-TARGET
         // index (kb/load.rs emit_desc_fact). A target-filtered query must report
-        // that stored index, not a global enumeration over ALL Description facts.
+        // that stored index, not a global enumeration over ALL DescriptionInfo facts.
         // Alpha's two descriptions precede Beta's, so a global counter would give
         // Beta's descriptions indices [2, 3]; the stored per-target indices are
         // [0, 1]. The bug filled DescriptionInfo.index with the global enumerate

@@ -20,6 +20,7 @@ Library proposals are distinct from **kernel-language proposals** (in the parent
 | [`003-finite-collection.md`](003-finite-collection.md) | Draft 2026-06-29 | Finiteness as a type. Eager consumers (`count`→`size`, `collect`, `foldLeft`, `foldRight`) diverge on infinite streams; move them off `Stream`/`Iterable` onto new `FiniteCollection` (consume capability), with new `FiniteStream` (a `Stream` whose tail is finite) so a lazy `map`/`filter` over a finite source stays consumable. |
 | [`004-partial-vs-total-equality-and-ordering.md`](004-partial-vs-total-equality-and-ordering.md) | Draft 2026-07-06 | Split the conflated `Eq` into `PartialEq` (partial — `eq`/`neq`; `Float` provides, IEEE) + `Eq` (requires `PartialEq` + a **checked** reflexivity law; `Float` does not provide), and `Ordered` into `PartialOrd`/`Ord`. Makes `requires Eq[T]` non-vacuous and closes the interpreter↔codegen Float-`NaN` soundness gap. Driver WI-644. |
 | [`005-stored-references.md`](005-stored-references.md) | Draft 2026-07-24 | `FactRef`: a source-neutral opaque stored-row reference, paired with visible content by `StoredRef[T]`. Replaces resident-only `FactId` at the persistence boundary. Driver WI-780 / proposal 057 R3. |
+| [`006-reflection-record-schemas.md`](006-reflection-record-schemas.md) | Draft 2026-07-27 | Replace the schema-less legacy `member` and `Description` metadata rows with declared `MemberInfo` / `DescriptionInfo` reflection records, making full-arity resolved reads possible without schema inference. Driver WI-834. |
 
 ## Candidate / planned proposals
 

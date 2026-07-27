@@ -1008,7 +1008,7 @@ fn retract_fact() {
     assert_eq!(kb.by_sort(fact_sort).len(), 0);
 }
 
-// ── Member fact tests ───────────────────────────────────────────
+// ── MemberInfo fact tests ───────────────────────────────────────
 
 #[test]
 fn member_facts_for_sort_with_body() {
@@ -1021,21 +1021,27 @@ fn member_facts_for_sort_with_body() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let member_sort = kb.make_name_term("Member");
-    let members = kb.by_sort(member_sort);
+    let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
+    let members = kb.rules_by_functor(member_info);
 
     // Should have 2 Constructor members (zero, succ)
     assert_eq!(members.len(), 2, "Nat should have 2 member facts");
 
     // Verify they are Constructor members
-    let ctor_sym = kb.intern("Constructor");
+    let ctor_sym = kb.resolve_symbol("anthill.reflect.MemberKind.Constructor");
     for &fid in &members {
         let term = kb.fact_term(fid);
         match kb.get_term(term) {
-            Term::Fn { pos_args, .. } => {
-                assert_eq!(pos_args.len(), 3);
-                // Second arg should be Ident("Constructor")
-                assert!(matches!(kb.get_term(pos_args[1]), Term::Ident(s) if *s == ctor_sym));
+            Term::Fn { named_args, .. } => {
+                assert_eq!(named_args.len(), 3);
+                let kind = get_named_arg(&kb, term, "kind").expect("MemberInfo.kind");
+                let kind_functor = match kb.get_term(kind) {
+                    Term::Ref(sym) => *sym,
+                    Term::Fn { functor, pos_args, named_args }
+                        if pos_args.is_empty() && named_args.is_empty() => *functor,
+                    other => panic!("expected nullary MemberKind constructor, got {other:?}"),
+                };
+                assert_eq!(kind_functor, ctor_sym);
             }
             other => panic!("expected Fn term, got {:?}", other),
         }
@@ -1056,14 +1062,16 @@ end
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let member_sort = kb.make_name_term("Member");
+    let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let account_term = kb.resolve_qualified_name_term("Account");
 
     // Get member facts for Account specifically
     let account_facts = kb.by_domain(account_term);
     let member_facts: Vec<_> = account_facts
         .iter()
-        .filter(|&&fid| kb.fact_sort(fid) == member_sort)
+        .filter(|&&fid| {
+            matches!(kb.get_term(kb.fact_term(fid)), Term::Fn { functor, .. } if *functor == member_info)
+        })
         .copied()
         .collect();
 
@@ -1084,13 +1092,15 @@ fn member_facts_for_namespace() {
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let member_sort = kb.make_name_term("Member");
+    let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let banking_term = kb.resolve_qualified_name_term("banking");
 
     let ns_facts = kb.by_domain(banking_term);
     let member_facts: Vec<_> = ns_facts
         .iter()
-        .filter(|&&fid| kb.fact_sort(fid) == member_sort)
+        .filter(|&&fid| {
+            matches!(kb.get_term(kb.fact_term(fid)), Term::Fn { functor, .. } if *functor == member_info)
+        })
         .copied()
         .collect();
 
@@ -1112,18 +1122,68 @@ fn member_facts_queryable_by_domain() {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let option_term = kb.resolve_qualified_name_term("Option");
-    let member_sort = kb.make_name_term("Member");
+    let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
 
-    // Query by_domain for Option should include member facts
+    // Query by_domain for Option should include MemberInfo facts.
     let domain_facts = kb.by_domain(option_term);
     let member_count = domain_facts
         .iter()
-        .filter(|&&fid| kb.fact_sort(fid) == member_sort)
+        .filter(|&&fid| {
+            matches!(kb.get_term(kb.fact_term(fid)), Term::Fn { functor, .. } if *functor == member_info)
+        })
         .count();
 
     // T (Sort), none (Constructor), some (Constructor) = 3 members
     assert_eq!(member_count, 3,
         "Option should have 3 members (T, none, some)");
+}
+
+#[test]
+fn reflection_inventory_rows_have_bootstrap_schemas_and_resolve() {
+    // This KB deliberately does not load reflect.anthill. The loader still emits
+    // public reflection rows while handling arbitrary source, so their schema
+    // and enum constructors must already be available to a full-arity Resolve
+    // read. This is the WI-834 bootstrap contract.
+    let source = r#"
+namespace inventory
+  entity Box(value: Int64)
+  const LIMIT: Int64 = 3
+  describe Box {< a documented constructor >}
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
+    let description_info = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    assert_eq!(
+        kb.entity_field_names(member_info)
+            .map(|fields| fields.iter().map(|field| kb.resolve_sym(*field)).collect::<Vec<_>>()),
+        Some(vec!["name", "kind", "parent"]),
+    );
+    assert_eq!(
+        kb.entity_field_names(description_info)
+            .map(|fields| fields.iter().map(|field| kb.resolve_sym(*field)).collect::<Vec<_>>()),
+        Some(vec!["target", "content", "index"]),
+    );
+    assert_eq!(
+        kb.read_facts_resolved(member_info, &[])
+            .expect("MemberInfo resolves")
+            .len(),
+        2,
+        "the entity and the const are both reflected",
+    );
+    assert_eq!(
+        kb.read_facts_resolved(description_info, &[])
+            .expect("DescriptionInfo resolves")
+            .len(),
+        1,
+    );
+    assert!(kb.try_resolve_symbol("anthill.reflect.member").is_none());
+    let legacy_description = kb.resolve_symbol("Description");
+    assert!(kb.rules_by_functor(legacy_description).is_empty());
 }
 
 // ── Requires declaration tests ──────────────────────────────────
@@ -1576,33 +1636,31 @@ fn load_describe_emits_desc_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Description");
-    let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 1, "should have 1 Description fact");
+    let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    let descs = kb.rules_by_functor(desc_sym);
+    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact");
 
-    // Verify the Desc fact structure: Desc(target, text, index)
+    // Verify the named DescriptionInfo record structure.
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Description");
-            assert_eq!(pos_args.len(), 3);
-            // Second arg should be the description text
-            match kb.get_term(pos_args[1]) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+            assert_eq!(named_args.len(), 3);
+            match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "A bank account holding funds");
                 }
                 other => panic!("expected String constant, got {:?}", other),
             }
-            // Third arg should be the index (0)
-            match kb.get_term(pos_args[2]) {
+            match kb.get_term(get_named_arg(&kb, tid, "index").expect("index field")) {
                 Term::Const(Literal::Int(i)) => {
                     assert_eq!(*i, 0);
                 }
                 other => panic!("expected Int64 constant for index, got {:?}", other),
             }
         }
-        other => panic!("expected Fn term for Description, got {:?}", other),
+        other => panic!("expected Fn term for DescriptionInfo, got {:?}", other),
     }
 }
 
@@ -1613,24 +1671,24 @@ fn load_abstract_sort_description_emits_desc_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Description");
-    let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 1, "should have 1 Description fact from inline description");
+    let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    let descs = kb.rules_by_functor(desc_sym);
+    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact from inline description");
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Description");
-            assert_eq!(pos_args.len(), 3);
-            match kb.get_term(pos_args[1]) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+            assert_eq!(named_args.len(), 3);
+            match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "Monetary amount");
                 }
                 other => panic!("expected String constant, got {:?}", other),
             }
         }
-        other => panic!("expected Fn term for Description, got {:?}", other),
+        other => panic!("expected Fn term for DescriptionInfo, got {:?}", other),
     }
 }
 
@@ -1673,24 +1731,24 @@ fn load_variable_description_emits_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Description");
-    let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 1, "should have 1 Description fact from variable annotation");
+    let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    let descs = kb.rules_by_functor(desc_sym);
+    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact from variable annotation");
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Description");
-            assert_eq!(pos_args.len(), 3);
-            match kb.get_term(pos_args[1]) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+            assert_eq!(named_args.len(), 3);
+            match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "the x value");
                 }
                 other => panic!("expected String constant, got {:?}", other),
             }
         }
-        other => panic!("expected Fn term for Description, got {:?}", other),
+        other => panic!("expected Fn term for DescriptionInfo, got {:?}", other),
     }
 }
 
@@ -1755,16 +1813,16 @@ fn load_describe_multiple_blocks_emits_facts() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Description");
-    let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 2, "should have 2 Description facts from multi-block describe");
+    let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    let descs = kb.rules_by_functor(desc_sym);
+    assert_eq!(descs.len(), 2, "should have 2 DescriptionInfo facts from multi-block describe");
 
     // Collect description texts
     let mut texts: Vec<String> = descs.iter().map(|fid| {
         let tid = kb.fact_term(*fid);
         match kb.get_term(tid) {
-            Term::Fn { pos_args, .. } => {
-                match kb.get_term(pos_args[1]) {
+            Term::Fn { .. } => {
+                match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                     Term::Const(Literal::String(s)) => s.clone(),
                     other => panic!("expected String, got {:?}", other),
                 }
@@ -1783,9 +1841,9 @@ fn load_abstract_sort_multiple_descriptions_emits_facts() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Description");
-    let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 2, "should have 2 Description facts from multi-description abstract sort");
+    let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    let descs = kb.rules_by_functor(desc_sym);
+    assert_eq!(descs.len(), 2, "should have 2 DescriptionInfo facts from multi-description abstract sort");
 }
 
 #[test]
@@ -1799,16 +1857,16 @@ sort WorkStatus {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Description");
-    let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 1, "should have 1 Description fact from sort_with_body");
+    let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    let descs = kb.rules_by_functor(desc_sym);
+    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact from sort_with_body");
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Description");
-            match kb.get_term(pos_args[1]) {
+        Term::Fn { functor, .. } => {
+            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+            match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "Tracks work progress");
                 }
@@ -4234,14 +4292,6 @@ fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Opt
                 .map(|&(_, tid)| tid)
         }
         _ => None,
-    }
-}
-
-/// Helper: get functor name of a Fn term.
-fn functor_name(kb: &KnowledgeBase, term_id: TermId) -> String {
-    match kb.get_term(term_id) {
-        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
-        _ => format!("{:?}", kb.get_term(term_id)),
     }
 }
 

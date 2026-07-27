@@ -2612,7 +2612,8 @@ const KERNEL_META_SORTS: &[&str] = &[
 
 /// KB-internal fact functors the loader emits into the KB (never declared in
 /// any `.anthill` file). Each is `(short_name, qualified_name)`.
-/// (EntityInfo and SortRequiresInfo are now declared in reflect.anthill.)
+/// (EntityInfo, SortRequiresInfo, MemberInfo, and DescriptionInfo are declared
+/// in reflect.anthill.)
 ///
 /// Registered *qualified-only* (see [`SymbolTable::define_qualified_only`]): the
 /// loader addresses them by qualified name via `resolve_symbol`, but they are
@@ -2620,13 +2621,11 @@ const KERNEL_META_SORTS: &[&str] = &[
 /// surface them. Previously they were bare global *locals*, which let a
 /// `requires`-induced scope link resurface the kernel `member` as a phantom
 /// rival to a user's `import …List.{member}` alias inside a requires-bearing
-/// sort (WI-422). `member` carries the fully-qualified reflect name it deserves
-/// as a reflection fact; `meta` / `SortAlias` keep their existing qualified
-/// keys (delocalizing alone closes the same latent leak — their many call sites
+/// sort (WI-422). `meta` / `SortAlias` keep their existing qualified keys
+/// (delocalizing alone closes the same latent leak — their many call sites
 /// resolve those keys unchanged).
 const KERNEL_FUNCTORS: &[(&str, &str)] = &[
     ("SortAlias", "SortAlias"),
-    ("member", "anthill.reflect.member"),
     ("meta", "meta"),
 ];
 
@@ -3089,6 +3088,43 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
     kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_term.raw());
     kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
+    let member_info = kb.symbols.define(
+        "MemberInfo",
+        "anthill.reflect.MemberInfo",
+        SymbolKind::Entity,
+        reflect_term.raw(),
+    );
+    let description_info = kb.symbols.define(
+        "DescriptionInfo",
+        "anthill.reflect.DescriptionInfo",
+        SymbolKind::Entity,
+        reflect_term.raw(),
+    );
+    let member_info_fields = vec![kb.intern("name"), kb.intern("kind"), kb.intern("parent")];
+    kb.register_entity_fields(member_info, member_info_fields);
+    let description_info_fields = vec![kb.intern("target"), kb.intern("content"), kb.intern("index")];
+    kb.register_entity_fields(description_info, description_info_fields);
+
+    // MemberInfo is emitted while loading arbitrary source, including the small
+    // bootstrap/test KBs that do not load reflect.anthill. Pre-register its enum
+    // and nullary variants so every emitted `kind` is a real MemberKind value,
+    // not an unscoped display-string Ident.
+    let member_kind = kb.symbols.define(
+        "MemberKind",
+        "anthill.reflect.MemberKind",
+        SymbolKind::Sort,
+        reflect_term.raw(),
+    );
+    let member_kind_term = kb.make_name_term_from_sym(member_kind);
+    kb.symbols.add_parent(member_kind_term.raw(), ScopeInclusion {
+        parent_scope_raw: reflect_term.raw(),
+        instantiation_term_raw: reflect_term.raw(),
+        is_enclosing: true,
+    });
+    for variant in ["Constructor", "Operation", "Rule", "Sort", "Enum", "Namespace", "Const"] {
+        let qualified = format!("anthill.reflect.MemberKind.{variant}");
+        kb.symbols.define(variant, &qualified, SymbolKind::Entity, member_kind_term.raw());
+    }
     // WI-040: the literal carriers are DEFINED here (registers them in
     // `by_qualified_name`) but NOT `_global`-imported — they resolve directly via
     // `kernel_vocab_qualified`. So the returned symbols are intentionally unused.
@@ -7772,7 +7808,7 @@ impl<'a> Loader<'a> {
         let kb_id = self.kb.alloc(kb_term);
         self.term_map.insert(parse_id.raw(), kb_id);
 
-        // Emit Description facts if the variable has inline descriptions
+        // Emit DescriptionInfo facts if the variable has inline descriptions
         if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
             let desc_texts = desc_texts.clone();
             for desc_text in &desc_texts {
@@ -9576,7 +9612,7 @@ impl<'a> Loader<'a> {
                 };
                 // Mirror `convert_term`'s tail (load.rs ~3989): a body variable
                 // can carry inline descriptions (`?x {< … >}?`); emit them as
-                // Description facts targeting the Global var term, as the dropped
+                // DescriptionInfo facts targeting the Global var term, as the dropped
                 // term-body `convert_term` walk did. (Entity / reflect-form atoms
                 // still emit via the `convert_term` call in the Fn arm below; this
                 // covers vars in generic predicate atoms.)
@@ -11493,7 +11529,7 @@ impl<'a> Loader<'a> {
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
         self.assert_sort_alias(sort_term, target_value, domain);
 
-        // Emit Description facts for all description blocks
+        // Emit DescriptionInfo facts for all description blocks
         for desc_text in &s.descriptions {
             self.emit_desc_fact(sort_term, desc_text, domain);
         }
@@ -11531,7 +11567,7 @@ impl<'a> Loader<'a> {
         };
         self.kb.register_sort(sort_term, sort_kind);
 
-        // Emit Description facts for all description blocks
+        // Emit DescriptionInfo facts for all description blocks
         for desc_text in &s.descriptions {
             self.emit_desc_fact(sort_term, desc_text, parent_domain);
         }
@@ -14413,7 +14449,10 @@ impl<'a> Loader<'a> {
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {
         let desc_sort = self.kb.make_name_term("Description");
-        let desc_sym = self.kb.resolve_symbol("Description");
+        let desc_sym = self.kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+        let target_field = self.kb.intern("target");
+        let content_field = self.kb.intern("content");
+        let index_field = self.kb.intern("index");
         let text_term = self.kb.alloc(Term::Const(super::term::Literal::String(text.to_string())));
 
         // Track description index per target
@@ -14423,8 +14462,12 @@ impl<'a> Loader<'a> {
 
         let desc_fact = self.kb.alloc(Term::Fn {
             functor: desc_sym,
-            pos_args: SmallVec::from_slice(&[target, text_term, index_term]),
-            named_args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (target_field, target),
+                (content_field, text_term),
+                (index_field, index_term),
+            ]),
         });
         self.kb.assert_metadata_fact(desc_fact, desc_sort, domain, None);
     }
@@ -14590,18 +14633,25 @@ impl<'a> Loader<'a> {
         result
     }
 
-    // ── Member fact emission ───────────────────────────────────
+    // ── MemberInfo fact emission ───────────────────────────────
 
-    fn emit_member_fact(&mut self, name_sym: Symbol, kind_str: &str, parent: TermId) {
-        let member_sym = self.kb.resolve_symbol("anthill.reflect.member");
+    fn emit_member_fact(&mut self, name_sym: Symbol, kind_name: &str, parent: TermId) {
+        let member_sym = self.kb.resolve_symbol("anthill.reflect.MemberInfo");
         let member_sort = self.kb.make_name_term("Member");
+        let name_field = self.kb.intern("name");
+        let kind_field = self.kb.intern("kind");
+        let parent_field = self.kb.intern("parent");
         let name_term = self.kb.make_name_term_from_sym(name_sym);
-        let kind_sym = self.kb.intern(kind_str);
-        let kind_term = self.kb.alloc(Term::Ident(kind_sym));
+        let kind_sym = self.kb.resolve_symbol(&format!("anthill.reflect.MemberKind.{kind_name}"));
+        let kind_term = self.kb.make_name_term_from_sym(kind_sym);
         let member_term = self.kb.alloc(Term::Fn {
             functor: member_sym,
-            pos_args: SmallVec::from_slice(&[name_term, kind_term, parent]),
-            named_args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (name_field, name_term),
+                (kind_field, kind_term),
+                (parent_field, parent),
+            ]),
         });
         self.kb.assert_metadata_fact(member_term, member_sort, parent, None);
     }
@@ -14650,13 +14700,10 @@ impl<'a> Loader<'a> {
                     let sym = self.remap_name(&n.name);
                     self.emit_member_fact(sym, "Namespace", parent);
                 }
-                // Proposal 039 / WI-084: a `const` emits no scope-member fact yet.
-                // Reflection of consts (a `member(Name, "Const", Parent)` fact, or
-                // a `ConstInfo` value fact) is deferred to the resolution/typing
-                // phase that actually consumes it — see the `const_types` note in
-                // kb/mod.rs. Made explicit (not swept into `_`) so the deferral is
-                // visible at the site, per the repo's loud-over-silent rule.
-                Item::Const(_) => {}
+                Item::Const(c) => {
+                    let sym = self.remap_name(&c.name);
+                    self.emit_member_fact(sym, "Const", parent);
+                }
                 _ => {}
             }
         }

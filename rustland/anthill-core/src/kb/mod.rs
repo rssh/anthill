@@ -2321,8 +2321,8 @@ impl KnowledgeBase {
     // WI-515 removed that one fact; this seam enforces the invariant for the
     // *class* so a future emission cannot silently re-create the pollution.
     //
-    // Every loader declaration-record emission (EntityInfo, SortInfo, member,
-    // Description, OperationInfo, OperationImpl, Implementation, ProofRecord,
+    // Every loader declaration-record emission (EntityInfo, SortInfo,
+    // MemberInfo, DescriptionInfo, OperationInfo, OperationImpl, Implementation, ProofRecord,
     // Sort{Provides,Requires}Info, SortAlias) routes through these three seams.
     // The check is a **debug-only tripwire** (`cfg(debug_assertions)`): it fires
     // in dev/test builds if a head functor is not a recognized system-metadata
@@ -2352,14 +2352,14 @@ impl KnowledgeBase {
     /// True iff `qualified_name` names a reserved system-metadata functor — one
     /// the loader is permitted to head a metadata fact with. The reflect and
     /// realization declaration records live under `anthill.reflect.` /
-    /// `anthill.realization.`; the kernel meta functors (`SortAlias`, `meta`,
-    /// `Description`) are registered qualified-only in [`load::register_prelude`]
-    /// with these bare qualified names.
+    /// `anthill.realization.`; the kernel meta functors (`SortAlias`, `meta`)
+    /// are registered qualified-only in [`load::register_prelude`] with these
+    /// bare qualified names.
     #[cfg(debug_assertions)]
     fn is_reserved_metadata_functor_name(qualified_name: &str) -> bool {
         qualified_name.starts_with("anthill.reflect.")
             || qualified_name.starts_with("anthill.realization.")
-            || matches!(qualified_name, "SortAlias" | "meta" | "Description")
+            || matches!(qualified_name, "SortAlias" | "meta")
     }
 
     /// WI-630 debug tripwire: panic if `functor` is not a reserved metadata

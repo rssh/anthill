@@ -713,6 +713,22 @@ namespace anthill.reflect
   -- Descriptions
   -- ================================================================
 
+  enum MemberKind
+    entity Constructor
+    entity Operation
+    entity Rule
+    entity Sort
+    entity Enum
+    entity Namespace
+    entity Const
+  end
+
+  entity MemberInfo(
+    name   : Symbol,
+    kind   : MemberKind,
+    parent : Term
+  )
+
   entity DescriptionInfo(
     target  : Symbol,                               -- target name (symbol reference)
     content : String,                               -- description text (literal)

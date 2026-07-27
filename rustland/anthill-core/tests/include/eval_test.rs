@@ -955,10 +955,10 @@ end
 /// bypasses the namespace's `member → List.member` import alias and used to
 /// resurface the loader-internal global `member` *fact functor* as a phantom
 /// second candidate — emitting `ambiguous symbol 'member'` and then cascading
-/// into a hard `unknown functor` failure. The fix registers that kernel functor
-/// qualified-only (`anthill.reflect.member`, never a global local), so bare
-/// `member` here resolves unambiguously to `List.member`. This pins both halves
-/// of the acceptance: the file loads warning-clean AND the call evaluates (the
+/// into a hard `unknown functor` failure. WI-834 removes that schema-less
+/// functor entirely in favour of `MemberInfo`, so bare `member` here resolves
+/// unambiguously to `List.member`. This pins both halves of the acceptance: the
+/// file loads warning-clean AND the call evaluates (the
 /// abstract `Eq[T]` evidence the enclosing `Box requires Eq[T]` supplies threads
 /// through to `member`'s `eq(head, x)`, as in the WI-421 lambda idiom above —
 /// here via a direct bare call instead of `lambda e -> List.member(e, xs)`).

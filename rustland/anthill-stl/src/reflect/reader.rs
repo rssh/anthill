@@ -124,26 +124,10 @@ pub(crate) fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, 
         .collect()
 }
 
-/// Positional args of a fact head, carrier-agnostic peer of [`term_named_args`].
-pub(crate) fn term_pos_args(kb: &KnowledgeBase, head: &Value) -> Vec<TermId> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while let Some(item) = head.pos_arg(kb, i) {
-        if let Some(t) = item.as_term_id() {
-            out.push(t);
-        }
-        i += 1;
-    }
-    out
-}
-
 /// Every asserted row of the declared fact functor `qualified_functor`.
 ///
-/// Reflection's historical `Member` / `Description` *sort* buckets are resident
-/// RuleEntry metadata, not information an extent-owned row carries. Their rows
-/// nevertheless have stable declared functors (`anthill.reflect.member` and
-/// `Description`), so fact readers enumerate them through the extent seam by
-/// functor rather than leaking the resident `RuleId` bucket.
+/// Reflection rows are declared entities, so readers enumerate their functors
+/// through the extent seam rather than leaking a resident `RuleId` bucket.
 fn facts_by_functor(kb: &KnowledgeBase, qualified_functor: &str, reader: &str) -> Vec<Value> {
     let Some(functor) = kb.try_resolve_symbol(qualified_functor) else {
         return Vec::new();
@@ -156,18 +140,25 @@ fn facts_by_functor(kb: &KnowledgeBase, qualified_functor: &str, reader: &str) -
     .unwrap_or_else(|e| panic!("reflect {reader} read: {e}"))
 }
 
-/// Collect the names of every `Member` of a given `kind` (`Constructor`,
+/// Collect the names of every `MemberInfo` of a given `kind` (`Constructor`,
 /// `Operation`, …) whose parent is the resolved sort `parent_sym` (WI-632:
 /// matched by functor symbol, not by display-name string).
 pub(crate) fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -> Vec<String> {
+    let name_field = kb.intern("name");
+    let kind_field = kb.intern("kind");
+    let parent_field = kb.intern("parent");
     let mut results = vec![];
-    for head in facts_by_functor(kb, "anthill.reflect.member", "Member") {
-        let pos = term_pos_args(kb, &head);
-        if pos.len() == 3 {
-            let member_kind = term_display_name(kb, pos[1]);
-            if member_kind == kind && term_head_sym(kb, pos[2]) == Some(parent_sym) {
-                results.push(term_display_name(kb, pos[0]));
-            }
+    for head in facts_by_functor(kb, "anthill.reflect.MemberInfo", "MemberInfo") {
+        let named = term_named_args(kb, &head);
+        let field = |key| named.iter().find(|(name, _)| *name == key).map(|(_, value)| *value);
+        let (Some(name), Some(member_kind), Some(parent)) =
+            (field(name_field), field(kind_field), field(parent_field))
+        else {
+            continue;
+        };
+        let member_kind = term_display_name(kb, member_kind);
+        if short_of(&member_kind) == kind && term_head_sym(kb, parent) == Some(parent_sym) {
+            results.push(term_display_name(kb, name));
         }
     }
     results
@@ -304,7 +295,7 @@ pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<O
     out
 }
 
-/// One `Description(target, content, index)` fact. The index is the stored
+/// One `DescriptionInfo(target, content, index)` fact. The index is the stored
 /// 0-based per-target index (WI-438), not a global enumeration.
 pub(crate) struct DescriptionRecord {
     pub target: TermId,
@@ -312,32 +303,37 @@ pub(crate) struct DescriptionRecord {
     pub index: i64,
 }
 
-/// Read every `Description` fact, optionally filtered to `target` (full or short
-/// name). A fact with fewer than three positional args, or a non-integer index,
-/// is skipped.
+/// Read every `DescriptionInfo` fact, optionally filtered to `target` (full or
+/// short name). A malformed or incomplete record is skipped.
 pub(crate) fn read_descriptions(
     kb: &mut KnowledgeBase,
     target: Option<&str>,
 ) -> Vec<DescriptionRecord> {
+    let target_field = kb.intern("target");
+    let content_field = kb.intern("content");
+    let index_field = kb.intern("index");
     let mut out = Vec::new();
-    for head in facts_by_functor(kb, "Description", "Description") {
-        let pos = term_pos_args(kb, &head);
-        if pos.len() < 3 {
+    for head in facts_by_functor(kb, "anthill.reflect.DescriptionInfo", "DescriptionInfo") {
+        let named = term_named_args(kb, &head);
+        let field = |key| named.iter().find(|(name, _)| *name == key).map(|(_, value)| *value);
+        let (Some(record_target), Some(content), Some(index_term)) =
+            (field(target_field), field(content_field), field(index_field))
+        else {
             continue;
-        }
-        let index = match kb.get_term(pos[2]) {
+        };
+        let index = match kb.get_term(index_term) {
             CoreTerm::Const(Literal::Int(n)) => *n,
             _ => continue,
         };
         if let Some(t) = target {
-            let target_name = term_display_name(kb, pos[0]);
+            let target_name = term_display_name(kb, record_target);
             if target_name != t && short_of(&target_name) != t {
                 continue;
             }
         }
         out.push(DescriptionRecord {
-            target: pos[0],
-            content: term_display_name(kb, pos[1]),
+            target: record_target,
+            content: term_display_name(kb, content),
             index,
         });
     }
