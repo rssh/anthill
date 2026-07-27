@@ -1,0 +1,22 @@
+namespace my.resolved
+  import anthill.cli.Main
+  import anthill.reflect.SortRequiresInfo
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int64, String, List}
+
+  entity enabled(value: Int64)
+  fact enabled(value: 1)
+
+  -- This is deliberately a *rule*, not a `requires` declaration: entry
+  -- discovery must resolve this guarded SortRequiresInfo row.
+  rule SortRequiresInfo(sort_ref: DerivedMain, spec: Main)
+    :- enabled(value: 1)
+
+  sort DerivedMain
+    operation main(args: List[T = String]) -> Int64
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "resolved main")
+      0
+  end
+end

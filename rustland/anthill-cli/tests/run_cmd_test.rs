@@ -24,6 +24,42 @@ fn hello_program_prints_and_exits_zero() {
     assert_eq!(out.stdout, "hello, world\n");
 }
 
+/// Entry discovery is a resolving extent read: this provider exists only as a
+/// guarded `SortRequiresInfo` rule, never as the resident fact a `requires`
+/// declaration would emit.
+#[test]
+fn resolved_sort_requires_info_discovers_main_provider() {
+    let path = fixtures_dir().join("resolved-main-provider.anthill");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
+    assert_eq!(out.stdout, "resolved main\n");
+}
+
+/// A guarded derived row is not evidence of an entry when its guard fails.
+/// `Refuse` would instead surface the bodied rule as an extent-read error.
+#[test]
+fn failed_sort_requires_info_guard_does_not_discover_provider() {
+    let path = fixtures_dir().join("resolved-main-provider-guard-fails.anthill");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 2, "stderr:\n{}", out.stderr);
+    assert!(out.stderr.contains("no program entry found"), "stderr:\n{}", out.stderr);
+}
+
+/// Resolution may derive the same row more than once. Entry discovery remains
+/// a set of providers, deterministically ordered by qualified name.
+#[test]
+fn resolved_main_providers_are_deduplicated_and_sorted() {
+    let path = fixtures_dir().join("resolved-main-providers-dedup.anthill");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 2, "stderr:\n{}", out.stderr);
+    assert!(out.stderr.contains("ambiguous program entry"), "stderr:\n{}", out.stderr);
+    let alpha = out.stderr.find("my.resolved.dedup.Alpha").expect("Alpha candidate");
+    let zeta = out.stderr.find("my.resolved.dedup.Zeta").expect("Zeta candidate");
+    assert!(alpha < zeta, "candidates must be ordered:\n{}", out.stderr);
+    assert_eq!(out.stderr.matches("my.resolved.dedup.Zeta").count(), 1,
+               "duplicate derivations must yield one candidate:\n{}", out.stderr);
+}
+
 #[test]
 fn no_main_fails_with_exit_2() {
     let path = fixtures_dir().join("no-main.anthill");

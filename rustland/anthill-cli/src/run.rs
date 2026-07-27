@@ -7,10 +7,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use anthill::{runner, stdlib};
-use anthill_core::eval::{Interpreter, Value};
+use anthill_core::eval::Interpreter;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
@@ -42,7 +43,7 @@ pub struct RunArgs {
 // ── Entry discovery ─────────────────────────────────────────────────
 
 /// Return the fully-qualified symbol of every sort whose
-/// `SortRequiresInfo` spec names `anthill.cli.Main`. Deterministically
+/// resolved `SortRequiresInfo` row names `anthill.cli.Main`. Deterministically
 /// sorted by qualified name.
 fn find_main_providers(kb: &mut KnowledgeBase) -> Result<Vec<Symbol>, String> {
     let main_sym = match kb.try_resolve_symbol("anthill.cli.Main") {
@@ -63,28 +64,27 @@ fn find_main_providers(kb: &mut KnowledgeBase) -> Result<Vec<Symbol>, String> {
 
     let mut providers: Vec<Symbol> = Vec::new();
     let requires = kb
-        .read_facts(
-            requires_sym,
-            &[],
-            anthill_core::kb::extent::BodiedRulePolicy::Refuse,
-        )
+        .read_facts_resolved(requires_sym, &[])
         .map_err(|e| format!("reading SortRequiresInfo facts: {e}"))?;
     for row in requires {
-        // Entry discovery still reads the `sort_ref` / `spec` fields through
-        // term-only helpers. A non-term row is not "no provider": surface the
-        // unsupported carrier until this reader is made TermView-native.
-        let Value::Term { id: head, .. } = row else {
-            return Err(
-                "SortRequiresInfo entry discovery does not yet support a non-term row; \
-                 it must be decoded carrier-neutrally"
-                    .into(),
-            );
+        // `read_facts_resolved` reifies a successful goal as a Value::Entity.
+        // Read it through TermView rather than assuming that representation at
+        // this boundary. Missing fields retain the old incomplete-record skip;
+        // a present non-term field is loud because the sort-reference decoder
+        // below is explicitly TermId-based.
+        let field_term = |field: Symbol, name: &str| -> Result<Option<TermId>, String> {
+            match row.named_arg(kb, field) {
+                None => Ok(None),
+                Some(value) => value.as_term_id().map(Some).ok_or_else(|| {
+                    format!(
+                        "SortRequiresInfo field `{name}` has a non-term carrier; \
+                         entry discovery requires a sort-reference term"
+                    )
+                }),
+            }
         };
-        let Term::Fn { named_args, .. } = kb.get_term(head) else {
-            return Err("SortRequiresInfo row is not a function-shaped record".into());
-        };
-        let sort_ref_tid = named_args.iter().find(|(s, _)| *s == sort_ref_field).map(|(_, t)| *t);
-        let spec_tid = named_args.iter().find(|(s, _)| *s == spec_field).map(|(_, t)| *t);
+        let sort_ref_tid = field_term(sort_ref_field, "sort_ref")?;
+        let spec_tid = field_term(spec_field, "spec")?;
         let (Some(sr), Some(sp)) = (sort_ref_tid, spec_tid) else { continue };
 
         // `spec` comes in three shapes depending on how the refining sort

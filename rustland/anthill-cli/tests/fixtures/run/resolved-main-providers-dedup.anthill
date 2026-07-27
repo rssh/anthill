@@ -1,0 +1,26 @@
+namespace my.resolved.dedup
+  import anthill.cli.Main
+  import anthill.reflect.SortRequiresInfo
+  import anthill.prelude.{Int64, String, List}
+
+  entity enabled(value: Int64)
+  fact enabled(value: 1)
+  fact enabled(value: 2)
+
+  -- The two Zeta derivations deliberately produce the same provider. The
+  -- reader may enumerate both answers; entry discovery must deduplicate them.
+  rule SortRequiresInfo(sort_ref: Zeta, spec: Main)
+    :- enabled(value: 1)
+  rule SortRequiresInfo(sort_ref: Zeta, spec: Main)
+    :- enabled(value: 2)
+  rule SortRequiresInfo(sort_ref: Alpha, spec: Main)
+    :- enabled(value: 1)
+
+  sort Alpha
+    operation main(args: List[T = String]) -> Int64 = 0
+  end
+
+  sort Zeta
+    operation main(args: List[T = String]) -> Int64 = 0
+  end
+end

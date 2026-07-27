@@ -1,0 +1,15 @@
+namespace my.resolved.false_guard
+  import anthill.cli.Main
+  import anthill.reflect.SortRequiresInfo
+  import anthill.prelude.{Int64, String, List}
+
+  entity enabled(value: Int64)
+
+  -- No `enabled` fact exists, so this candidate must not become an entry.
+  rule SortRequiresInfo(sort_ref: DerivedMain, spec: Main)
+    :- enabled(value: 1)
+
+  sort DerivedMain
+    operation main(args: List[T = String]) -> Int64 = 0
+  end
+end
