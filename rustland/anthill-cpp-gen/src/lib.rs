@@ -87,18 +87,19 @@ impl std::error::Error for CppCodegenError {}
 /// a realization reader in a `Result<_, CppCodegenError>` context routes the
 /// refusal with a bare `?`. This is the graceful successor to the WI-770
 /// `assert!` abort (exit 101, no span) for the readers WI-771 migrated —
-/// `Implementation` / `OperationImpl` / `Generated` / `OperationInfo` — and, via
-/// [`read_realization_facts`], the WI-810 type-lowering readers `TypeMapping` /
-/// `IncludeMapping` / `NamingConvention`. WI-774 retired the last head-match
-/// reader (`query_realization_facts` + its WI-770 `assert!`): `supported_effects`
-/// now RESOLVES its `EffectMapping` / `LanguageMapping` candidates via
-/// `kb.read_facts_resolved`, so a bodied realization rule is EVALUATED (its guard
-/// honored) instead of head-matched-and-aborted. Every cpp-gen realization read
-/// now rides `read_facts` / `read_facts_resolved`; the `assert!`-abort mechanism
-/// is gone. (The `Refuse` type-lowering readers stay on `read_facts(Refuse)` — a
-/// bodied `TypeMapping` is still a loud graceful refusal, because graduating them
-/// to `Resolve` needs a `lower_type` predicate that does not exist; see
-/// [`read_realization_facts`].)
+/// `Implementation` / `OperationImpl` / `Generated` / `OperationInfo` — which
+/// still ride `read_facts(Refuse)` (they consume GROUND SINGLE-VALUED fact heads,
+/// so a bodied rule under those functors is genuinely unconsumable and a loud
+/// refusal is correct).
+///
+/// WI-833: the type-lowering readers `TypeMapping` / `IncludeMapping` /
+/// `NamingConvention` GRADUATED from `Refuse` to `Resolve` (`read_facts_resolved`,
+/// via [`resolve_realization_rows`]) — joining `supported_effects` (WI-774). A
+/// bodied realization rule under those functors is now EVALUATED (its guard
+/// honored), with per-key ambiguity resolved or rejected caller-side
+/// ([`select_keyed_unique`]) rather than the read refusing every bodied
+/// candidate. Every cpp-gen realization read now rides `read_facts` /
+/// `read_facts_resolved`; the WI-770 `assert!`-abort mechanism is gone.
 impl From<ExtentReadError> for CppCodegenError {
     fn from(e: ExtentReadError) -> Self {
         CppCodegenError { message: e.to_string() }
@@ -409,10 +410,11 @@ impl CodegenContext {
     /// query, most-specific-first. `binding` is the foreign-binding key in
     /// scope (`Some` at a carrier-dispatch boundary, `None` in declared-
     /// signature position); the compilation profile follows; the language base
-    /// (`None`) is always last. `select_keyed` walks this list and the first
-    /// key with a matching fact wins — so a binding overlay shadows a profile
-    /// overlay shadows the base. The base sentinel is always present, so a type
-    /// with only a base entry still resolves.
+    /// (`None`) is always last. `select_keyed_unique` walks this list and the
+    /// first key with a matching (resolved, deduped) mapping wins — so a binding
+    /// overlay shadows a profile overlay shadows the base; two competing mappings
+    /// under one key are a loud error (WI-833). The base sentinel is always
+    /// present, so a type with only a base entry still resolves.
     fn active_keys(&self, binding: Option<&str>) -> Vec<Option<String>> {
         active_key_ladder(binding, self.profile.as_deref())
     }
@@ -2215,10 +2217,11 @@ struct Includes {
 
 impl Includes {
     /// Build from the cpp `IncludeMapping` facts, sorted by include directive.
-    /// A BODIED `IncludeMapping` rule is refused loudly through `CppCodegenError`
-    /// (WI-810) rather than head-matched — the same `read_facts(Refuse)` guard
-    /// the other realization readers carry.
-    fn from_kb(kb: &KnowledgeBase) -> Result<Self, CppCodegenError> {
+    /// WI-833: a BODIED `IncludeMapping` rule is now RESOLVED (its guard honored)
+    /// via `read_facts_resolved`, not refused — the same `Resolve` migration the
+    /// other realization readers carry; duplicate resolved pairs are deduped
+    /// (`query_include_mappings`).
+    fn from_kb(kb: &mut KnowledgeBase) -> Result<Self, CppCodegenError> {
         let mut probes = query_include_mappings(kb, "cpp")?;
         probes.sort_by(|a, b| a.1.cmp(&b.1));
         Ok(Includes {
@@ -3842,6 +3845,12 @@ fn unsupported_runtime_profile(qualified: &str) -> Option<&'static str> {
 /// A keyed type-mapping entry resolved from the KB (WI-089). `key = none`
 /// is the language base (the default rename); `some(k)` is a profile or
 /// foreign-binding overlay queried ahead of the base.
+///
+/// `PartialEq`/`Eq` (WI-833): two hits are equal iff every CONSUMED field
+/// agrees, so `select_keyed_unique` can collapse the same mapping resolved via
+/// several derivations (a duplicate) yet still reject two hits that differ at
+/// one key (a genuine conflict).
+#[derive(Clone, PartialEq, Eq)]
 struct TypeMappingHit {
     host_type: String,
     /// foreign->anthill adapter (marshalled overlay only; `None` on a plain
@@ -3853,63 +3862,92 @@ struct TypeMappingHit {
     key: Option<String>,
 }
 
-/// WI-089(a): first-match-wins selection over an ordered active-key list. For
-/// each key in `active_keys` (most-specific-first), return the first hit whose
-/// key equals it — so a binding/profile overlay shadows the base. Generic over
-/// the hit type via a key projection, shared by the type- and effect-mapping
-/// resolvers. Consumes `hits` (the chosen one is moved out).
-fn select_keyed<T>(
-    mut hits: Vec<T>,
-    key_of: impl Fn(&T) -> &Option<String>,
-    active_keys: &[Option<String>],
-) -> Option<T> {
-    for ak in active_keys {
-        if let Some(pos) = hits.iter().position(|h| key_of(h) == ak) {
-            return Some(hits.swap_remove(pos));
+/// WI-833: the single-valued aggregation every realization reader applies to its
+/// RESOLVED candidates — DEDUPLICATE identical items, then map the count to a
+/// verdict: 0 → `None` (absent), 1 → `Some` (the pick), >1 distinct → a loud
+/// `CppCodegenError` built by `ambiguous`. Resolution enumerates one mapping once
+/// per derivation (a fact reachable two ways, two guards that both hold), so an
+/// identical item twice is one mapping (deduped), while two DISTINCT items are
+/// genuinely competing (no deterministic pick — the caller names them in the
+/// error). Equality is `T`'s own `PartialEq`. Shared by [`select_keyed_unique`]
+/// (per key) and [`cpp_method_name`] (the whole convention set); the lists are a
+/// handful of entries, so the O(n²) `contains` dedup is not worth a `HashSet`.
+fn unique_or_ambiguous<T: Clone + PartialEq>(
+    items: impl IntoIterator<Item = T>,
+    ambiguous: impl FnOnce(&[T]) -> CppCodegenError,
+) -> Result<Option<T>, CppCodegenError> {
+    let mut distinct: Vec<T> = Vec::new();
+    for it in items {
+        if !distinct.contains(&it) {
+            distinct.push(it);
         }
     }
-    None
+    match distinct.len() {
+        0 => Ok(None),
+        1 => Ok(distinct.into_iter().next()),
+        _ => Err(ambiguous(&distinct)),
+    }
 }
 
-/// WI-810: the values-first realization-fact reader for the type-lowering
-/// `Refuse`-policy readers — the head `TermId` of each FACT of `functor_names`
-/// (tried in order, qualified first) whose named `selection` fields hold the
-/// given values, read through `kb.read_facts(functor, .., Refuse)` (WI-773/057)
-/// over resident AND mounted extents uniformly. A BODIED candidate for the
-/// functor is refused loudly through `CppCodegenError` (via the `?` on
-/// [`ExtentReadError`]) — the graceful successor to the WI-770 `assert!`-abort
-/// this reader's callers used to ride.
+/// WI-089(a) / WI-833: keyed overlay selection over an ordered active-key list,
+/// most-specific-first — the priority logic that stays CALLER-SIDE (in Rust),
+/// not in the resolver, so migrating the read to `Resolve` (WI-833) only changes
+/// where the candidate rows come from, not how a key shadows another. For each
+/// key in `active_keys`, the hits carrying that key are aggregated by
+/// [`unique_or_ambiguous`]:
+///   * 0 distinct  → the overlay is absent at this key; fall through to the next
+///     (a binding / profile overlay shadows the base only where it is present,
+///     and the base sentinel `None` is always last, so a base-only type still
+///     resolves);
+///   * 1 distinct  → that is the selection;
+///   * >1 distinct → AMBIGUOUS: two COMPETING mappings share one key, so no
+///     deterministic pick exists — a loud `CppCodegenError` naming `what`, the
+///     key, and the competing host types, never the silent first-wins the WI-089
+///     `select_keyed` did. The `Refuse` read this replaced could not surface a
+///     same-key conflict (it never evaluated a guard, so two competing overlays
+///     were a load-time fact collision); under `Resolve` two guarded overlays can
+///     both fire here, so the ambiguity is detected at selection.
 ///
-/// `selection` is `field = value` ground equality pushed down as the read's
-/// `bound` (057 §"query contract"): a mounted host-mapping store INDEXES on it
-/// rather than scanning. Only fields that are PLAIN strings on the fact are
+/// `what` labels the queried anthill type(s) for the ambiguity message.
+fn select_keyed_unique(
+    hits: Vec<TypeMappingHit>,
+    active_keys: &[Option<String>],
+    what: &str,
+) -> Result<Option<TypeMappingHit>, CppCodegenError> {
+    for ak in active_keys {
+        let at_key = hits.iter().filter(|h| &h.key == ak).cloned();
+        let selected = unique_or_ambiguous(at_key, |distinct| {
+            let hosts: Vec<&str> = distinct.iter().map(|h| h.host_type.as_str()).collect();
+            CppCodegenError {
+                message: format!(
+                    "ambiguous cpp TypeMapping for {what} at key {ak:?}: competing host \
+                     types {hosts:?} — a resolved overlay must select a single mapping \
+                     per key (check for duplicate facts, or guarded rules whose guards \
+                     overlap)"
+                ),
+            }
+        })?;
+        if selected.is_some() {
+            return Ok(selected);
+        }
+    }
+    Ok(None)
+}
+
+/// The shared front of the realization readers: resolve `functor_names`
+/// (qualified first, then bare short name) to the first loaded symbol and encode
+/// the `field = value` `selection` as ground `Value::Str` equalities pushed down
+/// as the read's `bound` (057 §"query contract"). Only PLAIN-string fields are
 /// selectable this way (an `Option`-typed `lang: some("cpp")` cannot be grounded
-/// structurally — its callers post-filter instead). Empty when the functor isn't
-/// loaded, or when a selection field name isn't interned (no fact carries it, so
-/// nothing could match).
+/// structurally — callers post-filter it instead). `None` is the shared
+/// BAIL-EMPTY: no `functor_names` entry is loaded, or a selection field name
+/// isn't interned (so no fact carries it and nothing could match).
 ///
-/// Each row is narrowed `Value::Term` → `TermId` via [`expect_term_head`]:
-/// TypeMapping / IncludeMapping / NamingConvention are invariantly Term-carried
-/// (plain ground facts), so a value/Node head is a loud error, never a silent
-/// skip — unlike the `OperationInfo` readers, which carry value heads.
-///
-/// WI-774 PIN (the accepted contract): these type-lowering readers STAY on
-/// `Refuse`, not the new `Resolve` (`read_facts_resolved`). A bodied `TypeMapping`
-/// — even one for another language the post-filter would discard — is a loud
-/// graceful refusal, blanket by design (`Refuse` poisons the read before the
-/// selection filter, WI-773/810). Graduating them to `Resolve` would need a
-/// realization RULE SET analogous to `realizes_effect` (WI-089's addendum
-/// `lower_type` predicate) to carry the base/profile/binding key priority through
-/// resolution; that predicate does not exist, so the honest state is refusal, not
-/// silent selection. Only `supported_effects` graduated to `Resolve` (WI-774),
-/// because its `realizes_effect` DECIDING path already resolves.
-/// Resolve `functor_names` (qualified first, then bare short name) to the first
-/// loaded symbol and encode the `field = value` `selection` as ground
-/// `Value::Str` equalities — the shared front of both realization readers
-/// ([`read_realization_facts`], `Refuse`, and [`resolve_realization_rows`],
-/// `Resolve`). `None` is their shared BAIL-EMPTY: no `functor_names` entry is
-/// loaded, or a selection field name isn't interned (so no fact carries it and
-/// nothing could match).
+/// WI-833: the sole consumer is now [`resolve_realization_rows`] (`Resolve`); the
+/// `Refuse` twin (`read_realization_facts`) retired when the three type-lowering
+/// readers graduated to `read_facts_resolved`. The direct `read_facts(Refuse)`
+/// sibling readers (`CarrierTable` / `OpImplTable` / `generated_targets`) build
+/// their own empty selection inline and do not route through here.
 fn realization_functor_and_selection(
     kb: &KnowledgeBase,
     functor_names: &[&str],
@@ -3924,24 +3962,9 @@ fn realization_functor_and_selection(
     Some((functor, sel))
 }
 
-fn read_realization_facts(
-    kb: &KnowledgeBase,
-    functor_names: &[&str],
-    selection: &[(&str, &str)],
-) -> Result<Vec<TermId>, CppCodegenError> {
-    let Some((functor, sel)) = realization_functor_and_selection(kb, functor_names, selection)
-    else {
-        return Ok(Vec::new());
-    };
-    kb.read_facts(functor, &sel, BodiedRulePolicy::Refuse)?
-        .into_iter()
-        .map(|row| expect_term_head(kb, functor, row))
-        .collect()
-}
-
 /// WI-089: resolve host-type mappings for `anthill_type` under `lang` over the
 /// keyed `TypeMapping` facts (the discrim tree IS the table). `lang`/`key` are
-/// `Option` fields read back from each matched head — grounding `some("cpp")`
+/// `Option` fields read back from each matched row — grounding `some("cpp")`
 /// structurally would be awkward — so only `anthill_type` is grounded and
 /// `lang` is post-filtered. Returns every matching entry across keys; callers
 /// pick by key priority.
@@ -3951,27 +3974,35 @@ fn read_realization_facts(
 /// Only facts with `lang: some("cpp")` are selected; the active-key priority
 /// then picks among the matches by `key`. A `TypeMapping` for another language,
 /// or one with no `lang`, is simply not a cpp mapping and is not selected.
+///
+/// WI-833: RESOLVED, not `Refuse`. A bodied `TypeMapping` rule is now EVALUATED
+/// (its guard honored) via [`resolve_realization_rows`] / `read_facts_resolved`,
+/// so a project can gate an overlay on a condition — the WI-089 guarded-overlay
+/// direction the old `read_facts(Refuse)` reader had to reject loudly. The
+/// key-priority aggregation stays caller-side ([`select_keyed_unique`]); this
+/// query only gathers the candidate rows, whose per-key ambiguity that selector
+/// then resolves or rejects.
 fn query_type_mappings(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     lang: &str,
     anthill_type: &str,
 ) -> Result<Vec<TypeMappingHit>, CppCodegenError> {
     let mut hits = Vec::new();
-    for head in read_realization_facts(
+    for row in resolve_realization_rows(
         kb,
         &["anthill.realization.TypeMapping", "TypeMapping"],
         &[("anthill_type", anthill_type)],
     )? {
-        let fact_lang = named_optional_string(kb, head, "lang");
+        let fact_lang = row_named_optional_string(kb, &row, "lang")?;
         if fact_lang.as_deref() != Some(lang) {
             continue;
         }
-        let Some(host_type) = named_string(kb, head, "host_type") else {
+        let Some(host_type) = row_named_string(kb, &row, "host_type")? else {
             continue;
         };
-        let lift = named_optional_string(kb, head, "lift");
-        let lower = named_optional_string(kb, head, "lower");
-        let key = named_optional_string(kb, head, "key");
+        let lift = row_named_optional_string(kb, &row, "lift")?;
+        let lower = row_named_optional_string(kb, &row, "lower")?;
+        let key = row_named_optional_string(kb, &row, "key")?;
         hits.push(TypeMappingHit { host_type, lift, lower, key });
     }
     Ok(hits)
@@ -4004,7 +4035,7 @@ fn resolve_type_mapping(
         queried.push(name);
         hits.extend(query_type_mappings(kb, "cpp", name)?);
     }
-    Ok(select_keyed(hits, |h| &h.key, &ctx.active_keys(binding)))
+    select_keyed_unique(hits, &ctx.active_keys(binding), &names.join(" / "))
 }
 
 /// WI-089: the C++ language-base host type for `anthill_type` (the
@@ -4013,14 +4044,15 @@ fn resolve_type_mapping(
 /// leaf type (`Int64 -> int64_t`); parameterized stdlib sorts lower to a
 /// bare template name (`List -> std::vector`) the caller wraps with args.
 pub fn cpp_base_host_type(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     anthill_type: &str,
 ) -> Result<Option<String>, CppCodegenError> {
     // The language base is the `key = none` entry — i.e. selection over the
     // single-element active-key list `[none]`. Routed through the shared
-    // `select_keyed` so there is one implementation of "pick the entry for this
-    // key", not a divergent `.find(key.is_none())` spelling.
-    Ok(select_keyed(query_type_mappings(kb, "cpp", anthill_type)?, |h| &h.key, &[None])
+    // `select_keyed_unique` so there is one implementation of "pick the entry for
+    // this key", not a divergent `.find(key.is_none())` spelling — and so a
+    // duplicate/competing base entry (WI-833) is deduped or rejected here too.
+    Ok(select_keyed_unique(query_type_mappings(kb, "cpp", anthill_type)?, &[None], anthill_type)?
         .map(|h| h.host_type))
 }
 
@@ -4177,17 +4209,25 @@ fn cpp_effect_receiver(kb: &mut KnowledgeBase, ctx: &CodegenContext, effect: &st
 
 /// WI-774: the values-first RESOLVED realization-fact reader — the ground rows of
 /// the first loaded `functor_names` (tried in order, qualified first) under the
-/// named `selection`, via `kb.read_facts_resolved` (057 `Resolve` policy). Unlike
-/// [`read_realization_facts`] (`Refuse`, which REJECTS a bodied candidate), a
+/// named `selection`, via `kb.read_facts_resolved` (057 `Resolve` policy). A
 /// bodied realization rule is RESOLVED — its guard honored — so a guarded
-/// `EffectMapping` / `LanguageMapping` entry participates iff its body succeeds.
-/// Empty when no name is loaded or a selection field name isn't interned (no fact
-/// carries it). A DEPTH-CAP-truncated candidate search is a loud `CppCodegenError`
-/// (via the `?` on [`ExtentReadError::SearchTruncated`], the WI-767 discipline).
-/// A mounted-BACKEND query failure is NOT surfaced here — the resolver's mount
-/// path handles it leniently in v1 (log + empty, WI-797); the loud channel for a
-/// fallible backend arrives with the write seam (WI-780). Immaterial to the
-/// realization readers, which are resident.
+/// `TypeMapping` / `IncludeMapping` / `NamingConvention` / `EffectMapping` /
+/// `LanguageMapping` entry participates iff its body succeeds (the `Resolve`
+/// counterpart of the retired `read_facts(Refuse)` reader, which rejected every
+/// bodied candidate outright). Empty when no name is loaded or a selection field
+/// name isn't interned (no fact carries it). A DEPTH-CAP-truncated candidate
+/// search is a loud `CppCodegenError` (via the `?` on
+/// [`ExtentReadError::SearchTruncated`], the WI-767 discipline). A mounted-BACKEND
+/// query failure is NOT surfaced here — the resolver's mount path handles it
+/// leniently in v1 (log + empty, WI-797); the loud channel for a fallible backend
+/// arrives with the write seam (WI-780). Immaterial to the realization readers,
+/// which are resident.
+///
+/// WI-833: all five realization functors now flow through this ONE resolved
+/// reader. Each row is a reified `Value::Entity` (children `Value::Term`); read
+/// its fields with [`row_named_string`] / [`row_named_optional_string`] /
+/// [`row_named_term`], not the `TermId`-head `named_string` the `Refuse` readers
+/// use.
 fn resolve_realization_rows(
     kb: &mut KnowledgeBase,
     functor_names: &[&str],
@@ -4206,13 +4246,18 @@ fn resolve_realization_rows(
 /// children are `Value::Term` — so this reads the field carrier-neutrally and
 /// narrows the (ground) child to its term, letting the existing term readers
 /// (`as_string` / `walk_list`) apply unchanged. `Ok(None)` when the field is
-/// ABSENT (a legitimate skip — e.g. the entity-constructor row). A field PRESENT
-/// with a non-`Term` carrier is a LOUD error, not a silent drop: it is the
-/// `expect_term_head` analog for a field (the CLAUDE.md "loud error over silent
-/// skip" principle), and it cannot occur for a resident realization fact (all
-/// ground fields reify to `Value::Term`) — so it signals a genuinely unexpected
-/// carrier (e.g. a future mounted store handing back a raw value), which the
-/// Term-assuming realization readers cannot yet consume.
+/// ABSENT (a legitimate skip — e.g. the entity-constructor row). Two carriers are
+/// LOUD errors, never a silent drop (the CLAUDE.md "loud error over silent skip"
+/// principle — the `expect_term_head` analog for a field):
+///   * a `Value::Var` — the field is UNBOUND: the resolved fact/rule OMITTED a
+///     required field (the loader var-fills a missing required field; an omitted
+///     `Option` field is `none`-filled instead, so it stays a `Term`) or a rule
+///     head left it unconstrained. cpp-gen cannot emit a mapping with an
+///     undetermined field, so this is a loud error naming the missing field, not
+///     a silent unmapped skip (which would hide the malformed mapping);
+///   * any other non-`Term` carrier — a genuinely unexpected reification (e.g. a
+///     future mounted store handing back a raw value, or a builtin-computed
+///     field), which the Term-assuming realization readers cannot consume.
 fn row_named_term(
     kb: &KnowledgeBase,
     row: &Value,
@@ -4222,6 +4267,13 @@ fn row_named_term(
     match row.named_arg(kb, sym).map(|v| v.to_value()) {
         None => Ok(None),
         Some(Value::Term { id, .. }) => Ok(Some(id)),
+        Some(Value::Var(_)) => Err(CppCodegenError {
+            message: format!(
+                "resolved realization row: field `{field}` is unbound — a realization \
+                 fact is missing this required field, or a rule head left it \
+                 unconstrained; cpp-gen needs every field it reads grounded"
+            ),
+        }),
         Some(_) => Err(CppCodegenError {
             message: format!(
                 "resolved realization row: field `{field}` has an unexpected non-term \
@@ -4229,6 +4281,30 @@ fn row_named_term(
             ),
         }),
     }
+}
+
+/// WI-833: read a plain-`String` field off a RESOLVED row — the row-based
+/// counterpart of [`named_string`] (which reads a fact-head `TermId`). `Ok(None)`
+/// when the field is absent or not a string literal; a present non-term carrier
+/// is a loud error via [`row_named_term`].
+fn row_named_string(
+    kb: &KnowledgeBase,
+    row: &Value,
+    field: &str,
+) -> Result<Option<String>, CppCodegenError> {
+    Ok(row_named_term(kb, row, field)?.and_then(|t| as_string(kb, t)))
+}
+
+/// WI-833: read an `Option[String]` field off a RESOLVED row (`some("x")` →
+/// `Some("x")`, `none` → `None`) — the row-based counterpart of
+/// [`named_optional_string`]. `Ok(None)` when the field is absent or its `Option`
+/// is `none`; a present non-term carrier is a loud error via [`row_named_term`].
+fn row_named_optional_string(
+    kb: &KnowledgeBase,
+    row: &Value,
+    field: &str,
+) -> Result<Option<String>, CppCodegenError> {
+    Ok(row_named_term(kb, row, field)?.and_then(|t| extract_optional_string(kb, t)))
 }
 
 /// WI-576: every effect `lang` realizes under `profile` — the profile's
@@ -4270,7 +4346,7 @@ fn supported_effects(
     let mut names: Vec<String> = Vec::new();
     // Flat: each top-level `EffectMapping` row's `effect`.
     for row in &flat_rows {
-        if let Some(effect) = row_named_term(kb, row, "effect")?.and_then(|t| as_string(kb, t)) {
+        if let Some(effect) = row_named_string(kb, row, "effect")? {
             names.push(effect);
         }
     }
@@ -4320,22 +4396,35 @@ fn describe_supported_effects(
 /// WI-089(c): the cpp `(host_type spelling, include directive)` probe pairs from
 /// the keyed `IncludeMapping` facts — replaces the hardcoded `INCLUDE_PROBES`
 /// array. Grounds the plain-String `lang`; caller sorts for deterministic output.
+///
+/// WI-833: RESOLVED, not `Refuse` — a bodied `IncludeMapping` rule is EVALUATED
+/// (its guard honored), so a project can gate a probe on a condition. The probes
+/// form a SET (each is an independent "when this spelling appears, include that
+/// header"), so aggregation is a plain DEDUP: `Resolve` may enumerate the same
+/// pair via several derivations, and a probe list with duplicates would render a
+/// directive twice (`Includes::needed` keys on the probe INDEX). Two probes with
+/// the same spelling but DIFFERENT includes are NOT a conflict — a type can need
+/// two headers — so both are kept (deduped, sorted) and both fire on a hit;
+/// there is no per-key winner to be ambiguous about (unlike `TypeMapping`).
 fn query_include_mappings(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     lang: &str,
 ) -> Result<Vec<(String, String)>, CppCodegenError> {
-    let mut out = Vec::new();
-    for head in read_realization_facts(
+    let mut out: Vec<(String, String)> = Vec::new();
+    for row in resolve_realization_rows(
         kb,
         &["anthill.realization.IncludeMapping", "IncludeMapping"],
         &[("lang", lang)],
     )? {
         let (Some(host_type), Some(include)) =
-            (named_string(kb, head, "host_type"), named_string(kb, head, "include"))
+            (row_named_string(kb, &row, "host_type")?, row_named_string(kb, &row, "include")?)
         else {
             continue;
         };
-        out.push((host_type, include));
+        let pair = (host_type, include);
+        if !out.contains(&pair) {
+            out.push(pair);
+        }
     }
     Ok(out)
 }
@@ -4348,29 +4437,41 @@ fn query_include_mappings(
 /// the convention is the source of truth, not a hardcoded default. Per-operation
 /// acronym irregulars (get_gps -> getGPS) ride a CppName override (WI-087), not
 /// this default.
-fn cpp_method_name(kb: &KnowledgeBase, source: &str) -> Result<String, CppCodegenError> {
-    let facts = read_realization_facts(
+fn cpp_method_name(kb: &mut KnowledgeBase, source: &str) -> Result<String, CppCodegenError> {
+    // WI-833: RESOLVED, not `Refuse` — a bodied `NamingConvention` rule is
+    // EVALUATED (its guard honored), so a project can gate the convention on a
+    // condition instead of the read refusing it loudly.
+    let rows = resolve_realization_rows(
         kb,
         &["anthill.realization.NamingConvention", "NamingConvention"],
         &[("language", "cpp")],
     )?;
-    // cpp_std supplies exactly one cpp NamingConvention. Zero (misconfigured or
-    // unloaded profile) or >1 (an ambiguous overlay — per-op irregulars ride a
-    // CppName attribute (WI-087), not a second fact) is a profile bug: fail
-    // loudly in dev/test per the repo's "loud error over silent skip", degrade
-    // to identity in release rather than abort codegen.
-    debug_assert!(
-        facts.len() == 1,
-        "expected exactly one cpp NamingConvention fact, found {}",
-        facts.len()
-    );
-    let Some(head) = facts.first().copied() else {
+    // The convention is SINGLE-VALUED: cpp_std supplies exactly one cpp
+    // NamingConvention, and per-op irregulars ride a CppName attribute (WI-087),
+    // never a second convention. `unique_or_ambiguous` collapses identical
+    // resolved rows (Resolve can enumerate one convention via several derivations
+    // — a duplicate, not a conflict) and rejects a genuinely competing pair loudly
+    // (WI-833), the `realizes_effect` discipline applied to a `Result` reader.
+    let pairs: Vec<(Option<String>, Option<String>)> = rows
+        .iter()
+        .map(|row| {
+            Ok((row_named_string(kb, row, "source_case")?, row_named_string(kb, row, "method_case")?))
+        })
+        .collect::<Result<_, CppCodegenError>>()?;
+    let convention = unique_or_ambiguous(pairs, |distinct| CppCodegenError {
+        message: format!(
+            "ambiguous cpp NamingConvention: {distinct:?} — exactly one (source_case, \
+             method_case) may resolve; per-operation irregulars ride a CppName \
+             attribute (WI-087), not a second convention"
+        ),
+    })?;
+    // Zero conventions (misconfigured or unloaded profile) → identity: the
+    // convention is the source of truth, and an absent one is an ordinary miss,
+    // not an error (a project may emit without loading a naming profile).
+    let Some((source_case, method_case)) = convention else {
         return Ok(source.to_string());
     };
-    Ok(match (
-        named_string(kb, head, "source_case").as_deref(),
-        named_string(kb, head, "method_case").as_deref(),
-    ) {
+    Ok(match (source_case.as_deref(), method_case.as_deref()) {
         (Some("snake_case"), Some("camelCase")) => snake_to_camel(source),
         // Same source/method spelling: a legitimate no-op (e.g. a profile that
         // keeps snake_case).
