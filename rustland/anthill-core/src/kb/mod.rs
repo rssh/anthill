@@ -1192,6 +1192,15 @@ impl KnowledgeBase {
 
     // ── Term allocation ─────────────────────────────────────────
 
+    /// The `TermId` of an already-interned term, without interning or refcounting it
+    /// (WI-849 review). For a caller that only needs to NAME a term it already holds
+    /// alive through something else; [`Self::alloc`] would inflate the refcount on every
+    /// such read. Deliberately does NOT reproduce `alloc`'s WI-511 nullary-`Fn` → `Ref`
+    /// canonicalization, so pass the storage form you expect to find.
+    pub fn find_term(&self, term: &Term) -> Option<TermId> {
+        self.terms.find(term)
+    }
+
     /// Allocate a term (hash-consed, refcounted).
     pub fn alloc(&mut self, term: Term) -> TermId {
         // WI-511: a nullary application of a registered constructor is stored in

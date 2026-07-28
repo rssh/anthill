@@ -344,6 +344,26 @@ pub enum LoadError {
         spec: String,
         carrier_param: String,
     },
+    /// WI-851: a constructor's named argument names no DECLARED FIELD of the entity.
+    /// The named twin of the positional over-arity refusal, and like it a loud case
+    /// rather than a silent never-match: an unknown label rides into the hash-consed
+    /// term as a real named arg, so `mk(a: 1, bogus: 2)` and `mk(a: 1)` are different
+    /// terms and a query written the other way silently fails to match — while
+    /// `check_constructor_iter`, which reads the DECLARED fields, never visits the
+    /// extra one, so its value's type is never checked.
+    ///
+    /// A distinct span-bearing variant rather than a bare `Other`: `Other` is not in
+    /// [`Self::user_span`]'s arms, so it renders with no `path:line:col`, and
+    /// `dedup_load_errors` (keyed on the rendered string) would then collapse EVERY
+    /// occurrence of the same entity+label across the whole load — even across files —
+    /// into one unlocatable message.
+    UnknownEntityField {
+        entity: String,
+        field: String,
+        /// The entity's declared field list, pre-rendered (`"a, b"`, or `"none"`).
+        declared: String,
+        span: Span,
+    },
     Other {
         message: String,
     },
@@ -701,7 +721,8 @@ impl LoadError {
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
-            | LoadError::FunctorOwnedByExtent { span, .. } => Some(*span),
+            | LoadError::FunctorOwnedByExtent { span, .. }
+            | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
@@ -915,6 +936,13 @@ impl LoadError {
                 format!(
                     "{}:{}: field projection '{}': {} has no field '{}'",
                     line, col, path, type_display, field,
+                )
+            }
+            LoadError::UnknownEntityField { entity, field, declared, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: '{}' has no field '{}' (declares: {})",
+                    line, col, entity, field, declared,
                 )
             }
             LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
@@ -1242,6 +1270,13 @@ impl std::fmt::Display for LoadError {
                     f,
                     "field projection '{}' at {}..{}: {} has no field '{}'",
                     path, span.start, span.end, type_display, field,
+                )
+            }
+            LoadError::UnknownEntityField { entity, field, declared, span } => {
+                write!(
+                    f,
+                    "'{}' has no field '{}' (declares: {}) at {}..{}",
+                    entity, field, declared, span.start, span.end,
                 )
             }
             LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
@@ -7751,11 +7786,7 @@ impl<'a> Loader<'a> {
                             }
                         }
                         PositionalPlan::OverArity { declared, unfilled } => {
-                            let fields = declared
-                                .iter()
-                                .map(|s| self.kb.resolve_sym(*s).to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ");
+                            let fields = self.kb.render_field_list(&declared);
                             self.errors.push(LoadError::Other {
                                 message: format!(
                                     "constructor '{}' given {} positional argument(s) but has {} unfilled field(s) (declares: {})",
@@ -7766,6 +7797,49 @@ impl<'a> Loader<'a> {
                                 ),
                             });
                         }
+                    }
+                }
+
+                // WI-851: the NAMED twin of the over-arity check above — a label that
+                // names no declared field. Checked HERE, at the one term-conversion
+                // funnel, rather than at each producer: a fact head, a rule head, a
+                // rule-body atom and a constraint body all arrive through this arm, and
+                // "enumerate the producers" is the WI-805 / WI-839 mistake. Placed AFTER
+                // the positional block so a label the desugar just assigned (always a
+                // declared field) is included and any bug there is caught too.
+                let unknown: SmallVec<[Symbol; 2]> = {
+                    let named_syms: SmallVec<[Symbol; 2]> =
+                        new_named.iter().map(|(s, _)| *s).collect();
+                    self.kb.unknown_named_labels(new_functor, &named_syms)
+                };
+                if !unknown.is_empty() {
+                    // Rendered once, not per offending label: the declared list is a
+                    // property of the functor, and a term with two bad labels would
+                    // otherwise rebuild it twice. `entity_field_names` is `Some` here by
+                    // construction — `unknown_named_labels` returns non-empty only after
+                    // reading it — so a missing schema is a broken invariant, not a case
+                    // to default away (a defaulting unwrap would print the bare
+                    // `(declares: )` that reads as the bug it would be hiding).
+                    let declared = match self.kb.entity_field_names(new_functor) {
+                        Some(f) => self.kb.render_field_list(f),
+                        None => unreachable!(
+                            "unknown_named_labels reported a label for a functor with no \
+                             registered field schema"
+                        ),
+                    };
+                    let ctor = self.kb.resolve_sym(new_functor).to_string();
+                    // Span-bearing so the message renders `path:line:col` and so
+                    // `dedup_load_errors` keeps two violations of the same entity+label
+                    // apart — it keys on the rendered string, and a span-less `Other`
+                    // would collapse every occurrence in the load into one.
+                    let span = self.parsed.terms.span(parse_id);
+                    for label in unknown {
+                        self.errors.push(LoadError::UnknownEntityField {
+                            entity: ctor.clone(),
+                            field: self.kb.resolve_sym(label).to_string(),
+                            declared: declared.clone(),
+                            span,
+                        });
                     }
                 }
 

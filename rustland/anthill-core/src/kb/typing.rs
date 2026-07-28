@@ -48,11 +48,6 @@ pub enum TypeError {
         // can be traced to its construction site without hand-instrumenting.
         site: &'static std::panic::Location<'static>,
     },
-    UnknownField {
-        span: Option<Span>,
-        entity_name: Symbol,
-        field: Symbol,
-    },
     NoParentSort {
         name: Symbol,
     },
@@ -429,10 +424,6 @@ impl TypeError {
                 let (expected, actual) = render_mismatch_pair(kb, expected, actual);
                 format!("type mismatch: expected {expected}, got {actual}")
             }
-            TypeError::UnknownField { entity_name, field, .. } => {
-                format!("unknown field '{}' in entity {}",
-                    kb.resolve_sym(*field), kb.resolve_sym(*entity_name))
-            }
             TypeError::NoParentSort { name } => {
                 format!("entity has no parent sort: {}", kb.resolve_sym(*name))
             }
@@ -580,7 +571,6 @@ impl TypeError {
     pub fn span(&self, _kb: &KnowledgeBase) -> Option<Span> {
         match self {
             TypeError::TypeMismatch { span, .. }
-            | TypeError::UnknownField { span, .. }
             | TypeError::UnresolvedName { span, .. }
             | TypeError::NoConstructor { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
@@ -643,17 +633,6 @@ impl TypeError {
                     field_name: context.field_name(kb),
                     expected_type,
                     actual_type,
-                    span: self.span(kb),
-                }
-            }
-            TypeError::UnknownField { entity_name, field, .. } => {
-                let field_name = kb.resolve_sym(*field).to_string();
-                LoadError::TypeMismatch {
-                    origin: None,
-                    entity_name: kb.resolve_sym(*entity_name).to_string(),
-                    expected_type: "known field".to_string(),
-                    actual_type: format!("unknown field '{}'", field_name),
-                    field_name,
                     span: self.span(kb),
                 }
             }
@@ -5684,11 +5663,19 @@ fn op_tp_pinning_params(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Vec<Symbol> {
+    // WI-849: the op table holds each param's `Var` directly. A non-`Global` entry is
+    // SKIPPED, not refused — this function computes a STAGING HINT (which arguments to
+    // type first), so an entry it cannot use costs only a missed reordering, never a
+    // wrong judgement. Deliberately not an `unreachable!` even though
+    // `extract_type_params` yields only `Global` today: `OpInfoRecord::type_params` is a
+    // `pub` field on a `pub` struct, so an out-of-crate producer can hand this a `Rigid`
+    // or `DeBruijn`, and aborting a downstream tool over a heuristic would be far worse
+    // than declining to stage.
     let mut tp_vars: Vec<VarId> = op
         .type_params
         .iter()
-        .filter_map(|(_, t)| match kb.get_term(*t) {
-            Term::Var(Var::Global(v)) => Some(*v),
+        .filter_map(|(_, v)| match v {
+            Var::Global(v) => Some(*v),
             _ => None,
         })
         .collect();
@@ -10111,8 +10098,9 @@ fn check_apply_iter(
         if !op.type_params.is_empty() {
             let op_scope_raw = kb.make_name_term_from_sym(fn_sym).raw();
             let mut resolved: Vec<(Symbol, TermId)> = Vec::with_capacity(op.type_params.len());
-            for (name, var_term) in &op.type_params {
-                let walked = walk_type_deep(kb, &subst, *var_term);
+            for (name, var) in &op.type_params {
+                let var_term = type_param_var_term(kb, *var);
+                let walked = walk_type_deep(kb, &subst, var_term);
                 // WI-394: the deep walk stops at a non-`Term` (`Value::Node`)
                 // binding, leaving a bare var; surface it so the eval installs
                 // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
@@ -12961,14 +12949,44 @@ struct OperationInfoFull {
     return_type: Value,            // WI-341 carrier-agnostic
     effects: Vec<Value>,
     /// Operation-level type parameters in declaration order, as
-    /// `(name, Var(VarId) term)` pairs.
-    type_params: Vec<(Symbol, TermId)>,
+    /// `(name, the parameter's own logical variable)` pairs. WI-849 — a `Var`,
+    /// not a `Term::Var` TermId; see [`super::op_info::OpInfoRecord::type_params`].
+    /// A reader that needs a term carrier (to unify against, or to walk with the
+    /// term-typed `walk_type_deep`) allocs `Term::Var(v)`, which hash-conses to
+    /// the identical TermId the loader built.
+    type_params: Vec<(Symbol, Var)>,
     /// WI-539: precondition (`requires`) clauses, for call-site contract checking
     /// (proposal 050 "operation call" rule). Carries the auto-inferred
     /// `EffectsRuntime[…]` and spec `Spec[C=T]` requires too; the call-site check
     /// filters to the VALUE goals (`is_value_precondition_clause`) — spec/typeclass
     /// requires are dispatched / coverage-checked elsewhere (WI-343 / WI-325).
     requires: Vec<Value>,
+}
+
+/// WI-849 — an operation type parameter as the TERM carrier the term-typed APIs take
+/// (`walk_type_deep`, `TermIdView`, `unify_types`). The table itself holds each
+/// parameter's `Var`, which is its whole content; this is the one-line bridge for a
+/// reader that needs it wrapped.
+///
+/// NOT a lossy re-materialization: the term is hash-consed, so this returns the
+/// IDENTICAL `TermId` the loader built for that parameter. Two consequences the callers
+/// depend on — `unify_types`' `Value::Term{x} == Value::Term{y}` identity fast-path
+/// stays reachable, and the effect-row-parameter test in cpp-gen still sees one variable
+/// in both the row and the table.
+///
+/// Looks the term up WITHOUT refcounting it (WI-849 review): every caller is a per-node
+/// typer path that merely reads a parameter it already holds via the `OperationInfo`
+/// record, and `alloc`'s increment-on-hit would inflate those refcounts monotonically
+/// across a type-check, pinning the slots forever. The var term is alive for the same
+/// reason it is readable — the fact this record was decoded from holds it — so the
+/// `alloc` fallback is for a KB where that fact has since been retracted, not a case any
+/// caller here is expected to hit.
+fn type_param_var_term(kb: &mut KnowledgeBase, v: Var) -> TermId {
+    let term = Term::Var(v);
+    match kb.find_term(&term) {
+        Some(t) => t,
+        None => kb.alloc(term),
+    }
 }
 
 /// Look up complete OperationInfo for a functor.
@@ -13061,6 +13079,7 @@ fn seed_op_type_args(
     // One target per binding, in order — nothing is skipped now, which is what lets
     // this be a plain `zip` rather than an index carried back out of the resolver.
     for (target, (_, value)) in targets.into_iter().zip(type_args) {
+        let target = type_param_var_term(kb, target);
         // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
         // so unify it directly — a value-in-type arg (`Value::Node`) unifies
         // cross-carrier through the typer's view dispatch, no re-ground.
@@ -13101,10 +13120,10 @@ fn call_type_args_of(
 ///     positional silently re-targeted the slot the named key had taken.
 fn resolve_call_type_arg_targets(
     type_args: &[(Option<Symbol>, crate::eval::value::Value)],
-    declared: &[(Symbol, TermId)],
+    declared: &[(Symbol, Var)],
     fn_sym: Symbol,
     span: Option<Span>,
-) -> Result<Vec<TermId>, TypeError> {
+) -> Result<Vec<Var>, TypeError> {
     // Which declared slots a NAMED key claims. Collected up front because a positional
     // must skip them wherever it sits in the list — the surface convention is
     // positional-first, but nothing in the grammar enforces it.
@@ -13170,7 +13189,8 @@ fn check_unconstrained_type_params(
     if op.type_params.is_empty() {
         return Ok(());
     }
-    for (name, var_term) in &op.type_params {
+    for (name, var) in &op.type_params {
+        let var_term = type_param_var_term(kb, *var);
         // Carrier-agnostic resolve over [`TermView`]: `walk_view` returns a
         // `Value`, so a var bound to a `Value::Node` (a WRITTEN effect row
         // `E = {Modify[p]}` threaded into an op's `Eff` param by the same-sort
@@ -13179,7 +13199,7 @@ fn check_unconstrained_type_params(
         // to put a non-`Term` carrier, so they keep the var and a row-bound
         // effect param was falsely flagged unconstrained. A genuinely unbound
         // param still resolves to a bare var.
-        let resolved = walk_view(kb, subst, &TermIdView(*var_term));
+        let resolved = walk_view(kb, subst, &TermIdView(var_term));
         if resolved_var(kb, &resolved).is_some() {
             return Err(TypeError::UnconstrainedTypeParam {
                 span,
@@ -19816,8 +19836,9 @@ fn check_signature_self_contradiction(
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    let any_param_bound = op.type_params.iter().any(|(_, vt)| {
-        resolved_var(kb, &walk_view(kb, subst, &TermIdView(*vt))).is_none()
+    let any_param_bound = op.type_params.iter().any(|(_, v)| {
+        let vt = type_param_var_term(kb, *v);
+        resolved_var(kb, &walk_view(kb, subst, &TermIdView(vt))).is_none()
     });
     if !any_param_bound {
         return Ok(());
@@ -25001,6 +25022,7 @@ fn ground_rigid_projection_if_concrete(
         .iter()
         .find(|(n, _)| kb.resolve_sym(*n) == subj_name)
         .map(|(_, v)| *v)?;
+    let tp_var = type_param_var_term(kb, tp_var);
     // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) subject fill is
     // seen through the view; a `Node` that is not a concrete `sort_ref` yields
     // `None`, keeping the projection the abstract neutral (as a bare var did).
@@ -32067,7 +32089,52 @@ fn type_check_sorts_collect(
     // and per-node passes below make `lookup_operation_info` the typer's hottest
     // call, and without this index each call linearly scans every `OperationInfo`
     // fact (quadratic overall). Every `OperationInfo` fact is asserted by now.
-    super::op_info::build_op_signatures(kb);
+    let malformed_type_params = super::op_info::build_op_signatures(kb);
+    // WI-849 — the LOUD half of `extract_type_params`' skip. A `type_params` entry that
+    // is not a logical variable cannot become a type parameter, and dropping it silently
+    // (which is what happened before) leaves the parameter uncheckable, unbindable and
+    // unskolemizable with no diagnostic anywhere. The decode itself cannot raise — it
+    // runs under `&KnowledgeBase`, pre-typer — so the sweep above carries the offenders
+    // out and they are reported here. `None` source: this is a whole-KB pass, and the
+    // offending fact carries no occurrence span.
+    for (op_sym, bad) in malformed_type_params {
+        // Rendered HERE, where a renderer is in reach. `build_op_signatures` carries the
+        // offending VALUE out rather than a string precisely so this renders readably
+        // instead of the `Fn { functor: Symbol(16), … TermId(3060) }` a `{:?}` at the
+        // decode site produced. Carrier-neutral, so a value-fact head's bad entry — which
+        // has no `TermId` at all — renders by the same path as a term-carried one.
+        // `TermPrinter` for a term-carried offender: it is a general TERM printer
+        // (`.anthill` source text), whereas `type_display_name_value` is a TYPE renderer
+        // and falls back to leaking `TermId(13506)` for an entry that is not a type —
+        // which is exactly what an offender here is. A non-term carrier has no TermId to
+        // print, so it renders by the carrier-neutral path.
+        let rendered = match &bad {
+            Value::Term { id, .. } => {
+                crate::persistence::print::TermPrinter::over(kb).print_term(*id)
+            }
+            other => type_display_name_value(kb, other),
+        };
+        errors.push(TypeError::Other {
+            site: TypeError::here(),
+            span: None,
+            context: TypeErrorContext::OperationTypeParams { op_name: op_sym },
+            expected: "each `type_params` entry to be a type variable".to_string(),
+            // Says "the `OperationInfo` fact naming X", NOT "operation X" (review). The
+            // report is reachable ONLY for a symbol the loader emitted no fact for:
+            // `build_op_signatures` keeps the FIRST fact per name and the loader emits
+            // one for every real operation, so a hand-written fact naming a real
+            // operation is shadowed and never decoded. Whatever reaches here is
+            // therefore NOT an operation — calling it one names the wrong thing, the
+            // same defect WI-839's review fixed in `TypeArgsOnNonOperation`.
+            actual: format!(
+                "the `OperationInfo` fact naming '{}' declares a type parameter that is \
+                 not a variable ({rendered}), so it can never be bound at a call, checked \
+                 for being unconstrained, or skolemized in a body",
+                kb.qualified_name_of(op_sym),
+            ),
+        });
+        sources.push(None);
+    }
     // WI-659 — likewise index the SortAlias facts once: `resolve_sort_alias` is
     // called on many sort-references per node and was the #1 hotspot post-WI-656
     // (a double linear scan of every SortAlias fact per call).
@@ -32119,6 +32186,13 @@ fn type_check_sorts_collect(
                 sort_owned_ops.extend(op_syms.iter().copied());
             }
             check_pattern_fragment(kb, sort_term, &mut errors);
+            // WI-745 invariant, restored INSIDE the loop (review): `sources` must stay
+            // parallel to `errors`, and `check_pattern_fragment` takes only `errors` (its
+            // diagnostics are per-SORT, with no one file to attribute them to). The pad
+            // at the end of this function cannot substitute — once this sort emits one,
+            // every LATER sort's entity-fact / operation-body error pairs with the
+            // PREVIOUS error's `SourceId` and renders `path:line:col` for the wrong file.
+            sources.resize(errors.len(), None);
             // WI-603: contradiction is now reported by the single `type_rule_bodies`
             // pass below (one `collect_rule_var_types` per rule). Record which
             // non-fact rules `check_rule_typing` would have walked so that pass
@@ -33030,13 +33104,29 @@ fn extract_parent_name(kb: &KnowledgeBase, parent: TermId) -> String {
 /// (fixed-but-abstract) constants: usable but not solvable. Mirrors the
 /// resolver's `forall_impl` skolemisation (`resolve.rs` `step_forall_impl`), the
 /// only other site that mints `Var::Rigid`.
+/// WI-849: takes each parameter's `Var` directly. The op side (`OpInfoRecord::
+/// type_params`) is already `Var`-typed; the SORT side ([`sort_type_params_as_pairs`],
+/// still TermId-typed because its consumers unify against the param as a term under
+/// `&KnowledgeBase`) is converted by the caller, where its own `Var::Global` filter
+/// makes the conversion total.
+///
+/// The `Var::Global` test below is therefore DEFENSIVE, not a live filter, and the
+/// difference is worth stating because the obvious justification for it is FALSE
+/// (review): "a sort param may alias a CONCRETE sort (`sort T = Int64`), which is not
+/// skolemizable" describes a case that never arrives — `sort_type_params_as_pairs`
+/// admits an entry only when it already IS a `Term::Var(Var::Global(_))`, so a concrete
+/// alias is dropped BEFORE the concat, and the caller's own conversion `unreachable!`s
+/// on anything that is not a `Term::Var`. Both input tables are all-`Global`; nothing
+/// reaching here can fail this test today. It is kept as a total match rather than an
+/// assertion because a `Rigid`/`DeBruijn` entry would be a caller bug, not user input,
+/// and skolemizing one would be worse than leaving it alone.
 fn rigidify_op_type_params(
     kb: &mut KnowledgeBase,
-    type_params: &[(Symbol, TermId)],
+    type_params: &[(Symbol, Var)],
 ) -> Substitution {
     let mut rigidify = Substitution::new();
-    for (param_sym, var_tid) in type_params {
-        if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {
+    for (param_sym, var) in type_params {
+        if let Var::Global(vid) = var {
             let vid = *vid;
             // Name the rigid after the PARAMETER's short name, not the alias var's name.
             // `sort A = ?` aliases to an ANONYMOUS `?` var, so inheriting `vid.name()`
@@ -33202,7 +33292,17 @@ fn check_operation_bodies(
             (rec.params, rec.return_type, rec.effects)
         } else {
             let mut all_params = rec.type_params.clone();
-            all_params.extend(parent_sort_params.iter().cloned());
+            // WI-849: the op table is `Var`-typed; the sort table is still TermId-typed
+            // (its other consumers want the param as a TERM, under `&KnowledgeBase`
+            // where they could not re-alloc). Convert here — total, because
+            // `sort_type_params_as_pairs` admits an entry only when it IS a
+            // `Term::Var(Global)`. A non-var would mean that filter changed under us.
+            all_params.extend(parent_sort_params.iter().map(|(n, t)| match kb.get_term(*t) {
+                Term::Var(v) => (*n, *v),
+                other => unreachable!(
+                    "sort_type_params_as_pairs admits only `Term::Var(Global)`, got {other:?}"
+                ),
+            }));
             let rigidify = rigidify_op_type_params(kb, &all_params);
             for (_, var_tid) in parent_sort_params.iter() {
                 if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {

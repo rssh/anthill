@@ -297,6 +297,17 @@ impl TermStore {
 
     /// Allocate a term, deduplicating via hash-consing.
     /// If an identical term exists, increments its refcount and returns it.
+    /// The `TermId` of an ALREADY-INTERNED term, without interning it or touching its
+    /// refcount — the read-only half of [`Self::alloc`] (WI-849 review).
+    ///
+    /// [`Self::alloc`] increments the refcount even on a hash-cons HIT, which is correct
+    /// for a caller taking ownership but wrong for one that only wants to *name* a term
+    /// it already holds through something else. Such a caller would inflate the count
+    /// monotonically and keep the slot from ever being released.
+    pub fn find(&self, term: &Term) -> Option<TermId> {
+        self.hash_index.get(term).copied()
+    }
+
     pub fn alloc(&mut self, term: Term) -> TermId {
         if let Some(&existing) = self.hash_index.get(&term) {
             self.refcounts[existing.index()] += 1;

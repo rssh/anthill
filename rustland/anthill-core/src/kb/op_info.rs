@@ -14,7 +14,7 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::node_occurrence::NodeOccurrence;
-use super::term::{Term, TermId};
+use super::term::{Term, TermId, Var};
 use super::term_view::{TermView, ViewHead, ViewItem};
 use super::typing::list_to_vec;
 use super::KnowledgeBase;
@@ -47,9 +47,24 @@ pub struct OpInfoRecord {
     /// effects list, not a side-table.
     pub effects: Vec<Value>,
     /// Operation-level type parameters from `operation foo[A, B](...)`.
-    /// Each entry: `(name_symbol, Var(VarId) term)`. The typer matches
-    /// call-site bindings against this table to seed its substitution.
-    pub type_params: Vec<(Symbol, TermId)>,
+    /// Each entry: `(name_symbol, the parameter's own logical variable)`. The
+    /// typer matches call-site bindings against this table to seed its
+    /// substitution.
+    ///
+    /// WI-849: a `Var`, not the `TermId` of a `Term::Var` — the entries ARE
+    /// variables (the loader mints each one via `fresh_var`, `kb/load.rs`
+    /// `load_operation`), and the term spelling made every reader destructure
+    /// `kb.get_term(tid)` back to a `Var` and SILENTLY DROP anything else. The
+    /// var is the whole content: the `Symbol` is `vid.name()` on this side, and
+    /// a reader that wants a term carrier re-allocs `Term::Var(v)`, which
+    /// hash-conses to the identical `TermId` the loader built.
+    ///
+    /// Deliberately NOT `Value` / `ViewItem`: a variable is not a carrier, so
+    /// carrier-neutrality buys nothing here — `Value::Var` would only re-admit
+    /// carriers that cannot occur, and `ViewItem<'a>` borrows `kb`, which this
+    /// record (cloned out of the [`OpSignature`] cache, then read under `&mut
+    /// KnowledgeBase`) cannot hold.
+    pub type_params: Vec<(Symbol, Var)>,
     /// Body NodeOccurrence read from `kb.op_bodies`. `None` when the
     /// operation is body-less (a spec op declaration).
     pub body_node: Option<Rc<NodeOccurrence>>,
@@ -86,7 +101,7 @@ pub struct OpSignature {
     pub params: Vec<(Symbol, Value)>,
     pub return_type: Value,
     pub effects: Vec<Value>,
-    pub type_params: Vec<(Symbol, TermId)>,
+    pub type_params: Vec<(Symbol, Var)>,
     pub requires: Vec<Value>,
     pub ensures: Vec<Value>,
     pub meta: Option<TermId>,
@@ -222,10 +237,23 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// can never disagree. `None` when the head lacks a `return_type` (malformed —
 /// the pre-WI-656 code likewise bailed the whole lookup on a missing `return_type`).
 fn extract_signature_from_head(kb: &KnowledgeBase, head: &Value) -> Option<OpSignature> {
+    let type_params = extract_type_params(kb, head);
+    signature_from_head_with_type_params(kb, head, type_params)
+}
+
+/// [`extract_signature_from_head`] with the `type_params` already decoded — for
+/// [`build_op_signatures`], which needs BOTH halves of that decode (the usable
+/// parameters and the offenders to report) and must not walk the list twice to get
+/// them. `head_field` is not free: it resolves every named key to a `&str` and string-
+/// compares, per field, per operation, on every type-check.
+fn signature_from_head_with_type_params(
+    kb: &KnowledgeBase,
+    head: &Value,
+    type_params: Vec<(Symbol, Var)>,
+) -> Option<OpSignature> {
     let return_type = head_field_value(kb, head, "return_type")?;
     let effects = effects_of_head(kb, head);
     let params = extract_params(kb, head_field(kb, head, "params"));
-    let type_params = extract_type_params(kb, head_field_term(kb, head, "type_params"));
     let requires = clause_list_field(kb, head, "requires");
     let ensures = clause_list_field(kb, head, "ensures");
     // WI-087: an empty `meta()` (the no-attributes case) reports as `None`.
@@ -271,15 +299,26 @@ fn op_info_from_signature(
 /// signature from its current first fact, so a re-typecheck after a signature change
 /// refreshes (a retracted op's entry would persist, but nothing mutates
 /// `OperationInfo` post-load).
-pub fn build_op_signatures(kb: &mut KnowledgeBase) {
+///
+/// WI-849 — RETURNS the `type_params` entries that are not logical variables, as
+/// `(op symbol, the offending value)`, for the caller to RENDER and report. It travels
+/// unrendered because this site has no printer, and as a carrier-agnostic `Value`
+/// because a value-fact head's bad entry has no `TermId` to travel as (review). Carried out of THIS pass
+/// rather than found by a second sweep: this one already visits every fact and decodes
+/// every `type_params` list, and it defines WHICH fact each operation is read from —
+/// so the report covers exactly the facts the system consults, no more (a shadowed
+/// duplicate is not read, so its contents are not diagnosed) and no less.
+#[must_use = "the malformed type-param entries must be reported, not dropped"]
+pub fn build_op_signatures(kb: &mut KnowledgeBase) -> Vec<(Symbol, Value)> {
     let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
-        return;
+        return Vec::new();
     };
     // Collect under the immutable borrow, then insert — the head decode reads
     // `&kb` while the record insert needs `&mut kb`. `seen` keeps only the FIRST
     // fact per op, so a later duplicate the scan would never reach is ignored.
     let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     let mut sigs: Vec<(Symbol, OpSignature)> = Vec::new();
+    let mut malformed: Vec<(Symbol, Value)> = Vec::new();
     for rid in kb.rules_by_functor(op_info_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -291,15 +330,29 @@ pub fn build_op_signatures(kb: &mut KnowledgeBase) {
         if !seen.insert(op_sym) {
             continue;
         }
+        // ONE decode, both halves: the usable parameters go into the cached signature,
+        // the offenders out to the caller to render and report. Splitting here rather
+        // than in a helper keeps the decode's shape honest — `type_param_entries` takes
+        // the list's `TermId` and hands back, per element, either the decoded parameter
+        // or that element's `TermId` unchanged; there is nothing to convert an
+        // undecodable entry INTO, so it passes through as the handle it arrived as.
+        let mut type_params = Vec::new();
+        for entry in type_param_entries(kb, head) {
+            match entry {
+                Ok(p) => type_params.push(p),
+                Err(bad) => malformed.push((op_sym, bad)),
+            }
+        }
         // A malformed first fact caches nothing (signature stays `None`) — the
         // fallback then reproduces the same `None`, so the paths agree.
-        if let Some(sig) = extract_signature_from_head(kb, head) {
+        if let Some(sig) = signature_from_head_with_type_params(kb, head, type_params) {
             sigs.push((op_sym, sig));
         }
     }
     for (op_sym, sig) in sigs {
         kb.op_records.entry(op_sym).or_default().signature = Some(sig);
     }
+    malformed
 }
 
 /// WI-087: a `meta(...)` term carries attributes iff it has at least one named
@@ -418,20 +471,122 @@ pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value>
     out
 }
 
-/// Walk a `type_params` list (a ground `TermId` list). Each entry is a
-/// `Term::Var(Global(vid))`; the surface name comes from `vid.name()`.
-fn extract_type_params(kb: &KnowledgeBase, tp_tid: Option<TermId>) -> Vec<(Symbol, TermId)> {
-    let tp_tid = match tp_tid {
-        Some(t) => t,
-        None => return Vec::new(),
+/// Walk a `type_params` list (a ground `TermId` list) into the parameters' own
+/// logical variables. Each entry is a `Term::Var(Global(vid))`; the surface name
+/// comes from `vid.name()`.
+///
+/// WI-849 — an entry that is not a `Term::Var(Global)` is skipped HERE and reported via
+/// [`type_param_entries`]' `Err` half, which [`build_op_signatures`] carries out of its
+/// pass. The skip is not the silent one it replaced:
+/// this decode runs under `&KnowledgeBase`, has no error channel, and is reached from
+/// load-time paths that run BEFORE the typer exists (the const-purity gate, the
+/// eq-dispatch table build), so it is the wrong place to raise from. The sweep that
+/// visits every `OperationInfo` fact exactly once — [`build_op_signatures`], called
+/// from `type_check_sorts_collect` where the error list lives — is the right one.
+///
+/// A dropped op type param is invisible in four ways at once, which is why it must be
+/// reported SOMEWHERE: [`crate::kb::typing`]'s `check_unconstrained_type_params` never
+/// checks it; `resolve_call_type_arg_targets` cannot find its label, so `op[T = …]`
+/// reports `NoSuchTypeParam` naming the USER's call for a malformed DECLARATION;
+/// `rigidify_op_type_params` never skolemizes it, so the body sees a solvable flex var
+/// instead of a rigid (WI-392); and `seed_op_type_args` has nothing to match.
+///
+/// REACHABILITY, measured twice — and the second measurement is why this is a report
+/// rather than a panic. WI-849 found that a hand-written
+/// `fact OperationInfo(name: <any resolvable symbol>, return_type: …,
+/// type_params: cons(head: 42, tail: nil()), …)` reached this arm from ordinary user
+/// source: `type_params` is not a declared field of the stdlib `OperationInfo` entity
+/// (the loader appends it via `kb.alloc`, bypassing term conversion), and an undeclared
+/// label was accepted everywhere. WI-851 closed THAT — an undeclared constructor label
+/// is now refused at load — so no source spelling reaches here today.
+///
+/// The report stays anyway, and stays non-fatal: what WI-851 closed is the TERM
+/// CONVERSION path, not this decode's contract. A producer that asserts an
+/// `OperationInfo` fact directly (as the loader itself does) still bypasses that
+/// refusal, and a panic would then take down a load over metadata the user never wrote.
+fn extract_type_params(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, Var)> {
+    type_param_entries(kb, head).into_iter().filter_map(|e| e.ok()).collect()
+}
+
+/// One `type_params` entry: the decoded parameter, or the thing that could not be one.
+/// The SINGLE decode behind both halves — [`extract_type_params`] keeps the `Ok`s,
+/// [`build_op_signatures`] reports the `Err`s — so the two can never disagree about
+/// which entries were usable.
+///
+/// CARRIER-NEUTRAL, and the offender is a `Value` rather than a `TermId` for a reason
+/// that is structural, not stylistic (review): an `OperationInfo` head is a value fact
+/// whenever any param/return/effect is `denoted`-bearing, and a non-term-carried entry
+/// — or a non-term-carried FIELD — has NO `TermId` to name it, so a `TermId`-typed error
+/// channel could not report the very cases it exists for. Reading the field with the
+/// term-only `head_field_term` had the same blind spot one level up: it returns `None`
+/// for a value-carried field, indistinguishable from "this operation declares no type
+/// parameters". Mirrors [`effects_of_head`] / [`clause_list_field`] / [`extract_params`],
+/// which are all carrier-neutral for exactly this reason.
+///
+/// A field that is present but is NOT A LIST AT ALL (`type_params: 42`) reports as one
+/// offender — the field itself. Previously it decoded to zero entries and zero reports,
+/// so the operation simply appeared to have no type parameters: the same silent-drop
+/// class as a bad element, one layer out.
+fn type_param_entries(kb: &KnowledgeBase, head: &Value) -> Vec<Result<(Symbol, Var), Value>> {
+    let Some(field) = head_field(kb, head, "type_params") else {
+        return Vec::new();
     };
-    list_to_vec(kb, tp_tid)
+    let field: Value = match field {
+        ViewItem::Term(t) => Value::term(t),
+        ViewItem::Value(v) => v.clone(),
+        ViewItem::Node(occ) => Value::Node(occ),
+    };
+    let Some(items) = list_items_strict(kb, &field) else {
+        return vec![Err(field)];
+    };
+    items
         .into_iter()
-        .filter_map(|var_tid| match kb.get_term(var_tid) {
-            Term::Var(crate::kb::term::Var::Global(vid)) => Some((vid.name(), var_tid)),
-            _ => None,
+        .map(|entry| match &entry {
+            Value::Term { id, .. } => match kb.get_term(*id) {
+                Term::Var(Var::Global(vid)) => Ok((vid.name(), Var::Global(*vid))),
+                _ => Err(entry),
+            },
+            Value::Var(Var::Global(vid)) => Ok((vid.name(), Var::Global(*vid))),
+            _ => Err(entry),
         })
         .collect()
+}
+
+/// A cons/nil list's elements, or `None` when `v` is NOT a list — the distinction
+/// [`list_to_vec`] and [`value_list_to_vec`] both erase by `break`ing out of the walk
+/// and returning what they had. Carrier-neutral, so a term list and a value list decode
+/// alike. Only the top of the spine is classified; a malformed TAIL still truncates, as
+/// it does for every other list field.
+fn list_items_strict(kb: &KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
+    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil");
+    let is_nil = |name: &str| name == "nil";
+    match v {
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Ref(s) if is_nil(kb.resolve_sym(*s)) => Some(Vec::new()),
+            Term::Fn { functor, .. } => {
+                let name = kb.resolve_sym(*functor);
+                if is_nil(name) {
+                    Some(Vec::new())
+                } else if name == "cons" {
+                    Some(list_to_vec(kb, *id).into_iter().map(Value::term).collect())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        Value::Entity { functor, .. } => {
+            let name = kb.resolve_sym(*functor);
+            if is_nil(name) || Some(*functor) == nil_sym {
+                Some(Vec::new())
+            } else if name == "cons" {
+                Some(value_list_to_vec(kb, v))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Decode the `params` field to `(name, type)` pairs carrier-faithfully. The

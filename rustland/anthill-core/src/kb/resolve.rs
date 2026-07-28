@@ -4039,6 +4039,76 @@ impl KnowledgeBase {
         self.qualified_name_of(functor) == "anthill.reflect.TupleLiteral"
     }
 
+    /// WI-851: the supplied named labels that name NO DECLARED FIELD of `functor` —
+    /// the NAMED twin of [`PositionalPlan::OverArity`], and like it a loud case rather
+    /// than a silent never-match. Returns them in supplied order; empty means every
+    /// label is declared, or the functor is exempt.
+    ///
+    /// An unknown label is not inert: [`Self::canonicalize_record_named_args`] sorts it
+    /// LAST (`unwrap_or(usize::MAX)`) and it rides into the hash-consed term as a real
+    /// named arg, while `check_constructor_iter` — which iterates the DECLARED fields
+    /// and looks each up among the supplied args — never visits it, so its value's type
+    /// is never checked. `mk(a: 1, bogus: 2)` and `mk(a: 1)` are then DIFFERENT terms
+    /// and a query written the other way silently fails to match.
+    ///
+    /// EXEMPT, in this order:
+    ///   * an ORDERED PRODUCT (a named tuple) — its labels are the AUTHOR's, and their
+    ///     order IS the value's identity (CLAUDE.md §"named args"), so there is no
+    ///     schema to be closed against. Same reason it is exempt from
+    ///     [`Self::canonicalize_record_named_args`];
+    ///   * a reflect FORM meta-ctor (`apply` / `match_expr` / `TupleLiteral` / …), whose
+    ///     arg shape IS the reflect encoding rather than user named-field application;
+    ///   * a functor with no registered schema at all — [`Self::entity_field_names`] is
+    ///     `Some` exactly for DECLARED ENTITIES (`register_entity_field_names_scan` is
+    ///     its only production registrar), so `None` means "not an entity".
+    ///
+    /// An EMPTY declared list is NOT exempt, and getting that wrong is the whole
+    /// subtlety. `entity nil` / `entity none` / `entity console` (the paren-less
+    /// zero-field spelling the prelude uses throughout) register `Some([])`, and so do
+    /// the reflect meta-ctors — so "empty" cannot distinguish "declares nothing" from
+    /// "has no schema", and treating empty as exempt let `nil(bogus: 1)` and
+    /// `none(bogus: 1)` — the two most-written constructors in the language — through
+    /// (MEASURED, /code-review). A zero-field entity's label set is CLOSED at zero: it
+    /// accepts no labels at all. Do NOT substitute a name-based exemption
+    /// (`anthill.reflect.*` prefix) for the form test either: it hides the same cases
+    /// but would also exempt reflect entities that DO declare fields, letting an
+    /// undeclared label back into exactly the metadata facts that most need to be
+    /// well-formed (it is what left the WI-849 `OperationInfo` path open).
+    pub(crate) fn unknown_named_labels(
+        &self,
+        functor: Symbol,
+        named: &[Symbol],
+    ) -> SmallVec<[Symbol; 2]> {
+        if named.is_empty() {
+            return SmallVec::new();
+        }
+        if self.is_ordered_product_functor(functor)
+            || node_occurrence::is_reflect_form_functor(self, functor)
+        {
+            return SmallVec::new();
+        }
+        let Some(declared) = self.entity_field_names(functor) else {
+            return SmallVec::new();
+        };
+        named
+            .iter()
+            .copied()
+            .filter(|s| !declared.contains(s))
+            .collect()
+    }
+
+    /// Render a declared field list for a diagnostic: `"a, b"`, or `"none"` when the
+    /// entity declares no fields. Shared by the two constructor-shape refusals in
+    /// [`crate::kb::load`]'s `convert_term` — the POSITIONAL over-arity one and the
+    /// NAMED unknown-label one — so their messages cannot drift, and so neither has to
+    /// spell the empty case as the bare `(declares: )` that reads like a bug.
+    pub(crate) fn render_field_list(&self, fields: &[Symbol]) -> String {
+        if fields.is_empty() {
+            return "none".to_string();
+        }
+        fields.iter().map(|s| self.resolve_sym(*s).to_string()).collect::<Vec<_>>().join(", ")
+    }
+
     /// WI-500: plan the positional→named desugar for a constructor — the loader's
     /// "rank-among-not-named" rule ([`crate::kb::load`]'s `convert_term_with_expected`),
     /// shared so runtime value→term lowering canonicalizes to the SAME named shape

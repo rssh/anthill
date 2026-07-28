@@ -3020,16 +3020,21 @@ enum EffectLabel {
 fn classify_effect_label(
     kb: &KnowledgeBase,
     eff: &Value,
-    type_params: &[(Symbol, TermId)],
+    type_params: &[(Symbol, Var)],
 ) -> EffectLabel {
     use anthill_core::kb::node_occurrence::{NodeKind, TypeChild, TypeNode};
     let kind_of = |t: TermId| match effect_kind_short(kb, t) {
         Some(name) => EffectLabel::Kind(name),
-        // `OpInfoRecord.type_params` carries each param's own `Term::Var`
-        // TermId, and vars hash-cons like any other term — so `EffP` in the
-        // effect row IS the same TermId as `EffP` in the type-param list. The
-        // test is therefore by reference (WI-632), not a name-string match.
-        None if type_params.iter().any(|(_, tid)| *tid == t) => EffectLabel::RowParam,
+        // `OpInfoRecord.type_params` carries each param's own `Var` (WI-849), and
+        // the effect row carries the SAME variable as a hash-consed `Term::Var` —
+        // so `EffP` in the row and `EffP` in the type-param list are one variable.
+        // The test is therefore by VARIABLE IDENTITY (a `VarId` compare, WI-632),
+        // not a name-string match; before WI-849 the same judgement was spelled as
+        // a `TermId` compare, which held only because vars hash-cons.
+        None if matches!(kb.get_term(t), Term::Var(v) if type_params.iter().any(|(_, p)| p == v)) =>
+        {
+            EffectLabel::RowParam
+        }
         None => EffectLabel::Unreadable,
     };
     match eff {
