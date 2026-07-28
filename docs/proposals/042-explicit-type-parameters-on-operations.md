@@ -141,7 +141,7 @@ Operation ::= DescriptionBlock*
 
 OperationTypeParamList ::= '[' OperationTypeParam (',' OperationTypeParam)* ']'
 OperationTypeParam     ::= Name                  -- shorthand for `Name = ?`
-                         | Name '=' Type         -- with default value
+                         | Name '=' Type         -- with default value: PARSED, REFUSED (WI-850, OQ3)
 ```
 
 Each entry declares a named logical variable scoped to the operation. The three shapes:
@@ -150,7 +150,7 @@ Each entry declares a named logical variable scoped to the operation. The three 
 |---|---|
 | `Name` | Shorthand for `Name = ?` — declare the name for a fresh anonymous logical variable. |
 | `Name = ?` | Explicit form of the above. |
-| `Name = Type` | Declare the name with a default — used when the caller and inference both leave the slot unfilled. |
+| `Name = Type` | ~~Declare the name with a default — used when the caller and inference both leave the slot unfilled.~~ **Refused** (WI-850 / OQ3): parsed only so the diagnostic can name it. |
 
 So `operation map[A, B](...)` is exactly `operation map[A = ?, B = ?](...)` with the `= ?` elided. This mirrors how `sort T = ?` works in a sort body — same `Name = ?` shape, same fresh-logical-variable allocation. The brackets are just the per-operation listing form.
 
@@ -203,7 +203,7 @@ A signature that uses `?A` / `?B` (or unfilled bare `A` / `B`) instead of `[A, B
 
 **Call-site bindings as scoped type aliases.** `map[A = Int64, B = String](xs, f)` reads as: for the duration of this call, alias `A = Int64` and `B = String` for `map`'s named logical variables. The shape is borrowed from `Foo[T = Int64]` for sorts — same brackets, same `Name = Type` punning — but the binding is per-call, not per-instance (see the next subsection).
 
-Internally the loader allocates a `VarId` for each declaration entry (one per bare-name entry; the explicit `Name = Type` form uses the supplied Type as a default that the call site can override) and records the name in the operation's symbol scope. Resolution of bare type names inside the operation body looks up declared parameters the same way sort-body resolution does for `sort T = ?` declarations. A signature can mix `[A]` and `?B` (different letters): `A` has a caller-visible name, `B` doesn't — both are logical variables, only one is addressable from outside.
+Internally the loader allocates a `VarId` for each declaration entry (one per bare-name entry — the `Name = Type` form is refused before it gets here; see OQ3 / WI-850) and records the name in the operation's symbol scope. Resolution of bare type names inside the operation body looks up declared parameters the same way sort-body resolution does for `sort T = ?` declarations. A signature can mix `[A]` and `?B` (different letters): `A` has a caller-visible name, `B` doesn't — both are logical variables, only one is addressable from outside.
 
 ### Call-site syntax (explicit type application)
 
@@ -427,7 +427,7 @@ operation_type_param_list: $ => seq(
 
 operation_type_param: $ => choice(
   $.name,                                          // shorthand for `Name = ?`
-  seq($.name, '=', $._type),                       // with default value
+  seq($.name, '=', $._type),                       // default: parsed, then REFUSED (WI-850)
 ),
 ```
 
@@ -538,6 +538,6 @@ Implicit-form signatures already in stdlib (e.g. `operation identity(x: ?T) -> ?
 
 **OQ2.** *(closed — the section above resolves this.)* The two surfaces (`[T]` declaration with bare references vs. `?T` logical variables) are independent kernel features. An operation's author picks one. Mixing same-letter cases (`operation foo[T](x: ?T)`) is grammatically admissible but means two distinct vars (declared `T` and logical `?T`) — almost certainly an author mistake; a linter should flag it.
 
-**OQ3.** *Defaults — useful or noise?* `operation foo[T = Int64](x: T) -> T` means "T defaults to Int64 if neither the caller nor inference fills the slot." This falls out of the unified shape (the `Name = Type` form of `SortBinding` already means this for sort instantiations); it costs nothing to allow grammatically. Open question is only whether any stdlib operation should use it for the first landing. The use case is thin — most call sites either have enough context or want explicit. Recommend: allow grammatically, no stdlib adoption in the first landing, revisit if a concrete driver appears.
+**OQ3.** *(closed — WI-850, 2026-07-28: NOISE, and refused.)* `operation foo[T = Int64](x: T) -> T` was to mean "T defaults to Int64 if neither the caller nor inference fills the slot". "Costs nothing to allow grammatically" was wrong: the loader mints one fresh var per declared parameter from its **name**, so the default was parsed, stored on `TypeParam.default` and read by nobody — `[T = Int64]` loaded exactly as `[T]`, and a call that left `T` unconstrained then reported "unconstrained type parameter", telling the author to pin `T` at the call when they had written that pin on the declaration. No driver appeared — no `.anthill` file in stdlib, examples or `anthill-todo` ever wrote one, and the only occurrences in the tree were two fixtures asserting that it *parses* — so the form is now **refused** at conversion, naming the operation and the parameter; the kernel spec's production is `TypeParam ::= Name` (§5.4). The declaration grammar and table above therefore keep the `Name = Type` row only as the *parsed-so-it-can-be-named* shape. Honouring it stays available and reopens this OQ: it needs the default carried beside the minted var through `OperationInfo`, consultation at exactly the point the unconstrained-parameter check raises, and an explicit verdict on whether a default may mention an earlier parameter (`[T, U = List[T]]`).
 
 **OQ4.** *(specified elsewhere — cross-reference, not open here.)* Two pieces this proposal leans on are detailed outside it: **cross-sort parameter inference** (binding `[T]` from a `List[Int64]` argument used where a `Stream[T]` is expected, via provider admissibility) — **WI-379**; and **projection cross-dependency strictness** (resolution order, cycle / missing-member / abstract-receiver loud errors) — **WI-376** and [`docs/design/type-parameter-scoping.md`](../design/type-parameter-scoping.md).

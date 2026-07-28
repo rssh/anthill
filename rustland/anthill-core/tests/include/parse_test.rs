@@ -4781,7 +4781,6 @@ fn parse_operation_with_single_type_param() {
     let op = first_operation(&parsed);
     assert_eq!(op.type_params.len(), 1);
     assert_eq!(parsed.symbols.name(op.type_params[0].name), "T");
-    assert!(op.type_params[0].default.is_none());
 }
 
 #[test]
@@ -4790,21 +4789,20 @@ fn parse_operation_with_multiple_type_params() {
     let op = first_operation(&parsed);
     let names: Vec<_> = op.type_params.iter().map(|p| parsed.symbols.name(p.name)).collect();
     assert_eq!(names, vec!["A", "B"]);
-    assert!(op.type_params.iter().all(|p| p.default.is_none()));
 }
 
+/// WI-850: the GRAMMAR still accepts `[T = Int64]` — the converter refuses it, so the
+/// author gets a diagnostic naming the operation and the parameter rather than an
+/// unexpected-`=` syntax error. This test used to assert the default reached the IR;
+/// it did, and nothing ever read it. The full story is in
+/// `wi850_type_param_default_test.rs`.
 #[test]
-fn parse_operation_type_param_with_default() {
-    let parsed = parse::parse("operation defaulted[T = Int64](x: T) -> T\n").expect("parse failed");
-    let op = first_operation(&parsed);
-    assert_eq!(op.type_params.len(), 1);
-    assert_eq!(parsed.symbols.name(op.type_params[0].name), "T");
-    match &op.type_params[0].default {
-        Some(TypeExpr::Simple(name)) => {
-            assert_eq!(parsed.symbols.name(name.last()), "Int64");
-        }
-        other => panic!("expected Simple(Int64) default, got {:?}", other),
-    }
+fn parse_operation_type_param_with_default_is_refused() {
+    let errs = crate::common::parse_errs("operation defaulted[T = Int64](x: T) -> T\n");
+    assert!(
+        errs.iter().any(|e| e.contains("type parameter `T` carries a default")),
+        "a declared type-param default must be refused by name; got: {errs:?}",
+    );
 }
 
 #[test]

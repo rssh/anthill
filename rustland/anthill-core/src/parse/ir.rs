@@ -540,12 +540,20 @@ pub struct Operation {
     pub span: Span,
 }
 
+/// One declared operation type parameter — a NAME, and nothing else.
+///
+/// WI-850: the surface `[T = Int64]` DEFAULT form used to ride here in an
+/// `Option<TypeExpr>` that no reader ever consulted — the loader mints one fresh var
+/// per parameter from `name` alone, so a defaulted declaration loaded exactly as the
+/// bare one and the default was dropped in silence. The verdict is REFUSAL, taken at
+/// the converter (`convert_operation_type_params`, which carries the reasons): the
+/// kernel spec's production is `TypeParam ::= Name` (§5.4), and proposal 042 OQ3 left
+/// the semantics unadopted for want of a driver. The field is gone rather than kept
+/// unread, so nothing here reads as though a default were honoured; honouring one
+/// (042 OQ3's option (a)) reinstates it beside the minted var and deletes the refusal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeParam {
     pub name: Symbol,
-    /// Default value from `[T = Int]`; `None` for bare `[T]` (which the
-    /// loader treats as `T = ?` — a fresh anonymous logical variable).
-    pub default: Option<TypeExpr>,
     pub span: Span,
 }
 

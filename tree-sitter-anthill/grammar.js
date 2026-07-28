@@ -498,6 +498,11 @@ module.exports = grammar({
       ']',
     ),
 
+    // WI-850: the `default` field is parsed but NOT part of the language — the
+    // converter refuses `[T = Int64]` naming the operation, the parameter and the
+    // type written (kernel spec §5.4: `TypeParam ::= Name`). Kept in the grammar
+    // deliberately: dropping it here would turn a defaulted declaration into an
+    // unexpected-`=` syntax error pointing at a token instead of the diagnostic.
     operation_type_param: $ => seq(
       field('name', $.identifier),
       optional(seq('=', field('default', $._type))),

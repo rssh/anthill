@@ -3187,11 +3187,13 @@ impl<'a> Converter<'a> {
     fn convert_operation(&mut self, node: Node) -> Option<Operation> {
         self.reset_var_scope();
         let span = self.span(node);
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
+        let name_node = self.field(node, "name")?;
+        let name = self.convert_name(name_node);
         let visibility = self.convert_visibility(node);
 
-        let type_params = self.convert_operation_type_params(node);
+        // The name AS WRITTEN, for diagnostics that must quote the declaration
+        // (WI-850's type-param-default refusal).
+        let type_params = self.convert_operation_type_params(node, self.text(name_node));
 
         let params = self.children_by_kind(node, "param")
             .into_iter()
@@ -3286,23 +3288,57 @@ impl<'a> Converter<'a> {
         Some(Const { visibility, name, ty, value, meta, span })
     }
 
-    fn convert_operation_type_params(&mut self, node: Node) -> Vec<TypeParam> {
+    /// `op` is the enclosing operation's name as written — carried in for the WI-850
+    /// diagnostic below, from the caller that already has it.
+    fn convert_operation_type_params(&mut self, node: Node, op: &str) -> Vec<TypeParam> {
         let Some(list) = self.child_by_kind(node, "operation_type_param_list") else {
             return Vec::new();
         };
         self.children_by_kind(list, "operation_type_param")
             .into_iter()
-            .map(|p| self.convert_operation_type_param(p))
+            .map(|p| self.convert_operation_type_param(p, op))
             .collect()
     }
 
-    fn convert_operation_type_param(&mut self, node: Node) -> TypeParam {
+    /// WI-850: a declared type-param DEFAULT (`operation foo[T = Int64](…)`) is
+    /// REFUSED here — the grammar parses it (`operation_type_param`'s optional
+    /// `default` field) so the refusal can name the operation and the parameter
+    /// instead of failing as an unexpected `=`.
+    ///
+    /// It has no semantics anywhere: the loader mints a fresh var per parameter from
+    /// its NAME alone, so `[T = Int64]` loaded EXACTLY as `[T]` and the default was
+    /// dropped in silence — and worse than inert, since an otherwise-unconstrained
+    /// call then raised `UnconstrainedTypeParam` telling the author to pin `T` with
+    /// `foo[T = …]` when they had written that pin on the DECLARATION. The kernel
+    /// spec's production is `TypeParam ::= Name` (§5.4); proposal 042 OQ3 admitted
+    /// the form grammatically and left the semantics unadopted pending a driver.
+    ///
+    /// Refused at the CONVERTER, not at the loader, because the verdict is decidable
+    /// from the surface form alone — no scope, no types, no KB — and this is the one
+    /// producer both declaration spellings reach (`operation_declaration` and an
+    /// `operation { … }` block's `operation_entry`). A load-time check would leave
+    /// `generate_rust`, which takes a `&ParsedFile` and never loads a KB, silently
+    /// dropping the default exactly as before. Same reasoning as WI-809's
+    /// duplicate-named-argument rule.
+    fn convert_operation_type_param(&mut self, node: Node, op: &str) -> TypeParam {
         let span = self.span(node);
-        let name = self.field(node, "name")
-            .map(|n| self.intern(self.text(n)))
-            .unwrap_or_else(|| self.intern("?"));
-        let default = self.field(node, "default").map(|t| self.convert_type(t));
-        TypeParam { name, default, span }
+        let written_name = self.field(node, "name").map(|n| self.text(n)).unwrap_or("?");
+        let name = self.intern(written_name);
+        if let Some(default) = self.field(node, "default") {
+            let written = self.text(default);
+            self.err(
+                format!(
+                    "operation `{op}`: type parameter `{written_name}` carries a default \
+                     (`{written_name} = {written}`), which nothing reads — the \
+                     declaration means exactly `{written_name}`, and the default would \
+                     be dropped in silence. Declare it bare and let the call bind it, \
+                     either from the arguments or explicitly \
+                     (`{op}[{written_name} = {written}](…)`)"
+                ),
+                node,
+            );
+        }
+        TypeParam { name, span }
     }
 
     fn convert_param(&mut self, node: Node) -> Param {

@@ -829,5 +829,8 @@ mod wi839_call_bracket_channel_test;
 #[path = "include/wi849_type_param_var_test.rs"]
 mod wi849_type_param_var_test;
 
+#[path = "include/wi850_type_param_default_test.rs"]
+mod wi850_type_param_default_test;
+
 #[path = "include/wi851_unknown_field_label_test.rs"]
 mod wi851_unknown_field_label_test;

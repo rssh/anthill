@@ -54,7 +54,7 @@ operation pair[A, B](a: A, b: B) -> Pair
         (identifier)))))
 
 ==================================
-Operation with default type param value
+Operation with default type param value (parsed here, REFUSED by the converter — WI-850)
 ==================================
 
 operation default_int[T = Int](x: T) -> T
