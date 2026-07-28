@@ -44,6 +44,7 @@ mod variant_test;
 mod wi533_const_test;
 mod wi536_const_ref_test;
 mod wi760_realization_rule_test;
+mod wi761_optional_header_test;
 mod wi771_bodied_refusal_test;
 mod wi774_resolved_effect_test;
 mod wi833_resolve_aggregation_test;

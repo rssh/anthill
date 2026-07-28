@@ -978,16 +978,27 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     }
     println!("anthill_runtime.hpp -> {}", runtime_path.display());
 
-    // anthill::geometry only emits if the namespace declared anything
-    // there; ignore the error when the namespace is empty (carrier-
-    // only / unrelated namespace).
-    if let Ok(geometry_header) = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, "anthill.geometry", profile) {
-        let geometry_path = args.output_dir.join("anthill_geometry.hpp");
-        if let Err(e) = fs::write(&geometry_path, &geometry_header) {
-            eprintln!("error: write {}: {e}", geometry_path.display());
+    // anthill::geometry is an OPTIONAL sidecar header — emitted only when a
+    // spec references geometry. `Ok(None)` means the namespace declares nothing
+    // there (carrier-only / unrelated) and is skipped quietly, as before; a
+    // GENUINE lowering failure (e.g. an op whose effect the profile can't
+    // realize, WI-576) is now reported loudly and exits non-zero, instead of
+    // being swallowed as if the only reason to fail were an empty namespace
+    // (WI-761).
+    match anthill_cpp_gen::emit_optional_namespace_header_with_profile(&mut kb, "anthill.geometry", profile) {
+        Ok(Some(geometry_header)) => {
+            let geometry_path = args.output_dir.join("anthill_geometry.hpp");
+            if let Err(e) = fs::write(&geometry_path, &geometry_header) {
+                eprintln!("error: write {}: {e}", geometry_path.display());
+                return Err(1);
+            }
+            println!("anthill.geometry -> {}", geometry_path.display());
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("error: {}", e.message);
             return Err(1);
         }
-        println!("anthill.geometry -> {}", geometry_path.display());
     }
 
     Ok(())
@@ -1045,7 +1056,13 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     let profile = profile_for_namespace(&kb, &args.namespace).map_err(render_err)?;
     let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
         .map_err(|e| { eprintln!("error: {}", e.message); 1 })?;
-    let geometry = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, "anthill.geometry", profile).ok();
+    // Optional geometry sidecar (WI-761): `Ok(None)` (namespace declares
+    // nothing) leaves `geometry` `None` and is skipped below, as before; a
+    // genuine lowering failure is reported loudly (via `render_err`, same as the
+    // reads above) and exits non-zero, instead of being dropped by the old
+    // `.ok()`.
+    let geometry = anthill_cpp_gen::emit_optional_namespace_header_with_profile(&mut kb, "anthill.geometry", profile)
+        .map_err(render_err)?;
     let runtime = anthill_cpp_gen::emit_runtime_header();
 
     let cpp_files = match list_cpp_sources(&args.cpp_sources) {

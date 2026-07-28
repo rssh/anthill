@@ -1699,12 +1699,30 @@ pub fn emit_runtime_header() -> &'static str {
     ANTHILL_RUNTIME_HEADER
 }
 
+/// WI-761: the "namespace declares nothing emittable" diagnostic. Raised by the
+/// REQUIRED entry points (the primary `--namespace`, tests asserting a non-empty
+/// header) when the namespace resolves to no entities / sums / traits / consts —
+/// so a typo'd namespace still fails loudly. Distinct from a genuine lowering
+/// failure: the optional-header path
+/// (`emit_optional_namespace_header_with_profile`) reports this same empty
+/// condition as `Ok(None)` instead and skips it quietly.
+fn empty_namespace_error(namespace: &str) -> CppCodegenError {
+    CppCodegenError {
+        message: format!(
+            "no entities, sum sorts, sort-with-operations, or constants to emit \
+             directly under namespace '{namespace}' (either nothing is declared \
+             there, or every candidate is carrier-bound by Implementation facts)"
+        ),
+    }
+}
+
 pub fn emit_namespace_header(
     kb: &mut KnowledgeBase,
     namespace: &str,
 ) -> Result<String, CppCodegenError> {
-    let ctx = CodegenContext::new(kb)?;
-    emit_namespace_header_in(kb, &ctx, namespace)
+    // No active profile is `CodegenContext::new`, i.e. `with_profile(kb, None)`
+    // — so this is the profile-aware required path with `None`.
+    emit_namespace_header_with_profile(kb, namespace, None)
 }
 
 /// WI-089(a): like `emit_namespace_header`, but for a specific compilation
@@ -1716,6 +1734,27 @@ pub fn emit_namespace_header_with_profile(
     namespace: &str,
     profile: Option<String>,
 ) -> Result<String, CppCodegenError> {
+    // WI-761: a REQUIRED namespace — the optional path's `Ok(None)` (nothing
+    // emittable) becomes the loud empty-namespace error, so a typo'd namespace
+    // still fails rather than emitting an empty header.
+    emit_optional_namespace_header_with_profile(kb, namespace, profile)?
+        .ok_or_else(|| empty_namespace_error(namespace))
+}
+
+/// WI-761: emit an OPTIONAL namespace header — like
+/// `emit_namespace_header_with_profile`, but a namespace that declares nothing
+/// emittable yields `Ok(None)` rather than an error. Callers driving an optional
+/// header (the CLI's `anthill.geometry` sidecar, absent unless a spec references
+/// geometry) skip on `Ok(None)` yet still surface a genuine lowering failure —
+/// e.g. an op requiring an effect the profile can't realize (WI-576) — as `Err`,
+/// instead of the old `.ok()` / `if let Ok(..)` that discarded every error as if
+/// it could only ever mean "namespace empty". The sole builder of the codegen
+/// context among the header entry points; the required wrappers delegate here.
+pub fn emit_optional_namespace_header_with_profile(
+    kb: &mut KnowledgeBase,
+    namespace: &str,
+    profile: Option<String>,
+) -> Result<Option<String>, CppCodegenError> {
     let ctx = CodegenContext::with_profile(kb, profile)?;
     emit_namespace_header_in(kb, &ctx, namespace)
 }
@@ -1728,11 +1767,18 @@ pub fn emit_namespace_header_with_profile(
 /// per-constructor structs followed by a `using S = std::variant<...>`
 /// alias). Items are emitted in qualified-name order, so the layout
 /// is deterministic across runs.
+///
+/// WI-761: returns `Ok(None)` when the namespace declares nothing
+/// emittable (no entities / sums / traits / consts, or everything is
+/// carrier-bound) — a benign "nothing here" outcome that the optional-
+/// header path skips quietly. `Err` is reserved for a genuine lowering
+/// failure. Required entry points recover the loud empty-namespace
+/// error via `empty_namespace_error`.
 pub fn emit_namespace_header_in(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     namespace: &str,
-) -> Result<String, CppCodegenError> {
+) -> Result<Option<String>, CppCodegenError> {
     // Track the currently-emitting namespace so `sort_to_cpp` can
     // qualify cross-namespace entity references (e.g. an
     // `anthill.geometry.Vec3` field inside an `anthill.examples.lf1`
@@ -1751,13 +1797,11 @@ pub fn emit_namespace_header_in(
 
     if entities.is_empty() && sums.is_empty() && traits.is_empty() && const_band.is_empty()
     {
-        return Err(CppCodegenError {
-            message: format!(
-                "no entities, sum sorts, sort-with-operations, or constants to emit \
-                 directly under namespace '{namespace}' (either nothing is declared \
-                 there, or every candidate is carrier-bound by Implementation facts)"
-            ),
-        });
+        // WI-761: benign "nothing to emit" → `Ok(None)`, kept DISTINCT from a
+        // genuine lowering failure below (`Err`) so the two never collapse into
+        // one error string the CLI has to guess between. See the fn doc for how
+        // the required entry points recover the loud empty-namespace error.
+        return Ok(None);
     }
 
     // Emit data types (flat entities + sum sorts) first, then traits
@@ -1823,11 +1867,11 @@ pub fn emit_namespace_header_in(
     }
 
     let ns_cpp = namespace.replace('.', "::");
-    Ok(TEMPLATE_HEADER
+    Ok(Some(TEMPLATE_HEADER
         .replace("{ns_anthill}", namespace)
         .replace("{ns_cpp}", &ns_cpp)
         .replace("{includes}", &needs.render())
-        .replace("{items}", &items))
+        .replace("{items}", &items)))
 }
 
 // ── Sum sort emission (std::variant) ─────────────────────────────────
