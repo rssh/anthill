@@ -18961,42 +18961,45 @@ fn validate_arg_against_param(
     // neutral leaf and so stays non-ground and skipped, exactly as before — this widens
     // what σ RESOLVES, never what it δ-grounds.
     //
-    // WITHHELD FROM A CALLABLE ([`type_head_is_callable`] — `arrow` or `Function[A, B, E]`).
-    // This gate does not OWN arrow conformance: an arrow argument is routed to the
-    // component-wise `validate_arrow_param_result` (WI-469) and `validate_callback_effect_-
-    // row` (WI-440) precisely BECAUSE its components must be judged one at a time with the
-    // effects row left to dispatch. Deep-walking σ into a callback's row makes the whole
-    // arrow read as ground, which hands it instead to the whole-type `types_compatible` —
-    // and that relation REFUSES the pairing WI-775/WI-792 settled must be ACCEPTED: a
-    // `Function[A = (a: Int64, b: Int64), B = Int64]` slot states NO arity, so the eta
-    // arrow of a 2-parameter operation belongs in it. Measured, not predicted: without this,
+    // WITHHELD WHEN A CALLABLE APPEARS ANYWHERE ([`type_contains_callable`]). This gate does
+    // not OWN arrow conformance: an arrow argument is routed to the component-wise
+    // `validate_arrow_param_result` (WI-469) and `validate_callback_effect_row` (WI-440)
+    // precisely BECAUSE its components must be judged one at a time with the effects row
+    // left to dispatch. Deep-walking σ into a callback's row makes the arrow read as ground,
+    // which hands it instead to the whole-type `types_compatible` — and that relation
+    // REFUSES the pairing WI-775/WI-792 settled must be ACCEPTED: a `Function[A = (a: Int64,
+    // b: Int64), B = Int64]` slot states NO arity, so the eta arrow of a 2-parameter
+    // operation belongs in it. Measured, not predicted: without this,
     // `wi787_eta_spread_named_tuple_test` (3 cases), `wi784_closure_arity_test`'s rigid-`A`
     // case and `wi424`'s row-gated callback all flipped from load-clean to refused. The
     // resulting hole is pinned by `known_gap_two_callback_arguments_sharing_a_type_var_-
     // are_not_checked`, which fails when the deeper fix lands.
     //
-    // A TOP-LEVEL head test is the right SCOPE, not an approximation of one: both arrow
-    // owners also read only the top-level form (`validate_callback_effect_row` gates on
-    // `type_head(declared)`, `validate_arrow_param_result` needs BOTH sides to decompose),
-    // so a callable NESTED in a sort application (`List[T = (X) -> Int64]`) was never routed
-    // to them and deep-walking it reroutes nothing.
+    // STRUCTURAL, not a head test — the correction the first cut needed. `types_compatible`
+    // DECOMPOSES a sort application down to `arrow_compatible_view`, so a callable NESTED in
+    // one is judged by the same arrow relation as a top-level one: measured, a head-only
+    // guard newly REFUSED `take[X](l: List[T = Function[A = X, B = Int64]], w: X)` applied
+    // to a list of a 2-parameter operation's eta arrow, a program that loads clean before
+    // WI-836. The withholding is decided on the DEEP-WALKED pair, which additionally covers
+    // a callable σ INTRODUCES (`List[T = X]` with `X := (Int64) -> Bool`) — a shallow test
+    // could not see that one at all. When it fires, the SHALLOW pair is kept and the gate
+    // below skips exactly as it did before this ticket.
     let mut both_ground =
         resolved_type_is_ground(kb, &actual_g) && resolved_type_is_ground(kb, &declared_g);
-    // Groundness (cheap: ~1/6 the cost of a head classification) is tested FIRST, so a
-    // conforming concrete argument — measured at 69% of calls — never pays for the probe.
-    let (actual_g, declared_g) = if !both_ground
-        && !type_head_is_callable(kb, &actual_g)
-        && !type_head_is_callable(kb, &declared_g)
-    {
-        let deep = (
-            walk_type_deep_value(kb, subst, &actual_g),
-            walk_type_deep_value(kb, subst, &declared_g),
-        );
-        both_ground =
-            resolved_type_is_ground(kb, &deep.0) && resolved_type_is_ground(kb, &deep.1);
-        deep
-    } else {
+    // Groundness (cheap, and the verdict on a measured 69% of calls) is tested FIRST, so a
+    // conforming concrete argument never pays for the walk or the callable scan.
+    let (actual_g, declared_g) = if both_ground {
         (actual_g, declared_g)
+    } else {
+        let deep_a = walk_type_deep_value(kb, subst, &actual_g);
+        let deep_d = walk_type_deep_value(kb, subst, &declared_g);
+        if type_contains_callable(kb, &deep_a) || type_contains_callable(kb, &deep_d) {
+            (actual_g, declared_g)
+        } else {
+            both_ground =
+                resolved_type_is_ground(kb, &deep_a) && resolved_type_is_ground(kb, &deep_d);
+            (deep_a, deep_d)
+        }
     };
     if !both_ground {
         // WI-469: a denoted-bearing arrow callback param whose EFFECTS row is
@@ -20651,12 +20654,11 @@ fn is_function_spec(kb: &KnowledgeBase, base: Symbol) -> bool {
 /// materializes the children (for a `Parameterized` head, two `Vec`s plus a `Value`
 /// clone per binding) before its caller throws them away.
 ///
-/// ONE owner for two callers — [`validate_callback_effect_row`], which routes a
-/// callback argument to the row check, and [`validate_arg_against_param`]'s WI-836
-/// deep-retry gate, which withholds the retry from a callable so the arrow checkers
-/// keep owning it. Those two must agree on what a callable IS: the retry gate exists
-/// precisely to leave arrow arguments to the arrow discipline, and a gate that drew the
-/// line somewhere else would hand over exactly the shapes it meant to withhold.
+/// ONE owner for two callers — [`validate_callback_effect_row`], which routes a callback
+/// argument to the row check and so asks about THE SLOT's head, and
+/// [`type_contains_callable`], the structural sibling that asks this at every node. Those
+/// two must agree on what a callable IS; where they differ is only WHERE they ask, which
+/// each site's own doc states.
 ///
 /// DELIBERATELY WIDER THAN `arrow_parts(..).is_some()`, which additionally requires the
 /// parts to materialize — it yields `None` for a `Function` head that binds no `B`
@@ -20669,6 +20671,95 @@ fn type_head_is_callable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
         TypeHead::Arrow => true,
         TypeHead::Parameterized { base } => is_function_spec(kb, base),
         _ => false,
+    }
+}
+
+/// Does a callable appear ANYWHERE in this type — at the head, or nested inside a sort
+/// application's bindings (`List[T = Function[A = X, B = Int64]]`)?
+///
+/// The STRUCTURAL sibling of [`type_head_is_callable`], which it asks at every node. The
+/// two questions have genuinely different owners and neither generalizes the other:
+/// [`validate_callback_effect_row`] routes THE SLOT, so the head is exactly its question;
+/// [`validate_arg_against_param`]'s WI-836 deep-retry must not change any arrow ACCEPTANCE
+/// decision, and `types_compatible` DECOMPOSES a sort application down to
+/// `arrow_compatible_view` — so a nested callable is judged by the arrow relation just as a
+/// top-level one is, and a head test would withhold the retry from exactly the shapes that
+/// were measured and from none of the others.
+///
+/// MEASURED (2026-07-28): with only the head test, `take[X](l: List[T = Function[A = X, B =
+/// Int64]], w: X)` applied to a list of a 2-parameter operation's eta arrow — which loads
+/// clean before WI-836 — was newly REFUSED, as was the `Option[T = Function[…]]` twin. The
+/// head test is not a cheaper approximation of this one; it is the wrong question here.
+///
+/// Runs on the DEEP-WALKED value, so it also catches a callable σ INTRODUCES that the
+/// shallow reading never showed (`List[T = X]` with `X := (Int64) -> Bool`). Conservative
+/// on a carrier it cannot read: a non-`Term`/`Node` value answers `true` (withhold), since
+/// "might contain a callable" must not license the widening.
+fn type_contains_callable(kb: &KnowledgeBase, v: &Value) -> bool {
+    match v {
+        Value::Term { id: t, .. } => term_contains_callable(kb, *t),
+        Value::Node(occ) => node_contains_callable(kb, occ),
+        _ => true,
+    }
+}
+
+/// [`type_contains_callable`] over a hash-consed type term: this node's head, else any
+/// argument's. Structurally the dual of [`type_value_is_ground`], which walks the same
+/// spine for the other predicate this gate reads.
+fn term_contains_callable(kb: &KnowledgeBase, tid: TermId) -> bool {
+    if type_head_is_callable(kb, &TermIdView(tid)) {
+        return true;
+    }
+    match kb.get_term(tid) {
+        Term::Fn { pos_args, named_args, .. } => {
+            let pos: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
+            let named: SmallVec<[TermId; 4]> = named_args.iter().map(|(_, a)| *a).collect();
+            pos.iter().any(|a| term_contains_callable(kb, *a))
+                || named.iter().any(|a| term_contains_callable(kb, *a))
+        }
+        _ => false,
+    }
+}
+
+/// [`type_contains_callable`] over an occurrence-carried type, walking the same
+/// `Type`/`EffectExpression` spine as [`node_type_is_ground`] so the two verdicts see the
+/// same children. An `Arrow` node answers `true` at its head via
+/// [`type_head_is_callable`]; every other form recurses.
+fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    if type_head_is_callable(kb, &Value::Node(Rc::clone(occ))) {
+        return true;
+    }
+    let child = |c: &TypeChild| match c {
+        TypeChild::Ground(t) => term_contains_callable(kb, *t),
+        TypeChild::Node(n) => node_contains_callable(kb, n),
+    };
+    match &occ.kind {
+        NodeKind::Type(tn) => match tn {
+            // A denoted carries a VALUE, not a type spine — no callable type inside it.
+            TypeNode::Denoted { .. } => false,
+            TypeNode::Parameterized { base, bindings } => {
+                child(base) || bindings.iter().any(|(_, c)| child(c))
+            }
+            TypeNode::EffectsRows { effects_expr } => child(effects_expr),
+            TypeNode::Arrow { .. } => true,
+            TypeNode::ExprCarried { value, member } => child(value) || child(member),
+            TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
+                .iter()
+                .any(|(_, t)| type_contains_callable(kb, t)),
+        },
+        // An effect row's labels are not callables; recurse anyway so the walk stays
+        // total over the node's children rather than assuming a shape.
+        NodeKind::EffectExpr(en) => match en {
+            EffectExprNode::Merge { left, right } => child(left) || child(right),
+            EffectExprNode::Present { label }
+            | EffectExprNode::Absent { label }
+            | EffectExprNode::Guarded { label, .. } => child(label),
+            EffectExprNode::Open { tail } => child(tail),
+            EffectExprNode::EmptyRow => false,
+        },
+        // Not a type occurrence — conservatively "might be" (withhold), matching
+        // `node_type_is_ground`'s conservative arm for the same carrier.
+        _ => true,
     }
 }
 

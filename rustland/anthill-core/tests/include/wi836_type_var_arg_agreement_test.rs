@@ -346,6 +346,65 @@ end
     );
 }
 
+/// CONTROL (e) — a callable NESTED inside a sort application. Found by review, and it
+/// is the reason the withholding is STRUCTURAL rather than a head test: both of these
+/// load clean before WI-836, and a head-only guard newly REFUSED both, because
+/// `types_compatible` decomposes a sort application down to `arrow_compatible_view` —
+/// the same relation that refuses a `Function[A = tuple]` against a 2-parameter eta
+/// arrow. The 5 cases that caught the top-level shape (wi787 ×3, wi784, wi424) all
+/// happen to be top-level, so nothing in the suite covered this.
+///
+/// Both spellings are driven because the guard walks a sort application's BINDINGS:
+/// `List` reaches the callable through a chain of entity types, `Option` directly.
+#[test]
+fn a_callback_nested_in_a_sort_application_is_still_accepted() {
+    let program = |wrap: &str, arg: &str| {
+        format!(
+            r#"
+namespace test.wi836.nested{wrap}
+  import anthill.prelude.{{List, Option, Int64, Function, some}}
+  import anthill.prelude.List.{{nil, cons}}
+  operation sub2(a: Int64, b: Int64) -> Int64 = a - b
+  operation take[X](l: {wrap}[T = Function[A = X, B = Int64]], w: X) -> Int64 = 1
+  operation go() -> Int64 = take({arg}, (3, 10))
+end
+"#
+        )
+    };
+    for (wrap, arg) in [("List", "cons(sub2, nil())"), ("Option", "some(sub2)")] {
+        assert_eq!(
+            eval_int(&program(wrap, arg), &format!("test.wi836.nested{wrap}.go")),
+            1,
+            "a callable nested in a {wrap} binding must stay accepted",
+        );
+    }
+}
+
+/// The WI-408 some-coercion in a position the gate previously SKIPPED — also found by
+/// review. Newly reaching the check means newly reaching its coercion arm, so this is a
+/// value rewrite the ticket enables and must therefore pin.
+///
+/// DRIVEN, not load-asserted: accepting the bare `3` WITHOUT wrapping also loads clean
+/// (the WI-385 lenient-accept interim WI-408 replaced), leaving the value bare in memory
+/// while its type says `Option[T]`, so the `match` would take neither arm. Only a real
+/// wrap returns 7.
+#[test]
+fn some_coercion_reaches_a_position_the_gate_used_to_skip() {
+    let src = r#"
+namespace test.wi836.wrap
+  import anthill.prelude.{List, Option, Int64, some, none}
+  import anthill.prelude.List.{nil}
+  operation li() -> List[T = Int64] = nil()
+  operation f[X](a: List[T = X], b: Option[T = X]) -> Int64 =
+    match b
+      case none() -> 0
+      case some(v) -> 7
+  operation drive() -> Int64 = f(li(), 3)
+end
+"#;
+    assert_eq!(eval_int(src, "test.wi836.wrap.drive"), 7);
+}
+
 /// CONTROL (d) — the BARE sort-ref spelling of the same conflict is owned by
 /// WI-374's member tie (`enforce_member_tie`), which runs BEFORE this check and
 /// reads σ's recorded contradictions. It stays that diagnostic: the written-out
