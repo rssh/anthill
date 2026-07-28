@@ -103,10 +103,55 @@ pub enum TypeError {
     /// `op[bindings](args)` named a binding key that doesn't correspond
     /// to any of the op's declared type-parameters. Replaces the
     /// WI-269 Phase D silent-drop site in `seed_op_type_args`.
+    ///
+    /// WI-839: raised for a callee with NO op-level type parameters too. That case
+    /// used to return early (`op.type_params.is_empty()`), so `plain[Bogus = Int64](n)`
+    /// loaded clean and meant nothing — and proposal 058 reuses this very channel for
+    /// instance selection, so an accepted-but-inert spelling is the hazard the arc
+    /// starts by closing (058 §2.2 / §9 phase 0).
     NoSuchTypeParam {
         span: Option<Span>,
         op: Symbol,
         name: Symbol,
+    },
+    /// WI-839: a call-site bracket supplies more POSITIONAL type arguments than the
+    /// callee has parameters left to bind — `plain[Int64](n)` on a param-less callee,
+    /// `idy[Int64, String](n)` on a one-param one, `idy[T = Int64, String](n)` where a
+    /// NAMED binding already took the only slot. The named twin of this drop is
+    /// [`Self::NoSuchTypeParam`]; positionals had their own silent `continue` in
+    /// `seed_op_type_args` and needed a diagnostic of their own, since an
+    /// unmatched positional has no key to name.
+    ExcessCallTypeArgs {
+        span: Option<Span>,
+        op: Symbol,
+        /// Positional bindings written in the bracket.
+        given: usize,
+        /// Parameters left for them — declared MINUS those a named key already took,
+        /// not simply declared: `idy[T = Int64, String]` over-applies a ONE-param
+        /// callee, and counting against `declared` would call that within budget.
+        free: usize,
+    },
+    /// WI-839: one call-site bracket binds the same type parameter TWICE —
+    /// `two[A = Int64, A = String](…)`. Both keys resolve to the same parameter var,
+    /// so the second unification contradicts the first and its failure is discarded:
+    /// `A = String` is written and means nothing. The same defect WI-805 / WI-808 /
+    /// WI-809 refused for tuple labels, entity fields and named ARGUMENT lists —
+    /// this is the type-argument list, which had no such guard.
+    DuplicateCallTypeArg {
+        span: Option<Span>,
+        op: Symbol,
+        name: Symbol,
+    },
+    /// WI-839: a call-site bracket on a callee that is not an OPERATION at all — a
+    /// function VALUE (arrow-typed variable or lambda), an applied rule citation
+    /// (WI-714), a bare-functor constructor invocation. Only an operation carries the
+    /// type-parameter list a bracket binds, so no key could ever match; this is
+    /// deliberately NOT [`Self::NoSuchTypeParam`], which would imply that some OTHER
+    /// key would have been accepted and would render a local binder through
+    /// `qualified_name_of` as though it were an operation.
+    TypeArgsOnNonOperation {
+        span: Option<Span>,
+        callee: Symbol,
     },
     /// WI-709: a parameterized type WRITTEN AS A VALUE (WI-707 —
     /// `is_modifiable(Cell[W = Int64])`) whose type arguments do not fit the sort's
@@ -424,6 +469,28 @@ impl TypeError {
                     kb.resolve_sym(*name),
                 )
             }
+            TypeError::ExcessCallTypeArgs { op, given, free, .. } => {
+                format!(
+                    "{} is over-applied at its type-argument bracket: {given} positional \
+                     type argument(s) but {free} type parameter(s) left to bind",
+                    kb.qualified_name_of(*op),
+                )
+            }
+            TypeError::DuplicateCallTypeArg { op, name, .. } => {
+                format!(
+                    "{} binds the type parameter '{}' more than once in one call-site \
+                     bracket",
+                    kb.qualified_name_of(*op),
+                    kb.resolve_sym(*name),
+                )
+            }
+            TypeError::TypeArgsOnNonOperation { callee, .. } => {
+                format!(
+                    "'{}' is not an operation, so it has no type-parameter list a \
+                     call-site `[…]` bracket could bind",
+                    short_name_of(kb.qualified_name_of(*callee)),
+                )
+            }
             TypeError::InvalidTypeArgument { sort, problem, .. } => problem.describe(kb, *sort),
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
                 let op_name = kb.qualified_name_of(*op);
@@ -521,6 +588,9 @@ impl TypeError {
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
+            | TypeError::ExcessCallTypeArgs { span, .. }
+            | TypeError::DuplicateCallTypeArg { span, .. }
+            | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
@@ -649,6 +719,35 @@ impl TypeError {
                 field_name: "type_arg".to_string(),
                 expected_type: "declared type-param name".to_string(),
                 actual_type: format!("unknown type-param '{}'", kb.resolve_sym(*name)),
+                span: self.span(kb),
+            },
+            TypeError::ExcessCallTypeArgs { op, given, free, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!("at most {free} positional type argument(s)"),
+                actual_type: format!("{given} — the callee is over-applied"),
+                span: self.span(kb),
+            },
+            TypeError::DuplicateCallTypeArg { op, name, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: "each type parameter bound at most once".to_string(),
+                actual_type: format!(
+                    "type-param '{}' bound twice in one bracket",
+                    kb.resolve_sym(*name),
+                ),
+                span: self.span(kb),
+            },
+            TypeError::TypeArgsOnNonOperation { callee, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*callee).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: "an operation, which declares the type parameters a \
+                                call-site `[…]` bracket binds".to_string(),
+                actual_type: "a callee with no type-parameter list (a function value, \
+                              an applied rule, a constructor)".to_string(),
                 span: self.span(kb),
             },
             // WI-709: the SAME `LoadError` the type position raises — one written type,
@@ -9109,6 +9208,21 @@ fn check_apply_iter(
     // in a single diagnostic rather than the first.
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
+    // WI-839: only an OPERATION has a type-parameter list a call-site bracket could
+    // bind, and `seed_op_type_args` — the one place a bracket is honoured — runs on
+    // that path alone. So refuse the bracket for every other callee class HERE, ABOVE
+    // the early returns rather than at each of them: this function returns early for a
+    // constructor symbol, for the WI-714 applied rule citation, and further down for a
+    // function VALUE, and MEASURED, guarding only the function-value path left an
+    // applied rule citation (`p[Bogus = Int64](1)`, `p[Int64, Int64, Int64](1)`)
+    // loading clean — the same silent drop one classification step over. The classes
+    // are disjoint (`kind_of` gives a symbol ONE kind), so "not an operation" is
+    // exactly "will not reach Path 1". The occurrence read comes first so a call
+    // without a bracket — every call in practice — pays only a match, not a lookup.
+    if call_type_args_of(occ).is_some() && lookup_operation_info_full(kb, fn_sym).is_none() {
+        return Err(TypeError::TypeArgsOnNonOperation { span, callee: fn_sym });
+    }
+
     // Materializer fallback: bare-functor constructor invocations land
     // in `Apply`; route them through the constructor checker so
     // type-param inference still fires.
@@ -12909,6 +13023,31 @@ fn op_scoped_type_param_symbol(
 /// match any declared type-param produce a `NoSuchTypeParam` error so
 /// the user sees the typo rather than a silent return-type Var leaking
 /// to the caller.
+///
+/// WI-839 — EVERY binding is now accounted for, and the two ways one used to
+/// vanish were both "the callee has nothing to bind it to":
+///   * `op.type_params.is_empty()` short-circuited the whole list, so a bracket on a
+///     param-less callee (`plain[Bogus = Int64](n)`) — and on a callee whose params
+///     are its enclosing SORT's rather than its own (`Box.mk[Bogus = Int64](5)`) —
+///     loaded clean. Deleted: an unmatched NAMED key is `NoSuchTypeParam` whatever
+///     the callee declares, which is exactly the diagnostic the non-empty case
+///     already gave.
+///   * an over-applied POSITIONAL `continue`d. It gets `ExcessCallTypeArgs` — its own
+///     variant, because an unmatched positional has no key to put in a message.
+///
+/// A callee that is not an operation at all never gets here — `check_apply_iter`
+/// refuses its bracket before classification (`TypeArgsOnNonOperation`).
+///
+/// This does NOT make a sort-level param bindable from a call bracket; that rung does
+/// not exist yet (058 §9 phase 2). The change is only that writing one is heard.
+///
+/// LIMIT, stated because the doc above would otherwise overclaim: `unify_types`'
+/// verdict is discarded here, as it is at every seeding site (WI-367 / WI-379 depend
+/// on a failed unify against an already-pinned slot being a no-op). What
+/// [`resolve_call_type_arg_targets`] guarantees is that each written binding reaches a
+/// DISTINCT declared parameter — so no binding is contradicted by a SIBLING binding.
+/// A binding contradicted by an ARGUMENT or by the expected type is caught downstream,
+/// by the WI-385/WI-836 conformance checks, not here.
 fn seed_op_type_args(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -12917,33 +13056,11 @@ fn seed_op_type_args(
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    let type_args = match &occ.kind {
-        NodeKind::Expr { expr: Expr::Apply { type_args, .. }, .. } => type_args,
-        _ => return Ok(()),
-    };
-    if type_args.is_empty() || op.type_params.is_empty() {
-        return Ok(());
-    }
-    let mut positional_idx = 0;
-    for (name_opt, value) in type_args {
-        let target = match name_opt {
-            Some(name_sym) => op.type_params.iter()
-                .find(|(n, _)| n == name_sym)
-                .map(|(_, v)| *v)
-                .ok_or(TypeError::NoSuchTypeParam {
-                    span,
-                    op: fn_sym,
-                    name: *name_sym,
-                })?,
-            None => {
-                let v = op.type_params.get(positional_idx).map(|(_, v)| *v);
-                positional_idx += 1;
-                match v {
-                    Some(v) => v,
-                    None => continue,
-                }
-            }
-        };
+    let Some(type_args) = call_type_args_of(occ) else { return Ok(()) };
+    let targets = resolve_call_type_arg_targets(type_args, &op.type_params, fn_sym, span)?;
+    // One target per binding, in order — nothing is skipped now, which is what lets
+    // this be a plain `zip` rather than an index carried back out of the resolver.
+    for (target, (_, value)) in targets.into_iter().zip(type_args) {
         // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
         // so unify it directly — a value-in-type arg (`Value::Node`) unifies
         // cross-carrier through the typer's view dispatch, no re-ground.
@@ -12951,6 +13068,92 @@ fn seed_op_type_args(
     }
     Ok(())
 }
+
+/// WI-839: the call-site bracket bindings this application wrote, or `None` when it
+/// wrote none (and for a non-`Apply` occurrence, which carries no such channel).
+fn call_type_args_of(
+    occ: &Rc<NodeOccurrence>,
+) -> Option<&[(Option<Symbol>, crate::eval::value::Value)]> {
+    match &occ.kind {
+        NodeKind::Expr { expr: Expr::Apply { type_args, .. }, .. } if !type_args.is_empty() => {
+            Some(type_args)
+        }
+        _ => None,
+    }
+}
+
+/// WI-839: match each call-site bracket binding to the declared type parameter it
+/// binds — named by symbol identity, positional by declaration order — returning the
+/// param var per binding, PARALLEL TO `type_args`. Every binding lands on a slot of
+/// its OWN or the call is refused; nothing is skipped, which is why the result can be
+/// zipped positionally, and NO SLOT IS BOUND TWICE.
+///
+/// Every one of the three refusals is a binding the author WROTE that would otherwise
+/// have meant nothing:
+///   * a named key matching no declared parameter — `NoSuchTypeParam`;
+///   * the same key twice — `DuplicateCallTypeArg`. Both copies resolve to one var, so
+///     the second unification contradicts the first and `unify_types`' verdict is
+///     discarded at the caller. The guard WI-805 / WI-808 / WI-809 already put on tuple
+///     labels, entity fields and named ARGUMENT lists; this list had none;
+///   * a positional with no slot LEFT — `ExcessCallTypeArgs`. "Left", not "declared":
+///     `idy[T = Int64, String]` over-applies a one-param callee, and measuring the
+///     positionals against `declared.len()` called that within budget while the
+///     positional silently re-targeted the slot the named key had taken.
+fn resolve_call_type_arg_targets(
+    type_args: &[(Option<Symbol>, crate::eval::value::Value)],
+    declared: &[(Symbol, TermId)],
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<Vec<TermId>, TypeError> {
+    // Which declared slots a NAMED key claims. Collected up front because a positional
+    // must skip them wherever it sits in the list — the surface convention is
+    // positional-first, but nothing in the grammar enforces it.
+    let mut taken = vec![false; declared.len()];
+    for (name_opt, _) in type_args.iter() {
+        let Some(name_sym) = name_opt else { continue };
+        let idx = declared.iter().position(|(n, _)| n == name_sym).ok_or(
+            TypeError::NoSuchTypeParam { span, op: fn_sym, name: *name_sym },
+        )?;
+        if std::mem::replace(&mut taken[idx], true) {
+            return Err(TypeError::DuplicateCallTypeArg { span, op: fn_sym, name: *name_sym });
+        }
+    }
+    let free = taken.iter().filter(|t| !**t).count();
+
+    let mut targets = Vec::with_capacity(type_args.len());
+    let mut next_free = 0;
+    for (name_opt, _) in type_args.iter() {
+        let target = match name_opt {
+            // Re-found rather than carried over from the pass above: the pass records
+            // slot OCCUPANCY, and threading indices out of it would be a second list to
+            // keep aligned with this one for no gain — `declared` is at most a handful.
+            Some(name_sym) => declared.iter()
+                .find(|(n, _)| n == name_sym)
+                .map(|(_, v)| *v)
+                .expect("named key resolved in the occupancy pass above"),
+            None => {
+                while next_free < taken.len() && taken[next_free] {
+                    next_free += 1;
+                }
+                match declared.get(next_free) {
+                    Some((_, v)) => {
+                        taken[next_free] = true;
+                        *v
+                    }
+                    None => return Err(TypeError::ExcessCallTypeArgs {
+                        span,
+                        op: fn_sym,
+                        given: type_args.iter().filter(|(n, _)| n.is_none()).count(),
+                        free,
+                    }),
+                }
+            }
+        };
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
 
 /// WI-270 — after seeding from `[bindings]`, expected, and arg
 /// unification, every declared type-param must resolve to a non-Var

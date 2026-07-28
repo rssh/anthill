@@ -65,20 +65,58 @@ end
 /// A CALL-SITE type-argument list (`op[A = Int](args)`, WI-271) rides as a `type_args`
 /// ParseAux named-arg on the parse `Fn`. It is not a sort application and must not be
 /// read as one — `type_args` is not a type parameter of anything.
+///
+/// WI-839 moved where this is demonstrable. A rule body may no longer carry the
+/// bracket at all (it was parsed and dropped there — see the sibling below), so the
+/// program that keeps LOADING puts the same call in an OPERATION BODY, the one place
+/// the channel is honoured. That is the stronger form of the claim anyway: the
+/// bindings are not merely un-misread, they reach `seed_op_type_args` and pin `T`.
 #[test]
 fn a_call_site_type_argument_list_is_not_a_sort_application() {
     let src = r#"
 namespace test.wi710.callsite
   import anthill.prelude.{Int64, Bool, List}
 
-  operation pick[T](xs: List[T = T]) -> Bool = true
-  -- The call carries an explicit call-site type-argument list.
-  rule ok(?b) :- eq(?b, pick[T = Int64](nil))
+  sort Driver
+    operation pick[T](xs: List[T = T]) -> Bool = true
+    -- The call carries an explicit call-site type-argument list.
+    operation main(xs: List[T = Int64]) -> Bool = pick[T = Int64](xs)
+  end
 end
 "#;
     try_load_kb_with(src).unwrap_or_else(|errs| {
         panic!("a call-site type-arg list must not be read as a sort application: {errs:?}")
     });
+}
+
+/// WI-839: the same list in a RULE BODY is refused — but by the not-supported-here
+/// diagnostic, NOT by the sort-application check. The distinction is the whole point
+/// of this file: `type_args` names no type parameter of anything, so reading it as a
+/// sort application would say `pick` has no type parameter named 'type_args'. A
+/// refusal-only assertion would pass on exactly that wrong implementation, so assert
+/// the message.
+#[test]
+fn a_rule_body_call_site_type_argument_list_is_refused_as_unsupported_not_as_a_sort_application() {
+    let src = r#"
+namespace test.wi710.callsite_body
+  import anthill.prelude.{Int64, Bool, List}
+
+  operation pick[T](xs: List[T = T]) -> Bool = true
+  rule ok(?b) :- eq(?b, pick[T = Int64](nil))
+end
+"#;
+    let errs = match try_load_kb_with(src) {
+        Err(errs) => errs,
+        Ok(_) => panic!("a rule-body call-site type-argument list is dropped — it must not load"),
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("call-site type arguments `pick[…](…)` are not supported here")),
+        "expected the WI-839 not-supported-here diagnostic, got {errs:?}",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("type_args")),
+        "the `type_args` channel must never be read as a sort application, got {errs:?}",
+    );
 }
 
 /// THE third guard against over-reach, and the subtlest: a sort and its constructor may

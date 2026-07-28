@@ -504,6 +504,33 @@ pub enum LoadError {
         detail: String,
         span: Option<Span>,
     },
+    /// WI-839: a CALL-SITE type-argument bracket (`f[T = X](…)`, proposal 042's
+    /// `type_args` channel) written where no lowering honours it. Parsed since
+    /// WI-271, it is threaded onward from exactly two places — an OPERATION BODY's
+    /// call (`build_call_type_args` → `Expr::Apply.type_args` → the typer's
+    /// `seed_op_type_args`) and a rule HEAD's `[T]` type-variable INTRODUCER
+    /// (`collect_rule_tvar_names`, WI-582). Everywhere else — a rule-body atom, a
+    /// `fact` head, a constraint, an entity-constructor call — it was parsed and then
+    /// DROPPED, so the program meant something other than what was written and said
+    /// so nowhere. Load-blocking, and deliberately a REFUSAL rather than a new
+    /// meaning: selection inside a rule body is DEFERRED (proposal 058 §4.2 — a rule
+    /// body needing a chosen witness routes through an operation), not ignored.
+    ///
+    /// Distinct from [`Self::InvalidTypeArgument`], which is about a written
+    /// parameterized TYPE (`Cell[W = Int64]`, a different producer that WI-710 checks
+    /// and that keeps loading here): this one is about the CHANNEL having no reader
+    /// at all in this position, whatever its keys say.
+    CallTypeArgsNotSupportedHere {
+        /// The callee as written, for the message (`f`, `Box.mk`).
+        callee: String,
+        /// Which of the two unsupported shapes this is — they need different advice,
+        /// and a single wording was actively wrong for the rule-head one (it told the
+        /// author to "route the call through an operation", which is not a move a rule
+        /// head has, while naming the rule-head introducer as a place the bracket IS
+        /// honoured — the very place they had written it).
+        position: CallTypeArgsPosition,
+        span: Span,
+    },
     /// WI-489: a value-in-type field projection (`Modify[result.nonexistent]`,
     /// `Modify[c.bogus]`) names a field the head's statically-known CONCRETE type
     /// (an entity / named-tuple param or `result`) does not declare. The v1 denoted
@@ -572,6 +599,49 @@ pub enum LoadError {
     },
 }
 
+/// WI-839: where an unread call-site bracket was written. The refusal is one rule, but
+/// the two shapes need different advice — see [`LoadError::CallTypeArgsNotSupportedHere`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallTypeArgsPosition {
+    /// A rule HEAD carrying at least one CONCRETE binding (`rule r[A = Int64](…)`).
+    /// The head channel exists but admits only the bare WI-582 introducer form.
+    RuleHead,
+    /// Anywhere the bracket has no reader at all: a rule-body goal, a `fact` head, a
+    /// `constraint`, an operation's `requires` / `ensures` contract expression, an
+    /// entity-constructor call.
+    NoChannel,
+}
+
+/// WI-839: the one wording of [`LoadError::CallTypeArgsNotSupportedHere`], shared by
+/// the two renderings (`display_with_source` and `Display`) so they cannot drift.
+///
+/// Both wordings name where the bracket IS read, because "not supported here" alone
+/// leaves the author no move — and neither prescribes an action the author's position
+/// cannot take. In particular the `NoChannel` text does NOT say "route the call
+/// through an operation" flatly: a contract expression is already inside one, and the
+/// advice belongs only to the case that motivates it (a rule body wanting a chosen
+/// witness, 058 §4.2).
+fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPosition) -> String {
+    match position {
+        CallTypeArgsPosition::RuleHead => format!(
+            "the rule head `{callee}[…](…)` binds a type argument — a rule head's \
+             bracket declares type-variable INTRODUCERS only (`rule {callee}[T](…)`, \
+             each a bare name bounded by a `:- Spec[T]` body guard). A concrete \
+             binding there is read by nobody and would be silently dropped; drop it, \
+             or introduce the variable and bound it with a guard"
+        ),
+        CallTypeArgsPosition::NoChannel => format!(
+            "call-site type arguments `{callee}[…](…)` are not supported here — the \
+             binding is parsed and would then be silently dropped. The bracket is read \
+             only on a call in an OPERATION BODY (and, as a bare introducer, on a rule \
+             head); a rule-body goal, a `fact` head, a `constraint`, a `requires` / \
+             `ensures` contract expression and an entity-constructor call have no \
+             channel for it. Where a rule body needs a chosen provider, call an \
+             operation whose body carries the bracket"
+        ),
+    }
+}
+
 impl LoadError {
     /// WI-745: stamp this error with the file it came from (see
     /// [`LoadError::Located`]). Idempotent — an already-`Located` error is
@@ -630,6 +700,7 @@ impl LoadError {
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
+            | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -832,6 +903,13 @@ impl LoadError {
                 }
                 None => format!("invalid type argument: {}", detail),
             },
+            LoadError::CallTypeArgsNotSupportedHere { callee, position, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!(
+                    "{}:{}: {}",
+                    line, col, call_type_args_unsupported_detail(callee, *position),
+                )
+            }
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
                 let (line, col) = Span::line_col(source, span.start);
                 format!(
@@ -1151,6 +1229,14 @@ impl std::fmt::Display for LoadError {
                 }
                 None => write!(f, "invalid type argument: {}", detail),
             },
+            LoadError::CallTypeArgsNotSupportedHere { callee, position, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    call_type_args_unsupported_detail(callee, *position),
+                    span.start, span.end,
+                )
+            }
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
                 write!(
                     f,
@@ -3835,6 +3921,9 @@ fn load_with_visited(
     let global = kb.make_name_term("_global");
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global);
     loader.load_items(&parsed.items, None);
+    // WI-839: every honouring reader of the call-site bracket channel has now run,
+    // so anything still unread was written and dropped — report it.
+    loader.check_unconsumed_call_type_args();
 
     let result = LoadResult {
         defined_sorts: loader.defined_sorts,
@@ -6271,6 +6360,35 @@ struct Loader<'a> {
     // and reject a non-existent field loudly. Empty outside an operation signature
     // (a local / cross-context head is absent ⇒ validation defers, never rejects).
     signature_place_types: HashMap<Symbol, Value>,
+    // WI-839: the parse `Term::Fn` nodes whose CALL-SITE BRACKET (`f[T = X](…)`, the
+    // `type_args` ParseAux channel) was actually READ by a lowering that honours it.
+    // The channel has exactly two honouring readers — `build_call_type_args` (an
+    // operation body's `Expr::Apply.type_args`, which the typer seeds from) and
+    // `collect_rule_tvar_names` (a rule HEAD's `[T]` type-variable introducer) — and
+    // each records its node here. `check_unconsumed_call_type_args` then sweeps the
+    // whole parse store and refuses every bracket NOT in this set.
+    //
+    // Recorded by CONSUMPTION rather than checked at each dropping producer, and that
+    // is the point: the channel is parsed once but lowered by several walkers (the
+    // op-body walker, the term converter, the rule-body occurrence builder, and
+    // whichever of them an ENTITY-headed call routes to), and MEASURED, four of them
+    // dropped it. Enumerating droppers is the mistake WI-805 names — a producer list
+    // that feels exhaustive and is not. A consumer list cannot be short: an
+    // unrecorded lowering path fails LOUDLY (its bracket is reported) instead of
+    // silently, and a new honouring reader announces itself by having to record here.
+    //
+    // Keyed by parse `TermId`, and therefore governed by the parse-store STABILITY
+    // caveat `SimpleTermStore` states for its own `minted` / `type_applications` /
+    // `projections` marks (`parse/ir.rs`): a future pass that reconstructs parse
+    // subtrees must carry this set over too, or every consumed bracket becomes a
+    // spurious refusal. Named here because the set lives outside that type.
+    consumed_call_type_args: HashSet<TermId>,
+    // WI-839: rule-HEAD nodes whose bracket carries a concrete binding rather than a
+    // bare WI-582 introducer (`rule r[A = Int64](…)`). Recorded by
+    // `collect_rule_tvar_names` — the only place that knows the node is a head — purely
+    // so the sweep can give that shape its own advice; the refusal itself is the
+    // ordinary unconsumed one.
+    rule_head_bracket_bindings: HashSet<TermId>,
 }
 
 /// WI-201: per-operation accumulator for the carrier-direct bare-spec-member sugar.
@@ -6450,6 +6568,8 @@ impl<'a> Loader<'a> {
             bare_spec_sugar: None,
             current_sort_carrier_bindings: HashMap::new(),
             signature_place_types: HashMap::new(),
+            consumed_call_type_args: HashSet::new(),
+            rule_head_bracket_bindings: HashSet::new(),
         }
     }
 
@@ -9152,7 +9272,17 @@ impl<'a> Loader<'a> {
                 // WI-342: the occurrence type-args (carrier-agnostic `Value`s) are
                 // the source of truth; the term-side `type_args` handle is the
                 // ground-only vestige (materialize + print).
-                let type_args = self.build_call_type_args(outer_parse_id);
+                // WI-839: read ONLY on the non-entity arm. An ENTITY-headed call
+                // (`boxed[Bogus = Int64](n: 1)`) builds an `Expr::Constructor`, which
+                // has no type-args slot — reading the channel here and then dropping
+                // the Vec on that arm is exactly the silent drop this ticket closes
+                // (measured: it loaded clean). Left unread, the bracket stays
+                // unconsumed and the end-of-file sweep reports it.
+                let type_args = if is_entity {
+                    Vec::new()
+                } else {
+                    self.build_call_type_args(outer_parse_id)
+                };
                 let type_args_tid = self.type_args_term_handle(&type_args);
 
                 let s = &self.expr_syms;
@@ -9282,6 +9412,12 @@ impl<'a> Loader<'a> {
     /// re-grounded via `make_denoted`. The occurrence carries these directly
     /// (`BuildFrame::Apply.type_args`); the vestigial term-side handle is built
     /// separately by `type_args_term_handle`. Empty when no explicit bindings.
+    ///
+    /// WI-839: this is ONE of the channel's two honouring readers, so it records the
+    /// node in `consumed_call_type_args` — see that field for why consumption, not
+    /// dropping, is what gets enumerated. Call it only where the result is actually
+    /// threaded onward (`ApplyOrConstructor`'s non-entity arm); calling it and then
+    /// discarding the Vec would mark a bracket consumed that in fact vanished.
     fn build_call_type_args(
         &mut self,
         parse_id: TermId,
@@ -9289,6 +9425,7 @@ impl<'a> Loader<'a> {
         let Some(bindings) = self.read_parse_call_type_args(parse_id) else {
             return Vec::new();
         };
+        self.consumed_call_type_args.insert(parse_id);
         bindings
             .iter()
             .map(|b| {
@@ -9300,6 +9437,51 @@ impl<'a> Loader<'a> {
                 (name, value)
             })
             .collect()
+    }
+
+    /// WI-839: sweep the whole parse store for CALL-SITE brackets (`f[T = X](…)`)
+    /// that no lowering read, and refuse each. Runs once per file, after
+    /// `load_items` — by then every honouring reader has run and recorded its node
+    /// in `consumed_call_type_args`.
+    ///
+    /// A WHOLE-STORE sweep rather than a check at each dropping lowering: the
+    /// bracket is attached by ONE parse producer (`push_fn_term`) but lowered by
+    /// several walkers, and measured on the parent commit FOUR of them dropped it
+    /// (the term converter, the rule-body occurrence builder, the op-body walker's
+    /// entity-constructor arm, and — inside the typer — a callee with no op-level
+    /// type params). Sweeping the store makes the rule "every written bracket is
+    /// read or reported" hold by construction, so a lowering path nobody thought of
+    /// fails loudly instead of quietly.
+    ///
+    /// Reads the parse store's `Term::Fn` nodes directly — a term the loader never
+    /// visited is exactly the case a producer-site check cannot see.
+    fn check_unconsumed_call_type_args(&mut self) {
+        let Some(key_sym) = self.parsed.symbols.lookup("type_args") else {
+            return; // no call in this file wrote a bracket
+        };
+        let mut unconsumed: Vec<(TermId, Symbol)> = Vec::new();
+        for i in 0..self.parsed.terms.len() {
+            let id = TermId::from_raw(i as u32);
+            if self.consumed_call_type_args.contains(&id) {
+                continue;
+            }
+            let Term::Fn { functor, named_args, .. } = self.parsed.terms.get(id) else {
+                continue;
+            };
+            if named_args.iter().any(|&(s, t)| s == key_sym && self.is_call_type_args_aux(t)) {
+                unconsumed.push((id, *functor));
+            }
+        }
+        for (id, functor) in unconsumed {
+            let span = self.parsed.terms.span(id);
+            let callee = self.parsed.symbols.name(functor).to_string();
+            let position = if self.rule_head_bracket_bindings.contains(&id) {
+                CallTypeArgsPosition::RuleHead
+            } else {
+                CallTypeArgsPosition::NoChannel
+            };
+            self.errors.push(LoadError::CallTypeArgsNotSupportedHere { callee, position, span });
+        }
     }
 
     /// WI-342: build the vestigial term-side `type_args` handle — a cons-list of
@@ -9372,6 +9554,15 @@ impl<'a> Loader<'a> {
             Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::TypeExpr(TypeExpr::EffectRow(_))))
     }
 
+    /// WI-839: is the parse term at `id` a NON-EMPTY call-site bracket payload — the
+    /// `ParseAux::SortBindings` that [`Self::read_parse_call_type_args`] unwraps?
+    /// Tested without cloning the bindings, because `check_unconsumed_call_type_args`
+    /// asks it of every term in the parse store.
+    fn is_call_type_args_aux(&self, id: TermId) -> bool {
+        matches!(self.parsed.terms.get(id),
+            Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::SortBindings(b) if !b.is_empty()))
+    }
+
     /// WI-366 B1: lower a WRITTEN effect-row binding value at `pid` — a
     /// `ParseAux::TypeExpr(EffectRow)` produced for `Spec[E = {}]` in a
     /// term-position type-arg slot — to its KB `effects_rows(EffectExpression)`
@@ -9422,24 +9613,38 @@ impl<'a> Loader<'a> {
     /// `ParseAux` enum to the expected inner shape. Returns `None`
     /// when the named arg is absent, points at a non-ParseAux, or its
     /// ParseAux variant doesn't match what `extract` accepts.
+    ///
+    /// WI-839: scans EVERY named arg under `key`, not just the first, and takes the
+    /// first whose value is a `ParseAux` this `extract` accepts. These keys are
+    /// converter-synthesized (`type_args`, `type_name`, `proof_meta`) and share one
+    /// namespace with the user's own argument LABELS, which the converter appends
+    /// them AFTER — so a callee with a parameter literally named `type_args`
+    /// (`f[T = Int64](type_args: n)`) put a user value first and a first-match read
+    /// returned `None`. That silently dropped the bracket before; once the
+    /// unconsumed-bracket sweep exists it REFUSED a correct program. WI-809's
+    /// duplicate-label guard cannot catch the collision — it runs in `push_fn_term`,
+    /// before the synthesized pair is appended. Keying on the value being a matching
+    /// `ParseAux` discriminates the two without a reserved-name rule, since a user
+    /// argument value is an ordinary term.
     fn read_parse_aux<T>(
         &self,
         parent_id: TermId,
         key: &str,
-        extract: impl FnOnce(&crate::parse::ir::ParseAux) -> Option<T>,
+        // `Fn`, not `FnOnce`: the scan may have to try more than one entry under the
+        // key before finding the ParseAux this caller wants.
+        extract: impl Fn(&crate::parse::ir::ParseAux) -> Option<T>,
     ) -> Option<T> {
         let named_args = match self.parsed.terms.get(parent_id) {
             Term::Fn { named_args, .. } => named_args,
             _ => return None,
         };
         let key_sym = self.parsed.symbols.lookup(key)?;
-        let aux_tid = named_args.iter()
-            .find(|(s, _)| *s == key_sym)
-            .map(|(_, t)| *t)?;
-        match self.parsed.terms.get(aux_tid) {
-            Term::ParseAux(aux) => extract(aux.as_ref()),
-            _ => None,
-        }
+        named_args.iter()
+            .filter(|(s, _)| *s == key_sym)
+            .find_map(|&(_, aux_tid)| match self.parsed.terms.get(aux_tid) {
+                Term::ParseAux(aux) => extract(aux.as_ref()),
+                _ => None,
+            })
     }
 
     /// WI-819: attach a `let p : T = …` annotation to the PATTERN term, the one
@@ -12543,9 +12748,15 @@ impl<'a> Loader<'a> {
     /// (`= wrap[Box](…)`) is not mistaken for an introducer (which would trip the
     /// "unbounded type-var" check). Only a bare, unbound name (`[T]`, `param =
     /// None`) is an introducer; a concrete binding (`[A = Int64]`) is a type
-    /// application. Read-only; runs before head conversion so the `typed_var` strip
+    /// application. Runs before head conversion so the `typed_var` strip
     /// and the body-guard scan know which annotations name an introduced type-var.
-    fn collect_rule_tvar_names(&self, head_parse_id: TermId, out: &mut std::collections::HashSet<String>) {
+    ///
+    /// WI-839: the channel's OTHER honouring reader (see `consumed_call_type_args`),
+    /// so it marks the head node consumed — but only when EVERY binding there is an
+    /// introducer. A rule head mixing in a concrete binding (`keep[T, A = Int64](…)`)
+    /// has that binding read by nobody, and leaving the node unmarked is what makes
+    /// the sweep report it instead of dropping it.
+    fn collect_rule_tvar_names(&mut self, head_parse_id: TermId, out: &mut std::collections::HashSet<String>) {
         // For an equational head `keep[T](…) = rhs` the introducer rides on the
         // LHS operand (`pos_args[0]`), so read the type-args there rather than off
         // the whole `eq(lhs, rhs)` node. WI-619: recognize the equational head by
@@ -12564,14 +12775,30 @@ impl<'a> Loader<'a> {
             _ => head_parse_id,
         };
         if let Some(bindings) = self.read_parse_call_type_args(target) {
+            let mut all_introducers = true;
             for b in &bindings {
-                if b.param.is_none() {
-                    if let crate::parse::ir::TypeExpr::Simple(n) = &b.bound {
-                        if n.segments.len() == 1 {
-                            out.insert(self.parsed.symbols.name(n.segments[0]).to_owned());
-                        }
+                let introducer = match (&b.param, &b.bound) {
+                    (None, crate::parse::ir::TypeExpr::Simple(n)) if n.segments.len() == 1 => {
+                        Some(self.parsed.symbols.name(n.segments[0]).to_owned())
                     }
+                    _ => None,
+                };
+                match introducer {
+                    Some(name) => {
+                        out.insert(name);
+                    }
+                    None => all_introducers = false,
                 }
+            }
+            if bindings.is_empty() {
+                return;
+            }
+            if all_introducers {
+                self.consumed_call_type_args.insert(target);
+            } else {
+                // Left UNCONSUMED on purpose — the sweep reports it — but recorded so
+                // the report can say what a rule head's bracket actually admits.
+                self.rule_head_bracket_bindings.insert(target);
             }
         }
     }
