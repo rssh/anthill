@@ -18937,7 +18937,68 @@ fn validate_arg_against_param(
 ) -> ArgValidation {
     let actual_g = walk_view(kb, subst, actual);
     let declared_g = walk_view(kb, subst, declared);
-    if !resolved_type_is_ground(kb, &actual_g) || !resolved_type_is_ground(kb, &declared_g) {
+    // WI-836: [`walk_view`] resolves only the HEAD var / sort-alias chain — it stops at a
+    // `Term::Fn`, so a type variable NESTED inside a sort application survives it. Feeding
+    // that head-only resolution to `resolved_type_is_ground`, a WHOLE-STRUCTURE predicate,
+    // read a param written `List[T = X]` (op type param) or `Box[T = T, O = O]` (the sort's
+    // own params, written out) as NON-ground even once σ had fully bound it — so the gate
+    // below SKIPPED the check and every generic multi-argument operation silently accepted
+    // heterogeneous arguments. RETRY deeply on the non-ground verdict, which pairs the
+    // predicate with a resolution of matching depth. (The narrative — why the three
+    // neighbouring checks all fire, so the area looked covered — is in
+    // `wi836_type_var_arg_agreement_test`'s module doc, beside the programs that pin it.)
+    //
+    // THIS is the site that must decide it, not the arg-unify loops whose `unify_types`
+    // boolean is discarded: unify is EQUALITY, while this check is SUBTYPING plus the three
+    // conversions below (reflect-`Term`, WI-408 some-coercion, provider-admissible
+    // carrier→bare-spec). A unify-false would over-reject all three.
+    //
+    // Retried, not substituted for the shallow walk: for a shallow-ground value the deep
+    // walk is an identity (groundness means no var and no sort-param ref anywhere left to
+    // substitute), so this buys the newly-checkable case without putting an occurrence
+    // rebuild on the hot path of every conforming argument. PURE σ (`walk_type_deep_value`,
+    // not the grounding `resolve_type_deep_value`): a rigid projection stays an inert
+    // neutral leaf and so stays non-ground and skipped, exactly as before — this widens
+    // what σ RESOLVES, never what it δ-grounds.
+    //
+    // WITHHELD FROM A CALLABLE ([`type_head_is_callable`] — `arrow` or `Function[A, B, E]`).
+    // This gate does not OWN arrow conformance: an arrow argument is routed to the
+    // component-wise `validate_arrow_param_result` (WI-469) and `validate_callback_effect_-
+    // row` (WI-440) precisely BECAUSE its components must be judged one at a time with the
+    // effects row left to dispatch. Deep-walking σ into a callback's row makes the whole
+    // arrow read as ground, which hands it instead to the whole-type `types_compatible` —
+    // and that relation REFUSES the pairing WI-775/WI-792 settled must be ACCEPTED: a
+    // `Function[A = (a: Int64, b: Int64), B = Int64]` slot states NO arity, so the eta
+    // arrow of a 2-parameter operation belongs in it. Measured, not predicted: without this,
+    // `wi787_eta_spread_named_tuple_test` (3 cases), `wi784_closure_arity_test`'s rigid-`A`
+    // case and `wi424`'s row-gated callback all flipped from load-clean to refused. The
+    // resulting hole is pinned by `known_gap_two_callback_arguments_sharing_a_type_var_-
+    // are_not_checked`, which fails when the deeper fix lands.
+    //
+    // A TOP-LEVEL head test is the right SCOPE, not an approximation of one: both arrow
+    // owners also read only the top-level form (`validate_callback_effect_row` gates on
+    // `type_head(declared)`, `validate_arrow_param_result` needs BOTH sides to decompose),
+    // so a callable NESTED in a sort application (`List[T = (X) -> Int64]`) was never routed
+    // to them and deep-walking it reroutes nothing.
+    let mut both_ground =
+        resolved_type_is_ground(kb, &actual_g) && resolved_type_is_ground(kb, &declared_g);
+    // Groundness (cheap: ~1/6 the cost of a head classification) is tested FIRST, so a
+    // conforming concrete argument — measured at 69% of calls — never pays for the probe.
+    let (actual_g, declared_g) = if !both_ground
+        && !type_head_is_callable(kb, &actual_g)
+        && !type_head_is_callable(kb, &declared_g)
+    {
+        let deep = (
+            walk_type_deep_value(kb, subst, &actual_g),
+            walk_type_deep_value(kb, subst, &declared_g),
+        );
+        both_ground =
+            resolved_type_is_ground(kb, &deep.0) && resolved_type_is_ground(kb, &deep.1);
+        deep
+    } else {
+        (actual_g, declared_g)
+    };
+    if !both_ground {
         // WI-469: a denoted-bearing arrow callback param whose EFFECTS row is
         // non-ground (it carries the op's `EffP` type-param and a binder-relative
         // `-Modify[x]`) makes the WHOLE arrow non-ground, so the gate above would
@@ -19745,12 +19806,7 @@ fn validate_callback_effect_row(
     let actual_src = callback_actual_source(arg_occ)?;
     // Cheap head gate before `arrow_parts` (which interns its child keys on
     // every call): most var-ref args land in non-callable param slots.
-    let head_is_callable = match type_head(kb, declared) {
-        TypeHead::Arrow => true,
-        TypeHead::Parameterized { base } => is_function_spec(kb, base),
-        _ => false,
-    };
-    if !head_is_callable {
+    if !type_head_is_callable(kb, declared) {
         return None;
     }
     // WI-705 (was WI-700): the self-contradictory-instantiation reject moved OUT of
@@ -20586,6 +20642,34 @@ const FUNCTION_SPEC_QNAME: &str = "anthill.prelude.Function";
 /// `Function` names no result type and is not a callable.
 fn is_function_spec(kb: &KnowledgeBase, base: Symbol) -> bool {
     kb.qualified_name_of(base) == FUNCTION_SPEC_QNAME
+}
+
+/// Is this type's HEAD a callable — an `arrow`, or the applied `Function[A, B, E]`
+/// spelling? The cheap gate for the sites that only need to know WHETHER a type is a
+/// callback slot, not what its parts are: it reads the functor symbol off
+/// [`type_head`] and stops, where [`arrow_parts`] interns five child keys and
+/// materializes the children (for a `Parameterized` head, two `Vec`s plus a `Value`
+/// clone per binding) before its caller throws them away.
+///
+/// ONE owner for two callers — [`validate_callback_effect_row`], which routes a
+/// callback argument to the row check, and [`validate_arg_against_param`]'s WI-836
+/// deep-retry gate, which withholds the retry from a callable so the arrow checkers
+/// keep owning it. Those two must agree on what a callable IS: the retry gate exists
+/// precisely to leave arrow arguments to the arrow discipline, and a gate that drew the
+/// line somewhere else would hand over exactly the shapes it meant to withhold.
+///
+/// DELIBERATELY WIDER THAN `arrow_parts(..).is_some()`, which additionally requires the
+/// parts to materialize — it yields `None` for a `Function` head that binds no `B`
+/// ([`function_spec_parts`]) and for an `arrow` whose children fail to read. Both are
+/// callables by head, and for a gate whose `true` means "hands off" the head is the
+/// right question; treating a malformed callable as non-callable is what would hand it
+/// to a relation that is not its owner.
+fn type_head_is_callable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    match type_head(kb, ty) {
+        TypeHead::Arrow => true,
+        TypeHead::Parameterized { base } => is_function_spec(kb, base),
+        _ => false,
+    }
 }
 
 /// WI-802: the ONE reader of a `Function[A, B, E]`'s type-parameter bindings —

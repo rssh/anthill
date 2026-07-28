@@ -816,3 +816,6 @@ mod wi824_abstract_mispin_test;
 
 #[path = "include/wi822_op_scoped_supply_test.rs"]
 mod wi822_op_scoped_supply_test;
+
+#[path = "include/wi836_type_var_arg_agreement_test.rs"]
+mod wi836_type_var_arg_agreement_test;
