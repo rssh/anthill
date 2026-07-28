@@ -4291,22 +4291,38 @@ fn resolve_realization_rows(
 
 /// Read named field `field` off a RESOLVED row (a `Value` from
 /// [`resolve_realization_rows`] / `read_facts_resolved`) as its child `TermId`. A
-/// resolved row is a reified enumeration goal — a `Value::Entity` whose ground
-/// children are `Value::Term` — so this reads the field carrier-neutrally and
-/// narrows the (ground) child to its term, letting the existing term readers
-/// (`as_string` / `walk_list`) apply unchanged. `Ok(None)` when the field is
-/// ABSENT (a legitimate skip — e.g. the entity-constructor row). Two carriers are
-/// LOUD errors, never a silent drop (the CLAUDE.md "loud error over silent skip"
-/// principle — the `expect_term_head` analog for a field):
-///   * a `Value::Var` — the field is UNBOUND: the resolved fact/rule OMITTED a
-///     required field (the loader var-fills a missing required field; an omitted
-///     `Option` field is `none`-filled instead, so it stays a `Term`) or a rule
-///     head left it unconstrained. cpp-gen cannot emit a mapping with an
-///     undetermined field, so this is a loud error naming the missing field, not
-///     a silent unmapped skip (which would hide the malformed mapping);
-///   * any other non-`Term` carrier — a genuinely unexpected reification (e.g. a
-///     future mounted store handing back a raw value, or a builtin-computed
-///     field), which the Term-assuming realization readers cannot consume.
+/// resolved row is a reified enumeration goal — a `Value::Entity` whose children
+/// are carrier-faithful reifications — so this reads the field carrier-neutrally
+/// and hands its (term) carrier to the existing term readers (`as_string` /
+/// `walk_list`) unchanged. `Ok(None)` when the field is ABSENT (a legitimate skip
+/// — e.g. an entity-constructor row that lacks it).
+///
+/// A field READ BACK through this function is always a `Value::Term` (WI-848,
+/// measured across `IncludeMapping` / `TypeMapping` / `NamingConvention`, fact and
+/// bodied rule). Readers read back the FREE (non-selected) columns — a selected
+/// column is grounded to its selection scalar and never re-read here — and the
+/// realization functors are plain entity sorts, so their facts/rules are
+/// TERM-headed. Each free column is a goal var that unifies with the stored head's
+/// term child, and `read_facts_resolved` reifies the row via `KnowledgeBase::reify`,
+/// which surfaces a term-level variable — the loader's var-fill of an OMITTED
+/// REQUIRED field, or an UNCONSTRAINED rule-head var — as `Value::Term` wrapping a
+/// `Term::Var`, NOT as a value-level `Value::Var`. So an under-determined field
+/// arrives via the `Value::Term` arm below (returned `Ok(Some(id))`); `as_string`
+/// then matches only `Term::Const(String)` and reads a var-term as absent, so the
+/// row contributes no mapping — the correct reading of a realization entry missing
+/// a required field (it maps nothing). That is WHY an omitted required field emits
+/// cleanly instead of erroring; it is a correct program, not a malformed one.
+/// (An omitted `Option` field is `none`-filled by the loader, so it is a real
+/// `Term` — `some`/`none` — that `extract_optional_string` reads directly.)
+///
+/// The non-`Term` arm is therefore DEFENSIVE, not a described user-facing behavior:
+/// a value-level `Value::Var` cannot arise (per above — so the prior "field is
+/// unbound / missing required field" story on it was measurably false and
+/// UNREACHABLE), and no realization source produces any other non-`Term` carrier
+/// today. It guards a future value-headed producer (a mounted store handing back a
+/// raw `Value`, a builtin-computed field) the Term-assuming realization readers
+/// could not consume — kept loud per the CLAUDE.md "loud error over silent skip"
+/// principle, never a silent drop.
 fn row_named_term(
     kb: &KnowledgeBase,
     row: &Value,
@@ -4315,18 +4331,18 @@ fn row_named_term(
     let Some(sym) = kb.lookup_symbol(field) else { return Ok(None) };
     match row.named_arg(kb, sym).map(|v| v.to_value()) {
         None => Ok(None),
+        // The universal case (WI-848): a resolved row's field is always a term. An
+        // under-determined field is a `Term::Var` here — the string readers skip a
+        // non-literal, so a realization entry missing a required field maps nothing.
         Some(Value::Term { id, .. }) => Ok(Some(id)),
-        Some(Value::Var(_)) => Err(CppCodegenError {
+        // DEFENSIVE (WI-848): unreachable today — see the doc comment. A resolved
+        // realization row is term-carried, so this fires only if a future
+        // value-headed producer hands back a non-term carrier; loud when it does.
+        Some(other) => Err(CppCodegenError {
             message: format!(
-                "resolved realization row: field `{field}` is unbound — a realization \
-                 fact is missing this required field, or a rule head left it \
-                 unconstrained; cpp-gen needs every field it reads grounded"
-            ),
-        }),
-        Some(_) => Err(CppCodegenError {
-            message: format!(
-                "resolved realization row: field `{field}` has an unexpected non-term \
-                 carrier; cpp-gen reads realization fact fields as terms"
+                "resolved realization row: field `{field}` has an unexpected {} \
+                 carrier; cpp-gen reads realization fact fields as terms",
+                other.type_name()
             ),
         }),
     }

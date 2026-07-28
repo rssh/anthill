@@ -48,6 +48,7 @@ mod wi761_optional_header_test;
 mod wi771_bodied_refusal_test;
 mod wi774_resolved_effect_test;
 mod wi833_resolve_aggregation_test;
+mod wi848_underdetermined_row_test;
 
 // Diagnostics — `#[ignore]`-gated dev-time helpers, kept in the
 // same binary so they stay buildable.

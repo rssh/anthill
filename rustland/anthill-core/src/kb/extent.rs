@@ -2403,4 +2403,49 @@ mod tests {
         let err = kb.read_facts_resolved(f, &[]).unwrap_err();
         assert!(matches!(err, ExtentReadError::NoFieldSchema { .. }));
     }
+
+    #[test]
+    fn read_facts_resolved_surfaces_an_underdetermined_field_as_a_term_var() {
+        // WI-848: when a fact OMITS a required field, the loader var-fills it with a
+        // fresh Global var (load.rs "Expand partial named args"). Resolving such a
+        // fact reifies that field carrier-faithfully via `reify`, whose "leaf or
+        // unbound Var" branch surfaces a term-level variable as `Value::Term`
+        // wrapping `Term::Var` — NOT a value-level `Value::Var`. This pins the
+        // reachability verdict cpp-gen's `row_named_term` depends on: an
+        // under-determined field of a resolved (term-headed) row is always a TERM
+        // carrier, so its term readers handle it (and skip a non-literal var-term),
+        // and the `Value::Var` value-carrier the arm once claimed cannot arise.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("wi");
+        let id_field = kb.intern("id");
+        let tag_field = kb.intern("tag");
+        kb.register_entity_fields(f, vec![id_field, tag_field]);
+        // A fact `wi(id: 1)` whose required `tag` is var-filled, exactly as the
+        // loader leaves an omitted required field: a fresh Global var in the slot.
+        let id_t = kb.alloc(Term::Const(Literal::Int(1)));
+        let fill = kb.fresh_var(tag_field);
+        let tag_v = kb.alloc(Term::Var(Var::Global(fill)));
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: [(id_field, id_t), (tag_field, tag_v)].into(),
+        });
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        kb.assert_fact(head, sort, domain, None);
+
+        let rows = kb.read_facts_resolved(f, &[]).expect("resolves");
+        assert_eq!(rows.len(), 1, "the var-filled fact still enumerates one row");
+        match rows[0].named_arg(&kb, tag_field).map(|a| a.to_value()) {
+            Some(Value::Term { id, .. }) => assert!(
+                matches!(kb.get_term(id), Term::Var(_)),
+                "an under-determined field reifies as Value::Term(Term::Var), \
+                 so the term readers — never a Value::Var arm — receive it"
+            ),
+            other => panic!(
+                "expected the under-determined `tag` to reify as \
+                 Value::Term(Term::Var), got {other:?}"
+            ),
+        }
+    }
 }
