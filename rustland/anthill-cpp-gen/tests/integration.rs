@@ -46,7 +46,7 @@ mod wi536_const_ref_test;
 mod wi760_realization_rule_test;
 mod wi771_bodied_refusal_test;
 mod wi774_resolved_effect_test;
-mod wi810_bodied_refusal_test;
+mod wi833_resolve_aggregation_test;
 
 // Diagnostics — `#[ignore]`-gated dev-time helpers, kept in the
 // same binary so they stay buildable.

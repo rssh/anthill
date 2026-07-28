@@ -10,11 +10,12 @@ use common::load_kb_with;
 #[test]
 fn base_renames_resolve_via_query() {
     // The cpp_std base renames ship in the stdlib; no user types needed.
-    let kb = load_kb_with("namespace test.empty end");
+    let mut kb = load_kb_with("namespace test.empty end");
 
-    // WI-810: `cpp_base_host_type` returns `Result` now (it can refuse a bodied
-    // TypeMapping through `read_facts(Refuse)`); plain facts resolve, so `.unwrap()`.
-    let base = |ty: &str| cpp_base_host_type(&kb, ty).unwrap();
+    // WI-833: `cpp_base_host_type` takes `&mut` now — it RESOLVES the TypeMapping
+    // candidates (`read_facts_resolved`) so a guarded overlay is evaluated. Plain
+    // facts resolve, so `.unwrap()`.
+    let mut base = |ty: &str| cpp_base_host_type(&mut kb, ty).unwrap();
 
     // Primitives → leaf host type.
     assert_eq!(base("Int64").as_deref(), Some("int64_t"));
@@ -31,38 +32,41 @@ fn base_renames_resolve_via_query() {
     assert_eq!(base("NoSuchType"), None);
 }
 
-/// WI-770 / WI-810: a BODIED TypeMapping rule must never be silently head-matched
-/// — the query reads facts only and cannot evaluate the guard, so an author
-/// following WI-089's guarded-overlay direction would otherwise get the guard's
-/// host type emitted unconditionally with no diagnostic. WI-810 moved this reader
-/// onto `read_facts(Refuse)`, so the refusal now surfaces GRACEFULLY through
-/// `CppCodegenError` (rendered `error: {msg}`, exit 1) instead of the WI-770
-/// `assert!`-abort (exit 101) — but it is still LOUD, naming the offending rule.
+/// WI-833: a BODIED TypeMapping rule is now EVALUATED, not refused. WI-089's
+/// guarded-overlay direction finally works: the query resolves the candidate
+/// (`read_facts_resolved`), so the mapping participates iff its guard holds.
+/// Pre-WI-833 (`read_facts(Refuse)`) this same rule was refused loudly because
+/// the read could not evaluate the guard; the fuller passing/failing-guard and
+/// ambiguity coverage lives in `wi833_resolve_aggregation_test`.
 #[test]
-fn bodied_type_mapping_rule_is_refused_not_head_matched() {
-    let source = r#"
-        namespace test.bodiedguard
-          import anthill.realization.{TypeMapping}
-          import anthill.prelude.Option.{some, none}
+fn guarded_type_mapping_is_evaluated_not_refused() {
+    let base = |fast_math: bool| {
+        let toggle = if fast_math { "fact FastMath(on: true)" } else { "fact FastMath(on: false)" };
+        let source = format!(
+            r#"
+            namespace test.bodiedguard
+              import anthill.realization.{{TypeMapping}}
+              import anthill.prelude.{{Bool}}
+              import anthill.prelude.Option.{{some, none}}
 
-          sort Toggle
-            entity fast_math_on
-          end
+              entity FastMath(on: Bool)
+              {toggle}
 
-          rule TypeMapping(lang: some("cpp"), anthill_type: "Money", host_type: "float")
-            :- fast_math_on()
-        end
-    "#;
-    let kb = load_kb_with(source);
-    let err = cpp_base_host_type(&kb, "Money")
-        .expect_err("a bodied TypeMapping rule must be refused, never head-matched");
-    // The refusal renders the offending rule (`head :- body`) and names the functor.
-    assert!(err.message.contains(":-"), "refusal renders the rule: {}", err.message);
-    assert!(
-        err.message.contains("TypeMapping"),
-        "refusal names the functor: {}",
-        err.message
-    );
+              rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money", host_type: "float",
+                               lift: none, lower: none)
+                :- FastMath(on: true)
+            end
+        "#
+        );
+        let mut kb = load_kb_with(&source);
+        cpp_base_host_type(&mut kb, "Money")
+            .expect("a guarded TypeMapping is resolved, not refused")
+    };
+
+    // Guard holds → the overlay's host type is emitted.
+    assert_eq!(base(true).as_deref(), Some("float"), "passing guard → mapping applies");
+    // Guard fails → no mapping (the rule contributed no row).
+    assert_eq!(base(false), None, "failing guard → no mapping resolves");
 }
 
 #[test]
@@ -78,10 +82,10 @@ fn project_fact_participates_in_query() {
           fact TypeMapping(lang: some("cpp"), anthill_type: "Money", host_type: "::cents::Cents")
         end
     "#;
-    let kb = load_kb_with(source);
+    let mut kb = load_kb_with(source);
 
     assert_eq!(
-        cpp_base_host_type(&kb, "Money").unwrap().as_deref(),
+        cpp_base_host_type(&mut kb, "Money").unwrap().as_deref(),
         Some("::cents::Cents")
     );
 }
