@@ -78,8 +78,8 @@ pub fn run(kb: &mut KnowledgeBase) {
     let kind_f = kb.intern("kind");
     let from_f = kb.intern("from");
     let to_f = kb.intern("to");
-    let sort = kb.make_name_term("Flow");
-    let domain = kb.make_name_term("_global");
+    let sort = kb.intern("Flow");
+    let domain = kb.intern("_global");
 
     for e in edges {
         let kind_ctor = if e.kind == Fk::Direct { direct_ctor } else { element_ctor };

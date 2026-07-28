@@ -48,8 +48,7 @@ end
         &[("term", ancestor_pat)]);
     let cid = kb.add_guard(guard);
 
-    let family_term = kb.make_name_term_from_sym(family_sym);
-    assert_eq!(kb.guard_trigger_sorts(cid), &[family_term]);
+    assert_eq!(kb.guard_trigger_sorts(cid), &[family_sym]);
 }
 
 #[test]
@@ -98,10 +97,8 @@ end
 
     let cid = kb.add_guard(conj);
 
-    let family_term = kb.make_name_term_from_sym(family_sym);
-    let place_term = kb.make_name_term_from_sym(place_sym);
     let triggers = kb.guard_trigger_sorts(cid);
-    assert!(triggers.contains(&family_term), "missing Family in {:?}", triggers);
-    assert!(triggers.contains(&place_term), "missing Place in {:?}", triggers);
+    assert!(triggers.contains(&family_sym), "missing Family in {:?}", triggers);
+    assert!(triggers.contains(&place_sym), "missing Place in {:?}", triggers);
     assert_eq!(triggers.len(), 2, "expected exactly two unique trigger sorts");
 }

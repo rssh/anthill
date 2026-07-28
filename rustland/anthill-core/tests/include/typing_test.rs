@@ -1057,8 +1057,8 @@ fn wi630_metadata_fact_headed_by_user_functor_is_rejected() {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(from_sym, int_ty)]),
     });
-    let entity_sort = kb.make_name_term("Entity");
-    let global = kb.make_name_term("_global");
+    let entity_sort = kb.intern("Entity");
+    let global = kb.intern("_global");
     kb.assert_metadata_fact(bad_head, entity_sort, global, None);
 }
 
@@ -4235,7 +4235,7 @@ end
     assert!(kb.is_constructor_symbol(blue_sym), "blue should be a constructor");
     // Enum should have SortKind::Enum
     let color_term = kb.resolve_qualified_name_term("Color");
-    assert_eq!(kb.sort_kind(color_term), Some(anthill_core::kb::SortKind::Enum));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(color_term)), Some(anthill_core::kb::SortKind::Enum));
 }
 
 #[test]

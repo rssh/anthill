@@ -147,14 +147,10 @@ fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
     let ctor_functors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
     for ctor in ctor_functors {
         // A variant maps to its parent sort; a free-standing entity is its own sort.
-        // `constructor_parent_sort` yields the parent as a term — always a sort
-        // reference (`Fn`/`Ref`/`Ident`); the `_` arm cannot occur for a registered
-        // parent, and degrading to the ctor (free-standing) is the safe reading.
+        // `constructor_parent_sort` yields the parent's NAME; a free-standing
+        // constructor (no registered parent) is its own sort.
         let sort = match kb.constructor_parent_sort(ctor) {
-            Some(parent) => match kb.get_term(parent) {
-                Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-                _ => ctor,
-            },
+            Some(parent) => parent,
             None => ctor,
         };
         if seen.insert(sort) {
@@ -273,7 +269,7 @@ fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) {
     });
     let sort_ref_term = kb.make_name_term_from_sym(carrier);
     kb.register_entity_fields(provides_sym, vec![sort_ref_key, spec_key]);
-    let provides_sort = kb.make_name_term("Requirement");
+    let provides_sort = kb.intern("Requirement");
     kb.assert_fact_carrier(
         provides_sym,
         Vec::new(),
@@ -282,7 +278,7 @@ fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) {
             (spec_key, Value::term(spec_view)),
         ],
         provides_sort,
-        sort_ref_term, // domain = the carrier name term
+        carrier, // domain = the carrier
         None,
     );
 }

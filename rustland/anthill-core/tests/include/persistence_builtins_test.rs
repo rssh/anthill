@@ -11,6 +11,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
 use anthill_core::persistence::{BulkStore, PersistenceError, Store};
+use anthill_core::intern::Symbol;
 use anthill_core::kb::term::TermId;
 
 use crate::common::interp_for;
@@ -103,7 +104,7 @@ fn persist_then_flush_writes_fact_to_disk() {
     // Find the Foo fact by walking facts under the default Fact sort.
     // After pull+load, "Foo" gets a fresh symbol in kb2's namespace; we
     // don't know its qname, so we identify by the printed head shape.
-    let fact_sort = kb2.make_name_term("Fact");
+    let fact_sort = kb2.intern("Fact");
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb2);
     let foo_count = kb2.by_sort(fact_sort)
         .into_iter()
@@ -123,8 +124,8 @@ fn failed_mirror_persist_does_not_assert_a_resident_fact() {
             &mut self,
             _kb: &KnowledgeBase,
             _fact: TermId,
-            _sort: TermId,
-            _domain: TermId,
+            _sort: Symbol,
+            _domain: Symbol,
             _meta: Option<TermId>,
         ) -> Result<(), PersistenceError> {
             Err(PersistenceError::Io("deliberate test failure".into()))

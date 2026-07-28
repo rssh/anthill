@@ -652,7 +652,7 @@ fn load_conventional_data(
     if data_files.is_empty() {
         return Ok(());
     }
-    let domain = kb.make_name_term("_data");
+    let domain = kb.intern("_data");
     let mut data_errors: Vec<String> = Vec::new();
     for file in &data_files {
         let source = match fs::read_to_string(file) {
@@ -1309,12 +1309,17 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 eprintln!("error: --mode sort requires a pattern argument (sort name)");
                 1
             })?;
-            // Try both make_name_term (for kernel meta-sorts like Sort, Fact)
-            // and resolve_qualified_name_term (for user-defined sorts)
-            let sort_term = kb.make_name_term(name);
-            let mut results = kb.program_clauses_by_sort(sort_term);
+            // Two lookups because the two NAME RESOLUTIONS can differ — not
+            // because the sort has two term spellings (it no longer does).
+            // `resolve_qualified_name_sym` returns the by-qualified-name entry if
+            // there is one, else interns exactly as `intern` does; so for a kernel
+            // meta-sort like `Sort`/`Fact` (no qualified entry) the two AGREE and
+            // the fallback is a harmless no-op. It earns its keep only for a name
+            // that IS a registered qualified name, where the raw intern differs.
+            let sort_sym = kb.intern(name);
+            let mut results = kb.program_clauses_by_sort(sort_sym);
             if results.is_empty() {
-                let alt = kb.resolve_qualified_name_term(name);
+                let alt = kb.resolve_qualified_name_sym(name);
                 results = kb.program_clauses_by_sort(alt);
             }
             print_program_clause_results(&kb, &results, args.max_results);
@@ -1333,8 +1338,8 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 eprintln!("error: --mode domain requires a pattern argument (domain name)");
                 1
             })?;
-            let domain_term = kb.resolve_qualified_name_term(name);
-            let results = kb.program_clauses_by_domain(domain_term);
+            let domain = kb.resolve_qualified_name_sym(name);
+            let results = kb.program_clauses_by_domain(domain);
             print_program_clause_results(&kb, &results, args.max_results);
         }
         QueryMode::Pattern => {

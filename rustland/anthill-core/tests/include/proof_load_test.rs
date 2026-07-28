@@ -26,8 +26,8 @@ fn load_with(extra: &str) -> KnowledgeBase {
 }
 
 fn render_facts_for(kb: &mut KnowledgeBase, sort_qn: &str) -> Vec<String> {
-    let sort_term = kb.make_name_term(sort_qn);
-    let rules = kb.by_sort(sort_term);
+    let sort_sym = kb.intern(sort_qn);
+    let rules = kb.by_sort(sort_sym);
     let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = TermPrinter::new(kb);
     let mut out: Vec<String> = heads.into_iter()

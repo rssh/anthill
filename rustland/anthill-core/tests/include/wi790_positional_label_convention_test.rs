@@ -50,8 +50,8 @@ fn assert_mixed_fact(kb: &mut KnowledgeBase) -> anthill_core::kb::RuleId {
     named_args.push((c_sym, named));
 
     let term = kb.alloc(Term::Fn { functor, pos_args, named_args });
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("wi790_domain");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("wi790_domain");
     kb.assert_fact(term, sort, domain, None)
 }
 
@@ -100,7 +100,7 @@ fn positional_slots_reload_to_the_same_indices() {
     // Reload into a FRESH KB so nothing is answered by the terms still interned
     // from the write side.
     let mut reloaded = crate::common::load_kb_with(TRIPLE_SRC);
-    let domain = reloaded.make_name_term("wi790_domain");
+    let domain = reloaded.intern("wi790_domain");
     let count = term_ser::load_json(&mut reloaded, &json, domain).expect("load_json");
     assert_eq!(count, 1, "one fact reloaded");
 

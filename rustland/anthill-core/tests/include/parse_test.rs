@@ -716,11 +716,11 @@ fn load_sort_with_body_registers_entity_of() {
     assert!(!kb.is_entity_of(nat_term, zero_term), "Nat should not be entity of zero");
 
     // Check sort kinds
-    assert_eq!(kb.sort_kind(nat_term), Some(SortKind::Sort));
-    assert_eq!(kb.sort_kind(zero_term), None); // entities aren't sorts
+    assert_eq!(kb.sort_kind(kb.name_term_sym(nat_term)), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(zero_term)), None); // entities aren't sorts
 
     // Check children
-    let children = kb.sort_children(nat_term);
+    let children = kb.sort_children(kb.name_term_sym(nat_term));
     assert!(children.len() >= 2, "Nat should have at least 2 children (zero, succ)");
 }
 
@@ -731,7 +731,7 @@ fn load_fact_and_query_by_sort() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let fact_sort = kb.make_name_term("Fact");
+    let fact_sort = kb.intern("Fact");
     let facts = kb.by_sort(fact_sort);
     assert!(!facts.is_empty(), "should have at least one Fact");
 }
@@ -761,7 +761,7 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check we have facts of various sorts
-    let ns_sort = kb.make_name_term("Namespace");
+    let ns_sort = kb.intern("Namespace");
     assert!(!kb.by_sort(ns_sort).is_empty(), "should have Namespace fact");
 
     // WI-515: entity declarations no longer assert a same-functor schema fact
@@ -773,10 +773,10 @@ end
         "should have entity field types registered"
     );
 
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     assert!(!kb.by_sort(op_sort).is_empty(), "should have Operation fact");
 
-    let fact_sort = kb.make_name_term("Fact");
+    let fact_sort = kb.intern("Fact");
     assert!(!kb.by_sort(fact_sort).is_empty(), "should have Fact fact");
 
     // Check sort relationship: dollars < Money
@@ -851,15 +851,16 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Operations should be registered as facts with sort "Operation"
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 2, "should have 2 Operation facts (deposit, withdraw)");
 
     // The operation facts should be scoped to the Account sort (not a separate domain)
-    let account_term = kb.resolve_qualified_name_term("Account");
+    let account_domain = kb.resolve_qualified_name_sym("Account");
+    let account_term = kb.make_name_term_from_sym(account_domain);
     for &fid in &ops {
         assert_eq!(
-            kb.fact_domain(fid), account_term,
+            kb.fact_domain(fid), account_domain,
             "operation should be scoped to the Account sort"
         );
     }
@@ -887,12 +888,12 @@ end
     assert!(op_names.contains(&"withdraw".to_owned()), "should have withdraw operation");
 
     // The sort itself should be Defined (has entities) with constructors as entity children
-    assert_eq!(kb.sort_kind(account_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(account_term)), Some(SortKind::Sort));
 
     let checking_term = kb.resolve_qualified_name_term("Account.checking");
     assert!(kb.is_entity_of(checking_term, account_term),
         "checking should be entity of Account");
-    assert_eq!(kb.sort_kind(checking_term), None); // entities aren't sorts
+    assert_eq!(kb.sort_kind(kb.name_term_sym(checking_term)), None); // entities aren't sorts
 }
 
 #[test]
@@ -914,7 +915,7 @@ sort Store {
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 3, "should have 3 operations");
 
@@ -970,7 +971,7 @@ fn load_operation_with_abstract_effect() {
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation");
 
@@ -1000,7 +1001,7 @@ fn retract_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let fact_sort = kb.make_name_term("Fact");
+    let fact_sort = kb.intern("Fact");
     let facts = kb.by_sort(fact_sort);
     assert_eq!(facts.len(), 1);
 
@@ -1063,10 +1064,10 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
-    let account_term = kb.resolve_qualified_name_term("Account");
+    let account_domain = kb.resolve_qualified_name_sym("Account");
 
     // Get member facts for Account specifically
-    let account_facts = kb.by_domain(account_term);
+    let account_facts = kb.by_domain(account_domain);
     let member_facts: Vec<_> = account_facts
         .iter()
         .filter(|&&fid| {
@@ -1093,9 +1094,9 @@ fn member_facts_for_namespace() {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
-    let banking_term = kb.resolve_qualified_name_term("banking");
+    let banking_domain = kb.resolve_qualified_name_sym("banking");
 
-    let ns_facts = kb.by_domain(banking_term);
+    let ns_facts = kb.by_domain(banking_domain);
     let member_facts: Vec<_> = ns_facts
         .iter()
         .filter(|&&fid| {
@@ -1125,7 +1126,7 @@ fn member_facts_queryable_by_domain() {
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
 
     // Query by_domain for Option should include MemberInfo facts.
-    let domain_facts = kb.by_domain(option_term);
+    let domain_facts = kb.by_domain(kb.name_term_sym(option_term));
     let member_count = domain_facts
         .iter()
         .filter(|&&fid| {
@@ -1288,14 +1289,14 @@ sort Ordered {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check that a Requirement fact exists
-    let req_sort = kb.make_name_term("Requirement");
+    let req_sort = kb.intern("Requirement");
     let reqs = kb.by_sort(req_sort);
     assert_eq!(reqs.len(), 1, "should have 1 Requirement fact");
 
     // The requirement should be scoped to the Ordered sort
-    let ordered_term = kb.resolve_qualified_name_term("Ordered");
+    let ordered_domain = kb.resolve_qualified_name_sym("Ordered");
     assert_eq!(
-        kb.fact_domain(reqs[0]), ordered_term,
+        kb.fact_domain(reqs[0]), ordered_domain,
         "requirement should be scoped to the Ordered sort"
     );
 
@@ -1399,22 +1400,22 @@ end
         .expect("load_all failed");
 
     // Both namespaces should be registered
-    let ns_sort = kb.make_name_term("Namespace");
+    let ns_sort = kb.intern("Namespace");
     let namespaces = kb.by_sort(ns_sort);
     assert_eq!(namespaces.len(), 2, "should have 2 namespaces");
 
     // Geometry's facts should reference Measure (from Units)
-    let geometry_term = kb.resolve_qualified_name_term("Geometry");
-    let geometry_facts = kb.by_domain(geometry_term);
+    let geometry_domain = kb.resolve_qualified_name_sym("Geometry");
+    let geometry_facts = kb.by_domain(geometry_domain);
     assert!(!geometry_facts.is_empty(), "Geometry should have facts");
 
     // Units' facts should reference Shape (from Geometry)
-    let units_term = kb.resolve_qualified_name_term("Units");
-    let units_facts = kb.by_domain(units_term);
+    let units_domain = kb.resolve_qualified_name_sym("Units");
+    let units_facts = kb.by_domain(units_domain);
     assert!(!units_facts.is_empty(), "Units should have facts");
 
     // Both sorts should exist as type references in operations
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 2, "should have 2 operations (area, convert)");
 
@@ -2041,7 +2042,7 @@ fn load_operation_with_variable_types() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 Operation fact");
 }
@@ -2235,7 +2236,7 @@ fn namespace_scoped_sorts_resolve() {
         .expect("load should succeed: B is visible from C via namespace A");
 
     // Verify requirement is registered
-    let req_sort = kb.make_name_term("Requirement");
+    let req_sort = kb.intern("Requirement");
     let reqs = kb.by_sort(req_sort);
     assert_eq!(reqs.len(), 1, "should have 1 Requirement (B) for C");
 }
@@ -2268,7 +2269,7 @@ sort B {
     assert_ne!(a_term, b_term, "A and B should be distinct sorts");
 
     // Both should have requirements
-    let req_sort = kb.make_name_term("Requirement");
+    let req_sort = kb.intern("Requirement");
     let reqs = kb.by_sort(req_sort);
     assert_eq!(reqs.len(), 2, "should have 2 requirements (A requires B, B requires A)");
 }
@@ -2298,12 +2299,12 @@ fn multi_file_same_namespace_resolution() {
         .expect("load should succeed: A is visible from B via shared namespace ns");
 
     // Both sorts should be registered
-    let sort_sort = kb.make_name_term("Sort");
+    let sort_sort = kb.intern("Sort");
     let sorts = kb.by_sort(sort_sort);
     assert!(sorts.len() >= 2, "should have at least 2 sorts (A, B)");
 
     // The operation in B should reference A
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }
@@ -2320,7 +2321,7 @@ fn multi_file_same_namespace_no_duplicate_facts() {
     load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
         .expect("load failed");
 
-    let ns_sort = kb.make_name_term("Namespace");
+    let ns_sort = kb.intern("Namespace");
     let ns_facts = kb.by_sort(ns_sort);
     // Two files both declare `namespace ns` — should produce 1 Namespace fact, not 2
     let ns_count = ns_facts.iter().filter(|&&fid| {
@@ -2363,7 +2364,7 @@ fn dotted_name_creates_intermediate_namespaces() {
 
     // `C` should be a registered sort with constructor `mkC`
     let c_term = kb.resolve_qualified_name_term("a.b.C");
-    assert_eq!(kb.sort_kind(c_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(c_term)), Some(SortKind::Sort));
 
     // Entity `mkC` inside sort `a.b.C` gets fully-qualified name
     assert!(kb.has_qualified_name("a.b.C.mkC"),
@@ -2388,12 +2389,12 @@ fn dotted_siblings_share_scope() {
         .expect("load should succeed: A and B are siblings in implicit 'ns' scope");
 
     // Both sorts should be registered
-    let sort_sort = kb.make_name_term("Sort");
+    let sort_sort = kb.intern("Sort");
     let sorts = kb.by_sort(sort_sort);
     assert!(sorts.len() >= 2, "should have at least 2 sorts (A, B)");
 
     // The operation in B should reference A (resolved via shared ns scope)
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }
@@ -2445,7 +2446,7 @@ fn implicit_and_explicit_namespace_merge() {
     assert!(kb.has_qualified_name("ns.B"));
 
     // The operation in B should resolve A via the shared namespace scope
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }
@@ -2540,7 +2541,7 @@ fn load_abstract_sort_variable_emits_sort_alias() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let sort_sort = kb.make_name_term("Sort");
+    let sort_sort = kb.intern("Sort");
     let facts = kb.by_sort(sort_sort);
     // Find the SortAlias fact
     let alias_facts: Vec<_> = facts.iter().filter(|fid| {
@@ -2574,7 +2575,7 @@ fn load_abstract_sort_anonymous_variable_emits_sort_alias() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let sort_sort = kb.make_name_term("Sort");
+    let sort_sort = kb.intern("Sort");
     let facts = kb.by_sort(sort_sort);
     let alias_facts: Vec<_> = facts.iter().filter(|fid| {
         let tid = kb.fact_term(**fid);
@@ -2600,7 +2601,7 @@ fn load_abstract_sort_shared_variables() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let sort_sort = kb.make_name_term("Sort");
+    let sort_sort = kb.intern("Sort");
     let facts = kb.by_sort(sort_sort);
     let alias_facts: Vec<_> = facts.iter().filter(|fid| {
         let tid = kb.fact_term(**fid);
@@ -3687,7 +3688,7 @@ end
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     // Ring is an algebraic spec (no entity constructors), classified as Abstract
-    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(ring_term)), Some(SortKind::Sort));
 
     // Ring has sort T + operations — verify it loaded successfully
     assert!(kb.fact_count() > 0, "KB should have facts after loading Ring");
@@ -3783,8 +3784,8 @@ fact Polynom[Int64]
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     let polynom_term = kb.resolve_qualified_name_term("Polynom");
-    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Sort));
-    assert_eq!(kb.sort_kind(polynom_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(ring_term)), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(polynom_term)), Some(SortKind::Sort));
 
     // Both sorts loaded successfully into the KB
     assert!(kb.fact_count() > 0, "KB should have facts after loading Ring + Polynom");
@@ -3814,7 +3815,7 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
-    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(kb.name_term_sym(ring_term)), Some(SortKind::Sort));
 }
 
 // ── Expression body tests ──────────────────────────────────────
@@ -4341,7 +4342,7 @@ fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Opt
 /// Helper: find an OperationInfo by qualified name substring from op facts.
 /// Uses `contains` to match qualified names like "test.expr.max".
 fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let ops = kb.by_sort(op_sort);
     for &fid in &ops {
         // WI-348: an OperationInfo for an op with a `denoted` effect is a value
@@ -4555,7 +4556,7 @@ end
 "#);
 
     // Check OperationImpl fact was emitted
-    let impl_sort = kb.make_name_term("OperationImpl");
+    let impl_sort = kb.intern("OperationImpl");
     let impls = kb.by_sort(impl_sort);
     // Find the one for "incr"
     let mut found = false;
@@ -4904,7 +4905,7 @@ fn parse_sort_companion_call_no_op_type_args() {
 /// Find the loaded OperationInfo fact whose `name` field references the
 /// given short name. Returns the OperationInfo's term id.
 fn find_operation_info(kb: &mut KnowledgeBase, short_name: &str) -> TermId {
-    let op_sort = kb.make_name_term("Operation");
+    let op_sort = kb.intern("Operation");
     let fid = kb.by_sort(op_sort).into_iter().find(|&fid| {
         match kb.get_term(kb.fact_term(fid)) {
             Term::Fn { named_args, .. } => named_args.iter().any(|(s, t)| {

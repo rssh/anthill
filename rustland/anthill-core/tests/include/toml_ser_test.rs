@@ -1,5 +1,6 @@
 /// Integration tests for term serialization (TOML/JSON ↔ KB terms).
 
+use anthill_core::intern::Symbol;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, FileSourceResolver};
@@ -55,7 +56,7 @@ end
 #[test]
 fn load_toml_primitives() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -85,7 +86,7 @@ language = "rust"
 #[test]
 fn load_json_primitives() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let json_src = r#"{
         "meta": { "entity": "test.Project" },
@@ -111,7 +112,7 @@ end
     let resolver = load::NullResolver;
     let _ = load::load_all(&mut kb, &[&parsed], &resolver);
 
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
     let toml_src = r#"
 [meta]
 entity = "test.Nums"
@@ -137,7 +138,7 @@ flag = true
 #[test]
 fn load_toml_list() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -172,7 +173,7 @@ tags = ["rust", "core"]
 #[test]
 fn load_toml_multiple_entries() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -206,7 +207,7 @@ tags = ["urgent"]
 #[test]
 fn load_toml_constructor_with_fields() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -229,7 +230,7 @@ tags = [{ ToolPasses = "cargo-test" }, { Compiles = "src" }]
 #[test]
 fn load_toml_variables() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -260,7 +261,7 @@ tags = []
 #[test]
 fn load_toml_escaped_variable() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -292,7 +293,7 @@ language = "rust"
 #[test]
 fn load_json_full_envelope() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let json_src = r#"{
         "meta": { "entity": "test.Task" },
@@ -322,7 +323,7 @@ fn load_json_full_envelope() {
 #[test]
 fn load_toml_multi_section() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [project.meta]
@@ -357,7 +358,7 @@ tags = []
 // ── Serializer tests ────────────────────────────────────────────
 
 /// Build a Project("my-app", "rust") fact and return its RuleId.
-fn assert_project_fact(kb: &mut KnowledgeBase, domain: TermId) -> anthill_core::kb::RuleId {
+fn assert_project_fact(kb: &mut KnowledgeBase, domain: Symbol) -> anthill_core::kb::RuleId {
     let project_sym = kb.try_resolve_symbol("test.Project")
         .expect("Project resolved");
     let name_sym = kb.intern("name");
@@ -376,14 +377,14 @@ fn assert_project_fact(kb: &mut KnowledgeBase, domain: TermId) -> anthill_core::
         named_args,
     });
 
-    let sort = kb.make_name_term("Fact");
+    let sort = kb.intern("Fact");
     kb.assert_fact(term, sort, domain, None)
 }
 
 #[test]
 fn serialize_simple_facts_toml() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
     let rid = assert_project_fact(&mut kb, domain);
 
     let toml_str = term_ser::serialize_toml(&kb, "test.Project", &[rid])
@@ -396,7 +397,7 @@ fn serialize_simple_facts_toml() {
 #[test]
 fn serialize_simple_facts_json() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
     let rid = assert_project_fact(&mut kb, domain);
 
     let json_str = term_ser::serialize_json(&kb, "test.Project", &[rid])
@@ -412,7 +413,7 @@ fn serialize_json_list_field_has_no_trailing_nil() {
     // bare `nil` cell as a stray final array element (which it did when it
     // only matched the `Fn{nil}` form).
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -445,7 +446,7 @@ tags = ["rust", "core"]
 #[test]
 fn round_trip_toml() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -472,7 +473,7 @@ language = "rust"
 
     // Reload into fresh KB
     let mut kb2 = build_test_kb();
-    let domain2 = kb2.make_name_term("test_domain2");
+    let domain2 = kb2.intern("test_domain2");
     let count2 = term_ser::load_toml(&mut kb2, &toml_out, domain2)
         .expect("reload");
     assert_eq!(count2, 1);
@@ -486,7 +487,7 @@ language = "rust"
 #[test]
 fn round_trip_json() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let json_src = r#"{
         "meta": { "entity": "test.Project" },
@@ -505,7 +506,7 @@ fn round_trip_json() {
         .expect("serialize");
 
     let mut kb2 = build_test_kb();
-    let domain2 = kb2.make_name_term("test_domain2");
+    let domain2 = kb2.intern("test_domain2");
     let count2 = term_ser::load_json(&mut kb2, &json_out, domain2)
         .expect("reload");
     assert_eq!(count2, 1);
@@ -583,7 +584,7 @@ end
 
     // Deserialize the SAME entity from a persisted (TOML) store, with the
     // fields written in NON-declared order to stress the canonicalization.
-    let domain = kb.make_name_term("persisted");
+    let domain = kb.intern("persisted");
     let toml_src = r#"
 [meta]
 entity = "test.Rec"
@@ -617,7 +618,7 @@ zzfield = "z"
 #[test]
 fn load_toml_missing_meta() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [data]
@@ -631,7 +632,7 @@ name = "oops"
 #[test]
 fn load_toml_unknown_entity() {
     let mut kb = build_test_kb();
-    let domain = kb.make_name_term("test_domain");
+    let domain = kb.intern("test_domain");
 
     let toml_src = r#"
 [meta]
@@ -692,8 +693,8 @@ end
         pos_args: SmallVec::new(),
         named_args: box_named,
     });
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("d");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("d");
     let rid = kb.assert_fact(box_term, sort, domain, None);
 
     let err = term_ser::serialize_json(&kb, "test.Box", &[rid])
@@ -746,8 +747,8 @@ end
         pos_args: SmallVec::new(),
         named_args: holder_named,
     });
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("d");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("d");
     let rid = kb.assert_fact(holder_term, sort, domain, None);
 
     let json = term_ser::serialize_json(&kb, "test.Holder", &[rid]).expect("serialize");
@@ -774,7 +775,7 @@ sort Outcome { entity Verified(at: String, by: String)  entity Pending }
 end
 "#);
 
-    let domain = kb.make_name_term("d");
+    let domain = kb.intern("d");
     // `Verified` needs `at` + `by`; a bare scalar can't supply them.
     let json_src = r#"{
         "meta": { "entity": "test.Rec" },

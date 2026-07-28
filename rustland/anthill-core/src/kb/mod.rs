@@ -112,7 +112,7 @@ struct Guard {
     #[allow(dead_code)]
     kind: GuardKind,
     #[allow(dead_code)]
-    trigger_sorts: Vec<TermId>,
+    trigger_sorts: Vec<Symbol>,
     /// Source `constraint` label, for violation diagnostics. `None` if unlabeled.
     label: Option<String>,
 }
@@ -199,8 +199,8 @@ struct RuleEntry {
     /// (`with_fresh_vars`) and the typer / `simp_rewrite` walk and rewrite
     /// (uniform with op bodies). Empty for ground facts.
     body_nodes: Vec<Rc<NodeOccurrence>>,
-    sort: TermId,
-    domain: TermId,
+    sort: Symbol,
+    domain: Symbol,
     meta: Option<TermId>,
     retracted: bool,
     /// Number of de Bruijn-encoded free variables in head+body.
@@ -291,8 +291,8 @@ struct RuleEntry {
 pub struct ProgramClause {
     pub head: crate::eval::value::Value,
     pub body_nodes: Vec<Rc<NodeOccurrence>>,
-    pub sort: TermId,
-    pub domain: TermId,
+    pub sort: Symbol,
+    pub domain: Symbol,
     pub meta: Option<TermId>,
     /// Leading De Bruijn slots borrowed from a parent rule frame.
     pub shared_arity: u32,
@@ -458,9 +458,9 @@ pub struct KnowledgeBase {
     rules: Vec<RuleEntry>,
 
     // Indexes — all maintained atomically by assert/retract
-    by_sort: HashMap<TermId, Vec<RuleId>>,
+    by_sort: HashMap<Symbol, Vec<RuleId>>,
     rules_by_functor: HashMap<Symbol, Vec<RuleId>>,
-    by_domain: HashMap<TermId, Vec<RuleId>>,
+    by_domain: HashMap<Symbol, Vec<RuleId>>,
     rules_by_label: HashMap<Symbol, Vec<RuleId>>,
 
     /// WI-812: per-functor count of currently-indexed BODIED rules (non-facts) —
@@ -477,9 +477,9 @@ pub struct KnowledgeBase {
 
     // Entity-of indexes: entity → parent sort (1-level, non-transitive).
     // Materialized indexes for EntityOf(entity, parent) facts.
-    sort_entities: HashMap<TermId, Vec<TermId>>,   // sort → its entity constructors
-    entity_parent: HashMap<Symbol, TermId>,         // entity ctor SYMBOL → its parent sort term (WI-697)
-    sort_info: HashMap<TermId, SortKind>,
+    sort_entities: HashMap<Symbol, Vec<Symbol>>,   // sort → its entity constructors (WI-697 finished: by SYMBOL)
+    entity_parent: HashMap<Symbol, Symbol>,         // entity ctor SYMBOL → its parent sort NAME (WI-697, both halves)
+    sort_info: HashMap<Symbol, SortKind>,
 
     // Discrimination tree index for structural term matching
     discrim: SubstTree<RuleId>,
@@ -489,7 +489,7 @@ pub struct KnowledgeBase {
     // duplicate in O(1) instead of scanning `by_sort[sort]` linearly.
     // Pre-WI-233 the scan averaged ~180 entries per call on a stdlib
     // load; this index brings it to a single hash lookup.
-    fact_dedup: HashMap<(TermId, TermId, TermId), RuleId>,
+    fact_dedup: HashMap<(TermId, Symbol, Symbol), RuleId>,
 
     // WI-169: structural-dedup memo for synthesized conjunction-rules
     // (`_synth_N(?vars) :- body`, minted by `synthesize_conjunction_rule` when
@@ -532,7 +532,7 @@ pub struct KnowledgeBase {
 
     // Guards — integrity constraints checked on assert
     guards: Vec<Guard>,
-    guards_by_sort: HashMap<TermId, Vec<usize>>,
+    guards_by_sort: HashMap<Symbol, Vec<usize>>,
 
     /// WI-251 — span side-table keyed by stored term TermId. Populated
     /// by `load.rs::create_occurrence_ex` for every expression /
@@ -1417,8 +1417,8 @@ impl KnowledgeBase {
         &mut self,
         head: TermId,
         body: Vec<TermId>,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         let body_nodes = self.term_body_to_nodes(&body);
@@ -1455,8 +1455,8 @@ impl KnowledgeBase {
         &mut self,
         head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         // WI-373: the head is carrier-agnostic — a `Value::Term` for the
@@ -1505,8 +1505,9 @@ impl KnowledgeBase {
     /// cannot drift in how a value head is owned and indexed. Increfs the head's
     /// ground `TermId` leaves (a `Value::Term(t)` yields exactly `[t]`, matching
     /// the old `terms.incref(head)`; a `Node`/`Entity` head increfs its ground
-    /// children — symmetric with `retract`'s `release_value_ground`) +
-    /// sort/domain/meta, pushes the entry (arity/shared_arity/globals at
+    /// children — symmetric with `retract`'s `release_value_ground`) + meta
+    /// (sort and domain are `Symbol`s — nothing to refcount), pushes the
+    /// entry (arity/shared_arity/globals at
     /// ground-fact defaults — De Bruijn callers overwrite), indexes
     /// `by_sort`/`by_domain`/`rules_by_functor` (functor via the head's
     /// `TermView`, any carrier), and inserts the head into the discrim tree
@@ -1516,8 +1517,8 @@ impl KnowledgeBase {
         &mut self,
         head: crate::eval::value::Value,
         body_nodes: Vec<Rc<NodeOccurrence>>,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         let rule_id = RuleId(self.rules.len() as u32);
@@ -1533,8 +1534,6 @@ impl KnowledgeBase {
         self.collect_head_global_vars(&head, &mut head_vars, &mut head_seen);
 
         self.incref_value_ground(&head);
-        self.terms.incref(sort);
-        self.terms.incref(domain);
         if let Some(m) = meta {
             self.terms.incref(m);
         }
@@ -1716,7 +1715,7 @@ impl KnowledgeBase {
     }
 
     /// Empty if reflect stdlib not loaded — guard then triggers on no sorts.
-    fn extract_trigger_sorts(&mut self, guard: &crate::eval::value::Value) -> Vec<TermId> {
+    fn extract_trigger_sorts(&mut self, guard: &crate::eval::value::Value) -> Vec<Symbol> {
         let syms = execute::LogicalQuerySymbols::resolve(self);
         let mut out = Vec::new();
         self.collect_trigger_sorts(guard, &syms, &mut out);
@@ -1730,7 +1729,7 @@ impl KnowledgeBase {
         &mut self,
         view: &crate::eval::value::Value,
         syms: &execute::LogicalQuerySymbols,
-        out: &mut Vec<TermId>,
+        out: &mut Vec<Symbol>,
     ) {
         use term_view::{TermView, ViewHead};
         let head = TermView::head(view, self);
@@ -1756,9 +1755,8 @@ impl KnowledgeBase {
                 .map(|c| c.to_value())
                 .and_then(|v| crate::eval::eval::value_functor(self, &v));
             if let Some(sym) = sym {
-                let sort_term = self.make_name_term_from_sym(sym);
-                if !out.contains(&sort_term) {
-                    out.push(sort_term);
+                if !out.contains(&sym) {
+                    out.push(sym);
                 }
             }
             return;
@@ -1784,17 +1782,12 @@ impl KnowledgeBase {
         }
     }
 
-    fn view_to_trigger_sort(&mut self, view: &crate::eval::value::Value) -> Option<TermId> {
+    fn view_to_trigger_sort(&mut self, view: &crate::eval::value::Value) -> Option<Symbol> {
         let functor = term_view::TermView::head(view, self).functor_sym()?;
         if let Some(parent) = self.constructor_parent_sort(functor) {
             return Some(parent);
         }
-        let sort_term = self.make_name_term_from_sym(functor);
-        if self.sort_kind(sort_term).is_some() {
-            Some(sort_term)
-        } else {
-            None
-        }
+        self.sort_kind(functor).map(|_| functor)
     }
 
     /// The sort a fact with this head triggers guards on / is indexed by — its
@@ -1804,7 +1797,7 @@ impl KnowledgeBase {
     /// [`view_to_trigger_sort`](Self::view_to_trigger_sort), so an asserted fact
     /// and a registered guard agree on the sort key. `None` when the head names
     /// no sort.
-    pub fn fact_trigger_sort(&mut self, head: &crate::eval::value::Value) -> Option<TermId> {
+    pub fn fact_trigger_sort(&mut self, head: &crate::eval::value::Value) -> Option<Symbol> {
         self.view_to_trigger_sort(head)
     }
 
@@ -1822,7 +1815,7 @@ impl KnowledgeBase {
     }
 
     /// Sorts whose facts re-fire guard `cid`.
-    pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[TermId] {
+    pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[Symbol] {
         self.guards.get(cid.index())
             .map(|g| g.trigger_sorts.as_slice())
             .unwrap_or(&[])
@@ -1833,8 +1826,8 @@ impl KnowledgeBase {
     pub fn assert_checked(
         &mut self,
         term: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> Option<RuleId> {
         let guard_indices: Vec<usize> = self.guards_by_sort
@@ -2134,8 +2127,8 @@ impl KnowledgeBase {
     pub fn assert_fact(
         &mut self,
         term: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         // WI-233: O(1) ground-fact dedup. Pre-WI-233 this was a linear
@@ -2177,8 +2170,8 @@ impl KnowledgeBase {
     pub fn assert_fact_value(
         &mut self,
         head: crate::eval::value::Value,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         use crate::eval::value::Value;
@@ -2302,8 +2295,8 @@ impl KnowledgeBase {
         functor: Symbol,
         pos: Vec<crate::eval::value::Value>,
         named: Vec<(Symbol, crate::eval::value::Value)>,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         use crate::eval::value::Value;
@@ -2399,8 +2392,8 @@ impl KnowledgeBase {
     pub fn assert_metadata_fact(
         &mut self,
         term: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         #[cfg(debug_assertions)]
@@ -2412,8 +2405,8 @@ impl KnowledgeBase {
     pub fn assert_metadata_fact_value(
         &mut self,
         head: crate::eval::value::Value,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         #[cfg(debug_assertions)]
@@ -2435,8 +2428,8 @@ impl KnowledgeBase {
         functor: Symbol,
         pos: Vec<crate::eval::value::Value>,
         named: Vec<(Symbol, crate::eval::value::Value)>,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         #[cfg(debug_assertions)]
@@ -2589,8 +2582,6 @@ impl KnowledgeBase {
         // invariant now has this one exception — a head occurrence whose cache was
         // demanded by `cached_term`.
         self.release_value_ground(&head_val);
-        self.terms.release(sort);
-        self.terms.release(domain);
         if let Some(m) = meta {
             self.terms.release(m);
         }
@@ -2598,55 +2589,67 @@ impl KnowledgeBase {
 
     // ── Sort management ─────────────────────────────────────────
 
-    /// Register a sort term with its kind.
-    pub fn register_sort(&mut self, sort_term: TermId, kind: SortKind) {
-        self.sort_info.insert(sort_term, kind);
+    /// Register a sort NAME with its kind.
+    ///
+    /// Keyed by `Symbol` like every sibling index. As a `TermId` it carried the
+    /// same order-dependent split `sort_entities` did: `register_sort` stored the
+    /// spelling `name_to_sort_term` produced at DECLARATION time, while every
+    /// probe rebuilt one via `make_name_term_from_sym` — and the WI-511
+    /// `Fn{c}`→`Ref(c)` canon is gated on `is_constructor_symbol`, so the two
+    /// could differ and `sort_kind` would silently answer `None`.
+    pub fn register_sort(&mut self, sort: Symbol, kind: SortKind) {
+        self.sort_info.insert(sort, kind);
     }
 
     /// Register an entity-of relationship: entity is a constructor of parent sort.
     /// Updates in-memory indexes (sort_entities, entity_parent).
     /// The loader separately asserts EntityOf(entity, parent) facts in the KB.
     pub fn register_entity_of(&mut self, entity: TermId, parent: TermId) {
-        // WI-697: key the parent index by the constructor's functor SYMBOL. A
-        // symbol has ONE spelling, so this retires the former Fn{c}/Ref(c) TermId
-        // dual-keying (which existed only because the WI-511 alloc canon —
-        // `Fn{c,[],[]}` → `Ref(c)`, gated on `is_constructor_symbol` — is
-        // order-dependent, leaving the same symbol with two TermId identities
-        // pre/post registration).
+        // WI-697 keyed the parent index by the constructor's functor SYMBOL,
+        // retiring the Fn{c}/Ref(c) TermId dual-keying there — a symbol has ONE
+        // spelling, whereas the WI-511 alloc canon (`Fn{c,[],[]}` → `Ref(c)`,
+        // gated on `is_constructor_symbol`) is ORDER-DEPENDENT and leaves the
+        // same symbol with two TermId identities pre/post registration.
         //
-        // A constructor identity is always `Fn{c}` / `Ref(c)` (built via
-        // `name_to_sort_term`); anything else is a malformed registration that
-        // would half-populate the indexes. Fail LOUD (release too), not a
-        // release-silent `debug_assert` skip — the repo's loud-over-silent rule.
-        let functor = match *self.terms.get(entity) {
-            Term::Fn { functor, .. } => functor,
-            Term::Ref(s) => s,
-            _ => panic!(
-                "register_entity_of: entity term {entity:?} is neither Fn nor Ref (no functor symbol)"
-            ),
+        // `sort_entities` is now keyed and valued the same way, finishing that
+        // job. It was the last TermId-keyed half, and the split was REAL, not
+        // hypothetical: `Color` was measured registering as a parent under BOTH
+        // `Ref(Color)` and `Fn{Color}` on one suite run — two buckets for one
+        // sort, so `by_sort`/`sort_children` answered differently depending on
+        // which spelling the CALLER happened to hold. With symbols there is one
+        // bucket and the dedup below is a plain `contains`.
+        //
+        // Deliberately NOT `name_term_sym`: that requires a NULLARY name, and the
+        // match this replaced accepted `Fn { functor, .. }` at ANY arity. The suite
+        // shows only nullary entities and parents here, but "not observed in the
+        // suite" is not evidence of unreachability — a parameterized `provides`
+        // block reaches the loader through paths the suite never ran, and narrowing
+        // on that reasoning is what turned one into a process abort. Taking the
+        // functor of an applied term keeps the old reading; a non-functor term is
+        // still refused loudly, as before.
+        let functor_of = |kb: &Self, t: TermId| -> Symbol {
+            match *kb.terms.get(t) {
+                Term::Fn { functor, .. } => functor,
+                Term::Ref(x) | Term::Ident(x) => x,
+                _ => panic!(
+                    "register_entity_of: term {t:?} has no functor symbol \
+                     (entity and parent must be sort/constructor references)"
+                ),
+            }
         };
-        // WI-719: dedup the child list by functor SYMBOL. Now that
-        // `register_prelude` pre-registers the prelude constructors
-        // (some/none/nil/cons) at bootstrap — so `is_constructor_symbol`, and
-        // thus the alloc/discrim `Fn{c}`↔`Ref(c)` canon, is order-independent —
-        // `register_entity_of` runs TWICE for each of them: once at bootstrap,
-        // once when option/list.anthill's sort body loads. The two calls can
-        // even pass DIFFERENT TermId spellings of the same constructor (`Ref(c)`
-        // vs the pre-canon `Fn{c}`), so dedup on the functor symbol, not the
-        // TermId, to keep `sort_children`/`by_sort` from double-counting one
-        // constructor.
-        let already = self.sort_entities.get(&parent).is_some_and(|children| {
-            children.iter().any(|&e| match *self.terms.get(e) {
-                Term::Fn { functor: f, .. } => f == functor,
-                Term::Ref(s) => s == functor,
-                _ => false,
-            })
-        });
-        if !already {
-            self.sort_entities.entry(parent).or_default().push(entity);
+        let entity_sym = functor_of(self, entity);
+        let parent_sym = functor_of(self, parent);
+        // WI-719: `register_entity_of` runs TWICE for each prelude constructor
+        // (`some`/`none`/`nil`/`cons`) — once at `register_prelude` bootstrap,
+        // once when option/list.anthill's sort body loads — and the two calls can
+        // pass DIFFERENT TermId spellings of the same constructor. Deduping keeps
+        // `sort_children`/`by_sort` from double-counting one constructor.
+        let children = self.sort_entities.entry(parent_sym).or_default();
+        if !children.contains(&entity_sym) {
+            children.push(entity_sym);
         }
-        self.constructor_symbols.insert(functor);
-        self.entity_parent.insert(functor, parent);
+        self.constructor_symbols.insert(entity_sym);
+        self.entity_parent.insert(entity_sym, parent_sym);
     }
 
     /// Check if `sub` is an entity of `sup` (1-level entity → parent sort). The
@@ -2687,30 +2690,22 @@ impl KnowledgeBase {
             term_view::ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => s,
             _ => return false,
         };
-        match self.entity_parent.get(&sub_sym) {
-            Some(&parent) => term_view::views_structurally_equal(
-                self,
-                &crate::eval::value::Value::term(parent),
-                sup,
-            ),
-            None => false,
+        // The stored parent is a NAME; `sup` may arrive in any carrier/spelling
+        // (`Fn{S}` or `Ref(S)` — WI-511 makes that order-dependent), so compare
+        // the two as SYMBOLS rather than structurally.
+        let Some(&parent_sym) = self.entity_parent.get(&sub_sym) else { return false };
+        match term_view::TermView::head(sup, self) {
+            term_view::ViewHead::Ref(s) => s == parent_sym,
+            term_view::ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => {
+                s == parent_sym
+            }
+            _ => false,
         }
-    }
-
-    /// Get the parent sort of an entity (1-level, non-transitive). WI-697: the
-    /// index is symbol-keyed, so read the entity's functor symbol first.
-    pub fn entity_parent_sort(&self, entity: TermId) -> Option<TermId> {
-        let functor = match *self.terms.get(entity) {
-            Term::Fn { functor, .. } => functor,
-            Term::Ref(s) => s,
-            _ => return None,
-        };
-        self.constructor_parent_sort(functor)
     }
 
     /// Get the parent sort of a constructor by its functor symbol. WI-697: an
     /// O(1) lookup into the symbol-keyed index (was an O(n) scan).
-    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<TermId> {
+    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
         self.entity_parent.get(&functor).copied()
     }
 
@@ -2723,16 +2718,12 @@ impl KnowledgeBase {
     /// eliminator to resolve a field-access receiver's field type.
     pub fn constructors_of_sort(&self, sort_sym: Symbol) -> Vec<Symbol> {
         let mut out = Vec::new();
-        // WI-697: the key IS the constructor symbol; match the parent's functor to
-        // `sort_sym`. (Symbol keys are unique, so — unlike the former dual-keyed
-        // TermId scan — no per-constructor duplicate is produced.)
-        for (&entity_sym, &parent_tid) in &self.entity_parent {
-            let parent_functor = match self.terms.get(parent_tid) {
-                Term::Fn { functor, .. } => Some(*functor),
-                Term::Ref(s) => Some(*s),
-                _ => None,
-            };
-            if parent_functor == Some(sort_sym) {
+        // WI-697: the key IS the constructor symbol, and the value is now the
+        // parent's NAME, so this is a direct symbol compare. (Symbol keys are
+        // unique, so — unlike the former dual-keyed TermId scan — no
+        // per-constructor duplicate is produced.)
+        for (&entity_sym, &parent_sym) in &self.entity_parent {
+            if parent_sym == sort_sym {
                 out.push(entity_sym);
             }
         }
@@ -2786,7 +2777,7 @@ impl KnowledgeBase {
     // ── Query ───────────────────────────────────────────────────
 
     /// All active rules/facts of a given sort (including entities of that sort).
-    pub fn by_sort(&self, sort: TermId) -> Vec<RuleId> {
+    pub fn by_sort(&self, sort: Symbol) -> Vec<RuleId> {
         let mut result = Vec::new();
 
         // Direct entries of this sort
@@ -2904,7 +2895,7 @@ impl KnowledgeBase {
 
     /// Snapshot every active program clause in `domain`, preserving the
     /// historical `by_domain` enumeration order without exposing `RuleId`.
-    pub fn program_clauses_by_domain(&self, domain: TermId) -> Vec<ProgramClause> {
+    pub fn program_clauses_by_domain(&self, domain: Symbol) -> Vec<ProgramClause> {
         self.by_domain(domain)
             .into_iter()
             .map(|rid| self.program_clause(rid))
@@ -2947,7 +2938,7 @@ impl KnowledgeBase {
     }
 
     /// All active rules/facts belonging to a given domain.
-    pub fn by_domain(&self, domain: TermId) -> Vec<RuleId> {
+    pub fn by_domain(&self, domain: Symbol) -> Vec<RuleId> {
         self.by_domain
             .get(&domain)
             .map(|v| {
@@ -2961,7 +2952,7 @@ impl KnowledgeBase {
 
     /// Snapshot every active program clause in `sort`, including direct entity
     /// children, with exactly [`Self::by_sort`]'s enumeration semantics.
-    pub fn program_clauses_by_sort(&self, sort: TermId) -> Vec<ProgramClause> {
+    pub fn program_clauses_by_sort(&self, sort: Symbol) -> Vec<ProgramClause> {
         self.by_sort(sort)
             .into_iter()
             .map(|rid| self.program_clause(rid))
@@ -3129,14 +3120,59 @@ impl KnowledgeBase {
         self.rules[id.index()].body_nodes = body_nodes;
     }
 
-    /// Get the sort of a rule.
-    pub fn rule_sort(&self, id: RuleId) -> TermId {
+    /// Get the sort of a rule — the meta-sort it is filed under (`Fact`,
+    /// `Rule`, `Operation`, `Sort`, …), as a `Symbol`. See [`Self::rule_domain`]
+    /// for why these are names rather than terms.
+    pub fn rule_sort(&self, id: RuleId) -> Symbol {
         self.rules[id.index()].sort
     }
 
-    /// Get the domain of a rule.
-    pub fn rule_domain(&self, id: RuleId) -> TermId {
+    /// Get the domain of a rule — the enclosing namespace/sort it was
+    /// declared in, as a `Symbol`.
+    ///
+    /// A domain is a NAME, not a term: a rule belongs to exactly one
+    /// namespace-or-sort, which the loader always spells as a bare identifier.
+    /// It was a `TermId` (a nullary `Term::Fn` wrapping this very symbol) until
+    /// every reader — `by_domain`, the requires-guard in `resolve.rs`, the
+    /// `[simp]` enclosing-sort guard, `anthill-stl`'s clause reader — unwrapped
+    /// it back to the functor through a three-arm `Fn | Ref | Ident` match whose
+    /// non-name arms silently `continue`d. The shape was measured across the
+    /// whole workspace suite before the change: every domain was a nullary `Fn`,
+    /// so the unwrap was total and the fallthrough arms were dead. Carrying the
+    /// symbol makes that true by type and deletes the four unwraps.
+    pub fn rule_domain(&self, id: RuleId) -> Symbol {
         self.rules[id.index()].domain
+    }
+
+    /// The symbol a NAME term denotes — the single `TermId → Symbol` bridge for
+    /// the SCOPE/DOMAIN positions, where a term is only ever a bare name
+    /// (`make_name_term` / `name_to_sort_term` build exactly a nullary
+    /// `Term::Fn`; `Ref`/`Ident` are the same name in the carriers the
+    /// parse/reflect sides use).
+    ///
+    /// Panics on anything else. Every caller holds a term IT built from a name
+    /// (`make_name_term` / `name_to_sort_term`), so a non-name is an internal
+    /// invariant violation, not bad user input.
+    ///
+    /// Do NOT reach for this on a term that came from USER SYNTAX. A
+    /// `provides Stack[T = Int64] … end` spec lowers to a SortView APPLICATION,
+    /// and calling this on it turned valid source into a process abort with no
+    /// `path:line:col` — the WI-745 convention for anything a user can trigger is
+    /// a `LoadError::Located`. Derive the name from the written name instead
+    /// (see `load_provides_block`).
+    pub fn name_term_sym(&self, term: TermId) -> Symbol {
+        match self.terms.get(term) {
+            Term::Fn { functor, pos_args, named_args }
+                if pos_args.is_empty() && named_args.is_empty() =>
+            {
+                *functor
+            }
+            Term::Ref(s) | Term::Ident(s) => *s,
+            other => panic!(
+                "name_term_sym: {term:?} is not a name term ({other:?}) — a scope \
+                 or domain must be a bare identifier"
+            ),
+        }
     }
 
     /// Get the meta of a rule.
@@ -3152,12 +3188,12 @@ impl KnowledgeBase {
     }
 
     /// Get the sort of a fact (alias for `rule_sort`).
-    pub fn fact_sort(&self, id: RuleId) -> TermId {
+    pub fn fact_sort(&self, id: RuleId) -> Symbol {
         self.rule_sort(id)
     }
 
     /// Get the domain of a fact (alias for `rule_domain`).
-    pub fn fact_domain(&self, id: RuleId) -> TermId {
+    pub fn fact_domain(&self, id: RuleId) -> Symbol {
         self.rule_domain(id)
     }
 
@@ -3256,12 +3292,12 @@ impl KnowledgeBase {
     }
 
     /// Get sort kind info.
-    pub fn sort_kind(&self, sort_term: TermId) -> Option<SortKind> {
-        self.sort_info.get(&sort_term).copied()
+    pub fn sort_kind(&self, sort: Symbol) -> Option<SortKind> {
+        self.sort_info.get(&sort).copied()
     }
 
-    /// Iterate sort_info entries (sort term → kind).
-    pub fn sort_info_iter(&self) -> impl Iterator<Item = (&TermId, &SortKind)> {
+    /// Iterate sort_info entries (sort name → kind).
+    pub fn sort_info_iter(&self) -> impl Iterator<Item = (&Symbol, &SortKind)> {
         self.sort_info.iter()
     }
 
@@ -3276,9 +3312,9 @@ impl KnowledgeBase {
     }
 
     /// Get immediate entity children of a sort.
-    pub fn sort_children(&self, sort_term: TermId) -> &[TermId] {
+    pub fn sort_children(&self, sort: Symbol) -> &[Symbol] {
         self.sort_entities
-            .get(&sort_term)
+            .get(&sort)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -3835,8 +3871,8 @@ impl KnowledgeBase {
         &mut self,
         head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         let head = head.into();
@@ -4004,8 +4040,8 @@ impl KnowledgeBase {
         body_nodes: Vec<Rc<NodeOccurrence>>,
         vars: Vec<VarId>,
         shared_arity: u32,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         let head = head.into();
@@ -4159,8 +4195,8 @@ impl KnowledgeBase {
         head: impl Into<crate::eval::value::Value>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
         seed_globals: &[VarId],
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
         // `term_to_debruijn` / `node_to_debruijn` map positions in reverse (last
@@ -4680,16 +4716,29 @@ impl KnowledgeBase {
     /// Falls back to intern() if no resolved symbol exists.
     /// Callers should pass qualified names (e.g. "Color.red", not "red").
     pub fn resolve_qualified_name_term(&mut self, name: &str) -> TermId {
-        let sym = if let Some(&found) = self.symbols.by_qualified_name.get(name) {
-            found
-        } else {
-            self.symbols.intern(name)
-        };
+        let sym = self.resolve_qualified_name_sym(name);
+        // `self.terms.alloc`, NOT `self.alloc` / `make_name_term_from_sym`:
+        // this must yield the literal nullary `Term::Fn`, and `KnowledgeBase::
+        // alloc` rewrites one to `Term::Ref` when the symbol is a CONSTRUCTOR
+        // (WI-511). Callers here ask for a NAME term and read the functor back
+        // off it, so routing through the canonicalizer hands them a `Ref` for
+        // `Color.red` and breaks the read.
         self.terms.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         })
+    }
+
+    /// The symbol behind [`Self::resolve_qualified_name_term`] — resolved by
+    /// qualified name, or interned if this KB has never seen it. Wanted
+    /// directly wherever a name is used as a KEY rather than as a term: a
+    /// rule's `domain`, a `by_domain` lookup.
+    pub fn resolve_qualified_name_sym(&mut self, name: &str) -> Symbol {
+        match self.symbols.by_qualified_name.get(name) {
+            Some(&found) => found,
+            None => self.symbols.intern(name),
+        }
     }
 
     /// Look up a resolved symbol by qualified name or short name.
@@ -5983,8 +6032,8 @@ mod tests {
     #[test]
     fn assert_and_query_by_sort() {
         let mut kb = KnowledgeBase::new();
-        let sort_account = kb.make_name_term("Account");
-        let domain = kb.make_name_term("banking");
+        let sort_account = kb.intern("Account");
+        let domain = kb.intern("banking");
 
         let acct1 = {
             let id_sym = kb.intern("account");
@@ -6079,8 +6128,8 @@ mod tests {
 
         let f_sym = kb.intern("op_with_denoted");
         let c_sym = kb.intern("c");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Head: f(denoted(value: Ref(c))) — the positional arg is a Node.
         let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
@@ -6144,8 +6193,8 @@ mod tests {
         // `alpha` interned before `beta` → canonical (Symbol-index) order [alpha, beta].
         let alpha = kb.intern("alpha");
         let beta = kb.intern("beta");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
         let beta_t = kb.alloc(Term::Const(Literal::Int(7)));
@@ -6214,8 +6263,8 @@ mod tests {
 
         let f_sym = kb.intern("vf");
         let c_sym = kb.intern("c");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Value fact: vf(Node(denoted(c))) — a Node-carrying head.
         let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
@@ -6301,8 +6350,8 @@ mod tests {
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
 
         let f_sym = kb.intern("vf");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Two value facts with structurally-distinct Node heads:
         // vf(denoted(c1)), vf(denoted(c2)).
@@ -6367,8 +6416,8 @@ mod tests {
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
 
         let f_sym = kb.intern("vf");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Build an Entity head `vf(denoted(c))`. The child occurrence is a FRESH
         // `Rc` each call (verified below), so two same-name heads are Rc-distinct
@@ -6420,7 +6469,7 @@ mod tests {
         let c = kb.intern("bare");
         let n1 = Value::Node(kb.make_denoted_occ_ref(c, span, None));
         let n2 = Value::Node(kb.make_denoted_occ_ref(c, span, None));
-        let sort2 = kb.make_name_term("BareSort");
+        let sort2 = kb.intern("BareSort");
         let b1 = kb.assert_fact_value(n1, sort2, domain, None);
         let b2 = kb.assert_fact_value(n2, sort2, domain, None);
         assert_eq!(b1, b2, "structurally-identical bare Node heads dedup via cached_term");
@@ -6431,17 +6480,19 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let nat = kb.make_name_term("Nat");
         let zero = kb.make_name_term("zero");
-        let domain = kb.make_name_term("test");
+        let domain = kb.intern("test");
 
-        kb.register_sort(nat, SortKind::Sort);
+        let nat_sym = kb.name_term_sym(nat);
+        kb.register_sort(nat_sym, SortKind::Sort);
         kb.register_entity_of(zero, nat);
+        let zero_sym = kb.name_term_sym(zero);
 
         // Assert a fact of sort `zero`
         let zero_val = kb.make_name_term("zero");
-        let fid = kb.assert_fact(zero_val, zero, domain, None);
+        let fid = kb.assert_fact(zero_val, zero_sym, domain, None);
 
         // Query by_sort(Nat) should include the zero fact (entity children)
-        let results = kb.by_sort(nat);
+        let results = kb.by_sort(nat_sym);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], fid);
 
@@ -6459,7 +6510,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let nat = kb.make_name_term("Nat");
         let zero = kb.make_name_term("zero"); // Fn{zero} — succ not yet a constructor
-        kb.register_sort(nat, SortKind::Sort);
+        kb.register_sort(kb.name_term_sym(nat), SortKind::Sort);
         kb.register_entity_of(zero, nat);
 
         // Term carriers via the ergonomic wrapper — reflexive / positive / negative.
@@ -6533,8 +6584,8 @@ mod tests {
 
         let vf = kb.intern("vf");
         let cond = kb.intern("cond");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Head vf(denoted(c1)) — a ground Value::Entity carrying a Node child.
         let c1 = kb.intern("c1");
@@ -6589,8 +6640,8 @@ mod tests {
         let vf = kb.intern("vf");
         let g = kb.intern("g");
         let cond = kb.intern("cond");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // An occurrence `g(DeBruijn(0))` — the shape a stored value rule head's
         // child takes after De Bruijn closure.
@@ -6653,8 +6704,8 @@ mod tests {
         let vf = kb.intern("vf");
         let g = kb.intern("g");
         let thing = kb.intern("thing");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Head vf(g(?x)) — g(?x) carried as an Expr Node; body thing(?x).
         let xv = kb.fresh_var(vf);
@@ -6722,8 +6773,8 @@ mod tests {
         let vf = kb.intern("vf");
         let g = kb.intern("g");
         let thing = kb.intern("thing");
-        let sort = kb.make_name_term("MySort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("MySort");
+        let domain = kb.intern("test");
 
         // Fact thing("active").
         let active = kb.alloc(Term::Const(Literal::String("active".into())));
@@ -6801,8 +6852,8 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let p = kb.intern("p");
         let q = kb.intern("q");
-        let sort = kb.make_name_term("T");
-        let domain = kb.make_name_term("d");
+        let sort = kb.intern("T");
+        let domain = kb.intern("d");
 
         // Rule p(?x) :- q(?x), arity 1 (closed to De Bruijn on assert).
         let xv = kb.fresh_var(p);
@@ -6853,8 +6904,8 @@ mod tests {
         let p = kb.intern("p");
         let q = kb.intern("q");
         let mk = kb.intern("mk");
-        let sort = kb.make_name_term("T");
-        let domain = kb.make_name_term("d");
+        let sort = kb.intern("T");
+        let domain = kb.intern("d");
 
         let xv = kb.fresh_var(p);
         let xt = kb.alloc(Term::Var(Var::Global(xv)));
@@ -6909,8 +6960,8 @@ mod tests {
         let p = kb.intern("p");
         let q = kb.intern("q");
         let mk = kb.intern("mk");
-        let sort = kb.make_name_term("T");
-        let domain = kb.make_name_term("d");
+        let sort = kb.intern("T");
+        let domain = kb.intern("d");
 
         let xv = kb.fresh_var(p);
         let xt = kb.alloc(Term::Var(Var::Global(xv)));
@@ -6962,8 +7013,8 @@ mod tests {
         let pr = kb.intern("pr");
         let marker = kb.intern("marker");
         let mk = kb.intern("mk");
-        let sort = kb.make_name_term("T");
-        let domain = kb.make_name_term("d");
+        let sort = kb.intern("T");
+        let domain = kb.intern("d");
 
         // Fact `marker` + rule `pr(?a, ?b) :- marker` (arity 2 → De Bruijn path).
         let marker_t = kb.alloc(Term::Fn {
@@ -7002,8 +7053,8 @@ mod tests {
     #[test]
     fn retract_removes_from_index() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("T");
-        let domain = kb.make_name_term("d");
+        let sort = kb.intern("T");
+        let domain = kb.intern("d");
         let term = kb.alloc(Term::Const(Literal::Int(42)));
 
         let fid = kb.assert_fact(term, sort, domain, None);
@@ -7626,8 +7677,8 @@ mod tests {
     #[test]
     fn query_by_pattern() {
         let mut kb = KnowledgeBase::new();
-        let fact_sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let fact_sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
 
         // Assert parent("alice", "bob") and parent("bob", "charlie")
@@ -7673,8 +7724,8 @@ mod tests {
         // hash-consed term to be looked up in the discrim tree.
         use crate::eval::value::Value;
         let mut kb = KnowledgeBase::new();
-        let fact_sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let fact_sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
         let alice = kb.alloc(Term::Const(Literal::String("alice".into())));
         let bob = kb.alloc(Term::Const(Literal::String("bob".into())));
@@ -7721,8 +7772,8 @@ mod tests {
     #[test]
     fn assert_rule_with_body() {
         let mut kb = KnowledgeBase::new();
-        let rule_sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let rule_sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
         let grandparent_sym = kb.intern("grandparent");
 
@@ -7767,8 +7818,8 @@ mod tests {
     #[test]
     fn query_rules_filters_facts() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
 
         // Assert a ground fact f(1)
@@ -7872,8 +7923,8 @@ mod tests {
     #[test]
     fn retract_releases_body_terms() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
         let g_sym = kb.intern("g");
 
@@ -7985,7 +8036,7 @@ mod wi518_occurrence_guard_resolution_tests {
     }
 
     /// Assert a ground `edge(from, to)` fact (both args nullary atoms).
-    fn assert_edge(kb: &mut KnowledgeBase, sort: TermId, domain: TermId, from: &str, to: &str) -> RuleId {
+    fn assert_edge(kb: &mut KnowledgeBase, sort: Symbol, domain: Symbol, from: &str, to: &str) -> RuleId {
         let edge = kb.intern("edge");
         let from_t = kb.make_name_term(from);
         let to_t = kb.make_name_term(to);
@@ -8004,8 +8055,8 @@ mod wi518_occurrence_guard_resolution_tests {
     #[test]
     fn occurrence_self_loop_guard_violated_by_self_loop() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Graph");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Graph");
+        let domain = kb.intern("test");
         assert_edge(&mut kb, sort, domain, "n1", "n1"); // a self-loop
         assert_edge(&mut kb, sort, domain, "n2", "n3"); // not a self-loop
 
@@ -8026,8 +8077,8 @@ mod wi518_occurrence_guard_resolution_tests {
     #[test]
     fn occurrence_self_loop_guard_holds_without_self_loop() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Graph");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Graph");
+        let domain = kb.intern("test");
         assert_edge(&mut kb, sort, domain, "n2", "n3"); // not a self-loop
 
         let leaf = edge_self_loop_occurrence(&mut kb);
@@ -8049,8 +8100,8 @@ mod wi518_occurrence_guard_resolution_tests {
     #[test]
     fn occurrence_guard_enforced_at_assert_checked() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Graph");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Graph");
+        let domain = kb.intern("test");
 
         let leaf = edge_self_loop_occurrence(&mut kb);
         let query = no_q_guard(&mut kb, leaf);
@@ -8105,8 +8156,8 @@ mod wi518_occurrence_guard_resolution_tests {
     #[test]
     fn conjunction_with_occurrence_leaf_resolves() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Graph");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Graph");
+        let domain = kb.intern("test");
         assert_edge(&mut kb, sort, domain, "n1", "n1");
         // A nullary `flag()` fact for the term-leaf side.
         let flag = kb.intern("flag");
@@ -8196,7 +8247,7 @@ mod wi628_guard_truncation_tests {
 
     /// Assert `loop(?x) :- loop(?x)` — a non-terminating recursion that TRUNCATES at
     /// the depth budget for any ground `loop(_)` query (it never refutes).
-    fn assert_loop_rule(kb: &mut KnowledgeBase, sort: TermId, domain: TermId) {
+    fn assert_loop_rule(kb: &mut KnowledgeBase, sort: Symbol, domain: Symbol) {
         let loop_sym = kb.intern("loop");
         let x = kb.intern("x");
         let vx = kb.fresh_var(x);
@@ -8283,10 +8334,10 @@ mod wi628_guard_truncation_tests {
         }
     }
 
-    fn loop_kb() -> (KnowledgeBase, TermId, TermId) {
+    fn loop_kb() -> (KnowledgeBase, Symbol, Symbol) {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         assert_loop_rule(&mut kb, sort, domain);
         (kb, sort, domain)
     }

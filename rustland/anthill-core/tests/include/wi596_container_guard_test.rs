@@ -272,7 +272,7 @@ fn nested_container_law_does_not_fire_when_carrier_lacks_spec() {
 /// Does some equational rule whose LHS outer functor is `op_qn` carry `[simp]`?
 fn simp_law_present(kb: &mut KnowledgeBase, op_qn: &str) -> bool {
     let op_sym = sym(kb, op_qn);
-    let rule_sort = kb.make_name_term("Rule");
+    let rule_sort = kb.intern("Rule");
     let rules = kb.by_sort(rule_sort);
     for rid in rules {
         let head = kb.rule_head(rid);

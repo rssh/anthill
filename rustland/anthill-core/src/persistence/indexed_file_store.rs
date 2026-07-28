@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::intern::Symbol;
 use crate::kb::typing::get_named_arg;
 use crate::kb::{KnowledgeBase, RuleId};
 use crate::kb::term::{Literal, Term, TermId};
@@ -108,8 +109,8 @@ impl Store for IndexedFileStore {
         &mut self,
         kb: &KnowledgeBase,
         fact: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
         // by_id population for runtime-persisted facts happens in the
@@ -141,8 +142,8 @@ impl Store for IndexedFileStore {
         kb: &KnowledgeBase,
         id: RuleId,
         new: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {
         if !self.retract(kb, id)? {

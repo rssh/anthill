@@ -1021,8 +1021,8 @@ mod tests {
     /// minimal shape, like `simplify_variable_equation`).
     fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
         let (eq_head, meta, add) = build_add_zero(kb);
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         kb.assert_fact(eq_head, sort, domain, Some(meta));
         add
     }
@@ -1033,8 +1033,8 @@ mod tests {
     /// `term_from_debruijn` branch.
     fn assert_add_zero_db(kb: &mut KnowledgeBase) -> Symbol {
         let (eq_head, meta, add) = build_add_zero(kb);
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
         add
     }
@@ -1069,8 +1069,8 @@ mod tests {
             .into(),
             named: Vec::new().into(),
         };
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let rid = kb.assert_fact_value(head, sort, domain, None);
 
         // The stored head is a value carrier (not a `Term`), so the term-only
@@ -1116,8 +1116,8 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
         });
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         kb.assert_rule_debruijn_with_nodes(unify_head, vec![], sort, domain, Some(meta));
 
         assert!(
@@ -1277,8 +1277,8 @@ mod tests {
         // rebuilt when its child changed: it must keep its Synthesized origin.
         let mut kb = KnowledgeBase::new();
         let add = assert_add_zero(&mut kb);
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let f = kb.intern("f");
         let g = kb.intern("g");

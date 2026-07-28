@@ -375,7 +375,7 @@ end
     // Serialize just this fact, then reload it into the same KB.
     let toml = term_ser::serialize_toml(&kb, "anthill.stage0.WorkItem", &[src_rid])
         .expect("serialize");
-    let domain = kb.make_name_term("store");
+    let domain = kb.intern("store");
     let n = term_ser::load_toml(&mut kb, &toml, domain).expect("reload");
     assert_eq!(n, 1);
 
@@ -400,7 +400,7 @@ end
 fn wi501_missing_required_field_errors_loudly() {
     use anthill_core::persistence::term_ser;
     let mut kb = load_github_todo_kb();
-    let domain = kb.make_name_term("store");
+    let domain = kb.intern("store");
     // Omit the required `id` field; acceptance + status present, options omitted.
     let toml_src = r#"
 [meta]

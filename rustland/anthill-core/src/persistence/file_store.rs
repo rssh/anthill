@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::intern::Symbol;
 use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse;
@@ -78,13 +79,15 @@ impl FileStore {
     }
 
     /// Determine the file path for a fact based on convention.
-    fn fact_path(&self, kb: &KnowledgeBase, _sort: TermId, domain: TermId) -> PathBuf {
+    fn fact_path(&self, kb: &KnowledgeBase, _sort: Symbol, domain: Symbol) -> PathBuf {
         match &self.convention {
             FileConvention::Flat => self.root.join("facts.anthill"),
             FileConvention::SingleFile(name) => self.root.join(name),
             FileConvention::ByDomain => {
-                let printer = print::TermPrinter::new(kb);
-                let domain_name = printer.print_term(domain);
+                // The domain IS the name — `symbols.name` is exactly what
+                // `TermPrinter` reached for on the nullary `Fn` this used to be,
+                // so the paths it produces are unchanged.
+                let domain_name = kb.symbols.name(domain);
                 // Sanitize: replace dots with path separators, strip non-alphanum
                 let sanitized: String = domain_name
                     .chars()
@@ -114,8 +117,8 @@ impl Store for FileStore {
         &mut self,
         kb: &KnowledgeBase,
         fact: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
         let path = self.fact_path(kb, sort, domain);
@@ -142,8 +145,8 @@ impl Store for FileStore {
         kb: &KnowledgeBase,
         id: RuleId,
         new: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {
         if !self.retract(kb, id)? {

@@ -785,12 +785,7 @@ fn occ_head_ctor(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol>
 /// The symbol of the sort a constructor belongs to (`cons`/`nil` → `List`), or
 /// `None` when the symbol is not a sort-owned constructor.
 fn ctor_sort_sym(kb: &KnowledgeBase, ctor: Symbol) -> Option<Symbol> {
-    let tid = kb.constructor_parent_sort(ctor)?;
-    match kb.get_term(tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        Term::Fn { functor, .. } => Some(*functor),
-        _ => None,
-    }
+    kb.constructor_parent_sort(ctor)
 }
 
 /// Whether two constructors are variants of the same sort — the condition under
@@ -1152,13 +1147,14 @@ impl KnowledgeBase {
             named_args: SmallVec::new(),
         });
 
-        let rule_sort = self.make_name_term("Rule");
+        let rule_sort = self.intern("Rule");
         let global_scope = self.make_name_term("_global");
+        let global_domain = self.name_term_sym(global_scope);
         let rid = self.assert_rule_debruijn_with_nodes(
             head,
             vec![body_node],
             rule_sort,
-            global_scope,
+            global_domain,
             None,
         );
 

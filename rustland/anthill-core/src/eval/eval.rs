@@ -2783,11 +2783,7 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     }
     // Entity / Term: the carrier is the constructor's parent-sort base symbol.
     let functor = value_functor(kb, value)?;
-    let parent_tid = kb.constructor_parent_sort(functor)?;
-    match kb.get_term(parent_tid) {
-        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
-        _ => None,
-    }
+    kb.constructor_parent_sort(functor)
 }
 
 /// Decide whether a constructor arg with optional auto-name goes into the

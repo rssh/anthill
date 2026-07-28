@@ -10,6 +10,7 @@ pub mod file_store;
 pub mod indexed_file_store;
 pub mod term_ser;
 
+use crate::intern::Symbol;
 use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse::error::ParseError;
@@ -107,8 +108,8 @@ pub trait Store {
         &mut self,
         kb: &KnowledgeBase,
         fact: TermId,
-        sort: TermId,
-        domain: TermId,
+        sort: Symbol,
+        domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError>;
 
@@ -139,8 +140,8 @@ pub trait Store {
         _kb: &KnowledgeBase,
         _id: RuleId,
         _new: TermId,
-        _sort: TermId,
-        _domain: TermId,
+        _sort: Symbol,
+        _domain: Symbol,
         _meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {
         Err(PersistenceError::NotMutable)

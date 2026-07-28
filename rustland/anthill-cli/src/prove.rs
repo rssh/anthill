@@ -944,11 +944,12 @@ fn synthesize_step_rule(
     use anthill_core::intern::SymbolKind;
     let short_name = step_qn.rsplit('.').next().unwrap_or(step_qn);
     let global_scope = kb.make_name_term("_global");
+    let global_domain = kb.name_term_sym(global_scope);
     let label_sym = kb.define_symbol(short_name, step_qn, SymbolKind::Rule, global_scope.raw());
     if kb.rule_id_by_qn(step_qn).is_some() {
         return;
     }
-    let rule_sort = kb.make_name_term("Rule");
+    let rule_sort = kb.intern("Rule");
 
     let parent_globals: Vec<_> = kb.rule_id_by_qn(parent_qn)
         .map(|rid| kb.rule_globals(rid).to_vec())
@@ -960,7 +961,7 @@ fn synthesize_step_rule(
         body_nodes,
         &parent_globals,
         rule_sort,
-        global_scope,
+        global_domain,
         None,
     );
     kb.set_rule_label(rid, label_sym);
@@ -1554,7 +1555,7 @@ fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
     // Walk all rules in the KB. For each with `hint` meta, determine
     // its head-functor QN and check whether the QN is prefixed by
     // any of `rule_qn`'s parent scope segments.
-    let rule_sort = kb.make_name_term("Rule");
+    let rule_sort = kb.intern("Rule");
     let mut out: Vec<String> = Vec::new();
     for rid in kb.by_sort(rule_sort) {
         let meta = kb.rule_meta(rid);

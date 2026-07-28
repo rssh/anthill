@@ -3274,16 +3274,7 @@ impl KnowledgeBase {
     /// rule returns `true`, so [`apply_eq_rules`] skips it (the typer fires
     /// it, where `min_sort` is available to check the guard).
     fn equation_is_requires_guarded(&mut self, rid: RuleId) -> bool {
-        let domain = self.rule_domain(rid);
-        let sort_sym = match self.get_term(domain) {
-            Term::Fn { functor, .. } => Some(*functor),
-            Term::Ref(s) | Term::Ident(s) => Some(*s),
-            _ => None,
-        };
-        match sort_sym {
-            Some(s) => !super::typing::requires_chain(self, s).is_empty(),
-            None => false,
-        }
+        !super::typing::requires_chain(self, self.rule_domain(rid)).is_empty()
     }
 
     // ── Builtin execution ──────────────────────────────────────
@@ -7149,8 +7140,8 @@ mod tests {
     #[test]
     fn is_equation_true() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
 
         let lhs = kb.alloc(Term::Const(Literal::Int(1)));
@@ -7168,8 +7159,8 @@ mod tests {
     #[test]
     fn is_equation_false_for_rule() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let g_sym = kb.intern("g");
 
@@ -7195,8 +7186,8 @@ mod tests {
     #[test]
     fn resolve_ground_fact() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
 
         let alice = kb.alloc(Term::Const(Literal::String("alice".into())));
@@ -7234,8 +7225,8 @@ mod tests {
     #[test]
     fn resolve_nonlinear_goal_drops_conflicting_match() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let rel = kb.intern("rel");
 
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -7276,8 +7267,8 @@ mod tests {
     #[test]
     fn resolve_simple_rule() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
         let grandparent_sym = kb.intern("grandparent");
 
@@ -7351,8 +7342,8 @@ mod tests {
     #[test]
     fn resolve_recursive_rule() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
         let ancestor_sym = kb.intern("ancestor");
 
@@ -7451,8 +7442,8 @@ mod tests {
     #[test]
     fn resolve_multiple_solutions() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let likes_sym = kb.intern("likes");
 
         let alice = kb.alloc(Term::Const(Literal::String("alice".into())));
@@ -7490,8 +7481,8 @@ mod tests {
     #[test]
     fn resolve_max_solutions() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
 
         for i in 0..5 {
@@ -7521,8 +7512,8 @@ mod tests {
     #[test]
     fn resolve_depth_limit() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let loop_sym = kb.intern("loop");
 
         // Infinite loop: loop(?x) :- loop(?x)
@@ -7565,8 +7556,8 @@ mod tests {
         // truncation into the floundered/undecided branch.
         let mut kb = kb_with_builtins();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let loop_sym = kb.intern("loop");
 
         // loop(?x) :- loop(?x)  — non-terminating recursion (truncates, never
@@ -7663,8 +7654,8 @@ mod tests {
         // `drain_all` surfaces it.
         let mut kb = kb_with_builtins();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let loop_sym = kb.intern("loop");
 
         // loop(?x) :- loop(?x) — non-terminating (truncates, never refutes).
@@ -7746,8 +7737,8 @@ mod tests {
         // so the self-looping `myeq` truncates in a handful of steps, not 100k.
         kb.sem_eq_sub_depth = 32;
         let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
-        let sort = kb.make_name_term("Carrier");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Carrier");
+        let domain = kb.intern("test");
 
         // A rule-backed carrier `eq` that self-loops: `myeq(?a, ?b) :- myeq(?a, ?b)`
         // — a non-terminating sub-proof that TRUNCATES at SEM_EQ_SUB_DEPTH, never
@@ -7867,8 +7858,8 @@ mod tests {
         // complete search → `Refuted` (flag would be false, never surfaced).
         let mut kb = KnowledgeBase::new();
         kb.sem_eq_sub_depth = 32; // truncate cheaply, not at the 100_000 default
-        let sort = kb.make_name_term("T");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("T");
+        let domain = kb.intern("test");
         let pr = kb.intern("pr");
         let a_sym = kb.intern("a");
         let b_sym = kb.intern("b");
@@ -7917,8 +7908,8 @@ mod tests {
         // a Refuted eq maps to Failure, never a Delay.
         let mut kb = kb_with_builtins();
         let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
-        let sort = kb.make_name_term("Carrier");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Carrier");
+        let domain = kb.intern("test");
 
         // `myeq_f(?a, ?b) :- eq(?x, ?y)` — the body compares two FRESH unbound vars
         // (not bound by the head), so the inner `eq` DELAYS → the clause floundes to
@@ -7990,8 +7981,8 @@ mod tests {
     #[test]
     fn resolve_no_solution() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
         let g_sym = kb.intern("g");
 
@@ -8020,8 +8011,8 @@ mod tests {
     #[test]
     fn simplify_constant_equation() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
 
         // Equation: eq(double(2), 4)
@@ -8049,8 +8040,8 @@ mod tests {
     #[test]
     fn simplify_variable_equation() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
 
         // Equation: eq(negate(negate(?x)), ?x)
@@ -8096,8 +8087,8 @@ mod tests {
     #[test]
     fn simplify_nested_subterms() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
 
         // Equation: eq(double(?x), twice(?x))
@@ -8174,8 +8165,8 @@ mod tests {
     #[test]
     fn resolve_with_simplification() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let f_sym = kb.intern("f");
         let g_sym = kb.intern("g");
@@ -8232,8 +8223,8 @@ mod tests {
         // threading the redex was SKIPPED (severing ?q), so the goal never
         // matched the fact → 0 solutions.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Pick"); // requires-free → resolver fires
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Pick"); // requires-free → resolver fires
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let pick_sym = kb.intern("pick");
         let found_sym = kb.intern("found");
@@ -8303,8 +8294,8 @@ mod tests {
         // would wildcard-match every fact and manufacture spurious solutions. A
         // bare-var goal is not resolvable → 0 solutions.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Pick");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Pick");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let pick_sym = kb.intern("pick");
 
@@ -8360,8 +8351,8 @@ mod tests {
     #[test]
     fn apply_eq_rules_returns_changes() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Eq");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Eq");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
 
         // Equation: eq(double(2), 4)
@@ -8394,8 +8385,8 @@ mod tests {
         // the arity-0 `assert_fact` Global-var form which never hit the bug)
         // must fire to its SUBSTITUTED RHS, not the raw `DeBruijn(n)` template.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Pick"); // requires-free → resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Pick"); // requires-free → resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq"); // matches `eq_functor()`'s bare fallback
         let pick_sym = kb.intern("pick");
 
@@ -8447,8 +8438,8 @@ mod tests {
         // `0`, silently dropping the constraint). The doubly-ground redex
         // (synthetic entries only) fires as before.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sub"); // requires-free → resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sub"); // requires-free → resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let sub_sym = kb.intern("sub");
         let f_sym = kb.intern("f");
@@ -8516,8 +8507,8 @@ mod tests {
         // bound through resolution (was skipped before the threading landed; the
         // earlier gate proved severing, not correctness).
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Pick");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Pick");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let pick_sym = kb.intern("pick");
 
@@ -8581,8 +8572,8 @@ mod tests {
         // `?q = f(42)` a rewrite cannot carry. Must skip, not silently thread
         // one and drop the other.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sub");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sub");
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let sub_sym = kb.intern("sub");
         let f_sym = kb.intern("f");
@@ -8634,8 +8625,8 @@ mod tests {
         // per level), so an innermost redex nested deeper than `fuel` (100) was
         // never reached — this test nests it far deeper and confirms it fires.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Add"); // requires-free → the resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Add"); // requires-free → the resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let add = kb.intern("add");
         let wrap = kb.intern("wrap");
@@ -8698,8 +8689,8 @@ mod tests {
         // `[simp]` equations must still rewrite — an earlier `has_simp_equations`
         // short-circuit (simp-only) silently skipped every unfold rewrite here.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Def"); // requires-free → the resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Def"); // requires-free → the resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let unfold_me = kb.intern("unfold_me");
         let done = kb.intern("done");
@@ -8775,8 +8766,8 @@ mod tests {
 
         // Assert `[simp] eq(add(?x, 0), ?x)` — this must invalidate the cached
         // gate (via `push_value_head_entry`).
-        let sort = kb.make_name_term("Add"); // requires-free → the resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Add"); // requires-free → the resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -8841,8 +8832,8 @@ mod tests {
             pos_args: SmallVec::from_slice(&[seven]),
             named_args: SmallVec::new(),
         });
-        let foo_sort = kb.make_name_term("Foo");
-        let domain = kb.make_name_term("test");
+        let foo_sort = kb.intern("Foo");
+        let domain = kb.intern("test");
         kb.assert_fact(foo_head, foo_sort, domain, None);
         assert!(
             kb.simp_gate_cache.is_some(),
@@ -8873,7 +8864,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
         });
-        let sort = kb.make_name_term("Add");
+        let sort = kb.intern("Add");
         kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
         assert!(
             kb.simp_gate_cache.is_none(),
@@ -8891,8 +8882,8 @@ mod tests {
         // redex still fires. Mirrors the typer's
         // `deeply_nested_body_does_not_overflow_host_stack`, on the resolver path.
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Add"); // requires-free → the resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Add"); // requires-free → the resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let add = kb.intern("add");
         let wrap = kb.intern("wrap");
@@ -8973,8 +8964,8 @@ mod tests {
         // Without the fire/descend split a `Const` leaf child would be skipped,
         // diverging from the term carrier (which still fires it).
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Lit"); // requires-free → resolver fires it
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Lit"); // requires-free → resolver fires it
+        let domain = kb.intern("test");
         let eq_sym = kb.intern("eq");
         let wrap = kb.intern("wrap");
 
@@ -9030,8 +9021,8 @@ mod tests {
     fn nonvar_succeeds_on_bound_var() {
         // f(?x), anthill.reflect.nonvar(?x) where f("hello") exists → success, no residual
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
@@ -9070,8 +9061,8 @@ mod tests {
     fn nonvar_delays_then_succeeds() {
         // anthill.reflect.nonvar(?x), f(?x) → nonvar delays, f binds x, nonvar retried → success
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
@@ -9133,8 +9124,8 @@ mod tests {
     fn ground_succeeds_on_literal() {
         // f(?x), anthill.reflect.ground(?x) where f(42) exists → success
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
         let ground_sym = kb.resolve_symbol("anthill.reflect.ground");
 
@@ -9171,8 +9162,8 @@ mod tests {
     fn ground_delays_on_partial_binding() {
         // f(?x), anthill.reflect.ground(?x) where f binds x to pair(?y) → ground delays, residualizes
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
         let pair_sym = kb.intern("pair");
         let ground_sym = kb.resolve_symbol("anthill.reflect.ground");
@@ -9218,8 +9209,8 @@ mod tests {
     fn existing_resolve_unchanged() {
         // No builtins registered, basic resolution still works with empty residual
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
 
         let val = kb.alloc(Term::Const(Literal::Int(1)));
@@ -9251,8 +9242,8 @@ mod tests {
         // Rules can be asserted for builtin functors, but builtins always
         // take precedence at resolution time.
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let val = kb.alloc(Term::Const(Literal::Int(1)));
@@ -9293,8 +9284,8 @@ mod tests {
         // With propagation: check(?a) delays (nonvar on caller var),
         //   bind_a binds ?a=42, check(42) retries → nonvar(42) succeeds.
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let check_sym = kb.intern("check");
         let is_thing_sym = kb.intern("is_thing");
@@ -9367,8 +9358,8 @@ mod tests {
         // Rule: check(?x) :- nonvar(?x), is_thing(?x)
         // Query: check(?a) with ?a never bound → check(?a) delays, residualizes
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let check_sym = kb.intern("check");
         let is_thing_sym = kb.intern("is_thing");
@@ -9427,8 +9418,8 @@ mod tests {
         // Here ?y is internal — nonvar(?y) should reorder within body (not propagate).
         // bar(?y) binds ?y, then nonvar succeeds.
         let mut kb = kb_with_builtins();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let foo_sym = kb.intern("foo");
         let bar_sym = kb.intern("bar");
@@ -9506,8 +9497,8 @@ mod tests {
     fn search_stream_basic() {
         // split_first yields solutions one at a time
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
 
         let v1 = kb.alloc(Term::Const(Literal::Int(1)));
@@ -9552,8 +9543,8 @@ mod tests {
     fn search_stream_lazy() {
         // Consume only 2 of 5 solutions, verify stream not exhausted
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
         let f_sym = kb.intern("f");
 
         for i in 0..5 {
@@ -9633,8 +9624,8 @@ mod tests {
     fn search_stream_recursive_rule() {
         // ancestor via stream, both solutions yielded one at a time
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Rule");
+        let domain = kb.intern("test");
         let parent_sym = kb.intern("parent");
         let ancestor_sym = kb.intern("ancestor");
 
@@ -10038,8 +10029,8 @@ mod tests {
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
 
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Assert p(a) as a fact
         let p_a_fact = kb.alloc(Term::Fn {
@@ -10101,8 +10092,8 @@ mod tests {
         let f_sym = kb.intern("f");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
 
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Assert f(a)
         let f_a = kb.alloc(Term::Fn {
@@ -10161,8 +10152,8 @@ mod tests {
         let p_sym = kb.intern("p");
         let f_sym = kb.intern("f");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Facts p(a), f(a).
         let p_a = kb.alloc(Term::Fn {
@@ -10225,8 +10216,8 @@ mod tests {
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let r_sym = kb.intern("r");
         let s_sym = kb.intern("s");
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Rule r() :- nonvar(?w).  (?w is body-local ⇒ r() is ground but flounders)
         let r_head = kb.alloc(Term::Fn {
@@ -10289,8 +10280,8 @@ mod tests {
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         let p_a_fact = kb.alloc(Term::Fn {
             functor: p_sym,
@@ -10331,8 +10322,8 @@ mod tests {
         let mut kb = kb_with_builtins();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Two ground-but-floundering nullary rules `r() :- nonvar(?w)`, `u() :- nonvar(?w2)`.
         let mut make_floundering_rule = |kb: &mut KnowledgeBase, name: &str, var: &str| -> Symbol {
@@ -10402,8 +10393,8 @@ mod tests {
         let r_sym = kb.intern("r");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
 
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Assert recursive rule: r(?y) :- r(?y)
         let y_sym = kb.intern("y");
@@ -10468,8 +10459,8 @@ mod tests {
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
         let b = kb.alloc(Term::Const(Literal::String("b".into())));
 
-        let sort = kb.make_name_term("Fact");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Fact");
+        let domain = kb.intern("test");
 
         // Assert facts
         let thing_a = kb.alloc(Term::Fn {
@@ -10547,8 +10538,8 @@ mod tests {
     #[test]
     fn search_stream_infinite_rule() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sort");
+        let domain = kb.intern("test");
 
         let nat_sym = kb.intern("nat");
         let zero_sym = kb.intern("zero");
@@ -10650,8 +10641,8 @@ mod tests {
     #[test]
     fn debruijn_multi_occurrence_concrete_query() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sort");
+        let domain = kb.intern("test");
 
         let shared_sym = kb.intern("shared");
         let check_a_sym = kb.intern("check_a");
@@ -10744,8 +10735,8 @@ mod tests {
         // holds(state(?x)); expect ?x = active. Before the nested binding-
         // extraction the fact was found but ?x stayed unbound (silent wrong answer).
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sort");
+        let domain = kb.intern("test");
         let holds = kb.intern("holds");
         let state = kb.intern("state");
         let active = kb.alloc(Term::Const(Literal::String("active".into())));
@@ -10782,8 +10773,8 @@ mod tests {
     #[test]
     fn debruijn_multiple_anonymous_vars_independent() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sort");
+        let domain = kb.intern("test");
 
         let pair_sym = kb.intern("pair");
         let left_sym = kb.intern("left");
@@ -10876,8 +10867,8 @@ mod tests {
                 let n: usize = 1000;
 
                 let mut kb = KnowledgeBase::new();
-                let sort = kb.make_name_term("Sort");
-                let domain = kb.make_name_term("test");
+                let sort = kb.intern("Sort");
+                let domain = kb.intern("test");
 
                 let big_sym = kb.intern("big");
 
@@ -10961,8 +10952,8 @@ mod tests {
     /// but parametric in `n`. Returns `(kb, query)`.
     fn build_n_body_fixture(n: usize) -> (KnowledgeBase, TermId) {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sort");
+        let domain = kb.intern("test");
         let big_sym = kb.intern("big");
 
         let f_syms: Vec<Symbol> = (0..n)
@@ -11124,8 +11115,8 @@ mod tests {
     #[test]
     fn anonymous_vars_chain_through_rules() {
         let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Sort");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Sort");
+        let domain = kb.intern("test");
 
         let check_sym = kb.intern("check");
         let p_sym = kb.intern("p");

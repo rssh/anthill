@@ -281,8 +281,8 @@ end
 /// The rendered `ProofRecord` facts in `kb`, for reading back which symbol a proof
 /// target resolved to.
 fn proof_record_targets(kb: &mut KnowledgeBase) -> Vec<String> {
-    let sort_term = kb.make_name_term("anthill.realization.ProofRecord");
-    let rules = kb.by_sort(sort_term);
+    let sort_sym = kb.intern("anthill.realization.ProofRecord");
+    let rules = kb.by_sort(sort_sym);
     let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = anthill_core::persistence::print::TermPrinter::new(kb);
     heads.into_iter().map(|h| printer.print_term(h)).collect()

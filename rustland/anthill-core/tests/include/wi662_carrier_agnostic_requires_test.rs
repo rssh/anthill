@@ -91,8 +91,8 @@ fn assert_requires_fact(kb: &mut KnowledgeBase, denoted: bool) -> (Symbol, Symbo
         foo_base
     };
 
-    let req_sort = kb.make_name_term("Requirement");
-    let domain = kb.make_name_term("test.wi662");
+    let req_sort = kb.intern("Requirement");
+    let domain = kb.intern("test.wi662");
     kb.assert_fact_carrier(
         requires_sym,
         Vec::new(),
@@ -215,8 +215,8 @@ end
         pos: vec![foo_base].into(),
         named: vec![(x_sym, x_ref), (e_sym, Value::Node(node))].into(),
     };
-    let req_sort = kb.make_name_term("Requirement");
-    let domain = kb.make_name_term("test.wi662b");
+    let req_sort = kb.intern("Requirement");
+    let domain = kb.intern("test.wi662b");
     kb.assert_fact_carrier(
         requires_sym,
         Vec::new(),

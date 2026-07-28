@@ -29,8 +29,8 @@ fn make_wi(kb: &mut KnowledgeBase, id_str: &str, status_name: &str) -> (TermId, 
         pos_args: SmallVec::new(),
         named_args: named,
     });
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("test");
     let rid = kb.assert_fact(head, sort, domain, None);
     (head, rid)
 }

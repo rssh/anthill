@@ -344,10 +344,10 @@ pub(crate) fn read_descriptions(
 /// `sort_sym` (WI-632: matched by functor symbol, not by display-name string).
 /// Each realization reifies these to its own term-repr form.
 pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Value> {
-    let rule_sort = kb.make_name_term("Rule");
+    let rule_sort = kb.intern("Rule");
     let mut out = Vec::new();
     for clause in kb.program_clauses_by_sort(rule_sort) {
-        if term_head_sym(kb, clause.domain) != Some(sort_sym) {
+        if clause.domain != sort_sym {
             continue;
         }
         out.push(clause.head);

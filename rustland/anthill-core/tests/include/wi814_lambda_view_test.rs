@@ -242,8 +242,8 @@ fn one_source_lambda_equal_two_distinct_sources_not() {
 #[test]
 fn lambda_cross_carrier_discrim_match() {
     let mut kb = stdlib_kb();
-    let fact_sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let fact_sort = kb.intern("Fact");
+    let domain = kb.intern("test");
     let b = kb.intern("b#1");
     let term = lambda_term(&mut kb, b);
     kb.assert_fact(term, fact_sort, domain, None);

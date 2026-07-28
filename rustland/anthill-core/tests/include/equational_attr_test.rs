@@ -35,7 +35,7 @@ fn load_with(extra: &str) -> KnowledgeBase {
 /// by checking the head shape directly.
 fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
     let mut count = 0usize;
-    let rule_sort_term = kb.make_name_term("Rule");
+    let rule_sort_term = kb.intern("Rule");
     let all_rules = kb.by_sort(rule_sort_term);
     for &rid in &all_rules {
         let head = kb.rule_head(rid);

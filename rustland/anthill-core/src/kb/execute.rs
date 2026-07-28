@@ -440,8 +440,8 @@ impl KnowledgeBase {
         });
 
         if fresh {
-            let rule_sort = self.make_name_term("Rule");
-            let domain = self.make_name_term("_global");
+            let rule_sort = self.intern("Rule");
+            let domain = self.intern("_global");
             // WI-678: the stored body is the goal carriers themselves — an
             // occurrence goal is used directly (its spans/types preserved, no
             // reify), a term/entity goal materializes to an occurrence exactly as

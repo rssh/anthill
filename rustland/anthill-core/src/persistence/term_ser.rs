@@ -66,7 +66,7 @@ impl std::error::Error for SerError {}
 pub fn load_toml(
     kb: &mut KnowledgeBase,
     source: &str,
-    domain: TermId,
+    domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
     let toml_val: toml::Value = toml::from_str(source)
         .map_err(|e| vec![SerError::Format(e.to_string())])?;
@@ -79,7 +79,7 @@ pub fn load_toml(
 pub fn load_json(
     kb: &mut KnowledgeBase,
     source: &str,
-    domain: TermId,
+    domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
     let json_val: serde_json::Value = serde_json::from_str(source)
         .map_err(|e| vec![SerError::Format(e.to_string())])?;
@@ -185,7 +185,7 @@ pub const DATA_EXTENSIONS: [&str; 2] = ["toml", "json"];
 fn load_value(
     kb: &mut KnowledgeBase,
     value: serde_json::Value,
-    domain: TermId,
+    domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
     let obj = match value {
         serde_json::Value::Object(map) => map,
@@ -227,7 +227,7 @@ fn load_value(
 fn load_section(
     kb: &mut KnowledgeBase,
     obj: &serde_json::Map<String, serde_json::Value>,
-    domain: TermId,
+    domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
     let meta = obj.get("meta").ok_or_else(|| {
         vec![SerError::MissingMeta("section has no 'meta' key".into())]
@@ -300,13 +300,8 @@ fn resolve_entity_functor(kb: &mut KnowledgeBase, name: &str) -> Option<Symbol> 
 }
 
 /// Get the sort term for an entity functor (its parent sort, or "Fact" fallback).
-fn entity_sort(kb: &mut KnowledgeBase, functor: Symbol) -> TermId {
-    let functor_term = kb.make_name_term_from_sym(functor);
-    if let Some(parent) = kb.entity_parent_sort(functor_term) {
-        parent
-    } else {
-        kb.make_name_term("Fact")
-    }
+fn entity_sort(kb: &mut KnowledgeBase, functor: Symbol) -> Symbol {
+    kb.constructor_parent_sort(functor).unwrap_or_else(|| kb.intern("Fact"))
 }
 
 /// Load a single data entry into a KB term, reconstructing each field

@@ -423,9 +423,7 @@ impl KnowledgeBase {
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
         let term = self.alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
-        let sort = self.fact_trigger_sort(&row).or_else(|| {
-            sort_hint.map(|sym| self.make_name_term_from_sym(sym))
-        }).ok_or_else(|| {
+        let sort = self.fact_trigger_sort(&row).or(sort_hint).ok_or_else(|| {
             ExtentError::Backend("persistent assert: row has no trigger sort and no sort hint".into())
         })?;
         Ok(self.assert_checked(term, sort, sort, None).map(|rule| StoredRow {
@@ -470,8 +468,8 @@ impl KnowledgeBase {
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
         let term = self.alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
-        let sort = self.make_name_term("Fact");
-        let domain = self.make_name_term("anthill.todo");
+        let sort = self.intern("Fact");
+        let domain = self.intern("anthill.todo");
         let rule = self.assert_fact(term, sort, domain, None);
         Ok(StoredRow { row, reference: FactRef::resident(rule) })
     }
@@ -489,8 +487,8 @@ impl KnowledgeBase {
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
         let term = self.alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent persist: lower row: {e:?}")))?;
-        let sort = self.make_name_term("Fact");
-        let domain = self.make_name_term("anthill.todo");
+        let sort = self.intern("Fact");
+        let domain = self.intern("anthill.todo");
         let mut mirror = self.take_mirror(mirror_key).ok_or_else(|| {
             ExtentError::Backend(format!("persistent persist: no mirror registered for key `{mirror_key}`"))
         })?;
@@ -1856,8 +1854,8 @@ mod tests {
     /// `rules_by_functor` finds it — the resident counterpart of the `row`
     /// fixture (which builds a raw `Value` for the mounted path).
     fn assert_wi_fact(kb: &mut KnowledgeBase, f: Symbol, id_field: Symbol, tag_field: Symbol, id: i64, tag: &str) {
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         let id_t = kb.alloc(Term::Const(Literal::Int(id)));
         let tag_t = kb.alloc(Term::Const(Literal::String(tag.to_string())));
         let head = kb.alloc(Term::Fn {
@@ -1924,8 +1922,8 @@ mod tests {
         // hide the refusal (the loop early-returns only on the bodied rule, never
         // on a selection match).
         assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         let x_sym = kb.intern("x");
         let x = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(x)));
@@ -2013,8 +2011,8 @@ mod tests {
         let c = kb.intern("c");
         kb.register_entity_fields(f, vec![a, b, c]);
         let assert_triple = |kb: &mut KnowledgeBase, av: i64, bv: i64, cv: i64| {
-            let sort = kb.make_name_term("Test");
-            let domain = kb.make_name_term("test");
+            let sort = kb.intern("Test");
+            let domain = kb.intern("test");
             let at = kb.alloc(Term::Const(Literal::Int(av)));
             let bt = kb.alloc(Term::Const(Literal::Int(bv)));
             let ct = kb.alloc(Term::Const(Literal::Int(cv)));
@@ -2069,8 +2067,8 @@ mod tests {
 
         // Assert two bodied rules under `f`.
         let mk_rule = |kb: &mut KnowledgeBase| {
-            let sort = kb.make_name_term("Test");
-            let domain = kb.make_name_term("test");
+            let sort = kb.intern("Test");
+            let domain = kb.intern("test");
             let x = kb.fresh_var(id_field);
             let var_x = kb.alloc(Term::Var(Var::Global(x)));
             let head = kb.alloc(Term::Fn {
@@ -2116,8 +2114,8 @@ mod tests {
         assert_wi_fact(&mut kb, f, id_field, tag_field, 1, "a");
         // A bodied rule under `f` with a head `Item(id: ?x)` — a different arity, so
         // the `id = 1` selection below would never structurally reach it.
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         let x = kb.fresh_var(id_field);
         let var_x = kb.alloc(Term::Var(Var::Global(x)));
         let head = kb.alloc(Term::Fn {
@@ -2272,8 +2270,8 @@ mod tests {
         tag: &str,
         guard: Symbol,
     ) {
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         let id_t = kb.alloc(Term::Const(Literal::Int(id)));
         let tag_t = kb.alloc(Term::Const(Literal::String(tag.to_string())));
         let head = kb.alloc(Term::Fn {
@@ -2291,8 +2289,8 @@ mod tests {
 
     /// Assert a nullary ground fact `f()` — a guard that succeeds.
     fn assert_nullary_fact(kb: &mut KnowledgeBase, f: Symbol) {
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         let head = kb.alloc(Term::Fn {
             functor: f,
             pos_args: SmallVec::new(),
@@ -2430,8 +2428,8 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: [(id_field, id_t), (tag_field, tag_v)].into(),
         });
-        let sort = kb.make_name_term("Test");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("Test");
+        let domain = kb.intern("test");
         kb.assert_fact(head, sort, domain, None);
 
         let rows = kb.read_facts_resolved(f, &[]).expect("resolves");

@@ -2,6 +2,9 @@
 
 mod common;
 
+#[path = "include/parameterized_provides_block_test.rs"]
+mod parameterized_provides_block_test;
+
 #[path = "include/tuple_order_test.rs"]
 mod tuple_order_test;
 

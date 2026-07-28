@@ -263,8 +263,8 @@ fn persist_and_flush_flat() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("test");
 
     // Create a simple fact term: Foo
     let foo = kb.make_name_term("Foo");
@@ -299,8 +299,8 @@ fn persist_flush_appends() {
 
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
     let mut kb = KnowledgeBase::new();
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("test");
     let new_term = kb.make_name_term("NewFact");
 
     store.persist(&kb, new_term, sort, domain, None).unwrap();
@@ -317,9 +317,9 @@ fn persist_by_domain() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::ByDomain);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.make_name_term("Fact");
-    let domain_a = kb.make_name_term("banking");
-    let domain_b = kb.make_name_term("trading");
+    let sort = kb.intern("Fact");
+    let domain_a = kb.intern("banking");
+    let domain_b = kb.intern("trading");
 
     let foo = kb.make_name_term("Foo");
     let bar = kb.make_name_term("Bar");
@@ -341,8 +341,8 @@ fn full_round_trip() {
 
     // Step 1: Build a KB with some facts
     let mut kb1 = KnowledgeBase::new();
-    let fact_sort = kb1.make_name_term("Fact");
-    let domain = kb1.make_name_term("test");
+    let fact_sort = kb1.intern("Fact");
+    let domain = kb1.intern("test");
 
     // fact Eq(T: Int64)
     let eq_sym = kb1.intern("Eq");
@@ -399,7 +399,7 @@ fn full_round_trip() {
     }
 
     // Step 4: Verify facts in the new KB
-    let fact_sort2 = kb2.make_name_term("Fact");
+    let fact_sort2 = kb2.intern("Fact");
     let facts = kb2.by_sort(fact_sort2);
     assert_eq!(facts.len(), 2, "should have 2 facts after round-trip");
 
@@ -442,8 +442,8 @@ fn retract_drops_fact_block_from_disk() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("test");
 
     // Persist three facts: Foo, Bar, Baz.
     let foo = kb.make_name_term("Foo");
@@ -484,8 +484,8 @@ fn retract_then_persist_replaces_in_place() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("test");
 
     let wi_sym = kb.intern("WorkItem");
     let id_sym = kb.intern("id");
@@ -559,7 +559,7 @@ fn retract_preserves_inter_fact_text() {
     }
 
     // Find the rule for B by walking by_sort and matching the printed head.
-    let fact_sort = kb.make_name_term("Fact");
+    let fact_sort = kb.intern("Fact");
     let mut b_id_opt = None;
     for rid in kb.by_sort(fact_sort) {
         let head = kb.rule_head(rid);
@@ -589,8 +589,8 @@ fn flush_is_idempotent_after_retract() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Fact");
+    let domain = kb.intern("test");
     let foo = kb.make_name_term("Foo");
     let bar = kb.make_name_term("Bar");
     let _foo_id = kb.assert_fact(foo, sort, domain, None);

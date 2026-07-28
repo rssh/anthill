@@ -68,8 +68,8 @@ fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
     });
-    let sort = kb.make_name_term("Eq");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Eq");
+    let domain = kb.intern("test");
     kb.assert_fact(eq_head, sort, domain, Some(meta));
     add
 }
@@ -109,8 +109,8 @@ fn assert_add_comm(kb: &mut KnowledgeBase) -> Symbol {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
     });
-    let sort = kb.make_name_term("Eq");
-    let domain = kb.make_name_term("test");
+    let sort = kb.intern("Eq");
+    let domain = kb.intern("test");
     kb.assert_fact(eq_head, sort, domain, Some(meta));
     add
 }

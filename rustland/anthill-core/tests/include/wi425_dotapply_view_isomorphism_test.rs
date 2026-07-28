@@ -147,8 +147,8 @@ fn dotapply_view_is_isomorphic_to_term_twin() {
 #[test]
 fn dotapply_cross_carrier_discrim_match() {
     let mut kb = stdlib_kb();
-    let fact_sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let fact_sort = kb.intern("Fact");
+    let domain = kb.intern("test");
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let term = dot_term(&mut kb, one);
     kb.assert_fact(term, fact_sort, domain, None);
@@ -179,8 +179,8 @@ fn dotapply_occurrence_goal_var_binds_through_args_list() {
     // arg's value) binds against the term fact's subterm — the deferred
     // VarPath extraction (WI-373) descends both carriers along the same keys.
     let mut kb = stdlib_kb();
-    let fact_sort = kb.make_name_term("Fact");
-    let domain = kb.make_name_term("test");
+    let fact_sort = kb.intern("Fact");
+    let domain = kb.intern("test");
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let term = dot_term(&mut kb, one);
     kb.assert_fact(term, fact_sort, domain, None);

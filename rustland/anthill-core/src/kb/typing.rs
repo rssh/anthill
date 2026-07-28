@@ -3567,34 +3567,14 @@ fn extract_ref_field(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId)
 }
 
 /// Functor symbols of a sort's constructor children.
-fn sort_constructor_syms(kb: &KnowledgeBase, sort_term: TermId) -> Vec<Symbol> {
-    // WI-511 prep (WI-348 migration): read each entity identity's functor through
-    // `TermView::head().functor_sym()` so a 0-ary constructor identity reads
-    // carrier-agnostically — `Ref(c)` or `Fn{c}` both yield `c` — making the
-    // future storage flip (`Fn{c}→Ref(c)`) a no-op here. Dedup guards against the
-    // entity-identity dual-keying.
-    let mut out: Vec<Symbol> = Vec::new();
-    for &et in kb.sort_children(sort_term) {
-        if let Some(f) = TermIdView(et).head(kb).functor_sym() {
-            if !out.contains(&f) {
-                out.push(f);
-            }
-        }
-    }
-    out
-}
-
-/// Convert a raw sort term (Fn { functor: sym }) to a sort_ref type term.
-fn sort_term_to_type(kb: &mut KnowledgeBase, sort_term: TermId) -> TermId {
-    let sym = match kb.get_term(sort_term) {
-        Term::Fn { functor, .. } => Some(*functor),
-        Term::Ref(s) => Some(*s),
-        _ => None,
-    };
-    match sym {
-        Some(s) => kb.make_sort_ref(s),
-        None => sort_term,
-    }
+fn sort_constructor_syms(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
+    // `sort_children` IS the answer now. It used to hand back entity-identity
+    // TERMS, so this read each one's functor through `TermView::head()` (a 0-ary
+    // constructor is spelled `Ref(c)` or `Fn{c}` depending on registration order)
+    // and deduped, because the same constructor could appear under both
+    // spellings. `sort_entities` stores symbols and dedups at registration, so
+    // both the per-element unwrap and the dedup are gone.
+    kb.sort_children(sort).to_vec()
 }
 
 pub fn get_named_arg(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId); 2]>, key: &str) -> Option<TermId> {
@@ -6011,8 +5991,8 @@ fn tuple_field_expected_from_ctor(
     let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
     let (_, field_decl) = field_types.iter().find(|(s, _)| *s == field_sym)?;
     let field_decl = field_decl.clone();
-    let parent_tid = kb.constructor_parent_sort(ctor_sym)?;
-    let parent_type = sort_term_to_type(kb, parent_tid);
+    let parent_sym = kb.constructor_parent_sort(ctor_sym)?;
+    let parent_type = kb.make_sort_ref(parent_sym);
     let mut subst = Substitution::new();
     if !unify_types(kb, &mut subst, &TermIdView(parent_type), exp) {
         return None;
@@ -6095,16 +6075,11 @@ fn try_fire_dot_rule(
         }
         // Enclosing-sort guard: a dot rule fires only where the receiver's
         // least sort conforms to the rule's defining sort — by identity or spec
-        // satisfaction. `rule_domain` is the *sort term* (a nullary `Fn` / `Ref`
-        // whose functor IS the sort), so read the functor directly;
-        // `sort_functor_of` is for `sort_ref`-wrapped *type* terms and returns
-        // `None` on a bare sort term. Without this guard one sort's `map` rule
-        // would hijack the member name for every receiver (unsound).
-        let encl = match kb.get_term(kb.rule_domain(rid)) {
-            Term::Fn { functor, .. } => *functor,
-            Term::Ref(s) => *s,
-            _ => continue,
-        };
+        // satisfaction. `rule_domain` IS that sort's symbol (it was a nullary
+        // `Fn`/`Ref` term unwrapped here). Do NOT reach for `sort_functor_of` —
+        // that is for `sort_ref`-wrapped *type* terms. Without this guard one
+        // sort's `map` rule would hijack the member name for every receiver.
+        let encl = kb.rule_domain(rid);
         // WI-672 `same_sort_canonical` (not raw `==`): a sort's differently-interned
         // copies share a canonical symbol — match the convention used by `sort_provides`
         // / sort widening. Identity OR spec satisfaction.
@@ -8231,10 +8206,7 @@ fn build_type(
             let scrutinee_ctors: Vec<Symbol> = scr_ty
                 .as_ref()
                 .and_then(|sty| sort_functor_of_view(kb, sty))
-                .map(|s| {
-                    let sort_term = kb.make_name_term_from_sym(s);
-                    sort_constructor_syms(kb, sort_term)
-                })
+                .map(|s| sort_constructor_syms(kb, s))
                 .unwrap_or_default();
             let mut branch_envs: Vec<Env> = Vec::with_capacity(branches.len());
             // WI-537: the arm guard's effects (merged into the match's effects)
@@ -8402,9 +8374,8 @@ fn build_type(
                     // PARAMETERIZED scrutinee keeps its exhaustiveness check
                     // (the bare-ref-only read silently skipped it).
                     if let Some(sort_sym) = sort_functor_of_view(kb, &sty) {
-                        let sort_term = kb.make_name_term_from_sym(sort_sym);
-                        if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
-                            let all_entities = sort_constructor_syms(kb, sort_term);
+                        if kb.sort_kind(sort_sym) == Some(SortKind::Enum) {
+                            let all_entities = sort_constructor_syms(kb, sort_sym);
                             let missing: Vec<String> = all_entities
                                 .iter()
                                 .filter(|e| {
@@ -20695,7 +20666,7 @@ fn check_constructor_iter(
     // and downstream spec-op calls fail dispatch (WI-204 feedback).
     let parent_sort = kb.constructor_parent_sort(ctor_sym);
     let parent_type = match parent_sort {
-        Some(parent_tid) => sort_term_to_type(kb, parent_tid),
+        Some(parent_sym) => kb.make_sort_ref(parent_sym),
         None => kb.make_sort_ref(ctor_sym),
     };
 
@@ -20811,11 +20782,8 @@ fn check_constructor_iter(
     // conflict is a genuine parametricity violation. Runs BEFORE the
     // expected-seed below, whose contradicting-hint unify is a deliberate
     // ignored no-op.
-    if let Some(parent_tid) = parent_sort {
-        if let Term::Fn { functor, .. } = kb.get_term(parent_tid) {
-            let parent_sym = *functor;
-            enforce_member_tie(kb, &subst, parent_sym, ctor_sym, span, &[])?;
-        }
+    if let Some(parent_sym) = parent_sort {
+        enforce_member_tie(kb, &subst, parent_sym, ctor_sym, span, &[])?;
     }
     // WI-408: materialize the recorded some-coercions (see check_apply_iter) —
     // every return below reads the (possibly rebuilt) `occ`.
@@ -23578,12 +23546,7 @@ fn bind_and_label_pattern(
             // `Option[T = String]`, `some.value`'s declared type `T` resolves
             // to `String` — without this `name` binds to the raw type-param
             // term and surfaces as a bare `TermId` in later return-type checks.
-            let parent_sort = kb.constructor_parent_sort(ctor_sym)
-                .and_then(|t| match kb.get_term(t) {
-                    Term::Fn { functor, .. } => Some(*functor),
-                    Term::Ref(s) => Some(*s),
-                    _ => None,
-                });
+            let parent_sort = kb.constructor_parent_sort(ctor_sym);
             let subst = scrutinee_type
                 .as_ref()
                 .zip(parent_sort)
@@ -28874,7 +28837,7 @@ pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
 fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
     let sym = extract_sort_ref_sym(kb, &TermIdView(t))?;
     let parent = kb.constructor_parent_sort(sym)?;
-    Some(sort_term_to_type(kb, parent))
+    Some(kb.make_sort_ref(parent))
 }
 
 /// WI-342: carrier-agnostic widen for [`join_types`]. Only a nominal sort widens
@@ -29434,11 +29397,9 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 
     // Entity subtyping: actual is entity of parent sort.
     // Check both direct match and transitive (parent's requires chain).
-    if let Some(parent_tid) = kb.constructor_parent_sort(actual_sym) {
-        if let Term::Fn { functor: parent_functor, .. } = kb.get_term(parent_tid) {
-            if sort_sym_compatible(kb, *parent_functor, expected_sym) {
-                return true;
-            }
+    if let Some(parent_sym) = kb.constructor_parent_sort(actual_sym) {
+        if sort_sym_compatible(kb, parent_sym, expected_sym) {
+            return true;
         }
     }
 
@@ -29482,10 +29443,8 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
         return true;
     }
     // An entity value's provision comes from its parent sort.
-    if let Some(parent_tid) = kb.constructor_parent_sort(actual_sym) {
-        if let Term::Fn { functor: parent_functor, .. } = kb.get_term(parent_tid) {
-            return sort_provides_admissibly(kb, *parent_functor, expected_sym);
-        }
+    if let Some(parent_sym) = kb.constructor_parent_sort(actual_sym) {
+        return sort_provides_admissibly(kb, parent_sym, expected_sym);
     }
     false
 }
@@ -29533,11 +29492,8 @@ fn bare_provider_binding_precise<E: TermView>(
         }
         // Entity → parent sort. The chain is acyclic (a parent is a sort, never a
         // constructor), mirroring `sort_provides_admissibly`'s recursion.
-        let Some(parent_tid) = kb.constructor_parent_sort(carrier) else { return false };
-        let Term::Fn { functor: parent_functor, .. } = kb.get_term(parent_tid) else {
-            return false;
-        };
-        carrier = *parent_functor;
+        let Some(parent_sym) = kb.constructor_parent_sort(carrier) else { return false };
+        carrier = parent_sym;
     };
     let mut probe = subst.clone();
     for (param, ev) in &expected_bindings {
@@ -31175,7 +31131,7 @@ fn reconstruct_sort_params(
 /// avoid (`docs/design/constrained-term-substrate.md`).
 fn finish_constructor_type(
     kb: &mut KnowledgeBase,
-    parent_sort: Option<TermId>,
+    parent_sort: Option<Symbol>,
     parent_type: TermId,
     subst: &Substitution,
 ) -> Value {
@@ -31184,12 +31140,8 @@ fn finish_constructor_type(
     }
     // A free-standing entity has no parent sort to walk; its own symbol is the type —
     // no type params to discover, so the simple `parent_type` sort_ref stands.
-    let parent_sym = match parent_sort {
-        Some(parent_tid) => match kb.get_term(parent_tid) {
-            Term::Fn { functor, .. } => *functor,
-            _ => return Value::term(parent_type),
-        },
-        None => return Value::term(parent_type),
+    let Some(parent_sym) = parent_sort else {
+        return Value::term(parent_type);
     };
     let param_bindings = reconstruct_sort_params(kb, parent_sym, subst);
     if param_bindings.is_empty() {
@@ -31308,7 +31260,7 @@ fn constructor_value_type(
 
     let parent_sort = kb.constructor_parent_sort(ctor_sym);
     let parent_type = match parent_sort {
-        Some(parent_tid) => sort_term_to_type(kb, parent_tid),
+        Some(parent_sym) => kb.make_sort_ref(parent_sym),
         None => kb.make_sort_ref(ctor_sym),
     };
     let field_types = match kb.entity_field_types(ctor_sym) {
@@ -32031,8 +31983,8 @@ use super::load::LoadError;
 /// Type-check the given sort terms and return errors as `LoadError` for
 /// the load pipeline. Use [`type_check_sorts_typed`] when structured
 /// `TypeError` values are needed (programmatic access, IDE diagnostics).
-pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<LoadError> {
-    let (typed, sources) = type_check_sorts_collect(kb, sort_terms);
+pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<LoadError> {
+    let (typed, sources) = type_check_sorts_collect(kb, sort_names);
     typed
         .iter()
         .zip(sources.iter())
@@ -32067,8 +32019,8 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 /// stays greppable); the `false` path is retained only as a debug kill-switch.
 const TYPECHECK_FREE_OPS: bool = true;
 
-pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
-    type_check_sorts_collect(kb, sort_terms).0
+pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<TypeError> {
+    type_check_sorts_collect(kb, sort_names).0
 }
 
 /// WI-745: like [`type_check_sorts_typed`], but also returns, parallel to the
@@ -32080,7 +32032,7 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 /// (signature/rule-body/provider checks) leave `None`.
 fn type_check_sorts_collect(
     kb: &mut KnowledgeBase,
-    sort_terms: &[TermId],
+    sort_names: &[Symbol],
 ) -> (Vec<TypeError>, Vec<Option<crate::span::SourceId>>) {
     let mut errors: Vec<TypeError> = Vec::new();
     // Parallel to `errors`: the file each error belongs to, where known.
@@ -32168,13 +32120,8 @@ fn type_check_sorts_collect(
         std::collections::HashSet::new();
 
     if kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some() {
-        for &sort_term in sort_terms {
-            let sort_functor = match kb.get_term(sort_term) {
-                Term::Fn { functor, .. } => *functor,
-                _ => continue,
-            };
-
-            let sort_info = find_sort_info(kb, sort_functor);
+        for &sort_sym in sort_names {
+            let sort_info = find_sort_info(kb, sort_sym);
             let (ctor_syms, op_syms) = match sort_info {
                 Some((ctors, ops)) => (ctors, ops),
                 None => continue,
@@ -32185,7 +32132,7 @@ fn type_check_sorts_collect(
             if TYPECHECK_FREE_OPS {
                 sort_owned_ops.extend(op_syms.iter().copied());
             }
-            check_pattern_fragment(kb, sort_term, &mut errors);
+            check_pattern_fragment(kb, sort_sym, &mut errors);
             // WI-745 invariant, restored INSIDE the loop (review): `sources` must stay
             // parallel to `errors`, and `check_pattern_fragment` takes only `errors` (its
             // diagnostics are per-SORT, with no one file to attribute them to). The pad
@@ -32197,7 +32144,7 @@ fn type_check_sorts_collect(
             // pass below (one `collect_rule_var_types` per rule). Record which
             // non-fact rules `check_rule_typing` would have walked so that pass
             // preserves the exact reporting scope.
-            for rid in kb.by_domain(sort_term) {
+            for rid in kb.by_domain(sort_sym) {
                 if !kb.is_fact(rid) {
                     rule_typing_reportable.insert(rid);
                 }
@@ -32718,7 +32665,7 @@ fn lit_sort_provides(kb: &KnowledgeBase, prim: &str, declared_sym: Symbol) -> bo
 /// when the parent sort provides the declared spec sort.
 fn check_value_sort_membership(
     kb: &KnowledgeBase,
-    parent: Option<TermId>,
+    parent: Option<Symbol>,
     declared_sym: Symbol,
     declared_type: &Value,
     entity_sym: Symbol,
@@ -32729,7 +32676,7 @@ fn check_value_sort_membership(
     if constructor_matches_declared(kb, parent, declared_sym) {
         return None;
     }
-    if sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, declared_sym)) {
+    if sort_provides(kb, parent, declared_sym) {
         return None;
     }
     Some(TypeError::Other {
@@ -32737,7 +32684,7 @@ fn check_value_sort_membership(
         span,
         context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
         expected: type_display_name_value(kb, declared_type),
-        actual: extract_parent_name(kb, parent),
+        actual: kb.resolve_sym(parent).to_string(),
     })
 }
 
@@ -32788,7 +32735,7 @@ fn check_value_against_parameterized(
         if !constructor_matches_declared(kb, parent, base_sym) {
             let goal_bindings = declared_type_goal_bindings(kb, &bindings);
             let accepted = if goal_bindings.is_empty() {
-                sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, base_sym))
+                sort_provides(kb, parent, base_sym)
             } else {
                 spec_resolves_at_bindings(kb, base_sym, goal_bindings)
             };
@@ -32800,7 +32747,7 @@ fn check_value_against_parameterized(
                 span,
                 context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                 expected: type_display_name_value(kb, declared_type),
-                actual: extract_parent_name(kb, parent),
+                actual: kb.resolve_sym(parent).to_string(),
             });
         }
     }
@@ -33074,27 +33021,12 @@ fn sort_provides_reach(
 }
 
 /// Check if a constructor's parent sort matches the declared type symbol.
-fn constructor_matches_declared(kb: &KnowledgeBase, parent: TermId, declared_type_sym: Symbol) -> bool {
-    let parent_sym = match kb.get_term(parent) {
-        Term::Fn { functor: f, .. } => Some(*f),
-        Term::Ref(s) => Some(*s),
-        _ => None,
-    };
+fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_type_sym: Symbol) -> bool {
     let declared_name = kb.resolve_sym(declared_type_sym);
-    parent_sym.map_or(false, |ps| {
-        let pn = kb.resolve_sym(ps);
-        pn == declared_name
-            || pn.strip_suffix(declared_name).map_or(false, |p| p.ends_with('.'))
-            || declared_name.strip_suffix(pn).map_or(false, |p| p.ends_with('.'))
-    })
-}
-
-fn extract_parent_name(kb: &KnowledgeBase, parent: TermId) -> String {
-    match kb.get_term(parent) {
-        Term::Fn { functor: f, .. } => kb.resolve_sym(*f).to_string(),
-        Term::Ref(s) => kb.resolve_sym(*s).to_string(),
-        _ => "?".to_string(),
-    }
+    let pn = kb.resolve_sym(parent);
+    pn == declared_name
+        || pn.strip_suffix(declared_name).is_some_and(|p| p.ends_with('.'))
+        || declared_name.strip_suffix(pn).is_some_and(|p| p.ends_with('.'))
 }
 
 /// WI-392: build a substitution that Skolemizes an operation's own declared type
@@ -33758,13 +33690,13 @@ fn collect_covered_entities(
 
 /// Validate that rules conform to the hereditary Harrop pattern fragment.
 /// This ensures higher-order unification remains decidable.
-fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
+fn check_pattern_fragment(kb: &KnowledgeBase, sort_name: Symbol, errors: &mut Vec<TypeError>) {
     let ho_apply_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.ho_apply") {
         Some(s) => s,
         None => return,
     };
 
-    for rid in kb.by_domain(sort_term) {
+    for rid in kb.by_domain(sort_name) {
         if kb.is_fact(rid) { continue; } // skip facts — only check rules
 
         // Head stays a hash-consed term (it is searched in the discrim tree),
@@ -35057,8 +34989,21 @@ fn head_result_carrier(kb: &KnowledgeBase, head: Symbol) -> Option<Symbol> {
     if let Some(rec) = super::op_info::lookup_operation_info(kb, head) {
         return sort_functor_of_view(kb, &rec.return_type);
     }
-    let parent = kb.constructor_parent_sort(head)?;
-    sort_functor_of_view(kb, &parent)
+    // BEHAVIOUR CHANGE, deliberate. This was
+    // `sort_functor_of_view(kb, &kb.constructor_parent_sort(head)?)`, and
+    // `constructor_parent_sort` then returned the parent TERM — usually the
+    // nullary `Fn{P}` that `type_head` classifies as `TypeHead::Error` ("a bare
+    // sort is `Ref(S)`, never `Fn{S}`"), so the branch answered `None`. But only
+    // USUALLY: when the parent symbol was itself a constructor, WI-511's canon
+    // stored `Ref(P)` and the same branch answered `Some(P)`. The result depended
+    // on registration ORDER — the exact defect this migration removes. A
+    // constructor's result carrier IS its parent sort (what the doc above already
+    // claims), so it now answers that uniformly. Consequence to know: a
+    // constructor-headed operand can now resolve a carrier in
+    // `check_value_eq_override_backing`, so a carrier with an unbacked `eq`
+    // override can raise `EqOverrideUnbacked` at load where it previously could
+    // not. The suite is green, i.e. no in-repo carrier is in that state.
+    kb.constructor_parent_sort(head)
 }
 
 /// WI-652 — walk a constraint/guard's untyped `LogicalQuery` Value for eq calls,
@@ -36474,6 +36419,7 @@ mod p4_tests {
         // parametric stdlib sort, so `type_param_vid_in_sort` has nothing to resolve.
         let global = kb.make_name_term("_global");
         let global_raw = global.raw();
+        let global_domain = kb.name_term_sym(global);
         kb.symbols.define_qualified_only("Box", "Box", SymbolKind::Sort, global_raw);
         kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, global_raw);
         let box_sym = kb.resolve_symbol("Box");
@@ -36484,13 +36430,13 @@ mod p4_tests {
         let var_term = kb.alloc(Term::Var(Var::Global(vid_seed)));
         let alias_sym = kb.resolve_symbol("SortAlias");
         let box_t_head = kb.make_name_term_from_sym(box_t);
-        let sort_sort = kb.make_name_term("Sort");
+        let sort_sort = kb.intern("Sort");
         kb.assert_fact_carrier(
             alias_sym,
             vec![Value::term(box_t_head), Value::term(var_term)],
             Vec::new(),
             sort_sort,
-            global,
+            global_domain,
             None,
         );
         let vid = type_param_vid_in_sort(&kb, box_sym, box_t)
@@ -37219,8 +37165,8 @@ mod wi617_canonical_provider_match_tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(spec_key, spec_ref)]),
         });
-        let sort = kb.make_name_term("anthill.reflect.SortProvidesInfo");
-        let domain = kb.make_name_term("test");
+        let sort = kb.intern("anthill.reflect.SortProvidesInfo");
+        let domain = kb.intern("test");
         kb.assert_fact(head, sort, domain, None);
 
         // Query with the canonical symbol. Pre-fix `view_base_sym == spec_sort`

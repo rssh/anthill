@@ -31,11 +31,14 @@ use crate::eval::value::Value;
 // ── Load result ──────────────────────────────────────────────
 
 /// Result of loading a file or set of files.
-/// Contains the sort/enum terms defined, for targeted type checking.
+/// Contains the sort/enum names defined, for targeted type checking.
 #[derive(Debug, Default)]
 pub struct LoadResult {
-    /// Sort and enum terms defined during this load.
-    pub defined_sorts: Vec<TermId>,
+    /// Sort and enum NAMES defined during this load — the work list
+    /// [`crate::kb::typing::type_check_sorts`] checks. A name, not a term:
+    /// the typer looks each one up (`SortInfo` by functor, `by_domain` for the
+    /// sort's own rules), both of which key on the symbol.
+    pub defined_sorts: Vec<Symbol>,
     /// RuleIds of facts asserted during this load, in source order.
     /// Parallel with `parsed.fact_spans()` so persistence backends can
     /// pair each fact's RuleId with its source byte range.
@@ -2886,15 +2889,11 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
         named_args: SmallVec::from_slice(&[(effects_field_sym, effects_rows_term)]),
     });
 
-    // The fact's sort is `EffectsRuntime` itself — same convention as the
-    // stdlib's `fact Effect[T = Modify[?]]` (its fact sort is `Effect`).
-    let er_sort_as_sort_term = kb.alloc(Term::Fn {
-        functor: er_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
-    });
-
     // Assert via the occurrence-native DeBruijn path to close the Global var to
-    // a DeBruijn — fact = rule with empty body (empty occurrence body).
-    kb.assert_rule_debruijn_with_nodes(head, vec![], er_sort_as_sort_term, er_sort_as_sort_term, None);
+    // a DeBruijn — fact = rule with empty body (empty occurrence body). The
+    // fact's sort is `EffectsRuntime` itself — same convention as the stdlib's
+    // `fact Effect[T = Modify[?]]` (its fact sort is `Effect`).
+    kb.assert_rule_debruijn_with_nodes(head, vec![], er_sort_sym, er_sort_sym, None);
 }
 
 /// WI-719: register one prelude constructor (`nil`/`cons`/`none`/`some`) as a
@@ -4463,10 +4462,10 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
 
     if new_records.is_empty() { return; }
-    let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
-    let global_term = kb.make_name_term("_global");
+    let record_sort_sym = kb.intern("anthill.realization.ProofRecord");
+    let global_domain = kb.intern("_global");
     for rec in new_records {
-        kb.assert_metadata_fact(rec, record_sort_term, global_term, None);
+        kb.assert_metadata_fact(rec, record_sort_sym, global_domain, None);
     }
 }
 
@@ -4608,10 +4607,10 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
 
     if new_records.is_empty() { return; }
-    let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
-    let global_term = kb.make_name_term("_global");
+    let record_sort_sym = kb.intern("anthill.realization.ProofRecord");
+    let global_domain = kb.intern("_global");
     for rec in new_records {
-        kb.assert_metadata_fact(rec, record_sort_term, global_term, None);
+        kb.assert_metadata_fact(rec, record_sort_sym, global_domain, None);
     }
 }
 
@@ -4816,10 +4815,10 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     }
 
     if new_records.is_empty() { return; }
-    let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
-    let global_term = kb.make_name_term("_global");
+    let record_sort_sym = kb.intern("anthill.realization.ProofRecord");
+    let global_domain = kb.intern("_global");
     for rec in new_records {
-        kb.assert_metadata_fact(rec, record_sort_term, global_term, None);
+        kb.assert_metadata_fact(rec, record_sort_sym, global_domain, None);
     }
 }
 
@@ -6316,7 +6315,7 @@ struct Loader<'a> {
     // Symbol of the current owning declaration (operation, rule, etc.)
     current_owner: Option<Symbol>,
     // Sort/enum terms defined in this file (for targeted type checking)
-    defined_sorts: Vec<TermId>,
+    defined_sorts: Vec<Symbol>,
     // RuleIds of top-level user `fact …(…)` blocks, in source order.
     // Persistence backends (IndexedFileStore et al.) zip this with the
     // corresponding parsed.fact_spans() to populate per-fact source maps
@@ -6467,7 +6466,7 @@ struct EntityInfoSyms {
     name: Symbol,
     type_name: Symbol,
     fields: Symbol,
-    sort_sort: TermId,
+    sort_sort: Symbol,
 }
 
 struct ExprBuilderSyms {
@@ -7663,7 +7662,7 @@ impl<'a> Loader<'a> {
                     if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
                         let desc_texts = desc_texts.clone();
                         for desc_text in &desc_texts {
-                            self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+                            self.emit_desc_fact(kb_id, desc_text, self.current_domain());
                         }
                     }
                     return kb_id;
@@ -8006,7 +8005,7 @@ impl<'a> Loader<'a> {
         if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
             let desc_texts = desc_texts.clone();
             for desc_text in &desc_texts {
-                self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+                self.emit_desc_fact(kb_id, desc_text, self.current_domain());
             }
         }
 
@@ -9899,7 +9898,7 @@ impl<'a> Loader<'a> {
                     let desc_texts = desc_texts.clone();
                     let target = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
                     for desc_text in &desc_texts {
-                        self.emit_desc_fact(target, desc_text, self.current_scope);
+                        self.emit_desc_fact(target, desc_text, self.current_domain());
                     }
                 }
                 Expr::Var(Var::Global(kb_vid))
@@ -10227,6 +10226,15 @@ impl<'a> Loader<'a> {
             None
         };
         scan(&|f, _| f == sym).or_else(|| scan(&|_, n| n == sort_name))
+    }
+
+    /// The DOMAIN of whatever is being loaded right now: the name of the
+    /// enclosing scope. `current_scope` is a namespace / sort TERM because that
+    /// is what keys the symbol table; a rule's domain is that scope's `Symbol`.
+    /// Used by the emitters that reach for the scope directly rather than
+    /// receiving a `domain` parameter (description facts).
+    fn current_domain(&self) -> Symbol {
+        self.kb.name_term_sym(self.current_scope)
     }
 
     fn name_to_sort_term(&mut self, name: &Name) -> TermId {
@@ -11263,7 +11271,7 @@ impl<'a> Loader<'a> {
                 // and emit its descriptions, yielding the ground hash-consed form.
                 let kb_id = self.convert_term(*term_id);
                 for desc_text in descriptions {
-                    self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+                    self.emit_desc_fact(kb_id, desc_text, self.current_domain());
                 }
                 node_occurrence::TypeChild::Ground(kb_id)
             }
@@ -11656,8 +11664,13 @@ impl<'a> Loader<'a> {
     /// Load items (top-level or within a domain), tracking scope.
     fn load_items(&mut self, items: &[Item], domain: Option<TermId>) {
         let prev_scope = self.current_scope;
-        let domain = domain.unwrap_or_else(|| self.kb.make_name_term("_global"));
-        self.current_scope = domain;
+        let scope = domain.unwrap_or_else(|| self.kb.make_name_term("_global"));
+        self.current_scope = scope;
+        // The scope TERM keys the symbol table (`resolve_in_scope` takes
+        // `TermId::raw()`); the DOMAIN a rule/fact is stored under is its NAME.
+        // This is the one place a scope becomes a domain, so it is the one place
+        // the bridge is crossed — every `load_*` below takes the `Symbol`.
+        let domain = self.kb.name_term_sym(scope);
 
         // WI-233: per-item-kind timing/count, gated by
         // ANTHILL_ITEM_TIMING=1. Aggregated across all `load_items`
@@ -11711,10 +11724,11 @@ impl<'a> Loader<'a> {
 
     fn load_namespace(&mut self, n: &Namespace) {
         let ns_term = self.name_to_sort_term(&n.name);
-        let ns_sort = self.kb.make_name_term("Namespace");
+        let ns_sort = self.kb.intern("Namespace");
 
-        // Assert namespace as a fact
-        self.kb.assert_fact(ns_term, ns_sort, ns_term, None);
+        // Assert namespace as a fact — a namespace is its own domain.
+        let ns_domain = self.kb.name_term_sym(ns_term);
+        self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
 
         // Set scope to namespace for member resolution
         let prev_scope = self.current_scope;
@@ -11756,11 +11770,11 @@ impl<'a> Loader<'a> {
         &mut self,
         sort_term: TermId,
         target: crate::eval::value::Value,
-        domain: TermId,
+        domain: Symbol,
     ) {
         use crate::eval::value::Value;
         let alias_sym = self.kb.resolve_symbol("SortAlias");
-        let sort_sort = self.kb.make_name_term("Sort");
+        let sort_sort = self.kb.intern("Sort");
         self.kb.assert_metadata_fact_carrier(
             alias_sym,
             vec![Value::term(sort_term), target],
@@ -11771,7 +11785,7 @@ impl<'a> Loader<'a> {
         );
     }
 
-    fn load_abstract_sort(&mut self, s: &AbstractSort, domain: TermId) {
+    fn load_abstract_sort(&mut self, s: &AbstractSort, domain: Symbol) {
         let sort_term = self.name_to_sort_term(&s.name);
 
         // Skip re-registration if this AbstractSort has already been loaded —
@@ -11785,7 +11799,7 @@ impl<'a> Loader<'a> {
             return;
         }
 
-        self.kb.register_sort(sort_term, SortKind::Sort);
+        self.kb.register_sort(self.kb.name_term_sym(sort_term), SortKind::Sort);
 
         // Both variable (sort T = ?Element) and alias (sort T = Int64) emit SortAlias.
         // For variables, use convert_term directly to avoid double-emitting descriptions
@@ -11823,7 +11837,7 @@ impl<'a> Loader<'a> {
     /// Emitted from `load_sort_with_body`'s pre-pass (before the entity FieldInfo
     /// build) so a reference to F resolves to this var, not a fresh divergent one.
     /// Dedup-guarded (shared `sort_alias_exists`) for a second load-order encounter.
-    fn emit_type_param_backing_var(&mut self, sort_term: TermId, domain: TermId) {
+    fn emit_type_param_backing_var(&mut self, sort_term: TermId, domain: Symbol) {
         use crate::eval::value::Value;
         if self.sort_alias_exists(sort_term) {
             return;
@@ -11834,17 +11848,17 @@ impl<'a> Loader<'a> {
         self.assert_sort_alias(sort_term, Value::term(var_term), domain);
     }
 
-    fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {
+    fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: Symbol) {
         let sort_term = self.name_to_sort_term(&s.name);
-        self.defined_sorts.push(sort_term);
-        let sort_sort = self.kb.make_name_term("Sort");
+        self.defined_sorts.push(self.kb.name_term_sym(sort_term));
+        let sort_sort = self.kb.intern("Sort");
 
         let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
         let (sort_kind, kind_str) = match s.kind {
             SortDeclKind::Enum => (SortKind::Enum, "enum"),
             SortDeclKind::Sort => (SortKind::Sort, "sort"),
         };
-        self.kb.register_sort(sort_term, sort_kind);
+        self.kb.register_sort(self.kb.name_term_sym(sort_term), sort_kind);
 
         // Emit DescriptionInfo facts for all description blocks
         for desc_text in &s.descriptions {
@@ -11873,12 +11887,13 @@ impl<'a> Loader<'a> {
         // reason: a bare or applied `F` in a field/op resolved during the entity
         // build below must find F's canonical backing var, not a fresh divergent
         // one. (`load_items` later loads F's own body / members.)
+        let sort_domain = self.kb.name_term_sym(sort_term);
         for item in &s.items {
             match item {
-                Item::AbstractSort(abs) => self.load_abstract_sort(abs, sort_term),
+                Item::AbstractSort(abs) => self.load_abstract_sort(abs, sort_domain),
                 Item::SortWithBody(inner) if inner.is_type_param => {
                     let f_term = self.name_to_sort_term(&inner.name);
-                    self.emit_type_param_backing_var(f_term, sort_term);
+                    self.emit_type_param_backing_var(f_term, sort_domain);
                 }
                 _ => {}
             }
@@ -11921,10 +11936,13 @@ impl<'a> Loader<'a> {
 
         // Now collect constructors, operations, parameters, requires from child items
         // (after loading, so all names are resolved in sort scope)
-        let sort_functor = match self.kb.get_term(sort_term) {
-            Term::Fn { functor, .. } => *functor,
-            _ => self.kb.intern("_unknown"),
-        };
+        // `sort_domain` above is this same symbol, taken once and loudly. The
+        // hand-rolled re-derivation this replaces fell back to a fabricated
+        // `_unknown` functor for a `Term::Ref` sort term (the WI-511 canon for a
+        // constructor-named symbol), emitting `SortInfo` under a name nothing
+        // resolves rather than failing — the silent-fallback family the rest of
+        // this migration removes.
+        let sort_functor = sort_domain;
 
         let mut ctor_refs = Vec::new();
         let mut op_refs = Vec::new();
@@ -12007,7 +12025,7 @@ impl<'a> Loader<'a> {
         s: &SortWithBody,
         sort_term: TermId,
         sort_functor: Symbol,
-        parent_domain: TermId,
+        parent_domain: Symbol,
     ) {
         let entities: Vec<&Entity> = s.items.iter()
             .filter_map(|i| if let Item::Entity(e) = i { Some(e) } else { None })
@@ -12106,7 +12124,7 @@ impl<'a> Loader<'a> {
             ));
         }
 
-        let rule_sort = self.kb.make_name_term("Rule");
+        let rule_sort = self.kb.intern("Rule");
         let body_nodes = self.kb.term_body_to_nodes(&body);
         self.kb.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, parent_domain, None);
     }
@@ -12167,8 +12185,8 @@ impl<'a> Loader<'a> {
         op_refs: &[TermId],
         param_refs: &[TermId],
         req_terms: &[TermId],
-        sort_sort: TermId,
-        parent_domain: TermId,
+        sort_sort: Symbol,
+        parent_domain: Symbol,
     ) {
         let sort_info_sym = self.kb.resolve_symbol("anthill.reflect.SortInfo");
         let name_sym = self.kb.intern("name");
@@ -12260,7 +12278,7 @@ impl<'a> Loader<'a> {
         ctor_term: TermId,
         lowered: &[crate::eval::value::Value],
         syms: &EntityInfoSyms,
-        domain: TermId,
+        domain: Symbol,
     ) {
         use crate::eval::value::Value;
         // WI-511: a registered nullary constructor identity is the canonical
@@ -12363,11 +12381,11 @@ impl<'a> Loader<'a> {
         let type_name = self.kb.intern("type_name");
         let fields = self.kb.intern("fields");
         self.kb.register_entity_fields(entity_info, vec![name, fields]);
-        let sort_sort = self.kb.make_name_term("Sort");
+        let sort_sort = self.kb.intern("Sort");
         EntityInfoSyms { field_info, entity_info, name, type_name, fields, sort_sort }
     }
 
-    fn load_entity(&mut self, e: &Entity, domain: TermId) {
+    fn load_entity(&mut self, e: &Entity, domain: Symbol) {
         let functor = self.remap_name(&e.name);
 
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
@@ -12447,9 +12465,9 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_fact(&mut self, f: &Fact, domain: TermId) {
+    fn load_fact(&mut self, f: &Fact, domain: Symbol) {
         let sort_name = f.sort.as_deref().unwrap_or("Fact");
-        let fact_sort = self.kb.make_name_term(sort_name);
+        let fact_sort = self.kb.intern(sort_name);
 
         // Set owner: use the fact's head functor symbol if available. WI-745:
         // resolve it QUIETLY — the term build below resolves the same functor and
@@ -12630,7 +12648,7 @@ impl<'a> Loader<'a> {
     /// Positional bindings are translated to named bindings via
     /// `type_params_of_sort` — `fact Ring[Float]` and
     /// `fact Ring[T = Float]` produce equivalent `SortView` records.
-    fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: TermId) {
+    fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: Symbol) {
         // fact_term must be `Fn { functor, … }` where functor is a Sort
         // with at least one type parameter (i.e. a spec).
         let (fact_functor, fact_pos_args, fact_named_args) =
@@ -12694,12 +12712,8 @@ impl<'a> Loader<'a> {
         // Determine sort_ref (the carrier). For sort-body facts, it's
         // the enclosing sort. For namespace-level facts, it's the
         // first binding value's underlying sort symbol.
-        let domain_functor = match self.kb.get_term(domain) {
-            Term::Fn { functor, .. } => *functor,
-            _ => return,
-        };
-        let sort_ref_term = match self.kb.kind_of(domain_functor) {
-            Some(SymbolKind::Sort) => domain,
+        let sort_ref_term = match self.kb.kind_of(domain) {
+            Some(SymbolKind::Sort) => self.kb.make_name_term_from_sym(domain),
             Some(SymbolKind::Namespace) => {
                 // Derive the carrier from the spec's CARRIER ("Self") TYPE
                 // PARAMETER — the first-declared TYPE binding — NOT
@@ -12781,7 +12795,7 @@ impl<'a> Loader<'a> {
         let sort_ref_arg = self.kb.intern("sort_ref");
         let spec_arg = self.kb.intern("spec");
         self.kb.register_entity_fields(provides_sym, vec![sort_ref_arg, spec_arg]);
-        let provides_sort = self.kb.make_name_term("Requirement");
+        let provides_sort = self.kb.intern("Requirement");
         self.kb.assert_fact_carrier(
             provides_sym,
             Vec::new(),
@@ -12911,8 +12925,8 @@ impl<'a> Loader<'a> {
         None
     }
 
-    fn load_rule(&mut self, r: &Rule, domain: TermId) {
-        let rule_sort = self.kb.make_name_term("Rule");
+    fn load_rule(&mut self, r: &Rule, domain: Symbol) {
+        let rule_sort = self.kb.intern("Rule");
 
         // WI-582: desugar the `[T]` type-variable-introducer form into the inline
         // form. Collect the head's introduced type-vars (`[T]`) and map each to
@@ -13283,7 +13297,7 @@ impl<'a> Loader<'a> {
         spec_atom: TermId,
         op_qualified: &str,
         op_scope: TermId,
-        domain: TermId,
+        domain: Symbol,
     ) -> crate::eval::value::Value {
         let qualified = format!("{op_qualified}.{carrier}");
         let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, op_scope.raw());
@@ -13359,7 +13373,7 @@ impl<'a> Loader<'a> {
     /// just a typed symbol with an optionally-stored body. The body resolves
     /// against the enclosing scope (a const has no params/result, so — unlike
     /// `load_operation` — it needs no dedicated op scope).
-    fn load_const(&mut self, c: &Const, _domain: TermId) {
+    fn load_const(&mut self, c: &Const, _domain: Symbol) {
         let const_sym = self.remap_name(&c.name);
 
         // Own type/body occurrences by the const symbol (mirrors load_operation).
@@ -13383,8 +13397,8 @@ impl<'a> Loader<'a> {
         self.current_owner = prev_owner;
     }
 
-    fn load_operation(&mut self, o: &Operation, domain: TermId) {
-        let op_sort = self.kb.make_name_term("Operation");
+    fn load_operation(&mut self, o: &Operation, domain: Symbol) {
+        let op_sort = self.kb.intern("Operation");
         let functor = self.remap_name(&o.name);
 
         // Set owner for expression occurrences
@@ -13764,7 +13778,7 @@ impl<'a> Loader<'a> {
         // NOT stored, so don't claim an impl exists for it.
         if has_body && !body_poisoned {
             if let Some(op_impl_sym) = self.kb.try_resolve_symbol("anthill.realization.OperationImpl") {
-                let impl_sort = self.kb.make_name_term("OperationImpl");
+                let impl_sort = self.kb.intern("OperationImpl");
                 let operation_key = self.kb.intern("operation");
                 let params_key = self.kb.intern("params");
 
@@ -13808,7 +13822,7 @@ impl<'a> Loader<'a> {
         o: &Operation,
         op_functor: Symbol,
         body_parse_id: TermId,
-        domain: TermId,
+        domain: Symbol,
     ) {
         let body_kb = self.convert_term(body_parse_id);
 
@@ -13842,7 +13856,7 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
 
-        let eq_sort = self.kb.make_name_term("anthill.prelude.PartialEq");
+        let eq_sort = self.kb.intern("anthill.prelude.PartialEq");
         self.kb.assert_rule_debruijn_with_nodes(head, vec![], eq_sort, domain, None);
     }
 
@@ -13873,7 +13887,7 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_constraint(&mut self, c: &Constraint, domain: TermId) {
+    fn load_constraint(&mut self, c: &Constraint, domain: Symbol) {
         let label = c.label.as_ref().map(|n| join_segments(&self.parsed.symbols, &n.segments));
 
         // WI-525 (proposal 049, Part B): a `constraint` body is a contract — it
@@ -13938,9 +13952,9 @@ impl<'a> Loader<'a> {
         &mut self,
         head: &[TermId],
         guard: Option<&[TermId]>,
-        domain: TermId,
+        domain: Symbol,
     ) {
-        let constraint_sort = self.kb.make_name_term("Constraint");
+        let constraint_sort = self.kb.intern("Constraint");
         let constraint_sym = self.kb.resolve_symbol("Constraint");
 
         let head_pos: SmallVec<[TermId; 4]> = head.iter().map(|&tid| self.convert_term(tid)).collect();
@@ -13974,8 +13988,8 @@ impl<'a> Loader<'a> {
 
     /// Store a queryable `Constraint(guard(<LogicalQuery>))` reflection fact for a
     /// guard-registered (quantified) constraint, for parity with the denial form.
-    fn store_logical_query_constraint_fact(&mut self, lq: TermId, domain: TermId) {
-        let constraint_sort = self.kb.make_name_term("Constraint");
+    fn store_logical_query_constraint_fact(&mut self, lq: TermId, domain: Symbol) {
+        let constraint_sort = self.kb.intern("Constraint");
         let constraint_sym = self.kb.resolve_symbol("Constraint");
         let guard_sym = self.kb.intern("guard");
         let guard_term = self.kb.alloc(Term::Fn {
@@ -14108,8 +14122,8 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: TermId) {
-        let requirement_sort = self.kb.make_name_term("Requirement");
+    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol) {
+        let requirement_sort = self.kb.intern("Requirement");
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
         let spec_value = self.sort_inst_to_value(&r.type_expr);
 
@@ -14124,17 +14138,21 @@ impl<'a> Loader<'a> {
         // opaque residue stays a `Value::Node` fact + the gated diagnostic.
         use crate::eval::value::Value;
         let spec_value = self.lower_value_or_gate(spec_value, "requires", &r.type_expr);
+        // The `sort_ref` FIELD carries the requiring sort as a term (it is read as
+        // a type by `direct_requires`); the DOMAIN beside it is the same name as a
+        // symbol. Same name, two positions — data vs. index key.
+        let domain_term = self.kb.make_name_term_from_sym(domain);
         self.kb.assert_metadata_fact_carrier(
             requires_sym,
             Vec::new(),
-            vec![(sort_ref_sym, Value::term(domain)), (spec_sym, spec_value)],
+            vec![(sort_ref_sym, Value::term(domain_term)), (spec_sym, spec_value)],
             requirement_sort,
             domain,
             None,
         );
     }
 
-    fn load_describe(&mut self, d: &Describe, domain: TermId) {
+    fn load_describe(&mut self, d: &Describe, domain: Symbol) {
         let target_term = self.name_to_sort_term(&d.target);
         for content in &d.contents {
             self.emit_desc_fact(target_term, content, domain);
@@ -14311,7 +14329,7 @@ impl<'a> Loader<'a> {
         Some(format!("{}.{}", self.kb.qualified_name_of(op_sym), last))
     }
 
-    fn load_proof(&mut self, p: &ProofDecl, domain: TermId) {
+    fn load_proof(&mut self, p: &ProofDecl, domain: Symbol) {
         // WI-539 Part 2: a contract-proof target `<op>.<clause>` (proposal 025
         // §"Proof for operation contracts") has no rule symbol of its own to
         // resolve — intern its fully-qualified contract QN directly so the
@@ -14531,7 +14549,7 @@ impl<'a> Loader<'a> {
                 (parametric_context_arg, nil_term),
             ]),
         });
-        let record_sort = self.kb.make_name_term("anthill.realization.ProofRecord");
+        let record_sort = self.kb.intern("anthill.realization.ProofRecord");
         self.kb.assert_metadata_fact(record_term, record_sort, domain, None);
     }
 
@@ -14545,8 +14563,8 @@ impl<'a> Loader<'a> {
     /// a Discharged ProofRecord at the substitution and emits
     /// `Specialization` ProofRecords pointing at the supporting
     /// proofs.
-    fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: TermId) {
-        let provides_sort = self.kb.make_name_term("Requirement");
+    fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: Symbol) {
+        let provides_sort = self.kb.intern("Requirement");
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
         let spec_value = self.sort_inst_to_value(&pc.spec);
 
@@ -14559,10 +14577,12 @@ impl<'a> Loader<'a> {
         // `check_provider_requires`.
         use crate::eval::value::Value;
         let spec_value = self.lower_value_or_gate(spec_value, "provides", &pc.spec);
+        // `sort_ref` is the providing sort as a term; the domain is its name.
+        let domain_term = self.kb.make_name_term_from_sym(domain);
         self.kb.assert_metadata_fact_carrier(
             provides_sym,
             Vec::new(),
-            vec![(sort_ref_sym, Value::term(domain)), (spec_sym, spec_value)],
+            vec![(sort_ref_sym, Value::term(domain_term)), (spec_sym, spec_value)],
             provides_sort,
             domain,
             None,
@@ -14579,7 +14599,7 @@ impl<'a> Loader<'a> {
     /// `Implementation` fact (anthill.realization.Implementation) carrying
     /// the carrier/artifact/namespace-map metadata so codegen and
     /// interpreters can locate the host bindings by `(language, profile)`.
-    fn load_provides_block(&mut self, pb: &ProvidesBlock, _domain: TermId) {
+    fn load_provides_block(&mut self, pb: &ProvidesBlock, _domain: Symbol) {
         // The provides-block spec is used only as a ground scope identity (and the
         // `Implementation` fact target), so it needs a `TermId`. WI-366: a
         // denoted-bearing spec (a value-in-type binding, e.g. `Foo[Int64, 3]`)
@@ -14599,17 +14619,31 @@ impl<'a> Loader<'a> {
                 }
             }
         };
+        // The DOMAIN of this block's inner clauses is the spec's BASE SORT, taken
+        // from the written name. Deliberately NOT `name_term_sym(spec_term)`: a
+        // PARAMETERIZED spec — `provides Stack[T = Int64] language rust … end`, the
+        // form the grammar's own doc comment shows — lowers to a SortView
+        // APPLICATION, not a bare name, so unwrapping it aborted the loader. The
+        // scope above still rides the full applied term (it is a scope IDENTITY, and
+        // `Stack[T = Int64]` and `Stack[T = String]` must not share one); the domain
+        // is the sort a clause BELONGS to, which is `Stack` either way.
+        let spec_domain = match &pb.spec {
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => self.remap_name(name),
+            _ => self.kb.intern("?"),
+        };
+        // Resolved ABOVE the scope switch: `remap_name` resolves in `current_scope`,
+        // and inside the block that is the spec term itself.
         let prev_scope = self.current_scope;
         self.current_scope = spec_term;
 
         for item in &pb.items {
             match item {
-                ProvidesItem::Rule(r) => self.load_rule(r, spec_term),
+                ProvidesItem::Rule(r) => self.load_rule(r, spec_domain),
                 ProvidesItem::RuleBlock(rb) => {
-                    for r in &rb.entries { self.load_rule(r, spec_term); }
+                    for r in &rb.entries { self.load_rule(r, spec_domain); }
                 }
-                ProvidesItem::Fact(f) => self.load_fact(f, spec_term),
-                ProvidesItem::Proof(p) => self.load_proof(p, spec_term),
+                ProvidesItem::Fact(f) => self.load_fact(f, spec_domain),
+                ProvidesItem::Proof(p) => self.load_proof(p, spec_domain),
                 ProvidesItem::Artifact(_)
                 | ProvidesItem::Carrier(_)
                 | ProvidesItem::NamespaceMap(_) => {}
@@ -14619,7 +14653,7 @@ impl<'a> Loader<'a> {
         self.current_scope = prev_scope;
 
         if self.parsed.symbols.name(pb.language) != "anthill" {
-            self.emit_implementation_fact(pb, spec_term);
+            self.emit_implementation_fact(pb, spec_term, spec_domain);
         }
     }
 
@@ -14627,7 +14661,7 @@ impl<'a> Loader<'a> {
     /// a `provides Spec language X ... end` block. Populates target,
     /// artifact, language, profile, carrier, and namespace_map fields per
     /// the entity definition in stdlib/anthill/realization/realization.anthill.
-    fn emit_implementation_fact(&mut self, pb: &ProvidesBlock, spec_term: TermId) {
+    fn emit_implementation_fact(&mut self, pb: &ProvidesBlock, spec_term: TermId, spec_domain: Symbol) {
         // target: qualified name of the spec sort, as a String literal.
         let spec_functor = match self.kb.get_term(spec_term) {
             Term::Fn { functor, .. } => *functor,
@@ -14733,8 +14767,8 @@ impl<'a> Loader<'a> {
                 (nm_field, nm_list),
             ]),
         });
-        let impl_sort = self.kb.make_name_term("anthill.realization.Implementation");
-        self.kb.assert_metadata_fact(impl_term, impl_sort, spec_term, None);
+        let impl_sort = self.kb.intern("anthill.realization.Implementation");
+        self.kb.assert_metadata_fact(impl_term, impl_sort, spec_domain, None);
     }
 
     /// Convert a parsed host_type term (typically a `Term::Const(String)`
@@ -14748,8 +14782,8 @@ impl<'a> Loader<'a> {
         self.convert_term(parse_id)
     }
 
-    fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {
-        let desc_sort = self.kb.make_name_term("Description");
+    fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: Symbol) {
+        let desc_sort = self.kb.intern("Description");
         let desc_sym = self.kb.resolve_symbol("anthill.reflect.DescriptionInfo");
         let target_field = self.kb.intern("target");
         let content_field = self.kb.intern("content");
@@ -14938,7 +14972,7 @@ impl<'a> Loader<'a> {
 
     fn emit_member_fact(&mut self, name_sym: Symbol, kind_name: &str, parent: TermId) {
         let member_sym = self.kb.resolve_symbol("anthill.reflect.MemberInfo");
-        let member_sort = self.kb.make_name_term("Member");
+        let member_sort = self.kb.intern("Member");
         let name_field = self.kb.intern("name");
         let kind_field = self.kb.intern("kind");
         let parent_field = self.kb.intern("parent");
@@ -14954,7 +14988,8 @@ impl<'a> Loader<'a> {
                 (parent_field, parent),
             ]),
         });
-        self.kb.assert_metadata_fact(member_term, member_sort, parent, None);
+        let parent_domain = self.kb.name_term_sym(parent);
+        self.kb.assert_metadata_fact(member_term, member_sort, parent_domain, None);
     }
 
     fn emit_member_facts_for_items(&mut self, items: &[Item], parent: TermId) {

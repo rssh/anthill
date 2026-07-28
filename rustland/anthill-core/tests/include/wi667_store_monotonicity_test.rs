@@ -21,6 +21,7 @@
 //!       retract fails LOUD via the Error effect at the write.
 
 use anthill_core::eval::{EvalError, Interpreter, Value};
+use anthill_core::intern::Symbol;
 use anthill_core::kb::term::TermId;
 use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
@@ -49,8 +50,8 @@ impl Store for PolicyStore {
         &mut self,
         _kb: &KnowledgeBase,
         _fact: TermId,
-        _sort: TermId,
-        _domain: TermId,
+        _sort: Symbol,
+        _domain: Symbol,
         _meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
         Ok(())
@@ -249,7 +250,7 @@ fn append_only_default_store_cannot_retract() {
     // non_monotone so the *guard* passes, isolating the trait-default gate.
     struct AppendOnly;
     impl Store for AppendOnly {
-        fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: TermId, _d: TermId, _m: Option<TermId>)
+        fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: Symbol, _d: Symbol, _m: Option<TermId>)
             -> Result<(), PersistenceError> { Ok(()) }
         fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> { Ok(()) }
         fn owned_monotonicity(&self) -> Vec<(String, Monotonicity)> {
