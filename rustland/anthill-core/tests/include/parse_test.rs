@@ -1186,6 +1186,49 @@ end
     assert!(kb.rules_by_functor(legacy_description).is_empty());
 }
 
+#[test]
+fn reflection_inventory_schemas_survive_an_empty_relation() {
+    // The zero-row companion to
+    // `reflection_inventory_rows_have_bootstrap_schemas_and_resolve`: this source
+    // declares no reflectable member and no description, so both relations are
+    // EMPTY. A schema is a property of the DECLARATION, not of a witness row, so
+    // the declared field schemas must still be present and a full-arity Resolve
+    // read must return an empty relation — never the `NoFieldSchema` error a
+    // schema-less bootstrap would raise. This is the exact schema-less bootstrap
+    // failure WI-834 removes, pinned at the empty boundary where a
+    // recover-schema-from-a-row shortcut would have no row to read.
+    let source = "namespace empty_ns\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
+    let description_info = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
+    // Declared schemas are present despite zero emitted rows.
+    assert_eq!(
+        kb.entity_field_names(member_info)
+            .map(|fields| fields.iter().map(|field| kb.resolve_sym(*field)).collect::<Vec<_>>()),
+        Some(vec!["name", "kind", "parent"]),
+    );
+    assert_eq!(
+        kb.entity_field_names(description_info)
+            .map(|fields| fields.iter().map(|field| kb.resolve_sym(*field)).collect::<Vec<_>>()),
+        Some(vec!["target", "content", "index"]),
+    );
+    // Resolve yields an EMPTY relation, not a schema error.
+    assert!(
+        kb.read_facts_resolved(member_info, &[])
+            .expect("MemberInfo resolves on an empty relation")
+            .is_empty(),
+    );
+    assert!(
+        kb.read_facts_resolved(description_info, &[])
+            .expect("DescriptionInfo resolves on an empty relation")
+            .is_empty(),
+    );
+}
+
 // ── Requires declaration tests ──────────────────────────────────
 
 #[test]
