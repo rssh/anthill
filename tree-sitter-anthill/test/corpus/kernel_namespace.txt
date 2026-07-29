@@ -60,7 +60,7 @@ end
           (identifier)))
       (operation_clause
         (requires_clause
-          (rule_body
+          (requires_body
             (fn_term
               name: (name
                 (identifier))

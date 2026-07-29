@@ -344,6 +344,21 @@ private class AnthillParserImpl(
     * silently swallowing the body into a chained eq (WI-562 follow-up). Mirrors
     * rustland's non-assoc `=` under GLR: `requires Eq[T] = match l …` gives the
     * op the `match` body, while `ensures result = x` keeps the eq goal. */
+  /** One item of an op-scoped `requires` list: its goal, and the NAMED requirement
+    * slot's binder when the item was written `<name>: Spec[…]` (WI-840, proposal 058
+    * §4.7). The op-scoped list is OVERLOADED — it carries both spec requirements
+    * (WI-448) and VALUE preconditions (`requires neq(b, 0)`, WI-539) — and a binder
+    * attaches only to the type flavor while coexisting with predicates in the same
+    * comma list, so it is admissible at ANY position of it. */
+  private case class RequiresItem(goal: TermId, binder: Option[TermSymbol])
+
+  /** A `requires` item, binder form first. The binder alternative backtracks cleanly
+    * when no `:` follows, so an ordinary goal (which may begin with the same
+    * identifier token) still parses. */
+  private def requiresItem[$: P]: P[RequiresItem] =
+    P((ident ~ ":" ~ clauseTerm).map { case (b, t) => RequiresItem(t, Some(b)) } |
+      clauseTerm.map(RequiresItem(_, None)))
+
   private def clauseTerm[$: P]: P[TermId] =
     P(
       atomWithFieldAccess ~ (nonEqInfixOp ~ atomWithFieldAccess).rep ~
@@ -1461,17 +1476,20 @@ private class AnthillParserImpl(
   private def singleOperation[$: P]: P[Item] =
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs, clauseMeta), opBody, trailingMeta) =>
-      Item.OperationItem(Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
-        reqs, enss, effs, opBody, combineMeta(clauseMeta, trailingMeta), mkSpan(0, 0)))
+    ).map { case (vis, n, tps, params, retType, clauses, opBody, trailingMeta) =>
+      Item.OperationItem(Operation(vis, n,
+        tps.getOrElse(IndexedSeq.empty) ++ clauses.slotBinders, params.toIndexedSeq, retType,
+        clauses.requires, clauses.ensures, clauses.effects, opBody,
+        combineMeta(clauses.meta, trailingMeta), mkSpan(0, 0)))
     }
 
   private def operationEntry[$: P]: P[Operation] =
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs, clauseMeta), opBody, trailingMeta) =>
-      Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
-        reqs, enss, effs, opBody, combineMeta(clauseMeta, trailingMeta), mkSpan(0, 0))
+    ).map { case (vis, n, tps, params, retType, clauses, opBody, trailingMeta) =>
+      Operation(vis, n, tps.getOrElse(IndexedSeq.empty) ++ clauses.slotBinders,
+        params.toIndexedSeq, retType, clauses.requires, clauses.ensures, clauses.effects,
+        opBody, combineMeta(clauses.meta, trailingMeta), mkSpan(0, 0))
     }
 
   /** Operation type-parameter list `[T, U = Int]` (WI-269). A distinct
@@ -1487,14 +1505,38 @@ private class AnthillParserImpl(
       TypeParam(n, default, mkSpan(0, 0))
     }
 
-  private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect], IndexedSeq[MetaEntry])] =
+  /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
+    * requirement slots found in the `requires` lists — each becomes an operation type
+    * parameter, appended to the ones written in the `[…]` bracket. */
+  private case class OperationClauses(
+    requires: IndexedSeq[IndexedSeq[TermId]],
+    ensures: IndexedSeq[IndexedSeq[TermId]],
+    effects: IndexedSeq[Effect],
+    meta: IndexedSeq[MetaEntry],
+    slotBinders: IndexedSeq[TypeParam]
+  )
+
+  private def operationClauses[$: P]: P[OperationClauses] =
     P(operationClause.rep).map { clauses =>
       val reqs = ArrayBuffer.empty[IndexedSeq[TermId]]
       val enss = ArrayBuffer.empty[IndexedSeq[TermId]]
       val effs = ArrayBuffer.empty[Effect]
       val metas = ArrayBuffer.empty[MetaEntry]
+      val binders = ArrayBuffer.empty[TypeParam]
       clauses.foreach {
-        case (0, terms: IndexedSeq[TermId] @unchecked) => reqs += terms
+        // WI-840: `slotBase` is the number of requirement goals earlier clauses
+        // already contributed, so a binder's recorded position indexes the
+        // operation's WHOLE requirement list rather than one clause of it (an
+        // operation may carry several `requires` clauses; they accumulate here
+        // rather than last-wins).
+        case (0, items: IndexedSeq[RequiresItem] @unchecked) =>
+          val slotBase = reqs.map(_.length).sum
+          reqs += items.map(_.goal)
+          items.zipWithIndex.foreach {
+            case (RequiresItem(_, Some(binder)), i) =>
+              binders += TypeParam(binder, None, mkSpan(0, 0), Some(slotBase + i))
+            case _ => ()
+          }
         case (1, terms: IndexedSeq[TermId] @unchecked) => enss += terms
         case (2, effects: IndexedSeq[Effect] @unchecked) => effs ++= effects
         // WI-087: `meta [...]` clause entries accumulate (matching effects/
@@ -1503,7 +1545,8 @@ private class AnthillParserImpl(
         case (3, entries: IndexedSeq[MetaEntry] @unchecked) => metas ++= entries
         case _ =>
       }
-      (reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq, metas.toIndexedSeq)
+      OperationClauses(reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq,
+        metas.toIndexedSeq, binders.toIndexedSeq)
     }
 
   /** WI-087: merge `meta [...]` operation-clause entries with a trailing
@@ -1518,7 +1561,7 @@ private class AnthillParserImpl(
       // `clauseTerm` (not `term`): a trailing `= <expr-body>` after the clause
       // is the operation-body separator, not an equality goal (WI-562:
       // `requires Eq[T] = match l …`). See `clauseTerm`.
-      (keyword("requires") ~/ clauseTerm.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
+      (keyword("requires") ~/ requiresItem.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
       (keyword("ensures") ~/ clauseTerm.rep(1, sep = ",")).map(ts => (1, ts.toIndexedSeq)) |
       // Mirrors rustland's `_effect_set` shared between operation
       // `effects` and arrow-type `@`: bare single type or braced list
@@ -1544,9 +1587,19 @@ private class AnthillParserImpl(
         Item.ConstItem(Const(vis, n, ty, value, meta, mkSpan(0, 0)))
     }
 
+  /** `requires [<name> :] <type>` at sort / namespace level.
+    *
+    * WI-840 (proposal 058 §4.7): the optional binder names the requirement SLOT,
+    * making it a type parameter of the enclosing sort. `ident ~ ":"` is tried first
+    * and backtracks cleanly on the anonymous form, whose `<type>` may itself begin
+    * with a (dotted) name — the two are decided on the `:` lookahead, which is also
+    * how rustland's grammar decides them. The binder is a single `ident`, not a
+    * `name`: it DECLARES a parameter rather than referencing one, so a dotted
+    * spelling would have no meaning. */
   private def requiresDeclItem[$: P]: P[Item] =
-    P(keyword("requires") ~/ typeExpr).map { te =>
-      Item.RequiresDeclItem(RequiresDecl(te, mkSpan(0, 0)))
+    P(keyword("requires") ~/ (ident ~ ":").? ~ typeExpr).map { case (binder, te) =>
+      val binderName = binder.map(b => Name(IndexedSeq(b), mkSpan(0, 0)))
+      Item.RequiresDeclItem(RequiresDecl(binderName, te, mkSpan(0, 0)))
     }
 
   private def entityDecl[$: P]: P[Item] =

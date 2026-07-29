@@ -803,6 +803,48 @@ class ParseTest extends munit.FunSuite:
     assert(op.body.isDefined, "the `= match …` must parse as the operation body")
   }
 
+  // ── WI-840: the NAMED requirement slot (proposal 058 §4.7) ──────────
+  //
+  // A named slot is a type PARAMETER — that is what lets a chosen witness enter a
+  // TYPE (`SortedSet[T = String, O = ByLength]`), which an ANONYMOUS slot cannot do
+  // because nothing named its witness. scaland mirrors the SURFACE and the IR (it
+  // has no operation loading, a pre-existing divergence), so what these pin is that
+  // both spellings parse and that the binder is carried, not dropped.
+
+  test("WI-840: an op-scoped `requires <name>: Spec[…]` binds a type parameter") {
+    val (pf, op) = parseDemoOp(
+      "  operation biFold(x: T, n: Int) -> T\n" +
+      "    requires neq(n, 0), lo: Ord[T], hi: Ord[T]")
+    // Three goals in one clause: the value precondition keeps its place, so the
+    // binders' recorded positions index the whole requirement list (§4.7 wrinkle 1 —
+    // the op-scoped list is OVERLOADED, and a binder must coexist with predicates in
+    // that same comma list).
+    assertEquals(op.requires.length, 1)
+    assertEquals(op.requires.head.length, 3)
+    assertEquals(
+      op.typeParams.map(tp => (pf.symbols.name(tp.name), tp.requirementSlot)),
+      IndexedSeq(("lo", Some(1)), ("hi", Some(2)))
+    )
+  }
+
+  test("WI-840: an anonymous op-scoped `requires` declares no type parameter") {
+    val (_, op) = parseDemoOp("  operation member(x: T) -> Int requires Eq[T]")
+    assertEquals(op.requires.length, 1)
+    assert(op.typeParams.isEmpty, "an anonymous slot is a constraint, not a parameter")
+  }
+
+  test("WI-840: a sort-level `requires O: Ord[T]` carries its binder") {
+    val pf = Parser.parse(
+      "sort Box\n  sort T = ?\n  requires O: Ord[T]\n  requires Eq[T]\nend", "<slot>")
+      .toOption.getOrElse(fail("parse failed"))
+    val decls = pf.items.collect { case Item.SortWithBodyItem(s) => s }
+      .head.items.collect { case Item.RequiresDeclItem(r) => r }
+    assertEquals(decls.length, 2)
+    assertEquals(decls.head.binder.map(b => pf.symbols.name(b.last)), Some("O"))
+    assertEquals(decls(1).binder, None,
+      "the anonymous form must still parse to a binder-less declaration")
+  }
+
   // The dual: a clause `= goal` with a plain-TERM rhs (not an expr-body keyword)
   // stays an equality goal, NOT the operation body — matching rust's GLR.
   test("a clause `ensures result = x` keeps `=` as the eq goal (no spurious body)") {

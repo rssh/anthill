@@ -1,0 +1,141 @@
+==================================
+WI-840 named requirement slot — the GLR tie, all three forms in one program
+==================================
+
+namespace m
+  sort SortedSet
+    sort T = ?
+    requires O: Ord[T]
+    -- a leading comment: WI-448's tie-breaker hazard
+    operation pick(a: T, b: T, n: Int64) -> T
+      requires plus: Monoid[T], neq(n, 0), Eq[T]
+  end
+end
+
+---
+
+; Pins proposal 058 §4.7's binder against the tie `requires_clause` /
+; `requires_declaration` already had (WI-448): both productions begin with the
+; `requires` token, `prec.dynamic(1)` biases the op-scoped one, and a preceding
+; COMMENT is what used to flip it. Here all three spellings coexist:
+;   - a sort-level NAMED slot     -> requires_declaration + binder
+;   - an op-scoped NAMED slot     -> requires_clause / requires_binder
+;   - a VALUE precondition and an ANONYMOUS spec requirement in that SAME
+;     comma list, one on each side of the binder (§4.7 wrinkle 1: the op-scoped
+;     list is overloaded, and a binder must be admissible at any position of it)
+; The comment before the operation is deliberate — without the dynamic
+; precedence the clause below re-scopes to the enclosing sort.
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (abstract_sort
+        name: (name
+          (identifier))
+        definition: (variable_term
+          (variable)))
+      (requires_declaration
+        binder: (identifier)
+        type: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier))))))
+      (line_comment)
+      (operation_declaration
+        name: (name
+          (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier))))
+        (param
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier))))
+        (param
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        (operation_clause
+          (requires_clause
+            (requires_body
+              (requires_binder
+                binder: (identifier)
+                type: (application
+                  name: (name
+                    (identifier))
+                  (sort_binding
+                    type: (simple_type
+                      (name
+                        (identifier))))))
+              (fn_term
+                name: (name
+                  (identifier))
+                (name
+                  (identifier))
+                (integer_literal))
+              (application
+                name: (name
+                  (identifier))
+                (sort_binding
+                  type: (simple_type
+                    (name
+                      (identifier))))))))))))
+
+==================================
+WI-840 anonymous sort-level requires is unchanged by the optional binder
+==================================
+
+namespace m
+  sort Box
+    sort T = ?
+    requires Ord[T]
+    requires anthill.prelude.Eq
+  end
+end
+
+---
+
+; The control for the production above: with no `<name> :` prefix the
+; declaration must parse exactly as it did before — one `type` field, no
+; `binder`. The dotted `anthill.prelude.Eq` also pins that a MULTI-SEGMENT
+; type still reaches `_type` — the binder is a single `identifier`, so the
+; two forms are decided on the `:` lookahead, not on the shape of the name.
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (abstract_sort
+        name: (name
+          (identifier))
+        definition: (variable_term
+          (variable)))
+      (requires_declaration
+        type: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier))))))
+      (requires_declaration
+        type: (simple_type
+          (name
+            (identifier)
+            (identifier)
+            (identifier)))))))

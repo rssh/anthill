@@ -562,6 +562,18 @@ pub struct Operation {
 pub struct TypeParam {
     pub name: Symbol,
     pub span: Span,
+    /// WI-840 (proposal 058 §4.7): `Some(k)` when this parameter was declared as a
+    /// NAMED requirement slot in the operation's `requires` clause list
+    /// (`requires plus: Monoid[T]`) rather than in its `[…]` bracket; `k` is the
+    /// slot's position among the operation's requirement GOALS in source order —
+    /// the same order `Operation::requires` holds them.
+    ///
+    /// Everything else about the parameter is ordinary: the binder is a type
+    /// parameter like any other, which is what puts a call-site `f[plus = AddM](…)`
+    /// under §4.2's rule (1) with no new selection surface. Why a POSITION rather
+    /// than the spec, and which list it indexes at each level, is stated once on the
+    /// table that stores it — `KnowledgeBase::named_requirement_slots`.
+    pub requirement_slot: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -597,6 +609,11 @@ pub struct Const {
 
 #[derive(Debug)]
 pub struct RequiresDecl {
+    /// WI-840 (proposal 058 §4.7): the slot's BINDER — `Some(O)` for the named form
+    /// `requires O: Ord[T]`, `None` for the anonymous `requires Ord[T]`. A named slot
+    /// is a type PARAMETER of the enclosing sort; `convert_requires_items` carries
+    /// the reasoning and does the splice.
+    pub binder: Option<Name>,
     pub type_expr: TypeExpr,
     pub span: Span,
 }

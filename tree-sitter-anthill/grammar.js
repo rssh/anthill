@@ -572,8 +572,18 @@ module.exports = grammar({
       optional($.meta_block),
     ),
 
+    // WI-840 (proposal 058 §4.7): the sort/namespace-scoped `requires`, with an
+    // OPTIONAL binder naming the requirement slot (`requires O: Ord[T]`). A NAMED
+    // slot is a type PARAMETER of the enclosing sort — addressable in type position
+    // (`SortedSet[T = String, O = ByLength]`), so the chosen witness is part of the
+    // sort's type identity; an ANONYMOUS one stays a constraint, solved and not
+    // recorded. The binder is `identifier` (single-segment) and not `name`: it
+    // DECLARES a parameter, it does not reference one, so a dotted spelling has no
+    // meaning here — and the single-token binder keeps `requires <type>` (whose
+    // `_type` may itself begin with a dotted `name`) decidable on the `:` lookahead.
     requires_declaration: $ => seq(
       'requires',
+      optional(seq(field('binder', $.identifier), ':')),
       field('type', $._type),
     ),
 
@@ -588,7 +598,29 @@ module.exports = grammar({
     // toward the op-clause, matching the comment-free behavior regardless of
     // any preceding comment.
     // (`ensures` has no standalone form, so it needs no bias.)
-    requires_clause: $ => prec.dynamic(1, seq('requires', $.rule_body)),
+    requires_clause: $ => prec.dynamic(1, seq('requires', $.requires_body)),
+    // WI-840: an op-scoped `requires` list is OVERLOADED — one comma list carries
+    // both spec requirements (`requires Eq[T]`, WI-448) and VALUE preconditions
+    // (`requires neq(b, 0)`, WI-539) — and the §4.7 binder attaches only to the
+    // TYPE flavor, so it must be admissible at any position of that same list
+    // (`requires plus: Monoid[T], neq(b, 0)` and the reverse both parse).
+    //
+    // Its own production rather than an extra `_goal` alternative: `_goal` is
+    // shared by `rule_body` / `rule_heads` / constraint and quantifier bodies,
+    // where a `name: Type` item would be accepted and then have nowhere to go —
+    // a silent drop of exactly the WI-839 class. `requires_body` is otherwise
+    // `rule_body` verbatim, so a binder-free clause converts identically.
+    requires_body: $ => commaSep1(choice($.requires_binder, $._goal)),
+
+    // A NAMED requirement slot inside an op-scoped `requires` list. The binder
+    // becomes an operation type PARAMETER (§4.7), so `f[plus = AddM](…)` selects
+    // through the ordinary call-site bracket channel with no further grammar.
+    requires_binder: $ => seq(
+      field('binder', $.identifier),
+      ':',
+      field('type', $._type),
+    ),
+
     ensures_clause: $ => seq('ensures', $.rule_body),
     effects_clause: $ => seq('effects', $._effect_set),
 

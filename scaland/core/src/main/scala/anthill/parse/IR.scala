@@ -199,8 +199,21 @@ case class Param(name: TermSymbol, ty: TypeExpr)
 /** Operation-local type parameter (WI-269): `[T]` or `[T = Default]`.
   * Mirrors rustland's `TypeParam`. These declare operation-local logical
   * variables, distinct from sort-parameter bindings at an instantiation
-  * site. `default` carries the optional `= Type` right-hand side. */
-case class TypeParam(name: TermSymbol, default: Option[TypeExpr], span: Span)
+  * site. `default` carries the optional `= Type` right-hand side.
+  *
+  * WI-840 (proposal 058 §4.7): `requirementSlot` is `Some(k)` when the parameter was
+  * declared as a NAMED requirement slot in the operation's `requires` clause list
+  * (`requires plus: Monoid[T]`) rather than in its `[…]` bracket; `k` is the slot's
+  * position among the operation's requirement GOALS in source order. A POSITION and
+  * not the spec, because a slot's identity is positional and the spec would not
+  * discriminate the motivating case: the two slots of
+  * `requires plus: Monoid[T], times: Monoid[T]` are the same type. */
+case class TypeParam(
+  name: TermSymbol,
+  default: Option[TypeExpr],
+  span: Span,
+  requirementSlot: Option[Int] = None
+)
 
 // ── Const (proposal 039 / WI-084) ───────────────────────────────
 
@@ -220,7 +233,17 @@ case class Const(
 
 // ── Requires declaration ────────────────────────────────────────
 
-case class RequiresDecl(typeExpr: TypeExpr, span: Span)
+/** A `requires` declaration at sort / namespace level.
+  *
+  * WI-840 (proposal 058 §4.7): `binder` is the NAMED slot's name — `Some(O)` for
+  * `requires O: Ord[T]`, `None` for the anonymous `requires Ord[T]`. A NAMED slot is
+  * a type PARAMETER of the enclosing sort (which is how a chosen witness enters a
+  * type, `SortedSet[T = String, O = ByLength]`); an ANONYMOUS one is a constraint —
+  * solved, not recorded. rustland desugars the named form into `sort O = ?` + the
+  * requirement at CONVERT time; scaland has no such fan-out in `declaration`
+  * (`P[Item]`, one item per production), so the binder rides here and `scanItemsPass1`
+  * registers the type parameter directly — same effect, one production earlier. */
+case class RequiresDecl(binder: Option[Name], typeExpr: TypeExpr, span: Span)
 
 // ── Sugar ───────────────────────────────────────────────────────
 

@@ -571,6 +571,25 @@ pub enum LoadError {
         position: CallTypeArgsPosition,
         span: Span,
     },
+    /// WI-840 (proposal 058 §4.2) — an operation declares a type parameter whose name
+    /// already denotes something else in the ONE bracket list that binds it, so a
+    /// written `op[N = …]` would have two possible targets. Refused at the
+    /// DECLARATION, not at the call: an ordered ladder at the call would be a silent
+    /// capture — the reader cannot see which `N` the key hit. One name, one channel.
+    ///
+    /// Three sources of the collision, each with its own advice ([`ShadowedSlot`]).
+    /// Not a duplicate of the ordinary duplicate-type-parameter rule, which already
+    /// covers binder-vs-binder: a NAMED requirement slot IS a type parameter, so two
+    /// slots of one name, or a slot and a bracket parameter of one name, are that
+    /// rule's business, not this one's.
+    TypeParamShadowsSlot {
+        /// The operation's qualified name, for the message.
+        op: String,
+        /// The declared type parameter, as written.
+        param: String,
+        shadowed: ShadowedSlot,
+        span: Span,
+    },
     /// WI-489: a value-in-type field projection (`Modify[result.nonexistent]`,
     /// `Modify[c.bogus]`) names a field the head's statically-known CONCRETE type
     /// (an entity / named-tuple param or `result`) does not declare. The v1 denoted
@@ -682,6 +701,79 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
     }
 }
 
+/// WI-840: what an operation's declared type parameter collides with (proposal 058
+/// §4.2's shadowing guard). One rule, three sources — and they need different advice,
+/// because the move that fixes each is different: rename here, rename here but for a
+/// dispatch-key reason, or rename here because the SORT already owns the name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ShadowedSlot {
+    /// The SHORT name of one of the operation's own requirement SPECS
+    /// (`operation f[Monoid](…) requires algebra.Monoid[T]`). §4.2's rule (2) resolves
+    /// a bracket key against exactly those short names, so the two channels answer the
+    /// same key. Carries the spec's qualified name.
+    RequirementSpec(String),
+    /// The head of one of the operation's own `requires` GOALS, which the parameter
+    /// has already CAPTURED: written `requires Monoid[T]` beside `[Monoid]`, the
+    /// goal's `Monoid` resolves in the operation's scope and finds the parameter, so
+    /// the clause no longer names a spec at all.
+    ///
+    /// Split from [`Self::RequirementSpec`] because the diagnosis differs, not just
+    /// the wording: there the two channels answer one key, here the requirement is
+    /// already gone. The unqualified form is the common one — a spec named without its
+    /// namespace is exactly what the parameter shadows — and reporting it as a spec
+    /// would print the parameter's own qualified name (`m.Use.fold.Monoid`), a
+    /// self-reference that reads like a different bug. A VALUE precondition
+    /// (`requires neq(b, 0)` beside `[neq]`) lands here too and belongs here: its head
+    /// is captured just the same, and the resulting goal proves nothing.
+    CapturedRequirementName,
+    /// The enclosing SPEC's own short name (`sort Desc … operation describe[Desc](…)`).
+    /// A direct spec-op call selects its dispatching dictionary by that very key
+    /// (`Desc.describe[Desc = LoudDesc](w)`, §4.2), which the parameter would shadow.
+    OwnSpec(String),
+    /// One of the ENCLOSING SORT's type parameters — a `sort T = ?`, or a sort-level
+    /// named requirement slot, which §4.7 makes a type parameter too. Rule (1) spans
+    /// both scopes, so the key would have two targets. Carries the sort's qualified
+    /// name.
+    EnclosingSortParam(String),
+}
+
+/// WI-840: the one wording of [`LoadError::TypeParamShadowsSlot`], shared by the two
+/// renderings (`display_with_source` and `Display`) so they cannot drift — WI-852's
+/// rule that a diagnostic has ONE owner.
+fn type_param_shadow_detail(op: &str, param: &str, shadowed: &ShadowedSlot) -> String {
+    let head = format!(
+        "operation `{op}`: type parameter `{param}` collides with "
+    );
+    match shadowed {
+        ShadowedSlot::RequirementSpec(spec) => format!(
+            "{head}the SHORT name of its own requirement `{spec}` — a bracket key \
+             selects a provider by that short name (proposal 058 §4.2 rule 2), so \
+             `{op}[{param} = …](…)` has two targets and the call cannot say which. \
+             Rename the type parameter, or NAME the requirement slot \
+             (`requires <name>: {param}[…]`), which gives the slot a key of its own"
+        ),
+        ShadowedSlot::CapturedRequirementName => format!(
+            "{head}the head of its own `requires {param}…` goal, which now resolves to \
+             THIS PARAMETER rather than to whatever `{param}` named outside the \
+             operation — so the clause requires nothing. Rename the type parameter; if \
+             `{param}` is a spec and you wanted a slot of that name, NAME the slot \
+             (`requires <name>: {param}[…]`) instead"
+        ),
+        ShadowedSlot::OwnSpec(spec) => format!(
+            "{head}its own spec `{spec}` — a call on a spec operation selects the \
+             dictionary backing it by that very key (`{param}.{}[{param} = …](…)`, \
+             proposal 058 §4.2). Rename the type parameter",
+            last_segment(op),
+        ),
+        ShadowedSlot::EnclosingSortParam(sort) => format!(
+            "{head}the type parameter `{param}` of its enclosing sort `{sort}`. A \
+             call-site bracket binds BOTH scopes (proposal 058 §4.2 rule 1), so \
+             `{op}[{param} = …](…)` would have two targets and the reader cannot see \
+             which one it hit. Rename the operation's parameter"
+        ),
+    }
+}
+
 impl LoadError {
     /// WI-745: stamp this error with the file it came from (see
     /// [`LoadError::Located`]). Idempotent — an already-`Located` error is
@@ -741,6 +833,7 @@ impl LoadError {
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
+            | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -988,6 +1081,12 @@ impl LoadError {
                 format!(
                     "{}: {}",
                     loc.format_start(*span), call_type_args_unsupported_detail(callee, *position),
+                )
+            }
+            LoadError::TypeParamShadowsSlot { op, param, shadowed, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span), type_param_shadow_detail(op, param, shadowed),
                 )
             }
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
@@ -1321,6 +1420,13 @@ impl std::fmt::Display for LoadError {
                     "{} at {}..{}",
                     call_type_args_unsupported_detail(callee, *position),
                     span.start, span.end,
+                )
+            }
+            LoadError::TypeParamShadowsSlot { op, param, shadowed, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    type_param_shadow_detail(op, param, shadowed), span.start, span.end,
                 )
             }
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
@@ -11738,6 +11844,10 @@ impl<'a> Loader<'a> {
         // outermost caller at end-of-pass.
         let timing = std::env::var("ANTHILL_ITEM_TIMING").map(|v| v == "1").unwrap_or(false);
 
+        // WI-840: how many `requires` items this scope has seen. Local to the walk —
+        // `load_items` runs once per domain, so the count is exact and needs no keying.
+        let mut requires_seen = 0usize;
+
         for item in items {
             let t0 = if timing { Some(std::time::Instant::now()) } else { None };
             let kind = match item {
@@ -11747,7 +11857,13 @@ impl<'a> Loader<'a> {
                 Item::Rule(r) => { self.load_rule(r, domain); "Rule" }
                 Item::Operation(o) => { self.load_operation(o, domain); "Operation" }
                 Item::Const(c) => { self.load_const(c, domain); "Const" }
-                Item::RequiresDecl(r) => { self.load_requires_decl(r, domain); "RequiresDecl" }
+                Item::RequiresDecl(r) => {
+                    // WI-840: source-order position among THIS scope's requirements,
+                    // named or not, so a named slot's index covers the whole list.
+                    self.load_requires_decl(r, domain, requires_seen);
+                    requires_seen += 1;
+                    "RequiresDecl"
+                }
                 Item::Entity(e) => { self.load_entity(e, domain); "Entity" }
                 Item::Fact(f) => { self.load_fact(f, domain); "Fact" }
                 Item::Constraint(c) => { self.load_constraint(c, domain); "Constraint" }
@@ -13693,6 +13809,17 @@ impl<'a> Loader<'a> {
         let requires_list = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
         let ensures_list = self.convert_clause_list(&o.ensures);
 
+        // WI-840 (058 §4.2 / §4.7): the operation's type parameters against the OTHER
+        // things one bracket key can name, and the NAMED requirement slots the
+        // `requires` clause declared. Run here, after the requires list is built, so
+        // the spec-short-name half reads the goals the operation actually carries.
+        // `prev_scope` — the ENCLOSING scope, saved before this operation's own was
+        // entered — is where rung (1)'s other targets live, and having it in hand is
+        // what lets the guard ask `is_type_param` directly instead of re-finding the
+        // sort's body scope by name.
+        self.check_op_type_param_shadowing(o, prev_scope, &op_qualified);
+        self.record_op_named_slots(o, functor);
+
         // WI-525 (proposal 049, Part B): a contract TESTS, it never binds — so a
         // binding `<=>` / `let` (a `unify` goal) in a `requires` / `ensures`
         // clause is rejected. Only the user-written clauses are checked; the
@@ -14182,7 +14309,14 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol) {
+    /// `slot_index` (WI-840, 058 §4.7) is this declaration's POSITION among the
+    /// enclosing scope's `requires` items. Passed in rather than counted here because
+    /// the caller — [`Self::load_items`], the one walk that sees the items in order —
+    /// is the only place it is well defined, and it is the SAME enumeration
+    /// `load_sort_with_body` builds `SortInfo.requires` from (both walk one
+    /// declaration's `s.items` in source order). See `named_requirement_slots` for why
+    /// that list, and not the `SortRequiresInfo` FACT order, is the referent.
+    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol, slot_index: usize) {
         let requirement_sort = self.kb.intern("Requirement");
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
         let spec_value = self.sort_inst_to_value(&r.type_expr);
@@ -14210,7 +14344,144 @@ impl<'a> Loader<'a> {
             domain,
             None,
         );
+        if let Some(binder) = &r.binder {
+            // The binder is already a type parameter of `domain` by now: the converter
+            // splices `sort O = ?` in front of this item and `scan_items_pass1`
+            // registers it (`add_type_param`). A binder with no sort to parameterize
+            // never reaches here — `convert_requires_items` strips it and reports,
+            // which is the ONE owner of that rule (it is decidable from the surface,
+            // and only a converter-side refusal keeps the spliced parameter out of
+            // `generate_rust`, which never loads a KB). So this is a pure record.
+            let name = join_segments(&self.parsed.symbols, &binder.segments);
+            let binder_sym = self.kb.intern(&name);
+            self.kb.record_named_requirement_slot(domain, binder_sym, slot_index);
+        }
     }
+
+    /// WI-840 (058 §4.2) — the SHADOWING GUARD, refused at the DECLARATION.
+    ///
+    /// A call-site bracket key is a bare LABEL, and §4.2 resolves it in two rungs:
+    /// (1) a declared type parameter name — the operation's OR its enclosing sort's —
+    /// and (2) a requirement's spec SHORT name among the callee's anonymous slots.
+    /// A parameter whose name is also answered by another rung leaves `op[N = …]`
+    /// with two targets, and an ordered ladder at the CALL would resolve it silently:
+    /// the reader cannot see which `N` the key hit. So the collision is refused where
+    /// it is written. One name, one channel.
+    ///
+    /// SHORT names on purpose, and not the identity comparison WI-672 deleted. Both
+    /// sides here are bare spellings by construction: a bracket key lowers to a bare
+    /// interned `Symbol` ("the param label … NOT a caller-scope value",
+    /// `build_call_type_args`) and a type parameter is stored as one — so the guard
+    /// compares exactly the two things a call would compare, in the same alphabet.
+    /// What WI-672 deleted was matching two RESOLVED identities on their last
+    /// segment; nothing here is a resolved identity.
+    fn check_op_type_param_shadowing(
+        &mut self,
+        o: &Operation,
+        enclosing: TermId,
+        op_qualified: &str,
+    ) {
+        if o.type_params.is_empty() {
+            return;
+        }
+        // Rung (2)'s candidate set: the base of each requirement goal this operation
+        // declares, classified by what it RESOLVED to — which is the only reading that
+        // says what the clause now means.
+        //
+        //  * a SORT that is one of THIS operation's own type parameters — the
+        //    parameter has already captured the goal's head, so there is no spec left
+        //    to be ambiguous with. Detected by qualified name (`<op>.<param>`), which
+        //    is where `scan_operation_params` defines it.
+        //  * any other SORT — a genuine spec whose short name rule (2) would match.
+        //    Reached when the spec was written QUALIFIED (`requires a.Monoid[T]`), so
+        //    the parameter did not capture it.
+        //  * anything else — a VALUE precondition (`requires neq(b, 0)`, WI-539),
+        //    which shares the clause list but is no slot, and whose owner is
+        //    `is_value_precondition_clause` — CALLED, not re-derived, so widening the
+        //    spec/precondition line cannot leave the guard behind.
+        //
+        // `convert_term` on an already-converted goal is a `term_map` memo hit
+        // (`convert_term_inner`), not a second walk — `convert_clause_list_with_extra`
+        // ran a few lines above. Reading its output back instead would be the harder
+        // path: it collapses a multi-goal clause into one `conjunction`.
+        let mut spec_bases: Vec<(String, String)> = Vec::new();
+        let mut captured: Vec<String> = Vec::new();
+        for goal in o.requires.iter().flatten() {
+            let converted = self.convert_term(*goal);
+            let Some(base) = self.kb.head_functor(converted) else { continue };
+            if super::typing::is_value_precondition_clause(self.kb, &Value::term(converted)) {
+                continue;
+            }
+            let short = self.kb.resolve_sym(base);
+            let qn = self.kb.qualified_name_of(base);
+            // The capture test without building the concatenation: `<op>.<short>` is
+            // where `scan_operation_params` defines a bracket type param.
+            let is_capture = qn.strip_prefix(op_qualified)
+                .and_then(|rest| rest.strip_prefix('.')) == Some(short);
+            if is_capture {
+                captured.push(short.to_owned());
+            } else {
+                spec_bases.push((short.to_owned(), qn.to_owned()));
+            }
+        }
+
+        for tp in &o.type_params {
+            let name = self.parsed.symbols.name(tp.name);
+            // Rung (1)'s OTHER scope, tested against the enclosing scope directly.
+            // `is_type_param` is an O(1) `HashSet` hit on the very set
+            // `add_type_param` filled during the scan — including a sort-level NAMED
+            // slot, which §4.7 makes a type parameter, so §4.2's "including a
+            // sort-level named requirement slot" needs no separate case. Deliberately
+            // NOT `type_params_of_sort`, which re-FINDS the body scope by scanning
+            // every qualified name in the symbol table: the enclosing scope is
+            // already in hand here, so the scan would buy nothing.
+            let enclosing_owns = self.kb.symbols.is_type_param(enclosing.raw(), name);
+            let enclosing_qn = self.kb.qualified_name_of(self.kb.name_term_sym(enclosing));
+            let enclosing_short = last_segment(enclosing_qn);
+            let shadowed = if captured.iter().any(|s| s == name) {
+                ShadowedSlot::CapturedRequirementName
+            } else if let Some((_, qn)) = spec_bases.iter().find(|(s, _)| s == name) {
+                ShadowedSlot::RequirementSpec(qn.clone())
+            } else if enclosing_short == name && self.enclosing_is_spec(enclosing) {
+                ShadowedSlot::OwnSpec(enclosing_qn.to_owned())
+            } else if enclosing_owns {
+                ShadowedSlot::EnclosingSortParam(enclosing_qn.to_owned())
+            } else {
+                continue;
+            };
+            self.errors.push(LoadError::TypeParamShadowsSlot {
+                op: op_qualified.to_owned(),
+                param: name.to_owned(),
+                shadowed,
+                span: tp.span,
+            });
+        }
+    }
+
+    /// WI-840 — is `enclosing` a SPEC sort, i.e. one carrying at least one type
+    /// parameter? That is `spec_op_parent_sort`'s own reading of "a spec", asked
+    /// directly of the scope rather than re-derived from the operation's qualified
+    /// name — and it is what makes §4.2's spec-op clause apply: a call on a spec
+    /// operation selects its dictionary by the SPEC's short name, which a parameter
+    /// of that name would shadow. A namespace declares no type parameters, so it
+    /// answers `false` without a kind test.
+    fn enclosing_is_spec(&self, enclosing: TermId) -> bool {
+        self.kb.symbols.scope(enclosing.raw())
+            .is_some_and(|s| !s.type_params_ordered.is_empty())
+    }
+
+    /// WI-840 (058 §4.7) — record the operation's NAMED requirement slots. The binder
+    /// is already an ordinary op type parameter by the time we get here (the converter
+    /// appends it to `type_params`, so `scan_operation_params` defined it and
+    /// `load_operation` minted its var); all that is left is WHICH slot it names.
+    fn record_op_named_slots(&mut self, o: &Operation, functor: Symbol) {
+        for tp in &o.type_params {
+            let Some(slot) = tp.requirement_slot else { continue };
+            let binder = self.kb.intern(self.parsed.symbols.name(tp.name));
+            self.kb.record_named_requirement_slot(functor, binder, slot);
+        }
+    }
+
 
     fn load_describe(&mut self, d: &Describe, domain: Symbol) {
         let target_term = self.name_to_sort_term(&d.target);

@@ -592,6 +592,50 @@ pub struct KnowledgeBase {
     /// declarations), so the side-table needs no fact backing to survive.
     pub(crate) op_capture_params: HashMap<Symbol, Symbol>,
 
+    /// WI-840 (proposal 058 §4.7) — the NAMED requirement slots declared by an
+    /// operation or a sort: `owner → [(binder, slot position)]`, in source order.
+    ///
+    /// `requires O: Ord[T]` is TWO facts about one declaration. The first — that `O`
+    /// is a type PARAMETER of the owner — needs no table: the converter desugars the
+    /// binder into the ordinary parameter machinery, so `O` is addressable in type
+    /// position and at a call bracket exactly like any `[T]`. This table carries the
+    /// second: WHICH requirement slot that parameter names.
+    ///
+    /// A POSITION, not the spec. A slot's identity is positional throughout
+    /// (`requirement_at_sort(node, k)`), and phase 1 adds a name where one was
+    /// missing rather than re-keying the projection path (§4.7 wrinkle 3) — and the
+    /// spec would not discriminate the case that motivates naming at all: the two
+    /// slots of `requires plus: Monoid[T], times: Monoid[T]` hash-cons to ONE term.
+    ///
+    /// **WHICH list `k` indexes, exactly — it is not the same list at both levels,
+    /// and one obvious candidate is measurably wrong.** In both cases it is the
+    /// SOURCE order of the owner's `requires` items, which is preserved by:
+    ///
+    /// * an OPERATION — the flattened requirement GOALS, i.e. what
+    ///   `op_requires_entries` enumerates (value preconditions included, since they
+    ///   occupy positions in the written list too). NOT `OperationInfo.requires`,
+    ///   which holds CLAUSES: `convert_clause_list_with_extra` collapses a multi-goal
+    ///   clause into one `conjunction(…)`, so the two named slots of the example
+    ///   above index a list of length 1 there.
+    /// * a SORT — `SortInfo.requires`, built by `load_sort_with_body`'s walk over the
+    ///   same `s.items` in the same order. **NOT the `SortRequiresInfo` FACT order**:
+    ///   `resolve_requires_bindings` RETRACTS and re-asserts every requirement whose
+    ///   op bindings it completes, moving it to the end of the functor index — so on
+    ///   a sort whose requirements are not all completed the fact order is a
+    ///   permutation of the source order (measured: `requires O: Ord[T = E]` followed
+    ///   by a parameterless `requires Marker` comes back `Marker, Ord`). Anything
+    ///   reading `direct_requires` must map through `SortInfo.requires`, not assume
+    ///   the two agree.
+    ///
+    /// A side-table rather than a field on those facts, for `op_capture_params`'
+    /// reasons: the record is loader-produced and typer-consumed, with no runtime or
+    /// persistence surface (the printer renders no declarations). Putting the binder
+    /// ON the requirement instead — a third `SortRequiresInfo` field, which the
+    /// retract/re-assert would carry — is the coordinate-free alternative, and the
+    /// one to reach for if phase 2 finds the mapping above load-bearing rather than
+    /// incidental.
+    pub(crate) named_requirement_slots: HashMap<Symbol, Vec<(Symbol, usize)>>,
+
     /// WI-659 — the SortAlias resolution index (source sort → alias target), built
     /// once at type-check start by `typing::build_sort_alias_index`. `None` until
     /// built; while `None`, `resolve_sort_alias` falls back to its (slower) scan.
@@ -949,6 +993,7 @@ impl KnowledgeBase {
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
             op_capture_params: HashMap::new(),
+            named_requirement_slots: HashMap::new(),
             sort_alias_index: None,
             provides_index: None,
             sort_info_index: None,
@@ -1096,6 +1141,21 @@ impl KnowledgeBase {
     /// loader when an operation declares a `...`-marked parameter.
     pub fn record_op_capture_param(&mut self, op_sym: Symbol, param: Symbol) {
         self.op_capture_params.insert(op_sym, param);
+    }
+
+    /// WI-840 (058 §4.7) — record that `owner`'s requirement slot at position `slot`
+    /// is NAMED `binder`. Called by the loader for both spellings of the named form:
+    /// a sort's `requires O: Ord[T]` and an operation's `requires plus: Monoid[T]`.
+    /// Appended in source order, so `named_requirement_slots(owner)` reads back the
+    /// declaration order.
+    pub fn record_named_requirement_slot(&mut self, owner: Symbol, binder: Symbol, slot: usize) {
+        self.named_requirement_slots.entry(owner).or_default().push((binder, slot));
+    }
+
+    /// WI-840 — `owner`'s NAMED requirement slots as `(binder, slot position)`, in
+    /// declaration order; empty for the overwhelmingly common all-anonymous owner.
+    pub fn named_requirement_slots(&self, owner: Symbol) -> &[(Symbol, usize)] {
+        self.named_requirement_slots.get(&owner).map_or(&[], Vec::as_slice)
     }
 
     /// WI-242 — record the value-typed body node for an operation.

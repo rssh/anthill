@@ -438,7 +438,7 @@ impl<'a> Converter<'a> {
             if child.kind() == "import_clause" {
                 continue;
             }
-            let items = self.convert_items_at(child);
+            let items = self.convert_items_at(child, ItemOwner::NotASort);
             self.items.extend(items);
         }
     }
@@ -456,14 +456,17 @@ impl<'a> Converter<'a> {
 
     /// One CST node → its IR item(s).
     ///
-    /// Most CST nodes map 1:1 onto an `Item` (handled in `convert_item`). The
-    /// `effects_sort_item` sugar (WI-320 / proposal 045) is the exception: a
-    /// single `effects E [= T]` source node desugars to TWO IR items —
-    /// `AbstractSort(E [= T])` followed by `RequiresDecl(EffectsRuntime[Effects = E])`.
-    /// Returning `Vec<Item>` keeps the three sort/namespace/root walks uniform.
-    fn convert_items_at(&mut self, node: Node) -> Vec<Item> {
+    /// Most CST nodes map 1:1 onto an `Item` (handled in `convert_item`). Two are
+    /// exceptions, and both fan out to the same pair: the `effects_sort_item` sugar
+    /// (WI-320 / proposal 045) turns `effects E [= T]` into `AbstractSort(E [= T])` +
+    /// `RequiresDecl(EffectsRuntime[Effects = E])`, and a NAMED requirement slot
+    /// (WI-840 / proposal 058 §4.7) turns `requires O: Ord[T]` into
+    /// `AbstractSort(O = ?)` + `RequiresDecl(Ord[T])`. Returning `Vec<Item>` keeps the
+    /// three sort/namespace/root walks uniform.
+    fn convert_items_at(&mut self, node: Node, owner: ItemOwner) -> Vec<Item> {
         match node.kind() {
             "effects_sort_item" => self.convert_effects_sort_item(node),
+            "requires_declaration" => self.convert_requires_items(node, owner),
             _ => self.convert_item(node).into_iter().collect(),
         }
     }
@@ -478,7 +481,6 @@ impl<'a> Converter<'a> {
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
             "const_declaration" => self.convert_const(node).map(Item::Const),
-            "requires_declaration" => self.convert_requires_decl(node).map(Item::RequiresDecl),
             "entity_declaration" => self.convert_entity(node).map(Item::Entity),
             "fact_declaration" => self.convert_fact(node).map(Item::Fact),
             "constraint_declaration" => self.convert_constraint(node).map(Item::Constraint),
@@ -2660,10 +2662,112 @@ impl<'a> Converter<'a> {
 
     // ── Rule body ───────────────────────────────────────────────
 
+    /// A `rule_body`'s goals. Delegates to [`Self::convert_requires_body`], whose
+    /// binder arm the grammar makes unreachable here (a `requires_binder` is a child
+    /// of `requires_body` only) — so the two lists convert by ONE walk rather than by
+    /// two that must be kept in step. That is the grammar comment's claim
+    /// (`requires_body` is otherwise `rule_body` verbatim) made structural: a goal
+    /// rewrite added for one is added for both.
     fn convert_rule_body(&mut self, node: Node) -> Vec<TermId> {
+        self.convert_requires_body(node, &mut Vec::new(), 0)
+    }
+
+    /// WI-840: the node to convert as a NAMED slot's requirement GOAL, given the
+    /// binder's `type` field. `None` — with a diagnostic — when the written type is
+    /// not a spec at all.
+    ///
+    /// The grammar's binder takes a full `_type`, but a requirement is a SPEC
+    /// application (`Ord[T]`) or a bare spec name (`Desc`) and nothing else — an
+    /// arrow, a tuple, an effect row, a type variable name none of these. The
+    /// anonymous spelling never had to say so: its goal is a `rule_body` term, so a
+    /// non-term shape cannot be written there in the first place.
+    ///
+    /// `application` is already a term kind, and converting THAT node is what makes a
+    /// named slot's goal byte-identical to the anonymous spelling's. A bare name
+    /// arrives wrapped in `simple_type` (where a rule-body goal would have spelled it
+    /// as a plain `name`), so unwrap to the `name` child rather than teaching
+    /// `visit_term` a type node — the wrapper is the only difference between the two
+    /// spellings of the same thing.
+    fn requires_binder_goal_node<'t>(&mut self, type_node: Node<'t>) -> Option<Node<'t>> {
+        if is_term_kind(type_node.kind()) {
+            return Some(type_node);
+        }
+        if type_node.kind() == "simple_type" {
+            if let Some(name) = self.child_by_kind(type_node, "name") {
+                return Some(name);
+            }
+        }
+        let written = self.text(type_node).to_owned();
+        self.err(
+            format!(
+                "a named requirement slot must name a SPEC — `requires <name>: Spec[…]` \
+                 or `requires <name>: Spec` — but `{written}` is not one. Naming a slot \
+                 makes it a type parameter whose value is the spec's WITNESS (proposal \
+                 058 §4.7); there is no witness to name here"
+            ),
+            type_node,
+        );
+        None
+    }
+
+    /// WI-840 (proposal 058 §4.7): one op-scoped `requires` clause list.
+    ///
+    /// Identical to [`Self::convert_rule_body`] for every ANONYMOUS goal — a spec
+    /// requirement (`requires Eq[T]`, WI-448) and a value precondition
+    /// (`requires neq(b, 0)`, WI-539) both convert exactly as before, which is what
+    /// keeps a binder-free clause byte-identical to today's load.
+    ///
+    /// A NAMED slot (`plus: Monoid[T]`) contributes BOTH: its spec becomes an
+    /// ordinary goal in this same list — converted from the `type` node through
+    /// `convert_term`, the very path the anonymous spelling takes, so the two produce
+    /// the SAME term and dispatch cannot tell them apart — and its binder becomes an
+    /// operation type parameter carrying that goal's position. One source, two
+    /// references: the goal is the requirement, the position is the name's referent.
+    ///
+    /// `slot_base` is the number of goals already written by EARLIER `requires`
+    /// clauses of this operation, so the recorded position is over the operation's
+    /// whole requirement list rather than per-clause (an operation may carry several
+    /// `requires` clauses; `convert_operation` accumulates rather than last-wins).
+    fn convert_requires_body(
+        &mut self,
+        node: Node,
+        type_params: &mut Vec<TypeParam>,
+        slot_base: usize,
+    ) -> Vec<TermId> {
         let mut terms = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
+            if child.kind() == "requires_binder" {
+                let Some(type_node) = self.field(child, "type") else {
+                    // The grammar makes `type` mandatory; a missing one means
+                    // tree-sitter error recovery already reported a parse error.
+                    // Record the shape rather than dropping the slot in silence.
+                    self.err("requires binder missing its required `type` field", child);
+                    continue;
+                };
+                let Some(goal_node) = self.requires_binder_goal_node(type_node) else {
+                    continue;
+                };
+                let tid = self.convert_term(goal_node);
+                let goal = self.rewrite_requires_goal(tid);
+                let slot = slot_base + terms.len();
+                terms.push(goal);
+                // `binder` is mandatory in the grammar exactly as `type` is, so a
+                // missing one is the same tree-sitter-recovery case — and the same
+                // treatment. Anything softer leaves the slot silently UNNAMED while
+                // its goal still loads, which is the WI-839 class of drop this
+                // production exists to avoid.
+                let Some(binder) = self.field(child, "binder") else {
+                    self.err("requires binder missing its required `binder` field", child);
+                    continue;
+                };
+                type_params.push(TypeParam {
+                    name: self.intern(self.text(binder)),
+                    span: self.span(binder),
+                    requirement_slot: Some(slot),
+                });
+                continue;
+            }
             if is_term_kind(child.kind()) {
                 let tid = self.convert_term(child);
                 terms.push(self.rewrite_requires_goal(tid));
@@ -2745,7 +2849,7 @@ impl<'a> Converter<'a> {
             match child.kind() {
                 "name" | "import_clause" => {}
                 _ => {
-                    let converted = self.convert_items_at(child);
+                    let converted = self.convert_items_at(child, ItemOwner::NotASort);
                     items.extend(converted);
                 }
             }
@@ -2914,6 +3018,9 @@ impl<'a> Converter<'a> {
             }],
         };
         let requires_decl = RequiresDecl {
+            // WI-840: the desugar's anchor is an internal artifact, never a slot
+            // the author can select — anonymous.
+            binder: None,
             type_expr: requires_type,
             span,
         };
@@ -2952,7 +3059,7 @@ impl<'a> Converter<'a> {
                 "name" | "visibility" | "import_clause" | "meta_block"
                 | "description_block" | "sort_type_param_list" => {}
                 _ => {
-                    let converted = self.convert_items_at(child);
+                    let converted = self.convert_items_at(child, ItemOwner::Sort);
                     items.extend(converted);
                 }
             }
@@ -3046,7 +3153,7 @@ impl<'a> Converter<'a> {
             let mut items = Vec::new();
             let mut cursor = body.walk();
             for child in body.named_children(&mut cursor) {
-                items.extend(self.convert_items_at(child));
+                items.extend(self.convert_items_at(child, ItemOwner::Sort));
             }
             items
         });
@@ -3211,7 +3318,9 @@ impl<'a> Converter<'a> {
 
         // The name AS WRITTEN, for diagnostics that must quote the declaration
         // (WI-850's type-param-default refusal).
-        let type_params = self.convert_operation_type_params(node, self.text(name_node));
+        // `mut`: a NAMED requirement slot in a `requires` clause is a type parameter
+        // too (WI-840 / 058 §4.7), appended by `convert_requires_body` below.
+        let mut type_params = self.convert_operation_type_params(node, self.text(name_node));
 
         let params = self.children_by_kind(node, "param")
             .into_iter()
@@ -3239,8 +3348,10 @@ impl<'a> Converter<'a> {
             for child in clause.named_children(&mut cursor) {
                 match child.kind() {
                     "requires_clause" => {
-                        if let Some(body) = self.child_by_kind(child, "rule_body") {
-                            requires.push(self.convert_rule_body(body));
+                        if let Some(body) = self.child_by_kind(child, "requires_body") {
+                            let base: usize = requires.iter().map(Vec::len).sum();
+                            let goals = self.convert_requires_body(body, &mut type_params, base);
+                            requires.push(goals);
                         }
                     }
                     "ensures_clause" => {
@@ -3356,7 +3467,9 @@ impl<'a> Converter<'a> {
                 node,
             );
         }
-        TypeParam { name, span }
+        // WI-840: a bracket-declared parameter names no requirement slot; only the
+        // `requires <name>: Spec[…]` binder does (`convert_requires_body`).
+        TypeParam { name, span, requirement_slot: None }
     }
 
     fn convert_param(&mut self, node: Node) -> Param {
@@ -3383,7 +3496,67 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         let type_expr = self.field(node, "type")
             .map(|t| self.convert_type(t))?;
-        Some(RequiresDecl { type_expr, span })
+        let binder = self.field(node, "binder").map(|b| self.convert_name(b));
+        Some(RequiresDecl { binder, type_expr, span })
+    }
+
+    /// WI-840 (proposal 058 §4.7): a sort/namespace-level `requires` item, desugared.
+    ///
+    /// The ANONYMOUS form is one item, as before. The NAMED form `requires O: Ord[T]`
+    /// is TWO — `sort O = ?` in front of the requirement — because a named slot IS a
+    /// type parameter, and going through `AbstractSort` is what makes it one
+    /// everywhere at once: `scan_items_pass1` defines `O` in the sort's scope and
+    /// registers it via `add_type_param` (so `Box[E = …, O = …]` is addressable and
+    /// `check_sort_type_args` accepts it), `load_abstract_sort` mints its backing
+    /// `SortAlias` var, and `SortInfo.params` lists it. Nothing downstream needs to
+    /// know the parameter came from a `requires`.
+    ///
+    /// The same shape as WI-320's `effects E = T` desugar (`convert_effects_sort_item`,
+    /// which fans out to `AbstractSort` + `RequiresDecl` for the same reason), and
+    /// spliced at the item's own position so declaration ORDER is the source's —
+    /// positional sort bindings (`SortedSet[String, ByLength]`) read it.
+    ///
+    /// A DOTTED binder cannot arrive (the grammar's binder is a single `identifier`),
+    /// so the parameter's name is always the one segment written.
+    fn convert_requires_items(&mut self, node: Node, owner: ItemOwner) -> Vec<Item> {
+        let Some(mut decl) = self.convert_requires_decl(node) else {
+            return Vec::new();
+        };
+        let Some(binder) = decl.binder.clone() else {
+            return vec![Item::RequiresDecl(decl)];
+        };
+        // A binder outside a SORT has nothing to parameterize, and the verdict is
+        // decidable from the surface alone — so it is taken HERE, the WI-850 rule.
+        // At load it would be a refusal only; `generate_rust` takes a `&ParsedFile`
+        // and never loads a KB, so the spliced `AbstractSort` reached codegen and
+        // MATERIALIZED a host artifact (`struct O;`) from a declaration the language
+        // rejects. Strip the binder rather than the requirement: the requirement
+        // itself is well-formed, and the recorded error already fails the load.
+        if owner == ItemOwner::NotASort {
+            let name = self.text(node).to_owned();
+            self.err(
+                format!(
+                    "named requirement slot `{name}`: a name is only meaningful on a \
+                     SORT — naming a slot makes it a type PARAMETER of the sort that \
+                     declares it (proposal 058 §4.7), which is how the chosen witness \
+                     enters the type (`SortedSet[T = String, O = ByLength]`), and a \
+                     namespace has no parameters to add it to. Drop the name \
+                     (`requires …`), or move the declaration into a sort"
+                ),
+                node,
+            );
+            decl.binder = None;
+            return vec![Item::RequiresDecl(decl)];
+        }
+        let param = AbstractSort {
+            visibility: None,
+            name: binder,
+            definition: self.fresh_anon_type_var(decl.span),
+            descriptions: Vec::new(),
+            meta: None,
+            span: decl.span,
+        };
+        vec![Item::AbstractSort(param), Item::RequiresDecl(decl)]
     }
 
     // ── Sugar: entity, fact, constraint ─────────────────────────
@@ -4029,6 +4202,18 @@ impl<'a> Converter<'a> {
         self.convert_expr_iter(node, WorkKind::ExprBody)
     }
 
+}
+
+/// WI-840: what owns the item list [`Converter::convert_items_at`] is walking — a SORT
+/// body (a sort, an enum, or a structured binder's brace body) or a namespace / the
+/// file root. Only a sort has type parameters, so it is the only owner on which a NAMED
+/// requirement slot (`requires O: Ord[T]`) means anything.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ItemOwner {
+    /// A sort / enum body — the binder becomes one of its type parameters.
+    Sort,
+    /// A namespace body or the file root — nothing to parameterize.
+    NotASort,
 }
 
 /// Check if a node kind is a term.

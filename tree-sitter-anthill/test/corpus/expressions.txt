@@ -763,7 +763,7 @@ operation safe_div(a: Int, b: Int) -> Int
         (identifier)))
     (operation_clause
       (requires_clause
-        (rule_body
+        (requires_body
           (infix_term
             (name
               (identifier))

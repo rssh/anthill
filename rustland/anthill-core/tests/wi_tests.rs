@@ -840,3 +840,6 @@ mod wi851_unknown_field_label_test;
 
 #[path = "include/wi853_top_level_import_test.rs"]
 mod wi853_top_level_import_test;
+
+#[path = "include/wi840_named_requires_slot_test.rs"]
+mod wi840_named_requires_slot_test;

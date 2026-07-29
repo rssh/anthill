@@ -105,19 +105,11 @@ object Loader:
           scanItemsPass1(kb, sort.items, fileSym, fileTerms, sortTerm, qualName)
 
         case Item.AbstractSortItem(sort) =>
-          val shortName = joinSegments(fileSym, sort.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scopeTerm.raw)
-          val sortTerm = kb.makeNameTermFromSym(sym)
-          kb.registerSort(sortTerm, SortKind.Abstract)
           // `sort T = ?` inside a SortWithBody (or enum) declares a type
-          // parameter local to the enclosing sort. The resolver uses this
-          // marker to keep T from leaking into ambient name-resolution from
-          // sibling sorts that share the same canonical parameter name.
-          sort.definition match
-            case _: TypeExpr.Variable if isSortScope(kb, scopeTerm) =>
-              kb.symbols.addTypeParam(scopeTerm.raw, shortName)
-            case _ => ()
+          // parameter local to the enclosing sort; `sort T = Concrete` is an
+          // ordinary abstract sort. Only the variable form is a parameter.
+          val isParam = sort.definition.isInstanceOf[TypeExpr.Variable]
+          defineAbstractSort(kb, fileSym, prefix, scopeTerm, sort.name.segments, isParam)
 
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
@@ -166,7 +158,54 @@ object Loader:
               kb.symbols.define(shortName, qualName, SymbolKind.Rule, scopeTerm.raw)
             }
 
+        // WI-840 (proposal 058 §4.7): a NAMED requirement slot — `requires O: Ord[T]`
+        // — declares a type PARAMETER of the enclosing sort, which is what lets the
+        // chosen witness enter the type (`SortedSet[T = String, O = ByLength]`); an
+        // ANONYMOUS slot stays a constraint and defines nothing. rustland reaches the
+        // same state by desugaring the named form into `sort O = ?` at convert time;
+        // scaland's `declaration` yields one `Item` per production, so the binder
+        // rides on the item and this arm does what the `AbstractSortItem` arm would
+        // have. Outside a sort scope the binder has nothing to parameterize, so it
+        // defines no symbol (rustland raises there; scaland has no operation-level
+        // diagnostics to sit beside it).
+        case Item.RequiresDeclItem(req) =>
+          // A NAMED slot IS `sort O = ?`, so it goes through the SAME registration —
+          // one implementation of "an abstract sort that is a type parameter of its
+          // enclosing sort", not two. rustland reaches this state by desugaring the
+          // binder into an `AbstractSort` item at CONVERT time; scaland's
+          // `declaration` yields one `Item` per production, so the binder rides on
+          // the item and the shared helper is applied here instead.
+          req.binder.foreach { binder =>
+            defineAbstractSort(kb, fileSym, prefix, scopeTerm, binder.segments, isParam = true)
+          }
+
         case _ => // Other items don't define symbols in pass 1
+
+  /** Define an ABSTRACT sort in `scopeTerm` and, when `isParam` and the scope is a
+    * sort body, register it as one of that sort's TYPE PARAMETERS — the marker the
+    * resolver uses to keep `T` from leaking into ambient name-resolution from sibling
+    * sorts that share the canonical parameter name.
+    *
+    * Shared by the two surfaces that declare one (WI-840): `sort T = ?`, and a NAMED
+    * requirement slot `requires O: Ord[T]` (proposal 058 §4.7), which IS a type
+    * parameter of the sort that declares it. Outside a sort scope neither is a
+    * parameter — a namespace has none to add to — so the symbol is defined and the
+    * marker is not.
+    */
+  private def defineAbstractSort(
+    kb: KnowledgeBase,
+    fileSym: SymbolTable,
+    prefix: String,
+    scopeTerm: TermId,
+    segments: IndexedSeq[TermSymbol],
+    isParam: Boolean
+  ): Unit =
+    val shortName = joinSegments(fileSym, segments)
+    val qualName = makeQualified(prefix, shortName)
+    val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scopeTerm.raw)
+    kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Abstract)
+    if isParam && isSortScope(kb, scopeTerm) then
+      kb.symbols.addTypeParam(scopeTerm.raw, shortName)
 
   /** Define a symbol of `kind` unless its qualified name is already
     * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
