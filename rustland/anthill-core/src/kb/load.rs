@@ -359,6 +359,37 @@ pub enum LoadError {
         carrier: String,
         providers: Vec<String>,
     },
+    /// WI-842 (proposal 058 §4.9) — one carrier declares the SAME spec twice with
+    /// CONFLICTING type-param bindings (`fact Iter[Self = C, Element = Int64]` beside
+    /// `fact Iter[Self = C, Element = String]`). Every reader of a carrier's provider
+    /// view (`provider_spec_view_bindings` — type conformance, member projection,
+    /// carrier-param classification, ~12 call sites) takes the FIRST matching
+    /// provision, so the pair's meaning was decided by SOURCE ORDER: MEASURED, the
+    /// identical program loaded clean with one order and was refused
+    /// (`expected Iter[Element = String, Self = C], got C`) with the other.
+    ///
+    /// Refused HERE, not at the read, for the same reason as
+    /// [`Self::AmbiguousEqDispatch`] and not by analogy — a carrier-keyed provision
+    /// has NO NAME (§4.3: only a witness sort does), so no call-site bracket at any
+    /// site could ever select between the two, and the readers are `bool`/`Option`
+    /// type predicates whose "loud" would be indistinguishable from an ordinary type
+    /// mismatch. This is therefore the check phase 3b must NOT delete: 3b moves the
+    /// refusal to the use site for NAMEABLE providers (witness sorts, whose
+    /// `sort_ref` is the witness and which this reader never sees as the carrier's
+    /// own provision), and leaves the unnameable ones refused at load.
+    ///
+    /// Load-blocking; keyed on (carrier, spec, APPLICATION, param) — a carrier may
+    /// provide one spec at several applications (the stdlib's `Console provides Effect`
+    /// ×3), so only provisions agreeing on the spec's carrier param are compared.
+    /// Provisions that AGREE are not a conflict either — they merge into one view,
+    /// which is how a provision binding a param another omits stops being invisible
+    /// behind it.
+    ConflictingProvisionBindings {
+        carrier: String,
+        spec: String,
+        param: String,
+        values: Vec<String>,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -1046,6 +1077,10 @@ impl LoadError {
                 format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
                     providers.len(), carrier, providers.join("; "))
             }
+            LoadError::ConflictingProvisionBindings { carrier, spec, param, values } => {
+                format!("conflicting provisions: '{}' declares '{}' more than once, binding '{}' to {} different types ({}) — every reader of a carrier's provider view takes the first matching provision, so which one applies would be decided by the order the provisions are written; keep one `{}[…]` per carrier, or bind the differing parameter on distinct carriers",
+                    carrier, spec, param, values.len(), values.join(", "), spec)
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -1399,6 +1434,10 @@ impl std::fmt::Display for LoadError {
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 write!(f, "ambiguous semantic equality: {} distinct `eq` implementations for carrier '{}' ({}) — `eq` dispatches from unification, with no call site to select at (keep exactly one)",
                     providers.len(), carrier, providers.join("; "))
+            }
+            LoadError::ConflictingProvisionBindings { carrier, spec, param, values } => {
+                write!(f, "conflicting provisions: '{}' declares '{}' twice, binding '{}' to {} ({}) — the first provision written would silently win (keep one)",
+                    carrier, spec, param, values.len(), values.join(", "))
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)
@@ -5313,12 +5352,16 @@ fn eq_dispatch_carrier_domain(
 /// `eq` came from a witness would be field-wise-derived `NonEq` and then
 /// false-conflict with its own `provides Eq`.
 ///
-/// SCOPE, stated exactly: LOAD-TIME readers. Eval's value-directed spec-op dispatch
-/// (`eval.rs`'s `own .or_else(instance_fact_op_binding) .or_else(witness_op_for_carrier)`
-/// chain) is a THIRD enumeration of the same three routes, kept separate because it is
-/// on the per-call path and reads the carrier-bucket index; its `own` leg is a weaker
-/// filter than [`super::typing::carrier_own_op`]. Folding it in needs a carrier-bucket
-/// fast path here and is 058 phase 3a's business, not this ticket's.
+/// SCOPE, stated exactly: LOAD-TIME readers, and only because they can afford ONE
+/// whole-KB walk. Eval's value-directed spec-op dispatch was a THIRD enumeration of
+/// the same three routes until WI-842, which could not share this index (it is on the
+/// per-call path, with no pass to build one in). What it shares instead is the layer
+/// below: [`super::typing::spec_op_suppliers_for_carrier`] answers ONE carrier from
+/// the same [`super::typing::provision_supplier`] classification this index buckets
+/// with, so the routes are enumerated once even though the two callers pay for them
+/// differently. Its `own` leg was also the weaker `sort_ops_lookup(…) != spec_op`;
+/// WI-842 unified it on [`super::typing::carrier_own_op`] after measuring the two
+/// equal on every value-directed dispatch in the corpus.
 ///
 /// Built ONCE per consumer, then answered per carrier by a hash lookup, because a
 /// provision's supplier is a function of the PROVISION, not of the carrier asking:
@@ -5383,16 +5426,13 @@ impl EqDispatchIndex {
             out.push(SpecOpSupplier { target, route: SupplyRoute::Own });
         }
         // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
-        // Deduped by CANONICAL target for the same reason the collector is: one
-        // qualified name can be interned under several Symbols, and the carrier's own
-        // member and a fact's binding reach the operation through different
-        // resolution scopes — a raw compare could read one operation as two
-        // candidates and refuse a correct program.
+        // Deduped by CANONICAL target through the collector's own owner
+        // ([`super::typing::push_supplier_deduped`]): the carrier's own member and a
+        // fact's binding reach the operation through different resolution scopes, so a
+        // raw compare could read one operation as two candidates and refuse a correct
+        // program.
         for &s in self.by_carrier.get(&kb.canonical_sort_sym(carrier)).into_iter().flatten() {
-            let target_canon = kb.canonical_sym(s.target);
-            if !out.iter().any(|e| kb.canonical_sym(e.target) == target_canon) {
-                out.push(s);
-            }
+            super::typing::push_supplier_deduped(kb, &mut out, s);
         }
         out
     }

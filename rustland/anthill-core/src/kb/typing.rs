@@ -17328,8 +17328,8 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     // while `sort WitCombiner provides Combiner[T = Tag]` binds no op and was
     // invisible to the fact grouping. That pair LOADED CLEAN, and the two dispatch
     // routes did not even agree on the winner: MEASURED, value-directed dispatch
-    // runs the INSTANCE FACT's op (eval's `own .or_else(instance_fact_op_binding)
-    // .or_else(witness_op_for_carrier)` chain) while the THREADED-DICT route dies
+    // ran the INSTANCE FACT's op (its `or_else` chain, which WI-842 replaced with a
+    // loud multi-candidate read) while the THREADED-DICT route dies
     // `EvalError::Internal("unhandled Expr variant")`. Hence one group per
     // `(spec, dispatch carrier)` holding candidates of every kind — a kind can no
     // longer have a grouping of its own to hide in. (The three DIAGNOSTICS below
@@ -17444,7 +17444,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         // it is its own variant rather than either sibling.
         if facts > 0 && !witnesses.is_empty() {
             errors.push(LoadError::MixedProviderKinds {
-                carrier: carrier_qn,
+                carrier: carrier_qn.clone(),
                 spec: spec_qn,
                 fact_count: facts,
                 witnesses,
@@ -17452,7 +17452,139 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
 
+    errors.extend(check_provision_binding_agreement(kb, &provisions));
     errors
+}
+
+/// WI-842 (proposal 058 §4.9) — refuse two CARRIER-KEYED provisions of one spec that
+/// bind one type parameter DIFFERENTLY, the ambiguity
+/// [`provider_spec_view_bindings`] would otherwise decide by SOURCE ORDER.
+///
+/// The candidate set is exactly what that reader matches: provisions whose `sort_ref`
+/// IS the carrier asked about, keyed canonically on (carrier, spec base) as the reader
+/// keys them. A WITNESS provision therefore participates only under ITS OWN sort — two
+/// witnesses of one spec are two carriers here, never a conflict — which is what keeps
+/// this check clear of proposal 058 phase 3b: 3b lets NAMEABLE providers (witness
+/// sorts) coexist and moves their refusal to the use site, while a carrier's own
+/// provisions have no name to select and so stay refused at load.
+///
+/// SAME APPLICATION, not merely same spec — the distinction this check turns on, and
+/// the one whose absence made a first cut refuse the STDLIB. A carrier may provide one
+/// spec MANY times at different APPLICATIONS: `sort Console` holds
+/// `fact Effect[T = ConsoleOutput]`, `[T = ConsoleError]` and `[T = ConsoleInput]`
+/// (console.anthill:35-37), three genuine instances that differ in the spec's CARRIER
+/// PARAM. So provisions are bucketed by that param's binding first, and only a
+/// disagreement WITHIN one bucket — same application, two answers for another param —
+/// is a conflict. (The Console shape leaves this reader under-determined in a way
+/// this ticket does not fix: asked for `Console`'s view of `Effect` it still answers
+/// the first of three. That is not §4.9's defect — no op binding is being selected,
+/// and MEASURED, no consumer asks — but it is the reason this reader cannot simply
+/// be made loud on a second provision.)
+///
+/// AGREEMENT, not identity: two provisions binding a param to the same type are one
+/// view (the reader merges them), so `provides Spec[T = C]` beside
+/// `fact Spec[T = C, op = f]` is admitted — that PAIR is the shape whose second
+/// binding used to hide behind the first. Comparison is deliberately CONSERVATIVE
+/// (hash-consed identity, or two spellings of one sort): a structured binding written
+/// two equivalent ways reads as a conflict rather than being waved through.
+fn check_provision_binding_agreement(
+    kb: &KnowledgeBase,
+    provisions: &[Provision],
+) -> Vec<LoadError> {
+    // (carrier, spec base) → the provisions' bindings, in source order so the
+    // diagnostic lists the conflicting types the way the author wrote them.
+    let mut groups: Vec<((Symbol, Symbol), SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]>)> =
+        Vec::new();
+    for p in provisions {
+        let Some((base, bindings)) = unwrap_spec_view(kb, p.spec_view) else { continue };
+        let key = (kb.canonical_sort_sym(p.carrier), kb.canonical_sort_sym(base));
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, views)) => views.push(bindings),
+            None => groups.push((key, SmallVec::from_elem(bindings, 1))),
+        }
+    }
+    let mut errors = Vec::new();
+    for ((carrier, spec), views) in &groups {
+        if views.len() < 2 {
+            continue;
+        }
+        // The spec's CARRIER PARAM — its first type parameter, the same one
+        // [`provision_carrier_sort`] reads to decide what a provision applies to.
+        // A spec with no type params leaves every provision in one bucket, which is
+        // right: they name one application by having no application to differ in.
+        let carrier_param = sort_type_params_as_pairs(kb, *spec)
+            .first()
+            .map(|(sym, _)| short_name_of(kb.resolve_sym(*sym)));
+        let binding_of = |view: &SmallVec<[(Symbol, TermId); 2]>, short: &str| {
+            view.iter()
+                .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
+                .map(|(_, v)| *v)
+        };
+        // Bucket by the carrier-param binding: one bucket per APPLICATION.
+        let mut buckets: Vec<(Option<TermId>, SmallVec<[&SmallVec<[(Symbol, TermId); 2]>; 2]>)> =
+            Vec::new();
+        for view in views {
+            let app = carrier_param.and_then(|c| binding_of(view, c));
+            let slot = buckets.iter_mut().find(|(a, _)| match (a, app) {
+                (Some(x), Some(y)) => provision_bindings_agree(kb, *x, y),
+                (None, None) => true,
+                _ => false,
+            });
+            match slot {
+                Some((_, vs)) => vs.push(view),
+                None => buckets.push((app, SmallVec::from_elem(view, 1))),
+            }
+        }
+        for (_, bucket) in &buckets {
+            if bucket.len() < 2 {
+                continue;
+            }
+            // Per PARAM SHORT NAME, because a param resolved in two import scopes can
+            // carry two Symbols for one spec parameter — the same reason the readers
+            // compare `short_name_of(resolve_sym(param))`.
+            let mut seen: Vec<(&str, SmallVec<[TermId; 2]>)> = Vec::new();
+            for view in bucket {
+                for (param, value) in view.iter() {
+                    let short = short_name_of(kb.resolve_sym(*param));
+                    match seen.iter_mut().find(|(s, _)| *s == short) {
+                        Some((_, vals)) => {
+                            if !vals.iter().any(|v| provision_bindings_agree(kb, *v, *value)) {
+                                vals.push(*value);
+                            }
+                        }
+                        None => seen.push((short, SmallVec::from_elem(*value, 1))),
+                    }
+                }
+            }
+            for (param, vals) in seen {
+                if vals.len() > 1 {
+                    errors.push(LoadError::ConflictingProvisionBindings {
+                        carrier: kb.qualified_name_of(*carrier).to_string(),
+                        spec: kb.qualified_name_of(*spec).to_string(),
+                        param: param.to_string(),
+                        values: vals.iter().map(|v| type_display_name(kb, *v)).collect(),
+                    });
+                }
+            }
+        }
+    }
+    errors
+}
+
+/// WI-842 — do two provision bindings name the SAME type? Hash-consed identity
+/// first (structurally identical type views share one `TermId`), then the one
+/// divergence that is not a real difference: a bare sort name interned under two
+/// Symbols. Anything else answers `false` — see
+/// [`check_provision_binding_agreement`] on why the conservative direction is the
+/// safe one here.
+fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+    if a == b {
+        return true;
+    }
+    match (sort_functor_of_view(kb, &Value::term(a)), sort_functor_of_view(kb, &Value::term(b))) {
+        (Some(x), Some(y)) => same_sort_canonical(kb, x, y),
+        _ => false,
+    }
 }
 
 /// One `anthill.reflect.SortProvidesInfo` fact, snapshotted before
@@ -17492,11 +17624,12 @@ enum Provider {
 /// Store`), which name no dispatch carrier at all.
 ///
 /// THE ONE OWNER of that criterion, which is why it is a free function rather
-/// than inline at either caller: [`witness_provision`] (eval-time and typer-time
-/// dispatch) and [`check_provider_operations`]'s coherence grouping (load time)
-/// must agree about what a witness is, and `witness_provision`'s doc asserts they
-/// do. Before WI-838 each had its own copy of the two checks, which is the shape
-/// that produced the cross-kind blind spot in the first place.
+/// than inline at any caller: [`provision_supplier`] (dispatch, both the load-time
+/// eq index and the per-call value-directed read), [`provision_binds_param_to_carrier`]
+/// (the WI-424 carrier-param classification) and [`check_provider_operations`]'s
+/// coherence grouping (load time) must agree about what a witness is. Before WI-838
+/// each had its own copy of the two checks, which is the shape that produced the
+/// cross-kind blind spot in the first place.
 ///
 /// Carries NO policy: the coherence pass's two exemptions (an op-less spec, a
 /// concrete provider) are applied at its own call site, where they are visible.
@@ -17617,10 +17750,23 @@ fn op_bound_in_instance_fact(kb: &KnowledgeBase, spec_view: TermId, op_short: &s
     }
 }
 
-/// WI-431 eval dispatch: the operation backing spec op `op_short` for `carrier`
+/// WI-431 dispatch: the operation backing spec op `op_short` for `carrier`
 /// through an instance fact `SortProvidesInfo(carrier, Spec[…, op_short = op])`.
 /// The dispatch fallback when `carrier` owns no `op_short` of its own — a
 /// retroactive instance binds the op in the fact instead of on the carrier.
+///
+/// STILL SINGLE-ROUTE after WI-842's §4.9 sweep, and deliberately so at both of its
+/// remaining callers — the value-directed chain that used to head them left for
+/// [`spec_op_suppliers_for_carrier`]:
+///   * [`resolve_op_target`] resolves an op WITHIN a dictionary's own functor — a
+///     provider already selected by `resolve_inner` → `pick_most_specific`, the one
+///     consumer that CAN raise a use-site ambiguity. It selects an op, not a provider,
+///     so §4.9's rule does not reach it;
+///   * `check_apply`'s higher-kinded arm reads only the FACT route for a carrier it
+///     has just discharged. Two op-binding facts for one carrier are
+///     [`super::load::LoadError::AmbiguousInstanceFact`] at load and STAY so under
+///     phase 3b, whose coexistence is gated on every candidate being NAMEABLE (§4.3)
+///     and an instance fact has no name.
 pub(crate) fn instance_fact_op_binding(
     kb: &KnowledgeBase,
     carrier: Symbol,
@@ -17631,50 +17777,15 @@ pub(crate) fn instance_fact_op_binding(
     instance_fact_op_in_bindings(kb, &bindings, op_short)
 }
 
-/// WI-450: the first WITNESS provision of `spec_sort` for `carrier` — a provider
-/// whose `sort_ref` is NOT the carrier but which binds `carrier` as a spec
-/// type-param VALUE (`sort TagCombiner provides Combiner[T = Tag]` ⇒ provider
-/// `TagCombiner`, carrier `Tag` bound to `T`). Returns `(provider sort, the
-/// provision's type-param bindings)`.
-///
-/// This is the param-agnostic dual of the carrier-keyed
-/// [`provider_spec_view_bindings`] (which keys `sort_ref == carrier`): a witness's
-/// `sort_ref` is the witness sort, not the carrier, so the carrier-keyed path
-/// cannot see it — a `fact Combiner[T = Tag, …]` works only because its DERIVED
-/// carrier IS `Tag`. Coherence (two providers for one application, of either kind
-/// — WI-838) is rejected at load by [`check_provider_operations`], so first-match
-/// is the sole instance. What COUNTS as a witness is [`witness_dispatch_carrier`],
-/// shared with that load-time pass so the two cannot disagree.
-fn witness_provision(
-    kb: &KnowledgeBase,
-    spec_sort: Symbol,
-    carrier: Symbol,
-) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
-    let carrier_canon = kb.canonical_sort_sym(carrier);
-    // Witness = provider distinct from the carrier, with the spec's CARRIER PARAM
-    // (its first type parameter — `Combiner.T`) bound to the dispatch carrier.
-    // `provider == carrier` (facts whose carrier IS the `sort_ref`, normal
-    // providers) is the carrier-keyed path's job and is never re-handled here; a
-    // NON-carrier param of a multi-param spec that merely happens to bind the
-    // carrier sort (`Spec[A = Other, B = Tag]` for carrier `Tag`) does not
-    // spuriously match. Both are asked of `witness_dispatch_carrier`, the ONE owner
-    // of the criterion — which is what makes the identical-detection claim above
-    // enforced rather than hand-maintained against the coherence pass's copy.
-    provisions_of_spec(kb, spec_sort)
-        .find(|(provider, spec_t, _)| {
-            witness_dispatch_carrier(kb, spec_sort, *provider, *spec_t) == Some(carrier_canon)
-        })
-        .map(|(provider, _, bindings)| (provider, bindings))
-}
-
 /// Every `SortProvidesInfo` provision OF `spec_sort`, decoded once into
 /// `(provider sort, the provision's `SortView` term, its type-param bindings)`.
 ///
-/// The shared substrate of the two readers that differ only in what they do at a
-/// match: [`witness_provision`] takes the first witness,
-/// [`collect_spec_op_suppliers_by_carrier`] collects every supplier. Both used to
-/// spell this decode themselves — eleven identical lines — which is the shape that produced WI-838's cross-kind blind
-/// spot in the first place (two copies of one criterion, kept in step by hand).
+/// The shared substrate of the multi-candidate walks
+/// ([`collect_spec_op_suppliers_by_carrier`], [`spec_op_suppliers_for_carrier`]),
+/// which differ only in whether they bucket every carrier or filter to one. It used
+/// to be spelled twice — eleven identical lines — which is the shape that produced
+/// WI-838's cross-kind blind spot in the first place (two copies of one criterion,
+/// kept in step by hand).
 ///
 /// Reads the WI-660 `by_spec_base` bucket via [`provides_rids_by_spec`] rather than
 /// every provision fact, and keeps the per-fact canonical re-filter that bucket's
@@ -17700,21 +17811,6 @@ fn provisions_of_spec(
         let (base, bindings) = unwrap_spec_view(kb, spec_t)?;
         (kb.canonical_sort_sym(base) == spec_canon).then_some((provider, spec_t, bindings))
     })
-}
-
-/// WI-450: resolve a spec op through a WITNESS SORT — the param-agnostic dual of
-/// [`instance_fact_op_binding`]. The witness owns the impl (`combine`) as a MEMBER
-/// of the witness sort (`TagCombiner.combine`), resolved through the sort_ops table
-/// like any provider's own op. The ADDITIVE fallback for the `sort_ref != carrier`
-/// case — the carrier-keyed path stays primary, so the hot path is undisturbed.
-pub(crate) fn witness_op_for_carrier(
-    kb: &KnowledgeBase,
-    spec_sort: Symbol,
-    carrier: Symbol,
-    op_short: Symbol,
-) -> Option<Symbol> {
-    let (provider, _) = witness_provision(kb, spec_sort, carrier)?;
-    kb.sort_ops_lookup(provider, op_short)
 }
 
 /// WI-837 — how a spec op's impl reaches a carrier. The three routes are written in
@@ -17775,19 +17871,18 @@ impl SpecOpSupplier {
 /// provision NAMES, not an input to reading it. Asking per carrier re-walks every
 /// provision per sort, which MEASURED as this ticket's entire first-cut cost.
 ///
-/// The multi-candidate dual of the two SELECTING readers [`instance_fact_op_binding`]
-/// (carrier-keyed, first fact wins) and [`witness_op_for_carrier`] (first witness
-/// wins). Proposal 058 §4.9's hardening rule is that a read which SELECTS goes loud
-/// on the second candidate, and NEITHER of those can: each stops at its first hit,
-/// and neither sees the other kind at all. Sole consumer today is the semantic-eq
-/// dispatch index ([`super::load::EqDispatchIndex`]) — the one reader with no later
-/// site to complain from, since equality dispatches from unification where no
-/// instance can be selected — so it consumes this and refuses at LOAD. The other
-/// §4.9 readers harden at the read (phase 3a), which is why this is op-generic
-/// rather than an `eq` special case.
+/// The multi-candidate dual of the SELECTING reader [`instance_fact_op_binding`]
+/// (carrier-keyed, first fact wins). Proposal 058 §4.9's hardening rule is that a
+/// read which SELECTS goes loud on the second candidate, and that one cannot: it
+/// stops at its first hit and never sees the witness kind at all. Consumer: the
+/// semantic-eq dispatch index ([`super::load::EqDispatchIndex`]) — the one reader
+/// with no later site to complain from, since equality dispatches from unification
+/// where no instance can be selected — so it consumes this and refuses at LOAD.
+/// WI-842's per-call reader [`spec_op_suppliers_for_carrier`] shares the
+/// classification but not the bucketing, and refuses at the READ.
 ///
 /// The witness leg reads the provider's own member through [`carrier_own_op`], NOT
-/// [`witness_op_for_carrier`]'s bare `sort_ops_lookup`: pass 2 of the sort-ops build
+/// the deleted `witness_op_for_carrier`'s bare `sort_ops_lookup`: pass 2 of the sort-ops build
 /// records the SPEC op itself under the short name for every provision that does not
 /// override it, so a witness which merely INHERITS a defaulted `eq` would otherwise
 /// report `PartialEq.eq` as its impl — and keying the eq index to the `SemEq` builtin
@@ -17801,48 +17896,131 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
     op_short_sym: Symbol,
     out: &mut std::collections::HashMap<Symbol, SmallVec<[SpecOpSupplier; 2]>>,
 ) {
-    let op_short = kb.resolve_sym(op_short_sym);
     for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
-        // KIND 2 — WITNESS SORT (WI-450): the dispatch carrier is what the provision
-        // binds to the spec's carrier param, not the provider. `witness_dispatch_carrier`
-        // is the ONE owner of what counts as a witness, shared with the load-time
-        // coherence grouping so they cannot disagree; it returns `None` for a provider
-        // that IS its own carrier, which is exactly KIND 1's case.
-        //
-        // KIND 1 — carrier-keyed INSTANCE FACT (WI-431): the dispatch carrier is the
-        // provision's own `sort_ref`. The loader DERIVES a namespace-level
-        // `fact Spec[T = Carrier, …]`'s `sort_ref` from the carrier binding, so this
-        // covers both that shape and a carrier's own `provides Spec[…, eq = op]` block.
-        let found = match witness_dispatch_carrier(kb, spec_sort, provider, spec_t) {
-            // A WITNESS may name the impl EITHER WAY, so both legs are read: usually
-            // as its own MEMBER (`sort W provides Spec[T = C]` with `W.op`), but
-            // `sort W provides Spec[T = C, op = f]` also loads today and BINDS it.
-            // Reading only the member leg dropped that provision on a silent
-            // `continue` — its written `op = f` never keyed the index and equality
-            // answered structurally with no diagnostic from anywhere.
-            Some(c) => carrier_own_op(kb, provider, spec_op, op_short_sym)
-                .or_else(|| instance_fact_op_in_bindings(kb, &bindings, op_short))
-                .map(|target| (c, target, SupplyRoute::Witness(provider))),
-            // A carrier-keyed provision supplies only what it BINDS. Its
-            // `carrier_own_op` is the CARRIER's own member — route 1's business, and
-            // attributing it to the provision here would let a `provides Spec[T = C]`
-            // block shadow a sibling `fact Spec[T = C, op = f]`'s binding, hiding the
-            // very second candidate this walk exists to surface.
-            None => instance_fact_op_in_bindings(kb, &bindings, op_short)
-                .map(|target| (kb.canonical_sort_sym(provider), target, SupplyRoute::Fact)),
+        let Some((carrier_canon, supplier)) =
+            provision_supplier(kb, spec_sort, spec_op, op_short_sym, provider, spec_t, &bindings)
+        else {
+            continue;
         };
-        let Some((carrier_canon, target, route)) = found else { continue };
-        let bucket = out.entry(carrier_canon).or_default();
-        // Dedup by CANONICAL target: one qualified name can be interned under several
-        // Symbols (the reason `canonical_sym` exists, and why the index keys entries
-        // under both spellings), so a raw compare would let one operation reached
-        // through two interned copies read as two candidates — refusing a correct
-        // program with `AmbiguousEqDispatch`.
-        let target_canon = kb.canonical_sym(target);
-        if !bucket.iter().any(|e| kb.canonical_sym(e.target) == target_canon) {
-            bucket.push(SpecOpSupplier { target, route });
+        push_supplier_deduped(kb, out.entry(carrier_canon).or_default(), supplier);
+    }
+}
+
+/// WI-837 — how ONE provision supplies spec op `spec_op`, and to WHICH canonical
+/// dispatch carrier. `None` when that provision supplies no impl of the op.
+///
+/// The ONE OWNER of the per-provision classification, read by both multi-candidate
+/// walks: [`collect_spec_op_suppliers_by_carrier`] (all carriers at once, for the
+/// load-time eq index) and [`spec_op_suppliers_for_carrier`] (one carrier, for the
+/// per-call value-directed dispatch). Extracted at WI-842 rather than copied: the
+/// two walks answering "who supplies this" differently is the shape that produced
+/// WI-838's cross-kind blind spot, and the criterion has three delicate legs.
+fn provision_supplier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    provider: Symbol,
+    spec_t: TermId,
+    bindings: &[(Symbol, TermId)],
+) -> Option<(Symbol, SpecOpSupplier)> {
+    let op_short = kb.resolve_sym(op_short_sym);
+    // KIND 2 — WITNESS SORT (WI-450): the dispatch carrier is what the provision
+    // binds to the spec's carrier param, not the provider. `witness_dispatch_carrier`
+    // is the ONE owner of what counts as a witness, shared with the load-time
+    // coherence grouping so they cannot disagree; it returns `None` for a provider
+    // that IS its own carrier, which is exactly KIND 1's case.
+    //
+    // KIND 1 — carrier-keyed INSTANCE FACT (WI-431): the dispatch carrier is the
+    // provision's own `sort_ref`. The loader DERIVES a namespace-level
+    // `fact Spec[T = Carrier, …]`'s `sort_ref` from the carrier binding, so this
+    // covers both that shape and a carrier's own `provides Spec[…, eq = op]` block.
+    match witness_dispatch_carrier(kb, spec_sort, provider, spec_t) {
+        // A WITNESS may name the impl EITHER WAY, so both legs are read: usually
+        // as its own MEMBER (`sort W provides Spec[T = C]` with `W.op`), but
+        // `sort W provides Spec[T = C, op = f]` also loads today and BINDS it.
+        // Reading only the member leg dropped that provision on a silent
+        // `continue` — its written `op = f` never keyed the index and equality
+        // answered structurally with no diagnostic from anywhere.
+        Some(c) => carrier_own_op(kb, provider, spec_op, op_short_sym)
+            .or_else(|| instance_fact_op_in_bindings(kb, bindings, op_short))
+            .map(|target| (c, SpecOpSupplier { target, route: SupplyRoute::Witness(provider) })),
+        // A carrier-keyed provision supplies only what it BINDS. Its
+        // `carrier_own_op` is the CARRIER's own member — route 1's business, and
+        // attributing it to the provision here would let a `provides Spec[T = C]`
+        // block shadow a sibling `fact Spec[T = C, op = f]`'s binding, hiding the
+        // very second candidate this walk exists to surface.
+        None => instance_fact_op_in_bindings(kb, bindings, op_short).map(|target| {
+            (kb.canonical_sort_sym(provider), SpecOpSupplier { target, route: SupplyRoute::Fact })
+        }),
+    }
+}
+
+/// WI-837 — append `cand` unless the bucket already holds its operation. Dedup is by
+/// CANONICAL target: one qualified name can be interned under several Symbols (the
+/// reason `canonical_sym` exists, and why the eq index keys entries under both
+/// spellings), so a raw compare would let ONE operation reached through two interned
+/// copies read as two candidates — refusing a correct program. Two provisions naming
+/// one operation are one dictionary, not a conflict.
+pub(crate) fn push_supplier_deduped(
+    kb: &KnowledgeBase,
+    bucket: &mut SmallVec<[SpecOpSupplier; 2]>,
+    cand: SpecOpSupplier,
+) {
+    let target_canon = kb.canonical_sym(cand.target);
+    if !bucket.iter().any(|e| kb.canonical_sym(e.target) == target_canon) {
+        bucket.push(cand);
+    }
+}
+
+/// WI-842 — EVERY supplier of spec op `spec_op` for ONE carrier, from all three
+/// routes, deduplicated by target. The per-carrier dual of
+/// [`collect_spec_op_suppliers_by_carrier`]: same classification
+/// ([`provision_supplier`]), same dedup, asked of one carrier because the caller is
+/// the PER-CALL value-directed dispatch and has no whole-KB pass to hang an index on.
+///
+/// Proposal 058 §4.9's hardening rule — a read that SELECTS a provider's op goes
+/// LOUD on the second candidate — is why this returns the whole list. It replaces
+/// eval's `own .or_else(instance_fact_op_binding) .or_else(witness_op_for_carrier)`
+/// chain, whose three `or_else` legs could not see past their first hit; the two
+/// first-match readers that chain called (`witness_op_for_carrier` /
+/// `witness_provision`) are DELETED rather than left beside this, so the first-match
+/// witness read cannot come back.
+///
+/// ROUTE ORDER is the chain's own precedence (own member, then provisions in
+/// `provides_rids_by_spec` order), so a single-candidate carrier resolves exactly
+/// what it resolved before — the change is confined to what happens at a SECOND one.
+///
+/// It costs the chain's short-circuit: an `own` hit no longer skips the provision
+/// walk, because skipping it is precisely how a second candidate stayed invisible.
+/// The walk is over ONE spec's `provides_rids_by_spec` bucket, and MEASURED across
+/// the suite's heaviest binary (1833 stdlib-loading tests, 592 value-directed
+/// dispatches) the difference is inside the noise: 63.2 s → 63.7 s.
+pub(crate) fn spec_op_suppliers_for_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> SmallVec<[SpecOpSupplier; 2]> {
+    let carrier_canon = kb.canonical_sort_sym(carrier);
+    let mut out: SmallVec<[SpecOpSupplier; 2]> = SmallVec::new();
+    // ROUTE 1 — the carrier's OWN member, the genuine override (WI-616).
+    if let Some(target) = carrier_own_op(kb, carrier, spec_op, op_short_sym) {
+        out.push(SpecOpSupplier { target, route: SupplyRoute::Own });
+    }
+    // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
+    for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
+        let Some((c, supplier)) =
+            provision_supplier(kb, spec_sort, spec_op, op_short_sym, provider, spec_t, &bindings)
+        else {
+            continue;
+        };
+        if c == carrier_canon {
+            push_supplier_deduped(kb, &mut out, supplier);
         }
     }
+    out
 }
 
 /// WI-652 — op symbols that have an EQUATIONAL definition `op(args) = rhs`
@@ -18987,12 +19165,20 @@ fn provision_binds_param_to_carrier(
     // this param to the carrier — `sort TagCombiner provides Combiner[T = Tag]`
     // classifies a `T`-typed arg valued `Tag` as the carrier param even though the
     // provider sort is `TagCombiner`, not `Tag`.
-    if let Some((_, view)) = witness_provision(kb, spec_sort, carrier_sym) {
-        if binds_pvid_to_carrier(&view) {
-            return Some(view);
-        }
-    }
-    None
+    //
+    // WI-842 (058 §4.9): ANY witnessing provision answers, so this SEARCHES the
+    // witnesses rather than taking the first one. The question here is EXISTENCE —
+    // does this argument position name the carrier? — and an existence read stays
+    // boolean under coexistence: every provision of `spec_sort` AT this carrier binds
+    // the carrier param to it identically, that being what makes it a provision for
+    // this carrier at all. Taking "the first witness" also answered `None` when the
+    // first bound no matching param and a second did.
+    provisions_of_spec(kb, spec_sort)
+        .filter(|(provider, spec_t, _)| {
+            witness_dispatch_carrier(kb, spec_sort, *provider, *spec_t) == Some(carrier_canon)
+        })
+        .map(|(_, _, view)| view)
+        .find(|view| binds_pvid_to_carrier(view))
 }
 
 /// WI-492 — the specs a carrier sort DIRECTLY provides (base symbols), read
@@ -19880,6 +20066,37 @@ fn transitive_provider_spec_view_bindings(
     None
 }
 
+/// WI-842 (proposal 058 §4.9) — every carrier-keyed provision of `spec_sort` for
+/// `carrier_sym` is read, and their bindings MERGED, rather than returning the first
+/// provision's view.
+///
+/// Both halves of that matter, and neither is the §4.9 "loud at the read" rule —
+/// which this reader cannot obey and does not need to:
+///
+///   * a param bound TWO WAYS by two provisions is refused at LOAD
+///     ([`check_provision_binding_agreement`]), because a carrier's own provision has
+///     no NAME for any call site to select (§4.3) and this reader's ~12 consumers are
+///     `bool`/`Option` type predicates whose "loud" would read as an ordinary type
+///     mismatch. That refusal is also the one phase 3b does NOT delete — 3b relaxes
+///     coexistence for NAMEABLE providers (witness sorts), whose `sort_ref` is the
+///     witness, so they never appear here as the carrier's own provision. First-match
+///     was licensed by a refusal that is about to disappear; merging is licensed by
+///     one that stays.
+///   * with conflicts refused, merging is total and strictly more complete than
+///     first-match: a provision binding a param that an earlier one omits is no
+///     longer INVISIBLE behind it (§4.9's recorded blind spot — "a first
+///     `SortProvidesInfo` fact that binds no `eq` hides a second that does").
+///
+/// The first match is returned unchanged when it is the only one, which MEASURED is
+/// every (carrier, spec) this reader is ever ASKED for across the stdlib and the whole
+/// test corpus; the merge path allocates only for a carrier that declares one spec more
+/// than once. That measurement is about the reads, NOT about the KB: multi-provision
+/// carriers do exist (`Console` provides `Effect` three times, at three different
+/// applications — see [`check_provision_binding_agreement`]), and asked for such a
+/// carrier's view this reader still answers the first application of several. That
+/// under-determination is not §4.9's defect — no op binding is selected by it — and
+/// fixing it means giving the reader the APPLICATION as an input, which is a design
+/// increment of its own.
 fn provider_spec_view_bindings(
     kb: &KnowledgeBase,
     carrier_sym: Symbol,
@@ -19889,6 +20106,7 @@ fn provider_spec_view_bindings(
     // `same_sort_canonical` re-filter below is the exact match for both. (An unresolved
     // `SortProvidesInfo` symbol yields an empty candidate list, and the tail returns
     // `None` — identical to the old `?` early return.)
+    let mut merged: Option<SmallVec<[(Symbol, TermId); 2]>> = None;
     for rid in provides_rids_by_carrier(kb, carrier_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -19917,11 +20135,31 @@ fn provider_spec_view_bindings(
         // different `Symbol` id than `spec_sort` (resolved in the caller's
         // scope) even for the same logical sort. Matches the carrier compare
         // above; a raw `==` would silently no-op this binding.
-        if kb.canonical_sort_sym(base) == kb.canonical_sort_sym(spec_sort) {
-            return Some(bindings);
+        if kb.canonical_sort_sym(base) != kb.canonical_sort_sym(spec_sort) {
+            continue;
+        }
+        match &mut merged {
+            // The overwhelmingly common case: one provision, returned as it was
+            // read, with no merge allocation.
+            None => merged = Some(bindings),
+            // A SECOND provision for this (carrier, spec). Its params are folded in
+            // by SHORT NAME (a param resolved in two import scopes carries two
+            // Symbols for one spec parameter). A param already present is left as
+            // read: the two agree, because a disagreement is a load error
+            // ([`check_provision_binding_agreement`]) — and during the very load
+            // that reports it, keeping the first is the pre-WI-842 answer rather
+            // than a new third one.
+            Some(view) => {
+                for (param, value) in bindings {
+                    let short = short_name_of(kb.resolve_sym(param));
+                    if !view.iter().any(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short) {
+                        view.push((param, value));
+                    }
+                }
+            }
         }
     }
-    None
+    merged
 }
 
 /// WI-357 — true iff an effect label is still an unresolved type/row
@@ -39361,6 +39599,105 @@ mod wi802_function_spec_owner_tests {
             extract_sort_ref_sym(&kb, result),
             Some(int_sym),
             "canonical `B` binds the result slot",
+        );
+    }
+}
+
+#[cfg(test)]
+mod wi842_bracketless_reader_tests {
+    //! WI-842 (proposal 058 §4.9) — the two halves of the hardening rule, asked of
+    //! the readers directly: a read that asks EXISTENCE stays boolean when a carrier
+    //! has two providers, and a read that SELECTS sees BOTH of them.
+    //!
+    //! In-crate because both readers are `pub(crate)`, and asked of one KB so the two
+    //! answers are about the same program — the integration pins
+    //! (`wi842_bracketless_readers_test.rs`) drive what the eval and load surfaces then
+    //! DO with those answers.
+    use super::{sort_provides, spec_op_suppliers_for_carrier};
+    use crate::kb::load::{self, NullResolver};
+    use crate::kb::KnowledgeBase;
+
+    /// `Leaf` self-provides `Desc` and owns `describe`; `Rival` provides `Desc` for
+    /// `Leaf` too, with its own. The pair LOADS (WI-855's measurement: a self-provider
+    /// is a coherence candidate of neither kind, and a CONCRETE witness is exempt), so
+    /// both readers can be asked about a genuinely two-provider carrier.
+    const SRC: &str = r#"
+namespace wi842u
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> T
+  end
+  sort Leaf
+    entity leaf
+    fact Desc[T = Leaf]
+    operation describe(x: Leaf) -> Leaf = x
+  end
+  sort Rival
+    entity rival
+    fact Desc[T = Leaf]
+    operation describe(x: Leaf) -> Leaf = x
+  end
+  sort Stranger
+    entity stranger
+  end
+end
+"#;
+
+    fn kb() -> KnowledgeBase {
+        let parsed = crate::parse::parse(SRC).expect("parse");
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
+            panic!(
+                "the two-provider program must LOAD — it is the only way to put two \
+                 providers in front of a bracket-less read before phase 3b:\n{}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")
+            );
+        }
+        kb
+    }
+
+    #[test]
+    fn an_existence_read_stays_boolean_with_two_providers() {
+        let kb = kb();
+        let leaf = kb.resolve_symbol("wi842u.Leaf");
+        let desc = kb.resolve_symbol("wi842u.Desc");
+        let stranger = kb.resolve_symbol("wi842u.Stranger");
+        assert!(
+            sort_provides(&kb, leaf, desc),
+            "two providers satisfy `provides Desc` as well as one — an existence read \
+             (the WI-300 `find_dictionary` / `[simp]` guards) must stay TRUE and hand \
+             the real choice to a selecting read (§4.9)"
+        );
+        assert!(
+            !sort_provides(&kb, stranger, desc),
+            "`Stranger` declares no provision at all — without this the assertion \
+             above would pass for a reader that answers true for anything"
+        );
+    }
+
+    #[test]
+    fn a_selecting_read_sees_both_providers() {
+        let mut kb = kb();
+        let leaf = kb.resolve_symbol("wi842u.Leaf");
+        let desc = kb.resolve_symbol("wi842u.Desc");
+        let spec_op = kb.resolve_symbol("wi842u.Desc.describe");
+        let short = kb.intern("describe");
+        let cands = spec_op_suppliers_for_carrier(&kb, desc, leaf, spec_op, short);
+        assert_eq!(
+            cands.len(),
+            2,
+            "the carrier's OWN member and the WITNESS sort's member both supply \
+             `describe` for `Leaf`; a length of 1 is the `or_else` chain this ticket \
+             replaced, which stopped at its first hit"
+        );
+        let names: Vec<String> =
+            cands.iter().map(|c| kb.qualified_name_of(c.target).to_string()).collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("Leaf.describe"))
+                && names.iter().any(|n| n.ends_with("Rival.describe")),
+            "both suppliers must be named, by their own operations; got {names:?}"
         );
     }
 }

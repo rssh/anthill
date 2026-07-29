@@ -96,6 +96,21 @@ pub enum EvalError {
     /// enters the frame unsupplied is argued once, where the choice is made:
     /// `Interpreter::requirements_for_value_directed_impl`.
     AmbiguousRequirement { op: String, requirement: String, candidates: Vec<String> },
+    /// WI-842 (proposal 058 §4.9): value-directed dispatch found TWO OR MORE
+    /// suppliers of one spec op for the runtime receiver's carrier — the carrier's
+    /// own member, an instance fact's binding, a witness sort's member — and this
+    /// call site names none of them.
+    ///
+    /// The SIBLING of [`Self::AmbiguousRequirement`], one selection step earlier:
+    /// that one is a tie over the providers of an impl's `requires` slot, this one a
+    /// tie over the providers of the OP being dispatched. Both are PROGRAM errors
+    /// (incoherent instances), not evaluator-invariant ones, hence variants of their
+    /// own rather than [`Self::Internal`].
+    ///
+    /// Each candidate is rendered by its SUPPLY ROUTE
+    /// ([`crate::kb::typing::SpecOpSupplier::render`]) because the three are written
+    /// in three syntaxes and the author must know which text to delete.
+    AmbiguousSpecOpDispatch { op: String, carrier: String, candidates: Vec<String> },
     Internal(String),
 }
 
@@ -170,6 +185,14 @@ impl std::fmt::Display for EvalError {
                 "dispatch to `{op}`: its requirement `{requirement}` is provided by \
                  tied providers ({}) — the instances are incoherent, so no dictionary \
                  can be built for it; delete or specialize one provision",
+                candidates.join(", "),
+            ),
+            EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates } => write!(
+                f,
+                "value-directed dispatch of `{op}` on carrier `{carrier}`: {} supply an \
+                 implementation ({}) and this call selects none — the instances are \
+                 incoherent, so delete or specialize one provision",
+                candidates.len(),
                 candidates.join(", "),
             ),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),

@@ -5794,7 +5794,12 @@ impl KnowledgeBase {
             // transparency: a callee's runtime-domain error (`Overflow`,
             // `Raised`), an unhandled effect (resolution must not perform
             // effects), or a body needing a real requirement dict (gap 3) must
-            // not break the enclosing rule. The one class worth surfacing is an
+            // not break the enclosing rule. That covers the two INCOHERENT-INSTANCE
+            // verdicts as well (`AmbiguousRequirement`, WI-855;
+            // `AmbiguousSpecOpDispatch`, WI-842): the rule DELAYS on a tie instead of
+            // committing to a first match, and the naming diagnostic is what an eval
+            // entry sees — a bridged eval may not abort the enclosing rule, so this
+            // site reports by NOT answering. The one class worth surfacing is an
             // evaluator-INVARIANT `Internal` bug — assert it loudly in debug/test
             // builds (the loud-over-silent rule) while still residualizing in
             // release rather than aborting resolution.

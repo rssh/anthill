@@ -855,3 +855,6 @@ mod wi855_ambiguous_requirement_test;
 
 #[path = "include/wi841_call_site_selection_test.rs"]
 mod wi841_call_site_selection_test;
+
+#[path = "include/wi842_bracketless_readers_test.rs"]
+mod wi842_bracketless_readers_test;

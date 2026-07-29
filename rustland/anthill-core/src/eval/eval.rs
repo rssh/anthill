@@ -900,39 +900,55 @@ impl Interpreter {
     /// operation for this spec op's short name (the same `(impl_sort,
     /// op_short)` table the requirement-dict path uses). Mirrors the typer's
     /// `receiver_carrier`: the self-receiver parameter is the one declared
-    /// with the spec sort itself. Returns `None` when the op has no self-
+    /// with the spec sort itself. Returns `Ok(None)` when the op has no self-
     /// receiver parameter, the receiver carries no sort, or that sort
     /// provides no impl — the caller then reports `UnknownOperation`.
+    ///
+    /// WI-842 (proposal 058 §4.9) — the three supply routes (the carrier's OWN
+    /// member, a WI-431 instance fact's op-valued binding, a WI-450 witness sort's
+    /// member) are COLLECTED by [`crate::kb::typing::spec_op_suppliers_for_carrier`]
+    /// rather than `or_else`-chained here. Two reasons, in order of weight:
+    ///
+    ///   * a chain cannot see past its first hit, and what LICENSED first-match was
+    ///     the load-time coherence refusal — which proposal 058 phase 3b deletes for
+    ///     nameable providers. So a SECOND candidate is
+    ///     [`EvalError::AmbiguousSpecOpDispatch`], raised HERE, at the read: this is
+    ///     a bracket-less site, so nothing later can name a selection for it.
+    ///   * the chain was the THIRD enumeration of the same three routes (the load-time
+    ///     eq index and WI-664's boundary classifier being the others, already sharing
+    ///     one owner as of WI-837). It now shares that owner too, so a fourth supply
+    ///     route cannot reach two of the three and be silently missed by the rest.
+    ///
+    /// The OWN leg is thereby `carrier_own_op` (the impl's parent sort must BE the
+    /// carrier) rather than this chain's older `sort_ops_lookup(…) != spec_op`, which
+    /// also admitted a table entry inherited from elsewhere. MEASURED equal on every
+    /// value-directed dispatch the `anthill-core` suite performs (592, no divergence),
+    /// so unifying on the stricter reader is a same-answer change here and closes the
+    /// gap WI-837's doc recorded.
     fn resolve_spec_op_target_by_value(
         &self,
         spec_op: Symbol,
         arg_values: &[Value],
-    ) -> Option<Symbol> {
-        use crate::kb::typing::{instance_fact_op_binding, witness_op_for_carrier};
-        let (spec_sort, carrier) = self.spec_call_runtime_carrier(spec_op, arg_values)?;
+    ) -> Result<Option<Symbol>, EvalError> {
+        let Some((spec_sort, carrier)) = self.spec_call_runtime_carrier(spec_op, arg_values)
+        else {
+            return Ok(None);
+        };
         let op_qn = self.kb.qualified_name_of(spec_op);
         let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
-        let op_short_sym = self.kb.lookup_symbol(op_short)?;
-        // A carrier that OWNS the op (its own override) wins. `sort_ops_lookup`
-        // returns the body-less spec op itself when the carrier merely inherits
-        // it (no real impl) — filter that placeholder out so it doesn't mask the
-        // instance fact below.
-        let own = self
-            .kb
-            .sort_ops_lookup(carrier, op_short_sym)
-            .filter(|&op| op != spec_op);
-        // WI-431: a RETROACTIVE INSTANCE FACT binds the op in the provision
-        // (`fact Combiner[T = Tag, combine = tagCombine]`) instead of on the
-        // carrier — the op-valued binding IS the dictionary entry. Fall back to
-        // it so a spec-op call on an instance-fact carrier dispatches to the
-        // bound op instead of dying `UnknownOperation`.
-        // WI-450: a WITNESS SORT (`sort TagCombiner provides Combiner[T = Tag]`
-        // with a member `combine`) provides the spec for `carrier` without binding
-        // the op in the provision and without being the carrier itself — the
-        // carrier-keyed `instance_fact_op_binding` misses it. Resolve it
-        // param-agnostically by the provision's application.
-        own.or_else(|| instance_fact_op_binding(&self.kb, carrier, spec_sort, op_short))
-            .or_else(|| witness_op_for_carrier(&self.kb, spec_sort, carrier, op_short_sym))
+        let Some(op_short_sym) = self.kb.lookup_symbol(op_short) else { return Ok(None) };
+        let cands = crate::kb::typing::spec_op_suppliers_for_carrier(
+            &self.kb, spec_sort, carrier, spec_op, op_short_sym,
+        );
+        match cands.as_slice() {
+            [] => Ok(None),
+            [only] => Ok(Some(only.target)),
+            _ => Err(EvalError::AmbiguousSpecOpDispatch {
+                op: op_qn.to_string(),
+                carrier: self.kb.qualified_name_of(carrier).to_string(),
+                candidates: cands.iter().map(|c| c.render(&self.kb, op_short)).collect(),
+            }),
+        }
     }
 
     /// WI-444 — the GENUINE carrier override of a (possibly defaulted) spec op,
@@ -1657,7 +1673,7 @@ impl Interpreter {
         // target`); the guard below skips it and it falls through to the
         // WI-818 classifier — `OperationBodyMissing` for a declared op,
         // `UnknownOperation` otherwise.
-        if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values) {
+        if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values)? {
             if impl_target != target {
                 // WI-455: same as the carrier-override arm above — the ring must
                 // name the impl that runs, not just the body-less spec op the call
