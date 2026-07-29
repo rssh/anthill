@@ -307,6 +307,23 @@ pub enum LoadError {
         spec: String,
         count: usize,
     },
+    /// WI-838 — a MIXED provider pair: one `(spec, carrier)` is covered by BOTH a
+    /// WI-431 instance fact AND a WI-450 witness sort. Two dictionaries, one
+    /// instance — the same conflict [`Self::AmbiguousInstanceFact`] and
+    /// [`Self::AmbiguousWitness`] refuse within a kind, and it went unrefused
+    /// until WI-838 because those two checks were grouped BY KIND and neither saw
+    /// the cross-kind pair. Load-blocking, and named apart from its two same-kind
+    /// siblings for two reasons: the REPAIR differs (the candidates are written in
+    /// different syntax, so the message must say which to delete), and only the
+    /// witness is SPELLABLE — an instance fact has no name, which is why proposal
+    /// 058 §4.3 gates any future use-site selection on every candidate being
+    /// nameable. Keyed on (spec, dispatch carrier).
+    MixedProviderKinds {
+        carrier: String,
+        spec: String,
+        fact_count: usize,
+        witnesses: Vec<String>,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -871,6 +888,12 @@ impl LoadError {
                 format!("ambiguous witness: {} distinct witness sorts provide '{}' for carrier '{}' — each backs the spec's operations with its own member ops, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `sort … provides {}[…]` witness per (spec, carrier)",
                     count, spec, carrier, spec)
             }
+            LoadError::MixedProviderKinds { carrier, spec, fact_count, witnesses } => {
+                format!("ambiguous provider kinds: '{}' for carrier '{}' is provided BOTH by {} instance fact(s) (`fact {}[…]`, binding the spec's operations in the fact itself) AND by {} witness sort(s) ({}), backing them with their own member ops — two distinct dictionaries for one (spec, carrier), and there is no way to select between them (scoped/named instance selection is not yet supported); drop either the instance fact(s) or the witness sort(s). Note the instance fact has NO NAME, so even a future use-site selection could not spell it.",
+                    spec, carrier, fact_count, spec,
+                    witnesses.len(),
+                    witnesses.iter().map(|w| format!("'{}'", w)).collect::<Vec<_>>().join(", "))
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -1198,6 +1221,10 @@ impl std::fmt::Display for LoadError {
             LoadError::AmbiguousWitness { carrier, spec, count } => {
                 write!(f, "ambiguous witness: {} distinct witness sorts provide '{}' for carrier '{}' (keep exactly one)",
                     count, spec, carrier)
+            }
+            LoadError::MixedProviderKinds { carrier, spec, fact_count, witnesses } => {
+                write!(f, "ambiguous provider kinds: '{}' for carrier '{}' is provided by {} instance fact(s) AND {} witness sort(s) ({}) — keep one kind",
+                    spec, carrier, fact_count, witnesses.len(), witnesses.join(", "))
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)

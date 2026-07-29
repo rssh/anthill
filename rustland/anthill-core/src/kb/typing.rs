@@ -16033,12 +16033,8 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let concrete = super::load::sorts_with_constructors(kb);
 
     // Snapshot the provisions before the per-op walk (which interns short names,
-    // mutating `kb` — can't overlap the `rules_by_functor` borrow).
-    // `spec_view` is the full `SortView` term — kept so the op-coverage check
-    // can read an INSTANCE FACT's op-valued bindings (`pure = optionPure`), the
-    // dictionary entries that back a spec op without the carrier owning it
-    // (WI-431).
-    struct Provision { carrier: Symbol, spec: Symbol, spec_view: TermId }
+    // mutating `kb` — can't overlap the `rules_by_functor` borrow). See
+    // [`Provision`] for what each field is.
     let mut provisions: Vec<Provision> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) { continue; }
@@ -16084,120 +16080,200 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
 
-    // WI-431 rule 2 — COHERENCE. Two DISTINCT instance facts (op-valued
-    // provisions) for the same (spec, carrier) each supply a different
-    // dictionary; with no scoped/named instance selection yet, dispatch would
-    // silently pick the first (the `provider_spec_view_bindings`
-    // first-provider-wins contract honored by increment 2's eval dispatch). Make
-    // it loud at load. Identity is the full canonical application (the WI-419 /
-    // §5.4 rule): spec views hash-cons, so identical instance facts share one
-    // `spec_view` (idempotent — collapsed by the per-group distinctness check)
-    // and only genuinely-differing facts collide. Restricted to op-binding
-    // provisions: a type-only provision (`provides Stream[T = X]`) supplies no
-    // dictionary and never participates, so existing `provides` / type-only
-    // `fact`s (e.g. `fact ModifyRuntime[T = Cell, V = V]`) are never
-    // over-rejected. Insertion-order grouping keeps the diagnostics deterministic.
+    // COHERENCE (WI-431 rule 2 / WI-450 witness flavor / WI-838 the MIXED pair) —
+    // ONE grouping over ALL provider kinds.
     //
-    // Symbol identity: the `(spec, carrier)` key and the `spec_view` are compared
-    // RAW (no `canonical_sort_sym`). Sound because this is a PROVIDER-to-PROVIDER
-    // comparison — both come from `SortProvidesInfo` facts resolved post-load, so
-    // two providers for one logical instance share the same canonical symbols and
-    // hash-cons to the same `spec_view` (verified across namespaces by
-    // `cross_namespace_{distinct,identical}_instances_*`). This differs from
-    // `provider_spec_view_bindings`, which compares a CALLER's spec symbol
-    // (resolved in a different scope) to providers and so must canonicalize;
-    // canonicalizing only the key here (without the `spec_view`) would instead
-    // FALSE-flag copy-divergent-but-identical facts.
-    let mut coherence_groups: Vec<((Symbol, Symbol), SmallVec<[TermId; 2]>)> = Vec::new();
-    for p in &provisions {
-        if !provision_binds_any_op(kb, p.spec_view) {
-            continue;
-        }
-        match coherence_groups
-            .iter_mut()
-            .find(|(key, _)| *key == (p.spec, p.carrier))
-        {
-            Some((_, views)) => {
-                if !views.contains(&p.spec_view) {
-                    views.push(p.spec_view);
+    // Two dictionaries for one `(spec, carrier)` are ambiguous whatever KIND
+    // supplies them, and grouping BY KIND is exactly what let the cross-kind pair
+    // through (WI-838): the instance-fact rule keyed a provision on its own
+    // `sort_ref`, and the witness rule skipped every provision whose provider IS
+    // the carrier — so a namespace-level `fact Combiner[T = Tag, combine = …]`
+    // (whose derived `sort_ref` IS `Tag`) was invisible to the witness grouping,
+    // while `sort WitCombiner provides Combiner[T = Tag]` binds no op and was
+    // invisible to the fact grouping. That pair LOADED CLEAN, and the two dispatch
+    // routes did not even agree on the winner: MEASURED, value-directed dispatch
+    // runs the INSTANCE FACT's op (eval's `own .or_else(instance_fact_op_binding)
+    // .or_else(witness_op_for_carrier)` chain) while the THREADED-DICT route dies
+    // `EvalError::Internal("unhandled Expr variant")`. Hence one group per
+    // `(spec, dispatch carrier)` holding candidates of every kind — a kind can no
+    // longer have a grouping of its own to hide in. (The three DIAGNOSTICS below
+    // are still per-kind-pair; only the grouping is general, which is the half
+    // that decides what is SEEN.)
+    //
+    // Insertion-order grouping keeps the diagnostics deterministic.
+    //
+    // Symbol identity: keys are CANONICAL. The instance-fact rule used to key RAW
+    // on the stated ground that provider symbols are already canonical (both sides
+    // come from post-load `SortProvidesInfo` facts) — MEASURED true: across the
+    // stdlib and the whole test corpus, no provision has a `spec`/`carrier` that
+    // differs from its canonical symbol, so canonicalizing the key changes no
+    // existing grouping while giving the cross-kind check the key the witness side
+    // already used. A `spec_view` is still compared RAW, so copy-divergent-but-
+    // identical facts stay idempotent (`cross_namespace_identical_instances_*`).
+    let mut groups: Vec<((Symbol, Symbol), SmallVec<[Provider; 2]>)> = Vec::new();
+    // The one insertion point, so a candidate of EITHER kind dedups by the same
+    // rule: an idempotent re-record (a repeated identical fact, a witness recorded
+    // twice) shares its `Provider` and collapses.
+    let mut record = |key: (Symbol, Symbol), cand: Provider| {
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, cands)) => {
+                if !cands.contains(&cand) {
+                    cands.push(cand);
                 }
             }
-            None => coherence_groups.push(((p.spec, p.carrier), SmallVec::from_elem(p.spec_view, 1))),
+            None => groups.push((key, SmallVec::from_elem(cand, 1))),
+        }
+    };
+    for p in &provisions {
+        // KIND 1 — INSTANCE FACT: the provision itself BINDS an op, and that
+        // op-valued binding IS the dictionary entry. A type-only provision
+        // (`provides Stream[T = X]`) supplies no dictionary and never
+        // participates, so existing `provides` / type-only `fact`s (e.g. `fact
+        // ModifyRuntime[T = Cell, V = V]`) are never over-rejected. Its dispatch
+        // carrier is the provision's own `sort_ref`: the loader DERIVES a
+        // namespace-level `fact Spec[T = Carrier, …]`'s `sort_ref` from the
+        // carrier binding, so `sort_ref` already IS the carrier.
+        if provision_binds_any_op(kb, p.spec_view) {
+            let key = (kb.canonical_sort_sym(p.spec), kb.canonical_sort_sym(p.carrier));
+            record(key, Provider::Fact(p.spec_view));
+        }
+        // KIND 2 — WITNESS SORT, admitted under TWO exemptions that are POLICY,
+        // not classification, and so are applied here rather than hidden inside
+        // the classifier:
+        //
+        //   * a spec that declares NO OPS has no dictionary to be ambiguous about
+        //     — a bare carrier spec (`sort W449Outer { sort C = ? }`) provided by
+        //     two carriers is binding-extraction plumbing, not a dispatch
+        //     conflict. ASYMMETRIC with the fact leg on purpose-of-record: the
+        //     fact leg's peer gate is `provision_binds_any_op`, which is per
+        //     PROVISION rather than per SPEC, so two facts binding a non-spec op
+        //     on an op-less spec still collide while two witnesses of it do not.
+        //     Pre-existing, left as found — lifting `own_ops` to the group would
+        //     change the fact rule in that corner and needs its own measurement.
+        //
+        //   * a CONCRETE provider (with constructors) is a backend whose VALUES
+        //     carry their own sort, so value-directed dispatch distinguishes them
+        //     by the value: two concrete backends providing one spec at the same
+        //     bindings is the existential / manifest-provider pattern (`MemStore`
+        //     / `DiskStore` provide `KVStore[K = String]`, design §5 — selected by
+        //     the `ensures` return), NOT an ambiguity. NOTE the mismatch, since it
+        //     is what bounds WI-838: the RATIONALE is about the GROUP (the value
+        //     picks among the candidates) while the GATE is PER CANDIDATE, so a
+        //     concrete witness beside an instance fact is exempted too even though
+        //     no value distinguishes those. Pinned as-is by
+        //     `concrete_witness_beside_a_fact_stays_exempt`; WI-838's scope is the
+        //     cross-kind BLIND SPOT, not the exemption's criterion, and widening
+        //     it is a design increment of its own.
+        let spec_has_ops = own_ops.get(&p.spec).is_some_and(|ops| !ops.is_empty());
+        if spec_has_ops && !concrete.contains(&p.carrier) {
+            if let Some(carrier_canon) = witness_dispatch_carrier(kb, p.spec, p.carrier, p.spec_view) {
+                let key = (kb.canonical_sort_sym(p.spec), carrier_canon);
+                record(key, Provider::Witness(kb.canonical_sort_sym(p.carrier)));
+            }
         }
     }
-    for ((spec, carrier), views) in &coherence_groups {
-        if views.len() > 1 {
+    for ((spec, carrier), cands) in &groups {
+        // A group of one candidate is the ordinary single-provider case and can
+        // raise none of the three; skipping it here is what keeps the name
+        // allocations below to the erroring groups only (every load has many
+        // groups and almost never an erroring one).
+        if cands.len() < 2 {
+            continue;
+        }
+        let spec_qn = kb.qualified_name_of(*spec).to_string();
+        let carrier_qn = kb.qualified_name_of(*carrier).to_string();
+        let facts = cands.iter().filter(|c| matches!(c, Provider::Fact(_))).count();
+        let witnesses: Vec<String> = cands
+            .iter()
+            .filter_map(|c| match c {
+                Provider::Witness(w) => Some(kb.qualified_name_of(*w).to_string()),
+                Provider::Fact(_) => None,
+            })
+            .collect();
+        if facts > 1 {
             errors.push(LoadError::AmbiguousInstanceFact {
-                carrier: kb.qualified_name_of(*carrier).to_string(),
-                spec: kb.qualified_name_of(*spec).to_string(),
-                count: views.len(),
+                carrier: carrier_qn.clone(),
+                spec: spec_qn.clone(),
+                count: facts,
             });
         }
-    }
-
-    // WI-450 witness coherence (rule 2, witness flavor): two distinct WITNESS sorts
-    // that provide the SAME spec application supply conflicting dictionaries through
-    // their member ops. Unlike an instance fact — whose op-valued binding makes two
-    // conflicting instances DIFFER in their `spec_view` (caught above) — a witness's
-    // op lives in the provider SORT, so two witnesses for one application share ONE
-    // hash-consed `spec_view`. Group by (spec, dispatch carrier) and flag >1 distinct
-    // PROVIDER.
-    //
-    // A provision is a WITNESS only when the spec's carrier param (its first type
-    // parameter) is bound to a concrete sort DISTINCT from the provider — `sort
-    // TagCombiner provides Combiner[T = Tag]` (carrier `Tag` ≠ provider
-    // `TagCombiner`). This excludes (a) instance facts and normal self-providers,
-    // whose derived/own carrier IS the provider (so they never collide here — facts
-    // ride the spec_view rule above), and (b) bare / carrier-less provisions
-    // (`provides Store`), which name no dispatch carrier. An idempotent re-record of
-    // one witness shares its provider and collapses.
-    let mut witness_groups: Vec<((Symbol, Symbol), SmallVec<[Symbol; 2]>)> = Vec::new();
-    for p in &provisions {
-        // Only a spec that declares OPS has a dictionary to be ambiguous about — a
-        // bare carrier spec (`sort W449Outer { sort C = ? }`, no ops) provided by two
-        // carriers is binding-extraction plumbing, not a dispatch conflict. (Mirrors
-        // the `provision_binds_any_op` gate the instance-fact rule above applies.)
-        if own_ops.get(&p.spec).map_or(true, |ops| ops.is_empty()) {
-            continue;
-        }
-        // A pure DICTIONARY witness has no constructors — its only role is to back
-        // the spec's ops for the carrier. A CONCRETE provider (with constructors) is
-        // a backend whose VALUES carry their own sort, so value-directed dispatch
-        // distinguishes them by the value (a self-receiver spec, OUT OF SCOPE): two
-        // concrete backends providing one spec at the same bindings is the existential
-        // / manifest-provider pattern (`MemStore` / `DiskStore` provide `KVStore[K =
-        // String]`, design §5 — selected by the `ensures` return), NOT an ambiguity.
-        if concrete.contains(&p.carrier) {
-            continue;
-        }
-        let Some(carrier) = provision_carrier_sort(kb, p.spec, &Value::term(p.spec_view)) else { continue };
-        let carrier_canon = kb.canonical_sort_sym(carrier);
-        // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
-        if kb.canonical_sort_sym(p.carrier) == carrier_canon {
-            continue;
-        }
-        let key = (kb.canonical_sort_sym(p.spec), carrier_canon);
-        match witness_groups.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, providers)) => {
-                let pc = kb.canonical_sort_sym(p.carrier);
-                if !providers.iter().any(|q| kb.canonical_sort_sym(*q) == pc) {
-                    providers.push(p.carrier);
-                }
-            }
-            None => witness_groups.push((key, SmallVec::from_elem(p.carrier, 1))),
-        }
-    }
-    for ((spec, carrier), providers) in &witness_groups {
-        if providers.len() > 1 {
+        if witnesses.len() > 1 {
             errors.push(LoadError::AmbiguousWitness {
-                carrier: kb.qualified_name_of(*carrier).to_string(),
-                spec: kb.qualified_name_of(*spec).to_string(),
-                count: providers.len(),
+                carrier: carrier_qn.clone(),
+                spec: spec_qn.clone(),
+                count: witnesses.len(),
+            });
+        }
+        // WI-838 — the MIXED pair; see [`LoadError::MixedProviderKinds`] for why
+        // it is its own variant rather than either sibling.
+        if facts > 0 && !witnesses.is_empty() {
+            errors.push(LoadError::MixedProviderKinds {
+                carrier: carrier_qn,
+                spec: spec_qn,
+                fact_count: facts,
+                witnesses,
             });
         }
     }
 
     errors
+}
+
+/// One `anthill.reflect.SortProvidesInfo` fact, snapshotted before
+/// [`check_provider_operations`]'s per-op walk (which interns short names,
+/// mutating `kb` — it can't overlap the `rules_by_functor` borrow). `carrier` is
+/// the provision's `sort_ref`: the PROVIDER sort for a `provides` block, and the
+/// DERIVED carrier for a namespace-level instance fact. `spec_view` is the full
+/// `SortView` term, kept so the op-coverage check can read an INSTANCE FACT's
+/// op-valued bindings (`pure = optionPure`) — the dictionary entries that back a
+/// spec op without the carrier owning it (WI-431).
+struct Provision { carrier: Symbol, spec: Symbol, spec_view: TermId }
+
+/// WI-838 — what supplies the dictionary for one `(spec, carrier)`. The two kinds
+/// are compared by DIFFERENT identities, which is why the coherence grouping
+/// holds this enum rather than a bare symbol.
+#[derive(Clone, Copy, PartialEq)]
+enum Provider {
+    /// WI-431 INSTANCE FACT — `fact Spec[T = Carrier, op = boundOp]`. It has NO
+    /// NAME, so its identity is the full canonical application (the WI-419 / §5.4
+    /// rule): spec views hash-cons, so identical facts share one `spec_view` and
+    /// collapse, and only genuinely-differing facts collide.
+    Fact(TermId),
+    /// WI-450 WITNESS SORT — `sort W provides Spec[T = Carrier]`, whose impls are
+    /// W's own members. Two witnesses for one application share ONE hash-consed
+    /// `spec_view` (the ops are not in the view), so identity is the provider SORT.
+    Witness(Symbol),
+}
+
+/// WI-450 — the canonical DISPATCH CARRIER a provision names when that provision
+/// is a WITNESS, else `None`.
+///
+/// A provision is a WITNESS exactly when the spec's carrier param (its first type
+/// parameter) is bound to a sort DISTINCT from the provider — `sort TagCombiner
+/// provides Combiner[T = Tag]` (carrier `Tag` ≠ provider `TagCombiner`). That
+/// excludes (a) instance facts and normal self-providers, whose derived/own
+/// carrier IS the provider, and (b) bare / carrier-less provisions (`provides
+/// Store`), which name no dispatch carrier at all.
+///
+/// THE ONE OWNER of that criterion, which is why it is a free function rather
+/// than inline at either caller: [`witness_provision`] (eval-time and typer-time
+/// dispatch) and [`check_provider_operations`]'s coherence grouping (load time)
+/// must agree about what a witness is, and `witness_provision`'s doc asserts they
+/// do. Before WI-838 each had its own copy of the two checks, which is the shape
+/// that produced the cross-kind blind spot in the first place.
+///
+/// Carries NO policy: the coherence pass's two exemptions (an op-less spec, a
+/// concrete provider) are applied at its own call site, where they are visible.
+fn witness_dispatch_carrier(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    provider: Symbol,
+    spec_view: TermId,
+) -> Option<Symbol> {
+    let carrier_canon =
+        kb.canonical_sort_sym(provision_carrier_sort(kb, spec, &Value::term(spec_view))?);
+    // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
+    (kb.canonical_sort_sym(provider) != carrier_canon).then_some(carrier_canon)
 }
 
 /// WI-450 — the concrete SORT the spec's carrier param (its first type parameter)
@@ -16305,8 +16381,10 @@ pub(crate) fn instance_fact_op_binding(
 /// [`provider_spec_view_bindings`] (which keys `sort_ref == carrier`): a witness's
 /// `sort_ref` is the witness sort, not the carrier, so the carrier-keyed path
 /// cannot see it — a `fact Combiner[T = Tag, …]` works only because its DERIVED
-/// carrier IS `Tag`. Coherence (two witnesses for one application) is rejected at
-/// load by [`check_provider_operations`], so first-match is the sole instance.
+/// carrier IS `Tag`. Coherence (two providers for one application, of either kind
+/// — WI-838) is rejected at load by [`check_provider_operations`], so first-match
+/// is the sole instance. What COUNTS as a witness is [`witness_dispatch_carrier`],
+/// shared with that load-time pass so the two cannot disagree.
 fn witness_provision(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -16322,28 +16400,22 @@ fn witness_provision(
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
         let Some(provider) = super::load::sort_ref_functor(kb, sr) else { continue };
-        // Witness = provider distinct from the carrier. `provider == carrier`
-        // (facts whose carrier IS the sort_ref, normal providers) is the
-        // carrier-keyed path's job — never re-handled here.
-        if kb.canonical_sort_sym(provider) == carrier_canon {
-            continue;
-        }
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
         let Some((base, bindings)) = unwrap_spec_view(kb, spec_t) else { continue };
         if kb.canonical_sort_sym(base) != spec_canon {
             continue;
         }
-        // The CARRIER PARAM (the spec's first type parameter — `Combiner.T`) must be
-        // bound to the dispatch carrier. Uses the SAME `provision_carrier_sort` the
-        // coherence pass and `find_spec_op_for_provided_sort` use, so witness
-        // detection is identical across dispatch / classification / coherence — a
-        // NON-carrier param of a multi-param spec that merely happens to bind the
-        // carrier sort (`Spec[A = Other, B = Tag]` for carrier `Tag`) does not
-        // spuriously match.
-        let binds_carrier = provision_carrier_sort(kb, spec_sort, &Value::term(spec_t))
-            .map(|c| kb.canonical_sort_sym(c) == carrier_canon)
-            .unwrap_or(false);
-        if binds_carrier {
+        // Witness = provider distinct from the carrier, with the spec's CARRIER
+        // PARAM (its first type parameter — `Combiner.T`) bound to the dispatch
+        // carrier. `provider == carrier` (facts whose carrier IS the `sort_ref`,
+        // normal providers) is the carrier-keyed path's job and is never
+        // re-handled here; a NON-carrier param of a multi-param spec that merely
+        // happens to bind the carrier sort (`Spec[A = Other, B = Tag]` for carrier
+        // `Tag`) does not spuriously match. Both are asked of
+        // `witness_dispatch_carrier`, the ONE owner of the criterion — which is
+        // what makes the identical-detection claim above enforced rather than
+        // hand-maintained against the coherence pass's copy.
+        if witness_dispatch_carrier(kb, spec_sort, provider, spec_t) == Some(carrier_canon) {
             return Some((provider, bindings));
         }
     }

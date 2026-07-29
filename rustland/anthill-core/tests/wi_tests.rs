@@ -823,6 +823,9 @@ mod wi822_op_scoped_supply_test;
 #[path = "include/wi836_type_var_arg_agreement_test.rs"]
 mod wi836_type_var_arg_agreement_test;
 
+#[path = "include/wi838_mixed_provider_coherence_test.rs"]
+mod wi838_mixed_provider_coherence_test;
+
 #[path = "include/wi839_call_bracket_channel_test.rs"]
 mod wi839_call_bracket_channel_test;
 
