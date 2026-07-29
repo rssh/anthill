@@ -10,6 +10,9 @@ sort anthill.prelude.Map
   -- `TotalFloat` for float keys. It is a NEGATIVE check (a witnessed `NonEq`, not a
   -- missing `Eq`): WI-616's universal structural default would make the positive
   -- reading vacuous, and no `Eq` fact is derived for a lawful all-`Eq` composite.
+  -- NOT total: the check reads `K`'s OWN provisions, so a key whose unlawfulness is
+  -- in its ARGUMENT (`Map[K = List[T = Float]]`) still loads — WI-664's parametric-
+  -- container propagation follow-up.
   requires Eq[T = K]
 
   -- WI-616 / WI-650 / WI-644: Map is a NON-STRUCTURAL Eq carrier — map equality is

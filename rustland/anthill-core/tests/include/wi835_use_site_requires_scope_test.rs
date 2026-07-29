@@ -167,9 +167,12 @@ end
     assert_non_eq_key_error(&errs, "Set", "T", "Float");
 }
 
-/// The POSITIONAL binding spelling. `Map[Float, Int64]` binds `K` by position, so
-/// the σ build must map it onto the declared parameter — and the diagnostic must
-/// still name `K`, which the author never wrote.
+/// The POSITIONAL binding spelling. `Map[Float, Int64]` binds `K` by position, and
+/// the diagnostic must still name `K`, which the author never wrote. What this pins
+/// is the LOWERING's positional→declared-param mapping, which is where that mapping
+/// happens; the recorded site is always named, so there is no positional case left
+/// downstream (an earlier cut carried a second positional mapping in the check, and
+/// it was dead code this test would not have caught).
 #[test]
 fn a_positionally_bound_float_key_is_a_load_error_naming_the_declared_param() {
     let errs = errors_for(
@@ -181,6 +184,65 @@ end
 "#,
     );
     assert_non_eq_key_error(&errs, "Map", "K", "Float");
+}
+
+/// A `const`'s declared type.
+#[test]
+fn float_element_set_in_a_const_type_is_a_load_error() {
+    let errs = errors_for(
+        r#"
+namespace test.wi835.constty
+  import anthill.prelude.{Set, Float}
+  const empties: Set[T = Float] = Set.empty()
+end
+"#,
+    );
+    assert_non_eq_key_error(&errs, "Set", "T", "Float");
+}
+
+/// A binding VALUE inside a `requires` clause. This reaches `sort_binding_to_value`,
+/// NOT `type_expr_to_child` — two independent `TypeExpr::Parameterized` lowerings —
+/// so recording at only the ordinary one let a Float key written in a spec clause
+/// load clean. The comment claiming a "sole type lowering" was the bug.
+#[test]
+fn float_key_in_a_requires_clause_binding_is_a_load_error() {
+    let errs = errors_for(
+        r#"
+namespace test.wi835.reqclause
+  import anthill.prelude.{Map, Float, Int64, Iterable}
+  sort Idx
+    requires Iterable[C = Map[K = Float, V = Int64], Element = Int64, E = {}]
+  end
+end
+"#,
+    );
+    assert_non_eq_key_error(&errs, "Map", "K", "Float");
+}
+
+/// A DENOTED-bearing sibling must not disable the check for the carrier bindings
+/// beside it. The literal `3` poisons the whole instantiation to a `Value::Node`,
+/// which has no ground term — so recording the assembled TERM dropped `K = Float`
+/// with it, and adding an unrelated value-in-type argument silently turned the
+/// lawful-key check off. Recording the BINDINGS drops only the denoted one.
+#[test]
+fn a_denoted_sibling_binding_does_not_disable_the_key_check() {
+    let src = r#"
+namespace test.wi835.denoted
+  import anthill.prelude.{Map, Float, Int64}
+  sort Buf
+    sort T = ?
+    sort N = ?
+    entity Buf(v: T)
+  end
+  sort H
+    entity H(m: Map[K = Float, V = Buf[T = Int64, N = 3]])
+  end
+end
+"#;
+    assert_non_eq_key_error(&errors_for(src), "Map", "K", "Float");
+    // Control: the same literal with a LAWFUL key still loads, so the refusal above
+    // is about `K = Float` and not about the value-in-type itself.
+    assert_loads_clean(&src.replace("K = Float", "K = Int64").replace("wi835.denoted", "wi835.denotedok"));
 }
 
 /// A body `let` ANNOTATION and a typed LAMBDA BINDER. Both are written inside an
@@ -299,6 +361,34 @@ fn a_float_value_type_is_not_a_key_and_loads() {
 namespace test.wi835.value
   import anthill.prelude.{Map, Float, Int64}
   operation m() -> Map[K = Int64, V = Float] = Map.empty()
+end
+"#,
+    );
+}
+
+// ── The documented NON-scope, pinned so it stays known ──────────────────────
+
+/// A PARAMETRIC or TUPLE key whose unlawfulness lives in its ARGUMENT is NOT caught
+/// (see `check_use_site_requires_eq`'s non-scope item 2). Both of these are
+/// genuinely unlawful keys — a list of `nan` is not equal to itself — so this test
+/// pins a KNOWN GAP, not desired behaviour: it exists so the gap cannot quietly
+/// stop being documented, and it should be inverted when WI-664's parametric-
+/// container propagation lands.
+#[test]
+fn known_gap_a_parametric_or_tuple_key_over_float_still_loads() {
+    assert_loads_clean(
+        r#"
+namespace test.wi835.gaplist
+  import anthill.prelude.{Map, List, Float, Int64}
+  operation m() -> Map[K = List[T = Float], V = Int64] = Map.empty()
+end
+"#,
+    );
+    assert_loads_clean(
+        r#"
+namespace test.wi835.gaptuple
+  import anthill.prelude.{Map, Float, Int64}
+  operation m() -> Map[K = (a: Float), V = Int64] = Map.empty()
 end
 "#,
     );

@@ -15898,38 +15898,52 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
 /// (the proposal-004 §Motivation carriers) is rejected.
 ///
 /// SCOPE (WI-835) — EVERY written parameterized type instantiation, wherever the
-/// type is written. The sites are recorded by the sole type lowering
-/// (`type_expr_to_child`'s `Parameterized` arm, `kb/load.rs`), beside the WI-709
-/// arg-FIT check whose semantic sibling this is — so the scope is not a list this
-/// function maintains, and a new type position cannot silently escape by being
-/// added elsewhere. MEASURED covered (each by its own probe, 2026-07-29): an entity
-/// field; an operation PARAMETER and RETURN type; a `const`'s type; a `sort S = …`
-/// alias; a body `let` annotation; a typed lambda binder; the positional binding
-/// spelling `Map[Float, Int64]`; and any of those NESTED inside a tuple, an arrow
-/// parameter, or another instantiation (`Map[K = Set[T = Float]]` refuses on the
-/// INNER `Set`, at the inner base name's own span).
+/// type is written. The sites are recorded at the type LOWERINGS (see
+/// [`crate::kb::ParameterizedSite`]) rather than gathered from a list of storage
+/// positions here, so a new type position cannot silently escape by being added
+/// elsewhere. MEASURED covered, each by its own probe and pinned by its own test:
+/// an entity field; an operation PARAMETER and RETURN type; a `const`'s type; a
+/// `sort S = …` alias; a body `let` annotation; a typed lambda binder; a binding
+/// value inside a `requires` / `provides` clause; the positional spelling
+/// `Map[Float, Int64]`; a DENOTED-bearing instantiation's non-denoted siblings
+/// (`Map[K = Float, V = Buf[T = Int64, N = 3]]`); and any of those NESTED inside a
+/// tuple, an arrow parameter, or another instantiation (`Map[K = Set[T = Float]]`
+/// refuses on the INNER `Set`, at the inner base name's own span).
 ///
 /// WI-644 shipped this scoped to ENTITY FIELDS only, which left the ticket's own
 /// acceptance program (`operation m() -> Map[K = Float, V = Int64]`) loading clean;
 /// that mismatch between "the data-STORAGE position" and "the positions a Float key
 /// is actually written in" is what WI-835 closes. Enumerating positions is what
-/// produced the mismatch, so the scope now rides on the producer instead.
+/// produced the mismatch, so the scope now rides on the producers instead — plural:
+/// `type_expr_to_value`'s doc calls itself "the SOLE type lowering" and it is not,
+/// which is how a spec clause's `Map[K = Float]` escaped a first cut of this.
 ///
 /// Complements the op-USE dispatch discharge (WI-300 Tier B), which already rejects
 /// CALLING an `Eq`-op over a Float-collection (`eq(a: Set[Float], …)`). Runs after
 /// `eq_derive::run`, so a Float-composite's derived `NonEq` is visible — which is
 /// also why the check is DEFERRED to here rather than run at the lowering.
 ///
-/// Deliberate non-scope (documented, not silently dropped): (1) DIRECT `requires
-/// Eq` only — a container whose Eq requirement is TRANSITIVE (`sort S requires
-/// Ordered[T]`, and `Ordered requires Eq`) is not chased; the stdlib key containers
-/// (`Map`/`Set`/`Lattice`/`Ordered`) all `requires Eq` directly. (2) Denoted-bearing
-/// instantiations (`Vector[Int64, n]`, `Modify[c]`) — the `Value::Node` branch of
-/// the lowering is not recorded: those bind a VALUE in a type-argument position, not
-/// a carrier, so there is no `requires Spec[param]` obligation to discharge. (3) A
-/// container type the author never WRITES — one the typer infers at a call site —
-/// has no written instantiation to record; the declared signature it flows into or
-/// out of is what carries the refusal.
+/// Deliberate non-scope (documented, not silently dropped):
+///
+/// (1) DIRECT `requires Eq` only — a container whose Eq requirement is TRANSITIVE
+/// (`sort S requires Ordered[T]`, and `Ordered requires Eq`) is not chased; the
+/// stdlib key containers (`Map`/`Set`/`Lattice`/`Ordered`) all `requires Eq`
+/// directly.
+///
+/// (2) A PARAMETRIC or TUPLE key whose unlawfulness is in its ARGUMENT, not in
+/// itself — `Map[K = List[T = Float]]` and `Map[K = (a: Float)]` both load. The
+/// check reads the key's own provisions, and neither carrier provides `NonEq`:
+/// `List` declines a sort-level `requires Eq` (so the inner `List[T = Float]` is
+/// not a refusal either), and WI-664 derives `NonEq` for ENTITY composites, not for
+/// tuple functors. Both are genuinely unlawful keys (a list of `nan` is not equal
+/// to itself), so this is a real gap, still owned by WI-664's stated
+/// parametric-container propagation follow-up. Carried over verbatim from WI-644's
+/// non-scope list — a rewrite of this comment dropped it once, which is how a known
+/// gap becomes an unknown one.
+///
+/// (3) A container type the author never WRITES — one the typer infers at a call
+/// site — has no written instantiation to record; the declared signature it flows
+/// into or out of is what carries the refusal.
 pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let (Some(eq_sym), Some(noneq_sym)) = (
@@ -15940,9 +15954,9 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
     };
     let eq_canon = kb.canonical_sort_sym(eq_sym);
 
-    // Every written parameterized type instantiation, with the span of its base
-    // name. Copied out before the `&mut` requires-substitution calls below.
-    let sites: Vec<(TermId, crate::span::SourceSpan)> = kb.parameterized_type_sites().to_vec();
+    // Every written parameterized type instantiation. DRAINED, so a later
+    // `load_incremental` into this KB re-checks only its own sites.
+    let sites = kb.take_parameterized_type_sites();
 
     let mut errors = Vec::new();
     // Per SITE, not per (container, carrier) pair: two `Map[K = Float]`s in two
@@ -15950,38 +15964,25 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
     // The key carries the whole `SourceSpan` — byte offsets alone repeat ACROSS
     // FILES, so a span-only key would silently drop the second file's refusal.
     let mut seen: HashSet<(Symbol, Symbol, Symbol, crate::span::SourceSpan)> = HashSet::new();
-    for (ty, site_span) in sites {
-        // Decompose a parameterized instantiation `Base[bindings]` (a bare `Fn`).
-        let (base, pos_args, named_args) = match kb.get_term(ty) {
-            Term::Fn { functor, pos_args, named_args }
-                if !(pos_args.is_empty() && named_args.is_empty()) =>
-            {
-                (*functor, pos_args.clone(), named_args.clone())
-            }
-            _ => continue,
-        };
-        // σ = the instantiation's param short-names → binding value terms (mirrors
-        // `check_provider_requires`' σ-build, minus its SortView-wrapper skip — a
-        // written type is a bare parameterized `Fn`, not a spec `SortView`). Named
-        // bindings first (`K = Float`); positional (`Map[Float, Int64]`) map onto
-        // the base's declared params in order, skipping any already named.
-        let mut sigma: SmallVec<[(String, TermId); 2]> = SmallVec::new();
-        for (k, v) in &named_args {
-            sigma.push((kb.resolve_sym(*k).to_string(), *v));
-        }
-        if !pos_args.is_empty() {
-            let unbound: Vec<String> = kb
-                .type_params_of_sort(base)
-                .into_iter()
-                .filter(|p| !sigma.iter().any(|(n, _)| n == p))
-                .collect();
-            for (v, name) in pos_args.iter().zip(unbound.iter()) {
-                sigma.push((name.clone(), *v));
-            }
-        }
-        if sigma.is_empty() {
-            continue;
-        }
+    // A base's `Eq` `requires` clauses with their RAW (unsubstituted) bindings — a
+    // function of the BASE alone, so computed once per distinct base rather than once
+    // per site. An EMPTY vec is a cached answer, not a missing one: it means "this
+    // base requires no `Eq`", the overwhelmingly common case (`Option`, `List`,
+    // `Result`, …), and it short-circuits the σ walk below — so those bases cost one
+    // map hit per site instead of two `direct_requires_chain` clones.
+    let mut eq_clauses: HashMap<Symbol, Vec<SortGoal>> = HashMap::new();
+    for site in sites {
+        let (base, site_span) = (site.base, site.span);
+        // σ = declared param name → bound type. The lowering already mapped any
+        // POSITIONAL argument onto its declared parameter (`Map[Float, Int64]` ⇒
+        // `K = Float`), so this is a rename, not a re-derivation — re-deriving it
+        // here would duplicate that mapping and, since the recorded bindings are
+        // always named, leave the positional half unreachable.
+        let sigma: SmallVec<[(String, TermId); 2]> = site
+            .bindings
+            .iter()
+            .map(|(k, v)| (kb.resolve_sym(*k).to_string(), *v))
+            .collect();
         // Base's `requires` clauses, both σ-substituted (`Map[K=Float]` ⇒ `Eq[T =
         // Float]`) and RAW. The raw pass names the parameter the diagnostic must
         // report: the substituted binding is the carrier `Float`, while the clause
@@ -15989,16 +15990,30 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
         // is what the author has to change — is only recoverable from the raw form.
         // Reading it back out of σ by matching the carrier would misname the
         // parameter whenever two params bind the same carrier (`Map[K = Float, V =
-        // Float]`). Both calls derive from the one `direct_requires_chain(base)`, so
-        // the two vectors are clause- and binding-aligned by construction. The raw
-        // pass is built ONLY once a refusal is decided — every clean site would
-        // otherwise pay a second chain walk for a name nothing reads.
-        let goals = provider_requires_subgoals(kb, base, &sigma);
-        let mut raw_goals: Option<Vec<SortGoal>> = None;
+        // Float]`). Both derive from the one `direct_requires_chain(base)`, so they
+        // are clause- and binding-aligned by construction.
+        //
+        // The RAW pass is per-BASE and cached: it does not depend on σ, and
+        // `direct_requires_chain` clones its memoized entry vector on every call, so
+        // recomputing it per SITE multiplied that clone by every `Option[…]` /
+        // `List[…]` written anywhere. A base with no `Eq` clause caches an empty vec
+        // and every later site of it costs one map hit.
+        let raw_goals = eq_clauses.entry(base).or_insert_with(|| {
+            provider_requires_subgoals(kb, base, &[])
+                .into_iter()
+                .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
+                .collect()
+        });
+        if raw_goals.is_empty() {
+            continue;
+        }
+        // Re-walk with σ applied. Filtered to the `Eq` clauses the same way, so the
+        // two vectors stay index-aligned with the cached raw ones.
+        let goals: Vec<SortGoal> = provider_requires_subgoals(kb, base, &sigma)
+            .into_iter()
+            .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
+            .collect();
         for (gi, goal) in goals.iter().enumerate() {
-            if kb.canonical_sort_sym(goal.spec_sort) != eq_canon {
-                continue;
-            }
             for (bi, (key, val)) in goal.bindings.iter().enumerate() {
                 if contains_type_param(kb, *val) {
                     continue; // abstract binding: defer (not a concrete carrier)
@@ -16013,25 +16028,16 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
                 // The container's own parameter, from the raw clause. A clause that
                 // binds a CONCRETE carrier outright (`requires Eq[T = Float]`, an
                 // ill-formed sort no instantiation can fix) has no container param
-                // to name, so the spec's own binding key is reported instead. The
-                // `raw` lookup is split out so its borrow of `raw_goals` (and hence
-                // of `kb`, through the lazy build) ends before `kb.get_term`.
+                // to name, so the spec's own binding key is reported instead.
                 let raw = raw_goals
-                    .get_or_insert_with(|| provider_requires_subgoals(kb, base, &[]))
                     .get(gi)
                     .and_then(|g| g.bindings.get(bi))
                     .filter(|(k, _)| k == key)
                     .map(|(_, raw)| *raw);
                 let param = raw
-                    .and_then(|raw| match kb.get_term(raw) {
-                        Term::Ref(s) | Term::Ident(s) => Some(*s),
-                        Term::Fn { functor, pos_args, named_args }
-                            if pos_args.is_empty() && named_args.is_empty() =>
-                        {
-                            Some(*functor)
-                        }
-                        _ => None,
-                    })
+                    // The same "is this a bare name" rule σ-substitution applied, so
+                    // the parameter reported is the one that carried the carrier in.
+                    .and_then(|raw| requires_bare_name_sym(kb, raw))
                     // Accept the raw name only when it is the one σ actually
                     // substituted — the SAME comparison `map_requires_name` makes
                     // (bare `resolve_sym` against the σ key), so the parameter
@@ -16888,6 +16894,27 @@ fn provider_requires_subgoals(
     out
 }
 
+/// The term shapes a `requires`-clause binding value uses to spell a bare NAME:
+/// the canonical `Ref(S)` / `Ident(S)`, and the nullary `Fn{S}` that `convert_term`
+/// emits for a bare name. ONE owner, because two readers must agree on it —
+/// [`subst_requires_value`], which substitutes σ at exactly these shapes, and
+/// `check_use_site_requires_eq`, which reads the RAW (unsubstituted) binding back to
+/// name the container parameter in its diagnostic. If they disagreed, the diagnostic
+/// would silently fall back to naming the spec's parameter instead of the
+/// container's. The WI-511 `Fn{c}` → `Ref(c)` flip is exactly the kind of change
+/// that would otherwise have to be applied to both by hand.
+fn requires_bare_name_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
+    match kb.get_term(v) {
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            Some(*functor)
+        }
+        _ => None,
+    }
+}
+
 /// Substitute σ into one `requires`-clause binding value (by short name);
 /// leave anything σ doesn't ground unchanged. Recurses through `Fn`
 /// children (`List[T]`, `Pair[A, B]`).
@@ -16896,14 +16923,10 @@ fn subst_requires_value(
     v: TermId,
     sigma: &[(String, TermId)],
 ) -> TermId {
+    if let Some(s) = requires_bare_name_sym(kb, v) {
+        return map_requires_name(kb, s, v, sigma);
+    }
     match kb.get_term(v).clone() {
-        Term::Ref(s) | Term::Ident(s) => map_requires_name(kb, s, v, sigma),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            // Nullary Fn — `convert_term`'s shape for a bare name.
-            map_requires_name(kb, functor, v, sigma)
-        }
         Term::Fn { functor, pos_args, named_args } => {
             let mut changed = false;
             let new_pos: SmallVec<[TermId; 4]> = pos_args.iter().map(|t| {

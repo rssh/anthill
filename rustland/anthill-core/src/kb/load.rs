@@ -825,18 +825,14 @@ impl LoadError {
         }
     }
 
-    /// WI-745: stamp with a file's provenance given directly as `(path, source)`
-    /// — for a whole-KB-pass error (typer `TypeMismatch` etc.) whose file is
-    /// resolved from its span's `SourceId` via the `SourceRegistry`, not from a
-    /// `&ParsedFile`. Idempotent, like [`LoadError::located_in`].
     /// WI-745 — the whole-KB-pass stamping in ONE step: look the `SourceId`'s
-    /// provenance up in the KB's `SourceRegistry` and wrap, or return the error
-    /// unwrapped when the source carries no text (registered by name only, so
-    /// there is nothing to resolve a `line:col` against). Every KB pass that
-    /// attributes an error to the file its span indexes into goes through here
-    /// — `type_check_sorts` and `check_use_site_requires_eq` had hand-rolled the
-    /// same lookup-and-match, which is one drift away from a diagnostic that
-    /// silently loses its file.
+    /// provenance up in the KB's `SourceRegistry` and wrap via
+    /// [`LoadError::located_in_source`], or return the error unwrapped when the
+    /// source carries no text (registered by name only, so there is nothing to
+    /// resolve a `line:col` against). Every KB pass that attributes an error to
+    /// the file its span indexes into goes through here — `type_check_sorts` and
+    /// `check_use_site_requires_eq` had hand-rolled the same lookup-and-match,
+    /// which is one drift away from a diagnostic that silently loses its file.
     pub fn located_in_kb_source(self, kb: &KnowledgeBase, source: crate::span::SourceId) -> LoadError {
         match kb.sources.provenance(source) {
             Some((path, text)) => self.located_in_source(path, text),
@@ -844,6 +840,10 @@ impl LoadError {
         }
     }
 
+    /// WI-745: stamp with a file's provenance given directly as `(path, source)`
+    /// — for a whole-KB-pass error (typer `TypeMismatch` etc.) whose file is
+    /// resolved from its span's `SourceId` via the `SourceRegistry`, not from a
+    /// `&ParsedFile`. Idempotent, like [`LoadError::located_in`].
     pub fn located_in_source(self, path: Option<Arc<Path>>, source: Arc<str>) -> LoadError {
         if matches!(self, LoadError::Located { .. }) {
             return self;
@@ -1369,11 +1369,14 @@ impl std::fmt::Display for LoadError {
                     carrier)
             }
             LoadError::NonEqKeyRequiresLawfulEq { container, param, spec, carrier, span } => {
-                // The trailing byte range is not decoration: `dedup_key` is this
-                // rendering, so without the span two refusals with the same
-                // (container, param, spec, carrier) at DIFFERENT instantiation sites
-                // would key alike and one would be dropped. Same reason every other
-                // span-bearing variant prints it.
+                // The trailing byte range follows the convention every other
+                // span-bearing variant here uses, so `dedup_key` (= this rendering)
+                // separates two refusals written at different offsets. It is NOT what
+                // keeps the two apart today: these errors are returned from
+                // `load_phase_inner` without passing through `dedup_load_errors`, and
+                // a byte range alone would not survive a cross-FILE collision anyway
+                // (no path, no `SourceId`). That case is decided at the producer, by
+                // `check_use_site_requires_eq`'s per-site `SourceSpan` key.
                 let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
                     container, spec, param, param, carrier);
                 match span {
@@ -11527,6 +11530,35 @@ impl<'a> Loader<'a> {
                         child_bindings.push((sym, bound_child));
                     }
                 }
+                // WI-835: record the written instantiation for the post-load use-site
+                // checks (`check_use_site_requires_eq`) — the semantic sibling of the
+                // WI-709 arg-FIT check above, deferred because it needs a `provides`
+                // relation `eq_derive::run` has not built yet.
+                //
+                // BEFORE the `any_node` split, and from `child_bindings` rather than
+                // the assembled term, so a denoted binding removes only ITSELF. The
+                // ground branch alone left `Map[K = Float, V = Buf[T = Int64, N = 3]]`
+                // unchecked: the literal `3` poisons the whole type to `Value::Node`,
+                // and `K = Float` went with it — an unrelated value-in-type argument
+                // silently disabling the lawful-key check. The WI-709 check above is
+                // branch-blind for the same reason; these two must not disagree about
+                // which instantiations they see.
+                //
+                // The base name's OWN span (`type_expr_span`, that rule's owner), not
+                // the threaded `span` — that one is the whole annotation's, so a NESTED
+                // instantiation (`Map[K = Int64, V = Set[T = Float]]`) would report the
+                // outer `Map`'s position for a refusal about the inner `Set`.
+                self.kb.record_parameterized_type_site(crate::kb::ParameterizedSite {
+                    base: sort_sym,
+                    bindings: child_bindings
+                        .iter()
+                        .filter_map(|(s, c)| match c {
+                            node_occurrence::TypeChild::Ground(t) => Some((*s, *t)),
+                            node_occurrence::TypeChild::Node(_) => None,
+                        })
+                        .collect(),
+                    span: self.type_expr_span(ty),
+                });
                 if any_node {
                     node_occurrence::TypeChild::Node(self.kb.make_parameterized_occ(
                         node_occurrence::TypeChild::Ground(base_term),
@@ -11546,27 +11578,9 @@ impl<'a> Loader<'a> {
                             node_occurrence::TypeChild::Node(_) => unreachable!("checked !any_node"),
                         })
                         .collect();
-                    let ty_term = self.kb.make_parameterized_type(base_term, &ground_bindings);
-                    // WI-835: record the written instantiation for the post-load
-                    // use-site checks (`check_use_site_requires_eq`) — the semantic
-                    // sibling of the WI-709 arg-FIT check above, deferred because it
-                    // needs a `provides` relation `eq_derive::run` has not built yet.
-                    // Only the GROUND branch is recorded: a denoted-bearing type
-                    // (`Vector[Int64, n]`) binds a VALUE, not a carrier, so it carries
-                    // no `requires Spec[param]` obligation to discharge.
-                    //
-                    // This type's OWN base-name span, not the threaded `span` — that
-                    // one is the whole annotation's, so a NESTED instantiation
-                    // (`Map[K = Int64, V = Set[T = Float]]`) would report the outer
-                    // `Map`'s position for a refusal about the inner `Set`.
-                    // `type_expr_span` is that own-span rule's owner (its
-                    // `Parameterized` arm IS the base name's span), so this reads it
-                    // rather than re-deriving it. Only the record is re-spanned;
-                    // `span` keeps threading to children unchanged, since the
-                    // occurrences built from it are read elsewhere.
-                    let site_span = self.type_expr_span(ty);
-                    self.kb.record_parameterized_type_site(ty_term, site_span);
-                    node_occurrence::TypeChild::Ground(ty_term)
+                    node_occurrence::TypeChild::Ground(
+                        self.kb.make_parameterized_type(base_term, &ground_bindings),
+                    )
                 }
             }
             TypeExpr::Arrow { params, return_type, effects } => {
@@ -11940,6 +11954,25 @@ impl<'a> Loader<'a> {
                         None => pos.push(bound),
                     }
                 }
+                // WI-835: a container written as a binding VALUE inside a `requires` /
+                // `provides` clause (`requires Iterable[C = Map[K = Float]]`) is a use
+                // site like any other, but it reaches HERE, not `type_expr_to_child` —
+                // this arm and that one are two `TypeExpr::Parameterized` lowerings, so
+                // recording at only one let a Float key written in a spec clause load
+                // clean. `named` already has positionals mapped onto declared params,
+                // matching the other recorder; a non-`Term` value (a denoted, or a
+                // nested `SortView`) is dropped per binding, never per site.
+                self.kb.record_parameterized_type_site(crate::kb::ParameterizedSite {
+                    base: base_sym,
+                    bindings: named
+                        .iter()
+                        .filter_map(|(s, v)| match v {
+                            Value::Term { id, .. } => Some((*s, *id)),
+                            _ => None,
+                        })
+                        .collect(),
+                    span: self.type_expr_span(ty),
+                });
                 self.assemble_binding_value(base_sym, named, pos)
             }
             _ => self.sort_inst_to_value(ty),

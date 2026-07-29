@@ -438,6 +438,42 @@ impl KbId {
     }
 }
 
+/// WI-835 — one written parameterized type instantiation (`Map[K = Float, V =
+/// Int64]`), as the post-load use-site checks need it: the base sort, the
+/// bindings that name a CARRIER, and where the base name was written.
+///
+/// Recorded by the type lowerings that have a `TypeExpr::Parameterized` arm —
+/// `type_expr_to_child` (ordinary type positions) and `sort_binding_to_value` (a
+/// type written as a binding VALUE inside a `requires` / `provides` clause). Both
+/// record, because "the sole type lowering" is not one function: `type_expr_to_value`'s
+/// doc says it is, but the spec-clause path builds its own `SortView` and never
+/// routes through it, so a `requires Spec[C = Map[K = Float]]` escaped a check
+/// keyed on the ordinary lowering alone.
+///
+/// The BINDINGS are recorded, not the assembled type term, for two reasons. The
+/// lowering has already mapped positional arguments onto declared parameter names,
+/// so a consumer that re-decomposed the term would duplicate that mapping (and its
+/// positional half would be dead code, since the assembled term carries named args
+/// only). And a DENOTED-bearing instantiation (`Buf[T = Int64, N = 3]`) has no
+/// ground term at all — it rides as a `Value::Node` — yet its non-denoted siblings
+/// still bind carriers: recording the term dropped `K = Float` from `Map[K = Float,
+/// V = Buf[T = Int64, N = 3]]` entirely, so an unrelated value-in-type argument
+/// silently disabled the lawful-key check.
+#[derive(Clone, Debug)]
+pub(crate) struct ParameterizedSite {
+    /// The sort being instantiated (`anthill.prelude.Map`).
+    pub base: Symbol,
+    /// Bindings whose value is a ground TYPE, by DECLARED parameter name
+    /// (positionals already mapped). A `denoted` binding is omitted: it stands a
+    /// VALUE in a type-argument position, so it carries no `requires Spec[param]`
+    /// obligation — omitting just that binding, rather than the whole site, is
+    /// what keeps its carrier-bound siblings checked.
+    pub bindings: SmallVec<[(Symbol, TermId); 2]>,
+    /// Where the base name was written, for a `path:line:col` diagnostic. Carries
+    /// the `SourceId`: byte offsets alone repeat across files.
+    pub span: SourceSpan,
+}
+
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
@@ -803,20 +839,19 @@ pub struct KnowledgeBase {
     // Populated during load_entity, used by type_check_sorts.
     entity_field_types: HashMap<Symbol, Vec<(Symbol, crate::eval::value::Value)>>,
 
-    // WI-835 — every PARAMETERIZED TYPE INSTANTIATION the author WRITES, wherever
-    // the type is written (`Map[K = Float]` in an entity field, an operation
-    // parameter or return type, a `const`'s type, a sort alias, a body `let`
-    // annotation, a typed lambda binder — and nested inside any of those, or inside
-    // a tuple or arrow), each with the span of its base name. Recorded by the sole type
-    // lowering, `type_expr_to_child`'s `Parameterized` arm (kb/load.rs), which is
-    // also where the WI-709 *syntactic* arg-fit check runs; this is its SEMANTIC
-    // sibling (`check_use_site_requires_eq`, kb/typing.rs).
+    // WI-835 — every PARAMETERIZED TYPE INSTANTIATION the author WRITES: see
+    // [`ParameterizedSite`] for what one is and which lowerings record them.
     //
     // RECORDED rather than checked in place because the check needs a COMPLETE
     // `provides` relation: `eq_derive::run` is the last load pass to assert
     // `SortProvidesInfo`, and a Float-composite key's `NonEq` comes from it, so
     // deciding at the lowering would silently pass every derived case.
-    parameterized_type_sites: Vec<(TermId, SourceSpan)>,
+    //
+    // Push-only WITHIN a load; drained by the check (`take_parameterized_type_sites`)
+    // so a second `load_incremental` into the same KB re-checks only ITS OWN sites.
+    // Leaving them would re-walk and re-report every earlier batch's sites — the
+    // reason the sibling `resolved_requires_facts` below exists.
+    parameterized_type_sites: Vec<ParameterizedSite>,
 
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
@@ -5801,17 +5836,26 @@ impl KnowledgeBase {
         self.entity_field_types.keys()
     }
 
-    /// WI-835 — record one written parameterized type instantiation and the span
-    /// of its base name, for the post-load use-site checks. Called from the sole
-    /// type lowering; see the `parameterized_type_sites` field comment for why
-    /// the check is deferred rather than run at the lowering.
-    pub(crate) fn record_parameterized_type_site(&mut self, ty: TermId, span: SourceSpan) {
-        self.parameterized_type_sites.push((ty, span));
+    /// WI-835 — record one written parameterized type instantiation, for the
+    /// post-load use-site checks. Called from the type lowerings; see
+    /// [`ParameterizedSite`] and the `parameterized_type_sites` field comment.
+    /// A site with no ground bindings is not recorded — there is nothing to
+    /// check, and `make_parameterized_type` collapses an empty binding list to a
+    /// bare `Ref(base)` anyway (`List[]` ≡ `List`, and the over-applied
+    /// non-parametric case), so recording one would bank an entry every reader
+    /// must then discard.
+    pub(crate) fn record_parameterized_type_site(&mut self, site: ParameterizedSite) {
+        if site.bindings.is_empty() {
+            return;
+        }
+        self.parameterized_type_sites.push(site);
     }
 
-    /// WI-835 — every recorded parameterized type instantiation, in load order.
-    pub(crate) fn parameterized_type_sites(&self) -> &[(TermId, SourceSpan)] {
-        &self.parameterized_type_sites
+    /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so
+    /// a later `load_incremental` into this KB checks only its own sites instead
+    /// of re-walking (and re-reporting) every batch loaded before it.
+    pub(crate) fn take_parameterized_type_sites(&mut self) -> Vec<ParameterizedSite> {
+        std::mem::take(&mut self.parameterized_type_sites)
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).
