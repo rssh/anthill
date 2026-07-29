@@ -57,6 +57,28 @@ static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     parse_files(&files)
 });
 
+/// Parsed stdlib MINUS the cpp realization PROFILE (`realization/cpp_std.anthill`),
+/// computed once per test binary. Keeps the realization VOCABULARY
+/// (`realization.anthill` — the `TypeMapping` / `CarrierBinding` /
+/// `NamingConvention` entity definitions) so a test can still write realization
+/// facts, but drops the cpp profile that ships the one stdlib cpp
+/// `NamingConvention` (snake_case -> camelCase) and the cpp base `TypeMapping`s.
+/// WI-846: the "no cpp realization profile" load path — the only way to reach
+/// `cpp_method_name`'s zero-`NamingConvention` branch, which the default
+/// always-cpp_std harness (`load_kb_with*`) cannot. Nothing imports `cpp_std`, so
+/// dropping it loads cleanly. INVARIANT: `cpp_std.anthill` is the SOLE stdlib
+/// source of a cpp `NamingConvention` fact — if a second cpp profile file ever
+/// ships one, this basename filter must drop it too, or the zero-case tests
+/// silently degrade into the 1-/>1-row cases.
+static STDLIB_MINUS_CPP_PROFILE_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
+    let files: Vec<PathBuf> = collect_anthill_files(&stdlib_dir())
+        .into_iter()
+        .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("cpp_std.anthill"))
+        .collect();
+    assert!(!files.is_empty(), "stdlib must be loadable from {}", stdlib_dir().display());
+    parse_files(&files)
+});
+
 /// Parsed cpp host bindings, computed once per test binary.
 static CPP_BINDINGS_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     let files = collect_anthill_files(&cpp_bindings_dir());
@@ -134,6 +156,31 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
                 panic!("load failed with {} errors", errs.len());
             }
             load::LoadResult::default()
+        });
+    kb
+}
+
+/// Build a KB with the cached stdlib-MINUS-cpp-profile + the cpp Rust-side
+/// bindings + the user source. This is the "a project supplies its own carrier
+/// bindings / type mappings but NO cpp naming profile" state: everything the
+/// full harness loads EXCEPT `realization/cpp_std.anthill`, so no cpp
+/// `NamingConvention` fact is present and `cpp_method_name`'s
+/// zero-`NamingConvention` branch (WI-846) becomes reachable. See
+/// `STDLIB_MINUS_CPP_PROFILE_PARSED`.
+#[allow(dead_code)]
+pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
+    let user = parse::parse(source).expect("parse user source");
+    let mut refs: Vec<&ParsedFile> = STDLIB_MINUS_CPP_PROFILE_PARSED.iter().collect();
+    refs.extend(CPP_BINDINGS_PARSED.iter());
+    refs.push(&user);
+
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .unwrap_or_else(|errs| {
+            for e in &errs { eprintln!("{}", e); }
+            panic!("load failed with {} errors", errs.len());
         });
     kb
 }

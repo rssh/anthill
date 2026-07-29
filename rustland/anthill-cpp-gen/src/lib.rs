@@ -4516,10 +4516,12 @@ fn query_include_mappings(
 /// the cpp `NamingConvention` fact — replaces the hardcoded `snake_to_camel`
 /// call at the carrier-dispatch boundary. The only transform implemented is
 /// `snake_case -> camelCase` (cpp's declared convention); any other declared
-/// pair (including same-case) is identity, and an absent fact is identity too —
-/// the convention is the source of truth, not a hardcoded default. Per-operation
-/// acronym irregulars (get_gps -> getGPS) ride a CppName override (WI-087), not
-/// this default.
+/// pair (including same-case) is identity. The convention is the source of
+/// truth, not a hardcoded default: an ABSENT one is a loud `CppCodegenError`
+/// (WI-846), not a silent identity fallback — this reader is reached only at a
+/// carrier-dispatch boundary, where guessing the host method name emits
+/// non-compilable C++. Per-operation acronym irregulars (get_gps -> getGPS)
+/// ride a CppName override (WI-087), not this default.
 fn cpp_method_name(kb: &mut KnowledgeBase, source: &str) -> Result<String, CppCodegenError> {
     // WI-833: RESOLVED, not `Refuse` — a bodied `NamingConvention` rule is
     // EVALUATED (its guard honored), so a project can gate the convention on a
@@ -4548,11 +4550,33 @@ fn cpp_method_name(kb: &mut KnowledgeBase, source: &str) -> Result<String, CppCo
              attribute (WI-087), not a second convention"
         ),
     })?;
-    // Zero conventions (misconfigured or unloaded profile) → identity: the
-    // convention is the source of truth, and an absent one is an ordinary miss,
-    // not an error (a project may emit without loading a naming profile).
+    // Zero conventions is NOT an ordinary miss (WI-846): `cpp_method_name` is
+    // reached only at a CARRIER-DISPATCH boundary (the `self->method(...)` call),
+    // where the host method spelling MUST be known — guessing identity emits
+    // `self->get_reading()` against a vendor header that may declare
+    // `getReading()`, non-compilable C++, silently. The realization profile is
+    // the source of truth, so its absence is a profile bug, not a default to
+    // paper over: fail loudly, naming the absent profile and the fix (repo rule:
+    // "prefer a loud error over a silent skip"). This is the zero-half twin of
+    // the >1 ambiguity error above — both are the `realizes_effect` <=1
+    // discipline applied to a `Result` reader; WI-833 restored only the >1 half
+    // and replaced this half with silent identity. Unreachable in normal codegen:
+    // the bundled stdlib always ships one cpp NamingConvention (cpp_std, a plain
+    // fact that always resolves). A hand-built KB with no realization profile is
+    // further guarded wherever a signature carries a primitive (`sort_to_cpp`
+    // fails there first), though an all-carrier-typed op has none — which is what
+    // the WI-846 test exercises.
     let Some((source_case, method_case)) = convention else {
-        return Ok(source.to_string());
+        return Err(CppCodegenError {
+            message: format!(
+                "no cpp NamingConvention resolved for carrier-dispatch method '{source}' — \
+                 the cpp realization profile (anthill.realization.cpp_std) is not loaded, or \
+                 declares no NamingConvention for language \"cpp\". Load a cpp naming profile, \
+                 or assert `fact NamingConvention(language: \"cpp\", source_case: ..., \
+                 method_case: ...)` (set source_case = method_case, e.g. \"snake_case\" -> \
+                 \"snake_case\", to declare identity casing intentional)"
+            ),
+        });
     };
     Ok(match (source_case.as_deref(), method_case.as_deref()) {
         (Some("snake_case"), Some("camelCase")) => snake_to_camel(source),
