@@ -754,13 +754,18 @@ impl LoadError {
     /// the inner carries a span, `path: msg` when it does not (a locationless
     /// diagnostic still names its file); with no path, the bare
     /// `inner.format_with_source` (`line:col: msg` or `msg`).
+    ///
+    /// WI-852: the PREFIX rule itself lives in `span::render_located`, shared
+    /// with `ParseError::format_located`. Only the prefix: the `line:col` half
+    /// is built by the arms below, which is a second implementation of what
+    /// `Span::format_start` spells for parse errors — the two agree today by
+    /// convention, not by construction.
     fn located_render(path: &Option<Arc<Path>>, source: &str, inner: &LoadError) -> String {
-        let body = inner.format_with_source(source);
-        match path {
-            Some(p) if inner.user_span().is_some() => format!("{}:{}", p.display(), body),
-            Some(p) => format!("{}: {}", p.display(), body),
-            None => body,
-        }
+        crate::span::render_located(
+            path.as_deref(),
+            inner.format_with_source(source),
+            inner.user_span().is_some(),
+        )
     }
 
     /// Format with line:col using source text, like ParseError::format_with_source.

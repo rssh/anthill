@@ -1,0 +1,5 @@
+namespace wi852
+
+  operation foo[T = Int64](x: T) -> T
+
+end

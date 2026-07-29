@@ -1,0 +1,6 @@
+namespace wi852.good
+  sort S
+    entity mk(x: Int64)
+  end
+  fact mk(x: 1)
+end

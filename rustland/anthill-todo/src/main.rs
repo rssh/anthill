@@ -651,7 +651,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 // the honest parse diagnostic is all that remains, and a real
                 // typo in any file must not be swallowed (loud over silent).
                 for err in &errs {
-                    eprintln!("warning: {}:{}", file.display(), err.format_with_source(&source));
+                    // WI-852: through the shared owner, so this hand-rolled
+                    // `path:line:col` cannot drift from the one every other
+                    // parse-error and load-error printer uses.
+                    eprintln!("warning: {}", err.format_located(file, &source));
                 }
             }
         }

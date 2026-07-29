@@ -150,7 +150,9 @@ fn parse_user_files(paths: &[PathBuf]) -> (Vec<ParsedFile>, Vec<String>) {
             Ok(p) => files.push(p.with_path(path.clone())),
             Err(parse_errors) => {
                 for pe in &parse_errors {
-                    errors.push(format!("{}: {pe}", path.display()));
+                    // WI-852: `path:line:col`, the rendering a load error already
+                    // had — see `main.rs::load_kb_with_stdlib`.
+                    errors.push(pe.format_located(path, &source));
                 }
             }
         }

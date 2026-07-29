@@ -51,6 +51,39 @@ impl Span {
     }
 }
 
+// ── Located rendering ──────────────────────────────────────────
+
+/// WI-745 / WI-852: the ONE file-prefix rendering, shared by every diagnostic
+/// family — [`crate::kb::load::LoadError::Located`] and
+/// [`crate::parse::error::ParseError::format_located`] — so which STAGE found a
+/// fault cannot change how its location reads. WI-745 gave LOAD errors
+/// `path:line:col`; parse errors kept rendering a raw byte offset, so the author
+/// got a clickable location or a number to count to depending on a stage
+/// boundary they cannot predict (WI-852).
+///
+/// EXACTLY WHAT IS SHARED: the FILE PREFIX rule, and nothing below it. Each
+/// family builds its own `body`, and the `line:col` half of that body is TWO
+/// implementations — `ParseError::format_with_source` goes through
+/// [`Span::format_start`], while `LoadError::format_with_source` hand-rolls
+/// `Span::line_col` + `format!` in ~20 message arms. So the two families agree
+/// on the position format by CONVENTION, not by construction, and changing one
+/// (0-based columns, an end column) would drift silently. Do not read the
+/// stage-independence claim as stronger than the prefix.
+///
+/// `body` is the already-rendered diagnostic — `line:col: message` when it
+/// carries a span, bare `message` when it does not, which is what `has_span`
+/// reports. Taken BY VALUE so the pathless case moves it instead of copying.
+/// The separator differs between the two cases on purpose: `path:line:col: msg`
+/// is the form editors and terminals make clickable, while a span-less
+/// `path:msg` would read as a mangled location, so it takes `path: msg`.
+pub fn render_located(path: Option<&std::path::Path>, body: String, has_span: bool) -> String {
+    match path {
+        Some(p) if has_span => format!("{}:{}", p.display(), body),
+        Some(p) => format!("{}: {}", p.display(), body),
+        None => body,
+    }
+}
+
 // ── Source identification ──────────────────────────────────────
 
 /// Opaque handle to a loaded source text. Sequential, not hash-consed.

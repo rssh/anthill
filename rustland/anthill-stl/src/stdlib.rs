@@ -135,7 +135,14 @@ pub fn parse_embedded() -> (Vec<ParsedFile>, Vec<String>) {
             Ok(parsed) => files.push(parsed),
             Err(errs) => {
                 for e in &errs {
-                    errors.push(format!("stdlib {path}: {e}"));
+                    // WI-852: `line:col` in the embedded source, not a byte
+                    // offset. `path` is the logical entry name, not a file on
+                    // disk — but it names the source exactly, which is what the
+                    // located rendering asks of it.
+                    errors.push(format!(
+                        "stdlib {}",
+                        e.format_located(std::path::Path::new(path), source)
+                    ));
                 }
             }
         }

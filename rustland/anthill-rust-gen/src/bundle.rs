@@ -230,8 +230,12 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
         match parse::parse(source) {{
             Ok(p) => parsed.push(p),
             Err(errs) => {{
-                let detail: Vec<String> = errs.iter().map(|e| format!("{{e}}")).collect();
-                return Err(format!("parse {{path}}: {{}}", detail.join("; ")));
+                // WI-852: `path:line:col`, not a byte offset into an embedded source.
+                let detail: Vec<String> = errs
+                    .iter()
+                    .map(|e| e.format_located(std::path::Path::new(path), source))
+                    .collect();
+                return Err(format!("parse failed: {{}}", detail.join("; ")));
             }}
         }}
     }}

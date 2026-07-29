@@ -41,7 +41,12 @@ pub fn parse_embedded_bundle() -> (Vec<ParsedFile>, Vec<String>) {
             Ok(parsed) => files.push(parsed),
             Err(parse_errors) => {
                 for e in &parse_errors {
-                    errors.push(format!("bundle {name}: {e}"));
+                    // WI-852: `line:col` in the embedded source — see
+                    // `anthill_stl::stdlib::parse_embedded`.
+                    errors.push(format!(
+                        "bundle {}",
+                        e.format_located(std::path::Path::new(name), source)
+                    ));
                 }
             }
         }

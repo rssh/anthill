@@ -12,7 +12,9 @@ use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
 use anthill_core::parse;
+use anthill_core::parse::error::ParseError;
 use anthill_core::parse::ir::{Item, ParsedFile};
+use anthill_core::span::Span;
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::persistence::term_ser;
 
@@ -554,7 +556,10 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
             Ok(p) => parsed_files.push(p.with_path(file.clone())),
             Err(parse_errors) => {
                 for pe in &parse_errors {
-                    errors.push(format!("{}: {pe}", file.display()));
+                    // WI-852: `path:line:col`, the same rendering a load error
+                    // gets — which STAGE found the fault must not decide whether
+                    // the author gets a location or a byte offset to count to.
+                    errors.push(pe.format_located(file, &source));
                 }
             }
         }
@@ -852,7 +857,8 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
             Ok(p) => p,
             Err(parse_errors) => {
                 for pe in &parse_errors {
-                    errors.push(format!("{}: {pe}", file.display()));
+                    // WI-852: `path:line:col` — see `load_kb_with_stdlib`.
+                    errors.push(pe.format_located(file, &source));
                 }
                 continue;
             }
@@ -1398,6 +1404,104 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
     Ok(())
 }
 
+/// WI-852: the source [`collect_queries`] parses is SYNTHESIZED — one `import`
+/// line per `-i` flag, then the user's text — so a raw span indexes into text the
+/// author only partly wrote. This owns the join, so the split point is recorded
+/// where the two halves meet and cannot be re-derived (differently) per arm.
+struct QuerySource<'a> {
+    /// What `parse::parse` is handed.
+    text: String,
+    /// Byte length of the import prefix: the boundary attribution keys on.
+    prefix_len: usize,
+    /// The `-i` flags, in the order their lines were written.
+    imports: &'a [String],
+}
+
+impl<'a> QuerySource<'a> {
+    fn new(imports: &'a [String], body: &str) -> Self {
+        let mut text: String = imports.iter().map(|imp| format!("import {imp}\n")).collect();
+        let prefix_len = text.len();
+        text.push_str(body);
+        Self { text, prefix_len, imports }
+    }
+
+    /// The `-i` flags a prefix-local span COVERS: one line per flag, in order, so
+    /// the newline counts at the span's two ends bound the range of flags.
+    ///
+    /// A range, not the flag at `start`, because one recovery node can span
+    /// SEVERAL import lines — measured: `-i wi852.good -i 'not a name!!'` yields
+    /// a single `ERROR` from byte 0 over both, and naming the flag at its start
+    /// blamed the FIRST flag for a fault in the second. Same false attribution
+    /// as keying `located_error` on `start`, one level down.
+    ///
+    /// Empty when an end is not on a character boundary — the flags cannot be
+    /// named then, and the caller still reports the diagnostic.
+    fn imports_covered(&self, span: Span) -> &[String] {
+        let (Some(head), Some(covered)) = (
+            self.text.get(..span.start as usize),
+            self.text.get(..(span.end as usize).min(self.prefix_len)),
+        ) else {
+            return &[];
+        };
+        let first = head.matches('\n').count();
+        // Each line ENDS with its newline, so a span reaching the prefix's end
+        // counts one line too many; clamp to the last flag.
+        let last = covered.matches('\n').count().min(self.imports.len().saturating_sub(1));
+        self.imports.get(first..=last).unwrap_or(&[])
+    }
+
+    /// WI-852: render one parse error against the half of `text` it belongs to.
+    ///
+    /// Attribution is by OVERLAP, not by where the span STARTS. When the user's
+    /// text does not begin a valid top-level item, tree-sitter's recovery merges
+    /// the synthesized prefix and that text into ONE `ERROR` node — which starts
+    /// at byte 0. Keying on `start` therefore blamed `--import` for a fault in
+    /// the FILE and dropped the file's location entirely (measured: a query file
+    /// beginning `) oops` reported `--import: syntax error near `import x ) oops``
+    /// with `-i`, and `path:1:1: syntax error near `) oops`` without it).
+    ///
+    /// - A span lying WHOLLY inside the prefix is a fault in an `--import` flag,
+    ///   which lives in no file; naming the flag is its location.
+    /// - A span reaching past the prefix reaches the user's text, so it is
+    ///   located THERE, with a start that began in the prefix clamped to the
+    ///   user's first byte. Shifting is what makes `--query-file` report the same
+    ///   line whether or not `-i` was passed; unshifted it drifts one line per
+    ///   flag, a location worse than none.
+    ///
+    /// `user` is the user's text and the file it came from, or `None` for an
+    /// inline `--pattern`. A pattern takes no `line:col`: it would index into
+    /// text anthill synthesized AROUND the argument (the import lines, and the
+    /// `fact` keyword the arm prepends), pointing at something the author never
+    /// wrote — the same "location that names nothing" this ticket removes. It is
+    /// one visible argument, so naming the flag it came from IS its location.
+    fn located_error(&self, e: &ParseError, user: Option<(&Path, &str)>) -> String {
+        // `prefix_len > 0` guards the no-`-i` case: with no prefix at all there
+        // is no flag to blame, and a zero-width span at byte 0 — the WI-778
+        // missing-token shape — would otherwise satisfy `end <= 0`.
+        if self.prefix_len > 0 && (e.span.end as usize) <= self.prefix_len {
+            return match self.imports_covered(e.span) {
+                [] => format!("--import: {}", e.message),
+                [flag] => format!("--import `{flag}`: {}", e.message),
+                flags => {
+                    let named: Vec<String> = flags.iter().map(|f| format!("`{f}`")).collect();
+                    format!("--import (one of {}): {}", named.join(", "), e.message)
+                }
+            };
+        }
+        match user {
+            None => format!("--pattern: {}", e.message),
+            Some((path, text)) => {
+                let shift = self.prefix_len as u32;
+                let mut shifted = e.clone();
+                // `end > shift` from the branch above; `start` may be BELOW it on
+                // a merged node, and clamping lands it on the user's first byte.
+                shifted.span = Span::new(e.span.start.max(shift) - shift, e.span.end - shift);
+                shifted.format_located(path, text)
+            }
+        }
+    }
+}
+
 /// Collect query terms from either an inline pattern or a query file.
 /// Returns (label, vec-of-term-ids) pairs.
 fn collect_queries(
@@ -1406,17 +1510,13 @@ fn collect_queries(
 ) -> Result<Vec<(String, Vec<anthill_core::kb::term::TermId>)>, i32> {
     if let Some(ref pattern) = args.pattern {
         // Build source: import lines + fact pattern
-        let mut source = String::new();
-        for imp in &args.imports {
-            source.push_str(&format!("import {imp}\n"));
-        }
-        source.push_str(&format!("fact {pattern}"));
+        let source = QuerySource::new(&args.imports, &format!("fact {pattern}"));
 
-        let parsed = match parse::parse(&source) {
+        let parsed = match parse::parse(&source.text) {
             Ok(p) => p,
             Err(errs) => {
                 for e in &errs {
-                    eprintln!("parse error: {e}");
+                    eprintln!("error: {}", source.located_error(e, None));
                 }
                 return Err(1);
             }
@@ -1455,11 +1555,6 @@ fn collect_queries(
         }
         Ok(vec![(pattern.clone(), terms)])
     } else if let Some(ref query_file) = args.query_file {
-        let mut source = String::new();
-        // Prepend --import flags
-        for imp in &args.imports {
-            source.push_str(&format!("import {imp}\n"));
-        }
         let file_source = match fs::read_to_string(query_file) {
             Ok(s) => s,
             Err(e) => {
@@ -1467,13 +1562,16 @@ fn collect_queries(
                 return Err(1);
             }
         };
-        source.push_str(&file_source);
+        // WI-852: the file's text is the half after the `--import` prefix, and a
+        // fault reaching it is located in the FILE.
+        let source = QuerySource::new(&args.imports, &file_source);
 
-        let parsed = match parse::parse(&source) {
+        let parsed = match parse::parse(&source.text) {
             Ok(p) => p,
             Err(errs) => {
+                let user = Some((query_file.as_path(), file_source.as_str()));
                 for e in &errs {
-                    eprintln!("parse error: {e}");
+                    eprintln!("error: {}", source.located_error(e, user));
                 }
                 return Err(1);
             }

@@ -13,7 +13,6 @@ pub mod term_ser;
 use crate::intern::Symbol;
 use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
-use crate::parse::error::ParseError;
 use crate::parse::ir::ParsedFile;
 
 // ── Error ──────────────────────────────────────────────────────
@@ -21,7 +20,15 @@ use crate::parse::ir::ParsedFile;
 #[derive(Debug)]
 pub enum PersistenceError {
     Io(String),
-    Parse(Vec<ParseError>),
+    /// WI-852: the parse faults ALREADY RENDERED as `path:line:col: message`,
+    /// like `Io`'s message beside it. Holding `Vec<ParseError>` left this the
+    /// one place in the tree that stored parse errors across a boundary, and it
+    /// stored them without the source their spans index into — so `Display` had
+    /// nothing to resolve against and printed a raw byte offset, a number naming
+    /// nothing in a file the message did not name either. The raise site holds
+    /// both the path and the text, so it renders there; nothing downstream reads
+    /// these apart from `Display`.
+    Parse(Vec<String>),
     NotQueryable,
     NotMutable,
 }
@@ -30,9 +37,9 @@ impl std::fmt::Display for PersistenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PersistenceError::Io(msg) => write!(f, "persistence I/O error: {msg}"),
-            PersistenceError::Parse(errs) => {
+            PersistenceError::Parse(rendered) => {
                 write!(f, "persistence parse errors:")?;
-                for e in errs {
+                for e in rendered {
                     write!(f, "\n  {e}")?;
                 }
                 Ok(())

@@ -1,0 +1,5 @@
+namespace wi852
+  sort S
+    entity mk(: Int64)
+  end
+end

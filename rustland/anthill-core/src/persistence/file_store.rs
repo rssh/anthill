@@ -206,7 +206,7 @@ impl Store for FileStore {
             // matches a retract canonical, preserve everything else.
             let after_retract = match retracts_by_path.get(&path) {
                 Some(retracts) if !retracts.is_empty() => {
-                    apply_retracts(&existing, retracts)?
+                    apply_retracts(&path, &existing, retracts)?
                 }
                 _ => existing,
             };
@@ -249,7 +249,16 @@ impl BulkStore for FileStore {
             let source = fs::read_to_string(&path).map_err(|e| {
                 PersistenceError::Io(format!("failed to read {}: {e}", path.display()))
             })?;
-            let parsed = parse::parse(&source).map_err(PersistenceError::Parse)?;
+            // WI-852: rendered HERE, where the path and the text are both in
+            // hand — `path:line:col`, not a byte offset naming nothing.
+            let parsed = match parse::parse(&source) {
+                Ok(p) => p,
+                Err(errors) => {
+                    return Err(PersistenceError::Parse(
+                        errors.iter().map(|e| e.format_located(&path, &source)).collect(),
+                    ))
+                }
+            };
             parsed_files.push(parsed);
         }
 
@@ -267,8 +276,22 @@ impl BulkStore for FileStore {
 /// If multiple in-source facts share the same head canonical, all of
 /// them are removed (a retract canonical is a *content* identifier, and
 /// duplicates on disk mean the user already has a problem).
-fn apply_retracts(source: &str, retracts: &HashSet<String>) -> Result<String, PersistenceError> {
-    let parsed = parse::parse(source).map_err(PersistenceError::Parse)?;
+///
+/// `path` is the file `source` was read from — carried for the parse error's
+/// `path:line:col` rendering only (WI-852); the rewrite itself is textual.
+fn apply_retracts(
+    path: &Path,
+    source: &str,
+    retracts: &HashSet<String>,
+) -> Result<String, PersistenceError> {
+    let parsed = match parse::parse(source) {
+        Ok(p) => p,
+        Err(errors) => {
+            return Err(PersistenceError::Parse(
+                errors.iter().map(|e| e.format_located(path, source)).collect(),
+            ))
+        }
+    };
 
     let mut drop_ranges: Vec<(usize, usize)> = Vec::new();
     let printer = print::TermPrinter::over(&parsed);
