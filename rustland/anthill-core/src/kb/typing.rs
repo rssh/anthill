@@ -16411,15 +16411,16 @@ fn witness_provision(
 /// `(provider sort, the provision's `SortView` term, its type-param bindings)`.
 ///
 /// The shared substrate of the two readers that differ only in what they do at a
-/// match: [`witness_provision`] takes the first witness, [`spec_op_suppliers`]
-/// collects every supplier. Both used to spell this decode themselves — eleven
-/// identical lines — which is the shape that produced WI-838's cross-kind blind
+/// match: [`witness_provision`] takes the first witness,
+/// [`collect_spec_op_suppliers_by_carrier`] collects every supplier. Both used to
+/// spell this decode themselves — eleven identical lines — which is the shape that produced WI-838's cross-kind blind
 /// spot in the first place (two copies of one criterion, kept in step by hand).
 ///
 /// Reads the WI-660 `by_spec_base` bucket via [`provides_rids_by_spec`] rather than
 /// every provision fact, and keeps the per-fact canonical re-filter that bucket's
 /// contract requires (its no-index fallback returns EVERY provides fact, which is
-/// what `build_sort_ops_table` sees — it runs before `build_provides_index`).
+/// what both readers see today — `build_eq_dispatch_index` runs before
+/// `build_provides_index`, and `eq_derive::run`'s caller nulls the index first).
 fn provisions_of_spec(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -16492,8 +16493,10 @@ impl SpecOpSupplier {
             SupplyRoute::Fact => {
                 format!("an instance fact binding `{} = {}`", op_short, target)
             }
+            // "supplying", not "its own member": a witness may name the impl either
+            // as its own member or as an op-valued binding in the provision itself.
             SupplyRoute::Witness(w) => format!(
-                "witness sort '{}' (its own member '{}')",
+                "witness sort '{}' (supplying '{}')",
                 kb.qualified_name_of(w),
                 target
             ),
@@ -16540,33 +16543,44 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
 ) {
     let op_short = kb.resolve_sym(op_short_sym);
     for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
-        let provider_canon = kb.canonical_sort_sym(provider);
-        // KIND 1 — carrier-keyed INSTANCE FACT (WI-431): the op-valued binding IS
-        // the impl, and the dispatch carrier is the provision's own `sort_ref`. The
-        // loader DERIVES a namespace-level `fact Spec[T = Carrier, …]`'s `sort_ref`
-        // from the carrier binding, so this covers both that shape and a carrier's
-        // own `provides Spec[…, eq = op]` block. A type-only provision binds no op
-        // and supplies nothing.
+        // KIND 2 — WITNESS SORT (WI-450): the dispatch carrier is what the provision
+        // binds to the spec's carrier param, not the provider. `witness_dispatch_carrier`
+        // is the ONE owner of what counts as a witness, shared with the load-time
+        // coherence grouping so they cannot disagree; it returns `None` for a provider
+        // that IS its own carrier, which is exactly KIND 1's case.
         //
-        // KIND 2 — WITNESS SORT (WI-450): the impl is the witness's OWN member, and
-        // the dispatch carrier is what the provision binds to the spec's carrier
-        // param. `witness_dispatch_carrier` is the ONE owner of what counts as a
-        // witness, shared with the load-time coherence grouping so they cannot
-        // disagree; it returns `None` for a provider that IS its own carrier, which
-        // is exactly KIND 1's case.
+        // KIND 1 — carrier-keyed INSTANCE FACT (WI-431): the dispatch carrier is the
+        // provision's own `sort_ref`. The loader DERIVES a namespace-level
+        // `fact Spec[T = Carrier, …]`'s `sort_ref` from the carrier binding, so this
+        // covers both that shape and a carrier's own `provides Spec[…, eq = op]` block.
         let found = match witness_dispatch_carrier(kb, spec_sort, provider, spec_t) {
-            Some(carrier_canon) => carrier_own_op(kb, provider, spec_op, op_short_sym)
-                .map(|target| {
-                    (carrier_canon, SpecOpSupplier { target, route: SupplyRoute::Witness(provider) })
-                }),
-            None => instance_fact_op_in_bindings(kb, &bindings, op_short).map(|target| {
-                (provider_canon, SpecOpSupplier { target, route: SupplyRoute::Fact })
-            }),
+            // A WITNESS may name the impl EITHER WAY, so both legs are read: usually
+            // as its own MEMBER (`sort W provides Spec[T = C]` with `W.op`), but
+            // `sort W provides Spec[T = C, op = f]` also loads today and BINDS it.
+            // Reading only the member leg dropped that provision on a silent
+            // `continue` — its written `op = f` never keyed the index and equality
+            // answered structurally with no diagnostic from anywhere.
+            Some(c) => carrier_own_op(kb, provider, spec_op, op_short_sym)
+                .or_else(|| instance_fact_op_in_bindings(kb, &bindings, op_short))
+                .map(|target| (c, target, SupplyRoute::Witness(provider))),
+            // A carrier-keyed provision supplies only what it BINDS. Its
+            // `carrier_own_op` is the CARRIER's own member — route 1's business, and
+            // attributing it to the provision here would let a `provides Spec[T = C]`
+            // block shadow a sibling `fact Spec[T = C, op = f]`'s binding, hiding the
+            // very second candidate this walk exists to surface.
+            None => instance_fact_op_in_bindings(kb, &bindings, op_short)
+                .map(|target| (kb.canonical_sort_sym(provider), target, SupplyRoute::Fact)),
         };
-        let Some((carrier_canon, supplier)) = found else { continue };
+        let Some((carrier_canon, target, route)) = found else { continue };
         let bucket = out.entry(carrier_canon).or_default();
-        if !bucket.iter().any(|e| e.target == supplier.target) {
-            bucket.push(supplier);
+        // Dedup by CANONICAL target: one qualified name can be interned under several
+        // Symbols (the reason `canonical_sym` exists, and why the index keys entries
+        // under both spellings), so a raw compare would let one operation reached
+        // through two interned copies read as two candidates — refusing a correct
+        // program with `AmbiguousEqDispatch`.
+        let target_canon = kb.canonical_sym(target);
+        if !bucket.iter().any(|e| kb.canonical_sym(e.target) == target_canon) {
+            bucket.push(SpecOpSupplier { target, route });
         }
     }
 }

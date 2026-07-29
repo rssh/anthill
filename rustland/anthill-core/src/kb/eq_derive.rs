@@ -9,11 +9,13 @@
 //!   an IEEE `Float` leaf (a `NonEq` provider) through composite fields, WITHOUT
 //!   crossing a lawful-Eq BOUNDARY. Computed as a monotone FIXPOINT over the
 //!   field-reference graph (not a truncating DFS), so it is sound for recursive and
-//!   mutually-recursive sorts. A boundary is a sort whose `eq` is its OWN — a
-//!   declared `operation eq` OR an op-bound provision (`fact PartialEq[T=X, eq=…]`)
-//!   — the SAME authoritative signal the eq-dispatch index uses
-//!   (`build_sort_ops_table` pass 3), so the classifier's boundary is exactly the
-//!   resolver's dispatch boundary. That is what keeps `TotalFloat` (a `Float`
+//!   mutually-recursive sorts. A boundary is a sort whose `eq` is DISPATCHED — a
+//!   declared `operation eq`, an op-bound provision (`fact PartialEq[T=X, eq=…]`),
+//!   or (WI-837) a WITNESS SORT's `eq` — read through the very predicate the
+//!   eq-dispatch index uses (`load::EqDispatchIndex`, built by
+//!   `load::build_eq_dispatch_index`), so the classifier's boundary is exactly the
+//!   resolver's dispatch boundary. The PREDICATE is shared; the DOMAINS are not —
+//!   see `is_eq_boundary` for the namespace-level-entity gap (WI-856). That is what keeps `TotalFloat` (a `Float`
 //!   wrapper that declares its own total `eq`) lawfully `Eq` — and shields a
 //!   composite that wraps it — while a plain `Point(x: Float, y: Float)` becomes
 //!   `NonEq`.

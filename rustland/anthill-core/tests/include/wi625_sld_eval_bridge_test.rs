@@ -893,7 +893,7 @@ fn transitive_op_requires_single_param_loads() {
 // `Tagged` a NON-STRUCTURAL eq: `taggedEq` compares only `key`, ignoring `note`,
 // so `tagged(1,9)` and `tagged(1,8)` are EQUAL semantically but structurally
 // distinct. Pre-gap-2 the resolver's `eq`/`neq` builtin (`sem_eq_core`) keyed
-// dispatch only on a carrier's OWN `eq` member (`build_sort_ops_table` pass 3 /
+// dispatch only on a carrier's OWN `eq` member (`build_eq_dispatch_index` /
 // `carrier_own_op`), so an instance-fact carrier fell through to the STRUCTURAL
 // verdict — diverging from the same program's `List.member` (which honors the
 // instance fact via the threaded dict). Gap 2 keys the instance-fact carrier's

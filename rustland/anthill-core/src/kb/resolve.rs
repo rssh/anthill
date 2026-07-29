@@ -4378,7 +4378,7 @@ impl KnowledgeBase {
 
     /// WI-616 — the eq-dispatch index probe for one operand: its head functor's
     /// entry (an entity constructor or self-returning op of an eq-overriding
-    /// carrier sort — see `load::build_sort_ops_table` pass 3). One O(1) hash
+    /// carrier sort — see `load::build_eq_dispatch_index`). One O(1) hash
     /// lookup; scalars and headless values read `None` (structural).
     pub(crate) fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
         let functor = match v.head(self) {

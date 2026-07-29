@@ -391,7 +391,8 @@ pub enum SortKind {
 /// itself (`Spec.<op>` — resolved via the spec's rewrite rule or a
 /// registered builtin at runtime).
 ///
-/// Built once at load time by `load::build_sort_ops_table`, after all
+/// Built once at load time by `load::build_sort_ops_table` (and, for the
+/// `eq_dispatch` field below, `load::build_eq_dispatch_index` right after), once all
 /// `SortProvidesInfo` / `OperationInfo` facts are asserted. Dispatch
 /// consumers (the typer's `resolve_at_goal`, the eval's
 /// `apply_within`) read it via [`KnowledgeBase::sort_ops_lookup`] — a
@@ -404,10 +405,12 @@ pub(crate) struct SortOpsTable {
     /// impl sort symbol → (op short-name symbol → target op symbol).
     by_impl: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     /// WI-616 — semantic-equality dispatch index: value-head functor →
-    /// the carrier's OWN `eq` override op. Built by
-    /// `load::build_sort_ops_table` for every sort whose `sort_ops` row
-    /// carries a genuine own `eq` member (`typing::carrier_own_op` filters:
-    /// not the `PartialEq.eq` spec op, parented by the sort itself): keys are the
+    /// the carrier's `eq` override op. Built by `load::build_eq_dispatch_index`
+    /// for every sort with exactly one `eq` supplier — its own member
+    /// (`typing::carrier_own_op` filters: not the `PartialEq.eq` spec op, parented
+    /// by the sort itself), a retroactive instance fact's op binding, or (WI-837) a
+    /// witness sort's; two DISTINCT suppliers is a load error, not a silent pick.
+    /// `load::EqDispatchIndex` owns that criterion. Keys are the
     /// sort's entity constructors and its SELF-RETURNING ops (the shapes its
     /// values are made of — `Set.insert`/`Set.empty`; a non-self-returning
     /// op like `Map.get` returns a DIFFERENT sort's value and must not key
@@ -3300,8 +3303,8 @@ impl KnowledgeBase {
         self.sort_ops.by_impl.entry(key).or_default().insert(op_short, target);
     }
 
-    /// WI-616 — record a `value-head functor → carrier's own eq` dispatch
-    /// entry. Called only by `load::build_sort_ops_table`.
+    /// WI-616 — record a `value-head functor → carrier's eq` dispatch
+    /// entry. Called only by `load::build_eq_dispatch_index`.
     pub(crate) fn insert_eq_dispatch(&mut self, functor: Symbol, target: Symbol) {
         self.sort_ops.eq_dispatch.insert(functor, target);
     }

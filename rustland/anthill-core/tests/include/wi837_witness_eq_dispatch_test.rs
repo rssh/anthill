@@ -229,7 +229,7 @@ end
 "#;
     assert_refused(
         src,
-        &["ambiguous semantic equality", "Pebble", "PebbleEqA", "PebbleEqB"],
+        &["ambiguous semantic equality", "carrier 'test.wi837.twowitness.Pebble'", "PebbleEqA", "PebbleEqB"],
         "two PartialEq witnesses for Pebble must be refused BY THE INDEX BUILD, naming both \
          providers (not only by the spec-generic AmbiguousWitness, which phase 3b deletes)",
     );
@@ -362,6 +362,40 @@ end
     );
 }
 
+/// A WITNESS that BINDS `eq` in its provision rather than declaring a member —
+/// `sort W provides PartialEq[T = C, eq = f]` — supplies it too. Both spellings load
+/// today and the two kinds are independent choices of SYNTAX, not of meaning, so a
+/// supplier walk that read only the usual leg per kind dropped this one on a silent
+/// `continue`: the written `eq = pebbleEq` never keyed the index, equality answered
+/// structurally, and nothing anywhere said so. (Found in review of this ticket, and a
+/// `continue` that hides a written declaration is exactly what CLAUDE.md's
+/// "loud error over silent skip" principle forbids.)
+#[test]
+fn a_witness_that_binds_eq_supplies_it_too() {
+    let src = r#"namespace test.wi837.wbind
+  import anthill.prelude.{Int64, Bool, PartialEq}
+
+  sort Pebble
+    entity pebble(n: Int64)
+  end
+
+  operation pebbleEq(a: Pebble, b: Pebble) -> Bool = true
+
+  sort PebbleEqW
+    provides PartialEq[T = Pebble, eq = pebbleEq]
+  end
+
+  rule peq(?x, ?y) :- eq(?x, ?y)
+end
+"#;
+    assert_eq!(
+        eq_solutions(src, "test.wi837.wbind.peq", "test.wi837.wbind.Pebble.pebble", &["n"]),
+        1,
+        "a witness provision that BINDS `eq` must key the index just as one declaring an \
+         `eq` member does — 0 solutions means the binding was silently dropped"
+    );
+}
+
 // ── The index's DOMAIN, pinned (a pre-existing gap, not this ticket's) ────────
 
 /// WI-837 shares ONE predicate between the eq index build and WI-664's lawful-Eq
@@ -423,5 +457,68 @@ fn a_namespace_level_entity_carrier_does_not_key_the_index() {
          `SortInfo`, so the index build never enumerates it and its `eq` supplier is ignored. \
          If this starts returning 1 the gap was closed — update the doc on `is_eq_boundary` \
          (kb/eq_derive.rs), which cites this asymmetry, and delete this test's premise"
+    );
+}
+
+// ── The `eq_derive` half of the shared predicate ──────────────────────────────
+
+/// The reason `eq_derive::is_eq_boundary` was rewired to the shared owner, exercised
+/// rather than merely asserted in prose. WI-664 derives `NonEq` FIELD-WISE for a
+/// composite that reaches an IEEE `Float`, UNLESS the composite is a lawful-Eq
+/// BOUNDARY — a carrier whose `eq` is dispatched. A WITNESS-supplied `eq` is such a
+/// boundary; before WI-837 the classifier knew only the own-member and instance-fact
+/// routes, so a Float-containing composite with a witness `eq` would be derived
+/// `NonEq` and its own `provides Eq` would then be refused by the WI-658 `Eq` ⊥
+/// `NonEq` check.
+///
+/// This is the test that fails if a future change re-narrows `is_eq_boundary` to the
+/// two old routes — the index-build tests above would all stay green, which is
+/// exactly the silent falsification the shared owner exists to prevent.
+#[test]
+fn a_witness_supplied_eq_is_a_lawful_eq_boundary() {
+    let src = r#"namespace test.wi837.boundary
+  import anthill.prelude.{Float, Bool, Eq, PartialEq}
+
+  sort W
+    entity w(v: Float)
+    provides Eq[T = W]
+  end
+
+  sort WEq
+    provides PartialEq[T = W]
+    operation eq(a: W, b: W) -> Bool = true
+  end
+end
+"#;
+    if let Err(errs) = crate::common::try_load_kb_with(src) {
+        panic!(
+            "a Float-containing composite whose `eq` comes from a WITNESS is a lawful-Eq \
+             boundary: it must NOT be field-wise-derived `NonEq` and must not then conflict \
+             with its own `provides Eq`; got:\n{}",
+            errs.join("\n")
+        );
+    }
+}
+
+/// CONTROL for the test above — WITHOUT any `eq` supplier the same composite IS
+/// field-wise-derived `NonEq`, so `provides Eq[W]` conflicts. Without this, the
+/// boundary test could pass because the derivation never fires at all.
+#[test]
+fn a_float_composite_with_no_eq_supplier_still_derives_noneq() {
+    let src = r#"namespace test.wi837.noboundary
+  import anthill.prelude.{Float, Bool, Eq, PartialEq}
+
+  sort W
+    entity w(v: Float)
+    provides Eq[T = W]
+  end
+end
+"#;
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("provides both") && e.contains("NonEq")),
+        "with no `eq` supplier the Float-containing W must be derived `NonEq` and conflict \
+         with its own `provides Eq` — otherwise the boundary test above proves nothing; got:\n{}",
+        errs.join("\n")
     );
 }

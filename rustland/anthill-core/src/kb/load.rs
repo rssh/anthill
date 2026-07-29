@@ -5144,8 +5144,13 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
 /// impls for one carrier is a load-blocking [`LoadError::AmbiguousEqDispatch`].
 #[must_use = "the ambiguity refusals are load-blocking and must be merged"]
 pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
-    // Its own `SortInfo` scan: negligible beside the provision walk below, and it
-    // keeps this pass independent of `build_sort_ops_table`'s locals.
+    // Its own `SortInfo` scan rather than a threaded-in map, so this pass is callable
+    // on its own (it is `pub`, and it is what a driver must call to get a KB whose
+    // `eq` dispatches). The duplicate scan is MEASURED, not assumed: this whole pass
+    // is 0.23–0.32 ms on the stdlib against `build_sort_ops_table`'s 0.20–0.24 ms for
+    // the same scan plus two table passes, so the scan is a fraction of a fraction of
+    // a ~135 ms load — and both passes read a KB that asserts nothing in between, so
+    // the two snapshots are equal by construction.
     let sort_ops: HashMap<Symbol, Vec<Symbol>> = sorts_and_own_ops(kb).into_iter().collect();
     let Some(eq_index) = EqDispatchIndex::build(kb) else {
         return Vec::new();
@@ -5286,8 +5291,14 @@ impl EqDispatchIndex {
             out.push(SpecOpSupplier { target, route: SupplyRoute::Own });
         }
         // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
+        // Deduped by CANONICAL target for the same reason the collector is: one
+        // qualified name can be interned under several Symbols, and the carrier's own
+        // member and a fact's binding reach the operation through different
+        // resolution scopes — a raw compare could read one operation as two
+        // candidates and refuse a correct program.
         for &s in self.by_carrier.get(&kb.canonical_sort_sym(carrier)).into_iter().flatten() {
-            if !out.iter().any(|e| e.target == s.target) {
+            let target_canon = kb.canonical_sym(s.target);
+            if !out.iter().any(|e| kb.canonical_sym(e.target) == target_canon) {
                 out.push(s);
             }
         }
