@@ -3938,46 +3938,59 @@ fn unique_or_ambiguous<T: Clone + PartialEq>(
     }
 }
 
-/// WI-089(a) / WI-833: keyed overlay selection over an ordered active-key list,
-/// most-specific-first — the priority logic that stays CALLER-SIDE (in Rust),
-/// not in the resolver, so migrating the read to `Resolve` (WI-833) only changes
-/// where the candidate rows come from, not how a key shadows another. For each
-/// key in `active_keys`, the hits carrying that key are aggregated by
+/// WI-089(a) / WI-833 / WI-847: keyed overlay selection over an ordered
+/// active-key list, most-specific-first — the priority logic that stays
+/// CALLER-SIDE (in Rust), not in the resolver, so migrating the read to
+/// `Resolve` (WI-833) only changes where the candidate rows come from, not how a
+/// key shadows another. `spellings` are the candidate `anthill_type` spellings of
+/// ONE sort, each paired with its OWN resolved hits, in priority order (a
+/// qualified name before its short name). For each key in `active_keys`, in
+/// order, each spelling's hits carrying that key are aggregated by
 /// [`unique_or_ambiguous`]:
-///   * 0 distinct  → the overlay is absent at this key; fall through to the next
-///     (a binding / profile overlay shadows the base only where it is present,
-///     and the base sentinel `None` is always last, so a base-only type still
-///     resolves);
+///   * 0 distinct  → this spelling is absent at this key; try the NEXT spelling,
+///     and once every spelling is absent, fall through to the next key (a
+///     binding / profile overlay shadows the base only where present, and the
+///     base sentinel `None` is always last, so a base-only type still resolves);
 ///   * 1 distinct  → that is the selection;
-///   * >1 distinct → AMBIGUOUS: two COMPETING mappings share one key, so no
-///     deterministic pick exists — a loud `CppCodegenError` naming `what`, the
-///     key, and the competing host types, never the silent first-wins the WI-089
-///     `select_keyed` did. The `Refuse` read this replaced could not surface a
-///     same-key conflict (it never evaluated a guard, so two competing overlays
-///     were a load-time fact collision); under `Resolve` two guarded overlays can
-///     both fire here, so the ambiguity is detected at selection.
+///   * >1 distinct → AMBIGUOUS: two COMPETING mappings of the SAME spelling share
+///     one key, so no deterministic pick exists — a loud `CppCodegenError` naming
+///     the spelling, the key, and the competing host types, never the silent
+///     first-wins the WI-089 `select_keyed` did. The `Refuse` read this replaced
+///     could not surface a same-key conflict (it never evaluated a guard, so two
+///     competing overlays were a load-time fact collision); under `Resolve` two
+///     guarded overlays can both fire here, so the ambiguity is detected here.
 ///
-/// `what` labels the queried anthill type(s) for the ambiguity message.
+/// The KEY ladder DOMINATES the spelling order: a higher-priority key is resolved
+/// across EVERY spelling before a lower key is consulted, so a binding / profile
+/// overlay written under EITHER spelling still shadows a base written under the
+/// other — WI-847 must not let a qualified-name BASE preempt a short-name binding
+/// OVERLAY (binding > base). WITHIN a key, the earliest spelling that carries a
+/// hit wins: that is the qualified-over-short OVERRIDE — a cross-spelling pair at
+/// one key resolves to the qualified one, while only a SAME-spelling pair at one
+/// key is the ambiguity above (WI-833). This per-spelling-within-key walk is what
+/// the WI-833 MERGE (which fused both spellings into one list, reading a
+/// cross-spelling override as that same-key ambiguity — WI-847) replaced.
 fn select_keyed_unique(
-    hits: Vec<TypeMappingHit>,
+    spellings: &[(&str, Vec<TypeMappingHit>)],
     active_keys: &[Option<String>],
-    what: &str,
 ) -> Result<Option<TypeMappingHit>, CppCodegenError> {
     for ak in active_keys {
-        let at_key = hits.iter().filter(|h| &h.key == ak).cloned();
-        let selected = unique_or_ambiguous(at_key, |distinct| {
-            let hosts: Vec<&str> = distinct.iter().map(|h| h.host_type.as_str()).collect();
-            CppCodegenError {
-                message: format!(
-                    "ambiguous cpp TypeMapping for {what} at key {ak:?}: competing host \
-                     types {hosts:?} — a resolved overlay must select a single mapping \
-                     per key (check for duplicate facts, or guarded rules whose guards \
-                     overlap)"
-                ),
+        for (what, hits) in spellings {
+            let at_key = hits.iter().filter(|h| &h.key == ak).cloned();
+            let selected = unique_or_ambiguous(at_key, |distinct| {
+                let hosts: Vec<&str> = distinct.iter().map(|h| h.host_type.as_str()).collect();
+                CppCodegenError {
+                    message: format!(
+                        "ambiguous cpp TypeMapping for {what} at key {ak:?}: competing host \
+                         types {hosts:?} — a resolved overlay must select a single mapping \
+                         per key (check for duplicate facts, or guarded rules whose guards \
+                         overlap)"
+                    ),
+                }
+            })?;
+            if selected.is_some() {
+                return Ok(selected);
             }
-        })?;
-        if selected.is_some() {
-            return Ok(selected);
         }
     }
     Ok(None)
@@ -4059,32 +4072,36 @@ fn query_type_mappings(
 
 /// WI-089(a): resolve the single best `TypeMapping` entry for an anthill type
 /// under the active-key priority. `names` are the candidate `anthill_type`
-/// spellings tried in order and merged (a sort's qualified name first, then its
-/// short name, so a fact written either way resolves); `binding` is the
-/// foreign-binding key in scope (`Some` at a carrier-dispatch boundary, `None`
-/// in declared-signature position). Returns the highest-priority overlay
-/// present — the one query that backs BOTH declared-signature host-type
-/// lowering (reads `host_type`) and value-level marshalling (reads `lift` /
-/// `lower`).
+/// spellings for ONE sort — a qualified name first, then its short name — each
+/// queried into its OWN hit list and handed, IN THAT ORDER, to
+/// [`select_keyed_unique`]. So a fact written either way resolves; a
+/// qualified-name overlay OVERRIDES a short-name one at the same key (the
+/// qualified-over-short priority this doc has always promised — WI-847); and the
+/// key ladder (binding > profile > base) still DOMINATES that spelling order, so
+/// a binding overlay written under EITHER spelling shadows a base written under
+/// the other. `binding` is the foreign-binding key in scope (`Some` at a
+/// carrier-dispatch boundary, `None` in declared-signature position). Returns the
+/// highest-priority overlay present — the one query that backs BOTH
+/// declared-signature host-type lowering (reads `host_type`) and value-level
+/// marshalling (reads `lift` / `lower`).
 fn resolve_type_mapping(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
     names: &[&str],
     binding: Option<&str>,
 ) -> Result<Option<TypeMappingHit>, CppCodegenError> {
-    let mut hits: Vec<TypeMappingHit> = Vec::new();
-    let mut queried: Vec<&str> = Vec::with_capacity(names.len());
-    for name in names {
+    let active_keys = ctx.active_keys(binding);
+    let mut spellings: Vec<(&str, Vec<TypeMappingHit>)> = Vec::with_capacity(names.len());
+    for &name in names {
         // Skip a repeated spelling (a sort whose qualified name equals its short
         // name — builtins like `Float`) so we don't issue the same discrim query
-        // twice and double the hit list.
-        if queried.contains(name) {
+        // twice; the first occurrence already carries that spelling's hits.
+        if spellings.iter().any(|(n, _)| *n == name) {
             continue;
         }
-        queried.push(name);
-        hits.extend(query_type_mappings(kb, "cpp", name)?);
+        spellings.push((name, query_type_mappings(kb, "cpp", name)?));
     }
-    select_keyed_unique(hits, &ctx.active_keys(binding), &names.join(" / "))
+    select_keyed_unique(&spellings, &active_keys)
 }
 
 /// WI-089: the C++ language-base host type for `anthill_type` (the
@@ -4097,12 +4114,13 @@ pub fn cpp_base_host_type(
     anthill_type: &str,
 ) -> Result<Option<String>, CppCodegenError> {
     // The language base is the `key = none` entry — i.e. selection over the
-    // single-element active-key list `[none]`. Routed through the shared
-    // `select_keyed_unique` so there is one implementation of "pick the entry for
-    // this key", not a divergent `.find(key.is_none())` spelling — and so a
-    // duplicate/competing base entry (WI-833) is deduped or rejected here too.
-    Ok(select_keyed_unique(query_type_mappings(kb, "cpp", anthill_type)?, &[None], anthill_type)?
-        .map(|h| h.host_type))
+    // single-element active-key list `[none]`, with the single spelling
+    // `anthill_type`. Routed through the shared `select_keyed_unique` so there is
+    // one implementation of "pick the entry for this key", not a divergent
+    // `.find(key.is_none())` spelling — and so a duplicate/competing base entry
+    // (WI-833) is deduped or rejected here too.
+    let hits = query_type_mappings(kb, "cpp", anthill_type)?;
+    Ok(select_keyed_unique(&[(anthill_type, hits)], &[None])?.map(|h| h.host_type))
 }
 
 /// WI-089(a): resolve the cpp host type for `anthill_type` under the active-key
