@@ -858,3 +858,6 @@ mod wi841_call_site_selection_test;
 
 #[path = "include/wi842_bracketless_readers_test.rs"]
 mod wi842_bracketless_readers_test;
+
+#[path = "include/wi843_coexisting_instances_test.rs"]
+mod wi843_coexisting_instances_test;

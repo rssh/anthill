@@ -304,29 +304,24 @@ pub enum LoadError {
         spec: String,
         count: usize,
     },
-    /// WI-450 witness coherence (rule 2, witness flavor): two distinct WITNESS
-    /// SORTS provide one spec at the same application — `sort TagCombinerA provides
-    /// Combiner[T = Tag]` and `sort TagCombinerB provides Combiner[T = Tag]`, each
-    /// backing the spec's ops with its own member impls. Like two instance facts
-    /// they give value-directed dispatch no sound choice (it would pick the first),
-    /// but the conflict is between provider SORTS, not `fact` op-bindings — hence a
-    /// distinct diagnostic. Load-blocking; keyed on (spec, dispatch carrier).
-    AmbiguousWitness {
-        carrier: String,
-        spec: String,
-        count: usize,
-    },
     /// WI-838 — a MIXED provider pair: one `(spec, carrier)` is covered by BOTH a
     /// WI-431 instance fact AND a WI-450 witness sort. Two dictionaries, one
-    /// instance — the same conflict [`Self::AmbiguousInstanceFact`] and
-    /// [`Self::AmbiguousWitness`] refuse within a kind, and it went unrefused
-    /// until WI-838 because those two checks were grouped BY KIND and neither saw
-    /// the cross-kind pair. Load-blocking, and named apart from its two same-kind
-    /// siblings for two reasons: the REPAIR differs (the candidates are written in
-    /// different syntax, so the message must say which to delete), and only the
-    /// witness is SPELLABLE — an instance fact has no name, which is why proposal
-    /// 058 §4.3 gates any future use-site selection on every candidate being
-    /// nameable. Keyed on (spec, dispatch carrier).
+    /// instance — the same conflict [`Self::AmbiguousInstanceFact`] refuses within
+    /// its kind, and it went unrefused until WI-838 because the two coherence
+    /// checks of the day were grouped BY KIND and neither saw the cross-kind pair.
+    /// Load-blocking, and named apart from its same-kind sibling for two reasons:
+    /// the REPAIR differs (the candidates are written in different syntax, so the
+    /// message must say which to delete), and only the witness is SPELLABLE — an
+    /// instance fact has no name, which is why proposal 058 §4.3 gates use-site
+    /// selection on every candidate being nameable. Keyed on (spec, dispatch
+    /// carrier).
+    ///
+    /// WI-843 made that gate load-bearing rather than forward-looking: two
+    /// WITNESSES for one `(spec, carrier)` now COEXIST and are refused only at a
+    /// use site that selects none ([`Self::UnselectedInstance`]). This variant and
+    /// [`Self::AmbiguousInstanceFact`] are what remains at load, and both remain
+    /// for the same reason — a group holding an instance fact has a candidate no
+    /// bracket can name.
     MixedProviderKinds {
         carrier: String,
         spec: String,
@@ -346,10 +341,19 @@ pub enum LoadError {
     /// from UNIFICATION: there is no call site anywhere to annotate, so 058's tier-3
     /// "loud at the unselected use site" has nowhere to fire and the refusal must
     /// stay at load. This is the mechanism behind §6's claim that the `Eq` family
-    /// keeps load-time coherence *by mechanism, not accident*; the spec-generic
-    /// [`Self::AmbiguousWitness`] that covers part of the same ground today is
-    /// deleted by phase 3b, and never saw the witness-`eq` case in the first place
-    /// (no witness ever reached this index before WI-837).
+    /// keeps load-time coherence *by mechanism, not accident*: the spec-generic
+    /// witness refusal that covered part of the same ground is GONE as of WI-843
+    /// (phase 3b), and it never saw the witness-`eq` case in the first place (no
+    /// witness reached this index before WI-837), so this variant is what now carries
+    /// the claim.
+    ///
+    /// SCOPE, stated exactly, because WI-843 narrowed what the claim covers. This
+    /// refuses two distinct `eq` TARGETS. A second provision that supplies no `eq` at
+    /// all (`sort CoinEqB provides PartialEq[T = Coin]` with no member and no binding)
+    /// contributes no candidate and is not refused — MEASURED after WI-843, that pair
+    /// loads and equality answers by the one supplier there is. That is one dictionary,
+    /// not two, so it is not the ambiguity this guards; the spec-generic refusal used
+    /// to reject it incidentally, by counting PROVISIONS rather than dictionaries.
     ///
     /// `providers` renders each candidate with its ROUTE, since the three are
     /// written in three different syntaxes and the author must know which to delete.
@@ -358,6 +362,44 @@ pub enum LoadError {
     AmbiguousEqDispatch {
         carrier: String,
         providers: Vec<String>,
+    },
+    /// WI-843 (proposal 058 §4.1 **tier 3**) — the refusal that REPLACED the
+    /// load-time two-witness one. Several providers answer a spec-op dispatch at
+    /// this call's bindings and the call names none of them, so the program does
+    /// not say which body to run.
+    ///
+    /// The whole point of the variant is WHERE it fires. Its predecessor refused
+    /// the pair of DECLARATIONS — delete every call and the load still failed —
+    /// so `Int64` could not carry both the additive and the multiplicative monoid
+    /// however carefully each call was written (§1). This one fires at the ONE
+    /// call that is actually ambiguous, and every call that says which resolves by
+    /// tier 1.
+    ///
+    /// Which makes the message's content load-bearing rather than cosmetic: a
+    /// use-site refusal is only an improvement if the author can act on it AT that
+    /// use site, so it names every candidate and the exact bracket that picks one
+    /// (§4.2 rule (2) — the spec's SHORT name is the key, whether the spec arrives
+    /// as the call's own dispatch target or as a callee's requirement slot). That
+    /// is also why the load-time refusal survives for groups holding an INSTANCE
+    /// FACT (§4.3, [`Self::MixedProviderKinds`] / [`Self::AmbiguousInstanceFact`]):
+    /// a fact has no name, and a diagnostic offering a candidate the author cannot
+    /// spell is a dead end, not a fix.
+    ///
+    /// Load-blocking, and span-bearing — unlike its predecessor, which had no site
+    /// to point at.
+    UnselectedInstance {
+        /// The spec op being dispatched, qualified (`ns.Monoid.combine`).
+        op: String,
+        /// The spec whose providers tied, qualified (`ns.Monoid`) — the noun.
+        spec: String,
+        /// Every provider that answered, qualified.
+        candidates: Vec<String>,
+        /// What the author can DO about it — a bracket to write, or which of the two
+        /// reasons no bracket applies. A typed answer rather than a subset the
+        /// renderer has to interpret; see [`super::typing::TieRepair`], whose arms
+        /// were each driven to their refusal before being given a message.
+        repair: super::typing::TieRepair,
+        span: Option<Span>,
     },
     /// WI-842 (proposal 058 §4.9) — one carrier declares the SAME spec twice with
     /// CONFLICTING type-param bindings (`fact Iter[Self = C, Element = Int64]` beside
@@ -920,6 +962,7 @@ impl LoadError {
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
+            | LoadError::UnselectedInstance { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -1060,18 +1103,22 @@ impl LoadError {
                 }
             }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
-                format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `fact {}[…]` per (spec, carrier)",
-                    count, spec, carrier, spec)
-            }
-            LoadError::AmbiguousWitness { carrier, spec, count } => {
-                format!("ambiguous witness: {} distinct witness sorts provide '{}' for carrier '{}' — each backs the spec's operations with its own member ops, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `sort … provides {}[…]` witness per (spec, carrier)",
+                format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and an instance fact has no NAME, so no use-site selection can spell one (named instance facts are not supported); keep exactly one `fact {}[…]` per (spec, carrier)",
                     count, spec, carrier, spec)
             }
             LoadError::MixedProviderKinds { carrier, spec, fact_count, witnesses } => {
-                format!("ambiguous provider kinds: '{}' for carrier '{}' is provided BOTH by {} instance fact(s) (`fact {}[…]`, binding the spec's operations in the fact itself) AND by {} witness sort(s) ({}), backing them with their own member ops — two distinct dictionaries for one (spec, carrier), and there is no way to select between them (scoped/named instance selection is not yet supported); drop either the instance fact(s) or the witness sort(s). Note the instance fact has NO NAME, so even a future use-site selection could not spell it.",
+                format!("ambiguous provider kinds: '{}' for carrier '{}' is provided BOTH by {} instance fact(s) (`fact {}[…]`, binding the spec's operations in the fact itself) AND by {} witness sort(s) ({}), backing them with their own member ops — two distinct dictionaries for one (spec, carrier); drop either the instance fact(s) or the witness sort(s). Two WITNESSES here would be legal and selected at the use site (`[{} = <witness>]`), but an instance fact has NO NAME, so no call site could spell it.",
                     spec, carrier, fact_count, spec,
                     witnesses.len(),
-                    witnesses.iter().map(|w| format!("'{}'", w)).collect::<Vec<_>>().join(", "))
+                    witnesses.iter().map(|w| format!("'{}'", w)).collect::<Vec<_>>().join(", "),
+                    last_segment(spec))
+            }
+            LoadError::UnselectedInstance { op, spec, candidates, repair, span } => {
+                let msg = super::typing::unselected_instance_message(op, spec, candidates, repair);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
             }
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
@@ -1423,9 +1470,12 @@ impl std::fmt::Display for LoadError {
                 write!(f, "ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' (keep exactly one)",
                     count, spec, carrier)
             }
-            LoadError::AmbiguousWitness { carrier, spec, count } => {
-                write!(f, "ambiguous witness: {} distinct witness sorts provide '{}' for carrier '{}' (keep exactly one)",
-                    count, spec, carrier)
+            LoadError::UnselectedInstance { op, spec, candidates, repair, span } => {
+                let msg = super::typing::unselected_instance_message(op, spec, candidates, repair);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::MixedProviderKinds { carrier, spec, fact_count, witnesses } => {
                 write!(f, "ambiguous provider kinds: '{}' for carrier '{}' is provided by {} instance fact(s) AND {} witness sort(s) ({}) — keep one kind",

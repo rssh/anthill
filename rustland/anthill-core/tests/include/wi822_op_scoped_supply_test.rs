@@ -227,6 +227,14 @@ end
 /// all. CORRECT: the op-scoped spelling loads and also computes 5, which
 /// needs a real op-scoped supply channel (frame slots keyed by the OPERATION,
 /// not only by its parent sort) — WI-822 LEG 1.
+///
+/// WI-843 RESTATED THE DIAGNOSTIC, and the restatement is worth reading as
+/// part of this pin: the two providers are CONCRETE, so 058 §4.4 check 3
+/// refuses an explicit `[Zeroable = Pebble]` here (measured — "an explicit
+/// `[Zeroable = Pebble]` cannot change it"), and the tier-3 message therefore
+/// does NOT offer the bracket it offers everywhere else. That is the residue
+/// stated exactly: this call can be answered by neither a value nor a
+/// selection, which is why only a dictionary channel closes it.
 #[test]
 fn receiverless_spec_op_op_scoped_rejected_sort_level_correct() {
     const BASE: &str = r#"
@@ -295,9 +303,17 @@ end
         });
     let text = errs.join("\n");
     assert!(
-        text.contains("Zeroable.zero.dispatch") && text.contains("multiple impls match"),
+        text.contains("ambiguous dispatch of `wi822.recv.opscoped.Zeroable.zero`")
+            && text.contains("wi822.recv.opscoped.Leaf")
+            && text.contains("wi822.recv.opscoped.Pebble"),
         "expected the load-time dispatch rejection of the receiver-less `zero()` \
          (CURRENT DEFECT; correct = loads and computes 5, as the sort-level control \
          does — WI-822 LEG 1); got:\n{text}"
+    );
+    assert!(
+        !text.contains("[Zeroable ="),
+        "both providers are CONCRETE, so 058 §4.4 check 3 refuses an explicit \
+         selection here — the tier-3 message must NOT suggest one, or it sends the \
+         author from this refusal straight into a second; got:\n{text}"
     );
 }

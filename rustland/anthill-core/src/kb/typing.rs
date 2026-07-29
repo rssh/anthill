@@ -89,11 +89,22 @@ pub enum TypeError {
         span: Option<Span>,
         op: Symbol,
     },
-    /// Spec-op dispatch found multiple impls — the coherence rule (C)
-    /// rejects ambiguous resolution.
+    /// Spec-op dispatch found multiple impls and the call selected none —
+    /// proposal 058 §4.1 **tier 3**, the refusal WI-843 moved here from load time.
+    ///
+    /// Before that move this variant said only "multiple impls match (coherence
+    /// rule)", which was enough because the *declarations* had already been refused
+    /// — the author's repair was to delete one, and the load error naming the pair
+    /// said so. Now the pair is legal and this is the whole diagnostic, so it
+    /// carries what the author needs AT the call: which providers answered, and the
+    /// bracket that picks one. See [`super::load::LoadError::UnselectedInstance`].
     DispatchAmbiguous {
         span: Option<Span>,
         op: Symbol,
+        /// The tie, by SYMBOL and stamped at the level it was observed — see
+        /// [`InstanceTie`] for why both matter. Rendering (and the concreteness
+        /// scan it needs) happens at `format` / `to_load_error`, not here.
+        tie: InstanceTie,
     },
     /// `op[bindings](args)` named a binding key that doesn't correspond
     /// to any of the op's declared type-parameters. Replaces the
@@ -527,10 +538,13 @@ impl TypeError {
                     kb.qualified_name_of(*op),
                 )
             }
-            TypeError::DispatchAmbiguous { op, .. } => {
-                format!(
-                    "dispatch failed: multiple impls of {} match the per-call bindings (coherence rule)",
+            TypeError::DispatchAmbiguous { op, tie, .. } => {
+                let (candidates, repair) = render_instance_tie(kb, tie);
+                unselected_instance_message(
                     kb.qualified_name_of(*op),
+                    kb.qualified_name_of(tie.spec),
+                    &candidates,
+                    &repair,
                 )
             }
             TypeError::NoSuchTypeParam { op, name, .. } => {
@@ -857,14 +871,21 @@ impl TypeError {
                 actual_type: "no impl matches".to_string(),
                 span: self.span(kb),
             },
-            TypeError::DispatchAmbiguous { op, .. } => LoadError::TypeMismatch {
-                origin: None,
-                entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "dispatch".to_string(),
-                expected_type: "unique impl for per-call bindings".to_string(),
-                actual_type: "multiple impls match (coherence rule)".to_string(),
-                span: self.span(kb),
-            },
+            // WI-843: its OWN variant, not a `TypeMismatch` — nothing here is a
+            // type mismatch (every candidate typed fine; the program just never
+            // said which to run), and the "expected X, got Y" frame has no room
+            // for the candidate list and the repair syntax that make a use-site
+            // refusal actionable.
+            TypeError::DispatchAmbiguous { op, tie, .. } => {
+                let (candidates, repair) = render_instance_tie(kb, tie);
+                LoadError::UnselectedInstance {
+                    op: kb.qualified_name_of(*op).to_string(),
+                    spec: kb.qualified_name_of(tie.spec).to_string(),
+                    candidates,
+                    repair,
+                    span: self.span(kb),
+                }
+            }
             TypeError::NoSuchTypeParam { op, name, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -11067,8 +11088,8 @@ fn check_apply_iter(
                     }
                     return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
                 }
-                DispatchOutcome::Ambiguous => {
-                    return Err(TypeError::DispatchAmbiguous { span, op: fn_sym });
+                DispatchOutcome::Ambiguous(tie) => {
+                    return Err(TypeError::DispatchAmbiguous { span, op: fn_sym, tie });
                 }
                 DispatchOutcome::Deferred => {
                     // Fallback: the WI-239 pre-check above already caught
@@ -11616,6 +11637,157 @@ pub(crate) fn bare_member_call_message(member: &str, owning_sorts: &[String]) ->
     )
 }
 
+/// WI-843 (058 §4.1 tier 3) — the tie a use site must resolve: which spec's
+/// providers tied, which they were, and whether a bracket at this call can reach
+/// them at all.
+///
+/// Carried by SYMBOL and stamped WHERE THE TIE WAS OBSERVED. Both halves are
+/// load-bearing, and the first cut got both wrong:
+///
+///   * `spec` was filled in by [`resolve_at_goal`] from the DISPATCHED goal, two
+///     frames later. But `resolve_inner` propagates a SUB-goal's tie verbatim, so a
+///     conditional witness whose `:-` subgoal tied was reported against the OUTER
+///     spec — naming providers of a different spec and advising a bracket the very
+///     next compile refuses (MEASURED: `[Pretty = ShowA]` → *"ShowA does not provide
+///     Pretty"*). A level's description belongs to that level; `goal_text` was
+///     already per-level, which is what made the mismatch visible.
+///   * `candidates` was a pre-rendered `Vec<String>` beside a concreteness verdict
+///     computed IN THE RESOLVER, which meant a whole-KB `SortInfo` scan on paths that
+///     then discard it (MEASURED: 5 of 19 calls, via `req_insertion`'s
+///     `require_complete = false` dep loop, which has no memo). Symbols are free to
+///     carry; the scan belongs at the one place a message is emitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceTie {
+    /// The spec whose providers tied — the goal the tie was observed AT.
+    pub spec: Symbol,
+    /// The providers that tied, in candidate order.
+    pub candidates: SmallVec<[Symbol; 2]>,
+    /// True when the tie is at the CALL'S OWN goal — `resolve_inner`'s
+    /// `stack.is_empty()`, the same test WI-841's step 0 uses to decide that a
+    /// selection reaches this goal and no sub-goal (§4.5). When false, NO bracket at
+    /// this call can steer the tie whatever the candidates are, because a key
+    /// deliberately does not reach sub-resolutions.
+    pub at_call_goal: bool,
+}
+
+/// WI-843 — what the author can actually DO about a tie. A typed answer rather than
+/// an emergent one: every way of reaching this diagnostic must say which of the three
+/// it is, so a new one cannot quietly inherit "offer the bracket".
+///
+/// Each arm was DRIVEN to its refusal before being given a message; advertising a
+/// repair that the next compile rejects is the failure mode this enum exists to make
+/// impossible to reintroduce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TieRepair {
+    /// Write this bracket in the call's list — rendered ready to print
+    /// (`[Monoid = ns.AddM]`). The key is the spec's SHORT name: a key is a bare
+    /// label and a QUALIFIED one is refused rather than resolved (§4.2), so echoing
+    /// the qualified spec would print advice that does not load.
+    Bracket(String),
+    /// Every candidate is a CONCRETE provider, where §4.4 check 3 refuses an explicit
+    /// witness because the VALUE decides — and a call that reached here has no value
+    /// that does. MEASURED on `wi822_op_scoped_supply_test`'s receiver-less
+    /// `Zeroable.zero()`: `[Zeroable = Pebble]` there is
+    /// *"an explicit `[Zeroable = Pebble]` cannot change it"*.
+    ValueDirected,
+    /// The tie is at a SUB-GOAL of the resolution, where §4.5 step 0 deliberately
+    /// keeps a bracket key out (a key's candidate set is the CALLEE's slots, and
+    /// extending it into the resolution tree would make key resolution depend on
+    /// which witness was pinned). MEASURED: naming the outer spec is
+    /// *"W does not provide Outer"* and naming the inner one is
+    /// *"unknown type-param"* — so neither spelling exists, and §4.2's answer is for
+    /// the witness to declare a NAMED slot the caller binds in the key's value
+    /// position (`fold[Monoid = ListM[O = MyEq]]`).
+    SubGoal,
+}
+
+/// WI-843 — §4.4 check 3's criterion, with ONE owner: is `sort` a provider whose
+/// dispatch the VALUE already decides?
+///
+/// [`validate_instance_selection`] refuses a selection on one; [`tie_repair`] must
+/// therefore not advertise one. Sharing the `concrete` SET is not enough to keep those
+/// two agreeing — the drift channel is the TEST, and the raw-plus-canonical probe is
+/// the test. (`check_provider_operations`' exemption spells `contains(raw)` only; that
+/// is pre-existing, and widening it would newly exempt groups, so it is left as found
+/// rather than folded in here.)
+fn is_value_directed_provider(
+    kb: &KnowledgeBase,
+    concrete: &std::collections::HashSet<Symbol>,
+    sort: Symbol,
+) -> bool {
+    concrete.contains(&sort) || concrete.contains(&kb.canonical_sort_sym(sort))
+}
+
+/// WI-843 — render a tie for a diagnostic: its candidates, and the one repair that
+/// actually applies. The `sorts_with_constructors` scan lives HERE, at the render
+/// boundary, so the resolver pays nothing for ties whose result is discarded.
+fn render_instance_tie(kb: &KnowledgeBase, tie: &InstanceTie) -> (Vec<String>, TieRepair) {
+    let candidates: Vec<String> = tie
+        .candidates
+        .iter()
+        .map(|s| kb.qualified_name_of(*s).to_string())
+        .collect();
+    if !tie.at_call_goal {
+        return (candidates, TieRepair::SubGoal);
+    }
+    let concrete = super::load::sorts_with_constructors(kb);
+    let repair = match tie
+        .candidates
+        .iter()
+        .position(|s| !is_value_directed_provider(kb, &concrete, *s))
+    {
+        Some(i) => TieRepair::Bracket(format!(
+            "[{} = {}]",
+            short_name_of(kb.qualified_name_of(tie.spec)),
+            candidates[i],
+        )),
+        None => TieRepair::ValueDirected,
+    };
+    (candidates, repair)
+}
+
+/// WI-843 — the one message body for a dispatch that several instances answer and
+/// the call selects none (058 §4.1 tier 3), shared by [`TypeError::format`] and
+/// [`super::load::LoadError`]'s two renderings so the wording cannot drift (the
+/// [`bare_member_call_message`] discipline).
+///
+/// It names each candidate AND the repair, because this refusal REPLACED one that
+/// pointed at the declarations: telling an author that two instances exist is no
+/// longer news — the news is that this call has to choose, and how. When no bracket
+/// applies, [`TieRepair`] says which reason, and the message says that instead of
+/// suggesting a spelling that would be refused.
+pub(crate) fn unselected_instance_message(
+    op: &str,
+    spec: &str,
+    candidates: &[String],
+    repair: &TieRepair,
+) -> String {
+    let head = format!(
+        "ambiguous dispatch of `{op}`: {} instances provide `{spec}` ({}) and the call \
+         selects none",
+        candidates.len(),
+        candidates.join(", "),
+    );
+    match repair {
+        TieRepair::Bracket(bracket) => format!(
+            "{head} — they may coexist, so say which: write `{bracket}` (or another of \
+             them) in the call's bracket list"
+        ),
+        TieRepair::ValueDirected => format!(
+            "{head}, and none can be named here: each is a CONCRETE provider, where an \
+             explicit witness is refused because the VALUE decides the dispatch — and \
+             this call has no value that does. Pin the carrier through the call's \
+             receiver or its expected result type"
+        ),
+        TieRepair::SubGoal => format!(
+            "{head}. The tie is in a SUB-GOAL of this call's resolution, which no \
+             call-site bracket reaches (§4.5) — give the conditional provider a NAMED \
+             requirement slot and bind it in the value position (`f[Spec = W[Slot = \
+             Chosen]]`), or keep a single provider of `{spec}`"
+        ),
+    }
+}
+
 /// WI-672 — sort identity by CANONICAL symbol: `a` and `b` name the same sort iff their
 /// `canonical_sort_sym` agree. Differently-interned copies of one sort share a qualified
 /// name, hence a canonical symbol, so this bridges them — but UNLIKE the deleted
@@ -11924,7 +12096,7 @@ fn explain_dep_refusal(
     // Refusal confirmed — everything below is cold diagnostic rendering.
     let construction = s3_failure
         .as_ref()
-        .map(describe_resolution_failure)
+        .map(|r| describe_resolution_failure(kb, r))
         .unwrap_or_default();
     let goal = goal_from_requires_entry(kb, dep);
     let dep_text = match &goal {
@@ -12045,7 +12217,7 @@ fn build_dispatching_dict_from_chain(
                         refused_covers: Vec::new(),
                         construction: s3_failure
                             .as_ref()
-                            .map(describe_resolution_failure)
+                            .map(|r| describe_resolution_failure(kb, r))
                             .unwrap_or_default(),
                         pinned: Some(w),
                     }));
@@ -12995,10 +13167,17 @@ pub(crate) enum BridgeRequirements {
     /// dominant unresolvable cause says "these types do not pin a dictionary HERE"
     /// (WI-822 measured that a receiver carrying no element type is ordinary, and
     /// that a body which never reads the slot runs correctly with none), while a tie
-    /// says the PROGRAM's instances are incoherent — there is a dictionary to build
-    /// and no rule picks it. There is no legitimate "proceed unsupplied" reading of
-    /// that, so the value-directed consumer raises on it and enters unsupplied on
-    /// the rest.
+    /// says there IS a dictionary to build and nothing picks it. There is no
+    /// legitimate "proceed unsupplied" reading of that, so the value-directed
+    /// consumer raises on it and enters unsupplied on the rest.
+    ///
+    /// WI-843 SHARPENED WHAT A TIE MEANS without changing what to do about it. Two
+    /// providers of one `(spec, carrier)` are no longer per se incoherent — 058
+    /// tier 3 lets NAMEABLE ones coexist and refuses only a use site that selects
+    /// none. But this consumer is VALUE-DIRECTED dispatch, which has no bracket
+    /// channel (§4.2 puts rule bodies out of scope for selection), so a tie reaching
+    /// here still has no answer at this call. What the message may no longer claim
+    /// is that the declarations are the defect.
     ///
     /// THE LINE IS NOT EXACTLY "program defect vs pinning failure", and saying so
     /// keeps the next reader from inferring one: `Cyclic` (a `requires` graph that
@@ -13132,10 +13311,14 @@ pub(crate) fn resolve_bridge_requirements(
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             // WI-855: a TIE is a coherence verdict, kept apart from the causes that
             // merely say "not pinnable at these types" — see `BridgeRequirements`.
-            ResolutionResult::Ambiguous { goal_text, candidate_impl_qns } => {
+            ResolutionResult::Ambiguous { goal_text, tie } => {
                 return BridgeRequirements::Ambiguous {
                     requirement: goal_text,
-                    candidates: candidate_impl_qns,
+                    candidates: tie
+                        .candidates
+                        .iter()
+                        .map(|s| kb.qualified_name_of(*s).to_string())
+                        .collect(),
                 }
             }
             // "no unique provider" was the umbrella wording BECAUSE it also covered
@@ -13146,7 +13329,7 @@ pub(crate) fn resolve_bridge_requirements(
                     detail: format!(
                         "`{}` could not be resolved: {}",
                         format_goal(kb, &goal),
-                        describe_resolution_failure(&other),
+                        describe_resolution_failure(kb, &other),
                     ),
                 }
             }
@@ -13757,7 +13940,9 @@ fn push_slots(
 /// Membership is probed BOTH raw and canonical because the set is keyed on the raw
 /// `SortInfo.name` symbol while the witness arrives from a resolved call-site
 /// reference — the existing consumer probes raw, so probing only the canonical form
-/// could miss.
+/// could miss. WI-843 gave that probe ONE owner ([`is_value_directed_provider`]),
+/// shared with the tier-3 diagnostic: the two must agree about which providers a
+/// bracket may name, or the message advertises what this check refuses.
 ///
 /// Check 1 is BASE-level here: does `witness` provide `spec` at all. The
 /// BINDING-precise half — "whose spec view unifies with the goal" — is [`resolve`]'s
@@ -13796,7 +13981,7 @@ fn validate_instance_selection(
             at_bindings: false,
         });
     }
-    if concrete.contains(&witness) || concrete.contains(&kb.canonical_sort_sym(witness)) {
+    if is_value_directed_provider(kb, concrete, witness) {
         return Err(TypeError::ValueDirectedSelection {
             span,
             op: fn_sym,
@@ -14556,7 +14741,14 @@ pub enum CallClass {
 }
 
 /// WI-210 — dispatch result for a spec-op call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// WI-843: no longer `Copy`. `Ambiguous` carries the candidates that tied, because
+/// under 058 tier 3 it is the ONLY refusal the author gets — the load-time
+/// two-witness one that used to name them is gone. Dropping `Copy` is deliberate:
+/// the alternative was to re-derive the candidate list at the diagnostic site from
+/// the goal, which is a second walk that can disagree with the one that actually
+/// tied.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchOutcome {
     /// No `SortProvidesInfo` records exist for this spec at all.
     /// Dispatch is opt-in per spec: with zero candidates, the call
@@ -14570,8 +14762,9 @@ pub enum DispatchOutcome {
     /// Candidates exist but none match the inferred bindings.
     /// User likely forgot to declare an impl at the right binding.
     NoMatch,
-    /// Two or more candidates match — coherence rule (C) rejects.
-    Ambiguous,
+    /// Two or more candidates match and the call selected none — 058 §4.1 tier 3.
+    /// The payload is the tie itself, forwarded from the level that observed it.
+    Ambiguous(InstanceTie),
     /// WI-221 (defer-to-requirement, open-bound trigger): spec sort
     /// reached via the enclosing sort's `requires` chain. Impl varies
     /// per requirement value at runtime, so Pin-now rewrite is skipped.
@@ -15054,9 +15247,10 @@ pub enum ResolutionResult {
     /// No candidate's head unifies with the goal.
     NoMatch { goal_text: String, hint: String },
     /// Multiple candidates match and specificity coherence couldn't
-    /// pick a unique winner. `candidate_impl_qns` lists the colliding
-    /// carriers for the diagnostic.
-    Ambiguous { goal_text: String, candidate_impl_qns: Vec<String> },
+    /// pick a unique winner. WI-843: the colliding carriers ride as an
+    /// [`InstanceTie`] — by SYMBOL, and stamped with the spec of THIS level's
+    /// goal, because a sub-goal's tie is propagated verbatim to the caller.
+    Ambiguous { goal_text: String, tie: InstanceTie },
     /// Detected a cycle in conditional-instance resolution. `path` is
     /// the goal stack at the point the cycle was detected.
     Cyclic { path: Vec<String> },
@@ -15086,7 +15280,10 @@ fn resolve_inner(
     // CALL made", so a selection reaches the call's own goal and no sub-goal: a
     // conditional witness still resolves its `:-` subgoals by SEARCH (tier 2), which
     // is what keeps a bracket key from depending on which witness was pinned.
-    let pinned = if stack.is_empty() {
+    // WI-843 reuses this exact test for the tie diagnostic (see `InstanceTie`): "the
+    // goal the CALL made" is also the only level a call-site bracket can steer.
+    let at_call_goal = stack.is_empty();
+    let pinned = if at_call_goal {
         pinned_witness_for(kb, scope.selected, goal.spec_sort)
     } else {
         None
@@ -15169,13 +15366,16 @@ fn resolve_inner(
         Some(idx) => &candidates[idx],
         None => {
             stack.pop();
-            let candidate_impl_qns: Vec<String> = candidates
-                .iter()
-                .map(|c| kb.qualified_name_of(c.impl_sort).to_string())
-                .collect();
+            // WI-843: `at_call_goal` is the SAME test step 0 used above, captured
+            // before the push — a tie under a conditional witness's `:-` subgoal is
+            // propagated verbatim to the caller, and no bracket there can reach it.
             return ResolutionResult::Ambiguous {
                 goal_text: format_goal(kb, goal),
-                candidate_impl_qns,
+                tie: InstanceTie {
+                    spec: goal.spec_sort,
+                    candidates: candidates.iter().map(|c| c.impl_sort).collect(),
+                    at_call_goal,
+                },
             };
         }
     };
@@ -15639,7 +15839,16 @@ fn resolve_nullary_result_carrier(
             nullary_carrier_impl_op(kb, *one, spec_op_sym, op_short_sym)
                 .map(DispatchOutcome::Unique)
         }
-        _ => Some(DispatchOutcome::Ambiguous),
+        // WI-843: the SECOND `Ambiguous` producer, and it names its own candidates
+        // — these are the providers THIS path counted (`impl_sorts_providing_spec`,
+        // no goal to match against), so reusing `resolve_inner`'s list here would
+        // report a set nothing on this path consulted. Always `at_call_goal`: this
+        // path resolves the CALL's own nullary dispatch, with no sub-resolution.
+        many => Some(DispatchOutcome::Ambiguous(InstanceTie {
+            spec: spec_sort,
+            candidates: many.iter().copied().collect(),
+            at_call_goal: true,
+        })),
     }
 }
 
@@ -17409,11 +17618,37 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
     for ((spec, carrier), cands) in &groups {
-        // A group of one candidate is the ordinary single-provider case and can
-        // raise none of the three; skipping it here is what keeps the name
-        // allocations below to the erroring groups only (every load has many
-        // groups and almost never an erroring one).
+        // A group of one candidate is the ordinary single-provider case; skipping it
+        // keeps the name allocations below to the erroring groups only (every load has
+        // many groups and almost never an erroring one).
         if cands.len() < 2 {
+            continue;
+        }
+        // WI-843 (058 §4.1 tier 3 / §4.3) — THE COEXISTENCE RULE, stated once and as
+        // itself rather than left to emerge from which per-kind counter happens to
+        // fire. Every candidate nameable ⇒ the group is admissible, and an unselected
+        // dispatch against it is refused at that CALL
+        // ([`LoadError::UnselectedInstance`]) instead of here. `AmbiguousWitness` is
+        // DELETED rather than gated: the group it refused is now legal, and a dormant
+        // variant would invite a second grouping to grow back around it.
+        //
+        // Reading the rule off the counters is precisely how WI-838's blind spot was
+        // built — the grouping was generalised over kinds while the verdict stayed a
+        // per-kind pair, so an unenumerated combination defaulted to ADMIT. Here the
+        // default is the rule, and [`Provider::is_nameable`] is a `match` that a new
+        // provider kind cannot skip.
+        //
+        // This gate is also what makes the skip above honest again: a witness-only
+        // group is now the COMMON legal case, and it no longer allocates two qualified
+        // names and a `Vec` of every witness before discovering it can raise nothing.
+        //
+        // Coexistence past this point is only sound because every BRACKET-LESS
+        // provider reader was hardened first (WI-842, §4.9): the sem-eq index and the
+        // carrier-keyed provision reader still refuse at LOAD (neither has a nameable
+        // candidate or a site to complain from), and the value-directed chain goes loud
+        // at the read. Delete this refusal without that and coexistence lands on silent
+        // first-match.
+        if cands.iter().all(Provider::is_nameable) {
             continue;
         }
         let spec_qn = kb.qualified_name_of(*spec).to_string();
@@ -17433,15 +17668,10 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 count: facts,
             });
         }
-        if witnesses.len() > 1 {
-            errors.push(LoadError::AmbiguousWitness {
-                carrier: carrier_qn.clone(),
-                spec: spec_qn.clone(),
-                count: witnesses.len(),
-            });
-        }
-        // WI-838 — the MIXED pair; see [`LoadError::MixedProviderKinds`] for why
-        // it is its own variant rather than either sibling.
+        // WI-838 — the MIXED pair. The witness leg still RECORDS into the grouping
+        // above even though two witnesses alone no longer refuse: dropping witnesses
+        // from it would re-open the cross-kind blind spot, and this arm is what needs
+        // to see them.
         if facts > 0 && !witnesses.is_empty() {
             errors.push(LoadError::MixedProviderKinds {
                 carrier: carrier_qn.clone(),
@@ -17611,6 +17841,32 @@ enum Provider {
     /// W's own members. Two witnesses for one application share ONE hash-consed
     /// `spec_view` (the ops are not in the view), so identity is the provider SORT.
     Witness(Symbol),
+}
+
+impl Provider {
+    /// WI-843 (058 §4.1 / §4.3) — can a use site SPELL this candidate?
+    ///
+    /// This is the coexistence rule itself, not a property of one diagnostic: a group
+    /// whose every candidate is nameable may coexist and is refused only at a dispatch
+    /// that selects none, because a tier-3 message can offer each of them; a group
+    /// holding an unnameable one keeps the LOAD refusal, because a diagnostic listing
+    /// a candidate the author cannot write is a dead end, not a fix.
+    ///
+    /// A `match` on purpose. Reading the rule off which of two per-kind COUNTERS
+    /// happens to fire is how WI-838's blind spot was built — the grouping was
+    /// generalised over kinds while the verdict stayed per-kind pair, so an
+    /// unenumerated combination defaulted to ADMIT. §4.9 already records that this
+    /// grouping is one candidate kind short (the self-provider), so a third variant is
+    /// expected; when it lands, this match stops compiling until it answers.
+    fn is_nameable(&self) -> bool {
+        match self {
+            // An instance fact has no name at all. Naming them (`fact AddM: Monoid[…]`)
+            // is a possible later increment and explicitly out of scope (§4.3).
+            Provider::Fact(_) => false,
+            // A witness sort's name IS the value a bracket binds.
+            Provider::Witness(_) => true,
+        }
+    }
 }
 
 /// WI-450 — the canonical DISPATCH CARRIER a provision names when that provision
@@ -18873,11 +19129,19 @@ fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
 /// actually decided, not just "unresolvable". A `Resolved` maps to the empty string
 /// — callers reach here only on the failure edge, and an empty tail reads as "no
 /// further detail" rather than asserting something false.
-fn describe_resolution_failure(result: &ResolutionResult) -> String {
+fn describe_resolution_failure(kb: &KnowledgeBase, result: &ResolutionResult) -> String {
     match result {
-        ResolutionResult::Ambiguous { goal_text, candidate_impl_qns } => format!(
+        // WI-843: `kb` is threaded in so the tie can ride as SYMBOLS all the way to a
+        // renderer. It was rendered eagerly in the resolver before, which meant every
+        // consumer paid for strings — and, worse, for the concreteness scan beside
+        // them — including the two that drop the result on the floor.
+        ResolutionResult::Ambiguous { goal_text, tie } => format!(
             "constructing `{goal_text}` is ambiguous among providers: {}",
-            candidate_impl_qns.join(", "),
+            tie.candidates
+                .iter()
+                .map(|s| kb.qualified_name_of(*s).to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
         ),
         // The reader of NoMatch's purpose-built hint (eagerly formatted since
         // WI-821, previously consumed by nothing).
@@ -20549,7 +20813,11 @@ fn resolve_at_goal(
             ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),
         },
         ResolutionResult::NoMatch { .. } => (DispatchOutcome::NoMatch, None),
-        ResolutionResult::Ambiguous { .. } => (DispatchOutcome::Ambiguous, None),
+        // WI-843: the tie is FORWARDED, not restamped. Tier 3's diagnostic is the
+        // only one the author now gets, and only `resolve_inner` knows which level
+        // tied — substituting `goal.spec_sort` here is exactly the bug that made a
+        // conditional witness's subgoal tie report the outer spec.
+        ResolutionResult::Ambiguous { tie, .. } => (DispatchOutcome::Ambiguous(tie), None),
         ResolutionResult::Cyclic { .. } => (DispatchOutcome::NoMatch, None),
     }
 }
@@ -25887,8 +26155,17 @@ impl BindingKeyMatch {
 /// (`raw=true label=true`, every one), so no candidate changes from dropped to kept and
 /// every candidate's specificity score is unchanged. The ordering effect is nil for
 /// existing code; it appears only for the newly-accepted pair, where the alternative was
-/// no candidate at all. Two providers of one spec for one carrier — the shape where a
-/// changed score could flip a winner — is separately refused as an ambiguous witness.
+/// no candidate at all.
+///
+/// WI-843 RETIRED THE SECOND HALF OF THAT ARGUMENT. It used to read "two providers of
+/// one spec for one carrier — the shape where a changed score could flip a winner — is
+/// separately refused as an ambiguous witness". That refusal is gone: 058 tier 3 lets
+/// two NAMEABLE providers coexist, so such a pair now reaches `pick_most_specific` and
+/// the score DOES decide it (measured under WI-843: a ground `Monoid[T = List[T =
+/// Int64]]` beside a parametric `Monoid[T = List[T = E]]` loads and answers the ground
+/// one). The MEASUREMENT above still stands on its own — every existing arm-(2) lookup
+/// resolved on raw identity, so no existing candidate's score moved — but the appeal to
+/// a load-time backstop no longer does.
 ///
 /// WI-769 enrolled the LUB/GLB lattice (`combine_parameterized_same_base`): its raw-identity
 /// key miss silently dropped the WHOLE schema (bare base sort for the LUB, `nothing` for the

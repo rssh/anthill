@@ -279,13 +279,17 @@ fn ambiguous_when_two_impls_collide_without_specificity_order() {
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::Ambiguous { candidate_impl_qns, .. } => {
-            assert!(candidate_impl_qns.iter().any(|q| q.ends_with("AmbA")),
-                "AmbA should appear in candidates: {candidate_impl_qns:?}");
-            assert!(candidate_impl_qns.iter().any(|q| q.ends_with("AmbB")),
-                "AmbB should appear in candidates: {candidate_impl_qns:?}");
-            assert_eq!(candidate_impl_qns.len(), 2,
-                "exactly two candidates expected; got {candidate_impl_qns:?}");
+        ResolutionResult::Ambiguous { tie, .. } => {
+            // WI-843: candidates ride as SYMBOLS, rendered only where a message is
+            // emitted — the resolver no longer builds strings for consumers that
+            // discard them.
+            let qns: Vec<&str> =
+                tie.candidates.iter().map(|s| kb.qualified_name_of(*s)).collect();
+            assert!(qns.iter().any(|q| q.ends_with("AmbA")),
+                "AmbA should appear in candidates: {qns:?}");
+            assert!(qns.iter().any(|q| q.ends_with("AmbB")),
+                "AmbB should appear in candidates: {qns:?}");
+            assert_eq!(qns.len(), 2, "exactly two candidates expected; got {qns:?}");
         }
         other => panic!("expected Ambiguous; got {other:?}"),
     }

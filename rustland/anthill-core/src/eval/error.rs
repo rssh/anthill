@@ -180,18 +180,26 @@ impl std::fmt::Display for EvalError {
             EvalError::Suspended { detail, .. } => {
                 write!(f, "semantic comparison suspended (undecided): {detail}")
             }
+            // WI-843: neither message may say "the instances are incoherent" any
+            // more — two NAMEABLE providers coexist by design (058 tier 3), and the
+            // defect is that THIS route cannot select. Both fire on value-directed
+            // dispatch, which has no call-site bracket (§4.2 leaves rule bodies out
+            // of selection), so the repair is to give the call a selecting site or
+            // to keep one provision.
             EvalError::AmbiguousRequirement { op, requirement, candidates } => write!(
                 f,
                 "dispatch to `{op}`: its requirement `{requirement}` is provided by \
-                 tied providers ({}) — the instances are incoherent, so no dictionary \
-                 can be built for it; delete or specialize one provision",
+                 tied providers ({}) and this route selects none — value-directed \
+                 dispatch carries no `[Spec = Witness]` bracket, so route the call \
+                 through an operation that can write one, or keep a single provision",
                 candidates.join(", "),
             ),
             EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates } => write!(
                 f,
                 "value-directed dispatch of `{op}` on carrier `{carrier}`: {} supply an \
-                 implementation ({}) and this call selects none — the instances are \
-                 incoherent, so delete or specialize one provision",
+                 implementation ({}) and this call selects none — value-directed \
+                 dispatch carries no `[Spec = Witness]` bracket, so route the call \
+                 through an operation that can write one, or keep a single provision",
                 candidates.len(),
                 candidates.join(", "),
             ),

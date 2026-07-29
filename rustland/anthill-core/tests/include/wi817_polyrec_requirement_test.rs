@@ -56,10 +56,12 @@
 //! `requires` makes ops untrappable"; two competing error spellings, neither
 //! established) is SETTLED: neither reported error reproduces; sort-level
 //! requires works end-to-end through a conditional instance (V8 pins the
-//! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above;
-//! the global two-provider rejection where the spec prescribes SCOPED
-//! selection (`two_describers_for_one_carrier_rejected_globally`, flips
-//! under WI-648). The bonus hazard found here — an UNCONDITIONED parametric
+//! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above.
+//! The GLOBAL two-provider rejection this file used to pin as a defect is
+//! GONE — WI-843 (058 §4.1 tier 3) moved it to the unselected use site, so
+//! the pair below is now a coexistence fixture (`two_describers_pinned_
+//! per_site_survive_the_closure_hop`, 75) plus the tier-3 control that
+//! keeps the unpinned form an error. The bonus hazard found here — an UNCONDITIONED parametric
 //! provider fact silently MIS-PINNING an abstract spec-op call at load — is
 //! FIXED by WI-824 (`unconditioned_parametric_fact_refused_at_abstract_call`;
 //! the rule and its second, silently-wrong-VALUE witness live in
@@ -606,39 +608,38 @@ end
     );
 }
 
-/// TWO DESCRIBERS FOR ONE CARRIER (user requirement: with a single
-/// describer the system just discovers the only candidate and pins it —
-/// nothing about selection is tested). Providers for Desc[Pebble] in TWO
-/// scopes: LoudDesc (describe→5) in wi817.tdl, QuietDesc (describe→7) in
-/// wi817.tdq; a loud-scope op creates the lambda, a quiet-scope op invokes
-/// it and describes the same value itself (scoped-correct would be
-/// 5 + 10·7 = 75; both-loud 55; both-quiet 77).
+/// TWO DESCRIBERS FOR ONE CARRIER, UNPINNED — WI-843 (058 §4.1 tier 3,
+/// §5.2) turned this from a DECLARATION-level refusal into a USE-SITE one,
+/// and this is the control that says the refusal did not merely vanish.
 ///
-/// PINS A CURRENT DEFECT (direction DECIDED — WI-648, modular typeclasses:
-/// scoped/named non-canonical instances, SortedSet/sorted-Map-by-chosen-
-/// comparator as its standing example). MEASURED: the
-/// configuration is REJECTED AT LOAD — DispatchAmbiguous at BOTH describe
-/// sites ("multiple impls match (coherence rule)") plus the global witness
-/// check ("ambiguous witness: 2 distinct witness sorts provide ... (keep
-/// exactly one)"): the implementation enforces GLOBAL
-/// one-provider-per-carrier where kernel-language.md §Instance coherence
-/// specifies SCOPED selection ("different scopes may resolve the same
-/// Spec[carrier] to different providers, the per-import choice").
+/// Providers for Desc[Pebble] in TWO scopes: LoudDesc (describe→5) in
+/// wi817.tdl, QuietDesc (describe→7) in wi817.tdq; a loud-scope op creates
+/// the lambda, a quiet-scope op invokes it and describes the same value
+/// itself. Neither `Desc.describe` call says which describer it means.
 ///
-/// The global rule is the WRONG rule, and not merely a spec drift: an
-/// algebraic-specification language must express Int carrying BOTH the
-/// additive and the multiplicative monoid — two instances of one spec on
-/// one carrier — and the VALUE cannot select between them (5 does not say
-/// which group it is in); only a requirement/scope can. Today the stdlib
-/// dodges Num-style (algebra.Ring bundles both operation families in one
-/// spec). Until WI-648 lands, the provider-selection dimension of the
-/// WI-816/817 question is unconstructible and dictionaries vary only along
-/// the TYPE dimension (the polymorphic-recursion pins above). CORRECT
-/// (WI-648 implement-phase acceptance): this program LOADS and computes 75 — lambda keeps
-/// its creation-scope provider (5), the quiet hop uses its own (7);
-/// 55/77 would betray a both-one-way selection.
+/// WHAT CHANGED. Before WI-843 this program drew TWO refusals: a
+/// DispatchAmbiguous at each describe site AND the global
+/// `ambiguous witness … (keep exactly one)`, the second of which did not
+/// depend on any call at all — delete both callers and the load still
+/// failed. The declarations are now legal (the pinned sibling below runs
+/// them both, in one program), so the ONLY thing refused is the pair of
+/// calls that pick no variant, each naming LoudDesc/QuietDesc and the
+/// bracket that would choose. Keeping this fixture UNPINNED is what keeps
+/// tier 3's refusal tested: editing the only copy into the pinned form
+/// would leave "an ambiguous site that says nothing is still an error"
+/// asserted nowhere (§5.2 chore (b)).
+///
+/// Note what this fixture no longer claims. Under a load-time global rule
+/// it stood for "the global rule is the WRONG rule" — kernel-language.md
+/// §Instance coherence specifies SCOPED selection, and an algebraic
+/// language must let Int carry both the additive and the multiplicative
+/// monoid. That argument is now DELIVERED, not pending, and its committed
+/// form is `wi843_coexisting_instances_test`. What is still deferred is
+/// IMPLICIT scoped selection (058 §8): a bare `Desc.describe(w)` does not
+/// pick up the enclosing namespace's provider, which is precisely why the
+/// two calls below must be written explicitly and why this one is an error.
 #[test]
-fn two_describers_for_one_carrier_rejected_globally() {
+fn two_describers_unpinned_are_refused_at_the_use_site() {
     let src = r#"
 namespace wi817.tds
   import anthill.prelude.{Int64}
@@ -693,10 +694,101 @@ end
     let errs = load_errs(src);
     let text = errs.join("\n");
     assert!(
-        text.contains("multiple impls match")
-            && text.contains("ambiguous witness: 2 distinct witness sorts provide"),
-        "expected the global two-provider rejection (DispatchAmbiguous at the \
-         describe sites + the ambiguous-witness check); got:\n{text}"
+        text.contains("ambiguous dispatch of `wi817.tds.Desc.describe`")
+            && text.contains("wi817.tdl.LoudDesc")
+            && text.contains("wi817.tdq.QuietDesc")
+            && text.contains("[Desc = "),
+        "an unselected dispatch must be refused AT THE CALL, naming both \
+         describers and the bracket that picks one; got:\n{text}"
+    );
+    assert!(
+        !text.contains("keep exactly one"),
+        "the DECLARATIONS are legal now (the pinned sibling runs them both) — a \
+         surviving declaration-level refusal would mean tier 3 doubled the old \
+         rule instead of replacing it; got:\n{text}"
+    );
+}
+
+/// THE SAME PROGRAM WITH ONE SELECTION WRITTEN PER SITE — §9 phase 3b's
+/// second acceptance, and the fixture's flipped form (§5.2).
+///
+/// It measures PIN SURVIVAL THROUGH A CLOSURE HOP, not scope capture. A
+/// selection is a per-occurrence static constant emitted at classification
+/// (058 §4.5 step 0), so the lambda's pin is decided where its body is
+/// WRITTEN and capture plays no part — `reduce_lambda`'s requirement
+/// snapshot matters for UNPINNED forwarding. The quiet caller invoking the
+/// loud-pinned lambda therefore still gets 5, and the quiet site its own 7:
+///
+///   5 + 10·7 = 75
+///
+/// 55 or 77 is a FAILURE, not a variant — 55 means the quiet site took the
+/// lambda's provider (a pin cross-wired), 77 that the lambda took the
+/// caller's (a pin ignored at the hop). The value is UNCHANGED from what
+/// this fixture always documented as its WI-648 acceptance, which is
+/// exactly why its old doc comment — "lambda keeps its creation-scope
+/// provider" — could have stayed and gone unnoticed while describing a
+/// mechanism (scope capture) the pinned program does not use. Implicit
+/// scoped selection is deferred (058 §8); this is the acceptance that
+/// belongs to what shipped.
+#[test]
+fn two_describers_pinned_per_site_survive_the_closure_hop() {
+    let src = r#"
+namespace wi817.tdsp
+  import anthill.prelude.{Int64}
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Pebble
+    entity pebble
+  end
+  sort Mk
+    operation mk() -> Pebble = pebble()
+  end
+end
+
+namespace wi817.tdqp
+  import anthill.prelude.{Int64, Function}
+  import wi817.tdsp.{Desc, Pebble}
+  sort QuietDesc
+    fact Desc[T = Pebble]
+    operation describe(x: Pebble) -> Int64 = 7
+  end
+  sort QuietOps
+    operation invoke(fn: Function[A = Pebble, B = Int64], z: Pebble) -> Int64 =
+      add(fn(z), mul(10, Desc.describe[Desc = QuietDesc](z)))
+  end
+end
+
+namespace wi817.tdlp
+  import anthill.prelude.{Int64, Function}
+  import wi817.tdsp.{Desc, Pebble}
+  import wi817.tdqp.{QuietOps}
+  sort LoudDesc
+    fact Desc[T = Pebble]
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+  sort LoudOps
+    operation run(z: Pebble) -> Int64 =
+      QuietOps.invoke(lambda w -> Desc.describe[Desc = LoudDesc](w), z)
+  end
+end
+
+namespace wi817.tddp
+  import anthill.prelude.{Int64}
+  import wi817.tdsp.{Mk}
+  import wi817.tdlp.{LoudOps}
+  sort Driver
+    operation drive(n: Int64) -> Int64 = LoudOps.run(Mk.mk())
+  end
+end
+"#;
+    let got = eval_fresh(src, "wi817.tddp.Driver.drive", 0);
+    assert!(
+        matches!(got, Ok(Value::Int(75))),
+        "expected Ok(Int(75)) = 5 (the lambda's pin, surviving the hop) + 10·7 \
+         (the quiet site's own pin); 55 means the pins cross-wired, 77 that one \
+         was ignored; got {got:?}"
     );
 }
 

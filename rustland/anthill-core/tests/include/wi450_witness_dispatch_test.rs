@@ -169,12 +169,23 @@ fn witness_dispatches_dot_call() {
     }
 }
 
-/// COHERENCE (rule 2, witness flavor): two witnesses providing the same
-/// `Combiner[T = Tag]` with different `combine` impls are a loud ambiguity at load,
-/// exactly as two instance facts are (WI-431 rule 2 extended to witness provisions).
+/// COHERENCE (rule 2, witness flavor) — RELOCATED BY WI-843 (058 §4.1 tier 3).
+///
+/// Two witnesses providing the same `Combiner[T = Tag]` with different `combine`
+/// impls were a loud ambiguity AT LOAD, exactly as two instance facts are (WI-431
+/// rule 2 extended to witness provisions). They now COEXIST: a witness sort has a
+/// name, so the choice can be written, and the refusal moved to a dispatch that
+/// writes none. The two instance facts stay refused at load — they have no name —
+/// so what looked like one rule is now visibly two, keyed on nameability (§4.3).
+///
+/// Both halves are asserted here rather than only the flip, because "no error"
+/// alone would also be satisfied by the coherence walk never seeing this shape:
+/// the same pair with an unselected CALL added must still be loud, at that call.
 #[test]
-fn duplicate_witnesses_are_a_loud_ambiguity() {
-    let snippet = r#"namespace test.wi450.coherence
+fn duplicate_witnesses_coexist_and_only_an_unselected_call_is_loud() {
+    let program = |caller: &str| {
+        format!(
+            r#"namespace test.wi450.coherence
   import anthill.prelude.Int64
 
   sort Combiner
@@ -194,11 +205,27 @@ fn duplicate_witnesses_are_a_loud_ambiguity() {
     provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 2)
   end
-end
-"#;
-    let errs = load_errors(&[snippet]);
+{caller}end
+"#
+        )
+    };
+    let declarations_only = program("");
+    let errs = load_errors(&[&declarations_only]);
     assert!(
-        errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
-        "two witnesses for (Combiner, Tag) with distinct combine impls must be a loud ambiguity: {errs:?}"
+        errs.is_empty(),
+        "two NAMEABLE witnesses for (Combiner, Tag) coexist under 058 tier 3: {errs:?}"
+    );
+
+    // The same declarations plus a call that names neither: loud, at that call.
+    let with_unselected_call = program(
+        "  sort Use\n    operation go(a: Tag, b: Tag) -> Tag = Combiner.combine(a, b)\n  end\n",
+    );
+    let errs = load_errors(&[&with_unselected_call]);
+    assert!(
+        errs.iter().any(|e| e.contains("ambiguous dispatch of")
+            && e.contains("test.wi450.coherence.TagCombinerA")
+            && e.contains("test.wi450.coherence.TagCombinerB")),
+        "an unselected dispatch against the coexisting pair must be loud AT THE \
+         CALL, naming both witnesses: {errs:?}"
     );
 }

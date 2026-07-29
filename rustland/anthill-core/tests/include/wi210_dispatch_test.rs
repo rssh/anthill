@@ -411,8 +411,22 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
     let subst = subst_with_t(&mut kb, "wi210p3.amb.AmbSpec", "wi210p3.amb.AmbCarrier");
     let op_short = kb.intern("amb_op");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert_eq!(outcome, DispatchOutcome::Ambiguous,
-        "expected Ambiguous when two impls provide the same binding; got {outcome:?}");
+    // WI-843: `Ambiguous` carries the impls that tied — under 058 tier 3 this is
+    // the ONLY refusal the author gets (the pair of declarations now loads), so
+    // the payload is asserted, not just the variant.
+    match &outcome {
+        DispatchOutcome::Ambiguous(tie) => {
+            let names: Vec<&str> = tie.candidates.iter().map(|s| kb.qualified_name_of(*s)).collect();
+            assert!(
+                names.iter().any(|c| c.ends_with("AmbA")) && names.iter().any(|c| c.ends_with("AmbB")),
+                "Ambiguous must name BOTH tied impls; got {names:?}"
+            );
+            // WI-843: the tie is at the CALL's own goal here (no conditional
+            // instance), which is what entitles the diagnostic to offer a bracket.
+            assert!(tie.at_call_goal, "a top-level tie must be marked as such");
+        }
+        other => panic!("expected Ambiguous when two impls provide the same binding; got {other:?}"),
+    }
 }
 
 /// WI-350 — load a synthetic *self-receiver* spec `Box` (`peek(b: Box)` —
@@ -457,7 +471,7 @@ fn wi350_self_receiver_spec_is_ambiguous_without_carrier() {
     let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int64");
     let op_short = kb.intern("peek");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert_eq!(outcome, DispatchOutcome::Ambiguous,
+    assert!(matches!(outcome, DispatchOutcome::Ambiguous { .. }),
         "two carrier impls + no carrier discriminator must be Ambiguous; got {outcome:?}");
 }
 
@@ -623,7 +637,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // Carrier-less compat path: ≥2 Stream impls both match the universal
     // binding, so dispatch is Ambiguous without a carrier to discriminate.
     let no_carrier = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert_eq!(no_carrier, DispatchOutcome::Ambiguous,
+    assert!(matches!(no_carrier, DispatchOutcome::Ambiguous { .. }),
         "expected Ambiguous for carrier-less Stream.splitFirst with ≥2 impls; got {no_carrier:?}");
 }
 

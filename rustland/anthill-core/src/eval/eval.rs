@@ -1786,17 +1786,19 @@ impl Interpreter {
     /// about a chain that CANNOT BE PINNED at these types, where "has a chain" and
     /// "needs it" genuinely differ and only the body answers the second. An
     /// AMBIGUOUS verdict is not that: the chain IS pinned, a dictionary IS
-    /// constructible, and two providers cover it with no rule to choose — the
-    /// program's instances are incoherent, and deferring to the read gains nothing
-    /// because the read can only report a MISSING dictionary, naming neither the
-    /// tie nor the candidates (MEASURED: the pre-WI-855 failure for a genuine tie
-    /// was `Internal(DeferToRequirement: … __req_desc not bound …)`). It cannot be
-    /// waved through as "the body may not need it" either: it reached here through
-    /// the same load-time coherence checks every other program does, and the ones
-    /// that would have refused it (`AmbiguousWitness` and its siblings) exempt a
-    /// CONCRETE provider by design — so the tie is a runtime finding with no
-    /// earlier owner. Raised as `EvalError::AmbiguousRequirement`, which the
-    /// resolver bridge residualizes like any other non-`Internal` eval error.
+    /// constructible, and two providers cover it with no rule to choose — and
+    /// deferring to the read gains nothing because the read can only report a
+    /// MISSING dictionary, naming neither the tie nor the candidates (MEASURED: the
+    /// pre-WI-855 failure for a genuine tie was
+    /// `Internal(DeferToRequirement: … __req_desc not bound …)`). It cannot be
+    /// waved through as "the body may not need it" either: the tie is a runtime
+    /// finding with no earlier owner. It had none before WI-843 because the
+    /// load-time coherence checks exempt a CONCRETE provider by design, and it has
+    /// none after for a second and now larger reason — 058 tier 3 lets NAMEABLE
+    /// providers coexist on purpose, so a tie reaching a route with no bracket
+    /// channel is exactly the case that must go loud where it is found. Raised as
+    /// `EvalError::AmbiguousRequirement`, which the resolver bridge residualizes
+    /// like any other non-`Internal` eval error.
     fn requirements_for_value_directed_impl(
         &mut self,
         impl_target: Symbol,

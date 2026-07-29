@@ -22,14 +22,20 @@
 //!     though each provider ALONE works on that route (`42` / `7`).
 //!
 //! The fix is ONE coherence grouping over all provider kinds
-//! (`check_provider_operations`), from which all three diagnostics are read — so
-//! a kind can no longer have a grouping of its own to hide in. The grouping is
-//! also where "what is a witness" now lives once (`witness_dispatch_carrier`),
-//! shared with the eval/typer dispatch reader that previously kept its own copy.
+//! (`check_provider_operations`), from which every diagnostic is read — so a kind
+//! can no longer have a grouping of its own to hide in. The grouping is also where
+//! "what is a witness" now lives once (`witness_dispatch_carrier`), shared with
+//! the eval/typer dispatch reader that previously kept its own copy.
 //!
-//! REFERENCE: `docs/proposals/058-modular-instances.md` §4.3, which records this
-//! as the reason a future tier-3 coexistence must be gated on every candidate
-//! being NAMEABLE — an instance fact has no name.
+//! WHAT WI-843 THEN CHANGED, since it is visible in the controls below. Tier 3
+//! (058 §4.1) let two NAMEABLE providers coexist and deleted `AmbiguousWitness`
+//! outright, so control 1 flipped from "keeps the witness diagnostic" to "loads
+//! clean". The MIXED pair did not flip, and that is this file's point restated
+//! rather than weakened: the gate is NAMEABILITY (§4.3), an instance fact has no
+//! name, and the grouping built here is what lets a per-GROUP rule see the
+//! unnameable candidate at all.
+//!
+//! REFERENCE: `docs/proposals/058-modular-instances.md` §4.3.
 
 /// The load diagnostics of `src`, empty when it loads clean — `common`'s shared
 /// loader, the same one `interp_for` runs on, so a program asserted to load here
@@ -92,17 +98,27 @@ end
     );
     // The cross-kind pair is neither same-kind conflict — a mixed pair reported
     // under a same-kind diagnostic would name a nonexistent second fact/witness.
+    // WI-843 deleted the witness diagnostic, so only the instance-fact one is a
+    // live mis-labelling risk; asserting the absence of a string no code can emit
+    // would be a control that cannot fail.
     assert!(
-        !errs.iter().any(|e| e.contains("ambiguous instance:") || e.contains("ambiguous witness:")),
-        "one fact + one witness is neither of the SAME-KIND ambiguities: {errs:?}"
+        !errs.iter().any(|e| e.contains("ambiguous instance:")),
+        "one fact + one witness is not the same-kind FACT ambiguity: {errs:?}"
     );
 }
 
 /// CONTROL 1 (same kind, witnesses) — replacing the instance fact with a SECOND
-/// witness sort must keep the pre-existing `AmbiguousWitness` diagnostic
-/// verbatim. Unifying the grouping must not re-label a same-kind conflict.
+/// witness sort must NOT be a load error at all.
+///
+/// It was one when WI-838 landed (`AmbiguousWitness`, asserted here verbatim);
+/// WI-843 deleted that refusal, because a witness sort has a NAME and so a use
+/// site can select one (058 §4.1 tier 3). Keeping the row as a CLEAN-LOAD control
+/// is what makes the mixed-pair test above mean something: the two programs differ
+/// only in whether one candidate is an unnameable instance fact, so this is the
+/// evidence that `MixedProviderKinds` fires on NAMEABILITY and not merely on
+/// "two providers".
 #[test]
-fn two_witnesses_keep_the_witness_diagnostic() {
+fn two_witnesses_coexist_and_are_no_load_error() {
     let snippet = r#"namespace test.wi838.twowit
   import anthill.prelude.Int64
 
@@ -128,15 +144,9 @@ end
 "#;
     let errs = load_errors(snippet);
     assert!(
-        errs.iter().any(|e| e.contains(
-            "ambiguous witness: 2 distinct witness sorts provide \
-             'test.wi838.twowit.Combiner' for carrier 'test.wi838.twowit.Tag'"
-        )),
-        "two witness sorts must keep the WITNESS diagnostic: {errs:?}"
-    );
-    assert!(
-        !errs.iter().any(|e| e.contains("ambiguous provider kinds")),
-        "two witnesses are a SAME-kind conflict, not a mixed one: {errs:?}"
+        errs.is_empty(),
+        "two NAMEABLE providers coexist under 058 tier 3 — no load diagnostic of \
+         any kind, including the cross-kind one: {errs:?}"
     );
 }
 
