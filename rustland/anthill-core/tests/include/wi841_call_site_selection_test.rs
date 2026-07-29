@@ -350,11 +350,69 @@ fn a_pin_outranks_a_deferral_to_the_enclosing_frame() {
     );
 }
 
-/// The same key on an OP-SCOPED `requires` (§4.2's own `fold[Monoid = AddM]` shape).
-/// Its threading rides on value-direction rather than a dictionary — an op-scoped
-/// chain has no frame slots at all (WI-822 leg 1, undelivered) — so what phase 2 owes
-/// here is that the key RESOLVES and the witness is CHECKED, which the sibling test
-/// below measures.
+/// PHASE 2 DOES NOT DELIVER SELECTION ON THE OP-SCOPED ROUTE, and this is the pair
+/// that says so. An operation-scoped `requires` has no dictionary channel at all
+/// (`synth_req_names` is keyed by the parent SORT), so it is served by value-directed
+/// dispatch, which never sees the call's selections — WI-822 leg 1, undelivered.
+///
+/// MEASURED, and only the SECOND row shows it: with `AddM` and `AnyM` both answering,
+/// `[Monoid = AnyM]` computed 99 and looked honoured — it merely agreed with what the
+/// search picks — while `[Monoid = AddM]` ALSO computed 99, the answer of the provider
+/// the author did not name. A silently wrong number, in a program that loaded. The
+/// control is the whole test; the agreeing row alone was a false positive.
+///
+/// So the call is REFUSED where the ignored selection could differ. With a SOLE
+/// provider it cannot — the pin necessarily names it — which is why the sibling below
+/// still loads and computes, and is what §9 phase 2's acceptance asks for.
+#[test]
+fn an_op_scoped_selection_that_could_differ_is_refused_not_ignored() {
+    let build = |call: &str| {
+        program(
+            "wi841.unthreadable",
+            PARAMETRIC_RIVAL,
+            &format!(
+                r#"  sort Holder
+    sort HT = ?
+    operation probe(a: HT, b: HT) -> Int64 requires Monoid[T = HT] = Monoid.combine(a, b)
+  end
+{}"#,
+                driver(call)
+            ),
+        )
+    };
+    for call in ["Holder.probe[Monoid = AddM](2, 3)", "Holder.probe[Monoid = AnyM](2, 3)"] {
+        refused_with(
+            &build(call),
+            "cannot be honoured",
+            "an op-scoped slot cannot thread a selection, and two providers answer it",
+        );
+    }
+
+    // CONTROL 1 — unbracketed, the same program loads and runs. The refusal is about
+    // the SELECTION, not about op-scoped requirements or about two providers.
+    assert_eq!(
+        eval_int(&build("Holder.probe(2, 3)"), "wi841.unthreadable.Driver.go", "unbracketed"),
+        99,
+    );
+
+    // CONTROL 2 — the SORT-LEVEL twin of the refused call is threaded and honoured, so
+    // the refusal is scoped to the route that cannot carry a pin, not to the spelling.
+    let sort_level = program(
+        "wi841.threadable",
+        PARAMETRIC_RIVAL,
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = AddM](2, 3)")),
+    );
+    assert_eq!(
+        eval_int(&sort_level, "wi841.threadable.Driver.go", "sort-level twin"),
+        5,
+        "moved to the sort, the SAME selection decides — 5, not the search's 99",
+    );
+}
+
+/// The same key on an OP-SCOPED `requires` (§4.2's own `fold[Monoid = AddM]` shape)
+/// with the carrier's SOLE provider — §9 phase 2's acceptance. Here the pin cannot
+/// differ from what the search finds, so it is accepted and the witness is CHECKED
+/// (the sibling tests drive a bogus and a wrong-bindings one).
 #[test]
 fn a_spec_short_name_selects_an_op_scoped_slot() {
     let src = program(
@@ -388,11 +446,15 @@ fn a_direct_spec_op_call_selects_its_own_dispatch() {
 /// Rule (1) SUBSUMES the named-slot case (§4.2): a binder is an ordinary type
 /// parameter, so binding it is a type-argument binding — and it must ALSO select,
 /// which is the half WI-840 left undone (there, `[m = AddM]` loaded and meant
-/// nothing). Both scopes, since a sort's named slot is bindable at a call on its
-/// member as well as in a type application.
+/// nothing).
+///
+/// The witness is `AddM`, the one the search does NOT pick, on purpose. An earlier
+/// version of this test pinned `AnyM` and asserted 99 — which is exactly what the
+/// search returns, so it passed without the binder selecting anything. Pin the
+/// provider the search would not choose, or the assertion is vacuous.
 #[test]
-fn a_named_slot_binder_selects_at_both_levels() {
-    let sort_level = program(
+fn a_named_sort_level_binder_selects() {
+    let src = program(
         "wi841.namedsort",
         PARAMETRIC_RIVAL,
         &format!(
@@ -402,17 +464,25 @@ fn a_named_slot_binder_selects_at_both_levels() {
     operation probe(a: HT, b: HT) -> Int64 = Monoid.combine(a, b)
   end
 {}"#,
-            driver("Holder.probe[m = AnyM](2, 3)")
+            driver("Holder.probe[m = AddM](2, 3)")
         ),
     );
     assert_eq!(
-        eval_int(&sort_level, "wi841.namedsort.Driver.go", "a sort-level binder selects"),
-        99,
-        "the answer must be AnyM's 99, not the search's 5 — else the binder bound a \
-         parameter and selected nothing, which is exactly the WI-840 state",
+        eval_int(&src, "wi841.namedsort.Driver.go", "a sort-level binder selects"),
+        5,
+        "AddM's 5, not the search's 99 — else the binder bound a parameter and \
+         selected nothing, which is exactly the WI-840 state",
     );
+}
 
-    let op_level = program(
+/// An OP-LEVEL named binder is the same rule on a route that cannot carry it. Named
+/// or anonymous makes no difference: an operation-scoped `requires` has no dictionary
+/// channel, so with two providers answering, the selection is refused rather than
+/// ignored. The sort-level twin above is the contrast — same binder spelling, same
+/// witness, threaded there and not here.
+#[test]
+fn an_op_level_named_binder_on_an_unthreadable_slot_is_refused() {
+    let src = program(
         "wi841.namedop",
         PARAMETRIC_RIVAL,
         &format!(
@@ -421,13 +491,10 @@ fn a_named_slot_binder_selects_at_both_levels() {
     operation probe(a: HT, b: HT) -> Int64 requires m: Monoid[T = HT] = Monoid.combine(a, b)
   end
 {}"#,
-            driver("Holder.probe[m = AnyM](2, 3)")
+            driver("Holder.probe[m = AddM](2, 3)")
         ),
     );
-    assert_eq!(
-        eval_int(&op_level, "wi841.namedop.Driver.go", "an op-level binder selects"),
-        99,
-    );
+    refused_with(&src, "cannot be honoured", "an op-scoped slot threads no selection");
 }
 
 /// A slot the author NAMED is no longer answered by its spec's short name: the binder

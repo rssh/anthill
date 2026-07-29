@@ -173,6 +173,21 @@ pub enum TypeError {
         op: Symbol,
         spec: Symbol,
     },
+    /// WI-841: `f[Spec = W](…)` on a slot whose route cannot THREAD the selection —
+    /// an OP-SCOPED `requires`, served by value-directed dispatch at eval, which never
+    /// sees the call's selections (`synth_req_names` is keyed by the parent SORT; the
+    /// channel is WI-822 leg 1, undelivered). Raised only when two or more providers
+    /// answer the goal, i.e. when the ignored selection could actually pick the wrong
+    /// one: MEASURED, `probe[Monoid = AddM](2, 3)` computed `AnyM`'s 99. With a SOLE
+    /// provider the pin necessarily names it and the call is accepted.
+    UnthreadableSelection {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        witness: Symbol,
+        /// The providers that answer the goal, for the diagnostic.
+        candidates: Vec<String>,
+    },
     /// WI-841 (058 §4.4 check 1): `f[Spec = W](…)` named a witness that does not
     /// provide that spec at all — no `SortProvidesInfo(sort_ref = W, spec = Spec[…])`
     /// exists. Names BOTH, since either half can be the typo.
@@ -569,6 +584,26 @@ impl TypeError {
                     spec_qn,
                 )
             }
+            TypeError::UnthreadableSelection { op, spec, witness, candidates, .. } => {
+                format!(
+                    "`[{} = {}]` cannot be honoured at {}: the requirement is declared \
+                     on the OPERATION, and an operation-scoped `requires` has no \
+                     dictionary channel — it is resolved from the argument VALUES at \
+                     run time, which cannot see this selection. {} providers answer it \
+                     ({}), so the selection would be silently ignored and one of them \
+                     picked instead. Declaring the `requires` on the enclosing SORT \
+                     threads it — but that is not a free rewrite: a sort-level \
+                     requirement is imposed on every dispatch through that sort, which \
+                     is why `List.member`'s `Eq[T]` is written on the operation. \
+                     Threading an operation-scoped selection is the real fix (WI-822 \
+                     leg 1); until it lands, this call has no honest reading",
+                    short_name_of(kb.qualified_name_of(*spec)),
+                    short_name_of(kb.qualified_name_of(*witness)),
+                    kb.qualified_name_of(*op),
+                    candidates.len(),
+                    candidates.join(", "),
+                )
+            }
             TypeError::WitnessDoesNotProvide { op, witness, spec, at_bindings, .. } => {
                 let spec_qn = kb.qualified_name_of(*spec);
                 if *at_bindings {
@@ -715,6 +750,7 @@ impl TypeError {
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
+            | TypeError::UnthreadableSelection { span, .. }
             | TypeError::WitnessDoesNotProvide { span, .. }
             | TypeError::ValueDirectedSelection { span, .. }
             | TypeError::ConflictingSelection { span, .. }
@@ -886,6 +922,17 @@ impl TypeError {
                 field_name: "type_arg".to_string(),
                 expected_type: format!(
                     "a witness sort for {}", kb.qualified_name_of(*spec),
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::UnthreadableSelection { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!(
+                    "a threadable slot for {} (declare the `requires` on the sort)",
+                    kb.qualified_name_of(*spec),
                 ),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -13980,13 +14027,15 @@ fn resolve_call_type_arg_targets(
 ///    this rung can only ever under-refuse — never refuse a call step 0 would accept —
 ///    which is the safe direction for a check whose job is to catch what the other
 ///    routes cannot report at all.
-///  * on the VALUE-DIRECTED route the pin is validated here and then **not honoured**:
-///    `selections` never reach eval, so `requirements_for_value_directed_impl` resolves
-///    with an empty scope and no pin. A bracket on an op-scoped `requires` therefore
-///    says more than it does. Unobservable before 058 phase 3b (with one provider the
-///    searched answer IS the pinned one) and closed by WI-822 leg 1, which would give
-///    an op-scoped chain a dictionary channel at all — but it is a real divergence
-///    between what the source says and what runs, so it is named where the check is.
+///  * on the VALUE-DIRECTED route a selection is **not honoured at all**: `selections`
+///    never reach eval, so `requirements_for_value_directed_impl` resolves with an
+///    empty scope and no pin. This was first written here as "unobservable before 058
+///    phase 3b, since with one provider the searched answer IS the pinned one" — which
+///    was FALSE and never measured. Driven: with `AddM` and `AnyM` both answering,
+///    `probe[Monoid = AddM](2, 3)` computed **99**, `AnyM`'s answer, in a program that
+///    loaded. So it is refused above whenever two or more providers answer, and
+///    accepted only where the pin provably cannot differ. The refusal is lifted by
+///    WI-822 leg 1, which gives an op-scoped chain a dictionary channel.
 fn check_selection_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -13998,10 +14047,35 @@ fn check_selection_bindings(
         return Ok(());
     }
     for sel in selections {
-        for goal in selection_goals(kb, subst, fn_sym, sel.spec_sort) {
+        for (goal, threaded) in selection_goals(kb, subst, fn_sym, sel.spec_sort) {
             let candidates = collect_provides_candidates(kb, &goal, None);
             if candidates.is_empty() {
                 continue;
+            }
+            // WI-841: a slot whose route cannot THREAD the selection, where the
+            // selection could actually change the answer. MEASURED: on an op-scoped
+            // `requires` with two providers, `probe[Monoid = AddM](2, 3)` computed
+            // 99 — `AnyM`'s answer, the provider the author did NOT name — because
+            // value-directed dispatch never sees the pin. Silently the wrong number,
+            // so this is an error and not a lint.
+            //
+            // Gated on TWO OR MORE candidates on purpose: with a sole provider the
+            // pin necessarily names it, so accepting is exact rather than lenient —
+            // and that is the case 058 §9 phase 2's acceptance requires to load
+            // (`fold[Monoid = AddM]([2,3,4])` computes 9 "with the carrier's SOLE
+            // provider"). The refusal is lifted by WI-822 leg 1, which gives an
+            // op-scoped chain a channel; until then, saying so is the honest option.
+            if !threaded && candidates.len() > 1 {
+                return Err(TypeError::UnthreadableSelection {
+                    span,
+                    op: fn_sym,
+                    spec: sel.spec_sort,
+                    witness: sel.witness,
+                    candidates: candidates
+                        .iter()
+                        .map(|c| kb.qualified_name_of(c.impl_sort).to_string())
+                        .collect(),
+                });
             }
             if !candidates.iter().any(|c| same_sort_canonical(kb, c.impl_sort, sel.witness)) {
                 return Err(TypeError::WitnessDoesNotProvide {
@@ -14031,13 +14105,18 @@ fn selection_goals(
     subst: &Substitution,
     fn_sym: Symbol,
     spec_sort: Symbol,
-) -> Vec<SortGoal> {
+) -> Vec<(SortGoal, bool)> {
     let slots: Vec<CalleeSlot> = callee_requirement_slots(kb, fn_sym)
         .into_iter()
         .filter(|s| same_sort_canonical(kb, s.spec, spec_sort))
         .collect();
-    let mut goals: Vec<SortGoal> = Vec::new();
+    let mut goals: Vec<(SortGoal, bool)> = Vec::new();
     for slot in slots {
+        // WI-841: can this slot's route actually USE a selection? An OP-SCOPED
+        // `requires` has no dictionary channel at all — `synth_req_names` is keyed by
+        // the parent SORT, so the requirement is served by value-directed dispatch at
+        // eval, which never sees `selections` (WI-822 leg 1, undelivered).
+        let threaded = !matches!(slot.source, CalleeSlotSource::OpRequires(_));
         let goal = match slot.source {
             // Formed as `dispatch_spec_op_cached` forms it. No carrier: the
             // receiver-carrier classification runs further down, and this check only
@@ -14055,7 +14134,7 @@ fn selection_goals(
                 goal_from_op_requires_entry(kb, &concrete)
             }
         };
-        goals.extend(goal);
+        goals.extend(goal.map(|g| (g, threaded)));
     }
     goals
 }
