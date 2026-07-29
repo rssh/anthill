@@ -2518,6 +2518,47 @@ impl KnowledgeBase {
         }
     }
 
+    /// The head functor of a query pattern `tid` WHEN it is a concrete name the
+    /// KB does not define — no rule or fact indexes it and no declaration of any
+    /// kind (sort / entity constructor / operation / const / builtin) names it.
+    /// `Some(sym)` is the caller's cue to refuse the query LOUDLY rather than hand
+    /// it to resolution, which answers an undefined predicate with a silent empty
+    /// set indistinguishable from a known functor that merely has no matching
+    /// facts — reading as "no such fact" when the truth is "that name resolves to
+    /// nothing" (WI-754).
+    ///
+    /// `None` is returned for the three cases that must NOT be refused:
+    ///   * a head with no functor at all (`Var` / `Const` / `Bottom` — a bare
+    ///     `?x` or a literal is a legitimate pattern the resolver answers empty);
+    ///   * a functor that IS defined;
+    ///   * a resolver SCOPING MARKER (`forall_in` / `some_in` / `forall_impl` /
+    ///     `__pop_assumption`) — the resolver recognises these by short name and
+    ///     skolemises / expands them in place, so they carry no rule / fact /
+    ///     declaration yet are not unknown. A bounded-quantifier query that
+    ///     evaluates to FALSE produces zero solutions, and without this arm that
+    ///     empty result would be mis-refused as an unknown functor (WI-027).
+    ///
+    /// The `rules_by_functor` disjunct is load-bearing, not redundant with
+    /// `kind_of`: a predicate defined PURELY by facts keeps an `Unresolved`
+    /// functor (the loader interns undefined data names as-is), so `kind_of`
+    /// alone would misread a fact-only predicate as unknown. Builtins are
+    /// `Resolved` operations, so `kind_of` already covers them.
+    ///
+    /// This is NOT a substitute for actually resolving: a predicate reachable
+    /// only through a rule body (an arity-0 proposition) can resolve to a
+    /// solution while sitting in neither table, so the CLI resolves FIRST and
+    /// consults this only to explain a genuinely empty result — never to refuse
+    /// before resolution (WI-754).
+    pub fn undefined_query_functor(&self, tid: TermId) -> Option<Symbol> {
+        let sym = self.head_functor(tid)?;
+        if crate::kb::resolve::is_scoping_marker_name(self.resolve_sym(sym)) {
+            return None;
+        }
+        let defined =
+            self.kind_of(sym).is_some() || self.rules_by_functor_iter(sym).next().is_some();
+        (!defined).then_some(sym)
+    }
+
     /// True iff `qualified_name` names a reserved system-metadata functor — one
     /// the loader is permitted to head a metadata fact with. The reflect and
     /// realization declaration records live under `anthill.reflect.` /

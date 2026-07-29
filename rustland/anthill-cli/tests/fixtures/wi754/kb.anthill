@@ -1,0 +1,11 @@
+-- WI-754: a KB with ONE known predicate `app.util.Q.q`, so a query can
+-- distinguish an UNKNOWN functor (refused loudly) from a KNOWN functor with no
+-- matching row (answered as an empty set). The entity lives inside `sort Q`, so
+-- its qualified name carries the sort segment: `app.util.Q.q`.
+namespace app.util
+  import anthill.prelude.Int64
+  sort Q
+    entity q(row: Int64)
+  end
+  fact q(row: 7)
+end

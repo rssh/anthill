@@ -1371,6 +1371,13 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // Structural browse: which facts / rule heads unify
                         // with the pattern, no body evaluation.
                         let results = kb.browse_program_clauses_matching(&qt);
+                        // WI-754: nothing matched — if the head names no known
+                        // functor, that is an unresolved name, not an empty
+                        // browse. Checked AFTER browsing so a defined functor
+                        // with no matching clause still reports `0 result(s)`.
+                        if results.is_empty() {
+                            refuse_if_unknown_functor(&kb, qt)?;
+                        }
                         print_program_clause_match_results(&kb, &results, args.max_results);
                     } else {
                         // WI-767: SLD resolution is the default — the old
@@ -1399,6 +1406,16 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // depth-truncated "no solutions" is UNDECIDED, not a
                         // refutation (WI-628).
                         let (solutions, stats) = kb.resolve_with_stats(&[qt], &config);
+                        // WI-754: a DEFINITE empty answer (not depth-truncated)
+                        // whose head names no known functor is an unresolved
+                        // name, not "no such fact". Resolved FIRST, so an arity-0
+                        // proposition reachable only through a rule body — which
+                        // sits in no functor table yet answers `true` — is never
+                        // refused, and a known functor with no matching row still
+                        // prints `no solutions`.
+                        if solutions.is_empty() && !stats.truncated {
+                            refuse_if_unknown_functor(&kb, qt)?;
+                        }
                         print_solutions(&kb, &solutions, qt, cap, stats.truncated);
                     }
                 }
@@ -1581,6 +1598,44 @@ fn collect_queries(
     } else {
         unreachable!()
     }
+}
+
+/// WI-754: a query that produced NO answer, whose head names a concrete functor
+/// the KB does not resolve, is refused loudly instead of printing an empty answer
+/// — otherwise `no solutions` reads as "no such fact" when the truth is "that name
+/// could not resolve". Called AFTER the query resolved/browsed to empty, never
+/// before: resolving first lets an arity-0 proposition (reachable only through a
+/// rule body, so in no functor table) answer normally when it is TRUE, and keeps a
+/// KNOWN functor with no matching row at `no solutions`. A non-functor head (`?x`,
+/// a literal) and a resolver scoping marker (`forall_in` / …) are never refused —
+/// `undefined_query_functor` returns `None`.
+///
+/// The discrim-index check is the backstop for the one case
+/// `undefined_query_functor` cannot see: a TOP-LEVEL arity-0 rule head that
+/// evaluated to FALSE (so resolution is empty) sits in neither enumeration table
+/// — it matches only through the discrimination tree, under a symbol the bare
+/// query re-interns — yet it IS declared. `browse_program_clauses_matching`
+/// consults that tree, so such a proposition is recognised as known-and-false
+/// (`no solutions`), while a genuinely absent name (and a namespaced name queried
+/// out of scope, whose qualified head the bare query does not match) still heads
+/// no clause and is refused.
+fn refuse_if_unknown_functor(
+    kb: &KnowledgeBase,
+    qt: anthill_core::kb::term::TermId,
+) -> Result<(), i32> {
+    let Some(sym) = kb.undefined_query_functor(qt) else {
+        return Ok(());
+    };
+    if !kb.browse_program_clauses_matching(&qt).is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "error: '{}' in query pattern does not resolve to a known functor — no \
+         rule, fact, or declaration is in scope for it. Qualify the name, or \
+         bring its namespace into scope with -i.",
+        kb.resolve_sym(sym)
+    );
+    Err(1)
 }
 
 // ── Check command ───────────────────────────────────────────────────

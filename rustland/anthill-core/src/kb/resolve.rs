@@ -6995,7 +6995,12 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 /// Shared by `step_init`'s marker dispatch and WI-670's refutation skip so the
 /// two name sets never drift (a marker missing from the refutation set would be
 /// mistaken for a 0-candidate goal and falsely refute a rule that uses it).
-fn is_scoping_marker_name(name: &str) -> bool {
+///
+/// `pub(crate)` so `KnowledgeBase::undefined_query_functor` (WI-754) shares this
+/// one authority for "the resolver recognises this functor by short name":
+/// a marker carries no rule/fact/declaration, so without consulting this set a
+/// bare `(forall … )` query would be mistaken for an unknown functor and refused.
+pub(crate) fn is_scoping_marker_name(name: &str) -> bool {
     matches!(name, "forall_impl" | "forall_in" | "some_in" | "__pop_assumption")
 }
 

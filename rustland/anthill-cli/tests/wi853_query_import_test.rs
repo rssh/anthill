@@ -36,15 +36,29 @@ fn query(args: &[&str]) -> Output {
 
 /// THE acceptance case. `mk` lives in `wi853.kb`, so the pattern resolves ONLY
 /// because the flag brings it into scope: the same query without the flag is the
-/// control, and it finds nothing.
+/// control, and it does not resolve.
 #[test]
 fn an_import_flag_puts_the_name_in_query_scope() {
+    // Without the import, `mk` resolves to no known functor at `_global`. Since
+    // WI-754 that is REFUSED loudly rather than answered as a silent empty set —
+    // a stronger control than the old "no solutions" (exit 0): the import is what
+    // makes the name exist at all in the query's scope, so its absence is a fault,
+    // not an empty answer.
     let without = query(&["mk(x: ?v)"]);
-    assert_eq!(without.code, 0, "the control must run; stderr:\n{}", without.stderr);
+    assert_eq!(
+        without.code, 1,
+        "control: with no import `mk` resolves nowhere and must be refused; \
+         stdout:\n{}\nstderr:\n{}",
+        without.stdout, without.stderr
+    );
     assert!(
-        without.has_stdout_line("no solutions"),
-        "control: with no import the pattern must NOT resolve, or the test below \
-         proves nothing; stdout:\n{}",
+        without.has_diagnostic("error:", "'mk'"),
+        "the refusal must name the unresolvable functor; stderr:\n{}",
+        without.stderr
+    );
+    assert!(
+        !without.stdout.contains("no solutions"),
+        "a refused query must not also print an empty answer; stdout:\n{}",
         without.stdout
     );
 

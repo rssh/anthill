@@ -1,0 +1,12 @@
+-- WI-754 (review follow-ups): TOP-LEVEL predicates for two cases the head-only
+-- functor check cannot classify on its own, so the CLI resolves first and, for an
+-- empty result, consults the discrimination index before refusing.
+--   * an arity-0 PROPOSITION sits in no functor-enumeration table (it matches
+--     only through the discrim tree), so a FALSE one resolves empty yet is
+--     declared — it must read `no solutions`, not "unknown functor";
+--   * a bounded QUANTIFIER (`forall_in` / `some_in`) is a resolver special form
+--     with no rule/fact, recognised by short name.
+fact base(1)
+fact base(2)
+rule holds :- base(1)       -- proposition, TRUE
+rule never :- base(999)     -- proposition, FALSE — base(999) is absent
