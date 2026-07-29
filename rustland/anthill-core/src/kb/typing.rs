@@ -148,6 +148,65 @@ pub enum TypeError {
         span: Option<Span>,
         callee: Symbol,
     },
+    /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
+    /// more of the callee's anonymous requirement slots — `requires Monoid[T],
+    /// Monoid[U]`, or two specs sharing a last segment. The short name is a GATED
+    /// shorthand: the gate is exactly "unambiguous among the remaining anonymous
+    /// slots", and without it this would be the short-name identity comparison
+    /// WI-672 deleted. The fix is to NAME the slot (§4.7), which makes it a type
+    /// parameter and so puts it under rule (1) — the complete mechanism.
+    AmbiguousRequirementKey {
+        span: Option<Span>,
+        op: Symbol,
+        /// The written key.
+        name: Symbol,
+        /// The qualified spec of each slot it matched.
+        slots: Vec<String>,
+    },
+    /// WI-841: `f[Spec = 42](…)` — a key that names a requirement SLOT, bound to
+    /// something that is not a sort. The value position of a slot binding denotes a
+    /// WITNESS, so there is no provider to check and no impl to pin. Its own variant
+    /// rather than [`Self::WitnessDoesNotProvide`], which would have to name the
+    /// non-sort as the witness and would render "Spec does not provide Spec".
+    SelectionValueNotASort {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+    },
+    /// WI-841 (058 §4.4 check 1): `f[Spec = W](…)` named a witness that does not
+    /// provide that spec at all — no `SortProvidesInfo(sort_ref = W, spec = Spec[…])`
+    /// exists. Names BOTH, since either half can be the typo.
+    WitnessDoesNotProvide {
+        span: Option<Span>,
+        op: Symbol,
+        witness: Symbol,
+        spec: Symbol,
+    },
+    /// WI-841 (058 §4.4 check 3): `f[Spec = W](…)` where `W` is a CONCRETE provider
+    /// — a sort with constructors, whose values carry their own sort. There the
+    /// VALUE decides the dispatch (§1.1, the same exemption the witness-coherence
+    /// check applies), so an explicit witness could only agree redundantly or
+    /// contradict silently. Refuse, do not prefer.
+    ValueDirectedSelection {
+        span: Option<Span>,
+        op: Symbol,
+        witness: Symbol,
+        spec: Symbol,
+    },
+    /// WI-841 (058 §4.2): one bracket selected two DIFFERENT witnesses for one spec
+    /// — two keys (a binder and the spec's short name, or two binders of same-spec
+    /// slots) resolving to the same `spec_sort`. A selection is keyed by the SPEC at
+    /// [`resolve`]'s step 0, so two witnesses under one key have no meaning to give.
+    /// Reachable only through a program with two coexisting providers, which stays a
+    /// LOAD error until 058 phase 3b moves the coherence refusal to the use site;
+    /// refused here so that move does not silently turn it into a first-match.
+    ConflictingSelection {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        first: Symbol,
+        second: Symbol,
+    },
     /// WI-709: a parameterized type WRITTEN AS A VALUE (WI-707 —
     /// `is_modifiable(Cell[W = Int64])`) whose type arguments do not fit the sort's
     /// declared params. The value-position face of
@@ -482,6 +541,59 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*callee)),
                 )
             }
+            TypeError::AmbiguousRequirementKey { op, name, slots, .. } => {
+                format!(
+                    "'{}' names more than one requirement slot of {} ({}) — a spec's \
+                     SHORT NAME selects a provider only when it picks out ONE anonymous \
+                     slot; name the slot you mean (`requires <name>: {0}[…]`) and bind \
+                     that name instead",
+                    kb.resolve_sym(*name),
+                    kb.qualified_name_of(*op),
+                    slots.join(", "),
+                )
+            }
+            TypeError::SelectionValueNotASort { op, spec, .. } => {
+                format!(
+                    "the `[{} = …]` binding on {} selects a provider, so its value must \
+                     name a WITNESS SORT — a sort declaring `fact {1}[…]` or `provides \
+                     {1}[…]`",
+                    short_name_of(kb.qualified_name_of(*spec)),
+                    kb.qualified_name_of(*op),
+                )
+            }
+            TypeError::WitnessDoesNotProvide { op, witness, spec, .. } => {
+                format!(
+                    "{} does not provide {} — a call-site `[{} = {}]` on {} must name a \
+                     sort that declares `fact {1}[…]` or `provides {1}[…]`",
+                    kb.qualified_name_of(*witness),
+                    kb.qualified_name_of(*spec),
+                    short_name_of(kb.qualified_name_of(*spec)),
+                    short_name_of(kb.qualified_name_of(*witness)),
+                    kb.qualified_name_of(*op),
+                )
+            }
+            TypeError::ValueDirectedSelection { op, witness, spec, .. } => {
+                format!(
+                    "{} is a CONCRETE provider of {} — its values carry their own sort, \
+                     so the dispatch at {} is already directed by the value and an \
+                     explicit `[{} = {}]` cannot change it",
+                    kb.qualified_name_of(*witness),
+                    kb.qualified_name_of(*spec),
+                    kb.qualified_name_of(*op),
+                    short_name_of(kb.qualified_name_of(*spec)),
+                    short_name_of(kb.qualified_name_of(*witness)),
+                )
+            }
+            TypeError::ConflictingSelection { op, spec, first, second, .. } => {
+                format!(
+                    "the call to {} selects two providers for {}: {} and {} — one spec, \
+                     one witness per call",
+                    kb.qualified_name_of(*op),
+                    kb.qualified_name_of(*spec),
+                    kb.qualified_name_of(*first),
+                    kb.qualified_name_of(*second),
+                )
+            }
             TypeError::InvalidTypeArgument { sort, problem, .. } => problem.describe(kb, *sort),
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
                 let op_name = kb.qualified_name_of(*op);
@@ -581,6 +693,11 @@ impl TypeError {
             | TypeError::ExcessCallTypeArgs { span, .. }
             | TypeError::DuplicateCallTypeArg { span, .. }
             | TypeError::TypeArgsOnNonOperation { span, .. }
+            | TypeError::AmbiguousRequirementKey { span, .. }
+            | TypeError::SelectionValueNotASort { span, .. }
+            | TypeError::WitnessDoesNotProvide { span, .. }
+            | TypeError::ValueDirectedSelection { span, .. }
+            | TypeError::ConflictingSelection { span, .. }
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
@@ -727,6 +844,55 @@ impl TypeError {
                                 call-site `[…]` bracket binds".to_string(),
                 actual_type: "a callee with no type-parameter list (a function value, \
                               an applied rule, a constructor)".to_string(),
+                span: self.span(kb),
+            },
+            // WI-841 — the four selection refusals. Each renders through `format`, so
+            // the load-facing text and the typer-facing text are ONE string: these
+            // messages carry the whole explanation (which slots, which witness, which
+            // spec), and a second hand-written summary here could only drift from it.
+            TypeError::AmbiguousRequirementKey { op, name, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!(
+                    "'{}' to name ONE requirement slot", kb.resolve_sym(*name),
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::SelectionValueNotASort { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!(
+                    "a witness sort for {}", kb.qualified_name_of(*spec),
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::WitnessDoesNotProvide { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!("a provider of {}", kb.qualified_name_of(*spec)),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::ValueDirectedSelection { op, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: "no explicit witness — this dispatch is value-directed"
+                    .to_string(),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::ConflictingSelection { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!("one witness for {}", kb.qualified_name_of(*spec)),
+                actual_type: self.format(kb),
                 span: self.span(kb),
             },
             // WI-709: the SAME `LoadError` the type position raises — one written type,
@@ -5319,7 +5485,12 @@ fn attach_eta_dispatch_dict(
     }
     let caller_requires: Vec<RequiresEntry> =
         env.enclosing_requires().map(|r| r.to_vec()).unwrap_or_default();
-    match build_concrete_dispatch_dict(kb, &subst, parent, env.enclosing_sort(), &caller_requires, env.enclosing_sort_param_rigids()) {
+    // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
+    // bracket — there is no call here to write one on — so no selection.
+    match build_concrete_dispatch_dict(
+        kb, &subst, parent, env.enclosing_sort(), &caller_requires,
+        env.enclosing_sort_param_rigids(), &[],
+    ) {
         Ok(Some(dict)) => {
             occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
             Ok(())
@@ -9304,7 +9475,10 @@ fn check_apply_iter(
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
         // seed the substitution first. Returns `NoSuchTypeParam` on
         // an unknown binding name.
-        seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
+        // WI-841: and returns what the bracket SELECTED (058 §4.2) — read below by
+        // both dispatch routes, the spec-op one (`dispatch_spec_op_cached`) and the
+        // Direct-call dictionary build (`build_concrete_dispatch_dict`).
+        let selections = seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
         // WI-424: a SAME-SORT sibling call inside a member body shares the
         // enclosing instance's sort params — seed the callee's canonical param
         // vars with the body's rigids (the WI-392 skolems, extended to sort
@@ -10181,6 +10355,15 @@ fn check_apply_iter(
             }
         }
 
+        // WI-841 (058 §4.4 check 1, binding-precise half): now that `subst` is
+        // complete, judge every selection against the GOAL it will be applied to.
+        // Here rather than at each consumer: a slot is served by one of THREE routes
+        // (the parent sort's dictionary, the spec-op dispatch, or — for an op-scoped
+        // `requires` — value-direction at eval, which has no dictionary channel at
+        // all, WI-822 leg 1), and only the first two have a place to complain from.
+        // One site-level check makes the same selection loud on all three.
+        check_selection_bindings(kb, &subst, fn_sym, &selections, span)?;
+
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
         // op (declared without body on a parametric sort), look up the
         // unique impl op based on the per-call substitution. The proposal-
@@ -10371,7 +10554,17 @@ fn check_apply_iter(
             // direct slots, so `dispatch_spec_op_cached`'s direct-only
             // trigger covered them; under the direct-chain ABI the nested
             // case needs this tree walk.
-            if !enclosing_requires.is_empty() {
+            //
+            // WI-841: unless the CALL SITE pinned this spec. Deferring is a FORWARD —
+            // "the enclosing frame's dictionary answers this" — and explicit selection
+            // outranks a forward exactly as it outranks a search (§4.1 tier 1). This
+            // pre-check runs BEFORE dispatch and RETURNS, so without the gate the pin
+            // is swallowed here and the twin gate inside `dispatch_spec_op_cached` is
+            // never reached: measured, `Monoid.combine[Monoid = AnyM](a, b)` written
+            // inside a sort that `requires Monoid[…]` computed the SEARCHED answer.
+            // Two gates, because there are two places that decide to defer.
+            let pinned_spec = pinned_witness_for(kb, &selections, spec_sort).is_some();
+            if !pinned_spec && !enclosing_requires.is_empty() {
                 // WI-613: the σ context lets `find_requires_location` disambiguate
                 // two same-spec `requires` over distinct element params by element
                 // identity, instead of blind first-match.
@@ -10496,7 +10689,7 @@ fn check_apply_iter(
             };
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires, carrier_sym,
-                Some(&dispatch_sigma),
+                Some(&dispatch_sigma), &selections,
             );
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
@@ -10860,7 +11053,7 @@ fn check_apply_iter(
                     // died at eval reading the unbound `__req_*`.
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb, &subst, parent_sym, enclosing_sort, &caller_requires,
-                        env.enclosing_sort_param_rigids(),
+                        env.enclosing_sort_param_rigids(), &selections,
                     )
                     .map_err(|refusal| TypeError::UnsatisfiableRequirement {
                         span,
@@ -11483,6 +11676,10 @@ fn build_dispatching_dict_direct(
         // WI-419: req-insertion diagnostic path — the call-site subst is gone
         // here, so Strategy 1 keeps its first-match behavior.
         None,
+        // WI-841: and with it the call-site bracket, so there is no selection to
+        // apply. This path's output is the diagnostic-only `dispatch_rewrites` term;
+        // the dict eval actually threads was built at the call site, WITH the pin.
+        &[],
     )
     // WI-828: a refusal needs the σ context (`disambig = Some`), so the σ-less
     // diagnostic path cannot produce one.
@@ -11509,6 +11706,14 @@ pub struct RequirementRefusal {
     /// How Strategy-3 construction terminated, rendered — the `Ambiguous`
     /// provider set when there is one, else the `NoMatch`/`Cyclic` account.
     construction: String,
+    /// WI-841: the witness this call-site bracket PINNED for the dep, when it did.
+    /// A pinned dep that fails to project can never degrade to "no dict, carry on":
+    /// the author named a provider and it was not used, so the refusal is
+    /// unconditional rather than gated on the σ signature the other fields describe.
+    /// A `Symbol`, rendered by `render` like every other name here — the other fields
+    /// are pre-rendered because they are LISTS built during the walk; a single name is
+    /// not, and `render` already holds the `kb`.
+    pinned: Option<Symbol>,
 }
 
 impl RequirementRefusal {
@@ -11523,12 +11728,22 @@ impl RequirementRefusal {
         } else {
             format!("call to `{}`", op_qn)
         };
-        let mut msg = format!(
-            "requirement `{}` of `{}` cannot be supplied for {}",
-            self.dep_text,
-            kb.qualified_name_of(callee_sort),
-            usage,
-        );
+        let mut msg = match &self.pinned {
+            Some(w) => format!(
+                "requirement `{}` of `{}` cannot be supplied for {} from the selected \
+                 witness `{}`",
+                self.dep_text,
+                kb.qualified_name_of(callee_sort),
+                usage,
+                kb.qualified_name_of(*w),
+            ),
+            None => format!(
+                "requirement `{}` of `{}` cannot be supplied for {}",
+                self.dep_text,
+                kb.qualified_name_of(callee_sort),
+                usage,
+            ),
+        };
         if !self.unconstrained.is_empty() {
             msg.push_str(&format!(
                 ": element {} is unconstrained at this call site",
@@ -11656,7 +11871,15 @@ fn explain_dep_refusal(
     }
     let refused_covers: Vec<String> =
         refused_entries.iter().map(|e| render_requires_entry(kb, e)).collect();
-    Some(RequirementRefusal { dep_text, unconstrained, refused_covers, construction })
+    // WI-841: this explainer is the σ-signature one; a PIN refusal is built by the
+    // caller, which is the only place that knows a pin was in force.
+    Some(RequirementRefusal {
+        dep_text,
+        unconstrained,
+        refused_covers,
+        construction,
+        pinned: None,
+    })
 }
 
 /// Shared core of the Direct-path dict build (`build_dispatching_dict_direct`)
@@ -11682,6 +11905,13 @@ fn explain_dep_refusal(
 /// silent `Ok(None)` fall-back. The Direct path passes false and silently
 /// drops un-projected deps (its output is the diagnostic-only
 /// `dispatch_rewrites` term), so it can never see `Err`.
+///
+/// WI-841 adds ONE unconditional abort to that: a dep the call site PINNED and that
+/// did not project is `Err` whatever the σ signature says. The `Ok(None)` fall-back
+/// means "no dictionary here; eval will inherit or value-direct", which is a
+/// defensible answer to a requirement nobody spoke about and no answer at all to one
+/// the author named a provider for. Measured before: such a call loaded clean and
+/// died `Internal(… __req_monoid not bound …)` at eval.
 fn build_dispatching_dict_from_chain(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
@@ -11693,6 +11923,8 @@ fn build_dispatching_dict_from_chain(
     // WI-419: call-site context for Strategy 1 same-spec disambiguation; `None`
     // on the req-insertion diagnostic path (`build_dispatching_dict_direct`).
     disambig: Option<&SigmaCtx>,
+    // WI-841: the call site's explicit provider selections, per slot (§4.5).
+    selected: &[InstanceSelection],
 ) -> Result<Option<TermId>, Box<RequirementRefusal>> {
     // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
     // it depends only on `caller_requires`, not on the current dep, so the
@@ -11710,15 +11942,34 @@ fn build_dispatching_dict_from_chain(
         // WI-828: have Strategy 3 hand out its terminal failure so a refusal
         // is explained from what the search itself saw, not a re-run.
         // Requested only where the explanation has a consumer.
+        let pinned_witness = pinned_witness_for(kb, selected, dep.required_sort);
         let mut s3_failure: Option<ResolutionResult> = None;
-        let s3_slot =
-            (require_complete && disambig.is_some()).then_some(&mut s3_failure);
+        // WI-841: a PINNED dep wants the account too — its refusal is unconditional,
+        // and the account is what makes it say more than "it did not work".
+        let s3_slot = (require_complete && (disambig.is_some() || pinned_witness.is_some()))
+            .then_some(&mut s3_failure);
         match build_dep_projection(
             kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms, disambig,
-            s3_slot,
+            s3_slot, selected,
         ) {
             Some(t) => proj_terms.push(t),
             None if require_complete => {
+                // WI-841: the call NAMED a provider for this dep and it did not land.
+                // Unconditional — `Ok(None)` would classify a dict-less call that
+                // loads clean and dies at eval, which is the WI-828 shape with an
+                // explicit instruction ignored on top.
+                if let Some(w) = pinned_witness {
+                    return Err(Box::new(RequirementRefusal {
+                        dep_text: render_requires_entry(kb, dep),
+                        unconstrained: Vec::new(),
+                        refused_covers: Vec::new(),
+                        construction: s3_failure
+                            .as_ref()
+                            .map(describe_resolution_failure)
+                            .unwrap_or_default(),
+                        pinned: Some(w),
+                    }));
+                }
                 // WI-828: with a σ in hand, a refusal-signature failure (a
                 // σ-refused cover / an Ambiguous construction of an
                 // unconstrained element) is a load diagnostic, not a silent
@@ -11780,6 +12031,10 @@ fn build_concrete_dispatch_dict(
     // rigids()`), needed to disambiguate a forward among two+ same-spec caller
     // requires (a callee element unified with a rigidified caller param).
     sort_param_rigids: &[(VarId, TermId)],
+    // WI-841 (058 §4.5): what the call's own bracket selected. This is the path a
+    // Direct call's dictionary is BUILT on, so it is where a construction-site
+    // selection (§5.3) actually decides which provider lands in the callee's frame.
+    selected: &[InstanceSelection],
 ) -> Result<Option<TermId>, Box<RequirementRefusal>> {
     // WI-418: a SAME-SORT call inherits the enclosing frame's requirements at
     // eval (`start_apply_same_sort` checks `inherit` — callee parent == caller
@@ -11818,7 +12073,7 @@ fn build_concrete_dispatch_dict(
     let disambig = SigmaCtx { subst, sort_param_rigids };
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &concrete_chain, caller_sort, caller_requires, &syms, true,
-        Some(&disambig),
+        Some(&disambig), selected,
     )
 }
 
@@ -11965,6 +12220,13 @@ pub fn build_dep_projection(
     // and does not resolve; left `None` on success or when an earlier
     // strategy served the dep.
     s3_failure_out: Option<&mut Option<ResolutionResult>>,
+    // WI-841 (058 §4.5): the call site's explicit provider selections. A dep this
+    // bracket PINNED skips Strategies 1 & 2 outright — those FORWARD the caller's own
+    // dictionary, and explicit selection outranks a forward exactly as it outranks a
+    // search (§4.1 tier 1) — and rides into Strategy 3's scope, where step 0 restricts
+    // the candidate set. Empty on the req-insertion diagnostic path, which has no call
+    // site in hand.
+    selected: &[InstanceSelection],
 ) -> Option<TermId> {
     // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
     // E = ?`) is satisfied STRUCTURALLY by the effect-row machinery — there is
@@ -12006,8 +12268,16 @@ pub fn build_dep_projection(
     // forwards BY NAME. On the σ-less diagnostic path the coarse first-match
     // stands — there is no subst to consult. Both modes are ONE scan with the
     // mode-selecting `entries_cover` (σ-precise implies coarse).
-    let chosen = (0..caller_requires.len())
-        .find(|&i| entries_cover(kb, &caller_requires[i], dep, disambig));
+    //
+    // WI-841: a dep the CALL SITE pinned takes neither forward. Strategies 1 and 2
+    // both answer "the caller's frame already holds a dictionary for this" — true, and
+    // beside the point once the call has said which provider it wants.
+    let pinned = pinned_witness_for(kb, selected, dep.required_sort).is_some();
+    let chosen = if pinned {
+        None
+    } else {
+        (0..caller_requires.len()).find(|&i| entries_cover(kb, &caller_requires[i], dep, disambig))
+    };
     if let Some(i) = chosen {
         let name = req_name_for_chain_index(kb, caller_sort?, i)?;
         return Some(build_req_var_ref(kb, syms, name));
@@ -12019,7 +12289,12 @@ pub fn build_dep_projection(
     // `requirement_at_sort` projects them. A dep reachable only past a
     // second level is not found here and falls through to Strategy 3's
     // SLD construction.
-    for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
+    //
+    // WI-841: skipped wholesale for a PINNED dep. Loop-invariant, so it is the
+    // iteration SOURCE that says so — a test inside would read as "this can go true
+    // mid-loop" and invite real work above it.
+    let s2_chains: &[Vec<RequiresEntry>] = if pinned { &[] } else { caller_sub_chains };
+    for (i, sub_chain) in s2_chains.iter().enumerate() {
         // WI-613/WI-821: same σ-class gate as Strategy 1 (same predicate). A
         // sub-chain entry is written in the SLOT sort's own param space
         // (`direct_requires_chain(slot)` roots at the slot — `Eq[T = Eq.T]`
@@ -12073,7 +12348,11 @@ pub fn build_dep_projection(
     // it, the wildcard-tolerant scope cover would resurrect the exact
     // forward the gate above refused.
     let goal = goal_from_requires_entry(kb, dep)?;
-    let scope = ResolutionScope { available_requires: caller_requires, sigma: disambig };
+    let scope = ResolutionScope {
+        available_requires: caller_requires,
+        sigma: disambig,
+        selected,
+    };
     match resolve(kb, &goal, &scope) {
         ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_sort, &tree, syms),
         failure => {
@@ -12757,7 +13036,10 @@ pub(crate) fn resolve_bridge_requirements(
         // frame at all; value-directed dispatch reached an impl the caller could not
         // pin, so no caller slot names it), so a slot can only resolve by
         // CONSTRUCTION (`Leaf`/`Conditional`), never `FromScope`.
-        let scope = ResolutionScope { available_requires: &[], sigma: None };
+        // WI-841: and no SELECTION — this runs at eval, from a value-directed
+        // dispatch or the SLD bridge, where there is no call-site bracket to read.
+        let scope =
+            ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
         match resolve(kb, &goal, &scope) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             // WI-855: a TIE is a coherence verdict, kept apart from the causes that
@@ -13065,8 +13347,22 @@ fn op_scoped_type_param_symbol(
 /// A callee that is not an operation at all never gets here — `check_apply_iter`
 /// refuses its bracket before classification (`TypeArgsOnNonOperation`).
 ///
-/// This does NOT make a sort-level param bindable from a call bracket; that rung does
-/// not exist yet (058 §9 phase 2). The change is only that writing one is heard.
+/// WI-841 (058 §9 phase 2) added the other two things a key can name, so the bracket
+/// is now a REQUIREMENT-SLOT channel as well as a type-argument one:
+///   * rung (1) spans TWO SCOPES — the operation's declared parameters **and its
+///     enclosing sort's**. Measured before: `Box.mk[T = String](5)` on `sort Box {
+///     sort T = ? }` was `unknown type-param 'T'`, so §5.3's construction-site
+///     selection had nothing to stand on. The two scopes never both answer: a
+///     colliding pair is refused at the DECLARATION (`check_op_type_param_shadowing`,
+///     WI-840), which is why appending one list to the other cannot capture silently.
+///   * rung (2) is a spec SHORT NAME among the callee's anonymous requirement slots
+///     ([`resolve_call_type_arg_targets`]).
+/// A key that answers neither is `NoSuchTypeParam`, exactly as before.
+///
+/// The SELECTIONS a bracket makes are RETURNED, not applied here: their consumer is
+/// [`resolve`]'s step 0 (§4.5), reached later in this same `check_apply_iter` through
+/// the dispatch and dict-build paths. A named slot's binding does BOTH — it unifies
+/// the parameter (so the witness is part of the type, §4.7) and selects the provider.
 ///
 /// LIMIT, stated because the doc above would otherwise overclaim: `unify_types`'
 /// verdict is discarded here, as it is at every seeding site (WI-367 / WI-379 depend
@@ -13082,17 +13378,315 @@ fn seed_op_type_args(
     occ: &Rc<NodeOccurrence>,
     fn_sym: Symbol,
     span: Option<Span>,
-) -> Result<(), TypeError> {
-    let Some(type_args) = call_type_args_of(occ) else { return Ok(()) };
-    let targets = resolve_call_type_arg_targets(type_args, &op.type_params, fn_sym, span)?;
+) -> Result<Vec<InstanceSelection>, TypeError> {
+    let Some(type_args) = call_type_args_of(occ) else { return Ok(Vec::new()) };
+    let declared = call_bracket_scopes(kb, op, fn_sym);
+    let slots = callee_requirement_slots(kb, fn_sym);
+    let targets =
+        resolve_call_type_arg_targets(kb, type_args, &declared, &slots, fn_sym, span)?;
     // One target per binding, in order — nothing is skipped now, which is what lets
     // this be a plain `zip` rather than an index carried back out of the resolver.
+    let mut selections: Vec<InstanceSelection> = Vec::new();
+    let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
     for (target, (_, value)) in targets.into_iter().zip(type_args) {
-        let target = type_param_var_term(kb, target);
-        // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
-        // so unify it directly — a value-in-type arg (`Value::Node`) unifies
-        // cross-carrier through the typer's view dispatch, no re-ground.
-        unify_types(kb, subst, &TermIdView(target), value);
+        if let Some(param) = target.param() {
+            let param = type_param_var_term(kb, param);
+            // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
+            // so unify it directly — a value-in-type arg (`Value::Node`) unifies
+            // cross-carrier through the typer's view dispatch, no re-ground.
+            unify_types(kb, subst, &TermIdView(param), value);
+        }
+        let Some(spec_sort) = target.slot_spec() else { continue };
+        // A slot binding's VALUE names a witness SORT, so it must be readable as one.
+        // A binding that is not (a literal, an arrow) has no provider to check and no
+        // impl to pin — refuse it rather than drop it into the type-parameter half
+        // and call the slot bound.
+        let witness = selection_witness_sym(kb, value)
+            .ok_or(TypeError::SelectionValueNotASort { span, op: fn_sym, spec: spec_sort })?;
+        // Built at the FIRST slot binding, not per binding: the §1.1 set is a scan of
+        // every `SortInfo` fact, and a bracket may bind several slots.
+        let concrete = concrete
+            .get_or_insert_with(|| super::load::sorts_with_constructors(kb));
+        validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
+        if let Some(prev) = selections
+            .iter()
+            .find(|s| same_sort_canonical(kb, s.spec_sort, spec_sort))
+        {
+            if !same_sort_canonical(kb, prev.witness, witness) {
+                return Err(TypeError::ConflictingSelection {
+                    span,
+                    op: fn_sym,
+                    spec: spec_sort,
+                    first: prev.witness,
+                    second: witness,
+                });
+            }
+            continue;
+        }
+        selections.push(InstanceSelection { spec_sort, witness });
+    }
+    Ok(selections)
+}
+
+/// WI-841 (058 §4.1 tier 1) — the witness the CALL SITE selected for `spec`, if any.
+///
+/// One owner for the pin criterion, because four sites ask it and each is a place
+/// where explicit selection must outrank a FORWARD: the WI-239 defer pre-check and
+/// `dispatch_spec_op_cached`'s defer trigger (both "the enclosing frame answers this"),
+/// `resolve_inner`'s `FromScope` step, and `build_dep_projection`'s Strategies 1 & 2.
+/// Those four are one statement said four times — "forwarding" has no single owner in
+/// this file (the cover predicates `entries_cover` / `requires_entry_covers_goal` /
+/// `find_requires_slot` / `find_requires_location` are four askers sharing only their
+/// inner pair verdict, WI-826), and folding the pin into them would push a PER-CALL
+/// policy into predicates the req-insertion pass and the eval bridge also call.
+///
+/// `build_dispatching_dict_from_chain`'s use is NOT one of the four: it fires AFTER a
+/// pinned dep already failed to resolve, and upgrades a silent `Ok(None)` degradation
+/// to a refusal. Loudness, not precedence — kept distinct so the tier-1 rule is not
+/// read as covering it.
+fn pinned_witness_for(
+    kb: &KnowledgeBase,
+    selected: &[InstanceSelection],
+    spec: Symbol,
+) -> Option<Symbol> {
+    selected
+        .iter()
+        .find(|s| same_sort_canonical(kb, s.spec_sort, spec))
+        .map(|s| s.witness)
+}
+
+/// WI-841 (058 §4.2) — one explicit provider selection a call site wrote:
+/// `f[Spec = W](…)`. Keyed by the requirement's SPEC, because that is the coordinate
+/// [`resolve`]'s goal carries (`SortGoal::spec_sort`); two slots of ONE spec are
+/// therefore indistinguishable to a pin, which is why two DIFFERENT witnesses for one
+/// spec are refused at the site ([`TypeError::ConflictingSelection`]) rather than
+/// silently first-matched. That corner is unreachable in a loading program until 058
+/// phase 3b lets two providers coexist, and it is 3b's business to give a slot-precise
+/// key if it needs one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InstanceSelection {
+    /// The spec sort of the selected requirement slot.
+    pub spec_sort: Symbol,
+    /// The witness sort the call named.
+    pub witness: Symbol,
+}
+
+/// WI-841 (058 §4.2 rule 1) — the type parameters a call bracket on `fn_sym` may bind:
+/// the operation's own, then its ENCLOSING SORT's. Concatenated rather than laddered:
+/// a name declared in both scopes is refused AT THE DECLARATION (WI-840's
+/// `check_op_type_param_shadowing`), so the two lists are disjoint by construction and
+/// no key can hit two targets. Were they not, an ordered ladder here would be a
+/// capture the reader cannot see, which is exactly why that guard exists.
+///
+/// A sort parameter's `Var` is read through [`sort_type_params_as_pairs`] — whose own
+/// doc calls it *"the same shape an operation's own `type_params` take"*, which is
+/// exactly the splice this function performs. Reusing it also inherits its SortAlias
+/// route (the one `sort_goal_from_subst` and `resolve_param_value_via_subst` read a
+/// sort param by, so seeding binds the very variable the callee's signature and its
+/// `requires` chain mention) and its memo — the uncached `type_params_of_sort` walk
+/// scans the whole symbol table per call.
+///
+/// KIND-GATED, for the reason the same pairing at [`rigidify_op_type_params`]'s call
+/// site is: `impl_parent_of_op` strips the last segment and resolves, so a FREE
+/// operation's "parent" is its NAMESPACE, which declares no type parameters and has
+/// nothing to contribute.
+///
+/// The key is the BARE short name — the cached pairs are keyed by the QUALIFIED param
+/// symbol, while a bracket key lowers to a bare interned `Symbol`
+/// (`build_call_type_args`) and `op.type_params` is keyed the same way (WI-708), and
+/// rung (1) matches by identity.
+fn call_bracket_scopes(
+    kb: &mut KnowledgeBase,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+) -> Vec<(Symbol, Var)> {
+    let mut declared = op.type_params.clone();
+    let Some(parent) = impl_parent_of_op(kb, fn_sym) else { return declared };
+    if kb.kind_of(parent) != Some(crate::intern::SymbolKind::Sort) {
+        return declared;
+    }
+    // Read out of the memo first: `kb.intern` below needs `&mut kb`, and the pairs are
+    // an owned `Rc` snapshot, so nothing borrows `kb` across the loop.
+    let pairs: Vec<(String, Var)> = sort_type_params_as_pairs(kb, parent)
+        .iter()
+        .filter_map(|(qualified, target)| match kb.get_term(*target) {
+            Term::Var(v) => Some((
+                short_name_of(kb.qualified_name_of(*qualified)).to_string(),
+                *v,
+            )),
+            _ => None,
+        })
+        .collect();
+    for (short, var) in pairs {
+        let name_sym = kb.intern(&short);
+        declared.push((name_sym, var));
+    }
+    declared
+}
+
+/// WI-841 (058 §4.2 rule 2) — one requirement slot a call bracket on `fn_sym` may
+/// select, carrying everything either consumer needs: which SPEC it demands, whether
+/// the author NAMED it, and how its goal is formed at the call's own bindings.
+struct CalleeSlot {
+    /// The slot's spec base.
+    spec: Symbol,
+    /// Named at the declaration? A named slot is reached by its BINDER under rule (1),
+    /// so it is not its own rule-(2) candidate — but it is still SUBTRACTED from its
+    /// spec's anonymous population, else `requires plus: Monoid[T]` would answer
+    /// `[Monoid = …]` too and one slot would take two contradicting bindings.
+    named: bool,
+    /// Where the goal comes from. The two `requires` levels store their spec in
+    /// different SHAPES (see [`goal_from_op_requires_entry`]) and the dispatch slot has
+    /// no entry at all, so the decoder rides with the slot rather than being re-chosen.
+    source: CalleeSlotSource,
+}
+
+enum CalleeSlotSource {
+    /// An OP-scoped `requires` clause — a bare application.
+    OpRequires(RequiresEntry),
+    /// The enclosing sort's `requires` — a `SortView`.
+    SortRequires(RequiresEntry),
+    /// A body-less spec op's own dispatch target; its goal comes from the subst.
+    Dispatch,
+}
+
+/// WI-841 — the requirement slots a call bracket on `fn_sym` may select. THREE
+/// sources, matching where a requirement a call must answer can be declared:
+///
+///  * the OPERATION's own `requires` (WI-448) — spec goals only; a VALUE precondition
+///    (`requires neq(b, 0)`, WI-539) shares the clause list and is no slot, and its
+///    owner is [`is_value_precondition_clause`], CALLED rather than re-derived;
+///  * its ENCLOSING SORT's `requires`, which is the channel a Direct call's dictionary
+///    is actually built from (`build_concrete_dispatch_dict`) and what §5.3's
+///    construction-site selection binds;
+///  * for a body-less SPEC op, the spec ITSELF — `Desc.describe[Desc = W](x)` has no
+///    `requires` of its own, and the thing selected is the dispatching dictionary,
+///    `requirements[0]` (§4.2, "a direct spec-op call is the same case").
+///
+/// ONE walk, because BOTH consumers need it — rung (2)'s candidate set
+/// ([`resolve_call_type_arg_targets`]) and the binding-precise validation
+/// ([`selection_goals`]). They were two walks, and had already drifted: only one
+/// filtered value preconditions, while a doc comment asserted they could not disagree.
+fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -> Vec<CalleeSlot> {
+    let mut out: Vec<CalleeSlot> = Vec::new();
+    let op_entries: Vec<RequiresEntry> = op_requires_entries(kb, fn_sym)
+        .into_iter()
+        .filter(|e| !is_value_precondition_clause(kb, &e.spec))
+        .collect();
+    push_slots(kb, fn_sym, op_entries, CalleeSlotSource::OpRequires, &mut out);
+    if let Some(parent) = impl_parent_of_op(kb, fn_sym) {
+        let sort_entries = direct_requires_chain(kb, parent);
+        push_slots(kb, parent, sort_entries, CalleeSlotSource::SortRequires, &mut out);
+        // The spec-op's own dispatch target. Only for a BODY-LESS spec op: a member
+        // with a body is called directly and dispatches nothing.
+        if lookup_spec_op_dispatch(kb, fn_sym).is_some() {
+            out.push(CalleeSlot { spec: parent, named: false, source: CalleeSlotSource::Dispatch });
+        }
+    }
+    out
+}
+
+/// WI-841 — tag `entries` (all of ONE owner's) with whether each is NAMED, and append.
+///
+/// Named-ness is decided by MULTISET-matching the owner's recorded slots BY SPEC, not
+/// by the recorded POSITION: the position indexes a list this side does not hold (see
+/// [`KnowledgeBase::named_requirement_slots`] — at sort level the typer's list is the
+/// FACT order, a permutation of source order). WHICH entry of a same-spec pair gets
+/// tagged is therefore arbitrary, and that is sound only because it is UNOBSERVABLE:
+/// an [`InstanceSelection`] is spec-keyed, so nothing downstream can tell the two
+/// apart, and the only thing read off the tag is the COUNT that rung (2)'s ambiguity
+/// gate needs. Said out loud because it is load-bearing and looks like an oversight.
+fn push_slots(
+    kb: &KnowledgeBase,
+    owner: Symbol,
+    entries: Vec<RequiresEntry>,
+    wrap: fn(RequiresEntry) -> CalleeSlotSource,
+    out: &mut Vec<CalleeSlot>,
+) {
+    let mut named: Vec<Symbol> = kb
+        .named_requirement_slots(owner)
+        .iter()
+        .filter_map(|s| s.spec_base)
+        .collect();
+    for entry in entries {
+        let spec = entry.required_sort;
+        // `same_sort_canonical`, not raw `==`: the two symbols come from DIFFERENT
+        // decoders (the loader's `spec_base_functor` / `head_functor` vs
+        // `push_op_requires_clause_term`), and a raw compare that missed would tag a
+        // NAMED slot anonymous — after which rung (2) answers for a slot the author
+        // already named, silently, which is what the tag exists to prevent.
+        let is_named = match named.iter().position(|s| same_sort_canonical(kb, *s, spec)) {
+            Some(i) => {
+                named.remove(i);
+                true
+            }
+            None => false,
+        };
+        out.push(CalleeSlot { spec, named: is_named, source: wrap(entry) });
+    }
+}
+
+/// WI-841 (058 §4.4) — validate one explicit selection at the site that wrote it.
+///
+/// Check 3 first, because it is a refusal of the WHOLE spelling rather than a
+/// complaint about this witness: where the provider is CONCRETE (a sort with
+/// constructors), its values carry their own sort and value-directed dispatch is
+/// already deciding (§1.1 — the very exemption the witness-coherence grouping
+/// applies, read through its owner `sorts_with_constructors` so the two cannot
+/// drift). An explicit witness there could only agree redundantly or contradict
+/// silently, so §4.4 says refuse, do not prefer.
+///
+/// `concrete` is the §1.1 set, passed in rather than recomputed: it answers in BULK (a
+/// scan of every `SortInfo` fact) and is built ONCE per written bracket by the caller.
+///
+/// NOT `KnowledgeBase::sort_has_constructors`, which exists and which
+/// `carrier_is_abstract_spec` calls — the two are DIFFERENT criteria, not two spellings
+/// of one: this set reads `SortInfo.constructors`, that predicate scans for
+/// `Entity`-kind children of the sort's qualified name. §1.1's exemption is the FORMER
+/// (`check_provider_operations`' `concrete.contains(&p.carrier)`), so that is the one to
+/// share; using the per-sort predicate here would silently answer a different question.
+/// Membership is probed BOTH raw and canonical because the set is keyed on the raw
+/// `SortInfo.name` symbol while the witness arrives from a resolved call-site
+/// reference — the existing consumer probes raw, so probing only the canonical form
+/// could miss.
+///
+/// Check 1 is BASE-level here: does `witness` provide `spec` at all. The
+/// BINDING-precise half — "whose spec view unifies with the goal" — is [`resolve`]'s
+/// step 0, which filters the goal's own candidate set to the pinned impl and so
+/// answers it exactly, at the one place the goal exists. The split is deliberate:
+/// this rung owns the message for the two typos worth naming both halves for (a
+/// non-provider, and a provider of a DIFFERENT spec); step 0 owns the case where the
+/// witness provides the spec but not at these bindings, where the goal must be
+/// rendered to say anything useful.
+///
+/// Check 2 ("the slot exists on the callee") is [`resolve_call_type_arg_targets`] —
+/// a key that names no slot never becomes a selection.
+fn validate_instance_selection(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    spec_sort: Symbol,
+    witness: Symbol,
+    concrete: &std::collections::HashSet<Symbol>,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if concrete.contains(&witness) || concrete.contains(&kb.canonical_sort_sym(witness)) {
+        return Err(TypeError::ValueDirectedSelection {
+            span,
+            op: fn_sym,
+            witness,
+            spec: spec_sort,
+        });
+    }
+    let provides = impl_sorts_providing_spec(kb, spec_sort)
+        .iter()
+        .any(|s| same_sort_canonical(kb, *s, witness));
+    if !provides {
+        return Err(TypeError::WitnessDoesNotProvide {
+            span,
+            op: fn_sym,
+            witness,
+            spec: spec_sort,
+        });
     }
     Ok(())
 }
@@ -13110,15 +13704,73 @@ fn call_type_args_of(
     }
 }
 
-/// WI-839: match each call-site bracket binding to the declared type parameter it
-/// binds — named by symbol identity, positional by declaration order — returning the
-/// param var per binding, PARALLEL TO `type_args`. Every binding lands on a slot of
+/// WI-841 (058 §4.2) — what ONE call-site bracket binding names.
+#[derive(Clone, Copy, Debug)]
+enum CallTypeArgTarget {
+    /// Rule (1) landed on an ordinary declared type parameter — the operation's or
+    /// its enclosing sort's. Today's meaning, unchanged.
+    Param(Var),
+    /// Rule (1) landed on a parameter that is a NAMED REQUIREMENT SLOT's binder. Its
+    /// value is a WITNESS, so the binding does both jobs: it pins the parameter (the
+    /// witness becomes part of the type — §4.7's `SortedSet[T = String, O = ByLength]`)
+    /// and it selects the provider for that slot.
+    NamedSlot(Var, Symbol),
+    /// Rule (2) — a spec SHORT NAME, unambiguous among the callee's anonymous slots.
+    /// A gated shorthand for the same selection; there is no parameter to pin.
+    AnonSlot(Symbol),
+}
+
+impl CallTypeArgTarget {
+    /// The type-parameter variable to unify the written value into, if any.
+    fn param(self) -> Option<Var> {
+        match self {
+            CallTypeArgTarget::Param(v) | CallTypeArgTarget::NamedSlot(v, _) => Some(v),
+            CallTypeArgTarget::AnonSlot(_) => None,
+        }
+    }
+
+    /// The SPEC of the requirement slot this binding selects a provider for, if any.
+    fn slot_spec(self) -> Option<Symbol> {
+        match self {
+            CallTypeArgTarget::NamedSlot(_, s) | CallTypeArgTarget::AnonSlot(s) => Some(s),
+            CallTypeArgTarget::Param(_) => None,
+        }
+    }
+}
+
+/// WI-839/WI-841: match each call-site bracket binding to what it names — returning
+/// one target per binding, PARALLEL TO `type_args`. Every binding lands on a target of
 /// its OWN or the call is refused; nothing is skipped, which is why the result can be
 /// zipped positionally, and NO SLOT IS BOUND TWICE.
 ///
-/// Every one of the three refusals is a binding the author WROTE that would otherwise
+/// Named keys resolve in the §4.2 order:
+///   1. a declared TYPE PARAMETER — matched by SYMBOL IDENTITY (`n == name_sym`),
+///      because both sides are the bare spelling: a key lowers to a bare interned
+///      `Symbol` ("the param label … NOT a caller-scope value", `build_call_type_args`)
+///      and `op.type_params` holds `kb.intern("T")` (WI-708). `declared` spans the
+///      operation's scope and its enclosing sort's ([`call_bracket_scopes`]).
+///   2. a requirement's SPEC SHORT NAME among the callee's remaining ANONYMOUS slots.
+///      This one cannot match by identity — its candidates are the slots' CANONICAL,
+///      qualified spec symbols — so it is a NAME LOOKUP, `same_label`'s sanctioned
+///      family 2, and **the "unambiguous" clause IS the gate that makes it sound**:
+///      without it this is the short-name identity comparison WI-672 deleted.
+///
+/// A QUALIFIED key never reaches rung 2 and is not resolved: it is refused with the
+/// rung-1 diagnostic, exactly as it is today (measured — `idy[Id.T = Int64]` is
+/// `unknown type-param 'Id.T'`). Three reasons, in §4.2's order of force: rule (1)'s
+/// key is unresolvable IN PRINCIPLE (`T` is a binder of the callee, visible in no
+/// scope), so a ladder mixing them would rank a label against a reference and
+/// resolve-then-fall-back is a fallback; a resolved key would make selection depend on
+/// the CALLER's imports, while the supply path takes no scope at all; and it buys no
+/// expressiveness, since every selection a short name cannot express is written with
+/// the §4.7 named slot, which puts it under rule (1). Gating rung 2 on a bare key also
+/// keeps `same_label`'s own `debug_assert` — which fires on a partially-qualified pair
+/// — out of reach.
+///
+/// Every one of the four refusals is a binding the author WROTE that would otherwise
 /// have meant nothing:
-///   * a named key matching no declared parameter — `NoSuchTypeParam`;
+///   * a named key matching no parameter and no slot — `NoSuchTypeParam`;
+///   * a key matching two or more slots — `AmbiguousRequirementKey` (rung 2's gate);
 ///   * the same key twice — `DuplicateCallTypeArg`. Both copies resolve to one var, so
 ///     the second unification contradicts the first and `unify_types`' verdict is
 ///     discarded at the caller. The guard WI-805 / WI-808 / WI-809 already put on tuple
@@ -13127,23 +13779,73 @@ fn call_type_args_of(
 ///     `idy[T = Int64, String]` over-applies a one-param callee, and measuring the
 ///     positionals against `declared.len()` called that within budget while the
 ///     positional silently re-targeted the slot the named key had taken.
+///
+/// POSITIONAL bindings stay rung (1) only. A requirement slot has no position a caller
+/// could count to — the two lists it might index (`op_requires_entries` and the
+/// enclosing sort's) are separate, and the sort-level one is the FACT order at every
+/// typer-side reader — so a positional selection would be a coordinate nobody can
+/// read off the source. Selection is written by NAME or not at all.
 fn resolve_call_type_arg_targets(
+    kb: &KnowledgeBase,
     type_args: &[(Option<Symbol>, crate::eval::value::Value)],
     declared: &[(Symbol, Var)],
+    slots: &[CalleeSlot],
     fn_sym: Symbol,
     span: Option<Span>,
-) -> Result<Vec<Var>, TypeError> {
+) -> Result<Vec<CallTypeArgTarget>, TypeError> {
     // Which declared slots a NAMED key claims. Collected up front because a positional
     // must skip them wherever it sits in the list — the surface convention is
     // positional-first, but nothing in the grammar enforces it.
     let mut taken = vec![false; declared.len()];
+    let mut named_targets: Vec<(Symbol, CallTypeArgTarget)> = Vec::new();
     for (name_opt, _) in type_args.iter() {
         let Some(name_sym) = name_opt else { continue };
-        let idx = declared.iter().position(|(n, _)| n == name_sym).ok_or(
-            TypeError::NoSuchTypeParam { span, op: fn_sym, name: *name_sym },
-        )?;
-        if std::mem::replace(&mut taken[idx], true) {
-            return Err(TypeError::DuplicateCallTypeArg { span, op: fn_sym, name: *name_sym });
+        if let Some(idx) = declared.iter().position(|(n, _)| n == name_sym) {
+            if std::mem::replace(&mut taken[idx], true) {
+                return Err(TypeError::DuplicateCallTypeArg { span, op: fn_sym, name: *name_sym });
+            }
+            let var = declared[idx].1;
+            // A parameter that IS a named slot's binder selects as well as pins. Read
+            // off the slot record by BINDER, so the two facts about the name — that it
+            // is a parameter and which requirement it names — come from the two places
+            // that own them.
+            let target = named_slot_spec(kb, fn_sym, *name_sym)
+                .map_or(CallTypeArgTarget::Param(var), |spec| {
+                    CallTypeArgTarget::NamedSlot(var, spec)
+                });
+            named_targets.push((*name_sym, target));
+            continue;
+        }
+        // Rung 2. A QUALIFIED key is not a slot name — it is refused below with the
+        // rung-1 message, which is what it already gets today.
+        let written = kb.resolve_sym(*name_sym);
+        let matched: Vec<Symbol> = if written.contains('.') {
+            Vec::new()
+        } else {
+            slots
+                .iter()
+                .filter(|s| !s.named && same_label(kb, *name_sym, s.spec))
+                .map(|s| s.spec)
+                .collect()
+        };
+        match matched.len() {
+            0 => return Err(TypeError::NoSuchTypeParam { span, op: fn_sym, name: *name_sym }),
+            1 => {
+                if named_targets.iter().any(|(n, _)| n == name_sym) {
+                    return Err(TypeError::DuplicateCallTypeArg {
+                        span, op: fn_sym, name: *name_sym,
+                    });
+                }
+                named_targets.push((*name_sym, CallTypeArgTarget::AnonSlot(matched[0])));
+            }
+            _ => {
+                return Err(TypeError::AmbiguousRequirementKey {
+                    span,
+                    op: fn_sym,
+                    name: *name_sym,
+                    slots: matched.iter().map(|s| kb.qualified_name_of(*s).to_string()).collect(),
+                })
+            }
         }
     }
     let free = taken.iter().filter(|t| !**t).count();
@@ -13152,13 +13854,13 @@ fn resolve_call_type_arg_targets(
     let mut next_free = 0;
     for (name_opt, _) in type_args.iter() {
         let target = match name_opt {
-            // Re-found rather than carried over from the pass above: the pass records
+            // Re-found rather than carried over as an index: the pass above records
             // slot OCCUPANCY, and threading indices out of it would be a second list to
-            // keep aligned with this one for no gain — `declared` is at most a handful.
-            Some(name_sym) => declared.iter()
+            // keep aligned with this one for no gain — a bracket is a handful of keys.
+            Some(name_sym) => named_targets.iter()
                 .find(|(n, _)| n == name_sym)
-                .map(|(_, v)| *v)
-                .expect("named key resolved in the occupancy pass above"),
+                .map(|(_, t)| *t)
+                .expect("named key resolved in the pass above"),
             None => {
                 while next_free < taken.len() && taken[next_free] {
                     next_free += 1;
@@ -13166,7 +13868,7 @@ fn resolve_call_type_arg_targets(
                 match declared.get(next_free) {
                     Some((_, v)) => {
                         taken[next_free] = true;
-                        *v
+                        CallTypeArgTarget::Param(*v)
                     }
                     None => return Err(TypeError::ExcessCallTypeArgs {
                         span,
@@ -13180,6 +13882,220 @@ fn resolve_call_type_arg_targets(
         targets.push(target);
     }
     Ok(targets)
+}
+
+/// WI-841 (058 §4.4 check 1) — the BINDING-PRECISE half of witness validation, run at
+/// the call site once `subst` is complete: for each goal this call's selections will
+/// be applied to, the pinned witness must be among the goal's own candidates.
+///
+/// AT THE SITE, not at each consumer, and that is the point. A requirement slot is
+/// served by one of three routes — the parent sort's dictionary build, the spec-op
+/// dispatch, or (for an OP-SCOPED `requires`) value-direction at eval, which has no
+/// dictionary channel at all (WI-822 leg 1, undelivered). Measured: without this
+/// check, a witness that provides the spec at OTHER bindings was refused by the
+/// spec-op route, loaded clean and died `Internal` on the dictionary route, and was
+/// silently IGNORED on the value-directed one. One site, one verdict.
+///
+/// Refuses only when the goal HAS candidates and none is the pinned witness. A goal
+/// with no candidates at all is under-determined here (an abstract element inside a
+/// generic body) and says nothing about the pin — its own route reports it. That
+/// asymmetry is what keeps this from false-refusing a correct polymorphic call.
+///
+/// TWO LIMITS, stated here rather than left to a test comment:
+///
+///  * this is the COARSE σ mode (`collect_provides_candidates(.., None)`), while
+///    `resolve`'s step 0 filters under the call's own σ. Coarse admits a superset, so
+///    this rung can only ever under-refuse — never refuse a call step 0 would accept —
+///    which is the safe direction for a check whose job is to catch what the other
+///    routes cannot report at all.
+///  * on the VALUE-DIRECTED route the pin is validated here and then **not honoured**:
+///    `selections` never reach eval, so `requirements_for_value_directed_impl` resolves
+///    with an empty scope and no pin. A bracket on an op-scoped `requires` therefore
+///    says more than it does. Unobservable before 058 phase 3b (with one provider the
+///    searched answer IS the pinned one) and closed by WI-822 leg 1, which would give
+///    an op-scoped chain a dictionary channel at all — but it is a real divergence
+///    between what the source says and what runs, so it is named where the check is.
+fn check_selection_bindings(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    selections: &[InstanceSelection],
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if selections.is_empty() {
+        return Ok(());
+    }
+    for sel in selections {
+        for goal in selection_goals(kb, subst, fn_sym, sel.spec_sort) {
+            let candidates = collect_provides_candidates(kb, &goal, None);
+            if candidates.is_empty() {
+                continue;
+            }
+            if !candidates.iter().any(|c| same_sort_canonical(kb, c.impl_sort, sel.witness)) {
+                return Err(TypeError::WitnessDoesNotProvide {
+                    span,
+                    op: fn_sym,
+                    witness: sel.witness,
+                    spec: sel.spec_sort,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// WI-841 — the goals a selection of `spec_sort` at a call to `fn_sym` will be
+/// applied to, at the call's own bindings.
+///
+/// Reads [`callee_requirement_slots`] — the SAME enumeration rung (2)'s candidate set
+/// reads — rather than re-walking the three sources. It was a second walk, and the two
+/// had already drifted (only one filtered value preconditions) while a doc comment
+/// asserted they could not disagree. One walk is the enforcement; a comment was not.
+fn selection_goals(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    spec_sort: Symbol,
+) -> Vec<SortGoal> {
+    let slots: Vec<CalleeSlot> = callee_requirement_slots(kb, fn_sym)
+        .into_iter()
+        .filter(|s| same_sort_canonical(kb, s.spec, spec_sort))
+        .collect();
+    let mut goals: Vec<SortGoal> = Vec::new();
+    for slot in slots {
+        let goal = match slot.source {
+            // Formed as `dispatch_spec_op_cached` forms it. No carrier: the
+            // receiver-carrier classification runs further down, and this check only
+            // asks whether the witness is AMONG the candidates — a carrier can only
+            // narrow that set, never admit a witness it excludes.
+            CalleeSlotSource::Dispatch => Some(sort_goal_from_subst(kb, subst, spec_sort, None)),
+            // The two levels are decoded by DIFFERENT readers because they are stored
+            // in different SHAPES — see [`goal_from_op_requires_entry`].
+            CalleeSlotSource::SortRequires(entry) => {
+                let concrete = substituted_entry(kb, &entry, subst);
+                goal_from_requires_entry(kb, &concrete)
+            }
+            CalleeSlotSource::OpRequires(entry) => {
+                let concrete = substituted_entry(kb, &entry, subst);
+                goal_from_op_requires_entry(kb, &concrete)
+            }
+        };
+        goals.extend(goal);
+    }
+    goals
+}
+
+/// WI-841 — a `requires` entry with the call-site bindings substituted in, so its
+/// goal is the one THIS call must answer.
+fn substituted_entry(
+    kb: &mut KnowledgeBase,
+    entry: &RequiresEntry,
+    subst: &Substitution,
+) -> RequiresEntry {
+    RequiresEntry {
+        required_sort: entry.required_sort,
+        spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+    }
+}
+
+/// WI-841 — the goal an OP-SCOPED `requires Monoid[T = HT]` clause states.
+///
+/// Deliberately NOT [`goal_from_requires_entry`], and the difference is not
+/// cosmetic: that one decodes a `SortView`, which is the shape a SORT-level
+/// requirement's `spec` FIELD carries, and for the BARE APPLICATION an op-scoped
+/// clause is (`push_op_requires_clause_term` reads the clause's own head functor AS
+/// the spec base — which a `SortView`'s head never is) it falls into the
+/// "nullary sort" arm and returns NO bindings at all. A goal with no bindings is
+/// matched by EVERY provider, so routing an op-scoped clause through it would make
+/// the selection check pass vacuously — worse than not running it, because it reads
+/// as covered. Measured: a witness providing the spec at other bindings was accepted
+/// at an op-scoped call and silently ignored.
+///
+/// The binding FILTER is the same one — `is_type_param_binding` — so the two readers
+/// agree on which named arguments are type parameters and which are op bindings.
+///
+/// **POSITIONALS COUNT, and reading only named args made this vacuous for the
+/// stdlib's own spelling.** `requires Eq[T]` (`prelude/list.anthill:58`) and
+/// `requires Ring[F]` (`algebra.anthill`) bind POSITIONALLY; measured, the named
+/// spelling `requires Monoid[T = HT]` refused a wrong-bindings pin while the
+/// positional twin `requires Monoid[HT]` loaded clean — the exact failure mode this
+/// reader exists to close, on the more common spelling. Positionals fill the params
+/// no named binding took, in declaration order, which is the idiom
+/// `check_provider_operations` and `requirement_ranges_over_owner_tparams` already
+/// use for the same bare-application shape.
+///
+/// THE FORK IS DOCUMENTED HERE, NOT OWNED. `RequiresEntry.spec` has two shapes and
+/// FOUR readers that disagree about the bare one: `unwrap_spec_view` drops its
+/// bindings, `entry_type_param_bindings` rejects it structurally, and
+/// `requirement_ranges_over_owner_tparams` reads it fully. The deeper fixes are to
+/// normalize at the producer (`push_op_requires_clause_term` emitting the `SortView`
+/// shape the sort path emits) or to make `unwrap_spec_view`'s bare arm return its
+/// named args — the latter is one line and would incidentally fix `entries_cover`,
+/// where an op-scoped `requires Monoid[T = HT]` currently decodes to empty bindings
+/// and so vacuously covers ANY `Monoid[…]` dep. Both are wider than this ticket and
+/// carry real regression surface across the requires-forwarding predicates.
+fn goal_from_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> Option<SortGoal> {
+    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
+    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for key in entry.spec.named_keys(kb) {
+        if !is_type_param_binding(kb, key, &spec_qn) {
+            continue;
+        }
+        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
+            bindings.push((key, v));
+        }
+    }
+    let pos_arity = match entry.spec.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => pos_arity,
+        _ => 0,
+    };
+    if pos_arity > 0 {
+        // The params a named binding did not already take, in declaration order.
+        let unbound: Vec<String> = kb
+            .type_params_of_sort(entry.required_sort)
+            .into_iter()
+            .filter(|p| !bindings.iter().any(|(k, _)| kb.resolve_sym(*k) == p))
+            .collect();
+        let vals: Vec<TermId> = (0..pos_arity)
+            .filter_map(|i| entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id()))
+            .collect();
+        for (name, val) in unbound.iter().zip(vals) {
+            // The BARE short name: `goal_binding_value` matches a goal key against a
+            // candidate's by RESOLVED SHORT NAME (with a symbol-identity fast path),
+            // so the two need only render alike.
+            let key = kb.intern(name);
+            bindings.push((key, val));
+        }
+    }
+    Some(SortGoal { spec_sort: entry.required_sort, bindings, carrier: None })
+}
+
+/// WI-841 — the SPEC of the requirement slot named `binder` on `fn_sym` or on its
+/// enclosing sort, or `None` when `binder` is an ordinary type parameter. Both scopes,
+/// for the same reason rule (1) spans both: a sort's named slot is bindable at a call
+/// on its member (§5.3's construction site) as well as in a type application.
+fn named_slot_spec(kb: &KnowledgeBase, fn_sym: Symbol, binder: Symbol) -> Option<Symbol> {
+    let find = |owner: Symbol| {
+        kb.named_requirement_slots(owner)
+            .iter()
+            .find(|s| s.binder == binder)
+            .and_then(|s| s.spec_base)
+    };
+    find(fn_sym).or_else(|| impl_parent_of_op(kb, fn_sym).and_then(find))
+}
+
+/// WI-841 — the WITNESS SORT a bracket binding's value names, or `None` when the value
+/// is not a sort at all. A witness may be written with type arguments
+/// (`[Monoid = ListM[O = MyEq]]`, §4.5), so the HEAD is what identifies it.
+fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    // `sort_functor_of_view` IS the two admissible cases — a bare sort, or a
+    // parameterized one whose BASE identifies the witness (a witness may carry type
+    // arguments, §4.5). Every other `TypeHead` is not a sort, and saying so here is
+    // the point: a second, coarser head read would hand the diagnostic an internal
+    // wrapper name as though it were the witness. MEASURED for one of them — `[Monoid
+    // = 42]` lowers to a WI-302 denoted value, which reported
+    // `TypeExtractor.Denoted does not provide Monoid`.
+    sort_functor_of_view(kb, value)
 }
 
 
@@ -13896,6 +14812,20 @@ enum ReceiverCarrier {
 pub struct ResolutionScope<'a> {
     pub available_requires: &'a [RequiresEntry],
     pub sigma: Option<&'a SigmaCtx<'a>>,
+    /// WI-841 (058 §4.5) — the providers the CALL SITE explicitly selected, `f[Spec =
+    /// W](…)`. Read by [`resolve`]'s **step 0** and by nothing else: at the TOP goal a
+    /// matching selection restricts the candidate set to `W` and suppresses the scope
+    /// (`FromScope`) lookup, because explicit outranks both searched and forwarded
+    /// (§4.1 tier 1). Empty on every path with no bracket in hand — the compat
+    /// dispatch wrappers, the req-insertion diagnostic build, the eval bridge.
+    ///
+    /// A selection deliberately does NOT reach sub-resolutions: rule (2)'s candidate
+    /// set is the CALLEE's slots, and extending it into the tree would make key
+    /// resolution depend on which witness was pinned (pinning changes which subgoals
+    /// exist). Steering a sub-resolution is written instead as a type application of
+    /// the witness — `fold[Monoid = ListM[O = MyEq]]` — where the selection happens at
+    /// the witness's own boundary, as a callee slot again.
+    pub selected: &'a [InstanceSelection],
 }
 
 /// The synthesized resolution chain. Returned to the requirement-
@@ -13984,7 +14914,24 @@ fn resolve_inner(
     scope: &ResolutionScope,
     stack: &mut Vec<SortGoal>,
 ) -> ResolutionResult {
-    for (i, ar) in scope.available_requires.iter().enumerate() {
+    // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
+    // CALL made", so a selection reaches the call's own goal and no sub-goal: a
+    // conditional witness still resolves its `:-` subgoals by SEARCH (tier 2), which
+    // is what keeps a bracket key from depending on which witness was pinned.
+    let pinned = if stack.is_empty() {
+        pinned_witness_for(kb, scope.selected, goal.spec_sort)
+    } else {
+        None
+    };
+
+    // Steps 1–4 are untouched — except that a PINNED goal skips the scope lookup:
+    // explicit beats forwarded as well as searched (§4.1 tier 1), and returning
+    // `FromScope` here would hand back the caller's dictionary and lose the pin.
+    // WI-841: a pinned goal consults NO scope entry, so the invariant is expressed by
+    // what is iterated rather than by a test inside the loop.
+    let scope_entries: &[RequiresEntry] =
+        if pinned.is_some() { &[] } else { scope.available_requires };
+    for (i, ar) in scope_entries.iter().enumerate() {
         if ar.required_sort != goal.spec_sort {
             continue;
         }
@@ -14014,7 +14961,30 @@ fn resolve_inner(
     // wildcard / concrete role is classified once, spelling-neutrally, rather
     // than by the head-only `Var::Rigid` test. `None` (the `resolve_at_goal`
     // dispatch/diagnostic path) keeps today's behaviour.
-    let candidates = collect_provides_candidates(kb, goal, scope.sigma);
+    let mut candidates = collect_provides_candidates(kb, goal, scope.sigma);
+
+    // WI-841 STEP 0, second half: restrict the goal's OWN candidate set to the pinned
+    // witness. Filtering rather than short-circuiting is what makes a CONDITIONAL
+    // witness work unchanged — its `:-` subgoals are still walked below, and still
+    // searched. It is also the binding-precise half of §4.4 check 1: the site check
+    // asked only "does W provide this spec"; here the candidate's head has been
+    // matched against THIS goal's bindings, so a witness that provides the spec at
+    // other bindings empties the set and the goal fails loudly.
+    if let Some(witness) = pinned {
+        candidates.retain(|c| same_sort_canonical(kb, c.impl_sort, witness));
+        if candidates.is_empty() {
+            stack.pop();
+            return ResolutionResult::NoMatch {
+                goal_text: format_goal(kb, goal),
+                hint: format!(
+                    "the call selected `{}` for {}, which provides no instance at these \
+                     bindings",
+                    kb.qualified_name_of(witness),
+                    kb.qualified_name_of(goal.spec_sort),
+                ),
+            };
+        }
+    }
 
     if candidates.is_empty() {
         stack.pop();
@@ -18998,9 +19968,12 @@ pub fn dispatch_spec_op_with_tree(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
-    // Compat entry — no call-site receiver, so no carrier discrimination, and no
-    // call-site σ context (WI-829 gate off — keeps the coarse defer trigger).
-    dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires, None, None)
+    // Compat entry — no call-site receiver, so no carrier discrimination, no
+    // call-site σ context (WI-829 gate off — keeps the coarse defer trigger), and no
+    // call-site bracket, hence no selection (WI-841).
+    dispatch_spec_op_cached(
+        kb, subst, spec_sort, op_short_sym, enclosing_requires, None, None, &[],
+    )
 }
 
 /// WI-226 — cached variant of `dispatch_spec_op_with_tree`. Repeated
@@ -19025,6 +19998,10 @@ pub fn dispatch_spec_op_cached(
     enclosing_requires: &[RequiresEntry],
     carrier: Option<Symbol>,
     disambig: Option<&SigmaCtx>,
+    // WI-841 (058 §4.5): the call's explicit provider selections. Rides in the memo
+    // KEY as well as into the resolution — a pin changes which impl a goal resolves
+    // to, so two calls on one goal that pin differently must not share an entry.
+    selected: &[InstanceSelection],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     // Direct defer trigger: a spec that is a *direct* `requires` of the
     // enclosing sort (i.e. present in `enclosing_requires`) is dispatched
@@ -19037,7 +20014,15 @@ pub fn dispatch_spec_op_cached(
     // `find_requires_location` did on the classification path — otherwise the
     // shallow-vs-deep compound cover would re-defer here after the tree walk
     // refused it, and construction would never run.
-    if !enclosing_requires.is_empty()
+    // WI-841: a spec the CALL SITE pinned does not defer. `Deferred` means "the
+    // enclosing frame's dictionary answers this", which is the same forward
+    // `resolve_inner`'s `FromScope` step makes and which explicit selection outranks
+    // for the same reason (§4.1 tier 1). Without this the pin would be swallowed
+    // before any resolution ran, and `f[Spec = W](…)` inside a sort that itself
+    // `requires Spec` would mean nothing — the one place selection is most wanted.
+    let pinned_here = pinned_witness_for(kb, selected, spec_sort).is_some();
+    if !pinned_here
+        && !enclosing_requires.is_empty()
         && find_requires_slot(kb, subst, spec_sort, enclosing_requires, disambig).is_some()
     {
         return (DispatchOutcome::Deferred, None);
@@ -19065,15 +20050,27 @@ pub fn dispatch_spec_op_cached(
     // determined by the key and stays cacheable; a non-ground σ-present goal
     // bypasses the memo (recomputed, always sound). Every σ-less caller (the
     // compat wrapper, the pre-WI-829 behaviour) keeps the cache unconditionally.
+    //
+    // WI-841: the SELECTIONS ride in the key. A pin changes which impl the very same
+    // goal resolves to, so two sites that pin differently — or one that pins and one
+    // that does not — must not share an entry. Whole list, not `is_some()`: unlike
+    // `disambig`, its CONTENT decides the answer.
     let cacheable = disambig.is_none()
         || goal.bindings.iter().all(|(_, v)| type_value_is_ground(kb, *v));
-    let key = (op_short_sym, goal.clone(), enclosing_requires.to_vec(), disambig.is_some());
+    let key = (
+        op_short_sym,
+        goal.clone(),
+        enclosing_requires.to_vec(),
+        disambig.is_some(),
+        selected.to_vec(),
+    );
     if cacheable {
         if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
             return cached.clone();
         }
     }
-    let result = resolve_at_goal(kb, &goal, op_short_sym, enclosing_requires, disambig);
+    let result =
+        resolve_at_goal(kb, &goal, op_short_sym, enclosing_requires, disambig, selected);
     if cacheable {
         kb.resolve_cache.borrow_mut().insert(key, result.clone());
     }
@@ -19097,8 +20094,14 @@ fn resolve_at_goal(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
     disambig: Option<&SigmaCtx>,
+    // WI-841 (058 §4.5): the call site's explicit selections, for `resolve`'s step 0.
+    selected: &[InstanceSelection],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
-    let scope = ResolutionScope { available_requires: enclosing_requires, sigma: disambig };
+    let scope = ResolutionScope {
+        available_requires: enclosing_requires,
+        sigma: disambig,
+        selected,
+    };
 
     // No matching candidate ⇒ NoCandidates (permissive fall-through).
     // An unrelated `SortProvidesInfo` record for the same spec — e.g.
@@ -30751,7 +31754,7 @@ fn build_requires_tree(
 /// identically to a ground `Value::Term`. Mirrors the arms `direct_requires`
 /// previously matched on the hash-consed spec term: a `SortView(base, …)`
 /// application (positional arg 0 is the base sort), or a bare nullary sort.
-fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Option<Symbol> {
+pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Option<Symbol> {
     match spec.head(kb) {
         ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => {
             match spec.pos_arg(kb, 0)?.head(kb) {
@@ -33207,7 +34210,8 @@ fn spec_resolves_at_bindings(
     // Field validation resolves a spec at declared bindings — no call-site
     // receiver, so no carrier discrimination (WI-350).
     let goal = SortGoal { spec_sort, bindings, carrier: None };
-    let scope = ResolutionScope { available_requires: &[], sigma: None };
+    // WI-841: no call site, hence no selection — a DECLARATION is being validated.
+    let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }
 

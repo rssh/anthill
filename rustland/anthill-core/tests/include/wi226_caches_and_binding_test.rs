@@ -113,7 +113,7 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
     let before = kb.resolve_cache_len();
     let _ = dispatch_spec_op_cached(
-        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None, None,
+        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None, None, &[],
     );
     let after_first = kb.resolve_cache_len();
     assert_eq!(
@@ -124,7 +124,7 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
     // Second call at the same (goal, scope) — no new entry, served from cache.
     let _ = dispatch_spec_op_cached(
-        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None, None,
+        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None, None, &[],
     );
     let after_second = kb.resolve_cache_len();
     assert_eq!(
@@ -191,7 +191,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     // enclosing sort; Strategy 1/2 won't fire anyway (binding mismatch),
     // so the name lookup is never reached.
     let projection = build_dep_projection(
-        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None, None,
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms, None, None, &[],
     )
     .expect("Strategy 3 must resolve Eq[T=String] via the String carrier");
 

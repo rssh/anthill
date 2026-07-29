@@ -479,7 +479,7 @@ fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
     let op_short = kb.intern("peek");
 
     let (outcome, _tree) = dispatch_spec_op_cached(
-        &mut kb, &subst, spec_sort, op_short, &[], Some(listbox_sym), None,
+        &mut kb, &subst, spec_sort, op_short, &[], Some(listbox_sym), None, &[],
     );
     assert_eq!(outcome, DispatchOutcome::Unique(listbox_peek),
         "carrier = ListBox must resolve uniquely to ListBox.peek; got {outcome:?}");
@@ -614,7 +614,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // Carrier = LogicalStream: the universal `fact Stream[T]` candidate
     // matches the per-call T = Int64 and the carrier filter keeps only it.
     let (with_carrier, _) = dispatch_spec_op_cached(
-        &mut kb, &subst, spec_sort, op_short, &[], Some(logical_stream), None,
+        &mut kb, &subst, spec_sort, op_short, &[], Some(logical_stream), None, &[],
     );
     assert!(matches!(with_carrier, DispatchOutcome::Unique(_)),
         "expected Unique dispatch for Stream.splitFirst at carrier=LogicalStream, T=Int64; \

@@ -14627,6 +14627,14 @@ impl<'a> Loader<'a> {
         // a type by `direct_requires`); the DOMAIN beside it is the same name as a
         // symbol. Same name, two positions — data vs. index key.
         let domain_term = self.kb.make_name_term_from_sym(domain);
+        // WI-841: the slot's SPEC base, read off the very value that becomes the
+        // fact's `spec` field and through the same decoder `direct_requires` uses —
+        // so "which spec does `O` name" cannot drift from "which spec does slot `k`
+        // demand". Taken BEFORE the assert, which moves `spec_value` into the fact,
+        // and only for a NAMED slot: the overwhelmingly common anonymous declaration
+        // records nothing and should read nothing.
+        let spec_base = r.binder.as_ref()
+            .and_then(|_| super::typing::spec_base_functor(self.kb, &spec_value));
         self.kb.assert_metadata_fact_carrier(
             requires_sym,
             Vec::new(),
@@ -14645,7 +14653,7 @@ impl<'a> Loader<'a> {
             // `generate_rust`, which never loads a KB). So this is a pure record.
             let name = join_segments(&self.parsed.symbols, &binder.segments);
             let binder_sym = self.kb.intern(&name);
-            self.kb.record_named_requirement_slot(domain, binder_sym, slot_index);
+            self.kb.record_named_requirement_slot(domain, binder_sym, slot_index, spec_base);
         }
     }
 
@@ -14765,11 +14773,35 @@ impl<'a> Loader<'a> {
     /// is already an ordinary op type parameter by the time we get here (the converter
     /// appends it to `type_params`, so `scan_operation_params` defined it and
     /// `load_operation` minted its var); all that is left is WHICH slot it names.
+    ///
+    /// WI-841 records the slot's SPEC base beside the position. The op-level position
+    /// indexes the FLATTENED goal list — `convert_requires_body` counts `slot_base +
+    /// terms.len()` over the operation's whole requirement list — which is exactly
+    /// `o.requires.iter().flatten()` here, so the spec is read from the goal at that
+    /// index rather than re-derived downstream from a list that may be ordered
+    /// differently. `convert_term` on an already-converted goal is a `term_map` memo
+    /// hit, not a second walk.
+    ///
+    /// A DIFFERENT decoder from the sort-level half's (`spec_base_functor`), and
+    /// necessarily so: an op-scoped clause is a BARE APPLICATION whose head functor IS
+    /// the spec base, not the `SortView` whose base sits in `pos_args[0]`. `head_functor`
+    /// is the reading `push_op_requires_clause_term` gives the same shape when it fills
+    /// `RequiresEntry.required_sort`, which is what this value is later compared
+    /// against — and compared with `same_sort_canonical`, not raw equality, because the
+    /// two decoders can intern separately.
     fn record_op_named_slots(&mut self, o: &Operation, functor: Symbol) {
+        if !o.type_params.iter().any(|tp| tp.requirement_slot.is_some()) {
+            return;
+        }
+        let goals: Vec<TermId> = o.requires.iter().flatten().copied().collect();
         for tp in &o.type_params {
             let Some(slot) = tp.requirement_slot else { continue };
             let binder = self.kb.intern(self.parsed.symbols.name(tp.name));
-            self.kb.record_named_requirement_slot(functor, binder, slot);
+            let spec_base = goals.get(slot).and_then(|g| {
+                let converted = self.convert_term(*g);
+                self.kb.head_functor(converted)
+            });
+            self.kb.record_named_requirement_slot(functor, binder, slot, spec_base);
         }
     }
 

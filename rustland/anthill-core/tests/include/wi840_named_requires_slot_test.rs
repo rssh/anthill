@@ -66,7 +66,7 @@ fn slots_of(kb: &KnowledgeBase, owner_qn: &str) -> Vec<(String, usize)> {
         .unwrap_or_else(|| panic!("no symbol {owner_qn}"));
     kb.named_requirement_slots(sym)
         .iter()
-        .map(|(b, i)| (kb.resolve_sym(*b).to_owned(), *i))
+        .map(|s| (kb.resolve_sym(s.binder).to_owned(), s.slot))
         .collect()
 }
 
