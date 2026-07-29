@@ -4677,7 +4677,7 @@ fn incorrect_program_error_includes_line_number() {
         "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);
 
     // Verify format_with_source produces "line:col: ..." with correct line
-    let formatted = unresolved[0].format_with_source(source);
+    let formatted = unresolved[0].format_at(&anthill_core::span::LineIndex::new(source));
     assert!(formatted.starts_with("2:"),
         "error should point to line 2, got: {}", formatted);
     assert!(formatted.contains("Nonexistent"),

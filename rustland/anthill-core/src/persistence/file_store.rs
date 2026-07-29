@@ -255,9 +255,9 @@ impl BulkStore for FileStore {
             let parsed = match parse::parse(&source) {
                 Ok(p) => p,
                 Err(errors) => {
-                    return Err(PersistenceError::Parse(ParseError::all_located(
-                        &errors, &path, &source,
-                    )))
+                    return Err(PersistenceError::Parse(
+                        ParseError::all_located(&errors, &path, &source).collect(),
+                    ))
                 }
             };
             parsed_files.push(parsed);
@@ -288,9 +288,9 @@ fn apply_retracts(
     let parsed = match parse::parse(source) {
         Ok(p) => p,
         Err(errors) => {
-            return Err(PersistenceError::Parse(ParseError::all_located(
-                &errors, path, source,
-            )))
+            return Err(PersistenceError::Parse(
+                ParseError::all_located(&errors, path, source).collect(),
+            ))
         }
     };
 

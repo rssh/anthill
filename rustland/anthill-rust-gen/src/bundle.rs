@@ -80,6 +80,14 @@ pub struct BundleOptions {
 
 /// Emit the bundle into `output_dir`. The directory is created if absent;
 /// existing files in it are overwritten without warning.
+///
+/// NOTE: `render_main` below emits Rust as a STRING, so the workspace build
+/// cannot type-check it. Its only compile check is `emitted_bundle_compiles`
+/// (tests/bundle.rs), which is `#[ignore]`d because it shells out to a nested
+/// `cargo check`. After ANY edit to that template — in particular to the
+/// diagnostic calls it makes into anthill-core — run:
+///     cargo test -p anthill-rust-gen -- --ignored emitted_bundle_compiles
+/// A green workspace proves nothing about the code this ships to users.
 pub fn generate_bundle(opts: &BundleOptions, output_dir: &Path) -> Result<(), BundleError> {
     if opts.user_sources.is_empty() {
         return Err(BundleError::NoSources);
@@ -231,8 +239,8 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
             Ok(p) => parsed.push(p),
             Err(errs) => {{
                 // WI-852: `path:line:col`, not a byte offset into an embedded source.
-                let detail = parse::error::ParseError::all_located(
-                    &errs, std::path::Path::new(path), source);
+                let detail: Vec<String> = parse::error::ParseError::all_located(
+                    &errs, std::path::Path::new(path), source).collect();
                 return Err(format!("parse failed: {{}}", detail.join("; ")));
             }}
         }}
@@ -243,7 +251,7 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
     kb.register_standard_builtins();
     if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {{
         // Batched: each source is indexed once, not re-walked per error.
-        let detail = load::LoadError::render_all(&errs);
+        let detail: Vec<String> = load::LoadError::render_all(&errs).collect();
         return Err(format!("load failed: {{}}", detail.join("; ")));
     }}
     Ok(kb)

@@ -769,22 +769,34 @@ impl LoadError {
     /// printer looping over `Vec<LoadError>` cost O(N × len) — measured on the
     /// parse side at ~50 s for 2100 diagnostics over 2.7 MB, and the load side
     /// renders the same way. Errors are keyed on their source's ADDRESS: every
-    /// error from one file shares that file's `Arc<str>`, so this is exact, and
-    /// a non-`Located` error (no file, no span to resolve) renders as before.
-    pub fn render_all(errors: &[LoadError]) -> Vec<String> {
+    /// error from one file shares that file's `Arc<str>`, so this is exact.
+    ///
+    /// A non-`Located` error renders through `Display`, exactly as the per-error
+    /// loop did — and that INCLUDES ones carrying a span: a typer error whose
+    /// `SourceRegistry` provenance lookup came back empty is never stamped, so it
+    /// still prints a raw byte range. Not a regression (the old loop printed the
+    /// same), and not fixable here: without the file's text there is nothing to
+    /// resolve a span against. The fix belongs at the stamping site.
+    ///
+    /// Returns an ITERATOR, not a `Vec`: every printer this replaced wrote each
+    /// line to stderr as it rendered it, and collecting first would hold the whole
+    /// batch resident and show the user nothing until the last error was rendered.
+    pub fn render_all(errors: &[LoadError]) -> impl Iterator<Item = String> + '_ {
         let mut indexes: HashMap<usize, LineIndex> = HashMap::new();
         errors
             .iter()
-            .map(|e| match e {
+            .map(move |e| match e {
                 LoadError::Located { path, source, inner } => {
                     let loc = indexes
-                        .entry(source.as_ptr() as *const u8 as usize)
+                        // `str::as_ptr` (through the `Arc<str>` deref), not
+                        // `Arc::as_ptr` — the DATA address, which is what two
+                        // clones of one file share.
+                        .entry(source.as_ptr() as usize)
                         .or_insert_with(|| LineIndex::new(source));
                     LoadError::located_render_at(path, loc, inner)
                 }
                 other => other.to_string(),
             })
-            .collect()
     }
 
     /// [`LoadError::located_render`] against an already-built index — the form
@@ -797,20 +809,11 @@ impl LoadError {
         )
     }
 
-    /// Format with line:col using source text, like ParseError::format_with_source.
-    ///
-    /// Builds a [`LineIndex`] for this ONE error. A printer with a whole
-    /// `Vec<LoadError>` must use [`LoadError::render_all`] instead — resolving a
-    /// position per error re-walked the file from byte 0, which is O(N × len).
-    pub fn format_with_source(&self, source: &str) -> String {
-        self.format_at(&LineIndex::new(source))
-    }
-
     /// The 20-odd span-bearing renderings, resolving every position through the
     /// ONE owner of the line/col rule ([`LineIndex`]) — the same one
     /// `ParseError::format_at` uses, so the two families cannot disagree about
     /// what a column counts.
-    fn format_at(&self, loc: &LineIndex) -> String {
+    pub fn format_at(&self, loc: &LineIndex) -> String {
         match self {
             // WI-745: a `Located` renders from its OWN source — `loc` (a caller's
             // guess) is ignored, and building an index for that own source is why
@@ -15242,21 +15245,43 @@ mod wi819_diagnostic_tests {
                 scope_name: "s".to_string(),
             }),
         };
+        // A SECOND `Arc` holding file a's text byte-for-byte: distinct address,
+        // so this is the cache MISS the address-keying reasons about ("a miss
+        // costs a rebuilt index, never a wrong answer"), which sharing one `Arc`
+        // per file never exercises.
+        let a_twin: Arc<str> = Arc::from(&*a);
+        assert!(!std::ptr::eq(a.as_ptr(), a_twin.as_ptr()), "the twin must be a distinct allocation");
         let errors = vec![
             located(&path_a, &a, 14),
             located(&path_b, &b, 16),
             located(&path_a, &a, 19),   // back to file a — out of order on purpose
             LoadError::Other { message: "no file, no span".to_string() },
             located(&path_b, &b, 14),
+            located(&path_a, &a_twin, 14),
+            // A non-`Located` error that DOES carry a span: the typer leaves one
+            // unstamped when its provenance lookup finds no source. It renders
+            // through `Display` — a raw byte range, since there is no text to
+            // resolve against — and the batch must not differ from the loop there
+            // either. `Other` alone (span-less) could not catch that.
+            LoadError::UnresolvedName {
+                name: "unstamped".to_string(),
+                span: crate::span::Span { start: 100, end: 110 },
+                scope_name: "s".to_string(),
+            },
         ];
 
-        let batched = LoadError::render_all(&errors);
+        let batched: Vec<String> = LoadError::render_all(&errors).collect();
         let one_at_a_time: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
         assert_eq!(batched, one_at_a_time);
         // Non-vacuous: the batch really did resolve distinct positions in two files.
         assert!(batched[0].starts_with("a.anthill:2:3:"), "{}", batched[0]);
         assert!(batched[1].starts_with("b.anthill:4:3:"), "{}", batched[1]);
         assert_eq!(batched[3], "no file, no span");
+        // The twin renders identically to the original — a rebuilt index, same answer.
+        assert_eq!(batched[5], batched[0]);
+        // The span-bearing unstamped error keeps `Display`'s byte range: honest,
+        // because without the file's text there is nothing to resolve it against.
+        assert!(batched[6].contains("100..110"), "{}", batched[6]);
     }
 
     /// Both renderings of the WI-819 diagnostics are single-spaced.
@@ -15275,11 +15300,13 @@ mod wi819_diagnostic_tests {
             ("Display/non-pattern", LoadError::LetAnnotationOnNonPattern { span }.to_string()),
             (
                 "located/twice",
-                LoadError::PatternAnnotatedTwice { span }.format_with_source("let x = 1"),
+                LoadError::PatternAnnotatedTwice { span }
+                    .format_at(&crate::span::LineIndex::new("let x = 1")),
             ),
             (
                 "located/non-pattern",
-                LoadError::LetAnnotationOnNonPattern { span }.format_with_source("let x = 1"),
+                LoadError::LetAnnotationOnNonPattern { span }
+                    .format_at(&crate::span::LineIndex::new("let x = 1")),
             ),
         ];
         for (label, rendered) in cases {

@@ -18,23 +18,18 @@ impl ParseError {
 }
 
 impl ParseError {
-    /// Format with line:col against an already-built index. The one place a
-    /// parse error's `line:col: message` body is spelled; everything else here
-    /// goes through it.
-    fn format_at(&self, loc: &LineIndex) -> String {
-        format!("{}: {}", loc.format_start(self.span), self.message)
-    }
-
-    /// Format with line:col using source text. The pathless rendering — for a
-    /// source that HAS no file (a synthesized one); a caller holding a path
-    /// wants [`ParseError::all_located`], or
-    /// [`ParseError::format_located_at`] for a single error.
+    /// `line:col: message` — the PATHLESS rendering, for a source that has no
+    /// file (a synthesized one). The one place a parse error's body is spelled;
+    /// everything else here goes through it.
     ///
-    /// Builds a [`LineIndex`] for this ONE error, which is why there is no
-    /// path-bearing one-shot beside it: a printer holds a whole `Vec` and must
-    /// index the source once — see [`ParseError::all_located`].
-    pub fn format_with_source(&self, source: &str) -> String {
-        self.format_at(&LineIndex::new(source))
+    /// Takes the index rather than the text, so a caller with several errors
+    /// cannot accidentally re-index per error: that was O(N × len), measured at
+    /// 50 s for 2100 diagnostics over 2.7 MB. The convenience one-shot that used
+    /// to sit here (`format_with_source`) is deleted for the same reason
+    /// `Display` was — a shape that must not be used in a loop should not be the
+    /// easy one to reach for. Batch printers want [`ParseError::all_located`].
+    pub fn format_at(&self, loc: &LineIndex) -> String {
+        format!("{}: {}", loc.format_start(self.span), self.message)
     }
 
     /// Render EVERY error from one source, located in `path` — the entry point
@@ -45,13 +40,15 @@ impl ParseError {
     /// the debug CLI for 2100 diagnostics on a 2.7 MB file, against ~1 s once the
     /// index is built once here. Rendering a batch through this — rather than
     /// resolving each error against the raw source — is the difference.
-    pub fn all_located(
-        errors: &[ParseError],
-        path: &std::path::Path,
-        source: &str,
-    ) -> Vec<String> {
+    /// Returns an ITERATOR so a printer writes each line as it renders it, the
+    /// way the per-error loops this replaced did.
+    pub fn all_located<'a>(
+        errors: &'a [ParseError],
+        path: &'a std::path::Path,
+        source: &'a str,
+    ) -> impl Iterator<Item = String> + 'a {
         let loc = LineIndex::new(source);
-        errors.iter().map(|e| e.format_located_at(path, &loc)).collect()
+        errors.iter().map(move |e| e.format_located_at(path, &loc))
     }
 
     /// WI-852: render with the file this error came from — `path:line:col:

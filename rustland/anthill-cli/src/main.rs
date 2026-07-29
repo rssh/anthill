@@ -559,7 +559,7 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
             // a location or a byte offset to count to. Rendered as a BATCH so the
             // source is indexed once, not walked per error.
             Err(parse_errors) => {
-                errors.extend(ParseError::all_located(&parse_errors, file, &source))
+                errors.extend(ParseError::all_located(&parse_errors, file, &source));
             }
         }
     }

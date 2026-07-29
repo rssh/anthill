@@ -38,9 +38,18 @@ impl Span {
 /// THE COLUMN WALK IS THE REMAINING COST, and one line can be the whole file: a
 /// generated or minified single-line source keeps the old quadratic (measured at
 /// -O0: 2100 lookups over a 2.7 MB ONE-LINE source, 49.4 s — the same text split
-/// into ~54-byte lines, 2.2 ms). It is never SLOWER than the scan it replaced,
-/// and hand-written sources have lines; a memo of the last lookup would close
-/// even that, and is worth it only if such a source ever shows up.
+/// into ~54-byte lines, 2.2 ms). Hand-written sources have lines; a memo of the
+/// last lookup would close even that, and is worth it only if such a source
+/// shows up.
+///
+/// A SINGLE lookup is SLOWER than the scan this replaced, and deliberately so:
+/// that scan stopped AT the offset (O(offset)), while building the index reads
+/// to EOF. So one error at byte 100 of a 3 MB file went from ~100 steps to a
+/// full pass. WI-854's ticket said the one-shot would stay "so single-lookup
+/// callers are unaffected"; they are affected, and the trade was taken anyway —
+/// every caller in the tree renders a BATCH, where the full pass is amortized
+/// over every error, and leaving a cheap-looking one-shot in place is what let
+/// the quadratic spread in the first place.
 ///
 /// It is the single owner of the line/col RULE as well: both families' renderings
 /// (`ParseError::format_with_source`, `LoadError::format_at`) resolve positions
@@ -54,15 +63,22 @@ pub struct LineIndex<'a> {
 
 impl<'a> LineIndex<'a> {
     pub fn new(source: &'a str) -> Self {
+        // A `Span` is u32, so a source this large cannot be addressed by any span
+        // that could be rendered against this index; `as u32` below would wrap and
+        // leave `starts` unsorted, which silently breaks every lookup rather than
+        // just the far ones. Loud in debug rather than silently wrong.
+        debug_assert!(
+            source.len() <= u32::MAX as usize,
+            "LineIndex over a >= 4 GiB source: line starts would truncate"
+        );
         // `match_indices` on a char pattern searches through `memchr`, which is
         // precompiled into `core` — so this stays fast in the debug builds the
         // measurements above come from, where a per-byte closure chain does not
-        // inline. `with_capacity` does the real reserving: `extend` over a
-        // search iterator has a zero lower bound, so it cannot reserve itself.
-        let mut starts = Vec::with_capacity(source.len() / 32 + 1);
-        starts.push(0);
-        // `as u32` is exact for any source a `Span` can address at all: spans are
-        // u32, so a >= 4 GiB source is already unrepresentable upstream.
+        // inline. No `with_capacity`: a byte-per-line guess was measured 24x too
+        // large on this repo's own 3.1 MB tracker file (767 B/line) and too small
+        // for ordinary sources, so it mis-served both; `extend`'s amortized growth
+        // is honest and costs a few reallocations on an error path.
+        let mut starts = vec![0];
         starts.extend(source.match_indices('\n').map(|(i, _)| (i + 1) as u32));
         Self { source, starts }
     }
@@ -269,8 +285,11 @@ mod line_index_tests {
 
     fn agrees_at_every_offset(source: &str) {
         let idx = LineIndex::new(source);
-        // `len + 2` so offsets PAST the end are covered too.
-        for offset in 0..=(source.len() as u32 + 2) {
+        // `len + 2` so offsets just past the end are covered, then the extremes:
+        // a recovery span can carry an offset far beyond the text, and the
+        // `partition_point` / `line - 1` indexing must not misbehave there.
+        let sweep = (0..=(source.len() as u32 + 2)).chain([u32::MAX / 2, u32::MAX - 1, u32::MAX]);
+        for offset in sweep {
             assert_eq!(
                 idx.line_col(offset),
                 reference_line_col(source, offset),

@@ -152,7 +152,7 @@ fn parse_user_files(paths: &[PathBuf]) -> (Vec<ParsedFile>, Vec<String>) {
             // WI-852: `path:line:col`, the rendering a load error already had —
             // see `main.rs::load_kb_with_stdlib`.
             Err(parse_errors) => {
-                errors.extend(ParseError::all_located(&parse_errors, path, &source))
+                errors.extend(ParseError::all_located(&parse_errors, path, &source));
             }
         }
     }

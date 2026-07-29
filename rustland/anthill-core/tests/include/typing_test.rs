@@ -1328,7 +1328,7 @@ fn typing_pass_spec_parses_and_loads() {
         .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
     let parsed = parse::parse(&source).unwrap_or_else(|errs| {
         for e in &errs {
-            eprintln!("parse error: {}", e.format_with_source(&source));
+            eprintln!("parse error: {}", e.format_at(&anthill_core::span::LineIndex::new(&source)));
         }
         panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
     });
@@ -1959,7 +1959,7 @@ fn type_check_error_reports_line_number() {
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect String where Int64 expected");
-    let formatted = errors[0].format_with_source(source);
+    let formatted = errors[0].format_at(&anthill_core::span::LineIndex::new(source));
     assert!(formatted.contains("type mismatch"), "should say type mismatch: {formatted}");
     assert!(formatted.contains("Thing"), "should mention entity name: {formatted}");
     assert!(formatted.starts_with("5:"), "error should point to line 5, got: {formatted}");
