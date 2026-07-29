@@ -57,9 +57,11 @@ use crate::kb::KnowledgeBase;
 pub(crate) fn run(kb: &mut KnowledgeBase) {
     let noneq_sym = kb.try_resolve_symbol("anthill.prelude.NonEq");
     let partialeq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq");
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq");
-    let eq_spec = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq");
-    let eq_short = kb.intern("eq");
+    // The eq-dispatch supply index — built here, before any `assert_provides` below,
+    // so the boundary set is computed against the same provisions the load-time index
+    // build saw. `None` on a prelude-less KB (no `PartialEq.eq` ⇒ no `eq` spec op
+    // exists, so nothing can supply an impl of it and no sort is a boundary).
+    let eq_index = super::load::EqDispatchIndex::build(kb);
 
     // Every composite carrier sort: data sorts (with variant constructors) plus
     // free-standing entities (their own sort).
@@ -68,7 +70,7 @@ pub(crate) fn run(kb: &mut KnowledgeBase) {
     // Lawful-Eq BOUNDARIES (canonical), by the authoritative eq-dispatch signal.
     let boundary: HashSet<Symbol> = sorts
         .iter()
-        .filter(|&&s| is_eq_boundary(kb, s, eq_spec, eq_short, partialeq_sym, eq_sym))
+        .filter(|&&s| is_eq_boundary(kb, eq_index.as_ref(), s))
         .map(|&s| kb.canonical_sort_sym(s))
         .collect();
 
@@ -160,30 +162,32 @@ fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
     sorts
 }
 
-/// Is `sort` a lawful-Eq boundary — its `eq` is its OWN, so its equality is
-/// dispatched, never field-wise-derived? The SAME check `build_sort_ops_table` pass
-/// 3 uses to populate the eq-dispatch index (`carrier_own_op` for a declared
-/// `operation eq`, else `instance_fact_op_binding` for the op-bound spelling `fact
-/// PartialEq/Eq[T=sort, eq=…]`), so the classifier boundary == the resolver's
-/// dispatch boundary and a carrier that dispatches its own `eq` is neither
-/// field-wise'd nor false-derived `NonEq` against its own `Eq`.
+/// Is `sort` a lawful-Eq boundary — its `eq` is dispatched, never field-wise-derived?
+/// Literally the PREDICATE [`super::load::build_eq_dispatch_index`] uses to decide
+/// what keys the eq-dispatch index, through its one owner
+/// [`super::load::EqDispatchIndex`] — a declared `operation eq`, the op-bound spelling
+/// `fact PartialEq/Eq[T=sort, eq=…]`, or (WI-837) a witness sort's own `eq`. Sharing
+/// the function, rather than restating the criterion, is what keeps the classifier
+/// boundary == the resolver's dispatch boundary, so a carrier that dispatches its own
+/// `eq` is neither field-wise'd nor false-derived `NonEq` against its own `Eq`.
+///
+/// The PREDICATE is shared; the DOMAINS are not, and that is a pre-existing gap
+/// neither WI-664 nor WI-837 closes. The index build enumerates `SortInfo`-carrying
+/// sorts, while [`composite_sorts`] also reaches a NAMESPACE-LEVEL entity (its own
+/// carrier, no `SortInfo` fact) — so such an entity can be a boundary here while its
+/// `eq` never keys the index at all. That direction is the safe one (it declines to
+/// derive `NonEq`, leaving structural eq) and it predates this pass, but do not read
+/// the shared predicate as making the two sets equal.
+///
+/// An AMBIGUOUS carrier (more than one candidate) is a boundary here and a load error
+/// at the index build: this pass runs after that refusal is already recorded, and
+/// treating it as non-boundary would pile a spurious `NonEq` conflict on top.
 fn is_eq_boundary(
     kb: &KnowledgeBase,
+    eq_index: Option<&super::load::EqDispatchIndex>,
     sort: Symbol,
-    eq_spec: Option<Symbol>,
-    eq_short: Symbol,
-    partialeq_sym: Option<Symbol>,
-    eq_sym: Option<Symbol>,
 ) -> bool {
-    if let Some(spec) = eq_spec {
-        if super::typing::carrier_own_op(kb, sort, spec, eq_short).is_some() {
-            return true;
-        }
-    }
-    let bound = |spec: Option<Symbol>| {
-        spec.and_then(|s| super::typing::instance_fact_op_binding(kb, sort, s, "eq")).is_some()
-    };
-    bound(partialeq_sym) || bound(eq_sym)
+    eq_index.is_some_and(|ix| !ix.candidates(kb, sort).is_empty())
 }
 
 /// The sorts that ALREADY provide `NonEq` — the partial leaves the fixpoint seeds

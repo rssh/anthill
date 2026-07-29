@@ -324,6 +324,32 @@ pub enum LoadError {
         fact_count: usize,
         witnesses: Vec<String>,
     },
+    /// WI-837 (proposal 058 §4.9) — two DISTINCT operations would key one carrier's
+    /// entry in the SEMANTIC-EQUALITY dispatch index: `eq` supplied by more than one
+    /// of the carrier's own member (WI-616), a retroactive instance fact's op binding
+    /// (WI-625 gap 2), and a WI-450 witness sort's member (`sort CEq provides
+    /// PartialEq[T = C]`). The index maps one carrier to ONE target, so a second
+    /// candidate would be silently dropped (or, worse, win by `HashMap` insertion
+    /// order) and equality would answer by whichever survived.
+    ///
+    /// Refused HERE rather than deferred to the use site — the rule that separates
+    /// this from its `Ambiguous*` siblings — because semantic equality dispatches
+    /// from UNIFICATION: there is no call site anywhere to annotate, so 058's tier-3
+    /// "loud at the unselected use site" has nowhere to fire and the refusal must
+    /// stay at load. This is the mechanism behind §6's claim that the `Eq` family
+    /// keeps load-time coherence *by mechanism, not accident*; the spec-generic
+    /// [`Self::AmbiguousWitness`] that covers part of the same ground today is
+    /// deleted by phase 3b, and never saw the witness-`eq` case in the first place
+    /// (no witness ever reached this index before WI-837).
+    ///
+    /// `providers` renders each candidate with its ROUTE, since the three are
+    /// written in three different syntaxes and the author must know which to delete.
+    /// Load-blocking; keyed on the carrier (not on a spec — `PartialEq` and `Eq`
+    /// share the one index entry).
+    AmbiguousEqDispatch {
+        carrier: String,
+        providers: Vec<String>,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -987,6 +1013,10 @@ impl LoadError {
                     witnesses.len(),
                     witnesses.iter().map(|w| format!("'{}'", w)).collect::<Vec<_>>().join(", "))
             }
+            LoadError::AmbiguousEqDispatch { carrier, providers } => {
+                format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
+                    providers.len(), carrier, providers.join("; "))
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -1324,6 +1354,10 @@ impl std::fmt::Display for LoadError {
             LoadError::MixedProviderKinds { carrier, spec, fact_count, witnesses } => {
                 write!(f, "ambiguous provider kinds: '{}' for carrier '{}' is provided by {} instance fact(s) AND {} witness sort(s) ({}) — keep one kind",
                     spec, carrier, fact_count, witnesses.len(), witnesses.join(", "))
+            }
+            LoadError::AmbiguousEqDispatch { carrier, providers } => {
+                write!(f, "ambiguous semantic equality: {} distinct `eq` implementations for carrier '{}' ({}) — `eq` dispatches from unification, with no call site to select at (keep exactly one)",
+                    providers.len(), carrier, providers.join("; "))
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)
@@ -3954,6 +3988,12 @@ fn load_phase_inner(
     // `kb.sort_ops_lookup` instead of the string-concat fallback.
     build_sort_ops_table(kb);
     mark!("build_sort_ops_table");
+    // WI-616 — the semantic-eq dispatch index, off the table just built. WI-837:
+    // it refuses two distinct `eq` impls for one carrier, because it has no later
+    // site to complain from — equality dispatches from unification (058 §4.9).
+    // Load-blocking.
+    all_errors.extend(build_eq_dispatch_index(kb));
+    mark!("build_eq_dispatch_index");
     // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
     // BEFORE op-body type-checking, because the typer's operation-boundary
     // masking (WI-353, `region::op_boundary_effects`) consumes them via
@@ -5012,6 +5052,13 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
 /// `try_resolve_symbol("{impl_qn}.{op}").or_else(spec_qn)`. Consumers
 /// read it via `kb.sort_ops_lookup(impl_sort, op_short)` — a direct
 /// table lookup. Idempotent: re-running overwrites with equal values.
+///
+/// The semantic-equality dispatch index is built by its own pass,
+/// [`build_eq_dispatch_index`], which must run right after this one (it reads the
+/// table this fills). It used to be a third pass inside this function, on the
+/// grounds of sharing the `SortInfo` scan — but it builds a DIFFERENT index and,
+/// since WI-837, can REFUSE the load, and neither belongs behind a name that says
+/// "the per-impl-sort operations table".
 pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     // One `SortInfo` scan shared by both passes: pass 1 records each
     // sort's own ops, pass 2 reads the spec sort's ops from the same
@@ -5076,32 +5123,53 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
         }
     }
 
-    // ── Pass 3 (WI-616): the semantic-equality dispatch index. ─────
-    // For every sort whose sort_ops row carries a GENUINE own `eq` member
-    // (`carrier_own_op`: not the `PartialEq.eq` spec op, parented by the sort
-    // itself — never a pass-2-inherited foreign same-short-name default), key that
-    // target under the shapes the sort's VALUES are headed by: its entity
-    // constructors and its SELF-RETURNING ops (`Set.insert`/`Set.empty`;
-    // `Map.get` returns an Option, not a Map, and must not key Map dispatch).
-    // The resolver's `eq`/`neq` builtin probes this per structurally-unequal
-    // goal — precomputing here keeps that path to one hash lookup.
-    // WI-644: the semantic eq op moved from `Eq` to its base `PartialEq`.
-    // WI-625 gap 2: a carrier with NO own `eq` but a RETROACTIVE instance fact
-    // (`fact PartialEq[T = X, eq = myEq]`) keys to the bound op `myEq` instead —
-    // so the resolver/eval `eq` dispatches through it rather than answering
-    // structurally (`myEq` is typically bodied ⇒ dispatched via the eval bridge).
-    let Some(eq_spec) = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq") else { return };
-    let eq_short = kb.intern("eq");
-    let partialeq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq");
-    let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq");
+}
+
+/// WI-616 — build the semantic-equality dispatch index. Must run right AFTER
+/// [`build_sort_ops_table`], whose table it reads.
+///
+/// For every sort with an `eq` override, key that target under the shapes the sort's
+/// VALUES are headed by: its entity constructors and its SELF-RETURNING ops
+/// (`Set.insert`/`Set.empty`; `Map.get` returns an Option, not a Map, and must not
+/// key Map dispatch). The resolver's `eq`/`neq` builtin probes this per
+/// structurally-unequal goal — precomputing here keeps that path to one hash lookup.
+///
+/// What counts as an override is [`EqDispatchIndex`]: the carrier's own member
+/// (WI-616), a retroactive instance fact's op binding (WI-625 gap 2), or a WI-450
+/// WITNESS SORT's member (WI-837). All three are COLLECTED rather than chained
+/// through `or_else`, because this index is the one `eq` reader with no later site to
+/// complain from — equality dispatches from unification, where no instance can be
+/// selected — so proposal 058 §4.9's rule that a SELECTING read goes loud on the
+/// second candidate can only be met at LOAD. Hence the return type: two distinct `eq`
+/// impls for one carrier is a load-blocking [`LoadError::AmbiguousEqDispatch`].
+#[must_use = "the ambiguity refusals are load-blocking and must be merged"]
+pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    // Its own `SortInfo` scan: negligible beside the provision walk below, and it
+    // keeps this pass independent of `build_sort_ops_table`'s locals.
+    let sort_ops: HashMap<Symbol, Vec<Symbol>> = sorts_and_own_ops(kb).into_iter().collect();
+    let Some(eq_index) = EqDispatchIndex::build(kb) else {
+        return Vec::new();
+    };
     let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
+    // Collected rather than built into `LoadError`s as we go: `sort_ops` is a
+    // `HashMap`, so this walk visits carriers in an arbitrary order, and a program
+    // with two erroring carriers must report them the same way on every load. Sorted
+    // by carrier below (each carrier's own candidate list is already deterministic —
+    // the index walks provisions in `provides_rids_by_spec` order).
+    let mut ambiguous: Vec<(String, Vec<String>)> = Vec::new();
     for &sort_sym in sort_ops.keys() {
-        // Carrier's own `eq` wins (a genuine override); else a retroactive
-        // instance fact's bound `eq` op. `None` ⇒ no eq override for this sort.
-        let target = super::typing::carrier_own_op(kb, sort_sym, eq_spec, eq_short)
-            .or_else(|| instance_fact_eq_target(kb, sort_sym, partialeq_sort, eq_sort));
-        let Some(target) = target else {
-            continue;
+        let cands = eq_index.candidates(kb, sort_sym);
+        let target = match cands.as_slice() {
+            // No eq override for this sort — structural equality IS its instance.
+            [] => continue,
+            [only] => only.target,
+            _ => {
+                ambiguous.push((
+                    kb.qualified_name_of(sort_sym).to_string(),
+                    cands.iter().map(|c| c.render(kb, "eq")).collect(),
+                ));
+                continue;
+            }
         };
         for ctor in kb.constructors_of_sort(sort_sym) {
             entries.push((ctor, target));
@@ -5132,27 +5200,99 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
             kb.insert_eq_dispatch(canon, target);
         }
     }
+    ambiguous.sort_by(|(a, _), (b, _)| a.cmp(b));
+    ambiguous
+        .into_iter()
+        .map(|(carrier, providers)| LoadError::AmbiguousEqDispatch { carrier, providers })
+        .collect()
 }
 
-/// WI-625 gap 2 — the operation a RETROACTIVE instance fact binds to `eq` for
-/// `carrier` (`fact PartialEq[T = carrier, eq = myEq]` ⇒ `myEq`), or `None`. The
-/// eq-dispatch fallback when `carrier` owns no `eq` member of its own: an instance
-/// fact supplies `eq` OFF-carrier (as a free-standing op), so the index must key
-/// the carrier's values to the bound op — otherwise the resolver/eval `eq`
-/// answers structurally, diverging from `List.member` (which honors the fact via
-/// the threaded dict). Checks the `PartialEq` fact (where `eq` canonically lives
-/// post-WI-644), then the `Eq` fact (a user who wrote only `fact Eq[…, eq = …]`).
-fn instance_fact_eq_target(
-    kb: &KnowledgeBase,
-    carrier: Symbol,
-    partialeq_sort: Option<Symbol>,
-    eq_sort: Option<Symbol>,
-) -> Option<Symbol> {
-    partialeq_sort
-        .and_then(|s| super::typing::instance_fact_op_binding(kb, carrier, s, "eq"))
-        .or_else(|| {
-            eq_sort.and_then(|s| super::typing::instance_fact_op_binding(kb, carrier, s, "eq"))
-        })
+/// WI-837 — the one owner of "what supplies this carrier's `eq`" AT LOAD TIME, read
+/// by the two passes that must agree about it: [`build_eq_dispatch_index`] and
+/// WI-664's lawful-Eq boundary classifier ([`super::eq_derive`]'s `is_eq_boundary`),
+/// whose doc has always *claimed* to use the index's check. Before WI-837 each
+/// spelled the criterion itself and that claim held by hand; adding the witness route
+/// to one copy would have silently falsified it — a Float-containing composite whose
+/// `eq` came from a witness would be field-wise-derived `NonEq` and then
+/// false-conflict with its own `provides Eq`.
+///
+/// SCOPE, stated exactly: LOAD-TIME readers. Eval's value-directed spec-op dispatch
+/// (`eval.rs`'s `own .or_else(instance_fact_op_binding) .or_else(witness_op_for_carrier)`
+/// chain) is a THIRD enumeration of the same three routes, kept separate because it is
+/// on the per-call path and reads the carrier-bucket index; its `own` leg is a weaker
+/// filter than [`super::typing::carrier_own_op`]. Folding it in needs a carrier-bucket
+/// fast path here and is 058 phase 3a's business, not this ticket's.
+///
+/// Built ONCE per consumer, then answered per carrier by a hash lookup, because a
+/// provision's supplier is a function of the PROVISION, not of the carrier asking:
+/// re-walking per carrier was MEASURED at 118 sorts × 58 provisions × 2 specs ≈ 13.7k
+/// fact visits for ≤116 distinct results, which is where the whole of this ticket's
+/// first-cut +1.6 ms went.
+pub(crate) struct EqDispatchIndex {
+    /// Provision-supplied candidates (fact / witness routes) by CANONICAL dispatch
+    /// carrier. A carrier absent from the map has no provision-supplied `eq`; its
+    /// own member, if any, is added per query — that one IS a cheap table lookup.
+    by_carrier: HashMap<Symbol, SmallVec<[super::typing::SpecOpSupplier; 2]>>,
+    eq_spec: Symbol,
+    eq_short: Symbol,
+}
+
+impl EqDispatchIndex {
+    /// Resolve the eq-family symbols and bucket every provision-supplied `eq`.
+    /// `None` on a prelude-less KB (no `PartialEq.eq` ⇒ the `eq` spec op does not
+    /// exist, so nothing can supply an impl of it).
+    pub(crate) fn build(kb: &mut KnowledgeBase) -> Option<Self> {
+        let eq_spec = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")?;
+        // Interned up front so the walk below stays `&self`-read-only.
+        let eq_short = kb.intern("eq");
+        // BOTH specs are swept: `eq` may be bound under `PartialEq` (where it
+        // canonically lives post-WI-644) or under `Eq` by a user who wrote only
+        // `fact Eq[…, eq = …]`. `PartialEq` first, so a carrier binding it in both
+        // renders in the order the author is likelier to recognize.
+        let specs: SmallVec<[Symbol; 2]> = ["anthill.prelude.PartialEq", "anthill.prelude.Eq"]
+            .into_iter()
+            .filter_map(|qn| kb.try_resolve_symbol(qn))
+            .collect();
+        let mut by_carrier: HashMap<Symbol, SmallVec<[super::typing::SpecOpSupplier; 2]>> =
+            HashMap::new();
+        for spec in specs {
+            super::typing::collect_spec_op_suppliers_by_carrier(
+                kb,
+                spec,
+                eq_spec,
+                eq_short,
+                &mut by_carrier,
+            );
+        }
+        Some(EqDispatchIndex { by_carrier, eq_spec, eq_short })
+    }
+
+    /// Every candidate `eq` impl for `carrier`, from ALL THREE supply routes,
+    /// deduplicated by TARGET (one operation named twice — `fact PartialEq[T = C,
+    /// eq = cEq]` beside `fact Eq[T = C, eq = cEq]` — is one dictionary, not a
+    /// conflict). Route order is the precedence the index used before this ticket,
+    /// so a single-candidate carrier keys exactly what it keyed then; returning the
+    /// whole list is what stops a SECOND candidate hiding behind the first (058 §4.9).
+    pub(crate) fn candidates(
+        &self,
+        kb: &KnowledgeBase,
+        carrier: Symbol,
+    ) -> SmallVec<[super::typing::SpecOpSupplier; 2]> {
+        use super::typing::{SpecOpSupplier, SupplyRoute};
+        let mut out: SmallVec<[SpecOpSupplier; 2]> = SmallVec::new();
+        // ROUTE 1 — the carrier's OWN `eq` member (`Set.eq`), the genuine override.
+        if let Some(target) = super::typing::carrier_own_op(kb, carrier, self.eq_spec, self.eq_short)
+        {
+            out.push(SpecOpSupplier { target, route: SupplyRoute::Own });
+        }
+        // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
+        for &s in self.by_carrier.get(&kb.canonical_sort_sym(carrier)).into_iter().flatten() {
+            if !out.iter().any(|e| e.target == s.target) {
+                out.push(s);
+            }
+        }
+        out
+    }
 }
 
 /// Intern the short name of an operation symbol (`Spec.lt` → `lt`) —

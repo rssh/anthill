@@ -843,3 +843,6 @@ mod wi853_top_level_import_test;
 
 #[path = "include/wi840_named_requires_slot_test.rs"]
 mod wi840_named_requires_slot_test;
+
+#[path = "include/wi837_witness_eq_dispatch_test.rs"]
+mod wi837_witness_eq_dispatch_test;
