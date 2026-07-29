@@ -8,8 +8,10 @@ namespace anthill.prelude
     -- WI-644 / proposal 004: IEEE Float provides only the PARTIAL specs — its `==`
     -- is not reflexive (nan) and not a congruence (-0.0/+0.0), so it is NOT a
     -- lawful Eq/Ordered. `TotalFloat` (prelude) provides the total instances for
-    -- when floats are needed as Map keys / sorted. (A raw `Float` key becoming a
-    -- load error is WI-649.)
+    -- when floats are needed as Map keys / sorted. (WI-835: a raw `Float` key IS a
+    -- load error — `Map[K = Float]` / `Set[T = Float]` are refused wherever the
+    -- type is written, off the `NonEq` fact below. The "WI-649" this comment named
+    -- was a REPURPOSED number; the use-site check is WI-835.)
     -- WI-658: Float provides NonEq — a WITNESSED non-reflexivity (`nonEqRefl() =
     -- nan`, backed in the prelude sort). NonEq is mutually exclusive with the
     -- lawful Eq, so a user `provides Eq[Float]` is now a load error.

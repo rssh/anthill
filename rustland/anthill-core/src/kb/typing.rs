@@ -15880,40 +15880,56 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
         .collect()
 }
 
-/// WI-644 — USE-SITE `requires Eq` enforcement. A parametric sort with a `requires
-/// Eq[param]` clause (`Map requires Eq[T = K]`, `Set requires Eq[T]`), instantiated
-/// in an ENTITY FIELD TYPE with `param` bound to a CONCRETE carrier that provides
-/// `NonEq` (IEEE `Float`, or a Float-containing composite via WI-664), is a load
-/// error: a raw `Float` key is not lawful (`nan != nan`), so `Map[K = Float]` is
-/// rejected rather than silently misdeciding; `Map[K = TotalFloat]` / `Map[K =
-/// Int64]` load.
+/// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a
+/// `requires Eq[param]` clause (`Map requires Eq[T = K]`, `Set requires Eq[T]`),
+/// instantiated with `param` bound to a CONCRETE carrier that provides `NonEq`
+/// (IEEE `Float`, or a Float-containing composite via WI-664), is a load error: a
+/// raw `Float` key is not lawful (`nan != nan`), so `Map[K = Float]` is rejected
+/// rather than silently misdeciding; `Map[K = TotalFloat]` / `Map[K = Int64]` load.
 ///
 /// NEGATIVE by design — fire ONLY on a provably-`NonEq` binding. A positive "the
 /// binding must provide `Eq`" check would be (a) VACUOUS: `spec_resolves_at_
 /// bindings` treats structural eq as a universal `Eq` instance (WI-616), which is
-/// exactly why `Map[K = Float]` loads clean today; and (b) OVER-REJECTING: WI-664
-/// derives `NonEq` facts for partial composites but NOT `Eq` facts for lawful
+/// exactly why `Map[K = Float]` loaded clean before WI-644; and (b) OVER-REJECTING:
+/// WI-664 derives `NonEq` facts for partial composites but NOT `Eq` facts for lawful
 /// all-`Eq` composites, so `sort_provides(Point, Eq)` is false for a perfectly
 /// lawful key — and an abstract type-param binding provides nothing either.
 /// Checking `NonEq` avoids both: only a carrier that GENUINELY lacks lawful Eq
 /// (the proposal-004 §Motivation carriers) is rejected.
 ///
-/// Scope: entity field types — the data-STORAGE position where a Float-keyed map
-/// lives. Complements the op-USE dispatch discharge (WI-300 Tier B), which already
-/// rejects CALLING an `Eq`-op over a Float-collection (`eq(a: Set[Float], …)`); this
-/// fills the storage gap the dispatch check leaves. Runs after `eq_derive::run`, so
-/// a Float-composite's derived `NonEq` is visible.
+/// SCOPE (WI-835) — EVERY written parameterized type instantiation, wherever the
+/// type is written. The sites are recorded by the sole type lowering
+/// (`type_expr_to_child`'s `Parameterized` arm, `kb/load.rs`), beside the WI-709
+/// arg-FIT check whose semantic sibling this is — so the scope is not a list this
+/// function maintains, and a new type position cannot silently escape by being
+/// added elsewhere. MEASURED covered (each by its own probe, 2026-07-29): an entity
+/// field; an operation PARAMETER and RETURN type; a `const`'s type; a `sort S = …`
+/// alias; a body `let` annotation; a typed lambda binder; the positional binding
+/// spelling `Map[Float, Int64]`; and any of those NESTED inside a tuple, an arrow
+/// parameter, or another instantiation (`Map[K = Set[T = Float]]` refuses on the
+/// INNER `Set`, at the inner base name's own span).
+///
+/// WI-644 shipped this scoped to ENTITY FIELDS only, which left the ticket's own
+/// acceptance program (`operation m() -> Map[K = Float, V = Int64]`) loading clean;
+/// that mismatch between "the data-STORAGE position" and "the positions a Float key
+/// is actually written in" is what WI-835 closes. Enumerating positions is what
+/// produced the mismatch, so the scope now rides on the producer instead.
+///
+/// Complements the op-USE dispatch discharge (WI-300 Tier B), which already rejects
+/// CALLING an `Eq`-op over a Float-collection (`eq(a: Set[Float], …)`). Runs after
+/// `eq_derive::run`, so a Float-composite's derived `NonEq` is visible — which is
+/// also why the check is DEFERRED to here rather than run at the lowering.
 ///
 /// Deliberate non-scope (documented, not silently dropped): (1) DIRECT `requires
 /// Eq` only — a container whose Eq requirement is TRANSITIVE (`sort S requires
 /// Ordered[T]`, and `Ordered requires Eq`) is not chased; the stdlib key containers
-/// (`Map`/`Set`/`Lattice`/`Ordered`) all `requires Eq` directly. (2) A NESTED key
-/// container (`Map[K = Set[T = Float]]`) — the inner `Set[T = Float]` is caught
-/// only if it also appears as a field type in its own right; the
-/// parametric-container propagation is WI-664's stated follow-up. (3) `Value::Node`
-/// field types (denoted-bearing: an effect-row / value-in-type) carry no
-/// `requires Eq` obligation and are never a Float-key container, so they are
-/// skipped.
+/// (`Map`/`Set`/`Lattice`/`Ordered`) all `requires Eq` directly. (2) Denoted-bearing
+/// instantiations (`Vector[Int64, n]`, `Modify[c]`) — the `Value::Node` branch of
+/// the lowering is not recorded: those bind a VALUE in a type-argument position, not
+/// a carrier, so there is no `requires Spec[param]` obligation to discharge. (3) A
+/// container type the author never WRITES — one the typer infers at a call site —
+/// has no written instantiation to record; the declared signature it flows into or
+/// out of is what carries the refusal.
 pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let (Some(eq_sym), Some(noneq_sym)) = (
@@ -15924,29 +15940,17 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
     };
     let eq_canon = kb.canonical_sort_sym(eq_sym);
 
-    // Snapshot every entity-field type that rides as a stored TERM (a concrete
-    // parameterized instantiation `Map[K = Float]` is one — ground types ride as
-    // `Value::Term`; a `Value::Node` field type is denoted-bearing and never a
-    // container key, so skipping it here is deliberate, not a dropped case).
-    // Released before the `&mut` requires-substitution calls below.
-    let field_types: Vec<TermId> = {
-        let mut out = Vec::new();
-        let ctors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
-        for ctor in ctors {
-            if let Some(fields) = kb.entity_field_types(ctor) {
-                for (_name, ty) in fields {
-                    if let crate::eval::value::Value::Term { id, .. } = ty {
-                        out.push(*id);
-                    }
-                }
-            }
-        }
-        out
-    };
+    // Every written parameterized type instantiation, with the span of its base
+    // name. Copied out before the `&mut` requires-substitution calls below.
+    let sites: Vec<(TermId, crate::span::SourceSpan)> = kb.parameterized_type_sites().to_vec();
 
     let mut errors = Vec::new();
-    let mut seen: HashSet<(Symbol, Symbol)> = HashSet::new();
-    for ty in field_types {
+    // Per SITE, not per (container, carrier) pair: two `Map[K = Float]`s in two
+    // places are two things to fix, and collapsing them would drop a diagnostic.
+    // The key carries the whole `SourceSpan` — byte offsets alone repeat ACROSS
+    // FILES, so a span-only key would silently drop the second file's refusal.
+    let mut seen: HashSet<(Symbol, Symbol, Symbol, crate::span::SourceSpan)> = HashSet::new();
+    for (ty, site_span) in sites {
         // Decompose a parameterized instantiation `Base[bindings]` (a bare `Fn`).
         let (base, pos_args, named_args) = match kb.get_term(ty) {
             Term::Fn { functor, pos_args, named_args }
@@ -15958,7 +15962,7 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
         };
         // σ = the instantiation's param short-names → binding value terms (mirrors
         // `check_provider_requires`' σ-build, minus its SortView-wrapper skip — a
-        // field type is a bare parameterized `Fn`, not a spec `SortView`). Named
+        // written type is a bare parameterized `Fn`, not a spec `SortView`). Named
         // bindings first (`K = Float`); positional (`Map[Float, Int64]`) map onto
         // the base's declared params in order, skipping any already named.
         let mut sigma: SmallVec<[(String, TermId); 2]> = SmallVec::new();
@@ -15978,14 +15982,24 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
         if sigma.is_empty() {
             continue;
         }
-        // Base's `requires` clauses substituted through σ (`Map[K=Float]` ⇒
-        // `Eq[T = Float]`). Reject an `Eq` requirement whose carrier is a concrete
-        // `NonEq` provider.
-        for goal in provider_requires_subgoals(kb, base, &sigma) {
+        // Base's `requires` clauses, both σ-substituted (`Map[K=Float]` ⇒ `Eq[T =
+        // Float]`) and RAW. The raw pass names the parameter the diagnostic must
+        // report: the substituted binding is the carrier `Float`, while the clause
+        // as written is `Eq[T = K]`, so `K` — the container's OWN parameter, which
+        // is what the author has to change — is only recoverable from the raw form.
+        // Reading it back out of σ by matching the carrier would misname the
+        // parameter whenever two params bind the same carrier (`Map[K = Float, V =
+        // Float]`). Both calls derive from the one `direct_requires_chain(base)`, so
+        // the two vectors are clause- and binding-aligned by construction. The raw
+        // pass is built ONLY once a refusal is decided — every clean site would
+        // otherwise pay a second chain walk for a name nothing reads.
+        let goals = provider_requires_subgoals(kb, base, &sigma);
+        let mut raw_goals: Option<Vec<SortGoal>> = None;
+        for (gi, goal) in goals.iter().enumerate() {
             if kb.canonical_sort_sym(goal.spec_sort) != eq_canon {
                 continue;
             }
-            for (_, val) in &goal.bindings {
+            for (bi, (key, val)) in goal.bindings.iter().enumerate() {
                 if contains_type_param(kb, *val) {
                     continue; // abstract binding: defer (not a concrete carrier)
                 }
@@ -15993,13 +16007,53 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
                     Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
                     _ => continue,
                 };
-                if sort_provides(kb, carrier, noneq_sym)
-                    && seen.insert((kb.canonical_sort_sym(base), kb.canonical_sort_sym(carrier)))
-                {
-                    errors.push(LoadError::NonEqKeyRequiresLawfulEq {
+                if !sort_provides(kb, carrier, noneq_sym) {
+                    continue;
+                }
+                // The container's own parameter, from the raw clause. A clause that
+                // binds a CONCRETE carrier outright (`requires Eq[T = Float]`, an
+                // ill-formed sort no instantiation can fix) has no container param
+                // to name, so the spec's own binding key is reported instead. The
+                // `raw` lookup is split out so its borrow of `raw_goals` (and hence
+                // of `kb`, through the lazy build) ends before `kb.get_term`.
+                let raw = raw_goals
+                    .get_or_insert_with(|| provider_requires_subgoals(kb, base, &[]))
+                    .get(gi)
+                    .and_then(|g| g.bindings.get(bi))
+                    .filter(|(k, _)| k == key)
+                    .map(|(_, raw)| *raw);
+                let param = raw
+                    .and_then(|raw| match kb.get_term(raw) {
+                        Term::Ref(s) | Term::Ident(s) => Some(*s),
+                        Term::Fn { functor, pos_args, named_args }
+                            if pos_args.is_empty() && named_args.is_empty() =>
+                        {
+                            Some(*functor)
+                        }
+                        _ => None,
+                    })
+                    // Accept the raw name only when it is the one σ actually
+                    // substituted — the SAME comparison `map_requires_name` makes
+                    // (bare `resolve_sym` against the σ key), so the parameter
+                    // reported is exactly the parameter that carried the carrier in.
+                    .filter(|s| sigma.iter().any(|(n, _)| n == kb.resolve_sym(*s)))
+                    .unwrap_or(*key);
+                if seen.insert((
+                    kb.canonical_sort_sym(base),
+                    kb.canonical_sort_sym(carrier),
+                    param,
+                    site_span,
+                )) {
+                    let err = LoadError::NonEqKeyRequiresLawfulEq {
                         container: kb.qualified_name_of(base).to_string(),
+                        param: kb.resolve_sym(param).to_string(),
+                        spec: kb.qualified_name_of(goal.spec_sort).to_string(),
                         carrier: kb.qualified_name_of(carrier).to_string(),
-                    });
+                        span: Some(site_span.span),
+                    };
+                    // WI-745: attribute to the file the site's span indexes into, so
+                    // the refusal renders `path:line:col` rather than naming no file.
+                    errors.push(err.located_in_kb_source(kb, site_span.source));
                 }
             }
         }
@@ -32275,8 +32329,8 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<Lo
             // WI-745: attribute to the file the error's span indexes into (an
             // entity-fact / op-body error carries its file's `source_id`), so it
             // renders `path:line:col` instead of a byte offset naming nothing.
-            match src.and_then(|sid| kb.sources.provenance(sid)) {
-                Some((path, source)) => le.located_in_source(path, source),
+            match src {
+                Some(sid) => le.located_in_kb_source(kb, *sid),
                 None => le,
             }
         })

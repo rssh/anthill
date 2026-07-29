@@ -4,6 +4,12 @@ sort anthill.prelude.Map
 
   sort K = ?
   sort V = ?
+  -- WI-835: this clause is ENFORCED at every written `Map[K = …]` — binding `K` to a
+  -- carrier that provides `NonEq` (IEEE `Float`, or a Float-containing composite via
+  -- WI-664) is a LOAD error naming the sort, `K`, the carrier and `Eq`. Use
+  -- `TotalFloat` for float keys. It is a NEGATIVE check (a witnessed `NonEq`, not a
+  -- missing `Eq`): WI-616's universal structural default would make the positive
+  -- reading vacuous, and no `Eq` fact is derived for a lawful all-`Eq` composite.
   requires Eq[T = K]
 
   -- WI-616 / WI-650 / WI-644: Map is a NON-STRUCTURAL Eq carrier — map equality is

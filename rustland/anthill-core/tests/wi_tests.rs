@@ -332,6 +332,9 @@ mod wi664_composite_eq_test;
 #[path = "include/wi644_use_site_requires_test.rs"]
 mod wi644_use_site_requires_test;
 
+#[path = "include/wi835_use_site_requires_scope_test.rs"]
+mod wi835_use_site_requires_scope_test;
+
 #[path = "include/wi625_eval_semantic_eq_test.rs"]
 mod wi625_eval_semantic_eq_test;
 

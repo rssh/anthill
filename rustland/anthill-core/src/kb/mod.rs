@@ -803,6 +803,21 @@ pub struct KnowledgeBase {
     // Populated during load_entity, used by type_check_sorts.
     entity_field_types: HashMap<Symbol, Vec<(Symbol, crate::eval::value::Value)>>,
 
+    // WI-835 — every PARAMETERIZED TYPE INSTANTIATION the author WRITES, wherever
+    // the type is written (`Map[K = Float]` in an entity field, an operation
+    // parameter or return type, a `const`'s type, a sort alias, a body `let`
+    // annotation, a typed lambda binder — and nested inside any of those, or inside
+    // a tuple or arrow), each with the span of its base name. Recorded by the sole type
+    // lowering, `type_expr_to_child`'s `Parameterized` arm (kb/load.rs), which is
+    // also where the WI-709 *syntactic* arg-fit check runs; this is its SEMANTIC
+    // sibling (`check_use_site_requires_eq`, kb/typing.rs).
+    //
+    // RECORDED rather than checked in place because the check needs a COMPLETE
+    // `provides` relation: `eq_derive::run` is the last load pass to assert
+    // `SortProvidesInfo`, and a Float-composite key's `NonEq` comes from it, so
+    // deciding at the lowering would silently pass every derived case.
+    parameterized_type_sites: Vec<(TermId, SourceSpan)>,
+
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
     resolved_requires_facts: HashSet<RuleId>,
@@ -1011,6 +1026,7 @@ impl KnowledgeBase {
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
+            parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
@@ -5783,6 +5799,19 @@ impl KnowledgeBase {
     /// Iterate all functor symbols that have registered field types.
     pub fn entity_field_type_functors(&self) -> impl Iterator<Item = &Symbol> {
         self.entity_field_types.keys()
+    }
+
+    /// WI-835 — record one written parameterized type instantiation and the span
+    /// of its base name, for the post-load use-site checks. Called from the sole
+    /// type lowering; see the `parameterized_type_sites` field comment for why
+    /// the check is deferred rather than run at the lowering.
+    pub(crate) fn record_parameterized_type_site(&mut self, ty: TermId, span: SourceSpan) {
+        self.parameterized_type_sites.push((ty, span));
+    }
+
+    /// WI-835 — every recorded parameterized type instantiation, in load order.
+    pub(crate) fn parameterized_type_sites(&self) -> &[(TermId, SourceSpan)] {
+        &self.parameterized_type_sites
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).

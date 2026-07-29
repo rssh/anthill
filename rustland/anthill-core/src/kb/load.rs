@@ -266,17 +266,26 @@ pub enum LoadError {
     IncompatibleEqNonEq {
         carrier: String,
     },
-    /// WI-644: a parametric sort with a `requires Eq[param]` clause is
-    /// instantiated (in an entity field type) with `param` bound to a carrier
-    /// that provides `NonEq` — a non-reflexive equality (IEEE `Float`). Such a
-    /// carrier is not a lawful `Eq` key, so the instantiation is a load error
-    /// (`Map[K = Float]`), not a silent wrong answer. Use a lawful key type
-    /// (`TotalFloat` for floats). Load-blocking.
+    /// WI-644 / WI-835: a parametric sort with a `requires Eq[param]` clause is
+    /// instantiated — ANYWHERE the type is written: an entity field, an operation
+    /// parameter or return type, a `const` type, a sort alias, a body `let`
+    /// annotation, a typed lambda binder, or nested inside any of those — with
+    /// `param` bound to a carrier that provides `NonEq`, a non-reflexive equality
+    /// (IEEE `Float`). Such a carrier is not a lawful `Eq` key, so the instantiation
+    /// is a load error (`Map[K = Float]`), not a silent wrong answer. Use a lawful
+    /// key type (`TotalFloat` for floats). Load-blocking.
     NonEqKeyRequiresLawfulEq {
         /// The parametric sort being instantiated (`anthill.prelude.Map`).
         container: String,
+        /// `container`'s own parameter carrying the requirement (`K`) — the one the
+        /// author has to re-bind. NOT the required spec's parameter (`Eq`'s `T`).
+        param: String,
+        /// The spec `container` requires at `param` (`anthill.prelude.Eq`).
+        spec: String,
         /// The carrier bound where lawful `Eq` is required (`anthill.prelude.Float`).
         carrier: String,
+        /// WI-835: where the instantiation is written — the span of its base name.
+        span: Option<Span>,
     },
     /// WI-431 (rule 2 — COHERENCE): two or more DISTINCT instance facts (op-valued
     /// provisions, `fact Combiner[T = Tag, combine = combineA]` /
@@ -820,6 +829,21 @@ impl LoadError {
     /// — for a whole-KB-pass error (typer `TypeMismatch` etc.) whose file is
     /// resolved from its span's `SourceId` via the `SourceRegistry`, not from a
     /// `&ParsedFile`. Idempotent, like [`LoadError::located_in`].
+    /// WI-745 — the whole-KB-pass stamping in ONE step: look the `SourceId`'s
+    /// provenance up in the KB's `SourceRegistry` and wrap, or return the error
+    /// unwrapped when the source carries no text (registered by name only, so
+    /// there is nothing to resolve a `line:col` against). Every KB pass that
+    /// attributes an error to the file its span indexes into goes through here
+    /// — `type_check_sorts` and `check_use_site_requires_eq` had hand-rolled the
+    /// same lookup-and-match, which is one drift away from a diagnostic that
+    /// silently loses its file.
+    pub fn located_in_kb_source(self, kb: &KnowledgeBase, source: crate::span::SourceId) -> LoadError {
+        match kb.sources.provenance(source) {
+            Some((path, text)) => self.located_in_source(path, text),
+            None => self,
+        }
+    }
+
     pub fn located_in_source(self, path: Option<Arc<Path>>, source: Arc<str>) -> LoadError {
         if matches!(self, LoadError::Located { .. }) {
             return self;
@@ -864,6 +888,7 @@ impl LoadError {
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
+            | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -995,9 +1020,13 @@ impl LoadError {
                 format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
                     carrier)
             }
-            LoadError::NonEqKeyRequiresLawfulEq { container, carrier } => {
-                format!("'{}' requires a lawful `Eq` key, but '{}' provides `NonEq` (its equality is not reflexive — e.g. IEEE `nan != nan`), so it cannot be a lawful key. Use a lawful key type (`TotalFloat` for floats) instead of '{}'.",
-                    container, carrier, carrier)
+            LoadError::NonEqKeyRequiresLawfulEq { container, param, spec, carrier, span } => {
+                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a carrier that provides `NonEq` (its equality is not reflexive — e.g. IEEE `nan != nan`), so it is not a lawful key. Bind `{}` to a lawful key type (`TotalFloat` for floats) instead of '{}'.",
+                    container, spec, param, param, carrier, param, carrier);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
             }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and there is no way to select between them (scoped/named instance selection is not yet supported); keep exactly one `fact {}[…]` per (spec, carrier)",
@@ -1339,9 +1368,18 @@ impl std::fmt::Display for LoadError {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
                     carrier)
             }
-            LoadError::NonEqKeyRequiresLawfulEq { container, carrier } => {
-                write!(f, "'{}' requires a lawful `Eq` key, but '{}' provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
-                    container, carrier)
+            LoadError::NonEqKeyRequiresLawfulEq { container, param, spec, carrier, span } => {
+                // The trailing byte range is not decoration: `dedup_key` is this
+                // rendering, so without the span two refusals with the same
+                // (container, param, spec, carrier) at DIFFERENT instantiation sites
+                // would key alike and one would be dropped. Same reason every other
+                // span-bearing variant prints it.
+                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
+                    container, spec, param, param, carrier);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::AmbiguousInstanceFact { carrier, spec, count } => {
                 write!(f, "ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' (keep exactly one)",
@@ -11508,9 +11546,27 @@ impl<'a> Loader<'a> {
                             node_occurrence::TypeChild::Node(_) => unreachable!("checked !any_node"),
                         })
                         .collect();
-                    node_occurrence::TypeChild::Ground(
-                        self.kb.make_parameterized_type(base_term, &ground_bindings),
-                    )
+                    let ty_term = self.kb.make_parameterized_type(base_term, &ground_bindings);
+                    // WI-835: record the written instantiation for the post-load
+                    // use-site checks (`check_use_site_requires_eq`) — the semantic
+                    // sibling of the WI-709 arg-FIT check above, deferred because it
+                    // needs a `provides` relation `eq_derive::run` has not built yet.
+                    // Only the GROUND branch is recorded: a denoted-bearing type
+                    // (`Vector[Int64, n]`) binds a VALUE, not a carrier, so it carries
+                    // no `requires Spec[param]` obligation to discharge.
+                    //
+                    // This type's OWN base-name span, not the threaded `span` — that
+                    // one is the whole annotation's, so a NESTED instantiation
+                    // (`Map[K = Int64, V = Set[T = Float]]`) would report the outer
+                    // `Map`'s position for a refusal about the inner `Set`.
+                    // `type_expr_span` is that own-span rule's owner (its
+                    // `Parameterized` arm IS the base name's span), so this reads it
+                    // rather than re-deriving it. Only the record is re-spanned;
+                    // `span` keeps threading to children unchanged, since the
+                    // occurrences built from it are read elsewhere.
+                    let site_span = self.type_expr_span(ty);
+                    self.kb.record_parameterized_type_site(ty_term, site_span);
+                    node_occurrence::TypeChild::Ground(ty_term)
                 }
             }
             TypeExpr::Arrow { params, return_type, effects } => {

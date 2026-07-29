@@ -7,6 +7,9 @@ sort anthill.prelude.Set
   import anthill.prelude.{Eq, PartialEq}
 
   sort T = ?         -- element type
+  -- WI-835: ENFORCED at every written `Set[T = …]` — see `map.anthill`'s twin note
+  -- for the rule and why it is checked negatively (`Set[T = Float]` is a load error;
+  -- `Set[T = TotalFloat]` loads).
   requires Eq[T]
 
   -- WI-616 (proposal 051 Phase 2): Set is the first NON-STRUCTURAL Eq carrier —

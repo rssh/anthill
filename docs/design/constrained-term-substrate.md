@@ -460,7 +460,7 @@ The gap is not hypothetical; two flavors of dormant rule exist now (acceptance c
 WI-292):
 
 - **Implicit sort-`requires` (type-directed — the WI-292 case).** `Set` (`requires Eq[T]`,
-  set.anthill:6) and `Map` (`requires Eq[T = K]`, map.anthill:7) declare the bound at *sort* level, so
+  set.anthill) and `Map` (`requires Eq[T = K]`, map.anthill) declare the bound at *sort* level, so
   **every** equational rule in them is implicitly type-guarded and skipped by
   `equation_is_requires_guarded`: `member` / `insert` / `subset` / `union` on `Set`
   (set.anthill:17-23) and `get` / `put` / `contains` / `remove` / `size` on `Map` (map.anthill:46-56)
