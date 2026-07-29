@@ -543,8 +543,11 @@ impl Interpreter {
     ///   * a requires-carrying op gets REAL provider dicts, so its body's spec-op
     ///     dispatch reaches the right impl and DECIDES (the gap-3 win);
     ///   * a requirement that cannot be resolved uniquely at these arg types
-    ///     ([`BridgeRequirements::Unresolvable`]) SUSPENDS → the bridge residualizes,
-    ///     never running with a wrong or missing dict.
+    ///     ([`BridgeRequirements::Unresolvable`], or WI-855's
+    ///     [`BridgeRequirements::Ambiguous`] tie) SUSPENDS → the bridge residualizes,
+    ///     never running with a wrong or missing dict. The two suspend for different
+    ///     REASONS and say so, but a bridged eval may not abort the enclosing
+    ///     resolution either way (WI-483), so both delay.
     pub(crate) fn call_op_bridged(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
@@ -560,6 +563,34 @@ impl Interpreter {
                         self.kb.qualified_name_of(sym),
                     ),
                     // A missing dictionary is a flounder, not a truncated search.
+                    truncated: false,
+                });
+            }
+            // WI-855 — a TIE, kept apart from its siblings above so this consumer
+            // says WHICH failure it is. It still SUSPENDS rather than raising, and
+            // that is the difference from the value-directed consumer: this one runs
+            // inside SLD resolution, where WI-483 substitution transparency says a
+            // bridged eval's failure must not break the enclosing rule — the caller
+            // (`bridge_op_to_eval`) delays either way, so raising would only trade a
+            // named delay for an unnamed one.
+            //
+            // The SENTENCE has one owner — `AmbiguousRequirement`'s `Display` — and
+            // this arm adds only its `bridge:` prefix, the same division the
+            // `Unresolvable` arm above uses with typing.rs's `detail`. Two hand-kept
+            // copies of one message would drift, and only the `Display` copy is under
+            // test — MEASURED, nothing in the crate destructures `Suspended.detail`
+            // at all (the bridge's two readers take `..` / `truncated`, `simp_rewrite`
+            // residualizes), so this text is the record left for whoever first
+            // surfaces one, not something a test could pin today.
+            BridgeRequirements::Ambiguous { requirement, candidates } => {
+                let tie = EvalError::AmbiguousRequirement {
+                    op: self.kb.qualified_name_of(sym).to_string(),
+                    requirement,
+                    candidates,
+                };
+                return Err(EvalError::Suspended {
+                    detail: format!("bridge: {tie}"),
+                    // An ambiguity is a flounder, not a truncated search.
                     truncated: false,
                 });
             }

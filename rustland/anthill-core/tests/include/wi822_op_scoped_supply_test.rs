@@ -39,32 +39,9 @@ use anthill_core::eval::Value;
 /// instance at `Wrap[E]` given `Desc[E]` (describe → 10·describe(inner) + 2),
 /// so a correct answer is depth-coded (1, 12, 122, …) and a wrong dictionary
 /// at any step shows up as a different number. Same shape as the WI-817
-/// witness's `INSTANCES`, restated here so this file reads standalone.
-const INSTANCES: &str = r#"
-  sort Desc
-    sort T = ?
-    operation describe(x: T) -> Int64
-  end
-
-  sort Leaf
-    entity leaf
-    fact Desc[T = Leaf]
-    operation describe(x: Leaf) -> Int64 = 1
-  end
-
-  sort Wrap
-    sort A = ?
-    entity wrap(inner: A)
-  end
-
-  sort WrapDesc
-    sort E = ?
-    requires Desc[T = E]
-    fact Desc[T = Wrap[A = E]]
-    operation describe(w: Wrap[A = E]) -> Int64 =
-      add(mul(10, Desc.describe(w.inner)), 2)
-  end
-"#;
+/// witness's `INSTANCES` — and now literally the same text: the claim used to
+/// be a comment nothing enforced, so the block has ONE owner.
+const INSTANCES: &str = crate::common::DESC_INSTANCES;
 
 fn eval_fresh(src: &str, entry: &str, n: i64) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);

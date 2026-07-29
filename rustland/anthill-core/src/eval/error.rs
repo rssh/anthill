@@ -85,6 +85,17 @@ pub enum EvalError {
     /// indistinguishable flounder and the outer stream's `truncated` flag would
     /// stay clear — the exact WI-628 hole, one bridge level up.
     Suspended { detail: String, truncated: bool },
+    /// WI-855: value-directed dispatch reached an impl whose own `requires` slot is
+    /// covered by TWO OR MORE providers at these argument types, with no rule to
+    /// pick between them ([`crate::kb::typing::BridgeRequirements::Ambiguous`]).
+    ///
+    /// A PROGRAM error, not an evaluator-invariant one — hence its own variant
+    /// rather than [`Self::Internal`], whose `debug_assert` in the resolver bridge
+    /// would (correctly) fire on an evaluator bug and must not fire on incoherent
+    /// user instances. Why a tie raises here while every other unresolvable cause
+    /// enters the frame unsupplied is argued once, where the choice is made:
+    /// `Interpreter::requirements_for_value_directed_impl`.
+    AmbiguousRequirement { op: String, requirement: String, candidates: Vec<String> },
     Internal(String),
 }
 
@@ -154,6 +165,13 @@ impl std::fmt::Display for EvalError {
             EvalError::Suspended { detail, .. } => {
                 write!(f, "semantic comparison suspended (undecided): {detail}")
             }
+            EvalError::AmbiguousRequirement { op, requirement, candidates } => write!(
+                f,
+                "dispatch to `{op}`: its requirement `{requirement}` is provided by \
+                 tied providers ({}) — the instances are incoherent, so no dictionary \
+                 can be built for it; delete or specialize one provision",
+                candidates.join(", "),
+            ),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

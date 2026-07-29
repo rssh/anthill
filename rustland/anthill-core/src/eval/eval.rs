@@ -1732,11 +1732,12 @@ impl Interpreter {
     /// papered over here.
     ///
     /// WHEN THE CHAIN CANNOT BE RESOLVED at these argument types, this ENTERS THE
-    /// FRAME UNSUPPLIED (the pre-WI-822 behaviour) rather than raising. WI-822
-    /// specified a loud dispatch error here; MEASURED, that broke 29 previously
-    /// green stdlib tests (the Stream / Iterable / FiniteCollection families —
-    /// `wi435`, `wi439`, `wi492`, `wi588`, `wi614`, …). The shape is ordinary:
-    /// `Map.iterator` is reached
+    /// FRAME UNSUPPLIED (the pre-WI-822 behaviour) rather than raising — with ONE
+    /// exception, an AMBIGUOUS verdict, which raises here (WI-855, last paragraph
+    /// below). WI-822 specified a loud dispatch error here; MEASURED, that broke 29
+    /// previously green stdlib tests (the Stream / Iterable / FiniteCollection
+    /// families — `wi435`, `wi439`, `wi492`, `wi588`, `wi614`, …). The shape is
+    /// ordinary: `Map.iterator` is reached
     /// value-directed on a `Value::Map` HANDLE, which names its carrier sort but
     /// carries no element type, so `Map`'s `requires Eq[T = Map.K]` cannot be
     /// pinned — and `iterator`'s body never reads that dictionary, so it runs
@@ -1756,6 +1757,22 @@ impl Interpreter {
     /// resolution's fully-pinned gate rejects an abstract element BEFORE
     /// candidate matching, so an unpinnable chain yields no dictionary at all
     /// rather than one built against a wildcard.
+    ///
+    /// WI-855 — THE ONE CAUSE THAT RAISES HERE IS A TIE. WI-822's measurement is
+    /// about a chain that CANNOT BE PINNED at these types, where "has a chain" and
+    /// "needs it" genuinely differ and only the body answers the second. An
+    /// AMBIGUOUS verdict is not that: the chain IS pinned, a dictionary IS
+    /// constructible, and two providers cover it with no rule to choose — the
+    /// program's instances are incoherent, and deferring to the read gains nothing
+    /// because the read can only report a MISSING dictionary, naming neither the
+    /// tie nor the candidates (MEASURED: the pre-WI-855 failure for a genuine tie
+    /// was `Internal(DeferToRequirement: … __req_desc not bound …)`). It cannot be
+    /// waved through as "the body may not need it" either: it reached here through
+    /// the same load-time coherence checks every other program does, and the ones
+    /// that would have refused it (`AmbiguousWitness` and its siblings) exempt a
+    /// CONCRETE provider by design — so the tie is a runtime finding with no
+    /// earlier owner. Raised as `EvalError::AmbiguousRequirement`, which the
+    /// resolver bridge residualizes like any other non-`Internal` eval error.
     fn requirements_for_value_directed_impl(
         &mut self,
         impl_target: Symbol,
@@ -1790,6 +1807,15 @@ impl Interpreter {
                     );
                 }
                 Ok(incoming)
+            }
+            // WI-855 — a TIE is the one unresolvable cause that does NOT enter
+            // unsupplied: see the doc comment's last paragraph.
+            BridgeRequirements::Ambiguous { requirement, candidates } => {
+                Err(EvalError::AmbiguousRequirement {
+                    op: self.kb.qualified_name_of(impl_target).to_string(),
+                    requirement,
+                    candidates,
+                })
             }
             BridgeRequirements::Resolved(parent, trees) => {
                 self.frame_requirements_from_trees(parent, &trees).map_err(|name| {

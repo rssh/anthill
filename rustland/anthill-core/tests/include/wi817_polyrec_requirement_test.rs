@@ -77,31 +77,10 @@ use anthill_core::eval::Value;
 /// (describe → 10·describe(inner) + 2). Correct values are therefore
 /// depth-coded: describe(wrapⁿ(leaf)) = 1, 12, 122, 1222, … — a wrong
 /// dictionary at any step produces a detectably different number.
-const INSTANCES: &str = r#"
-  sort Desc
-    sort T = ?
-    operation describe(x: T) -> Int64
-  end
-
-  sort Leaf
-    entity leaf
-    fact Desc[T = Leaf]
-    operation describe(x: Leaf) -> Int64 = 1
-  end
-
-  sort Wrap
-    sort A = ?
-    entity wrap(inner: A)
-  end
-
-  sort WrapDesc
-    sort E = ?
-    requires Desc[T = E]
-    fact Desc[T = Wrap[A = E]]
-    operation describe(w: Wrap[A = E]) -> Int64 =
-      add(mul(10, Desc.describe(w.inner)), 2)
-  end
-"#;
+///
+/// Shared with the WI-822 / WI-855 files, which read the SAME depth coding —
+/// hence one owner (`common::DESC_INSTANCES`) rather than three copies.
+const INSTANCES: &str = crate::common::DESC_INSTANCES;
 
 fn with_instances(ns: &str, body: &str) -> String {
     format!(

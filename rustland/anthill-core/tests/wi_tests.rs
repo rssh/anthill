@@ -846,3 +846,6 @@ mod wi840_named_requires_slot_test;
 
 #[path = "include/wi837_witness_eq_dispatch_test.rs"]
 mod wi837_witness_eq_dispatch_test;
+
+#[path = "include/wi855_ambiguous_requirement_test.rs"]
+mod wi855_ambiguous_requirement_test;

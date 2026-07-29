@@ -12609,9 +12609,11 @@ pub(crate) enum BridgeRequirements {
     /// Resolved: the parent sort + one tree per slot of its `requires` chain, in
     /// `synth_req_names` order, for the eval bridge to port into `RequirementHandle`s.
     Resolved(Symbol, Vec<(Symbol, ResolvedRequiresNode)>),
-    /// A required dictionary is unresolvable at these arg types (no / ambiguous /
-    /// cyclic provider, or an under-determined carrier) — the caller must
-    /// residualize or raise rather than run with a wrong or missing dict.
+    /// A required dictionary is unresolvable at these arg types (NO provider, a
+    /// cyclic one, an under-determined carrier, or a signature/spec-binding the
+    /// pin cannot read) — the caller must residualize or raise rather than run
+    /// with a wrong or missing dict. NOT the ambiguous case; that is
+    /// [`Self::Ambiguous`], see there.
     ///
     /// WI-822: `detail` NAMES the requirement and the types it failed at. Both
     /// consumers report it; previously the variant was opaque and each site could
@@ -12619,6 +12621,31 @@ pub(crate) enum BridgeRequirements {
     /// message WI-822's own investigation had to work around. Built only on this
     /// (immediately-returning) failure edge, never on the resolving path.
     Unresolvable { detail: String },
+    /// WI-855 — two or more providers TIE for one `requires` slot at these argument
+    /// types ([`ResolutionResult::Ambiguous`]). A VARIANT OF ITS OWN, not a `detail`
+    /// string inside `Unresolvable`, because the two carry different verdicts and
+    /// each consumer must DECIDE between them rather than print one prose blob: the
+    /// dominant unresolvable cause says "these types do not pin a dictionary HERE"
+    /// (WI-822 measured that a receiver carrying no element type is ordinary, and
+    /// that a body which never reads the slot runs correctly with none), while a tie
+    /// says the PROGRAM's instances are incoherent — there is a dictionary to build
+    /// and no rule picks it. There is no legitimate "proceed unsupplied" reading of
+    /// that, so the value-directed consumer raises on it and enters unsupplied on
+    /// the rest.
+    ///
+    /// THE LINE IS NOT EXACTLY "program defect vs pinning failure", and saying so
+    /// keeps the next reader from inferring one: `Cyclic` (a `requires` graph that
+    /// re-enters its own goal) is a property of the instances too, not of these
+    /// argument types, and it stays in `Unresolvable` — not because it belongs
+    /// there on principle, but because nothing in the corpus drives it and WI-855
+    /// measured only the tie. Splitting it is the same edit, one variant over.
+    ///
+    /// Carries the DATA (`requirement` = the formatted goal, `candidates` = the tied
+    /// provider names) rather than a rendered message: the value-directed consumer
+    /// raises it and the bridge suspends on it, so the two need the same facts under
+    /// different framing — the SENTENCE has one owner,
+    /// [`crate::eval::EvalError::AmbiguousRequirement`]'s `Display`.
+    Ambiguous { requirement: String, candidates: Vec<String> },
 }
 
 /// Resolve the requirement dictionaries for a bridged op call over GROUND args (see
@@ -12733,10 +12760,21 @@ pub(crate) fn resolve_bridge_requirements(
         let scope = ResolutionScope { available_requires: &[], sigma: None };
         match resolve(kb, &goal, &scope) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
+            // WI-855: a TIE is a coherence verdict, kept apart from the causes that
+            // merely say "not pinnable at these types" — see `BridgeRequirements`.
+            ResolutionResult::Ambiguous { goal_text, candidate_impl_qns } => {
+                return BridgeRequirements::Ambiguous {
+                    requirement: goal_text,
+                    candidates: candidate_impl_qns,
+                }
+            }
+            // "no unique provider" was the umbrella wording BECAUSE it also covered
+            // the tie; with that split off, what is left is a goal that resolves to
+            // no provider at all or to a cycle.
             other => {
                 return BridgeRequirements::Unresolvable {
                     detail: format!(
-                        "`{}` has no unique provider: {}",
+                        "`{}` could not be resolved: {}",
                         format_goal(kb, &goal),
                         describe_resolution_failure(&other),
                     ),

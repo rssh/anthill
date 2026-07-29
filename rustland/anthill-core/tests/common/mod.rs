@@ -333,3 +333,45 @@ end
 "#
     )
 }
+
+// ── Conditional-instance fixture (WI-817 / 822 / 855) ────────
+
+/// Spec `Desc`, a LEAF instance at `Leaf` (describe → 1), and a CONDITIONAL
+/// instance at `Wrap[E]` given `Desc[E]` (describe → 10·describe(inner) + 2).
+///
+/// ONE copy of the program shape the requirement-supply cluster is argued over.
+/// The answers are DEPTH-CODED — `describe(wrapⁿ(leaf))` = 1, 12, 122, 1222, … —
+/// so a wrong dictionary at any step shows up as a different number rather than
+/// as an error, and that coding is what each file's assertions read. It had been
+/// copy-pasted byte-identically into three files, two of which carried the
+/// unenforced claim that they were "the same shape" as the first; WI-855 was
+/// about to add a fourth copy.
+///
+/// Assign it to a file-local `const INSTANCES: &str = common::DESC_INSTANCES;`
+/// so the surrounding programs can keep interpolating `{INSTANCES}` inline.
+#[allow(dead_code)]
+pub const DESC_INSTANCES: &str = r#"
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+
+  sort Leaf
+    entity leaf
+    fact Desc[T = Leaf]
+    operation describe(x: Leaf) -> Int64 = 1
+  end
+
+  sort Wrap
+    sort A = ?
+    entity wrap(inner: A)
+  end
+
+  sort WrapDesc
+    sort E = ?
+    requires Desc[T = E]
+    fact Desc[T = Wrap[A = E]]
+    operation describe(w: Wrap[A = E]) -> Int64 =
+      add(mul(10, Desc.describe(w.inner)), 2)
+  end
+"#;
