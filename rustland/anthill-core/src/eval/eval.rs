@@ -1160,6 +1160,13 @@ impl Interpreter {
     ///    caller's enclosing sort, the callee inherits the caller's
     ///    `frame.requirements` as-is (same chain shape, same names). The
     ///    common case for multi-op bundles like anthill-todo's `Main`.
+    ///    WI-841: **unless the typer supplied a dict anyway**, which on a same-sort
+    ///    call means the call site EXPLICITLY SELECTED a provider (058 §4.1 tier 1 —
+    ///    inheriting is a forward, and explicit outranks a forward). Nothing else can
+    ///    produce one here: `build_concrete_dispatch_dict` returns `None` for a
+    ///    same-sort call in every other case, so this changes no existing program.
+    ///    Measured before: `S.inner[Monoid = AnyM](a, b)` inside `S` inherited and
+    ///    computed the SEARCHED answer with no diagnostic.
     /// 2. **WI-415 compile-built dict** — a cross-sort / no-enclosing-sort
     ///    call (`member(2, [1,2,3])` from a plain namespace) cannot inherit;
     ///    when the typer pinned the callee parent's type params concretely it
@@ -1179,10 +1186,11 @@ impl Interpreter {
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         let callee_parent = crate::kb::typing::impl_parent_of_op(&self.kb, target);
-        let inherit = matches!(
-            (callee_parent, enclosing_sort),
-            (Some(c), Some(e)) if c == e,
-        );
+        let inherit = dispatch_dict.is_none()
+            && matches!(
+                (callee_parent, enclosing_sort),
+                (Some(c), Some(e)) if c == e,
+            );
         if inherit {
             let caller_reqs = self.stack.top()
                 .ok_or_else(|| EvalError::Internal(

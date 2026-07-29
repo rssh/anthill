@@ -33,6 +33,25 @@
 //!     carry on" — which is a defensible answer to a requirement nobody spoke about
 //!     and no answer at all to one the author named a provider for.
 //!
+//! A /code-review round then found SEVEN more, five of them driven to a measured
+//! wrong outcome before being fixed, and they are worth reading as a group because
+//! four are the SAME mistake at different depths — a place the pin is dropped or
+//! mis-described that the first pass did not enumerate:
+//!   * the SAME-SORT sibling call is a FIFTH forward (the callee inherits the caller's
+//!     frame), dropped twice over — the typer returned before reading `selected`, and
+//!     eval preferred inheriting even once a dict existed;
+//!   * several classification blocks RETURN before the binding-precise check ran, so a
+//!     wrong-bindings pin loaded clean on the WI-444 defaulted-override path. The
+//!     check now sits ABOVE them: refuse above the returns, do not enumerate them;
+//!   * a POSITIONAL bracket argument spilled out of the operation's parameter list
+//!     into its sort's, turning a loud over-application into a silent rebinding of the
+//!     receiver's element that surfaced as an unrelated argument mismatch;
+//!   * three diagnostics said something false — the non-sort refusal told the author to
+//!     declare `fact <operation>[…]`, a concrete NON-provider was reported as "is a
+//!     CONCRETE provider", and a witness that provides at OTHER bindings was told to
+//!     add a `fact` it already had. Asserting only a shared substring is what let the
+//!     wrong wording pass, so the tests below assert what must NOT be said too.
+//!
 //! Reference: docs/proposals/058-modular-instances.md §4.2, §4.4, §4.5, §9 phase 2.
 
 use anthill_core::eval::Value;
@@ -636,7 +655,7 @@ fn a_pin_at_other_bindings_is_loud_on_every_route() {
         OTHER_BINDINGS,
         &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = StrM](2, 3)")),
     );
-    refused_with(&sort_level, "does not provide", "dictionary route");
+    refused_with(&sort_level, "not at the bindings", "dictionary route");
 
     let op_scoped = program(
         "wi841.otherbind2",
@@ -650,14 +669,14 @@ fn a_pin_at_other_bindings_is_loud_on_every_route() {
             driver("Holder.probe[Monoid = StrM](2, 3)")
         ),
     );
-    refused_with(&op_scoped, "does not provide", "value-directed route");
+    refused_with(&op_scoped, "not at the bindings", "value-directed route");
 
     let spec_op = program(
         "wi841.otherbind3",
         OTHER_BINDINGS,
         &driver("Monoid.combine[Monoid = StrM](2, 3)"),
     );
-    refused_with(&spec_op, "does not provide", "spec-op dispatch route");
+    refused_with(&spec_op, "not at the bindings", "spec-op dispatch route");
 
     // The op-scoped route again, written POSITIONALLY (`requires Monoid[HT]`) — the
     // spelling the stdlib itself uses (`requires Eq[T]`, prelude/list.anthill:58).
@@ -676,7 +695,11 @@ fn a_pin_at_other_bindings_is_loud_on_every_route() {
             driver("Holder.probe[Monoid = StrM](2, 3)")
         ),
     );
-    refused_with(&positional, "does not provide", "value-directed route, positional requires");
+    refused_with(
+        &positional,
+        "not at the bindings",
+        "value-directed route, positional requires",
+    );
 
     // CONTROL for that row: the positional spelling with the RIGHT witness still
     // loads and runs, so the refusal is about the bindings and not about positionals.
@@ -848,41 +871,42 @@ fn an_op_level_type_argument_still_binds_and_still_reports() {
     refused_with(&bogus, "unknown type-param 'Bogus'", "WI-839's message is unchanged");
 }
 
-/// A POSITIONAL binding reaches the enclosing sort's parameters too — rule (1) is one
-/// rule over one concatenated list, so a positional counts through it. Selection
-/// stays NAME-only by contrast: a requirement slot has no position a caller could
-/// count to, since the two lists it might index are separate and the sort-level one
-/// is the FACT order at every typer-side reader.
+/// A POSITIONAL binding reaches the operation's OWN parameters and stops there.
+///
+/// Rule (1) spans two scopes BY NAME; position does not travel with it. Concatenating
+/// the two lists for positional allocation too would let an over-application spill
+/// silently into the receiver's element (measured: `conv[String, Bool]` bound the
+/// sort's `CT := Bool` and surfaced as an unrelated ARGUMENT mismatch instead of the
+/// loud over-application it had always been). Selection is likewise NAME-only: a
+/// requirement slot has no position a call site could count to, since the two lists it
+/// might index are separate and the sort-level one is the FACT order at every
+/// typer-side reader.
 #[test]
-fn a_positional_binding_reaches_the_sorts_params_and_selection_stays_by_name() {
-    let src = program(
+fn a_positional_binds_the_ops_own_params_and_selection_stays_by_name() {
+    let ok = program(
         "wi841.positional",
         "",
-        r#"  sort Box
-    sort T = ?
-    entity box(v: T)
-    operation mk(v: T) -> Box[T = T] = box(v: v)
-    operation peek(b: Box[T = Int64]) -> Int64 = b.v
-  end
-  sort Use
-    operation go(n: Int64) -> Int64 = Box.peek(Box.mk[Int64](5))
+        r#"  sort Id
+    operation idy[A](x: A) -> A = x
+    operation go(n: Int64) -> Int64 = Id.idy[Int64](n)
   end"#,
     );
     assert_eq!(
-        eval_int(&src, "wi841.positional.Use.go", "a positional binds the sort's param"),
-        5,
+        eval_int(&ok, "wi841.positional.Id.go", "a positional binds the op's own param"),
+        0,
     );
 
-    // A positional PAST the concatenated list is still over-application, not a slot.
+    // Past the operation's own list it is over-application, not the sort's params and
+    // not a slot.
     let excess = program(
         "wi841.positionalexcess",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Int64, Int64](2, 3)")),
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Int64](2, 3)")),
     );
     refused_with(
         &excess,
         "over-applied",
-        "a positional never selects a requirement slot, so the second one has no target",
+        "`probe` declares no type parameters of its own, so a positional has no target",
     );
 }
 
@@ -897,4 +921,189 @@ fn an_unbracketed_requires_call_is_unchanged() {
         &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe(2, 3)")),
     );
     assert_eq!(eval_int(&src, "wi841.nobracket.Driver.go", "the search answers it"), 5);
+}
+
+
+// ── /code-review round: seven defects, each driven before it was fixed ─────
+
+/// A witness that provides the spec AT OTHER BINDINGS gets its own wording. The
+/// base-level message tells the author to add a `fact Spec[…]` — advice that is
+/// actively wrong here, because `StrM` HAS one (at `T = String`), and it never names
+/// the bindings, which are the whole content of the mismatch. Two failures, two
+/// messages; asserting only the shared substring is what locked the wrong one in.
+#[test]
+fn the_two_provider_failures_say_different_things() {
+    let at_other = program(
+        "wi841.msgbind",
+        OTHER_BINDINGS,
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = StrM](2, 3)")),
+    );
+    refused_with(&at_other, "not at the bindings", "provides, but not here");
+    let errs = load_errs(&at_other);
+    assert!(
+        !errs.iter().any(|e| e.contains("must name a sort that declares")),
+        "a witness that DOES declare the fact must not be told to declare it; got: {errs:?}",
+    );
+
+    let never = program(
+        "wi841.msgnone",
+        "",
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = NoProv](2, 3)")),
+    );
+    refused_with(&never, "does not provide", "provides nothing");
+    refused_with(&never, "must name a sort that declares", "and IS told to declare one");
+}
+
+/// A CONCRETE sort that provides NOTHING is a typo, not a coherence rule. Check 1
+/// must run before check 3, else the diagnostic asserts the sort IS a provider and
+/// that the value therefore decides — every clause false.
+#[test]
+fn a_concrete_non_provider_is_not_reported_as_a_provider() {
+    let src = program(
+        "wi841.concnoprov",
+        r#"
+  sort Conc
+    entity conc
+  end
+"#,
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = Conc](2, 3)")),
+    );
+    refused_with(&src, "does not provide", "the real mistake is that it provides nothing");
+    let errs = load_errs(&src);
+    assert!(
+        !errs.iter().any(|e| e.contains("is a CONCRETE provider")),
+        "it is concrete but NOT a provider — saying so would be false; got: {errs:?}",
+    );
+}
+
+/// The non-sort refusal must name the SPEC in its advice. It named the OPERATION,
+/// telling the author to declare `fact <operation>[…]`.
+#[test]
+fn the_non_sort_refusal_names_the_spec_not_the_operation() {
+    let src = program(
+        "wi841.nsmsg",
+        "",
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = 42](2, 3)")),
+    );
+    let errs = load_errs(&src);
+    assert!(
+        errs.iter().any(|e| e.contains("fact wi841.nsmsg.Monoid[")),
+        "the advice must name the SPEC to declare; got: {errs:?}",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("fact wi841.nsmsg.Holder.probe[")),
+        "and must not name the OPERATION as the thing to declare; got: {errs:?}",
+    );
+}
+
+/// A SAME-SORT sibling call is a FIFTH forward: the callee inherits the caller's
+/// frame dictionary. Explicit selection outranks it like the other four. Measured
+/// before: the pin was dropped twice over — the typer returned before reading it, and
+/// eval preferred inheriting even once a dict existed.
+#[test]
+fn a_pin_outranks_the_same_sort_inherit() {
+    let build = |call: &str| {
+        program(
+            "wi841.samesort",
+            PARAMETRIC_RIVAL,
+            &format!(
+                r#"  sort S
+    sort ST = ?
+    requires Monoid[T = ST]
+    operation inner(a: ST, b: ST) -> Int64 = Monoid.combine(a, b)
+    operation outer(a: ST, b: ST) -> Int64 = {call}
+  end
+{}"#,
+                driver("S.outer(2, 3)")
+            ),
+        )
+    };
+    assert_eq!(
+        eval_int(&build("S.inner(a, b)"), "wi841.samesort.Driver.go", "the inherit"),
+        5,
+        "CONTROL: unbracketed, the sibling inherits the frame the search filled",
+    );
+    assert_eq!(
+        eval_int(&build("S.inner[Monoid = AnyM](a, b)"), "wi841.samesort.Driver.go", "pinned"),
+        99,
+        "the bracket must be honoured rather than inherited past",
+    );
+}
+
+/// The binding-precise check runs ABOVE the classification blocks, several of which
+/// RETURN. The WI-444 defaulted-spec-op carrier-override path is one, and a
+/// wrong-bindings pin on such a call loaded clean while the check ran after it.
+#[test]
+fn a_pin_is_validated_before_the_classification_early_returns() {
+    let src = program(
+        "wi841.earlyret",
+        OTHER_BINDINGS,
+        r#"  sort Shape
+    sort SH = ?
+    requires Monoid[T = SH]
+    operation area(x: SH) -> Int64 = Monoid.combine(x, x)
+  end
+  sort Sq
+    entity sq
+    fact Shape[SH = Sq]
+    fact Monoid[T = Sq]
+    operation combine(a: Sq, b: Sq) -> Int64 = 3
+    operation area(x: Sq) -> Int64 = 4
+  end
+  sort Driver
+    operation go(n: Int64) -> Int64 = Shape.area[Monoid = StrM](sq())
+  end"#,
+    );
+    refused_with(
+        &src,
+        "not at the bindings",
+        "the defaulted-spec-op override path returns early; the check must precede it",
+    );
+}
+
+/// A POSITIONAL bracket argument binds the operation's OWN parameters only. Letting
+/// it spill into the enclosing sort's turned a loud over-application into a silent
+/// rebinding of the receiver's element — and `seed_op_type_args` discards `unify`'s
+/// verdict, so the contradiction surfaced later as an unrelated argument mismatch.
+#[test]
+fn a_positional_does_not_spill_into_the_enclosing_sorts_params() {
+    let src = program(
+        "wi841.spill",
+        "",
+        r#"  sort Coll
+    sort CT = ?
+    entity mk(v: CT)
+    operation conv[B](c: Coll[CT = CT], b: B) -> Int64 = 1
+  end
+  sort Driver
+    operation go(n: Int64) -> Int64 = Coll.conv[String, Bool](mk(v: 1), "x")
+  end"#,
+    );
+    refused_with(&src, "over-applied", "one declared param, two positionals");
+    let errs = load_errs(&src);
+    assert!(
+        !errs.iter().any(|e| e.contains("conv.c")),
+        "the bracket is the mistake, not the argument it silently re-typed; got: {errs:?}",
+    );
+}
+
+/// A NAMED sort-level parameter is still bindable by name — the positional
+/// restriction above must not take the name channel with it (§5.3's construction
+/// site is written `Box.mk[T = String](…)`, not positionally).
+#[test]
+fn the_named_sort_level_channel_survives_the_positional_restriction() {
+    let src = program(
+        "wi841.namedstill",
+        "",
+        r#"  sort Box
+    sort T = ?
+    entity box(v: T)
+    operation mk(v: T) -> Box[T = T] = box(v: v)
+    operation peek(b: Box[T = Int64]) -> Int64 = b.v
+  end
+  sort Use
+    operation go(n: Int64) -> Int64 = Box.peek(Box.mk[T = Int64](5))
+  end"#,
+    );
+    assert_eq!(eval_int(&src, "wi841.namedstill.Use.go", "named still binds"), 5);
 }
