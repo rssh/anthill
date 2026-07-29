@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 use crate::intern::{positional_label, positional_label_index, Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
 use crate::parse::pratt;
-use crate::span::{Span, SourceId, SourceSpan};
+use crate::span::{LineIndex, Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
@@ -755,45 +755,83 @@ impl LoadError {
     /// diagnostic still names its file); with no path, the bare
     /// `inner.format_with_source` (`line:col: msg` or `msg`).
     ///
-    /// WI-852: the PREFIX rule itself lives in `span::render_located`, shared
-    /// with `ParseError::format_located`. Only the prefix: the `line:col` half
-    /// is built by the arms below, which is a second implementation of what
-    /// `Span::format_start` spells for parse errors — the two agree today by
-    /// convention, not by construction.
+    /// WI-852: the PREFIX rule lives in `span::render_located` and the `line:col`
+    /// half in `LineIndex::format_start`, both shared with `ParseError` — so a
+    /// load error and a parse error at the same character render identically by
+    /// construction, not by convention. (They did only by convention until the
+    /// arms below stopped hand-rolling `format!("{}:{}: …")`.)
     fn located_render(path: &Option<Arc<Path>>, source: &str, inner: &LoadError) -> String {
+        LoadError::located_render_at(path, &LineIndex::new(source), inner)
+    }
+
+    /// WI-852 follow-up: render a whole batch, building each FILE's line index
+    /// ONCE. `Display` resolves a position by walking that file from byte 0, so a
+    /// printer looping over `Vec<LoadError>` cost O(N × len) — measured on the
+    /// parse side at ~50 s for 2100 diagnostics over 2.7 MB, and the load side
+    /// renders the same way. Errors are keyed on their source's ADDRESS: every
+    /// error from one file shares that file's `Arc<str>`, so this is exact, and
+    /// a non-`Located` error (no file, no span to resolve) renders as before.
+    pub fn render_all(errors: &[LoadError]) -> Vec<String> {
+        let mut indexes: HashMap<usize, LineIndex> = HashMap::new();
+        errors
+            .iter()
+            .map(|e| match e {
+                LoadError::Located { path, source, inner } => {
+                    let loc = indexes
+                        .entry(source.as_ptr() as *const u8 as usize)
+                        .or_insert_with(|| LineIndex::new(source));
+                    LoadError::located_render_at(path, loc, inner)
+                }
+                other => other.to_string(),
+            })
+            .collect()
+    }
+
+    /// [`LoadError::located_render`] against an already-built index — the form
+    /// [`LoadError::render_all`] uses so one file is indexed once, not per error.
+    fn located_render_at(path: &Option<Arc<Path>>, loc: &LineIndex, inner: &LoadError) -> String {
         crate::span::render_located(
             path.as_deref(),
-            inner.format_with_source(source),
+            inner.format_at(loc),
             inner.user_span().is_some(),
         )
     }
 
     /// Format with line:col using source text, like ParseError::format_with_source.
+    ///
+    /// Builds a [`LineIndex`] for this ONE error. A printer with a whole
+    /// `Vec<LoadError>` must use [`LoadError::render_all`] instead — resolving a
+    /// position per error re-walked the file from byte 0, which is O(N × len).
     pub fn format_with_source(&self, source: &str) -> String {
+        self.format_at(&LineIndex::new(source))
+    }
+
+    /// The 20-odd span-bearing renderings, resolving every position through the
+    /// ONE owner of the line/col rule ([`LineIndex`]) — the same one
+    /// `ParseError::format_at` uses, so the two families cannot disagree about
+    /// what a column counts.
+    fn format_at(&self, loc: &LineIndex) -> String {
         match self {
-            // WI-745: a `Located` renders from its OWN source — the `source`
-            // argument (a caller's guess) is ignored.
+            // WI-745: a `Located` renders from its OWN source — `loc` (a caller's
+            // guess) is ignored, and building an index for that own source is why
+            // a BATCH goes through `render_all`, which handles `Located` directly.
             LoadError::Located { path, source: own, inner } => {
                 LoadError::located_render(path, own, inner)
             }
             LoadError::UnresolvedName { name, span, scope_name } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: unresolved name '{}' in scope '{}'", line, col, name, scope_name)
+                format!("{}: unresolved name '{}' in scope '{}'", loc.format_start(*span), name, scope_name)
             }
             LoadError::UnresolvedImport { path, span } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: unresolved import '{}'", line, col, path)
+                format!("{}: unresolved import '{}'", loc.format_start(*span), path)
             }
             LoadError::AmbiguousSymbol { name, candidates, span, scope_name } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: ambiguous symbol '{}' in scope '{}': candidates {:?}", line, col, name, scope_name, candidates)
+                format!("{}: ambiguous symbol '{}' in scope '{}': candidates {:?}", loc.format_start(*span), name, scope_name, candidates)
             }
             LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span, origin } => {
                 let tag = type_mismatch_tag(origin);
                 let site = type_mismatch_origin_suffix(origin);
                 if let Some(sp) = span {
-                    let (line, col) = Span::line_col(source, sp.start);
-                    format!("{}:{}: type mismatch in {}.{}{}: expected {}, got {}{}", line, col, entity_name, field_name, tag, expected_type, actual_type, site)
+                    format!("{}: type mismatch in {}.{}{}: expected {}, got {}{}", loc.format_start(*sp), entity_name, field_name, tag, expected_type, actual_type, site)
                 } else {
                     format!("type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
                 }
@@ -801,8 +839,7 @@ impl LoadError {
             LoadError::BareMemberCall { member, owning_sorts, span } => {
                 let msg = super::typing::bare_member_call_message(member, owning_sorts);
                 if let Some(sp) = span {
-                    let (line, col) = Span::line_col(source, sp.start);
-                    format!("{}:{}: {}", line, col, msg)
+                    format!("{}: {}", loc.format_start(*sp), msg)
                 } else {
                     msg
                 }
@@ -849,38 +886,30 @@ impl LoadError {
             // diagnostic, so it matches its siblings.
             LoadError::Other { message } => message.clone(),
             LoadError::FunctorOwnedByExtent { kind, functor, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: resident {} for '{}' is refused: the functor is owned by a \
+                    "{}: resident {} for '{}' is refused: the functor is owned by a \
                      mounted extent source; seed it through the store's own channel",
-                    line, col, kind, functor
+                    loc.format_start(*span), kind, functor
                 )
             }
             LoadError::ArrowTermInExprPosition { span } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: {}", line, col, arrow_expr_hint())
+                format!("{}: {}", loc.format_start(*span), arrow_expr_hint())
             }
             LoadError::PatternAnnotatedTwice { span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: this pattern is annotated twice — `let (x: T1): T2 = …` writes \
+                    "{}: this pattern is annotated twice — `let (x: T1): T2 = …` writes \
                      two types into the one annotation slot; keep either the binder's \
                      `: T1` or the let's `: T2`",
-                    line, col
-                )
+                    loc.format_start(*span))
             }
             LoadError::LetAnnotationOnNonPattern { span } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: let annotation on a term that is not a pattern form", line, col)
+                format!("{}: let annotation on a term that is not a pattern form", loc.format_start(*span))
             }
             LoadError::BareArrowInLogicPosition { position, unresolved, span } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: {}", line, col, bare_arrow_logic_msg(position, unresolved))
+                format!("{}: {}", loc.format_start(*span), bare_arrow_logic_msg(position, unresolved))
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)",
-                    line, col, label_suffix(label))
+                format!("{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)", loc.format_start(*span), label_suffix(label))
             }
             LoadError::ConstraintViolated { label } => {
                 format!("integrity constraint{} is violated by the loaded facts", label_suffix(label))
@@ -898,8 +927,7 @@ impl LoadError {
                 )
             }
             LoadError::UnsupportedConstraintForm { label, detail, span } => {
-                let (line, col) = Span::line_col(source, span.start);
-                format!("{}:{}: constraint{} uses an unsupported form: {}", line, col, label_suffix(label), detail)
+                format!("{}: constraint{} uses an unsupported form: {}", loc.format_start(*span), label_suffix(label), detail)
             }
             LoadError::ValueInTypeNotResolved { position, name } => {
                 format!(
@@ -916,65 +944,57 @@ impl LoadError {
                 )
             }
             LoadError::UnresolvedTypeName { name, span, scope_name } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: unresolved type name '{}' in scope '{}' — not a value \
+                    "{}: unresolved type name '{}' in scope '{}' — not a value \
                      projection (`s.Member` off a param/local/field), not a \
                      type-parameter or sort projection (`P.Member` / `Sort.Member`), \
                      and not a resolvable qualified sort reference",
-                    line, col, name, scope_name,
+                    loc.format_start(*span), name, scope_name,
                 )
             }
             LoadError::InvalidTypeArgument { detail, span } => match span {
                 Some(sp) => {
-                    let (line, col) = Span::line_col(source, sp.start);
-                    format!("{}:{}: invalid type argument: {}", line, col, detail)
+                    format!("{}: invalid type argument: {}", loc.format_start(*sp), detail)
                 }
                 None => format!("invalid type argument: {}", detail),
             },
             LoadError::CallTypeArgsNotSupportedHere { callee, position, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: {}",
-                    line, col, call_type_args_unsupported_detail(callee, *position),
+                    "{}: {}",
+                    loc.format_start(*span), call_type_args_unsupported_detail(callee, *position),
                 )
             }
             LoadError::InvalidFieldProjection { path, field, type_display, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: field projection '{}': {} has no field '{}'",
-                    line, col, path, type_display, field,
+                    "{}: field projection '{}': {} has no field '{}'",
+                    loc.format_start(*span), path, type_display, field,
                 )
             }
             LoadError::UnknownEntityField { entity, field, declared, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: '{}' has no field '{}' (declares: {})",
-                    line, col, entity, field, declared,
+                    "{}: '{}' has no field '{}' (declares: {})",
+                    loc.format_start(*span), entity, field, declared,
                 )
             }
             LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: '{}' is internal to '{}' and cannot be referenced from scope '{}'",
-                    line, col, name, declared_in, scope_name,
+                    "{}: '{}' is internal to '{}' and cannot be referenced from scope '{}'",
+                    loc.format_start(*span), name, declared_in, scope_name,
                 )
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: variable '{}' in a `<=>` (unify) under `not` is not bound by \
+                    "{}: variable '{}' in a `<=>` (unify) under `not` is not bound by \
                      an earlier positive goal — negation-as-failure on an unbound \
                      unification is unsound; bind it positively first",
-                    line, col, var_name,
+                    loc.format_start(*span), var_name,
                 )
             }
             LoadError::BindingInContract { position, span } => {
-                let (line, col) = Span::line_col(source, span.start);
                 format!(
-                    "{}:{}: a binding `<=>` / `let` is not allowed in a {} contract — \
+                    "{}: a binding `<=>` / `let` is not allowed in a {} contract — \
                      contracts must TEST, not bind; use `=` (equality test) instead",
-                    line, col, position,
+                    loc.format_start(*span), position,
                 )
             }
         }
@@ -15200,6 +15220,44 @@ mod wi351_place_tests {
 #[cfg(test)]
 mod wi819_diagnostic_tests {
     use super::*;
+
+    /// `render_all` is a SECOND rendering path for `LoadError`: it handles
+    /// `Located` itself (to reuse one line index per file) instead of going
+    /// through `Display`. That divergence is the risk, so this pins the two as
+    /// equal — over a batch that mixes TWO files, interleaved so the per-file
+    /// index cache is exercised out of order, plus a non-`Located` error.
+    #[test]
+    fn render_all_matches_the_per_error_display() {
+        use std::sync::Arc;
+        let a: Arc<str> = Arc::from("namespace a\n  fact one(x: 1)\n");
+        let b: Arc<str> = Arc::from("namespace b\n\n\n  fact two(y: 2)\n");
+        let path_a: Arc<std::path::Path> = Arc::from(std::path::Path::new("a.anthill"));
+        let path_b: Arc<std::path::Path> = Arc::from(std::path::Path::new("b.anthill"));
+        let located = |path: &Arc<std::path::Path>, src: &Arc<str>, start: u32| LoadError::Located {
+            path: Some(path.clone()),
+            source: src.clone(),
+            inner: Box::new(LoadError::UnresolvedName {
+                name: "ghost".to_string(),
+                span: crate::span::Span { start, end: start + 5 },
+                scope_name: "s".to_string(),
+            }),
+        };
+        let errors = vec![
+            located(&path_a, &a, 14),
+            located(&path_b, &b, 16),
+            located(&path_a, &a, 19),   // back to file a — out of order on purpose
+            LoadError::Other { message: "no file, no span".to_string() },
+            located(&path_b, &b, 14),
+        ];
+
+        let batched = LoadError::render_all(&errors);
+        let one_at_a_time: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        assert_eq!(batched, one_at_a_time);
+        // Non-vacuous: the batch really did resolve distinct positions in two files.
+        assert!(batched[0].starts_with("a.anthill:2:3:"), "{}", batched[0]);
+        assert!(batched[1].starts_with("b.anthill:4:3:"), "{}", batched[1]);
+        assert_eq!(batched[3], "no file, no span");
+    }
 
     /// Both renderings of the WI-819 diagnostics are single-spaced.
     ///

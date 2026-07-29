@@ -8,6 +8,7 @@ use anthill_core::kb::load;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::error::ParseError;
 use anthill_core::parse::ir::ParsedFile;
 
 use smallvec::SmallVec;
@@ -650,11 +651,11 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 // because the bundled domain/rules already supply those names;
                 // the honest parse diagnostic is all that remains, and a real
                 // typo in any file must not be swallowed (loud over silent).
-                for err in &errs {
-                    // WI-852: through the shared owner, so this hand-rolled
-                    // `path:line:col` cannot drift from the one every other
-                    // parse-error and load-error printer uses.
-                    eprintln!("warning: {}", err.format_located(file, &source));
+                // WI-852: through the shared owner, so this cannot drift from
+                // the rendering every other parse-error and load-error printer
+                // uses; batched so the file is indexed once.
+                for located in ParseError::all_located(&errs, file, &source) {
+                    eprintln!("warning: {located}");
                 }
             }
         }
@@ -689,7 +690,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // unimplemented on purpose: a load error is not the redundant duplicate
         // the parse arm skips, and WI-744 requires it to block.
         Err(errs) => {
-            for e in &errs {
+            // Batched: one line index per file, not per error (WI-852 follow-up).
+            for e in load::LoadError::render_all(&errs) {
                 eprintln!("error: {e}");
             }
             return runner::EXIT_COMPILE;

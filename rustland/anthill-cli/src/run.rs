@@ -14,6 +14,7 @@ use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::error::ParseError;
 use anthill_core::parse::ir::ParsedFile;
 use clap::Parser;
 
@@ -148,12 +149,10 @@ fn parse_user_files(paths: &[PathBuf]) -> (Vec<ParsedFile>, Vec<String>) {
         match parse::parse(&source) {
             // WI-745: stamp the path so a load error renders `path:line:col`.
             Ok(p) => files.push(p.with_path(path.clone())),
+            // WI-852: `path:line:col`, the rendering a load error already had —
+            // see `main.rs::load_kb_with_stdlib`.
             Err(parse_errors) => {
-                for pe in &parse_errors {
-                    // WI-852: `path:line:col`, the rendering a load error already
-                    // had — see `main.rs::load_kb_with_stdlib`.
-                    errors.push(pe.format_located(path, &source));
-                }
+                errors.extend(ParseError::all_located(&parse_errors, path, &source))
             }
         }
     }
@@ -193,8 +192,9 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
         }
         // WI-744: every `LoadError` blocks (see `LoadError`'s doc); an advisory
         // rides `result.warnings` on the Ok path above.
+        // Batched so each file is indexed once — see `main.rs::load_kb_with_stdlib`.
         Err(errs) => {
-            for e in &errs {
+            for e in load::LoadError::render_all(&errs) {
                 eprintln!("error: {e}");
             }
             return Err(runner::EXIT_COMPILE);

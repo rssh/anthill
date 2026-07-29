@@ -14,7 +14,7 @@ use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
 use anthill_core::parse;
 use anthill_core::parse::error::ParseError;
 use anthill_core::parse::ir::{Item, ParsedFile};
-use anthill_core::span::Span;
+use anthill_core::span::{LineIndex, Span};
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::persistence::term_ser;
 
@@ -554,13 +554,12 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
         match parse::parse(&source) {
             // WI-745: stamp the path so a load error renders `path:line:col`.
             Ok(p) => parsed_files.push(p.with_path(file.clone())),
+            // WI-852: `path:line:col`, the same rendering a load error gets —
+            // which STAGE found the fault must not decide whether the author gets
+            // a location or a byte offset to count to. Rendered as a BATCH so the
+            // source is indexed once, not walked per error.
             Err(parse_errors) => {
-                for pe in &parse_errors {
-                    // WI-852: `path:line:col`, the same rendering a load error
-                    // gets — which STAGE found the fault must not decide whether
-                    // the author gets a location or a byte offset to count to.
-                    errors.push(pe.format_located(file, &source));
-                }
+                errors.extend(ParseError::all_located(&parse_errors, file, &source))
             }
         }
     }
@@ -607,8 +606,10 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
         }
         // WI-744: every `LoadError` blocks (see `LoadError`'s doc); an advisory
         // rides `result.warnings` on the Ok path above.
+        // Rendered as a BATCH: each file's line index is built once, not once
+        // per error (WI-852 follow-up).
         Err(load_errors) => {
-            for e in &load_errors {
+            for e in load::LoadError::render_all(&load_errors) {
                 eprintln!("error: {e}");
             }
             return Err(1);
@@ -856,10 +857,8 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
         let parsed = match parse::parse(&source) {
             Ok(p) => p,
             Err(parse_errors) => {
-                for pe in &parse_errors {
-                    // WI-852: `path:line:col` — see `load_kb_with_stdlib`.
-                    errors.push(pe.format_located(file, &source));
-                }
+                // WI-852: `path:line:col` — see `load_kb_with_stdlib`.
+                errors.extend(ParseError::all_located(&parse_errors, file, &source));
                 continue;
             }
         };
@@ -1468,13 +1467,24 @@ impl<'a> QuerySource<'a> {
     ///   line whether or not `-i` was passed; unshifted it drifts one line per
     ///   flag, a location worse than none.
     ///
-    /// `user` is the user's text and the file it came from, or `None` for an
-    /// inline `--pattern`. A pattern takes no `line:col`: it would index into
+    /// `user` is the file the text came from and an index over that text, or
+    /// `None` for an inline `--pattern`. A pattern takes no `line:col`: it would index into
     /// text anthill synthesized AROUND the argument (the import lines, and the
     /// `fact` keyword the arm prepends), pointing at something the author never
     /// wrote — the same "location that names nothing" this ticket removes. It is
     /// one visible argument, so naming the flag it came from IS its location.
-    fn located_error(&self, e: &ParseError, user: Option<(&Path, &str)>) -> String {
+    /// Rendered as a BATCH so the user's text is indexed ONCE — resolving a
+    /// position per error re-walks it from byte 0, the O(N × len) shape the
+    /// line-index work removed everywhere else.
+    fn located_errors(&self, errors: &[ParseError], user: Option<(&Path, &str)>) -> Vec<String> {
+        // The index and the path travel as ONE value from here on, so "a file
+        // but no index" is not a state `located_error` can be handed.
+        let indexed = user.map(|(path, text)| (path, LineIndex::new(text)));
+        let user = indexed.as_ref().map(|(path, loc)| (*path, loc));
+        errors.iter().map(|e| self.located_error(e, user)).collect()
+    }
+
+    fn located_error(&self, e: &ParseError, user: Option<(&Path, &LineIndex)>) -> String {
         // `prefix_len > 0` guards the no-`-i` case: with no prefix at all there
         // is no flag to blame, and a zero-width span at byte 0 — the WI-778
         // missing-token shape — would otherwise satisfy `end <= 0`.
@@ -1489,14 +1499,15 @@ impl<'a> QuerySource<'a> {
             };
         }
         match user {
+            // No file: an inline `--pattern`.
             None => format!("--pattern: {}", e.message),
-            Some((path, text)) => {
+            Some((path, loc)) => {
                 let shift = self.prefix_len as u32;
                 let mut shifted = e.clone();
                 // `end > shift` from the branch above; `start` may be BELOW it on
                 // a merged node, and clamping lands it on the user's first byte.
                 shifted.span = Span::new(e.span.start.max(shift) - shift, e.span.end - shift);
-                shifted.format_located(path, text)
+                shifted.format_located_at(path, loc)
             }
         }
     }
@@ -1515,8 +1526,8 @@ fn collect_queries(
         let parsed = match parse::parse(&source.text) {
             Ok(p) => p,
             Err(errs) => {
-                for e in &errs {
-                    eprintln!("error: {}", source.located_error(e, None));
+                for e in source.located_errors(&errs, None) {
+                    eprintln!("error: {e}");
                 }
                 return Err(1);
             }
@@ -1526,7 +1537,7 @@ fn collect_queries(
         // (see `LoadError`'s doc).
         let scan_errors = load::scan_definitions(kb, &[&parsed]);
         if !scan_errors.is_empty() {
-            for e in &scan_errors {
+            for e in load::LoadError::render_all(&scan_errors) {
                 eprintln!("error: {e}");
             }
             return Err(1);
@@ -1570,8 +1581,8 @@ fn collect_queries(
             Ok(p) => p,
             Err(errs) => {
                 let user = Some((query_file.as_path(), file_source.as_str()));
-                for e in &errs {
-                    eprintln!("error: {}", source.located_error(e, user));
+                for e in source.located_errors(&errs, user) {
+                    eprintln!("error: {e}");
                 }
                 return Err(1);
             }
@@ -1581,7 +1592,7 @@ fn collect_queries(
         // see the `--pattern` arm above.
         let scan_errors = load::scan_definitions(kb, &[&parsed]);
         if !scan_errors.is_empty() {
-            for e in &scan_errors {
+            for e in load::LoadError::render_all(&scan_errors) {
                 eprintln!("error: {e}");
             }
             return Err(1);

@@ -1,6 +1,7 @@
 //! Embedded `.anthill` bundle for the rust+anthill realization.
 
 use anthill_core::parse;
+use anthill_core::parse::error::ParseError;
 use anthill_core::parse::ir::ParsedFile;
 
 const BUNDLE_SOURCES: &[(&str, &str)] = &[
@@ -40,14 +41,13 @@ pub fn parse_embedded_bundle() -> (Vec<ParsedFile>, Vec<String>) {
         match parse::parse(source) {
             Ok(parsed) => files.push(parsed),
             Err(parse_errors) => {
-                for e in &parse_errors {
-                    // WI-852: `line:col` in the embedded source — see
-                    // `anthill_stl::stdlib::parse_embedded`.
-                    errors.push(format!(
-                        "bundle {}",
-                        e.format_located(std::path::Path::new(name), source)
-                    ));
-                }
+                // WI-852: `line:col` in the embedded source — see
+                // `anthill_stl::stdlib::parse_embedded`.
+                errors.extend(
+                    ParseError::all_located(&parse_errors, std::path::Path::new(name), source)
+                        .into_iter()
+                        .map(|located| format!("bundle {located}")),
+                );
             }
         }
     }

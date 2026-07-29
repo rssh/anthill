@@ -1073,7 +1073,10 @@ mod tests {
         load::register_prelude(&mut kb);
         kb.register_standard_builtins();
         load::load_all(&mut kb, &refs, &NullResolver)
-            .unwrap_or_else(|errs| { for e in &errs { eprintln!("{}", e); } panic!("load failed"); });
+            .unwrap_or_else(|errs| {
+                for e in load::LoadError::render_all(&errs) { eprintln!("{e}"); }
+                panic!("load failed");
+            });
 
         let mut interp = Interpreter::new(kb);
         eval::builtins::register_standard_builtins(&mut interp)

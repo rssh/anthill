@@ -22,6 +22,7 @@ use crate::intern::Symbol;
 use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse;
+use crate::parse::error::ParseError;
 use crate::parse::ir::Item;
 
 use super::print;
@@ -254,9 +255,9 @@ impl BulkStore for FileStore {
             let parsed = match parse::parse(&source) {
                 Ok(p) => p,
                 Err(errors) => {
-                    return Err(PersistenceError::Parse(
-                        errors.iter().map(|e| e.format_located(&path, &source)).collect(),
-                    ))
+                    return Err(PersistenceError::Parse(ParseError::all_located(
+                        &errors, &path, &source,
+                    )))
                 }
             };
             parsed_files.push(parsed);
@@ -287,9 +288,9 @@ fn apply_retracts(
     let parsed = match parse::parse(source) {
         Ok(p) => p,
         Err(errors) => {
-            return Err(PersistenceError::Parse(
-                errors.iter().map(|e| e.format_located(path, source)).collect(),
-            ))
+            return Err(PersistenceError::Parse(ParseError::all_located(
+                &errors, path, source,
+            )))
         }
     };
 
