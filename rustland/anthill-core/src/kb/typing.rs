@@ -16319,6 +16319,28 @@ fn witness_dispatch_carrier(
 /// `None` for a bare / carrier-less provision or a non-sort binding. Used by witness
 /// coherence to tell a WITNESS (carrier ≠ provider sort) from a fact / self-provider
 /// (carrier IS the provider).
+///
+/// WI-856 — "sort" here means SORT-LIKE: a SORT, or a FREE-STANDING entity, which is
+/// its own type ([`KnowledgeBase::is_free_standing_entity`] — the same pair
+/// [`check_bare_ref`] uses to decide that a bare name DENOTES A TYPE). So
+/// `sort W provides PartialEq[T = binding]` over a namespace-level `entity binding(…)`
+/// is a bona-fide witness. Reading only `SymbolKind::Sort` made this answer `None`,
+/// and the caller then read the provision as a SELF-provider keyed on `W` — the
+/// witness's `eq` was filed under the witness instead of the carrier and silently
+/// never dispatched, with the load clean. Measured: 0 → 1 solution on the witness arm
+/// of the WI-856 test pair.
+///
+/// Using that helper rather than a hand-rolled `kind == Entity && !constructor` also
+/// makes this set EQUAL BY CONSTRUCTION to the carrier domain the eq index walks:
+/// both bottom out in the entity-field-type registry
+/// ([`super::load::eq_dispatch_carrier_domain`] via `eq_derive::composite_sorts`,
+/// which is `entity_field_type_functors`). Accepting a carrier here that the index
+/// cannot enumerate would recreate the very asymmetry WI-856 exists to close.
+///
+/// A sort-NESTED entity stays rejected — a variant is not a carrier in its own right
+/// (its type is the parent sort), and admitting one would mint a SECOND carrier bucket
+/// keying the very same constructor, where a rival `eq` could hide from the
+/// per-carrier ambiguity check instead of colliding with it.
 fn provision_carrier_sort(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -16331,8 +16353,10 @@ fn provision_carrier_sort(
     let val = bindings
         .iter()
         .find_map(|(k, v)| (short_name_of(kb.resolve_sym(*k)) == carrier_short).then_some(*v))?;
-    super::load::provides_spec_base_sym(kb, val)
-        .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Sort)))
+    super::load::provides_spec_base_sym(kb, val).filter(|&s| {
+        matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
+            || kb.is_free_standing_entity(s)
+    })
 }
 
 /// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a

@@ -27,6 +27,11 @@
 //! test below asserts the DIAGNOSTIC IDENTITY, not merely that the load fails:
 //! `AmbiguousWitness` refuses that program today, so a failure-only assertion would
 //! pass with nothing implemented.
+//!
+//! WI-856 continues in the same file (last section) because it closes the DOMAIN gap
+//! WI-837 measured and pinned here: the index build enumerated `SortInfo` sorts only,
+//! so a NAMESPACE-LEVEL entity carrier — its own carrier, emitting no `SortInfo` —
+//! never keyed the index at all, whatever route supplied its `eq`.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
@@ -108,6 +113,17 @@ fn assert_refused(src: &str, needles: &[&str], why: &str) {
         "{why}; expected one diagnostic containing all of {needles:?}, got:\n{}",
         errs.join("\n"),
     );
+}
+
+/// The positive twin of [`assert_refused`] — `src` loads with NO diagnostic. Every
+/// refusal test in this file needs one: without it a refusal can be passing because
+/// the check over-refuses the one-supplier shape too. `common::load_kb_with` is not a
+/// substitute — it panics with a generic "load failed with N errors" and drops the
+/// per-test rationale, which is the whole content of a control.
+fn assert_loads_clean(src: &str, why: &str) {
+    if let Err(errs) = crate::common::try_load_kb_with(src) {
+        panic!("{why}; got:\n{}", errs.join("\n"));
+    }
 }
 
 fn pebble_term(kb: &mut KnowledgeBase, n: i64) -> TermId {
@@ -333,9 +349,7 @@ end
 /// witness route now over-refuses.
 #[test]
 fn a_single_witness_eq_loads_clean() {
-    if let Err(errs) = crate::common::try_load_kb_with(WITNESS_SRC) {
-        panic!("a lone PartialEq witness for Pebble must load clean; got:\n{}", errs.join("\n"));
-    }
+    assert_loads_clean(WITNESS_SRC, "a lone PartialEq witness for Pebble must load clean");
 }
 
 /// CONTROL — the carrier's OWN `eq` still keys the index and still wins as the sole
@@ -396,20 +410,20 @@ end
     );
 }
 
-// ── The index's DOMAIN, pinned (a pre-existing gap, not this ticket's) ────────
+// ── The index's DOMAIN (WI-856) ──────────────────────────────────────────────
 
 /// WI-837 shares ONE predicate between the eq index build and WI-664's lawful-Eq
-/// boundary classifier — but the two enumerate DIFFERENT sort universes, and this
-/// pair of tests pins that so the shared predicate is not misread as a shared
-/// domain. The index build derives its carriers from `SortInfo` facts, which only a
+/// boundary classifier; WI-856 shares the composite half of the DOMAIN too, and this
+/// pair of tests measures it on both arms of one otherwise-identical program. The
+/// index build used to derive its carriers from `SortInfo` facts alone, which only a
 /// `sort … end` block emits; a NAMESPACE-LEVEL entity is its own carrier with no
-/// `SortInfo`, so its `eq` supplier never keys the index and equality stays
-/// STRUCTURAL. Measured on both arms of one otherwise-identical program.
+/// `SortInfo`, so its `eq` supplier never keyed the index and equality silently
+/// answered STRUCTURALLY — while the classifier, which walks the entity registry,
+/// reached that same entity and treated it as a lawful-Eq boundary.
 ///
-/// PRE-EXISTING and independent of the witness route: the index build has always
-/// walked the `SortInfo`-derived sort list, so the WI-625 gap-2 instance-fact route
-/// used here degrades identically. Recorded rather than fixed — widening the domain
-/// would newly key every free-standing entity and is its own increment (WI-856).
+/// The gap was PRE-EXISTING and route-independent: the `SortInfo` walk fed the index
+/// from the start, so the WI-625 gap-2 instance-fact route used here degraded exactly
+/// as the WI-616 own-member and WI-837 witness routes did.
 const NS_ENTITY_SRC: &str = r#"namespace test.wi837.nsent
   import anthill.prelude.{Int64, Bool, PartialEq}
 
@@ -449,14 +463,120 @@ fn a_sort_wrapped_entity_carrier_keys_the_index() {
 }
 
 #[test]
-fn a_namespace_level_entity_carrier_does_not_key_the_index() {
+fn a_namespace_level_entity_carrier_keys_the_index() {
     assert_eq!(
         eq_solutions(NS_ENTITY_SRC, "test.wi837.nsent.beq", "test.wi837.nsent.binding", &["n", "note"]),
+        1,
+        "a namespace-level entity emits no `SortInfo`, so the index build must reach it through \
+         the composite-carrier walk it now shares with WI-664's classifier; 0 solutions means \
+         the domain re-narrowed to `SortInfo` and the written `fact PartialEq[T = binding, \
+         eq = bindEq]` is being silently ignored again (WI-856)"
+    );
+}
+
+/// The WITNESS route to the same carrier — and the measurement that REFUTES this
+/// ticket's premise that all three supply routes "degrade identically" for a
+/// namespace-level entity and are all restored by widening the index's DOMAIN. They
+/// are not: the witness route was broken a SECOND time, one owner earlier.
+/// `provision_carrier_sort` (kb/typing.rs) read `T = binding` and required
+/// `SymbolKind::Sort`, so a free-standing ENTITY carrier answered `None` and the
+/// caller filed the provision as a self-provider keyed on the WITNESS — the widened
+/// domain then enumerated `binding` and correctly found nothing there. Both owners
+/// had to move; measured 0 → 1 on this arm alone.
+#[test]
+fn a_witness_supplies_eq_for_a_namespace_level_entity_carrier() {
+    let src = r#"namespace test.wi856.nswitness
+  import anthill.prelude.{Int64, Bool, PartialEq}
+
+  entity binding(n: Int64, note: Int64)
+
+  sort BindingEqW
+    provides PartialEq[T = binding]
+    operation eq(a: binding, b: binding) -> Bool = true
+  end
+
+  rule beq(?x, ?y) :- eq(?x, ?y)
+end
+"#;
+    assert_eq!(
+        eq_solutions(src, "test.wi856.nswitness.beq", "test.wi856.nswitness.binding", &["n", "note"]),
+        1,
+        "a WITNESS sort supplying `eq` for a namespace-level entity carrier must dispatch; \
+         0 solutions means the provision's carrier is being read as the witness sort again \
+         and the written `operation eq` is silently ignored"
+    );
+}
+
+/// CONTROL for the widening above — a sort-NESTED entity is NOT admitted as a carrier
+/// in its own right. `T = pebble` names a VARIANT, whose type is the parent sort, so
+/// the provision is not a witness for it and the parent keeps structural equality.
+/// Without this, the free-standing widening could have admitted every constructor,
+/// minting a second carrier bucket that keys the same constructor — where a rival
+/// `eq` would hide from the per-carrier ambiguity check instead of colliding with it.
+#[test]
+fn a_variant_named_as_a_carrier_is_not_a_witness_carrier() {
+    let src = r#"namespace test.wi856.variant
+  import anthill.prelude.{Int64, Bool, PartialEq}
+
+  sort Pebble
+    entity pebble(n: Int64)
+  end
+
+  sort PebbleEqW
+    provides PartialEq[T = pebble]
+    operation eq(a: Pebble, b: Pebble) -> Bool = true
+  end
+
+  rule peq(?x, ?y) :- eq(?x, ?y)
+end
+"#;
+    assert_eq!(
+        eq_solutions(src, "test.wi856.variant.peq", "test.wi856.variant.Pebble.pebble", &["n"]),
         0,
-        "PINS A KNOWN GAP (WI-856), not a desired behaviour: a namespace-level entity emits no \
-         `SortInfo`, so the index build never enumerates it and its `eq` supplier is ignored. \
-         If this starts returning 1 the gap was closed — update the doc on `is_eq_boundary` \
-         (kb/eq_derive.rs), which cites this asymmetry, and delete this test's premise"
+        "a sort-nested variant is not a carrier — `T = pebble` must not key `pebble`'s \
+         constructor for dispatch behind the `Pebble` carrier's back"
+    );
+}
+
+/// The refusal half of the same widening: a namespace-level entity that is newly
+/// index-keyed must also be newly REFUSABLE. Asserted on the diagnostic IDENTITY
+/// (`AmbiguousEqDispatch`, naming both ops) rather than on failure — the program
+/// below loaded CLEAN before WI-856, so a failure-only assertion would have been the
+/// whole content of the change and would still pass if the second candidate were
+/// dropped by some other check instead.
+#[test]
+fn two_eq_suppliers_for_a_namespace_level_entity_are_refused() {
+    let src = r#"namespace test.wi856.nsambig
+  import anthill.prelude.{Int64, Bool, PartialEq}
+
+  entity binding(n: Int64, note: Int64)
+
+  operation bindEqA(a: binding, b: binding) -> Bool = true
+  operation bindEqB(a: binding, b: binding) -> Bool = false
+
+  fact PartialEq[T = binding, eq = bindEqA]
+
+  sort BindingEqW
+    provides PartialEq[T = binding, eq = bindEqB]
+  end
+end
+"#;
+    assert_refused(
+        src,
+        &["ambiguous semantic equality", "carrier 'test.wi856.nsambig.binding'", "bindEqA", "bindEqB"],
+        "a namespace-level entity carrier with two `eq` suppliers must be refused by the index \
+         build just as a `sort`-wrapped one is — it loaded clean while the domain excluded it",
+    );
+}
+
+/// CONTROL for the refusal above — ONE supplier for the same namespace-level carrier
+/// still loads clean, so the refusal is the SECOND candidate talking and not the
+/// widened domain over-refusing every free-standing entity.
+#[test]
+fn a_single_eq_supplier_for_a_namespace_level_entity_loads_clean() {
+    assert_loads_clean(
+        NS_ENTITY_SRC,
+        "one `eq` supplier for a namespace-level entity must load clean",
     );
 }
 
@@ -490,14 +610,12 @@ fn a_witness_supplied_eq_is_a_lawful_eq_boundary() {
   end
 end
 "#;
-    if let Err(errs) = crate::common::try_load_kb_with(src) {
-        panic!(
-            "a Float-containing composite whose `eq` comes from a WITNESS is a lawful-Eq \
-             boundary: it must NOT be field-wise-derived `NonEq` and must not then conflict \
-             with its own `provides Eq`; got:\n{}",
-            errs.join("\n")
-        );
-    }
+    assert_loads_clean(
+        src,
+        "a Float-containing composite whose `eq` comes from a WITNESS is a lawful-Eq \
+         boundary: it must NOT be field-wise-derived `NonEq` and must not then conflict \
+         with its own `provides Eq`",
+    );
 }
 
 /// CONTROL for the test above — WITHOUT any `eq` supplier the same composite IS

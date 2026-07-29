@@ -14,8 +14,8 @@
 //!   or (WI-837) a WITNESS SORT's `eq` — read through the very predicate the
 //!   eq-dispatch index uses (`load::EqDispatchIndex`, built by
 //!   `load::build_eq_dispatch_index`), so the classifier's boundary is exactly the
-//!   resolver's dispatch boundary. The PREDICATE is shared; the DOMAINS are not —
-//!   see `is_eq_boundary` for the namespace-level-entity gap (WI-856). That is what keeps `TotalFloat` (a `Float`
+//!   resolver's dispatch boundary. Since WI-856 the composite half of the DOMAIN is
+//!   shared as well ([`composite_sorts`]). That is what keeps `TotalFloat` (a `Float`
 //!   wrapper that declares its own total `eq`) lawfully `Eq` — and shields a
 //!   composite that wraps it — while a plain `Point(x: Float, y: Float)` becomes
 //!   `NonEq`.
@@ -145,7 +145,11 @@ pub(crate) fn run(kb: &mut KnowledgeBase) {
 /// free-standing entities (their own sort). Derived from the entity-field-type
 /// registry — one entry per constructor that carries a field schema — mapping each
 /// constructor to its owning sort.
-fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+///
+/// WI-856 — the ONE owner of "which composite carriers exist", shared with
+/// [`super::load::eq_dispatch_carrier_domain`], which unions it into the eq index's
+/// `SortInfo` walk to reach a NAMESPACE-LEVEL entity; that function carries the why.
+pub(crate) fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
     let mut sorts: Vec<Symbol> = Vec::new();
     let mut seen: HashSet<Symbol> = HashSet::new();
     let ctor_functors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
@@ -173,13 +177,9 @@ fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
 /// boundary == the resolver's dispatch boundary, so a carrier that dispatches its own
 /// `eq` is neither field-wise'd nor false-derived `NonEq` against its own `Eq`.
 ///
-/// The PREDICATE is shared; the DOMAINS are not, and that is a pre-existing gap
-/// neither WI-664 nor WI-837 closes. The index build enumerates `SortInfo`-carrying
-/// sorts, while [`composite_sorts`] also reaches a NAMESPACE-LEVEL entity (its own
-/// carrier, no `SortInfo` fact) — so such an entity can be a boundary here while its
-/// `eq` never keys the index at all. That direction is the safe one (it declines to
-/// derive `NonEq`, leaving structural eq) and it predates this pass, but do not read
-/// the shared predicate as making the two sets equal.
+/// WI-856 — the DOMAINS now agree on the composite half too, so a NAMESPACE-LEVEL
+/// entity that is a boundary here also keys the index there
+/// ([`super::load::eq_dispatch_carrier_domain`]).
 ///
 /// An AMBIGUOUS carrier (more than one candidate) is a boundary here and a load error
 /// at the index build: this pass runs after that refusal is already recorded, and

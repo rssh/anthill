@@ -5134,6 +5134,10 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
 /// key Map dispatch). The resolver's `eq`/`neq` builtin probes this per
 /// structurally-unequal goal — precomputing here keeps that path to one hash lookup.
 ///
+/// WHICH sorts are walked is [`eq_dispatch_carrier_domain`] — the `SortInfo` sorts
+/// UNION WI-664's composite carriers, the latter being the only route to a
+/// NAMESPACE-LEVEL entity (WI-856).
+///
 /// What counts as an override is [`EqDispatchIndex`]: the carrier's own member
 /// (WI-616), a retroactive instance fact's op binding (WI-625 gap 2), or a WI-450
 /// WITNESS SORT's member (WI-837). All three are COLLECTED rather than chained
@@ -5155,14 +5159,15 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     let Some(eq_index) = EqDispatchIndex::build(kb) else {
         return Vec::new();
     };
+    let carriers = eq_dispatch_carrier_domain(kb, sort_ops.keys().copied());
     let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
-    // Collected rather than built into `LoadError`s as we go: `sort_ops` is a
-    // `HashMap`, so this walk visits carriers in an arbitrary order, and a program
-    // with two erroring carriers must report them the same way on every load. Sorted
+    // Collected rather than built into `LoadError`s as we go: `carriers` comes from
+    // two `HashMap` walks, so this loop visits carriers in an arbitrary order, and a
+    // program with two erroring carriers must report them the same way on every load. Sorted
     // by carrier below (each carrier's own candidate list is already deterministic —
     // the index walks provisions in `provides_rids_by_spec` order).
     let mut ambiguous: Vec<(String, Vec<String>)> = Vec::new();
-    for &sort_sym in sort_ops.keys() {
+    for sort_sym in carriers {
         let cands = eq_index.candidates(kb, sort_sym);
         let target = match cands.as_slice() {
             // No eq override for this sort — structural equality IS its instance.
@@ -5176,7 +5181,12 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
                 continue;
             }
         };
-        for ctor in kb.constructors_of_sort(sort_sym) {
+        // `field_constructors_of_sort`, not `constructors_of_sort`: a NAMESPACE-LEVEL
+        // entity IS its own constructor and has no variants, so the variant-only
+        // reader returns nothing for it and its values would be headed by a functor
+        // the index never keyed (WI-856). For a `sort … end` carrier the two agree —
+        // the sort symbol itself carries no field schema.
+        for ctor in kb.field_constructors_of_sort(sort_sym) {
             entries.push((ctor, target));
         }
         let sort_canon = kb.canonical_sort_sym(sort_sym);
@@ -5210,6 +5220,47 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         .into_iter()
         .map(|(carrier, providers)| LoadError::AmbiguousEqDispatch { carrier, providers })
         .collect()
+}
+
+/// WI-856 — the eq-dispatch index's carrier DOMAIN: every sort whose values can head
+/// an equality goal. Two sources, unioned because neither subsumes the other:
+///
+/// * `sort_infos`, the `SortInfo`-derived sorts — every `sort … end`, including
+///   the constructor-LESS carriers whose values are headed by their SELF-RETURNING
+///   OPS (`Set.insert`) rather than by any entity constructor;
+/// * [`super::eq_derive::composite_sorts`] — every composite carrier, and the ONLY
+///   route to a NAMESPACE-LEVEL `entity binding(…)`: such an entity is its own
+///   carrier, and `emit_sort_info` has exactly one caller (`load_sort_with_body`), so
+///   no `SortInfo` fact is ever emitted for it.
+///
+/// Sharing the second walk with WI-664's classifier — rather than re-deriving the
+/// entity registry here — is what gives the DOMAIN one owner, as [`EqDispatchIndex`]
+/// already gives the PREDICATE one. Before this, a namespace-level entity could be a
+/// lawful-Eq BOUNDARY for the classifier (which reaches it) while its `eq` supplier
+/// never keyed the index at all (which did not): the safe direction — structural
+/// equality, no falsely derived `NonEq` — but a SILENT one, and a written
+/// `fact PartialEq[T = binding, eq = bindEq]` simply did nothing.
+///
+/// Seeded from the `SortInfo` half VERBATIM and deduplicated only on the composite
+/// side — deliberately asymmetric, not an oversight to tidy into one uniform
+/// `chain().filter(seen.insert(canon))`. The caller looks a carrier's self-returning
+/// ops up as `sort_ops.get(&sort_sym)`, a RAW-symbol read, so when both halves spell
+/// one canonical sort the `SortInfo` spelling must be the copy that survives; the
+/// composite copy would find no ops and silently drop them from the index. The
+/// dedup itself is CANONICAL because one qualified name can be interned under several
+/// Symbols, and a carrier visited twice reports its ambiguity twice.
+fn eq_dispatch_carrier_domain(
+    kb: &KnowledgeBase,
+    sort_infos: impl IntoIterator<Item = Symbol>,
+) -> Vec<Symbol> {
+    let mut out: Vec<Symbol> = sort_infos.into_iter().collect();
+    let mut seen: HashSet<Symbol> = out.iter().map(|&s| kb.canonical_sort_sym(s)).collect();
+    out.extend(
+        super::eq_derive::composite_sorts(kb)
+            .into_iter()
+            .filter(|&s| seen.insert(kb.canonical_sort_sym(s))),
+    );
+    out
 }
 
 /// WI-837 — the one owner of "what supplies this carrier's `eq`" AT LOAD TIME, read
