@@ -1,0 +1,6 @@
+namespace wi853.kb
+  sort S
+    entity mk(x: Int64)
+  end
+  fact mk(x: 7)
+end

@@ -1,0 +1,2 @@
+-- Resolves only if `mk` is in scope, which is what `-i wi853.kb` supplies.
+fact mk(x: ?v)

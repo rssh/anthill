@@ -801,6 +801,15 @@ import anthill.prelude.{List, Option}         -- imports "List" and "Option" fro
 import anthill.prelude.*                      -- imports all visible names from anthill.prelude
 ```
 
+**Where an import may be written.** Anywhere a declaration may be: in a namespace
+body, in a sort body, or at a file's **top level**, outside any namespace. The
+import enters the scope it is written in, and a file's top level is the global
+scope — the same one a top-level `sort` / `fact` / `rule` is defined in. So a
+top-level import is **not** file-local: like a top-level definition, it is
+visible from every scope that resolves through the global scope, including
+namespaces in other files of the same load. Write imports inside the namespace
+that needs them when that scope is what you mean.
+
 **Visibility** is a prefix modifier on declarations. Names are **visible by
 default**; the modifiers adjust that (full algorithm in §8.6):
 
@@ -2417,6 +2426,9 @@ NameList    ::= Name (',' Name)*
 SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq[T] = Eq[T = T])
               | Type                            -- positional: next unfilled param in declaration order (§5.2)
               | VariableTerm                    -- variable binding: Modify[?], Modify[?r]
+
+File             ::= NamespaceContent*           -- a file's top level: same content,
+                                                 -- scoped to the GLOBAL scope (§5.1)
 
 NamespaceContent ::= Import
                    | Sort | Rule | Operation

@@ -131,6 +131,16 @@ pub fn generate_rust_with_config(
     config: &CodegenConfig,
 ) -> Result<String, Vec<CodegenError>> {
     let mut cg = RustCodegen::with_context(&parsed.symbols, &parsed.terms, global_trait_sorts, config);
+    // WI-853: a file's TOP-LEVEL imports emit their `use` lines here, where a
+    // namespace body's are emitted by `emit_namespace`. Both spell one anthill
+    // `import` as one Rust `use`; dropping the top-level ones would generate a
+    // module whose names silently do not resolve.
+    for imp in &parsed.imports {
+        cg.emit_import(imp);
+    }
+    if !parsed.imports.is_empty() && !parsed.items.is_empty() {
+        cg.blank();
+    }
     cg.emit_items(&parsed.items, None);
     if cg.errors.is_empty() {
         Ok(cg.output)

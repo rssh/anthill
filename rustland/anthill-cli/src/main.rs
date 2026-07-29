@@ -14,7 +14,6 @@ use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
 use anthill_core::parse;
 use anthill_core::parse::error::ParseError;
 use anthill_core::parse::ir::{Item, ParsedFile};
-use anthill_core::span::{LineIndex, Span};
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::persistence::term_ser;
 
@@ -1304,6 +1303,17 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         eprintln!("error: --max-depth applies only to resolution (--mode pattern, without --match)");
         return Err(1);
     }
+    // WI-853: `-i` under the same rule. A listing mode resolves its argument by
+    // qualified name (or interns it raw), never through the query scope the flag
+    // imports into, so the flag is INERT there — and a flag that silently does
+    // nothing is the defect this ticket exists to remove.
+    if listing_mode && !args.imports.is_empty() {
+        eprintln!(
+            "error: --import applies only to --mode pattern; a listing mode looks its \
+             argument up by name, not in the query scope"
+        );
+        return Err(1);
+    }
 
     let mut kb = load_kb(&args.paths, false)?;
 
@@ -1403,114 +1413,81 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
     Ok(())
 }
 
-/// WI-852: the source [`collect_queries`] parses is SYNTHESIZED — one `import`
-/// line per `-i` flag, then the user's text — so a raw span indexes into text the
-/// author only partly wrote. This owns the join, so the split point is recorded
-/// where the two halves meet and cannot be re-derived (differently) per arm.
-struct QuerySource<'a> {
-    /// What `parse::parse` is handed.
-    text: String,
-    /// Byte length of the import prefix: the boundary attribution keys on.
-    prefix_len: usize,
-    /// The `-i` flags, in the order their lines were written.
-    imports: &'a [String],
+/// WI-853: parse a source the query command SYNTHESIZED from one argument —
+/// `import <name>` for a `-i` flag, `fact <pattern>` for an inline `--pattern` —
+/// reporting any fault against `origin`, the flag it came from.
+///
+/// No `line:col`: the position would index text this function wrapped AROUND the
+/// argument (the `import` / `fact` keyword), pointing at something the author
+/// never wrote. One visible argument is the whole of the origin, so naming the
+/// flag IS its location — WI-852's rule for `--pattern`, now shared with `-i`.
+///
+/// WI-852 got the `-i` half of that by JOINING one `import` line per flag onto
+/// the user's text, recording where the two met, and splitting each span back
+/// across the boundary. Nothing is joined any more: each flag is its own source
+/// and the query file is parsed ALONE, so the split point, the span shift and
+/// the "which flags does this span cover" range are gone with it (WI-853's
+/// second fallout), and a recovery node can no longer merge a flag's fault with
+/// the file's — the case that split had to be re-fixed for.
+fn parse_flag_source(origin: &str, text: &str) -> Result<ParsedFile, i32> {
+    parse::parse(text).map_err(|errs| {
+        for e in &errs {
+            eprintln!("error: {origin}: {}", e.message);
+        }
+        1
+    })
 }
 
-impl<'a> QuerySource<'a> {
-    fn new(imports: &'a [String], body: &str) -> Self {
-        let mut text: String = imports.iter().map(|imp| format!("import {imp}\n")).collect();
-        let prefix_len = text.len();
-        text.push_str(body);
-        Self { text, prefix_len, imports }
+/// Scan one query-side source into `kb` so its names resolve. WI-744: every
+/// `LoadError` blocks (see `LoadError`'s doc).
+///
+/// `origin` is `Some(flag)` for a source the CLI synthesized and `None` for a
+/// real file — whose errors carry their own `path:line:col`, since the
+/// `ParsedFile` was stamped with the path it was read from. A synthesized
+/// source has no path, and a bare `line:col` from one would read as a position
+/// in the query FILE; the flag prefix says which argument it is a position in.
+fn scan_query_source(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    origin: Option<&str>,
+) -> Result<(), i32> {
+    let errors = load::scan_definitions(kb, &[parsed]);
+    if errors.is_empty() {
+        return Ok(());
     }
-
-    /// The `-i` flags a prefix-local span COVERS: one line per flag, in order, so
-    /// the newline counts at the span's two ends bound the range of flags.
-    ///
-    /// A range, not the flag at `start`, because one recovery node can span
-    /// SEVERAL import lines — measured: `-i wi852.good -i 'not a name!!'` yields
-    /// a single `ERROR` from byte 0 over both, and naming the flag at its start
-    /// blamed the FIRST flag for a fault in the second. Same false attribution
-    /// as keying `located_error` on `start`, one level down.
-    ///
-    /// Empty when an end is not on a character boundary — the flags cannot be
-    /// named then, and the caller still reports the diagnostic.
-    fn imports_covered(&self, span: Span) -> &[String] {
-        let (Some(head), Some(covered)) = (
-            self.text.get(..span.start as usize),
-            self.text.get(..(span.end as usize).min(self.prefix_len)),
-        ) else {
-            return &[];
-        };
-        let first = head.matches('\n').count();
-        // Each line ENDS with its newline, so a span reaching the prefix's end
-        // counts one line too many; clamp to the last flag.
-        let last = covered.matches('\n').count().min(self.imports.len().saturating_sub(1));
-        self.imports.get(first..=last).unwrap_or(&[])
-    }
-
-    /// WI-852: render one parse error against the half of `text` it belongs to.
-    ///
-    /// Attribution is by OVERLAP, not by where the span STARTS. When the user's
-    /// text does not begin a valid top-level item, tree-sitter's recovery merges
-    /// the synthesized prefix and that text into ONE `ERROR` node — which starts
-    /// at byte 0. Keying on `start` therefore blamed `--import` for a fault in
-    /// the FILE and dropped the file's location entirely (measured: a query file
-    /// beginning `) oops` reported `--import: syntax error near `import x ) oops``
-    /// with `-i`, and `path:1:1: syntax error near `) oops`` without it).
-    ///
-    /// - A span lying WHOLLY inside the prefix is a fault in an `--import` flag,
-    ///   which lives in no file; naming the flag is its location.
-    /// - A span reaching past the prefix reaches the user's text, so it is
-    ///   located THERE, with a start that began in the prefix clamped to the
-    ///   user's first byte. Shifting is what makes `--query-file` report the same
-    ///   line whether or not `-i` was passed; unshifted it drifts one line per
-    ///   flag, a location worse than none.
-    ///
-    /// `user` is the file the text came from and an index over that text, or
-    /// `None` for an inline `--pattern`. A pattern takes no `line:col`: it would index into
-    /// text anthill synthesized AROUND the argument (the import lines, and the
-    /// `fact` keyword the arm prepends), pointing at something the author never
-    /// wrote — the same "location that names nothing" this ticket removes. It is
-    /// one visible argument, so naming the flag it came from IS its location.
-    /// Rendered as a BATCH so the user's text is indexed ONCE — resolving a
-    /// position per error re-walks it from byte 0, the O(N × len) shape the
-    /// line-index work removed everywhere else.
-    fn located_errors(&self, errors: &[ParseError], user: Option<(&Path, &str)>) -> Vec<String> {
-        // The index and the path travel as ONE value from here on, so "a file
-        // but no index" is not a state `located_error` can be handed.
-        let indexed = user.map(|(path, text)| (path, LineIndex::new(text)));
-        let user = indexed.as_ref().map(|(path, loc)| (*path, loc));
-        errors.iter().map(|e| self.located_error(e, user)).collect()
-    }
-
-    fn located_error(&self, e: &ParseError, user: Option<(&Path, &LineIndex)>) -> String {
-        // `prefix_len > 0` guards the no-`-i` case: with no prefix at all there
-        // is no flag to blame, and a zero-width span at byte 0 — the WI-778
-        // missing-token shape — would otherwise satisfy `end <= 0`.
-        if self.prefix_len > 0 && (e.span.end as usize) <= self.prefix_len {
-            return match self.imports_covered(e.span) {
-                [] => format!("--import: {}", e.message),
-                [flag] => format!("--import `{flag}`: {}", e.message),
-                flags => {
-                    let named: Vec<String> = flags.iter().map(|f| format!("`{f}`")).collect();
-                    format!("--import (one of {}): {}", named.join(", "), e.message)
-                }
-            };
-        }
-        match user {
-            // No file: an inline `--pattern`.
-            None => format!("--pattern: {}", e.message),
-            Some((path, loc)) => {
-                let shift = self.prefix_len as u32;
-                let mut shifted = e.clone();
-                // `end > shift` from the branch above; `start` may be BELOW it on
-                // a merged node, and clamping lands it on the user's first byte.
-                shifted.span = Span::new(e.span.start.max(shift) - shift, e.span.end - shift);
-                shifted.format_located_at(path, loc)
-            }
+    for e in load::LoadError::render_all(&errors) {
+        match origin {
+            Some(origin) => eprintln!("error: {origin}: {e}"),
+            None => eprintln!("error: {e}"),
         }
     }
+    Err(1)
+}
+
+/// Supply the `-i` flags to the scope the query pattern is resolved in.
+///
+/// The import enters `_global` — the scope `convert_query_term` resolves the
+/// pattern in, and the one a top-level `sort` / `fact` / `rule` is defined in —
+/// because the flag is parsed as a TOP-LEVEL `import`, which the grammar admits
+/// as of WI-853. That is the whole fix: the flag has never had a namespace to
+/// sit in, so every `-i` run failed the parse. Wrapping the flags in a synthetic
+/// `namespace` would parse, but would import into THAT namespace's scope, which
+/// the pattern is not resolved in.
+///
+/// One source per flag, so a diagnostic names EXACTLY the flag it came from and
+/// no flag's fault can displace another's spans. Every flag is reported, not
+/// only the first: they are independent arguments, and stopping at the first
+/// would cost a CLI run per typo.
+fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(), i32> {
+    let mut failed = false;
+    for flag in imports {
+        let origin = format!("--import `{flag}`");
+        match parse_flag_source(&origin, &format!("import {flag}\n")) {
+            Ok(parsed) => failed |= scan_query_source(kb, &parsed, Some(&origin)).is_err(),
+            Err(_) => failed = true,
+        }
+    }
+    if failed { Err(1) } else { Ok(()) }
 }
 
 /// Collect query terms from either an inline pattern or a query file.
@@ -1519,29 +1496,15 @@ fn collect_queries(
     args: &QueryArgs,
     kb: &mut KnowledgeBase,
 ) -> Result<Vec<(String, Vec<anthill_core::kb::term::TermId>)>, i32> {
+    // WI-853: the `-i` flags first, and on their OWN sources — the pattern / file
+    // below is parsed with nothing prepended to it. Imports enter `_global`
+    // before the query text is scanned, so its names resolve against them.
+    supply_import_flags(kb, &args.imports)?;
+
     if let Some(ref pattern) = args.pattern {
-        // Build source: import lines + fact pattern
-        let source = QuerySource::new(&args.imports, &format!("fact {pattern}"));
-
-        let parsed = match parse::parse(&source.text) {
-            Ok(p) => p,
-            Err(errs) => {
-                for e in source.located_errors(&errs, None) {
-                    eprintln!("error: {e}");
-                }
-                return Err(1);
-            }
-        };
-
-        // Scan definitions for name resolution. WI-744: every `LoadError` blocks
-        // (see `LoadError`'s doc).
-        let scan_errors = load::scan_definitions(kb, &[&parsed]);
-        if !scan_errors.is_empty() {
-            for e in load::LoadError::render_all(&scan_errors) {
-                eprintln!("error: {e}");
-            }
-            return Err(1);
-        }
+        // The query IR reaches a pattern term through a `fact`.
+        let parsed = parse_flag_source("--pattern", &format!("fact {pattern}"))?;
+        scan_query_source(kb, &parsed, Some("--pattern"))?;
 
         // Extract the fact term and reintern into KB
         let global_raw = kb.make_name_term("_global").raw();
@@ -1573,30 +1536,24 @@ fn collect_queries(
                 return Err(1);
             }
         };
-        // WI-852: the file's text is the half after the `--import` prefix, and a
-        // fault reaching it is located in the FILE.
-        let source = QuerySource::new(&args.imports, &file_source);
-
-        let parsed = match parse::parse(&source.text) {
-            Ok(p) => p,
+        // WI-853: the parsed source IS the file — the `-i` flags were supplied
+        // as sources of their own — so it is stamped with the path it was read
+        // from and EVERY diagnostic from it, parse or load, names that file and
+        // a position in it. Under the old join both halves shared one source, so
+        // stamping would have attributed a flag's fault to the file (WI-853's
+        // first fallout: the two load printers here named no file at all,
+        // because with a prefix in the source naming one would have lied).
+        let parsed = match parse::parse(&file_source) {
+            Ok(p) => p.with_path(query_file.clone()),
             Err(errs) => {
-                let user = Some((query_file.as_path(), file_source.as_str()));
-                for e in source.located_errors(&errs, user) {
+                for e in ParseError::all_located(&errs, query_file, &file_source) {
                     eprintln!("error: {e}");
                 }
                 return Err(1);
             }
         };
 
-        // Scan definitions for name resolution. WI-744: a `LoadError` blocks —
-        // see the `--pattern` arm above.
-        let scan_errors = load::scan_definitions(kb, &[&parsed]);
-        if !scan_errors.is_empty() {
-            for e in load::LoadError::render_all(&scan_errors) {
-                eprintln!("error: {e}");
-            }
-            return Err(1);
-        }
+        scan_query_source(kb, &parsed, None)?;
 
         // Extract all fact items as queries
         let global_raw = kb.make_name_term("_global").raw();

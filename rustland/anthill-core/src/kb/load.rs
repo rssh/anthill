@@ -1435,6 +1435,11 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
         // WI-745: collect this file's pass-2 errors on their own so each is
         // stamped with the file it came from before merging into the flat list.
         let mut file_errors = Vec::new();
+        // WI-853: the file's TOP-LEVEL imports (written outside any namespace /
+        // sort body) enter the scope the file's top level IS — `_global`, the
+        // same scope its top-level `sort` / `fact` / `rule` are defined in.
+        // Processed exactly like a namespace body's, one nesting level out.
+        process_imports(kb, &file.symbols, &file.imports, global, &mut file_errors, &mut pending, file_idx);
         scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut file_errors, &mut pending, file_idx);
         errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
     }

@@ -35,6 +35,7 @@ pub fn parse(source: &str) -> Result<ParsedFile, Vec<ParseError>> {
     if errors.is_empty() {
         Ok(ParsedFile {
             items: converter.items,
+            imports: converter.imports,
             symbols: converter.symbols,
             terms: converter.terms,
             // WI-745: keep the source so a load error's byte span can render as

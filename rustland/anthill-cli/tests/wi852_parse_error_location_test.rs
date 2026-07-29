@@ -151,15 +151,17 @@ fn a_query_file_parse_error_names_the_file() {
     assert_every_mention_is_located(&out, &q);
 }
 
-/// `collect_queries` parses a source it SYNTHESIZED — one `import` line per
-/// `-i` flag, then the file — so an unshifted span reports the file's faults one
-/// line too low per flag. A location that is wrong is worse than none, so the
-/// span is shifted back into the user's own text: the SAME line as with no
-/// flags at all.
+/// `collect_queries` used to parse a source it SYNTHESIZED — one `import` line
+/// per `-i` flag, then the file — so an unshifted span reported the file's
+/// faults one line too low per flag, and WI-852 shifted each span back across a
+/// recorded boundary. WI-853 removed the join instead: the flags are parsed as
+/// sources of their own and the file is parsed ALONE, so the file's spans are
+/// its own and no shift exists to get wrong.
 ///
-/// The `-i` lines may add their own `--import:` diagnostics (a bare top-level
-/// `import` does not parse — a separate defect this test deliberately does not
-/// pin). What it pins is that they do not move the FILE's location.
+/// The claim outlives the mechanism, so the test does: the reported line is the
+/// same with flags as without. It now holds by construction rather than by
+/// arithmetic, which is the point — it fails if a future change re-prepends
+/// anything to the author's text.
 #[test]
 fn prepended_import_lines_do_not_shift_the_file_location() {
     let kb = fixture("good.anthill");
@@ -179,15 +181,17 @@ fn prepended_import_lines_do_not_shift_the_file_location() {
     assert_every_mention_is_located(&out, &q);
 }
 
-/// The merged-node case, and the reason attribution is by OVERLAP rather than by
-/// where a span STARTS. When the file's first token cannot begin a top-level
-/// item, tree-sitter recovery swallows the synthesized `import` lines and the
-/// file into ONE `ERROR` node starting at byte 0. Keying on `start` blamed
-/// `--import` and dropped the file's location entirely — the exact failure this
-/// ticket exists to remove, reintroduced by the fix for it.
+/// The merged-node case: when the file's first token cannot begin a top-level
+/// item, tree-sitter recovery swallowed the synthesized `import` lines and the
+/// file into ONE `ERROR` node starting at byte 0 — and attributing that node by
+/// where it STARTED blamed `--import` and dropped the file's location entirely,
+/// the exact failure WI-852 existed to remove, reintroduced by the fix for it.
+/// The overlap rule that repaired it is gone with the join (WI-853): a flag and
+/// the file are different sources, so no node can span both.
 ///
-/// `bad-query.anthill` cannot catch this: its first token (`fact`) is a valid
-/// top-level start, so recovery does not merge.
+/// Still driven, because "cannot happen by construction" is a claim about the
+/// current construction. `bad-query.anthill` cannot stand in for it: its first
+/// token (`fact`) is a valid top-level start, so recovery never merges there.
 #[test]
 fn a_span_merged_across_the_prefix_is_located_in_the_file() {
     let kb = fixture("good.anthill");
@@ -225,36 +229,16 @@ fn an_inline_pattern_names_the_flag() {
     );
 }
 
-/// A fault lying WHOLLY inside the synthesized prefix is in an `--import` flag,
-/// which lives in no file at all — so it names the flag rather than pointing at
-/// a line the author never wrote. WHICH flag, too: the prefix is one line per
-/// flag in order, so a bare `--import:` would leave the author to guess among
-/// them, and the second diagnostic below ("unexpected top-level node: ERROR")
-/// carries no other clue at all.
-#[test]
-fn a_malformed_import_flag_names_which_flag() {
-    let kb = fixture("good.anthill");
-    let out = anthill(&[
-        "query", "--path", kb.to_str().unwrap(),
-        "-i", "wi852.good", "-i", "not a name!!",
-        "mk(x: 1)",
-    ]);
+// DELETED by WI-853: `a_malformed_import_flag_names_which_flag`. It pinned the
+// RANGE naming ("--import (one of `a`, `b`)") that the join forced — one
+// recovery node could cover several `import` lines, so the flag at its start was
+// the wrong answer and every covered flag had to be named. Each flag is now its
+// own source, so a span covers exactly one and the range has no case to serve.
+// The claim it protected — the good flag is never blamed for the bad one's fault
+// — is asserted more strictly by `a_malformed_flag_names_only_itself` in
+// `wi853_query_import_test.rs`.
 
-    assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
-    let blamed: Vec<&str> = out.diagnostics("error:").collect();
-    // Recovery merges BOTH import lines into one ERROR node, so the span
-    // identifies a RANGE of flags, not one. Naming the flag at its start said
-    // `wi852.good` — blaming the first flag for the second's fault, the same
-    // false attribution as keying the file/flag split on `start`. Every flag the
-    // span covers is named, so the claim is never wrong.
-    assert!(
-        blamed.iter().all(|l| l.starts_with("error: --import (one of `wi852.good`, `not a name!!`): ")),
-        "a prefix fault must name every flag its span covers, and no others; stderr:\n{}",
-        out.stderr
-    );
-}
-
-/// The single-flag case the range collapses to — the flag is named exactly.
+/// The single-flag case, which is now every case — the flag is named exactly.
 #[test]
 fn a_lone_malformed_import_flag_is_named_exactly() {
     let kb = fixture("good.anthill");

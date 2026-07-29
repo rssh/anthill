@@ -1,0 +1,5 @@
+-- A query file whose own top-level import does not resolve: the LOAD-stage
+-- diagnostic must name this file and the position of `nosuch.ns` in it.
+import nosuch.ns
+
+fact mk(x: ?v)

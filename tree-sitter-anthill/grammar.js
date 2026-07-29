@@ -69,8 +69,16 @@ module.exports = grammar({
     // Kernel declarations
     // =========================================================
 
+    // WI-853: `import` is admitted HERE as well as inside a namespace / sort
+    // body. A file's top level IS a scope — the `_global` one every top-level
+    // `sort` / `fact` / `rule` is defined in — and an import is how names enter
+    // a scope; admitting the declarations but not the import that feeds them was
+    // an asymmetry with no rule behind it. It is what makes `anthill query -i`
+    // work: the flag supplies an import to the query's `_global` scope, and
+    // there is no namespace to put it in.
     _declaration: $ => choice(
       $.namespace_declaration,
+      $.import_clause,
       $.abstract_sort,
       $.sort_with_body,
       $.sort_var_binder,

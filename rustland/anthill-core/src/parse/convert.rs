@@ -233,6 +233,8 @@ pub(super) struct Converter<'a> {
     pub symbols: SymbolTable,
     pub terms: SimpleTermStore,
     pub items: Vec<Item>,
+    /// WI-853: top-level `import` clauses — see [`super::ir::ParsedFile::imports`].
+    pub imports: Vec<Import>,
     pub errors: Vec<ParseError>,
     /// Counter for fresh VarId allocation.
     next_var: u32,
@@ -258,6 +260,7 @@ impl<'a> Converter<'a> {
             symbols: SymbolTable::new(),
             terms: SimpleTermStore::new(),
             items: Vec::new(),
+            imports: Vec::new(),
             errors: Vec::new(),
             next_var: 0,
             var_scope: HashMap::new(),
@@ -423,11 +426,32 @@ impl<'a> Converter<'a> {
     // ── Root ────────────────────────────────────────────────────
 
     pub fn convert_file(&mut self, root: Node) {
+        // WI-853: a top-level `import` is collected the way a namespace / sort
+        // body's is — into the imports of the thing that OWNS the scope it
+        // enters, here the file, whose scope is `_global`. It is NOT an `Item`:
+        // `convert_item` would have to invent a variant no loader pass reads,
+        // and pass 2 already takes a scope's imports as a separate list.
+        self.imports = self.collect_imports(root);
+
         let mut cursor = root.walk();
         for child in root.named_children(&mut cursor) {
+            if child.kind() == "import_clause" {
+                continue;
+            }
             let items = self.convert_items_at(child);
             self.items.extend(items);
         }
+    }
+
+    /// The `import` clauses written directly in `node`'s body — the imports of
+    /// the scope `node` owns. Shared by the three things that own one: the file
+    /// (`_global`), a namespace, a sort. Each then walks its body separately,
+    /// skipping `import_clause`, because what else it must skip differs.
+    fn collect_imports(&mut self, node: Node) -> Vec<Import> {
+        self.children_by_kind(node, "import_clause")
+            .into_iter()
+            .map(|ic| self.convert_import(ic))
+            .collect()
     }
 
     /// One CST node → its IR item(s).
@@ -2712,10 +2736,7 @@ impl<'a> Converter<'a> {
             .map(|n| self.convert_name(n))?;
         let span = self.span(node);
 
-        let imports = self.children_by_kind(node, "import_clause")
-            .into_iter()
-            .map(|ic| self.convert_import(ic))
-            .collect();
+        let imports = self.collect_imports(node);
 
         // Namespace body items
         let mut items = Vec::new();
@@ -2915,10 +2936,7 @@ impl<'a> Converter<'a> {
             .map(|d| strip_description_delimiters(self.text(d)))
             .collect();
 
-        let imports = self.children_by_kind(node, "import_clause")
-            .into_iter()
-            .map(|ic| self.convert_import(ic))
-            .collect();
+        let imports = self.collect_imports(node);
 
         let mut items = Vec::new();
         // WI-451 (§5.4): an enclosing type-param list `sort Spec[F[T], A, B]`

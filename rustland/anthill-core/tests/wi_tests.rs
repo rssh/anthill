@@ -834,3 +834,6 @@ mod wi850_type_param_default_test;
 
 #[path = "include/wi851_unknown_field_label_test.rs"]
 mod wi851_unknown_field_label_test;
+
+#[path = "include/wi853_top_level_import_test.rs"]
+mod wi853_top_level_import_test;
