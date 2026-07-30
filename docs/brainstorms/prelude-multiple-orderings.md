@@ -235,7 +235,7 @@ drive if option 2 is chosen.
 
 **Option 5 is the principled one, and it is not new machinery.** "This provision holds
 given that its carrier is lawful" is a CONDITIONAL provider, which the resolver already
-models (`ResolvedRequiresNode::Conditional`; `candidate_sub_goals_owned` walks the
+models (`ResolvedRequiresNode::Conditional`; `candidate_provider_sub_goals` walks the
 provider's own `requires` chain). What is missing is that the two *checkers* do not:
 `check_provider_requires` resolves the sub-goal globally (measured above). And note where
 else that split appears — **WI-857 is the same producer/consumer disagreement seen from

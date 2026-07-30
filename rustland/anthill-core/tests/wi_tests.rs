@@ -864,3 +864,6 @@ mod wi843_coexisting_instances_test;
 
 #[path = "include/wi844_sorted_set_driver_test.rs"]
 mod wi844_sorted_set_driver_test;
+
+#[path = "include/wi857_dictionary_layout_test.rs"]
+mod wi857_dictionary_layout_test;

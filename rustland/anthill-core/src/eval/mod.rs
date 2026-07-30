@@ -230,6 +230,15 @@ pub(crate) struct FieldSymbols {
     pub impl_functor: Symbol,
     pub requirements: Symbol,
     pub predicate: Symbol,
+    /// WI-857 — `anthill.reflect.NoProvider`, the functor a dictionary slot carries
+    /// when the spec's requirement had no provider at the goal's bindings. Interned
+    /// ONCE here, like every other well-known name, so eval never re-derives it: it is
+    /// what `port_resolved_tree` allocates (removing a `lookup_symbol(..)?` that would
+    /// have silently residualized a whole resolved tree if nothing had interned the
+    /// name yet). NOTE the typer-side readers still test by NAME
+    /// (`kb::typing::is_no_provider`) because they hold only a `&KnowledgeBase`, so
+    /// there are two spellings, not one; see that function for the cost.
+    pub no_provider: Symbol,
     /// `__req_self` — the Self-slot requirement-param name (WI-237
     /// names model). Interned, not a stdlib symbol.
     pub req_self: Symbol,
@@ -266,6 +275,7 @@ impl FieldSymbols {
             impl_functor: kb.intern("impl_functor"),
             requirements: kb.intern("requirements"),
             predicate: kb.intern("predicate"),
+            no_provider: crate::kb::typing::no_provider_sym(kb),
             req_self: kb.intern("__req_self"),
         }
     }
@@ -625,16 +635,17 @@ impl Interpreter {
     /// (`Suspended`), WI-822's value-directed dispatch raises (`Internal`). Both
     /// otherwise built this list identically, so it has one owner.
     fn frame_requirements_from_trees(
-        &self,
+        // `&mut` since WI-857: the `__req_self` stand-in reads the dictionary layout,
+        // which memoizes the requires chain on `kb`.
+        &mut self,
         parent: Symbol,
         trees: &[(Symbol, crate::kb::typing::ResolvedRequiresNode)],
     ) -> Result<smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>, Symbol> {
         let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
             smallvec::SmallVec::with_capacity(trees.len() + 1);
-        out.push((
-            self.fields.req_self,
-            self.requirements.alloc(parent, smallvec::SmallVec::new()),
-        ));
+        // WI-857: layout-valid — see `stand_in_requirement`.
+        let self_slot = self.stand_in_requirement(parent, parent);
+        out.push((self.fields.req_self, self_slot));
         for (name, tree) in trees {
             out.push((*name, self.port_resolved_tree(tree).ok_or(*name)?));
         }
@@ -646,8 +657,9 @@ impl Interpreter {
     /// [`value::RequirementHandle`] — the runtime dual of the typer's
     /// `emit_tree_as_projection`. A `Leaf` allocates a handle over its impl carrier
     /// with no sub-requirements; a `Conditional` recurses each sub-resolution into a
-    /// nested handle first (so `handle.arity()` matches the impl's own `requires`
-    /// chain, satisfying the eval dispatcher's cross-check). `FromScope` cannot arise
+    /// nested handle first (so `handle.arity()` matches the DICTIONARY LAYOUT — the
+    /// spec's own `requires` chain then the impl's, WI-857 — satisfying the eval
+    /// dispatcher's cross-check). `FromScope` cannot arise
     /// here (the bridge resolves with an empty scope) — returns `None` (residualize)
     /// if it somehow does.
     fn port_resolved_tree(
@@ -658,6 +670,11 @@ impl Interpreter {
         match tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. } => {
                 Some(self.requirements.alloc(*impl_sort, smallvec::SmallVec::new()))
+            }
+            // WI-857: the runtime dual of `emit_tree_as_projection`'s marker slot —
+            // an empty bundle over the marker, which dispatch refuses to go through.
+            ResolvedRequiresNode::Unavailable { .. } => {
+                Some(self.requirements.alloc(self.fields.no_provider, smallvec::SmallVec::new()))
             }
             ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
                 let mut subs: smallvec::SmallVec<[value::RequirementHandle; 1]> =
@@ -753,10 +770,37 @@ impl Interpreter {
                 got = chain_dicts.len(),
             )));
         }
+        // WI-857: each supplied dictionary must also be layout-VALID for its slot's
+        // spec, not merely present. The count check above is the pre-existing guard and
+        // does not look inside. Checked HERE because this is the host boundary: a
+        // hand-built dict that claims a provider and bundles nothing is the shape that
+        // dies later at a frame push, attributed to the callee rather than to the
+        // caller that built it. Today's in-tree host is layout-valid only because the
+        // chains involved are empty — the same chain-free accident this ticket is about
+        // — so the check is what keeps it valid when 058 phase 7 gives those specs
+        // chains.
+        if let Some(p) = parent_sym {
+            let chain = crate::kb::typing::direct_requires_chain_rc(&mut self.kb, p);
+            for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
+                let want = crate::kb::typing::dict_layout(
+                    &mut self.kb, entry.required_sort, dict.functor(),
+                );
+                if dict.arity() != want.arity() {
+                    return Err(EvalError::Internal(format!(
+                        "call_with_requirements({qualified_name}): the dictionary \
+                         supplied for `{}` has arity {} but its layout wants {}",
+                        self.kb.qualified_name_of(entry.required_sort),
+                        dict.arity(),
+                        want.describe(&self.kb),
+                    )));
+                }
+            }
+        }
         let mut requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
             smallvec::SmallVec::new();
         if let (Some(p), Some(names)) = (parent_sym, names) {
-            let placeholder = self.requirements.alloc(p, smallvec::SmallVec::new());
+            // WI-857: layout-valid — see `stand_in_requirement`.
+            let placeholder = self.stand_in_requirement(p, p);
             requirements.push((self.fields.req_self, placeholder));
             for (name, dict) in names.iter().zip(chain_dicts) {
                 requirements.push((*name, dict));
@@ -875,10 +919,14 @@ impl Interpreter {
     /// Per WI-234 / Model 1 the layout is: slot 0 = Self (the entry op's
     /// parent sort), slots 1..=N = one per entry in the parent's flattened
     /// `requires` chain. Both Self and chain entries are self-referential
-    /// placeholders (`functor = parent_sort, sub_requires = []`) — adequate
-    /// for same-sort recursion but mis-dispatches when the parent's
-    /// `requires` clause names a different sort. Cross-sort entries
-    /// should use [`Self::call_with_requirements`].
+    /// STAND-INS over `parent_sort` — adequate for same-sort recursion but
+    /// mis-dispatching when the parent's `requires` clause names a different
+    /// sort. Cross-sort entries should use [`Self::call_with_requirements`].
+    ///
+    /// WI-857: a stand-in is `functor = parent_sort` with
+    /// `dict_layout(..).arity()` `NoProvider` marker sub-slots, NOT the empty
+    /// `sub_requires` it once had — see [`Self::stand_in_requirement`] for why
+    /// the empty form is a claim the layout reads as false.
     fn seed_entry_requirements(
         &mut self,
         op_sym: Symbol,
@@ -886,20 +934,56 @@ impl Interpreter {
         let Some(parent_sym) = crate::kb::typing::impl_parent_of_op(&self.kb, op_sym) else {
             return smallvec::SmallVec::new();
         };
+        // The `_rc` read (WI-657(12)): only `required_sort` is read per entry, so the
+        // owned clone of every `RequiresEntry` is pure cost.
+        let chain = crate::kb::typing::direct_requires_chain_rc(&mut self.kb, parent_sym);
         let names = crate::kb::typing::synth_req_names(&mut self.kb, parent_sym);
         let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
             smallvec::SmallVec::with_capacity(names.len() + 1);
-        out.push((
-            self.fields.req_self,
-            self.requirements.alloc(parent_sym, smallvec::SmallVec::new()),
-        ));
-        for name in names.iter() {
-            out.push((
-                *name,
-                self.requirements.alloc(parent_sym, smallvec::SmallVec::new()),
-            ));
+        let self_slot = self.stand_in_requirement(parent_sym, parent_sym);
+        out.push((self.fields.req_self, self_slot));
+        // `names` and `chain` are two reads of `direct_requires_chain(parent_sym)` — the
+        // SAME symbol, back to back, with no mutation between — so the zip cannot
+        // truncate. (`expand_dispatching_dict` checks its analogous pair at runtime
+        // because there the two sides come from DIFFERENT symbols, bridged by
+        // canonicalization.)
+        for (name, entry) in names.iter().zip(chain.iter()) {
+            let slot = self.stand_in_requirement(entry.required_sort, parent_sym);
+            out.push((*name, slot));
         }
         out
+    }
+
+    /// WI-857 — a **stand-in** dictionary for `spec` under the functor `functor`:
+    /// layout-valid (its bundled count is `dict_layout(spec, functor).arity()`) with
+    /// every sub-slot a `NoProvider` marker, since a stand-in has no evidence for
+    /// any of them.
+    ///
+    /// Producers of a dictionary must produce a layout-valid one — that is the
+    /// invariant the arity cross-check enforces, and this is what lets a stand-in
+    /// satisfy it without pretending to carry evidence. The stand-ins are the host
+    /// entry points' self-referential slots ([`Self::seed_entry_requirements`],
+    /// [`Self::call_with_requirements`]'s `__req_self`): adequate for same-sort
+    /// recursion, and for a cross-sort `requires` they dispatch onto the spec's own
+    /// op, whose value-directed resolution reads the real carrier (WI-350/WI-822).
+    /// Before this they were `functor` with NO sub-slots, which the layout reads as
+    /// a dictionary claiming `functor`'s whole `requires` chain and bundling none.
+    fn stand_in_requirement(
+        &mut self,
+        spec: Symbol,
+        functor: Symbol,
+    ) -> value::RequirementHandle {
+        let arity = crate::kb::typing::dict_layout(&mut self.kb, spec, functor).arity();
+        if arity == 0 {
+            return self.requirements.alloc(functor, smallvec::SmallVec::new());
+        }
+        // ONE marker slot, shared by refcount across the sub-slots: they are empty and
+        // interchangeable, and slot sharing between parents is supported and tested
+        // (`shared_subrequirement_kept_alive_via_other_owner`).
+        let marker = self.requirements.alloc(self.fields.no_provider, smallvec::SmallVec::new());
+        let subs: smallvec::SmallVec<[value::RequirementHandle; 1]> =
+            smallvec::SmallVec::from_elem(marker, arity);
+        self.requirements.alloc(functor, subs)
     }
 
     /// Override the activation-stack depth cap. Kept as a convenience wrapper

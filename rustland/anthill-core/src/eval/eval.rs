@@ -241,9 +241,9 @@ impl Interpreter {
                         pos_args, named_args, type_args,
                     ),
                     Some(CallClass::ConcreteApplyWithin {
-                        fn_target_sym, enclosing_sort, dispatch_dict, ..
+                        fn_target_sym, spec_op_sym, enclosing_sort, dispatch_dict, ..
                     }) => self.start_apply_same_sort(
-                        *fn_target_sym, *enclosing_sort, *dispatch_dict,
+                        *fn_target_sym, *spec_op_sym, *enclosing_sort, *dispatch_dict,
                         pos_args, named_args, type_args,
                     ),
                     _ => {
@@ -254,8 +254,17 @@ impl Interpreter {
             }
             Expr::ApplyWithin { functor, args, named_args, requirements, .. } => {
                 let type_args = collect_resolved_type_args(occ);
+                // WI-857: `apply_within(fn = …)` has TWO producers with OPPOSITE
+                // conventions — `record_apply_within_rewrite` writes the SPEC op,
+                // `record_apply_within_concrete` writes the IMPL member — so passing
+                // `functor` twice is right only for the first. It holds here because
+                // this arm is REBUILD-ONLY today: `term_view` keeps such an occurrence
+                // an `Expr::Apply`, so a concrete-form term never reaches it. If that
+                // changes, this must read the classification's `spec_op_sym` instead;
+                // a concrete-form `fn` would make the layout measure a spec-instance
+                // dict against the provider's chain alone.
                 self.start_apply_within(
-                    *functor, args, named_args, requirements, type_args,
+                    *functor, *functor, args, named_args, requirements, type_args,
                 )
             }
             Expr::Constructor { name, pos_args, named_args, .. } => {
@@ -391,7 +400,9 @@ impl Interpreter {
                 // concrete one builds from its `fact` — and capture it on the
                 // OpRef for the apply path to install into the callee frame.
                 let dict = self.eta_dispatch_dict(occ)?;
-                return Ok(StepOutcome::Deliver(Value::OpRef { op: sym, dict }));
+                // WI-857: an eta captures its OWN parent's bundle, so the named op
+                // and the target are the same — `named: None`.
+                return Ok(StepOutcome::Deliver(Value::OpRef { op: sym, dict, named: None }));
             }
         }
         // WI-714 (proposal 052): a bare reference to a RULE — its head functor
@@ -806,13 +817,42 @@ impl Interpreter {
     // AwaitState dance — the chain is statically resolvable to arena
     // handles).
 
+    /// WI-857 — project sub-requirement `k` out of `parent`, as an `EvalError` rather
+    /// than the arena's `panic!`. ONE owner for the two things that make a projection
+    /// impossible: the parent pins no provider (a `NoProvider` marker bundles nothing,
+    /// and a marker is now reachable in a frame slot two ways — a recorded-absent
+    /// spec-half slot, and a host-entry stand-in's sub-slots), and a plain
+    /// out-of-range index. `start_apply_deferred`'s `proj_path` loop already stated
+    /// this intent ("a clean `EvalError` rather than the arena's `project` panic") and
+    /// was the only consumer that had it.
+    fn project_requirement(
+        &self,
+        parent: &super::value::RequirementHandle,
+        k: usize,
+        what: &str,
+    ) -> Result<super::value::RequirementHandle, EvalError> {
+        if let Err(msg) = crate::kb::typing::marker_refusal(&self.kb, parent.functor()) {
+            return Err(EvalError::UnpinnedRequirement {
+                detail: format!("cannot read sub-requirement {k} of {what}: {msg}"),
+            });
+        }
+        let arity = parent.arity();
+        if k >= arity {
+            return Err(EvalError::Internal(format!(
+                "requirement_at_sort: index {k} out of range for {what} \
+                 (it bundles {arity} sub-requirement(s))"
+            )));
+        }
+        Ok(parent.project(k))
+    }
+
     fn reduce_requirement_at_sort_node(
         &mut self,
         chain: &Rc<NodeOccurrence>,
         slot: i64,
     ) -> Result<StepOutcome, EvalError> {
         let parent = self.eval_requirement_chain_node(chain)?;
-        let projected = parent.project(slot as usize);
+        let projected = self.project_requirement(&parent, slot as usize, "this chain")?;
         Ok(StepOutcome::Deliver(Value::Requirement(projected)))
     }
 
@@ -848,7 +888,7 @@ impl Interpreter {
         match expr {
             Expr::RequirementAtSort { chain, slot } => {
                 let parent = self.eval_requirement_chain_node(chain)?;
-                Ok(parent.project(*slot as usize))
+                self.project_requirement(&parent, *slot as usize, "this chain")
             }
             Expr::ConstructRequirement { impl_functor, requirements } => {
                 let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
@@ -882,12 +922,22 @@ impl Interpreter {
     /// caller's already-concrete `fn_sym` the dict carries no row for). The
     /// resolution lives in [`crate::kb::typing::resolve_op_target`], shared with
     /// the reflect `Dictionary.resolveOp` / `ops` faces so they cannot drift.
+    ///
+    /// WI-857 — the `NoProvider` refusal rides in
+    /// [`crate::kb::typing::resolve_op_target_checked`], which is where the resolution
+    /// it guards lives and therefore the only place the interpreter and the reflect
+    /// `Dictionary` faces cannot drift apart. Dispatching through the marker would
+    /// silently fall through to `fn_sym` — the spec's own builtin/default — i.e. take
+    /// the host answer where a provider's was wanted.
     fn dispatch_via_sort_ops_table(
         &self,
         fn_sym: Symbol,
         dispatching_dict: &super::value::RequirementHandle,
-    ) -> Symbol {
-        crate::kb::typing::resolve_op_target(&self.kb, dispatching_dict.functor(), fn_sym)
+    ) -> Result<Symbol, EvalError> {
+        crate::kb::typing::resolve_op_target_checked(
+            &self.kb, dispatching_dict.functor(), fn_sym,
+        )
+        .map_err(|detail| EvalError::UnpinnedRequirement { detail })
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer
@@ -1130,6 +1180,13 @@ impl Interpreter {
     fn start_apply_within(
         &mut self,
         functor: Symbol,
+        // WI-857: the op the CALL named, whose parent sort is the dictionary's SPEC.
+        // Distinct from `functor` on the WI-415 route, where `functor` is already the
+        // resolved impl member while the dict is the callee PARENT's own bundle — the
+        // two agree there because that classification records the callee itself as its
+        // `spec_op_sym`. `functor` alone got the layout wrong for a WI-829 spec-instance
+        // dict, whose functor is the impl member and whose spec is the spec sort.
+        spec_op: Symbol,
         args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         requirements_occ: &[Rc<NodeOccurrence>],
@@ -1150,7 +1207,7 @@ impl Interpreter {
             };
 
         let target = match &dispatching_dict {
-            Some(dict) => self.dispatch_via_sort_ops_table(functor, dict),
+            Some(dict) => self.dispatch_via_sort_ops_table(functor, dict)?,
             None => functor,
         };
 
@@ -1160,7 +1217,7 @@ impl Interpreter {
         // synthesis as the typer's IR emitter, so the callee body's
         // `var_ref(__req_*)` reads resolve against this frame.
         let requirements = match dispatching_dict {
-            Some(dict) => self.expand_dispatching_dict(target, &dict)?,
+            Some(dict) => self.expand_dispatching_dict(spec_op, target, &dict)?,
             None => SmallVec::new(),
         };
         self.dispatch_apply_with_requirements(
@@ -1195,6 +1252,10 @@ impl Interpreter {
     fn start_apply_same_sort(
         &mut self,
         target: Symbol,
+        // WI-857: the classification's `spec_op_sym` — the spec op for a spec-op
+        // dispatch, and the callee itself on the WI-415 direct-call route. See
+        // `start_apply_within`.
+        spec_op: Symbol,
         enclosing_sort: Option<Symbol>,
         dispatch_dict: Option<TermId>,
         pos_args: &[Rc<NodeOccurrence>],
@@ -1223,7 +1284,8 @@ impl Interpreter {
             let dict_occ =
                 crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_tid);
             return self.start_apply_within(
-                target, pos_args, named_args, std::slice::from_ref(&dict_occ), type_args,
+                target, spec_op, pos_args, named_args, std::slice::from_ref(&dict_occ),
+                type_args,
             );
         }
         self.start_apply(target, pos_args, named_args, type_args)
@@ -1281,52 +1343,104 @@ impl Interpreter {
         // before each projection keeps a producer/consumer mismatch a
         // clean `EvalError` rather than the arena's `project` panic.
         for &k in proj_path {
-            let arity = dispatching_dict.arity();
-            if k >= arity {
-                return Err(EvalError::Internal(format!(
-                    "DeferToRequirement: projection index {k} out of range \
-                     (requirement `{}` bundles {arity} sub-requirement(s))",
-                    self.kb.resolve_sym(name_sym),
-                )));
-            }
-            dispatching_dict = dispatching_dict.project(k);
+            // WI-857: through the shared owner, so this and the two
+            // `requirement_at_sort` reductions cannot drift on either failure. The
+            // `what` names the frame slot, which is what locates the read.
+            let what = format!("requirement `{}`", self.kb.resolve_sym(name_sym));
+            dispatching_dict = self.project_requirement(&dispatching_dict, k, &what)?;
         }
-        let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict);
-        let requirements = self.expand_dispatching_dict(target, &dispatching_dict)?;
+        let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict)?;
+        let requirements =
+            self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
         self.dispatch_apply_with_requirements(
             target, requirements, type_args, pos_args, named_args,
         )
     }
 
     /// Build the callee's `frame.requirements` from a resolved dispatching
-    /// dict: `__req_self` plus one entry per sub-instance, keyed by the
-    /// impl parent sort's synthesized `__req_<spec>` chain names.
+    /// dict: `__req_self` plus the slice of sub-instances the TARGET's own parent
+    /// sort reads, keyed by that sort's synthesized `__req_<spec>` chain names.
     /// Mirrors `start_apply_within`'s names-model expansion.
+    ///
+    /// WI-857 — `dispatched_from` is the op the CALL named, before
+    /// `dispatch_via_sort_ops_table` picked `target`. Its parent sort is the dict's
+    /// SPEC (for a spec-op dispatch) or the frame owner itself (for a WI-415
+    /// parent-bundle dict, where the two coincide), which together with the dict's
+    /// own functor — the PROVIDER — determines the layout
+    /// ([`crate::kb::typing::DictLayout`]). The frame then gets exactly the half
+    /// `target`'s parent owns: the spec half when dispatch landed on the spec's own
+    /// op (no impl member), the provider half when it landed on the provider's. This
+    /// pair used to be read as ONE chain — the target's parent's — which agreed with
+    /// what the producer bundled only when the provider was a chain-free witness.
     fn expand_dispatching_dict(
         &mut self,
+        dispatched_from: Symbol,
         target: Symbol,
         dict: &super::value::RequirementHandle,
     ) -> Result<SmallVec<[(Symbol, super::value::RequirementHandle); 2]>, EvalError> {
-        let names = match crate::kb::typing::impl_parent_of_op(&self.kb, target) {
-            Some(p) => Some(crate::kb::typing::synth_req_names(&mut self.kb, p)),
-            None => None,
-        };
+        let provider = dict.functor();
+        // A namespace-level `dispatched_from` names no spec (nothing to dispatch
+        // through); the dictionary is then the provider's own bundle alone.
+        let spec = crate::kb::typing::impl_parent_of_op(&self.kb, dispatched_from)
+            .unwrap_or(provider);
+        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider);
         let arity = dict.arity();
-        let name_count = names.as_ref().map_or(0, |n| n.len());
-        if arity != name_count {
+        if arity != layout.arity() {
             return Err(EvalError::Internal(format!(
                 "deferred dispatch frame-push: dispatching dict for {} has \
-                 arity {arity} but its requires chain has {name_count} entries",
+                 arity {arity} but its requires chain wants {}",
                 self.kb.qualified_name_of(target),
+                layout.describe(&self.kb),
             )));
         }
         let mut reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
             SmallVec::with_capacity(arity + 1);
         reqs.push((self.fields.req_self, dict.clone()));
-        if let Some(names) = names {
-            for (k, name) in names.iter().enumerate() {
-                reqs.push((*name, dict.project(k)));
+        let Some(owner) = crate::kb::typing::impl_parent_of_op(&self.kb, target) else {
+            // A namespace-level target (a WI-431 instance-fact binding op) has no
+            // `requires` chain to fill — `__req_self` alone.
+            return Ok(reqs);
+        };
+        let names = crate::kb::typing::synth_req_names(&mut self.kb, owner);
+        let Some(slots) = layout.slots_for(&self.kb, owner) else {
+            // `resolve_op_target` can land on a THIRD sort — a same-short-name
+            // default the provider merely inherits, or an instance-fact binding
+            // whose target lives in another sort. This dictionary carries nothing
+            // for such an owner: fine when it declares no `requires`, and a loud
+            // internal error when it does, rather than a frame silently short of
+            // the slots its body reads.
+            if names.is_empty() {
+                return Ok(reqs);
             }
+            return Err(EvalError::Internal(format!(
+                "deferred dispatch frame-push: dispatch of `{}` landed on `{}`, whose \
+                 parent `{}` is neither the spec nor the provider of the dictionary \
+                 ({}), so its {} requirement slot(s) cannot be filled",
+                self.kb.qualified_name_of(dispatched_from),
+                self.kb.qualified_name_of(target),
+                self.kb.qualified_name_of(owner),
+                layout.describe(&self.kb),
+                names.len(),
+            )));
+        };
+        // The slice IS `owner`'s own chain, so its length is `synth_req_names(owner)`'s
+        // by construction — unless `owner` and the layout's spec/provider are two
+        // interned copies of one sort whose `SortRequiresInfo` differs, which
+        // `same_sort_canonical` would bridge for identity while the two chain reads
+        // disagreed. Checked rather than `debug_assert`ed because the alternative is
+        // `RequirementHandle::project`'s panic in a release build.
+        if slots.len() != names.len() {
+            return Err(EvalError::Internal(format!(
+                "deferred dispatch frame-push: `{}` reads {} requirement slot(s) but \
+                 the dictionary layout gives it {} ({})",
+                self.kb.qualified_name_of(owner),
+                names.len(),
+                slots.len(),
+                layout.describe(&self.kb),
+            )));
+        }
+        for (k, name) in names.iter().enumerate() {
+            reqs.push((*name, dict.project(slots.start + k)));
         }
         Ok(reqs)
     }
@@ -1517,7 +1631,7 @@ impl Interpreter {
                 drop(type_args);
                 return self.enter_closure(handle, arg_values);
             }
-            Some(Value::OpRef { op, dict }) => {
+            Some(Value::OpRef { op, dict, named }) => {
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
                 // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
@@ -1531,7 +1645,11 @@ impl Interpreter {
                 let requirements = match dict {
                     Some(d) => {
                         drop(requirements);
-                        self.expand_dispatching_dict(op, &d)?
+                        // WI-857: `op` is the RESOLVED target; the op the call NAMED
+                        // is `named` when the minter recorded a different one
+                        // (`Dictionary.resolveOp`), else `op` itself (an eta, whose
+                        // captured dict is its own parent's bundle — WI-420).
+                        self.expand_dispatching_dict(named.unwrap_or(op), op, &d)?
                     }
                     None => requirements,
                 };

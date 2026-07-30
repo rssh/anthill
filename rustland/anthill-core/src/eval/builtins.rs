@@ -3114,7 +3114,7 @@ fn dict_sub(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 /// signature, so a native-builtin-backed resolved op like `PartialEq.eq` is callable).
 fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::term::Term;
-    use crate::kb::typing::resolve_op_target;
+    use crate::kb::typing::resolve_op_target_checked;
     let [d, spec_op] = expect_args::<2>("Dictionary.resolveOp", args)?;
     let h = match d {
         Value::Requirement(h) => h,
@@ -3127,8 +3127,17 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         },
         other => return Err(type_mismatch("Symbol", other, None)),
     };
-    let target = resolve_op_target(&interp.kb, h.functor(), spec_op_sym);
-    Ok(Value::OpRef { op: target, dict: Some(h) })
+    // WI-857: refuses a `NoProvider` marker — `resolveOp` MINTS A CALLABLE, so it is
+    // a dispatch face, and letting it hand back an `OpRef` on the spec op is the
+    // silent fall-through the marker exists to prevent.
+    let target = resolve_op_target_checked(&interp.kb, h.functor(), spec_op_sym)
+        .map_err(|detail| EvalError::UnpinnedRequirement { detail })?;
+    // WI-857: `target` is the RESOLVED member; `h` is a dictionary for the spec
+    // `spec_op_sym` belongs to, whose layout has that spec's chain as its prefix.
+    // Carry the named op so applying this ref measures `h` against the right layout —
+    // reading it off `target` alone measures a spec dictionary against the provider's
+    // own chain, which for a chain-free witness is 0 and rejects a valid dict.
+    Ok(Value::OpRef { op: target, dict: Some(h), named: Some(spec_op_sym) })
 }
 
 /// `Dictionary.ops(d) -> FiniteStream[OpRef]` — all this dict's operations as
@@ -3144,22 +3153,36 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
 /// materialized up front today. Each element is a callable OpRef, same as a
 /// `resolveOp` result.
 fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::typing::resolve_op_target;
+    use crate::kb::typing::resolve_op_target_checked;
     let [d] = expect_args::<1>("Dictionary.ops", args)?;
     let h = match d {
         Value::Requirement(h) => h,
         other => return Err(type_mismatch("Dictionary", &other, None)),
     };
     let impl_sym = h.functor();
+    // WI-857: refuse the marker UP FRONT, not per element. A marker's
+    // `sort_ops_for_impl` is EMPTY, so a per-element check never runs and the bulk
+    // face would answer `nil` — "this dictionary has no operations" — for a
+    // dictionary that pins no provider at all. That is the silent skip the marker
+    // exists to prevent, one level quieter than the one `resolveOp` refuses.
+    if let Err(detail) = crate::kb::typing::marker_refusal(&interp.kb, impl_sym) {
+        return Err(EvalError::UnpinnedRequirement { detail });
+    }
     let elems: Vec<Value> = interp
         .kb
         .sort_ops_for_impl(impl_sym)
         .into_iter()
         .map(|target| {
-            let resolved = resolve_op_target(&interp.kb, impl_sym, target);
-            Value::OpRef { op: resolved, dict: Some(h.clone()) }
+            resolve_op_target_checked(&interp.kb, impl_sym, target)
+                .map(|resolved| Value::OpRef {
+                    op: resolved,
+                    dict: Some(h.clone()),
+                    // The table row IS the op named here, pre-resolution.
+                    named: Some(target),
+                })
+                .map_err(|detail| EvalError::UnpinnedRequirement { detail })
         })
-        .collect();
+        .collect::<Result<Vec<Value>, EvalError>>()?;
     build_value_list(interp, elems)
 }
 

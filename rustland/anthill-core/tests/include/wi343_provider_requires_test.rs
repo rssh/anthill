@@ -8,7 +8,8 @@
 //!
 //! This is the provider-side twin of the call-site `MissingRequiresForSpecOp`
 //! check, and it reuses the same binding-aware resolution
-//! (`candidate_sub_goals_owned` + `collect_provides_candidates`).
+//! (`candidate_provider_sub_goals` — `candidate_sub_goals_owned` before WI-857 split
+//! the dictionary's spec and provider halves — plus `collect_provides_candidates`).
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver, LoadError};

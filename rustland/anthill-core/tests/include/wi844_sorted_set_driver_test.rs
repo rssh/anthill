@@ -136,9 +136,8 @@ fn loads_clean(src: &str, why: &str) {
 
 /// Run `entry(0)` on a FRESH interpreter — a trapped call poisons later calls on a
 /// shared one. The load doubles as the clean-load gate (`interp_for` panics on a dirty
-/// load), so a value assertion also asserts the program loads. Returning the `Result`
-/// rather than a value is what lets the two WI-857 tests below assert a FAILURE through
-/// the same runner every passing test uses. (`wi841_call_site_selection_test`'s shape.)
+/// load), so a value assertion also asserts the program loads.
+/// (`wi841_call_site_selection_test`'s shape.)
 fn eval_fresh(src: &str, entry: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let mut interp = crate::common::interp_for(src);
     interp.call(entry, &[Value::Int(0)])
@@ -156,17 +155,6 @@ fn eval_int(src: &str, entry: &str, why: &str) -> i64 {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}"),
     }
-}
-
-/// The dual of [`eval_int`] for the two tests that pin a KNOWN failure (WI-857): the
-/// call must error, and with the expected text — "it errored" alone would pass on an
-/// unrelated breakage of the same program.
-fn eval_err(src: &str, entry: &str, needle: &str, why: &str) {
-    let err = match eval_fresh(src, entry) {
-        Err(e) => format!("{e:?}"),
-        Ok(v) => panic!("{why}; expected a failure, got {v:?}"),
-    };
-    assert!(err.contains(needle), "{why}; expected {needle:?}, got: {err}");
 }
 
 // ── Positive control ─────────────────────────────────────────────────
@@ -585,26 +573,23 @@ fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
     );
 }
 
-/// §5.3's last paragraph — "omitting the binding keeps existing code working" — split
-/// in two by what driving it found. It LOADS, and tier 2 resolves it: `SortedSet.empty
-/// [T = Int64]()` names no ordering and the unique `Ordered[Int64]` provider answers,
-/// which is the non-regression half and is what this asserts.
+/// §5.3's last paragraph — "omitting the binding keeps existing code working". It
+/// LOADS, tier 2 resolves it (`SortedSet.empty[T = Int64]()` names no ordering and the
+/// unique `Ordered[Int64]` provider answers), and — since **WI-857** — it also RUNS.
 ///
-/// IT THEN DIES AT EVAL, on a defect that predates the whole arc and needs none of its
-/// vocabulary — **WI-857**, pinned here (with its 058-free control below) so the
-/// ticket has a live reproducer and so this file does not read as though the spelling
-/// works. The producer of a requirement dictionary walks the PROVIDER's `requires`
-/// chain (`candidate_sub_goals_owned`), the consumer names the frame's slots from the
-/// SPEC's (`expand_dispatching_dict`); a carrier-keyed `fact Ordered[T = Int64]` has an
-/// empty chain while `Ordered` itself declares two, so the dict arrives arity 0 where 2
-/// are wanted. A WITNESS provider agrees by accident — dispatch then lands on the
-/// witness's own member, whose parent chain is empty — which is why every other test in
-/// this file runs.
+/// It used to die at eval, on a defect that predated the whole arc and needed none of
+/// its vocabulary: the producer of a requirement dictionary walked the PROVIDER's
+/// `requires` chain while the consumer named the frame's slots from the SPEC's, and a
+/// carrier-keyed `fact Ordered[T = Int64]` has an empty chain while `Ordered` itself
+/// declares two — so the dict arrived arity 0 where 2 were wanted. A WITNESS provider
+/// agreed by accident (dispatch lands on the witness's own member, whose parent chain
+/// is empty), which is why every other test in this file ran. WI-857 made the two read
+/// ONE layout; the 058-free control below is the same hole one level shallower.
 ///
 /// "The same program you write today meaning the same thing" is therefore literally
-/// true, and that is the point: today's spelling fails identically (see the control).
+/// true — and now true at eval as well as at load.
 #[test]
-fn omitting_the_ordering_is_resolved_but_dies_at_eval() {
+fn omitting_the_ordering_is_resolved_and_runs() {
     let src = program(
         "wi844.inferred",
         "  sort Driver\n    \
@@ -619,20 +604,25 @@ fn omitting_the_ordering_is_resolved_but_dies_at_eval() {
         "omission leaves `O` to inference and tier 2 answers with the unique \
          `Ordered[Int64]` provider — the LOAD half of §5.3's last paragraph",
     );
-    eval_err(
-        &src,
-        "wi844.inferred.Driver.smallest",
-        "has arity 0 but its requires chain has 2 entries",
-        "WI-857: the inferred route dies at eval — flip this to `eval_int(…) == 3` when \
-         that ticket lands",
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi844.inferred.Driver.smallest",
+            "the inferred route must SORT, not merely resolve (WI-857)",
+        ),
+        3,
+        "the prelude `Ordered[Int64]` is ascending, so the smallest of {{7, 3}} is 3; \
+         a -1 would mean the set came back empty",
     );
 }
 
-/// …and the control that keeps WI-857 out of 058's ledger: the identical failure with
+/// …and the control that kept WI-857 out of 058's ledger: the identical failure with
 /// no `SortedSet`, no named slot, no second provider and no bracket anywhere — a bare
 /// `requires Eq[T]` sort calling `PartialEq.eq`. Beside it, the spec whose OWN chain is
-/// empty (`PartialEq`) RUNS, which is what identifies the trigger as the spec's chain
-/// depth rather than the shape.
+/// empty (`PartialEq`) ran even then, which is what identified the trigger as the
+/// spec's chain depth rather than the shape. Both run now; the pair is kept because it
+/// is the smallest statement of what WI-857 was, and the `PartialEq` half remains the
+/// control that a passing `Eq` half is not vacuous.
 #[test]
 fn wi857_control_the_same_hole_with_no_058_vocabulary() {
     let src = program_with(
@@ -657,15 +647,14 @@ fn wi857_control_the_same_hole_with_no_058_vocabulary() {
         eval_int(&src, "wi844.wi857.Driver.viaPartialEq", "PartialEq has an EMPTY own chain"),
         1,
         "the control must PASS, else it proves nothing about what distinguishes the \
-         failing case",
+         case that used to fail",
     );
-    eval_err(
-        &src,
-        "wi844.wi857.Driver.viaEq",
-        "bundles 0 sub-requirement(s)",
-        "the 058-free twin of the failure above — `Eq` requires `PartialEq`, so its \
-         dictionary wants one sub-entry and gets none; same producer/consumer \
-         disagreement, one level shallower",
+    assert_eq!(
+        eval_int(&src, "wi844.wi857.Driver.viaEq", "the `Eq` twin runs since WI-857"),
+        1,
+        "`Eq requires PartialEq`, so its dictionary bundles one sub-entry — which the \
+         producer now supplies and the transitive `PartialEq.eq` read projects out. \
+         This errored `bundles 0 sub-requirement(s)` before.",
     );
 }
 

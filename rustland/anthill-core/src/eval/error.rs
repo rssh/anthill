@@ -96,6 +96,23 @@ pub enum EvalError {
     /// enters the frame unsupplied is argued once, where the choice is made:
     /// `Interpreter::requirements_for_value_directed_impl`.
     AmbiguousRequirement { op: String, requirement: String, candidates: Vec<String> },
+    /// WI-857: a dictionary slot that pins NO provider was used — dispatched
+    /// through, projected into, or enumerated. The slot carries an empty bundle over
+    /// the `NoProvider` marker because its goal did not resolve when the dictionary
+    /// was built (nothing provides that spec at those bindings, or more than one
+    /// does), or because it is a host-entry stand-in that supplied no dictionary at
+    /// all.
+    ///
+    /// The THIRD member of the family above, and a variant for the same reason: this
+    /// is a PROGRAM (or host-entry) error, not an evaluator-invariant one, so the
+    /// resolver bridge's `debug_assert` on [`Self::Internal`] must not fire on it —
+    /// a bridged rule DELAYS instead. It was `Internal` when first written, which
+    /// would have aborted any test whose rule body dispatched through such a slot.
+    ///
+    /// `detail` is pre-rendered by `kb::typing::marker_refusal`, the one owner of the
+    /// sentence (the marker carries no payload, so the wording must hedge over the
+    /// three causes — narrowing it is what carrying the reason to runtime would buy).
+    UnpinnedRequirement { detail: String },
     /// WI-842 (proposal 058 §4.9): value-directed dispatch found TWO OR MORE
     /// suppliers of one spec op for the runtime receiver's carrier — the carrier's
     /// own member, an instance fact's binding, a witness sort's member — and this
@@ -186,6 +203,7 @@ impl std::fmt::Display for EvalError {
             // dispatch, which has no call-site bracket (§4.2 leaves rule bodies out
             // of selection), so the repair is to give the call a selecting site or
             // to keep one provision.
+            EvalError::UnpinnedRequirement { detail } => write!(f, "{detail}"),
             EvalError::AmbiguousRequirement { op, requirement, candidates } => write!(
                 f,
                 "dispatch to `{op}`: its requirement `{requirement}` is provided by \

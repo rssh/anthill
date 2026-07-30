@@ -86,6 +86,15 @@ pub enum Value {
         /// a dict, INCLUDING a same-sort eta (its sort's `__req_self`) — an eta'd
         /// `OpRef` escapes to a foreign apply frame, so it cannot inherit.
         dict: Option<RequirementHandle>,
+        /// WI-857 — the op the CALL NAMED, when that differs from `op`. `op` is the
+        /// RESOLVED target; `dict`'s layout is keyed by the SPEC it witnesses, and
+        /// only the minter knows which that was. `None` means "the same" — an eta'd
+        /// reference, whose captured dict is its own parent's bundle, so spec and
+        /// provider coincide. `Dictionary.resolveOp` sets it: there `op` is the impl
+        /// member while `dict` is a spec-instance dictionary carrying the spec's
+        /// requires chain as its prefix, and reading the layout off `op` alone
+        /// measures a spec dictionary against the provider's chain.
+        named: Option<Symbol>,
     },
     Stream(StreamHandle),
     /// First-class substitution — reference into an arena owned by the

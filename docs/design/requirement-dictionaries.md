@@ -57,7 +57,12 @@ struct Slot {
 ```
 
 So the value is a **recursive `(functor, [sub-requirements])` tree**: an impl
-symbol plus an array of child dictionaries. Concretely:
+symbol plus an array of child dictionaries. The sub-array's **layout** — which
+`requires` chain slot `k` belongs to — is stated once in
+[`operation-call-model.md`](./operation-call-model.md) §"Dispatch rule" (WI-857):
+the spec's own chain, then the provider's, each in declaration order. `arity` and
+`sub` below are views on exactly that array, so `sub(d, k)`'s denoted type follows
+that reading. Concretely:
 
 | Aspect | Today |
 |---|---|
@@ -214,7 +219,8 @@ sort Dictionary[S]
   -- number of sub-requirement dicts
   operation arity(d: Dictionary[S]) -> Int
   -- project the i-th sub-requirement — no copy. Its denoted type S_i is the i-th
-  -- `requires` of S's impl, so the return is a VALUE-DEPENDENT type (proposal
+  -- entry of the DICTIONARY LAYOUT (WI-857: S's own `requires` chain, then the
+  -- impl's), so the return is a VALUE-DEPENDENT type (proposal
   -- 011/027): `Dictionary[S_i]`, S_i determined by the value `i`.
   operation sub(d: Dictionary[S], i: Int) -> Dictionary[S_i]
   -- NB no `denotedType` op: the denoted type IS the parameter S, which the typer

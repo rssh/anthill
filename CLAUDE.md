@@ -179,6 +179,30 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   from a different field (WI-788). A POSITIONAL carrier has no names, so it still
   reads by slot; that is exact, not a fallback, and it is how a spread call
   (`f(3, 10)`) arrives.
+- **A requirement DICTIONARY has ONE layout** (WI-857), owned by `dict_layout`
+  (`kb/typing.rs`) and stated in `design/operation-call-model.md` §"Dispatch rule": a
+  dictionary for spec `S` supplied by provider `P` bundles `S`'s own direct `requires`
+  chain, THEN `P`'s. `P == S` is ONE list — which is also the parent-bundle dict
+  (`build_concrete_dispatch_dict`), whose functor IS the frame owner. The SPEC half is
+  the PREFIX so `requirement_at_sort(chain, k)` — whose `k` indexes the required
+  spec's own chain — needs no offset. `expand_dispatching_dict` hands a frame exactly
+  the half `impl_parent_of_op(target)` owns, and is LOUD when that is a third sort
+  with a chain (`resolve_op_target` can land on an inherited same-short-name default
+  or an instance-fact binding elsewhere). This channel is POSITIONAL and its rule was
+  NEVER WRITTEN DOWN, so the producer walked `P`'s chain while two consumers indexed
+  `S`'s; they agreed only for a chain-free witness provider — every case the suite
+  covered — so a carrier-keyed `fact Ordered[T = Int64]` built an arity-0 dict and
+  EVERY spec with a non-empty chain died at eval. EVERY producer must build a
+  layout-valid dict, including the host-entry STAND-INS (`stand_in_requirement`):
+  `cr(functor, [])` reads as "claims `functor`'s whole chain, bundles none". A
+  spec-half goal that does not resolve is RECORDED (`Unavailable` → a marker functor),
+  not refused and not dropped — refusing it broke 33 tests, because a spec-level
+  `requires` is routinely satisfied only via the abstract fallback in
+  `check_provider_requires` (`FiniteCollection requires Iterable[C = C]` holds for a
+  `List` only through `List provides Stream provides Iterable`). Dispatching through
+  the marker is refused at `dispatch_via_sort_ops_table` — one owner — so an unread
+  slot costs nothing and a read one names its missing requirement. LOCALITY: inside
+  `W`'s dictionary a sub-goal `W` itself provides takes `W`'s own provision first.
 
 # Repository rules
 

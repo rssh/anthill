@@ -202,13 +202,70 @@ fn opref_backed_by_builtin_is_callable() {
                end\n";
     let mut interp = common::interp_for(src);
     let abs = resolve(&interp, "anthill.prelude.Int64.abs");
-    let opref = Value::OpRef { op: abs, dict: None };
+    // `named: None` — a bare ref names its own op (WI-857).
+    let opref = Value::OpRef { op: abs, dict: None, named: None };
     let got = interp
         .call("test.wi577.apply.applyUnary", &[opref, Value::Int(-5)])
         .unwrap();
     match got {
         Value::Int(n) => assert_eq!(n, 5, "applying the builtin-backed OpRef must run Int64.abs(-5)"),
         other => panic!("expected Int, got {}", other.type_name()),
+    }
+}
+
+/// WI-857 REGRESSION — an `OpRef` minted by `resolveOp` must remember the op the
+/// call NAMED, not only the one it resolved to.
+///
+/// `resolveOp` returns `op` = the RESOLVED impl member (`Descending.compare`) while
+/// `dict` witnesses the SPEC (`Ordered`), whose layout puts `Ordered`'s own chain —
+/// `Eq`, `PartialOrd` — in front of the provider's. Applying that ref reads the
+/// layout to slice the callee's frame, and reading it off the resolved op alone
+/// measures a spec-instance dictionary against `Descending`'s own chain, which is
+/// EMPTY: a valid arity-2 dictionary is then rejected as "wants 0 slot(s)". Found by
+/// review; the pre-WI-857 code matched by accident because a dictionary bundled only
+/// the provider's chain.
+///
+/// Asserted on the VALUE rather than by applying it: the mint site is what carries
+/// the named op, and `OpRef.op` is the public face of the resolution.
+#[test]
+fn resolve_op_remembers_the_named_spec_op() {
+    let src = "namespace test.wi577.named\n\
+               import anthill.prelude.{Int64, Ordered}\n\
+               import anthill.prelude.Numeric.{sub}\n\
+               sort Descending\n\
+               fact Ordered[T = Int64]\n\
+               operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
+               end\n\
+               end\n";
+    let mut interp = common::interp_for(src);
+    let desc = resolve(&interp, "test.wi577.named.Descending");
+    // A LAYOUT-VALID `Ordered[Int64]` dictionary supplied by `Descending`: the spec
+    // half is `Ordered`'s two entries; `Descending` declares no `requires`.
+    let mut subs: SmallVec<[_; 1]> = SmallVec::new();
+    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
+    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
+    let dict = Value::Requirement(interp.alloc_requirement(desc, subs));
+    let cmp = sym_val(&mut interp, "anthill.prelude.Ordered.compare");
+    let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
+    match &opref {
+        Value::OpRef { op, named, .. } => {
+            assert_eq!(
+                interp.kb().qualified_name_of(*op),
+                "test.wi577.named.Descending.compare",
+                "resolveOp resolves to the witness's own member",
+            );
+            let named = named.expect(
+                "the NAMED op must be carried: `op` alone cannot say which spec the \
+                 captured dictionary witnesses, so applying this ref would measure it \
+                 against `Descending`'s (empty) chain and reject a valid arity-2 dict",
+            );
+            assert_eq!(
+                interp.kb().qualified_name_of(named),
+                "anthill.prelude.Ordered.compare",
+                "the named op is the SPEC op the call passed in",
+            );
+        }
+        other => panic!("resolveOp must return an OpRef, got {}", other.type_name()),
     }
 }
 
@@ -219,7 +276,7 @@ fn opref_dict_none_for_dictless_ref() {
     let mut interp = interp();
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     // A bare op-ref with no captured dict (a requires-free / namespace-level op).
-    let opref = Value::OpRef { op: eq_eq, dict: None };
+    let opref = Value::OpRef { op: eq_eq, dict: None, named: None };
     let d = interp.call(&format!("{OPREF}.dict"), &[opref]).unwrap();
     match &d {
         Value::Entity { functor, named, .. } => {

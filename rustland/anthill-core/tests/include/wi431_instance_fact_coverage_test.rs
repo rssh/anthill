@@ -220,11 +220,15 @@ end
 /// `fact HasZ[T = Tag, hzero = tagZero]` (with `fact MyEq[T = Tag]` satisfying the
 /// provider-requires). The nullary `hzero() -> T` forces the threaded path (no
 /// carrier arg ⇒ no value-directed rescue), and the target `tagZero` is a
-/// namespace-level instance-fact op with no parent sort. An instance-fact-derived
-/// dict is a LEAF (`construct_requirement(Tag, nil)`, arity 0) — it does NOT
-/// bundle the spec's `MyEq` sub-requirement — so `expand_dispatching_dict`'s
-/// arity check (`dict.arity()` vs the target's requires-chain) is `0 == 0` and
-/// does not spuriously fire `EvalError::Internal`. Result `7` ⇒ `tagZero` ran.
+/// namespace-level instance-fact op with no parent sort.
+///
+/// WI-857: the instance-fact dict now DOES bundle the spec's `MyEq` leg — a
+/// dictionary's prefix is the spec's own `requires` chain, resolved here against
+/// `fact MyEq[T = Tag]`. What keeps `expand_dispatching_dict` quiet is the other
+/// end: `tagZero` has no parent sort, so it owns no `requires` slots and the frame
+/// gets `__req_self` alone. (Before, the dict was `construct_requirement(Tag, nil)`
+/// and the check passed as `0 == 0` — the same pass for a different reason, which is
+/// why this test did not notice the layout change.) Result `7` ⇒ `tagZero` ran.
 #[test]
 fn instance_fact_op_dispatches_when_spec_has_requires() {
     let src = r#"namespace test.wi431.subreq

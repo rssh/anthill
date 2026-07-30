@@ -14,7 +14,8 @@
 //!
 //!  2. **`EffectsRuntime` skip in the dispatch sub-goals.** The witness's
 //!     effect-row params (`effects ES`, `effects EF`) each synthesize a
-//!     `requires EffectsRuntime[…]`. `candidate_sub_goals_owned` emitted those as
+//!     `requires EffectsRuntime[…]`. `candidate_provider_sub_goals` (then named
+//!     `candidate_sub_goals_owned`; WI-857 split the dictionary's two halves) emitted those as
 //!     dispatch sub-goals, which `resolve_inner` can never satisfy
 //!     (`EffectsRuntime` is the runtime marker, not a resolvable provider) — so
 //!     dispatching ANY op through the witness failed with `DispatchNoMatch`. The

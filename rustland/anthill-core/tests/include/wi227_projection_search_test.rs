@@ -287,7 +287,12 @@ fn ground_dep_emits_construct_requirement() {
         kb.qualified_name_of(impl_sym)
     );
 
-    // requirements list = nil — Eq has no transitive deps in stdlib.
+    // requirements list = one entry — WI-857: a dictionary bundles the SPEC's own
+    // direct `requires` chain as its prefix, and `Eq requires PartialEq[T]`. So the
+    // emitted list is a single `cons` carrying `PartialEq[T = Int64]`'s own
+    // construct_requirement (also over Int64, which provides both). It was `nil`
+    // while the producer bundled only the PROVIDER's chain — and `Int64`'s is empty,
+    // which is exactly the arity-0 dictionary that died at eval.
     let sub_reqs_tid =
         get_named_arg(&kb, &named_args, "requirements").expect("requirements arg");
     let sub_functor = match kb.get_term(sub_reqs_tid) {
@@ -297,7 +302,29 @@ fn ground_dep_emits_construct_requirement() {
         other => panic!("requirements must be Fn (list) or Ref (nil); got {other:?}"),
     };
     assert_eq!(
-        sub_functor, syms.nil,
-        "Eq has no transitive deps; nested requirements list must be nil"
+        sub_functor, syms.cons,
+        "the spec half is `Eq`'s `requires PartialEq[T]`, so the nested \
+         requirements list is a one-entry cons, not nil"
+    );
+    let cons_named = match kb.get_term(sub_reqs_tid) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        other => panic!("expected a cons cell; got {other:?}"),
+    };
+    let head_tid = get_named_arg(&kb, &cons_named, "head").expect("cons head");
+    let head_named = match kb.get_term(head_tid) {
+        Term::Fn { functor, named_args, .. } if *functor == syms.construct => named_args.clone(),
+        other => panic!("the bundled entry must itself be construct_requirement; got {other:?}"),
+    };
+    let inner_tid = get_named_arg(&kb, &head_named, "impl_functor").expect("impl_functor");
+    let inner_sym = match kb.get_term(inner_tid) {
+        Term::Ref(s) | Term::Ident(s) => *s,
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() => *functor,
+        other => panic!("impl_functor must be a sort reference; got {other:?}"),
+    };
+    assert_eq!(
+        inner_sym, int_sym,
+        "`PartialEq[T = Int64]` is provided by Int64 as well; got {}",
+        kb.qualified_name_of(inner_sym)
     );
 }

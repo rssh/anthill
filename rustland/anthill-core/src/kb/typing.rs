@@ -5,6 +5,7 @@
 /// Effects are tracked as List[Type] alongside the value type.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 
 use smallvec::SmallVec;
@@ -11969,6 +11970,12 @@ fn build_dispatching_dict_direct(
     // direct-require count, satisfying eval's `expand_dispatching_dict`
     // arity invariant. Transitive callee requires are bundled recursively
     // inside each direct projection, not flattened into this list.
+    //
+    // WI-857: this is a PARENT-BUNDLE dictionary, not a spec instance — its functor
+    // IS the frame owner — so under [`dict_layout`] its spec and provider coincide
+    // and the single list above is exactly the layout. Unchanged by that ticket for
+    // that reason; the consumer computes the same one-list layout from the
+    // classification's `spec_op_sym`, which on this route is the callee itself.
     let callee_chain = direct_requires_chain(kb, callee_spec_sort);
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &callee_chain, caller_sort, caller_requires, syms, false,
@@ -12195,7 +12202,8 @@ fn explain_dep_refusal(
 /// `chain` is the callee's DIRECT requires — one projection per slot the
 /// callee body reads by `__req_<spec>` name, matching `synth_req_names` (also
 /// direct) so the dict's arity equals the callee's direct-require count
-/// (eval's `expand_dispatching_dict` invariant). Transitive requires are
+/// (eval's `expand_dispatching_dict` invariant — for a PARENT-BUNDLE dictionary
+/// [`dict_layout`] reads that same single list, WI-857). Transitive requires are
 /// bundled recursively inside each direct projection, not flattened. The
 /// Direct path passes `direct_requires_chain` verbatim; WI-415 passes a copy
 /// with the call-site bindings substituted in so each entry resolves
@@ -12551,11 +12559,8 @@ pub fn build_dep_projection(
     // `var_ref(__req_effectsruntime)` read (a cross-sort delegating body —
     // `Iterable.find` → `Stream.find`) then dies "unbound in requirement
     // position" at eval.
-    if kb.qualified_name_of(dep.required_sort) == "anthill.prelude.EffectsRuntime" {
-        let nil_list = super::load::build_cons_list(
-            kb, &[], syms.nil, syms.cons, syms.head, syms.tail,
-        );
-        return Some(build_construct_requirement(kb, syms, dep.required_sort, nil_list));
+    if is_effects_runtime(kb, dep.required_sort) {
+        return Some(build_empty_bundle(kb, syms, dep.required_sort));
     }
 
     // Strategy 1 — named-param, binding-aware. Match by (required_sort,
@@ -13088,6 +13093,34 @@ fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
     }
 }
 
+/// WI-857 — the functor a dictionary slot carries when its goal did not resolve
+/// ([`ResolvedRequiresNode::Unavailable`]). Not a sort: it is INTERNED, never
+/// DEFINED, and `SymbolTable` keeps those two maps disjoint — that, not the choice
+/// of name, is what keeps `sort_ops_lookup` from ever answering for it. It is NOT
+/// reserved, so a program (or a future stdlib file) declaring `namespace
+/// anthill.reflect … sort NoProvider` would produce a real sort whose qualified name
+/// matches, and every dictionary rooted at it would then be refused; `intern_unique`
+/// cannot be used instead because producer and consumer must agree on the symbol.
+/// Every use is refused through [`marker_refusal`], which is what turns a carried
+/// absence into a loud error exactly where the absence matters. Interning is
+/// idempotent, so producer and consumer get the same symbol.
+pub(crate) fn no_provider_sym(kb: &mut KnowledgeBase) -> Symbol {
+    kb.intern(NO_PROVIDER_NAME)
+}
+
+/// True iff `sym` is the [`no_provider_sym`] marker. By NAME, because this reader
+/// holds only a shared `kb` and cannot intern — and it IS on the per-dispatch path
+/// (via [`marker_refusal`] ← `resolve_op_target_checked` ← every dict-threaded
+/// dispatch). The cost is one `resolve_sym` plus a 26-byte compare that
+/// short-circuits on length for nearly every call; making it a `Symbol` compare needs
+/// the marker cached where a `&KnowledgeBase` reader can see it (a KB well-known
+/// slot), which the interpreter's `fields.no_provider` does only for eval.
+pub(crate) fn is_no_provider(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    kb.resolve_sym(sym) == NO_PROVIDER_NAME
+}
+
+const NO_PROVIDER_NAME: &str = "anthill.reflect.NoProvider";
+
 /// WI-227: translate a `ResolvedRequiresNode` into a projection IR term.
 /// `FromScope` becomes `var_ref(name = __req_<caller chain slot>)`;
 /// `Leaf` becomes `construct_requirement(impl, nil)`; `Conditional`
@@ -13106,10 +13139,13 @@ fn emit_tree_as_projection(
             Some(build_req_var_ref(kb, syms, name))
         }
         ResolvedRequiresNode::Leaf { impl_sort, .. } => {
-            let nil_list = super::load::build_cons_list(
-                kb, &[], syms.nil, syms.cons, syms.head, syms.tail,
-            );
-            Some(build_construct_requirement(kb, syms, *impl_sort, nil_list))
+            Some(build_empty_bundle(kb, syms, *impl_sort))
+        }
+        ResolvedRequiresNode::Unavailable { .. } => {
+            // WI-857: an empty bundle over the marker functor. Occupies its slot so
+            // the halves stay positionally exact, and cannot be dispatched through.
+            let marker = no_provider_sym(kb);
+            Some(build_empty_bundle(kb, syms, marker))
         }
         ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
             let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -13153,6 +13189,21 @@ fn build_req_at_sort(
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(syms.chain, inner), (syms.slot, slot_lit)]),
     })
+}
+
+/// Build `construct_requirement(functor, nil)` — a dictionary bundling nothing.
+/// THREE producers need it: a `Leaf` resolution, WI-857's `Unavailable` marker slot,
+/// and `build_dep_projection`'s synthetic `EffectsRuntime` anchor. One owner, so the
+/// spelling of a childless dictionary has one definition.
+fn build_empty_bundle(
+    kb: &mut KnowledgeBase,
+    syms: &ProjectionSyms,
+    functor: Symbol,
+) -> TermId {
+    let nil_list = super::load::build_cons_list(
+        kb, &[], syms.nil, syms.cons, syms.head, syms.tail,
+    );
+    build_construct_requirement(kb, syms, functor, nil_list)
 }
 
 /// Build `construct_requirement(impl_functor = <Ref(impl)>, requirements = <list>)`.
@@ -13256,12 +13307,11 @@ pub(crate) enum BridgeRequirements {
 /// `Unresolvable` (→ the bridge delays).
 ///
 /// Targets effect-free spec-op providers (`eq`/`cmp`/comparison-style `Combiner`s).
-/// A resolved provider whose OWN requires-chain carries a synthetic `EffectsRuntime`
-/// marker would build a handle whose arity is short of `synth_req_names(impl)` (the
-/// marker is skipped by `candidate_sub_goals_owned` but not `synth_req_names`), which
-/// the eval dispatcher's cross-check rejects — surfaced loudly by
-/// [`super::KnowledgeBase::bridge_op_to_eval`]'s `debug_assert(!Internal)` rather than
-/// silently mis-decided. Unreachable for the providers the bridge targets.
+/// The `EffectsRuntime` hazard this paragraph used to describe is GONE (WI-857): the
+/// synthetic anchor a provider's effect-row params contribute used to be SKIPPED by
+/// the sub-goal walk but counted by `synth_req_names`, so such a provider built a
+/// handle short of its own chain; both halves now keep the anchor's slot as a
+/// structural leaf, and the producer asserts its count against [`dict_layout`].
 pub(crate) fn resolve_bridge_requirements(
     kb: &mut KnowledgeBase,
     op: Symbol,
@@ -14725,6 +14775,58 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     Some(parent_sym)
 }
 
+/// WI-857 — [`resolve_op_target`] with the `NoProvider` refusal, for every reader
+/// that DISPATCHES through a dictionary. `Err` carries the rendered reason.
+///
+/// The guard lives here, beside the resolution, rather than at eval's
+/// `dispatch_via_sort_ops_table`: `resolve_op_target`'s own doc promises that the
+/// interpreter and the reflect `Dictionary.resolveOp` / `ops` faces share it "so the
+/// three cannot drift", and a guard placed only in the interpreter would have made
+/// them drift in exactly the direction that doc names — a body could reach a marker
+/// slot through `Dictionary.sub` and `resolveOp` it into an `OpRef` on the spec op,
+/// which is the silent fall-through to the host default the marker exists to refuse.
+///
+/// `Dictionary.impl` deliberately does NOT go through this: it is an INSPECTION face
+/// ("which impl did this resolve to"), and the marker is a truthful answer to it —
+/// self-describing by name, and the only way to observe a recorded absence at all.
+/// The line is dispatch-vs-inspect, not read-vs-write.
+pub(crate) fn resolve_op_target_checked(
+    kb: &KnowledgeBase,
+    impl_sym: Symbol,
+    spec_op: Symbol,
+) -> Result<Symbol, String> {
+    if let Err(msg) = marker_refusal(kb, impl_sym) {
+        return Err(format!(
+            "cannot dispatch `{}`: {msg}",
+            kb.qualified_name_of(spec_op),
+        ));
+    }
+    Ok(resolve_op_target(kb, impl_sym, spec_op))
+}
+
+/// WI-857 — `Err(sentence)` iff `functor` is the `NoProvider` marker. The ONE place
+/// the refusal is worded, for every reader that treats a dictionary as usable:
+/// dispatch ([`resolve_op_target_checked`]), the bulk reflect face (`Dictionary.ops`,
+/// whose per-element check can never fire because a marker has no ops), and eval's
+/// projection descent.
+///
+/// The sentence hedges deliberately. It cannot say WHICH of "nothing provides it" /
+/// "more than one does" holds — the marker carries no payload — and it cannot tell a
+/// recorded-absent SPEC-HALF slot from a host-entry STAND-IN slot, whose real remedy
+/// is `call_with_requirements` rather than anything in the program. Both are named
+/// so the reader is not sent to the wrong fix; narrowing it needs the reason carried
+/// to runtime.
+pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), String> {
+    if !is_no_provider(kb, functor) {
+        return Ok(());
+    }
+    Err("the requirement it reads pins no provider — nothing provides that spec at \
+         those bindings, or more than one does, or this frame was entered from a host \
+         entry point that supplied no dictionary. Declare a provider, select one at \
+         the call site, or enter through `call_with_requirements`."
+        .to_string())
+}
+
 /// Resolve `spec_op` against a dispatching impl sort to its concrete target op —
 /// the load-time `sort_ops_table[impl_sym][op_short]` (WI-240): the impl's own
 /// `S.<op>` override when it has one (filtering the body-less spec-op
@@ -15401,6 +15503,25 @@ pub enum ResolvedRequiresNode {
         scope_index: usize,
         spec_sort: Symbol,
     },
+    /// WI-857 — a SPEC-HALF slot ([`DictLayout`]) whose goal did not resolve:
+    /// no provider at these bindings, a tie, or a cycle. Recorded rather than
+    /// propagated, because the slot must exist for the halves to stay
+    /// positionally exact, and because the spec's own `requires` is often
+    /// satisfied only LOOSELY — `check_provider_requires` falls back to a
+    /// base-level existence check when σ leaves a binding abstract, and the
+    /// stdlib relies on that: `FiniteCollection requires Iterable[C = C]` holds
+    /// for a `List` carrier only through `List provides Stream provides
+    /// Iterable`, which no `Iterable[C = List[…]]` provision matches. Refusing
+    /// to build the dictionary there would reject every program that dispatches
+    /// such a spec op without ever reading the evidence (MEASURED: 33 tests).
+    ///
+    /// So the absence is CARRIED, and every attempt to USE it is loud — eval
+    /// refuses to dispatch through the marker functor
+    /// ([`no_provider_sym`]). A slot nobody reads costs nothing; a slot
+    /// somebody reads names the requirement that has no provider.
+    Unavailable {
+        spec_sort: Symbol,
+    },
 }
 
 impl ResolvedRequiresNode {
@@ -15409,7 +15530,8 @@ impl ResolvedRequiresNode {
         match self {
             ResolvedRequiresNode::Leaf { spec_sort, .. }
             | ResolvedRequiresNode::Conditional { spec_sort, .. }
-            | ResolvedRequiresNode::FromScope { spec_sort, .. } => *spec_sort,
+            | ResolvedRequiresNode::FromScope { spec_sort, .. }
+            | ResolvedRequiresNode::Unavailable { spec_sort } => *spec_sort,
         }
     }
 
@@ -15419,7 +15541,10 @@ impl ResolvedRequiresNode {
         match self {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => Some(*impl_sort),
-            ResolvedRequiresNode::FromScope { .. } => None,
+            // Neither pins an impl: `FromScope` reads the caller's slot, and
+            // `Unavailable` has none to pin (WI-857).
+            ResolvedRequiresNode::FromScope { .. }
+            | ResolvedRequiresNode::Unavailable { .. } => None,
         }
     }
 }
@@ -15452,7 +15577,7 @@ pub fn resolve(
     scope: &ResolutionScope,
 ) -> ResolutionResult {
     let mut stack: Vec<SortGoal> = Vec::new();
-    resolve_inner(kb, goal, scope, &mut stack)
+    resolve_inner(kb, goal, scope, &mut stack, None)
 }
 
 fn resolve_inner(
@@ -15460,6 +15585,12 @@ fn resolve_inner(
     goal: &SortGoal,
     scope: &ResolutionScope,
     stack: &mut Vec<SortGoal>,
+    // WI-857 — the provider whose dictionary this goal is a sub-requirement OF, when
+    // it is one (`None` at the goal the call made). The LOCALITY rule: a sub-goal
+    // that provider itself provides resolves to its OWN provision before any global
+    // search. The IMMEDIATELY enclosing provider only — one level down, the sub-goal's
+    // own chosen provider takes over, which is what makes locality compose.
+    local_provider: Option<Symbol>,
 ) -> ResolutionResult {
     // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
     // CALL made", so a selection reaches the call's own goal and no sub-goal: a
@@ -15536,6 +15667,23 @@ fn resolve_inner(
         }
     }
 
+    // WI-857 LOCALITY (058 §3.8): inside provider `W`'s dictionary, a sub-goal `W`
+    // itself provides IS `W`'s — its own provision beats every rival. A filter, like
+    // step 0's pin, so the head has already been matched against THIS sub-goal's
+    // bindings: a `W` that provides the spec only at OTHER bindings contributes no
+    // candidate here and the search proceeds globally, rather than being narrowed to
+    // an instance that does not fit.
+    if let Some(w) = local_provider {
+        // Canonicalize `w` ONCE, not once per candidate per pass.
+        let w_canon = kb.canonical_sort_sym(w);
+        let is_w = |c: &Candidate| {
+            c.impl_sort == w || kb.canonical_sort_sym(c.impl_sort) == w_canon
+        };
+        if candidates.iter().any(&is_w) {
+            candidates.retain(&is_w);
+        }
+    }
+
     if candidates.is_empty() {
         stack.pop();
         return ResolutionResult::NoMatch {
@@ -15573,16 +15721,81 @@ fn resolve_inner(
     let chosen_impl_subst = chosen.impl_subst.clone();
     drop(candidates);
 
-    let sub_goals: Vec<SortGoal> = candidate_sub_goals_owned(
-        kb, chosen_impl_sort, &chosen_impl_subst,
+    let (sub_goals, spec_half_len) = dict_sub_goals(
+        kb, goal, chosen_impl_sort, &chosen_impl_subst, &chosen_bindings,
+    );
+    // WI-857 — the producer/consumer contract, asserted at the producer: this list IS
+    // what `dict_layout` counts, so eval's arity cross-check cannot fire on a
+    // well-formed resolution. Kept as a `debug_assert` because it is the invariant the
+    // whole ticket exists to establish, and because it CAUGHT the last violation: the
+    // `EffectsRuntime` anchor was dropped from the provider half while the layout
+    // counted it (144 dictionaries across the suite), which the green suite hid because
+    // none of those dictionaries reached a frame push. `dict_layout` only reads memoized
+    // chains, so the cost is a cache hit and two symbol compares.
+    debug_assert_eq!(
+        dict_layout(kb, goal.spec_sort, chosen_impl_sort).arity(),
+        sub_goals.len(),
+        "dictionary layout for {} supplied by {} disagrees with what dict_sub_goals \
+         produced",
+        kb.qualified_name_of(goal.spec_sort),
+        kb.qualified_name_of(chosen_impl_sort),
     );
     let mut sub_resolutions: Vec<ResolvedRequiresNode> = Vec::with_capacity(sub_goals.len());
-    for sg in &sub_goals {
-        match resolve_inner(kb, sg, scope, stack) {
+    let anchor = effects_runtime_sym(kb);
+    for (i, sg) in sub_goals.iter().enumerate() {
+        // WI-857: the `EffectsRuntime` kind-anchor occupies its slot as a STRUCTURAL
+        // LEAF, never resolved — see [`effects_runtime_sym`]. Byte-identical to what
+        // `build_dep_projection` emits for the same anchor, so the two dictionary
+        // producers agree.
+        //
+        // A `Leaf` over the anchor sort, NOT the `Unavailable` marker, and the
+        // difference is the point: the anchor IS satisfied — structurally, by the
+        // effect-row machinery — and names a real sort a body can read
+        // (`var_ref(__req_effectsruntime)` in a cross-sort delegating body), whereas
+        // `Unavailable` records that nothing satisfies the slot at all and is refused
+        // at any use. Two encodings because there are two facts.
+        if anchor.is_some_and(|er| same_sort_canonical(kb, sg.spec_sort, er)) {
+            sub_resolutions.push(ResolvedRequiresNode::Leaf {
+                impl_sort: sg.spec_sort,
+                spec_sort: sg.spec_sort,
+                bindings: SmallVec::new(),
+            });
+            continue;
+        }
+        // WI-857, the LOCALITY rule (058 §3.8): the sub-goals of `chosen_impl_sort`'s
+        // dictionary see that provider FIRST. Once the spec half is bundled (see
+        // `dict_sub_goals`), a bundled witness — the only lawful form of an
+        // alternative ordering, since `Ordered`'s inherited `gt`/`lt` are derived
+        // from `compare` and a lone witness's dictionary would contradict itself —
+        // provides both `Ordered[C]` and `PartialOrd[C]`, so `PartialOrd[C]` has one
+        // candidate inside EACH of two coexisting witnesses' chains and a global
+        // search ties. The only right answer is witness-local. It depends on the
+        // SELECTED provider and never on caller scope, so it introduces no
+        // import-coupling.
+        match resolve_inner(kb, sg, scope, stack, Some(chosen_impl_sort)) {
             ResolutionResult::Resolved(t) => sub_resolutions.push(t),
+            // WI-857: a SPEC-half slot that does not resolve is CARRIED as
+            // `Unavailable`, uniformly across NoMatch / Ambiguous / Cyclic — the
+            // honest record either way is "no dictionary was pinned here", and one
+            // rule has no cases to get wrong. See the variant's own note for why
+            // refusing instead would reject working programs. The PROVIDER half
+            // stays strict: those are the provision's OWN conditions, which the
+            // provider's body will read, and failing them has always been the
+            // dispatch failure the caller reports.
+            //
+            // Written as a branch on the FAILURE rather than a guarded `_` arm beside
+            // `Resolved`: a guarded wildcard would silently shadow any arm added after
+            // it (for half the loop, with no reachability lint), and the tolerance is a
+            // property of the slot, not of the outcome's shape.
             err => {
-                stack.pop();
-                return err;
+                if i < spec_half_len {
+                    sub_resolutions.push(ResolvedRequiresNode::Unavailable {
+                        spec_sort: sg.spec_sort,
+                    });
+                } else {
+                    stack.pop();
+                    return err;
+                }
             }
         }
     }
@@ -17080,30 +17293,85 @@ fn op_requires_covers_call(
     op_requires_covers(kb, &ctx, env.op_requires(), spec_sort, &call_carriers)
 }
 
-fn candidate_sub_goals_owned(
+/// WI-857 — the sub-requirement goals a dictionary for `goal` supplied by
+/// `impl_sort` bundles, in [`DictLayout`] order: the SPEC half (the spec's own
+/// `requires` chain at this goal's bindings) then the PROVIDER half
+/// ([`candidate_provider_sub_goals`], the pre-WI-857 list). One producer for one
+/// layout — `dict_layout(goal.spec_sort, impl_sort).arity()` counts what this
+/// returns, and every consumer slices by that same layout.
+///
+/// The spec half goes through [`provider_requires_subgoals`], which is the very
+/// walk `check_provider_requires` (WI-343/WI-356) already runs to VERIFY that each
+/// spec-level `requires`, instantiated at the provision's bindings, resolves. That
+/// check is why the spec half can be built at all: the information was already
+/// established at load and merely not put in the dictionary. σ is the candidate's
+/// RESOLVED head bindings — the per-call values, so a parametric provision
+/// (`fact Ordered[T = Duo[A, B]]` matched at `Duo[Int64, Int64]`) instantiates the
+/// spec's chain at the call's carrier and not at the provision's pattern.
+///
+/// `impl_sort == goal.spec_sort` (a sort providing its own spec) contributes the
+/// provider half ALONE, per the layout's one-list rule.
+/// Returns the goals in dict order plus the length of the SPEC half — the prefix
+/// whose unresolved slots become [`ResolvedRequiresNode::Unavailable`] rather than
+/// failing the whole resolution.
+fn dict_sub_goals(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    impl_sort: Symbol,
+    impl_subst: &[(Symbol, TermId)],
+    head_bindings: &[(Symbol, TermId)],
+) -> (Vec<SortGoal>, usize) {
+    let mut out: Vec<SortGoal> = Vec::new();
+    if !same_sort_canonical(kb, impl_sort, goal.spec_sort) {
+        // σ keyed by the spec's short param name — `provider_requires_subgoals`'
+        // convention, and the only key that reaches the stdlib shorthand
+        // (`Ordered requires Eq[T]` stores the value as `Eq`'s OWN `T`).
+        let sigma: SmallVec<[(String, TermId); 2]> = head_bindings
+            .iter()
+            .map(|(k, v)| (kb.resolve_sym(*k).to_string(), *v))
+            .collect();
+        out.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma));
+    }
+    let spec_len = out.len();
+    out.extend(candidate_provider_sub_goals(kb, impl_sort, impl_subst));
+    (out, spec_len)
+}
+
+/// The PROVIDER half of [`dict_sub_goals`]: the impl sort's own `requires` chain,
+/// instantiated at the substitution matching its head against the goal — the
+/// conditional evidence the provider's own member body reads.
+fn candidate_provider_sub_goals(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
     impl_subst: &[(Symbol, TermId)],
 ) -> Vec<SortGoal> {
     let chain = direct_requires_chain(kb, impl_sort);
-    let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
     for entry in &chain {
         let required_sort = entry.required_sort;
-        // Skip the synthetic `requires EffectsRuntime[E]` that every effect-row
-        // param (`effects ES = ?`) contributes: `EffectsRuntime` is the effect-
-        // runtime marker, never a resolvable dispatch provider, so emitting it as
-        // a sub-goal makes `resolve_inner` fail with a spurious `no impl provides
-        // EffectsRuntime`. This bites a WITNESS provider whose carrier is
-        // parameterized over effect rows (`fact FiniteCollection[C =
-        // MappedStream[…, ES = ES, EF = EF]]`): its requires-chain carries those
-        // markers, which would otherwise block dispatch even though the real
-        // conditional requirement (`Finite[C = S]`) resolves. Mirrors the
-        // identical skip in `check_provider_requires`.
-        if Some(required_sort) == effects_runtime {
-            continue;
-        }
+        // WI-857: the synthetic `requires EffectsRuntime[E]` that every effect-row
+        // param (`effects ES = ?`) contributes KEEPS ITS SLOT, and `resolve_inner`
+        // places a structural leaf in it without resolving — `EffectsRuntime` is the
+        // effect-runtime kind-anchor, never a resolvable dispatch provider, so
+        // resolving it would fail with a spurious `no impl provides EffectsRuntime`
+        // (WI-590's witness over an effect-row-parameterized carrier). It used to be
+        // SKIPPED here, which made the dictionary shorter than the chain it is
+        // indexed by — see [`effects_runtime_sym`] for the measurement. The
+        // parent-bundle producer (`build_dep_projection`) already emitted the same
+        // structural leaf; now both agree.
         let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+            // A `requires` spec with no readable head cannot become a goal. Keep the
+            // SLOT anyway so the halves stay positionally exact — and see the twin in
+            // `provider_requires_subgoals` for why the bindings-free goal is a GUESS
+            // and why this is asserted rather than merely commented. Measured
+            // unreachable there and here.
+            debug_assert!(
+                false,
+                "WI-857: `requires {}` has no readable spec head — the dictionary slot \
+                 for it is a bindings-free guess",
+                kb.qualified_name_of(required_sort),
+            );
+            out.push(SortGoal { spec_sort: required_sort, bindings: SmallVec::new(), carrier: None });
             continue;
         };
         let spec_qn = kb.qualified_name_of(required_sort).to_string();
@@ -17204,7 +17472,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return Vec::new();
     };
-    let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
+    let effects_runtime = effects_runtime_sym(kb);
 
     // Snapshot each provision before the requires walk, which mutates `kb`
     // (`provider_requires_subgoals` allocates substituted terms).
@@ -17636,7 +17904,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return Vec::new();
     };
-    let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
+    let effects_runtime = effects_runtime_sym(kb);
 
     // Host-provided carriers (`Implementation.target` QNs). Their operations are
     // backed by the host artifact, not an anthill body/rule, so the provision is
@@ -18611,7 +18879,10 @@ fn impl_target_qn(kb: &KnowledgeBase, target: TermId) -> Option<String> {
 
 /// Build the `requires` sub-goals for the provider-side check (WI-356).
 /// Walks `spec`'s **direct** `requires`, instantiating each clause at the
-/// provision's σ. Distinct from `candidate_sub_goals_owned` (the resolver's
+/// provision's σ. WI-857 made this the producer of the dictionary's SPEC HALF too
+/// ([`dict_sub_goals`]) — one walk for the check and the dictionary, so a
+/// requirement the load verified is the requirement the dictionary carries. Distinct
+/// from [`candidate_provider_sub_goals`] (the resolver's
 /// impl-side template) in that σ is keyed by short **name**, not symbol: the
 /// stdlib shorthand `requires Eq[T]` stores the binding value as the
 /// *required* spec's own param (`Eq.T`), tied to the enclosing param only by
@@ -18635,6 +18906,28 @@ fn provider_requires_subgoals(
     for entry in &chain {
         let required = entry.required_sort;
         let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+            // WI-857: KEEP THE SLOT, exactly as `candidate_provider_sub_goals` does —
+            // this walk is now positional (it produces the dictionary's spec half, not
+            // only the load check's goals), so dropping an entry would shift every
+            // later slot into it.
+            //
+            // But the slot is a GUESS: a bindings-free goal is one every provider
+            // matches, so it is RESOLVABLE, and resolving is the concern — not
+            // indexing. In `check_provider_requires` (which shares this walk) empty
+            // bindings make `concrete` vacuously true, so a previously-skipped entry
+            // would now be resolved and could raise a load error; in the provider half
+            // an unresolvable one fails the whole dispatch. MEASURED UNREACHABLE: a
+            // probe on this branch across the `anthill-core` suite hit it ZERO times —
+            // a `requires` clause's spec is always a `SortView`, a bare ref or an
+            // ident. The assert says so, and fires if that ever stops being true,
+            // rather than letting a guessed goal decide a load.
+            debug_assert!(
+                false,
+                "WI-857: `requires {}` has no readable spec head — the dictionary slot \
+                 for it is a bindings-free guess",
+                kb.qualified_name_of(required),
+            );
+            out.push(SortGoal { spec_sort: required, bindings: SmallVec::new(), carrier: None });
             continue;
         };
         let r_qn = kb.qualified_name_of(required).to_string();
@@ -20982,7 +21275,9 @@ fn resolve_at_goal(
     }
 
     let mut stack: Vec<SortGoal> = Vec::new();
-    match resolve_inner(kb, &goal, &scope, &mut stack) {
+    // `None`: this IS the goal the call made, so there is no enclosing provider whose
+    // locality could narrow it (WI-857).
+    match resolve_inner(kb, &goal, &scope, &mut stack, None) {
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
@@ -20996,6 +21291,12 @@ fn resolve_at_goal(
                 }
             }
             ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),
+            // WI-857: `Unavailable` is only ever a SPEC-half SLOT inside a resolved
+            // tree, never a whole resolution — `resolve_inner` returns the failure
+            // itself at the top level and only substitutes the marker when placing a
+            // sub-goal. Reaching here would mean a dispatch pinned no impl at all,
+            // which `NoMatch` is the answer to.
+            ResolvedRequiresNode::Unavailable { .. } => (DispatchOutcome::NoMatch, None),
         },
         ResolutionResult::NoMatch { .. } => (DispatchOutcome::NoMatch, None),
         // WI-843: the tie is FORWARDED, not restamped. Tier 3's diagnostic is the
@@ -22587,7 +22888,7 @@ fn check_seq_literal_constructor(
 /// exact here (and more robust than symbol identity, which can differ across the
 /// param's registrations).
 fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) -> bool {
-    let Some(effects_runtime) = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime") else {
+    let Some(effects_runtime) = effects_runtime_sym(kb) else {
         return false;
     };
     for entry in direct_requires_chain(kb, sort) {
@@ -32496,6 +32797,134 @@ pub fn req_name_for_chain_index(
     idx: usize,
 ) -> Option<Symbol> {
     synth_req_names(kb, parent_sort).get(idx).copied()
+}
+
+/// WI-857 — **THE** layout of a requirement dictionary's bundled sub-requirements.
+/// One owner, because a producer and three consumers must agree on it, and before
+/// this ticket they did not: the producer bundled the PROVIDER's `requires` chain
+/// while `expand_dispatching_dict` named the frame from whatever chain the
+/// dispatched target's parent declared and `requirement_at_sort` indexed the SPEC's
+/// — so a carrier-keyed provision (`fact Ordered[T = Int64]`, whose provider
+/// `Int64` declares no `requires`) produced an arity-0 dictionary where two spec
+/// slots were wanted, and every spec with a non-empty chain died at eval.
+///
+/// A dictionary for spec `S` supplied by provider `P` bundles, in this order:
+///
+/// 1. **the spec half** — `direct_requires_chain(S)` at the goal's bindings. This
+///    is `S`'s own contract: what `requirement_at_sort(chain, slot = k)` indexes
+///    (WI-239 — a transitively-required spec lives inside its direct requirement's
+///    value, and `k` indexes the required spec's OWN chain), and what a body owned
+///    by `S` itself reads when dispatch lands on the spec's op because `P`
+///    contributes no member.
+/// 2. **the provider half** — `direct_requires_chain(P)` at the matched impl
+///    substitution: `P`'s conditional evidence, which `P`'s own member body reads.
+///
+/// The spec half is the PREFIX so that reader — a projection path computed from
+/// `requires_tree`, where a node's children are the required spec's chain — needs no
+/// offset and no knowledge of the provider.
+///
+/// `P == S` contributes ONE list, not two. Two shapes reach that: a sort that
+/// provides its own spec, and — the load-bearing one — a **parent-bundle**
+/// dictionary (`build_dispatching_dict_from_chain`, WI-415), which is not a spec
+/// instance at all but the frame bundle of a directly-called op's parent sort, so
+/// its "spec" and its provider are the same sort and its single list is that sort's
+/// chain, exactly as before this ticket.
+#[derive(Clone, Copy, Debug)]
+pub struct DictLayout {
+    spec: Symbol,
+    provider: Symbol,
+    spec_len: usize,
+    provider_len: usize,
+}
+
+/// WI-857 — the `EffectsRuntime` kind-anchor that every effect-row parameter
+/// (`effects E = ?`) synthesizes as a `requires` entry. It is satisfied
+/// STRUCTURALLY by the effect-row machinery and never by a carrier `fact`, so it is
+/// never resolved: it rides as a structural leaf, occupying its dictionary slot so
+/// the [`DictLayout`] halves stay positionally exact.
+///
+/// One owner for the three readers that must agree about the ANCHOR'S SLOT — the
+/// resolver's slot placement, `check_provider_requires`' exemption, and
+/// `build_dep_projection`'s synthetic projection. They previously spelled the name
+/// two ways (`try_resolve_symbol` and a qualified-name comparison) and, worse,
+/// DISAGREED about the slot: the provider half dropped the anchor while the
+/// parent-bundle projection kept it, so a provider with an effect-row param built a
+/// dictionary SHORTER than the chain it is indexed by (MEASURED: 144 such
+/// dictionaries across the suite — `Iterable`-over-`Stream` alone accounts for 140).
+/// Other checks look the anchor up for their own purposes (`check_provider_-
+/// operations`, `sort_param_is_effect_row`); they decide nothing about slots.
+pub(crate) fn effects_runtime_sym(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.prelude.EffectsRuntime")
+}
+
+/// True iff `spec` is the [`effects_runtime_sym`] kind-anchor. Via
+/// [`same_sort_canonical`], NOT raw `==`: this replaced a qualified-NAME comparison
+/// in `build_dep_projection`, which bridged a differently-interned copy of the
+/// anchor sort, and a raw symbol compare would silently stop recognizing one — the
+/// anchor would lose its slot and the dictionary would again come out shorter than
+/// the chain it is indexed by.
+pub(crate) fn is_effects_runtime(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    effects_runtime_sym(kb).is_some_and(|er| same_sort_canonical(kb, spec, er))
+}
+
+/// Compute [`DictLayout`] for a dictionary of `spec` supplied by `provider`.
+pub fn dict_layout(kb: &mut KnowledgeBase, spec: Symbol, provider: Symbol) -> DictLayout {
+    let spec_len = direct_requires_chain_rc(kb, spec).len();
+    let provider_len = if same_sort_canonical(kb, spec, provider) {
+        0
+    } else {
+        direct_requires_chain_rc(kb, provider).len()
+    };
+    DictLayout { spec, provider, spec_len, provider_len }
+}
+
+impl DictLayout {
+    /// How many sub-requirements a well-formed dictionary of this shape bundles.
+    pub fn arity(&self) -> usize {
+        self.spec_len + self.provider_len
+    }
+
+    /// The dictionary slots whose names are `synth_req_names(owner)` — the frame
+    /// slice for an operation owned by `owner`. `None` when `owner` is neither the
+    /// spec nor the provider: [`resolve_op_target`] can land on a THIRD sort (a
+    /// same-short-name default the carrier merely inherits, or a WI-431
+    /// instance-fact binding whose target lives elsewhere), and this dictionary
+    /// says nothing about such an owner's chain. Harmless when that owner declares
+    /// no `requires`; the caller must be loud when it does.
+    pub(crate) fn slots_for(&self, kb: &KnowledgeBase, owner: Symbol) -> Option<Range<usize>> {
+        // Spec first: when spec == provider the two halves are one list and the
+        // spec arm answers for both.
+        if same_sort_canonical(kb, owner, self.spec) {
+            Some(0..self.spec_len)
+        } else if same_sort_canonical(kb, owner, self.provider) {
+            Some(self.spec_len..self.arity())
+        } else {
+            None
+        }
+    }
+
+    /// Render the two halves for the arity diagnostic — a bare "expected N" cannot
+    /// say WHICH half is short, which is the whole difficulty this layout resolves.
+    pub fn describe(&self, kb: &KnowledgeBase) -> String {
+        // `dict_layout` forces `provider_len = 0` for a self-provider, so ONE list is
+        // exactly the same-sort case — tested canonically, like `slots_for`, so two
+        // interned copies of one sort do not render as two halves.
+        if same_sort_canonical(kb, self.spec, self.provider) {
+            return format!(
+                "{} slot(s) — `{}`'s own requires chain",
+                self.arity(),
+                kb.qualified_name_of(self.spec),
+            );
+        }
+        format!(
+            "{} slot(s) — {} for spec `{}`'s requires chain then {} for provider `{}`'s",
+            self.arity(),
+            self.spec_len,
+            kb.qualified_name_of(self.spec),
+            self.provider_len,
+            kb.qualified_name_of(self.provider),
+        )
+    }
 }
 
 /// Append `sym`'s short name (last dotted segment), lowercased with

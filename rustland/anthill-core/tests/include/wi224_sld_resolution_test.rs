@@ -110,21 +110,45 @@ fn empty_scope<'a>(_subst: &'a Substitution) -> ResolutionScope<'a> {
 
 #[test]
 fn leaf_resolution_picks_concrete_impl() {
-    // Eq[T = Int64] resolves to the IntEq leaf — stdlib registers
+    // Eq[T = Int64] resolves to the Int64 impl — stdlib registers
     // `fact Eq[T = Int64]` in the rustland bindings.
+    //
+    // WI-857: a `Leaf` no longer, and the reason is the point of that ticket. A
+    // dictionary bundles the SPEC's own `requires` chain as its prefix, and
+    // `Eq requires PartialEq[T]` — so `Eq[T = Int64]` is a Conditional whose one
+    // sub-resolution is `PartialEq[T = Int64]`. The provider half is empty here:
+    // `Int64` is a carrier-keyed provider and declares no `requires`, which is
+    // exactly the shape that used to build an arity-0 dictionary and die at eval.
     let mut kb = load_with("");
     let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int64");
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     let result = resolve(&mut kb, &goal, &scope);
+    let is_int64 = |kb: &KnowledgeBase, s| {
+        let qn = kb.qualified_name_of(s).to_string();
+        qn.ends_with(".Int64") || qn == "anthill.prelude.Int64" || qn.ends_with("IntEq")
+    };
     match result {
-        ResolutionResult::Resolved(ResolvedRequiresNode::Leaf { impl_sort, .. }) => {
-            let impl_qn = kb.qualified_name_of(impl_sort).to_string();
-            assert!(impl_qn.ends_with(".Int64") || impl_qn == "anthill.prelude.Int64"
-                || impl_qn.ends_with("IntEq"),
-                "expected an Int64-or-IntEq leaf; got {impl_qn}");
+        ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
+            impl_sort, sub_resolutions, ..
+        }) => {
+            assert!(is_int64(&kb, impl_sort),
+                "expected the Int64 impl; got {}", kb.qualified_name_of(impl_sort));
+            assert_eq!(sub_resolutions.len(), 1,
+                "the spec half is `Eq`'s own chain — one entry, `PartialEq[T]`; got {:?}",
+                sub_resolutions);
+            match &sub_resolutions[0] {
+                ResolvedRequiresNode::Leaf { impl_sort: inner, spec_sort, .. } => {
+                    assert_eq!(kb.qualified_name_of(*spec_sort), "anthill.prelude.PartialEq",
+                        "slot 0 is the spec half's `PartialEq` leg");
+                    assert!(is_int64(&kb, *inner),
+                        "`PartialEq[Int64]` is provided by Int64 too; got {}",
+                        kb.qualified_name_of(*inner));
+                }
+                other => panic!("`PartialEq[Int64]` has an empty chain, so it is a Leaf; got {other:?}"),
+            }
         }
-        other => panic!("expected Resolved::Leaf for Eq[T=Int64]; got {other:?}"),
+        other => panic!("expected Resolved::Conditional for Eq[T=Int64]; got {other:?}"),
     }
 }
 
@@ -134,7 +158,16 @@ fn leaf_resolution_picks_concrete_impl() {
 fn one_level_conditional_resolves_via_subgoal() {
     // EqList provides Eq[List[T=A]] conditional on Eq[T=A]. Resolving
     // Eq[T = List[T = Int64]] must produce a Conditional node whose
-    // sub_resolution is Eq[T = Int64]'s leaf impl.
+    // PROVIDER-half sub_resolution is Eq[T = Int64]'s impl.
+    //
+    // WI-857 layout: slot 0 is the SPEC half (`Eq requires PartialEq[T]`, i.e.
+    // `PartialEq[List[Int64]]`) and slot 1 is the PROVIDER half (`EqList requires
+    // Eq[T = A]`, i.e. `Eq[Int64]`). Nothing in this fixture provides `PartialEq`
+    // for a `List` — `EqList` declares only the `Eq` marker — so slot 0 is
+    // `Unavailable`: recorded, positionally exact, and loud only if a body ever
+    // reads it. That is the deliberate looseness the variant documents; the
+    // properly-bundled twin (a provider declaring both) is pinned in
+    // `wi857_dictionary_layout_test`.
     let src = r#"
         namespace test.wi224.one_level
           import anthill.prelude.{Eq, List, Int64}
@@ -164,16 +197,28 @@ fn one_level_conditional_resolves_via_subgoal() {
             let impl_qn = kb.qualified_name_of(impl_sort).to_string();
             assert_eq!(impl_qn, "test.wi224.one_level.EqList",
                 "expected EqList as the conditional impl; got {impl_qn}");
-            assert_eq!(sub_resolutions.len(), 1,
-                "EqList has one requires (`Eq[T=A]`); got {} sub_resolutions",
-                sub_resolutions.len());
+            assert_eq!(sub_resolutions.len(), 2,
+                "WI-857: `Eq`'s own chain (1) then `EqList`'s (1); got {sub_resolutions:?}");
             match &sub_resolutions[0] {
-                ResolvedRequiresNode::Leaf { impl_sort: inner, .. } => {
+                ResolvedRequiresNode::Unavailable { spec_sort } => assert_eq!(
+                    kb.qualified_name_of(*spec_sort), "anthill.prelude.PartialEq",
+                    "the spec half's unresolved leg is `PartialEq`",
+                ),
+                other => panic!(
+                    "nothing provides `PartialEq[List[…]]` here, so the spec-half slot \
+                     must be recorded as Unavailable, not filled or dropped; got {other:?}"
+                ),
+            }
+            match &sub_resolutions[1] {
+                ResolvedRequiresNode::Conditional { impl_sort: inner, .. } => {
                     let inner_qn = kb.qualified_name_of(*inner).to_string();
                     assert!(inner_qn.contains("Int64"),
-                        "expected inner subgoal to resolve to an Int64 leaf; got {inner_qn}");
+                        "expected the provider half's `Eq[T=A]` to resolve at Int64; got {inner_qn}");
                 }
-                other => panic!("inner sub_resolution should be a Leaf; got {other:?}"),
+                other => panic!(
+                    "the provider half is `Eq[Int64]`, itself Conditional on \
+                     `PartialEq[Int64]`; got {other:?}"
+                ),
             }
         }
         other => panic!("expected Conditional resolution for Eq[List[Int64]]; got {other:?}"),
@@ -223,25 +268,30 @@ fn two_level_conditional_chains_recursively() {
         }) => {
             let impl_qn = kb.qualified_name_of(impl_sort).to_string();
             assert_eq!(impl_qn, "test.wi224.two_level.EqList");
-            assert_eq!(sub_resolutions.len(), 1);
-            // The middle layer must also be a Conditional EqList…
-            match &sub_resolutions[0] {
+            // WI-857: slot 0 = the spec half (`PartialEq[List[List[Int64]]]`,
+            // unprovided here), slot 1 = the provider half (`Eq[List[Int64]]`), which
+            // is the middle EqList layer.
+            assert_eq!(sub_resolutions.len(), 2, "got {sub_resolutions:?}");
+            match &sub_resolutions[1] {
                 ResolvedRequiresNode::Conditional { impl_sort: mid, sub_resolutions: inner, .. } => {
                     let mid_qn = kb.qualified_name_of(*mid).to_string();
                     assert_eq!(mid_qn, "test.wi224.two_level.EqList",
                         "middle layer must be EqList; got {mid_qn}");
-                    assert_eq!(inner.len(), 1);
-                    // …whose inner sub_resolution bottoms out at an Int64 leaf.
-                    match &inner[0] {
-                        ResolvedRequiresNode::Leaf { impl_sort: leaf, .. } => {
+                    assert_eq!(inner.len(), 2, "same two halves one level down");
+                    // …whose provider half bottoms out at Int64.
+                    match &inner[1] {
+                        ResolvedRequiresNode::Conditional { impl_sort: leaf, .. } => {
                             let leaf_qn = kb.qualified_name_of(*leaf).to_string();
                             assert!(leaf_qn.contains("Int64"),
-                                "expected the leaf to mention Int64; got {leaf_qn}");
+                                "expected the innermost impl to be Int64; got {leaf_qn}");
                         }
-                        other => panic!("inner-most must be Leaf; got {other:?}"),
+                        other => panic!(
+                            "inner-most is `Eq[Int64]` — Conditional on its own \
+                             `PartialEq[Int64]` spec half; got {other:?}"
+                        ),
                     }
                 }
-                other => panic!("middle resolution must be Conditional EqList; got {other:?}"),
+                other => panic!("the provider half must be Conditional EqList; got {other:?}"),
             }
         }
         other => panic!("expected Conditional outer; got {other:?}"),
@@ -456,7 +506,9 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
                 }
                 None
             }
-            ResolvedRequiresNode::FromScope { .. } => None,
+            // Neither pins an impl to compare (WI-857).
+            ResolvedRequiresNode::FromScope { .. }
+            | ResolvedRequiresNode::Unavailable { .. } => None,
         }
     }
     let a_under_b = pick_a(&kb, &b_tree, ".DiamondA")

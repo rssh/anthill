@@ -241,10 +241,63 @@ else (fn is a spec-op symbol, e.g., Eq.eq):
 
 push new frame for impl_sym:
     locals       = zip(impl.params, eval(args))
-    requirements = bind impl's inserted requirement param names to:
+    requirements = bind the TARGET's inserted requirement param names to:
                      [0] dict_value                        (the Self slot)
-                     [i+1..] dict_value.sub_requires[i]    (one per impl's `requires`)
+                     [i+1..] dict_value.sub_requires[<the target's own slice>]
 ```
+
+**Which sub-requirements the frame gets — the dictionary layout (WI-857).** A
+dictionary for spec `S` supplied by provider `P` bundles its sub-requirements in
+ONE order:
+
+```
+sub_requires = [ S's own direct `requires` … ] ++ [ P's own direct `requires` … ]
+```
+
+The **spec half** is `S`'s contract: what `requirement_at_sort(chain, k)` indexes
+(`k` is a slot of the *required spec's* own chain — see §"The one primitive"), and
+what a body owned by `S` itself reads when `dispatch_via_sort_ops_table` lands on
+the spec's own op because `P` supplies no member. The **provider half** is `P`'s
+conditional evidence, which `P`'s member body reads. `P == S` contributes ONE list,
+not two — which is also the shape of a **parent-bundle** dictionary
+(`build_concrete_dispatch_dict`), where the functor is the callee's parent sort and
+there is no separate spec.
+
+So the frame gets exactly the half owned by `impl_parent_of_op(target)`: the spec
+half when dispatch landed on `S`'s op, the provider half when it landed on `P`'s.
+`resolve_op_target` can also land on a THIRD sort (a same-short-name default the
+provider merely inherits, a WI-431 instance-fact binding defined elsewhere); the
+dictionary says nothing about such an owner's chain, so it gets no chain slots —
+harmless when that owner declares none, a loud error when it does.
+
+> This paragraph is the ticket WI-857 settled, and the disagreement it settled was
+> visible **in this document**: the pseudo-code above said "one per *impl's*
+> `requires`" while the worked example below indexes the *spec's*. The
+> implementation split the same way — the producer walked the provider's chain, two
+> consumers indexed the spec's — and they agreed only when the provider was a
+> chain-free witness sort. A carrier-keyed provision (`fact Ordered[T = Int64]`,
+> whose provider `Int64` declares no `requires`) therefore built an arity-0
+> dictionary, and every spec with a non-empty chain died at eval. State the layout
+> once; `kb::typing::dict_layout` is its single owner in code.
+
+**A slot with no provider is recorded, not dropped.** A spec-half goal that does
+not resolve (no provider at those bindings, a tie, a cycle) still occupies its slot,
+as an empty bundle over a marker functor — the halves must stay positionally exact,
+and a spec-level `requires` is often satisfied only loosely: the load-time
+provider-requires check (WI-343/WI-356) falls back to a base-level existence check
+wherever σ leaves a binding abstract, and the stdlib relies on that
+(`FiniteCollection requires Iterable[C = C]` holds for a `List` through `List
+provides Stream provides Iterable`, which no `Iterable[C = List[…]]` provision
+matches). Dispatching through the marker is refused, so a slot nobody reads costs
+nothing and a slot somebody reads names the requirement that has no provider.
+
+**Locality.** When constructing provider `W`'s dictionary, a sub-goal that `W`
+itself provides resolves to `W`'s OWN provision before any global search. The rule
+becomes necessary once the spec half is bundled: `Ordered requires PartialOrd[T]`,
+and the lawful form of an alternative ordering is a `PartialOrd` + `Ordered`
+BUNDLE, so with two coexisting bundles `PartialOrd[C]` has one candidate inside
+each and a global search ties. It keys on the SELECTED provider and never on caller
+scope, so it does not make a program's meaning depend on its imports.
 
 **Sort symbols carry their own operations table.** Each sort symbol (e.g., `IntEq`, `EqList`) is associated in the KB with a mapping `op_short → impl_op_symbol` recording its declared operations. The dispatch lookup `sort_ops_table[dict_value.sort][fn.op_short]` is a direct table lookup, not a string concatenation + name resolution. (Conceptually equivalent to a C++ vtable / Haskell dictionary's method slot.)
 
@@ -292,6 +345,13 @@ The interpreter sees `fn` is a spec-op, evaluates `requirements[0]` to a `Resolv
 - `requirements = [__req_self_b → V, __req_eq → V.sub_requires[0], __req_ord → V.sub_requires[1]]`
 
 `BImpl.cmp`'s body uses `var_ref(__req_eq)` and `var_ref(__req_ord)` to access the Eq and Ord dictionaries — they're already named bindings on the frame.
+
+Note which chain those two slots come from: `Eq` and `Ordered` are **`B`'s** — the
+SPEC's — `requires`, so this example reads the layout's **spec half** (slots 0 and 1,
+since the spec half is the prefix). Had `BImpl` declared `requires` of its own, its
+body's reads would name those instead and take the **provider half**, at slots 2… —
+see the layout rule under §"Dispatch rule". `BImpl` here declares none, which is why
+the two coincide in this example and why the discrepancy went unnoticed (WI-857).
 
 > **Future extension (out of v0 scope)**: per-operation `requires` clauses (e.g., `op bar[U](u: U) requires Ord[U]`) would let the apply's `requirements` channel hold more than one entry — one for the dispatching dict, one per per-op require. Mechanism stays uniform; cardinality grows.
 
@@ -501,7 +561,7 @@ op.requirements_tree(sort) =
 
 **Substitution**: when computing requirements for a particular type-args binding, the sub-tree's bindings inherit the substitution. E.g., `requirements_tree(B[T = Int64])` produces a tree whose Eq sub-node has `T = Int64` (not `T = T`).
 
-**Ordering** within `sub_requires`: source declaration order in the sort's `requires` block, then depth-first traversal for body-discovered specs.
+**Ordering** within `sub_requires`: source declaration order in the sort's `requires` block, then depth-first traversal for body-discovered specs. For a *dictionary* the two halves come first — spec's chain, then provider's — each in that declaration order; see the layout rule under §"Dispatch rule" (WI-857).
 
 **Mutual recursion → cycle break**: if an op's requirements-tree computation visits the same `(sort, bindings)` it's currently computing, the back-edge is recorded but not expanded — a `RequiresNode::CycleBack` variant (or omitted entirely, by the WI-230 design). Termination guaranteed.
 
