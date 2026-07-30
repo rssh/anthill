@@ -232,6 +232,19 @@ pub enum TypeError {
     /// Reachable only through a program with two coexisting providers, which stays a
     /// LOAD error until 058 phase 3b moves the coherence refusal to the use site;
     /// refused here so that move does not silently turn it into a first-match.
+    ///
+    /// WI-844: and the same refusal for the OTHER producer of a selection — the
+    /// ARGUMENT TYPES. A named slot is a type parameter, so a sort with two same-spec
+    /// named slots can carry two witnesses in ONE type: `Both[T = String, A = ByLength,
+    /// B = Alphabetical]`, which a bracket cannot spell (this very error refuses that
+    /// spelling) but a parameter ANNOTATION can — measured, it loads. Reading such a
+    /// value's slots back would first-match one witness onto both deps, which is
+    /// exactly what this variant exists to prevent.
+    ///
+    /// The message names the two witnesses and NOT which producer wrote each, and that
+    /// is deliberate: a MIXED pair is reachable (one slot bracketed, its same-spec
+    /// sibling read off the argument's type), so any sentence attributing both to one
+    /// producer would be false for it. [`push_selection`] owns the rule for all of them.
     ConflictingSelection {
         span: Option<Span>,
         op: Symbol,
@@ -655,10 +668,10 @@ impl TypeError {
             }
             TypeError::ConflictingSelection { op, spec, first, second, .. } => {
                 format!(
-                    "the call to {} selects two providers for {}: {} and {} — one spec, \
-                     one witness per call",
-                    kb.qualified_name_of(*op),
+                    "two providers are selected for {} at the call to {}: {} and {} — \
+                     one spec, one witness per call",
                     kb.qualified_name_of(*spec),
+                    kb.qualified_name_of(*op),
                     kb.qualified_name_of(*first),
                     kb.qualified_name_of(*second),
                 )
@@ -975,10 +988,13 @@ impl TypeError {
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
+            // WI-844: `selection`, not `type_arg` — a conflicting pair can be written
+            // in a bracket, carried in an argument's TYPE, or one of each, so the field
+            // names what is wrong rather than where it was written.
             TypeError::ConflictingSelection { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "type_arg".to_string(),
+                field_name: "selection".to_string(),
                 expected_type: format!("one witness for {}", kb.qualified_name_of(*spec)),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -5574,10 +5590,38 @@ fn attach_eta_dispatch_dict(
     let caller_requires: Vec<RequiresEntry> =
         env.enclosing_requires().map(|r| r.to_vec()).unwrap_or_default();
     // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
-    // bracket — there is no call here to write one on — so no selection.
+    // BRACKET — there is no call here to write one on.
+    //
+    // WI-844: but that is only half of §4.7's channel, and this site fills the other
+    // half itself — the unify above pins the op's params from the EXPECTED ARROW, so
+    // when that arrow names a witness (`(SortedSet[T = String, O = ByLength], String) ->
+    // …`) σ already holds it. MEASURED before this: a bare-name eta of `SortedSet.insert`
+    // against exactly that arrow refused with "constructing `Ordered[T = String]` is
+    // ambiguous among providers" — the expected type's `O = ByLength` notwithstanding.
+    // The slot read is the same one the direct call uses; only the σ producer differs.
+    //
+    // No `check_selection_bindings` here, unlike the direct call: a pin that fails to
+    // land is already loud from this very build (`RequirementRefusal { pinned }` names
+    // the selected witness and the dep), and adding the call-site check would widen
+    // what an eta refuses beyond what this ticket measured.
+    //
+    // GATED BEFORE the record read, not inside: `lookup_operation_info_full` clones
+    // every per-field `Vec` of the signature (`op_info_from_signature` — the cost
+    // `operation_is_declared` exists to avoid), and `names_any_requirement_slot` is two
+    // `Symbol`-keyed index gets. An op that names no slot must not pay the clone.
+    let selected = if names_any_requirement_slot(kb, sym) {
+        match lookup_operation_info_full(kb, sym) {
+            Some(op) => selections_from_slot_bindings(
+                kb, &subst, &op, sym, Vec::new(), Some(occ.span.span),
+            )?,
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
     match build_concrete_dispatch_dict(
         kb, &subst, parent, env.enclosing_sort(), &caller_requires,
-        env.enclosing_sort_param_rigids(), &[],
+        env.enclosing_sort_param_rigids(), &selected,
     ) {
         Ok(Some(dict)) => {
             occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
@@ -10345,6 +10389,14 @@ fn check_apply_iter(
             occ.set_resolved_type_args(resolved);
         }
 
+        // WI-844 (058 §5.3 / §4.7): a NAMED requirement slot IS a type parameter, so
+        // the chosen provider rides in the TYPE — and an argument carrying that type
+        // says which as plainly as a bracket does. Read here, where `subst` is
+        // complete, and BEFORE the validation below, so a type-carried pin is judged
+        // by exactly the check a written one is.
+        let selections =
+            selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
+
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has
         // filled `subst`.
@@ -13683,24 +13735,157 @@ fn seed_op_type_args(
         let concrete = concrete
             .get_or_insert_with(|| super::load::sorts_with_constructors(kb));
         validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
-        if let Some(prev) = selections
-            .iter()
-            .find(|s| same_sort_canonical(kb, s.spec_sort, spec_sort))
-        {
-            if !same_sort_canonical(kb, prev.witness, witness) {
-                return Err(TypeError::ConflictingSelection {
-                    span,
-                    op: fn_sym,
-                    spec: spec_sort,
-                    first: prev.witness,
-                    second: witness,
-                });
-            }
-            continue;
-        }
-        selections.push(InstanceSelection { spec_sort, witness });
+        push_selection(kb, &mut selections, spec_sort, witness, fn_sym, span)?;
     }
     Ok(selections)
+}
+
+/// WI-841/WI-844 — add one selection, upholding the invariant EVERY producer shares: at
+/// most one [`InstanceSelection`] per spec, and a second, DIFFERENT witness for a spec
+/// already selected is [`TypeError::ConflictingSelection`], never a first match.
+///
+/// One owner because the invariant is one statement and there are two producers — the
+/// call BRACKET ([`seed_op_type_args`]) and the argument TYPES
+/// ([`selections_from_slot_bindings`]). A selection is keyed by the SPEC at
+/// [`resolve`]'s step 0, so two witnesses under one key have no meaning to give,
+/// wherever they were written.
+///
+/// **The producers are NOT ranked, and an earlier cut that ranked them was wrong.** It
+/// exempted a derived witness colliding with a BRACKET-written one, on the reasoning
+/// that they read one variable and so cannot disagree — true of ONE slot, false across
+/// two same-spec slots. MEASURED: on a sort with `requires A: Ord[T]` and
+/// `requires B: Ord[T]`, a value typed `Both[T = String, A = ByLength, B = Alphabetical]`
+/// is correctly refused, and adding `[A = ByLength]` to the call DELETED the refusal —
+/// the `B` read collided with the bracket entry, was exempted, and one spec-keyed pin
+/// served both deps. A `debug_assert` written to document the exemption fired on the
+/// first program that exercised it. So the comparison is unconditional: witnesses agree
+/// or the call is refused, whoever wrote them.
+fn push_selection(
+    kb: &KnowledgeBase,
+    selections: &mut Vec<InstanceSelection>,
+    spec_sort: Symbol,
+    witness: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if let Some(prev) = selections
+        .iter()
+        .find(|s| same_sort_canonical(kb, s.spec_sort, spec_sort))
+    {
+        if !same_sort_canonical(kb, prev.witness, witness) {
+            return Err(TypeError::ConflictingSelection {
+                span,
+                op: fn_sym,
+                spec: spec_sort,
+                first: prev.witness,
+                second: witness,
+            });
+        }
+        return Ok(());
+    }
+    selections.push(InstanceSelection { spec_sort, witness });
+    Ok(())
+}
+
+/// WI-844 (058 §5.3, §4.7) — the selections this call's TYPES make, appended to the
+/// ones its BRACKET made.
+///
+/// §4.7's rule is that a NAMED requirement slot **is a type parameter**, so the chosen
+/// provider is part of the type identity and every value of that type carries it:
+/// `SortedSet[T = String, O = ByLength]`. WI-841 implemented the WRITE half — a
+/// bracket key binds the slot's parameter AND records an [`InstanceSelection`] — and
+/// left the type carrying a choice nothing read back. MEASURED at HEAD before this
+/// ticket, on §5.3's driver: two `Ordered[String]` witnesses coexist and
+/// `SortedSet.empty[T = String, O = ByLength]()` selects, but the very next line,
+/// `SortedSet.insert(a, "zz")`, refused with *"constructing `Ordered[T = String]` is
+/// ambiguous among providers: String, ByLength, Alphabetical"* — the argument's
+/// `O = ByLength` notwithstanding. The driver was writable only by repeating
+/// `[T = String, O = ByLength]` at every call, which is the type parameter doing none
+/// of the work §4.7 gives it.
+///
+/// So this READS the slot's parameter back out of σ. The bracket and the argument
+/// write the SAME variable (`seed_op_type_args` unifies it, argument conformance then
+/// checks it — WI-836), so this is one channel with two producers, not a second
+/// mechanism: what the bracket returns eagerly, an argument leaves in σ for this to
+/// pick up.
+///
+/// Three properties, each load-bearing:
+///
+///  * **Appended, never overwriting — and never FIRST-MATCHING.** Both producers go
+///    through [`push_selection`], which refuses a second, DIFFERENT witness for one
+///    spec whoever wrote it. That matters because an `InstanceSelection` is keyed by
+///    the SPEC: a sort with two same-spec named slots carries two witnesses in one type
+///    (`Both[T = String, A = ByLength, B = Alphabetical]` — which the bracket cannot
+///    spell but a parameter ANNOTATION reaches, measured), and first-matching would pin
+///    one onto both deps. For ONE slot the bracket and the argument write the same
+///    variable, so they agree and the second push is a no-op.
+///  * **An ABSTRACT slot derives nothing.** Inside `report[T, O](s: SortedSet[T = T,
+///    O = O])` (§7.1) the slot is bound to a type PARAMETER, not a witness, and must
+///    stay a FORWARD of the caller's dictionary. [`is_type_param_value`] is that test,
+///    and it is the reason this cannot turn universal polymorphism into a wrong pin.
+///  * **No `validate_instance_selection`.** Its check 3 refuses a SPELLING — an
+///    explicit witness where a concrete provider's values already direct dispatch
+///    (§4.4) — and there is no spelling here; its check 1 (the witness provides the
+///    spec at all) is what [`check_selection_bindings`] decides more precisely, at
+///    this call's own bindings, on the very next line.
+fn selections_from_slot_bindings(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    mut selected: Vec<InstanceSelection>,
+    span: Option<Span>,
+) -> Result<Vec<InstanceSelection>, TypeError> {
+    // The overwhelmingly common callee names no slot in EITHER scope, and
+    // `call_bracket_scopes` is a memo read plus a per-param intern. Skip both.
+    if !names_any_requirement_slot(kb, fn_sym) {
+        return Ok(selected);
+    }
+    // The SAME two scopes rule (1) binds, read through the same owner — a slot
+    // reachable by a bracket key and a slot readable from σ are one list, so a scope
+    // added there cannot be forgotten here.
+    for (name, var) in call_bracket_scopes(kb, op, fn_sym) {
+        let Some(spec_sort) = named_slot_spec(kb, fn_sym, name) else { continue };
+        let var_term = type_param_var_term(kb, var);
+        // WALKED THEN SURFACED, the pairing `check_apply_iter`'s sibling σ-read of these
+        // very vars uses (`set_resolved_type_args`, WI-394): the deep walk STOPS at a
+        // non-`Term` (`Value::Node`) binding and leaves a bare var behind, which
+        // `is_type_param_value` then reads as ABSTRACT — so a `Value::Node`-carried
+        // witness would derive no selection and say nothing about it. Walking without
+        // surfacing is the silent skip, not a shortcut.
+        let walked = walk_type_deep(kb, subst, var_term);
+        let bound = surface_node_binding_to_term(kb, subst, walked);
+        if is_type_param_value(kb, bound) {
+            continue;
+        }
+        // `sort_functor_of_view`'s `TermId` face — the SAME head read
+        // `selection_witness_sym` gives a bracket value, and for the same reason: a
+        // witness may carry type arguments (§4.5) and its BASE is what identifies it.
+        // `None` here is a slot bound to something with no sort head at all (an arrow,
+        // a tuple) — no witness to name, and `check_selection_bindings` has no goal to
+        // judge it against; the requirement's own route reports it.
+        let Some(witness) = sort_functor_of(kb, bound) else { continue };
+        push_selection(kb, &mut selected, spec_sort, witness, fn_sym, span)?;
+    }
+    Ok(selected)
+}
+
+/// WI-844 — does `fn_sym` or its enclosing SORT name any requirement slot (§4.7)?
+///
+/// The cheap gate on [`selections_from_slot_bindings`], and its own function because
+/// "the operation's scope, else its enclosing sort's" already has three askers
+/// ([`call_bracket_scopes`], [`callee_requirement_slots`], [`named_slot_spec`]) and a
+/// fourth spelling of it is how the parent's KIND GATE goes missing: the other two
+/// that resolve a parent require it to be a `Sort`, because a FREE operation's "parent"
+/// is its NAMESPACE. That changes nothing today — a namespace's slot index is empty —
+/// which is exactly why the drift would be silent, and why
+/// [`callee_requirement_slots`] states the same reason at its own gate.
+fn names_any_requirement_slot(kb: &KnowledgeBase, fn_sym: Symbol) -> bool {
+    let owns = |owner: Symbol| !kb.named_requirement_slots(owner).is_empty();
+    owns(fn_sym)
+        || impl_parent_of_op(kb, fn_sym)
+            .filter(|p| kb.kind_of(*p) == Some(crate::intern::SymbolKind::Sort))
+            .is_some_and(owns)
 }
 
 /// WI-841 (058 §4.1 tier 1) — the witness the CALL SITE selected for `spec`, if any.

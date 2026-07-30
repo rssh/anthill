@@ -47,6 +47,11 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/unit", include_str!("../../../stdlib/anthill/prelude/unit.anthill")),
     ("anthill/prelude/nothing", include_str!("../../../stdlib/anthill/prelude/nothing.anthill")),
     ("anthill/prelude/set", include_str!("../../../stdlib/anthill/prelude/set.anthill")),
+    // Beside `set`, and after the `list` / `ordered` it is built out of — for readability
+    // only. Nothing here dispatches into it (no `provides`), so unlike the derived-algebra
+    // files above it has no ordering HAZARD; `scan_definitions` pass 1 defines every name
+    // across every file first (WI-321), so the references resolve wherever it sits.
+    ("anthill/prelude/sortedset", include_str!("../../../stdlib/anthill/prelude/sortedset.anthill")),
     ("anthill/prelude/map", include_str!("../../../stdlib/anthill/prelude/map.anthill")),
     ("anthill/prelude/field", include_str!("../../../stdlib/anthill/prelude/field.anthill")),
     ("anthill/prelude/sort", include_str!("../../../stdlib/anthill/prelude/sort.anthill")),

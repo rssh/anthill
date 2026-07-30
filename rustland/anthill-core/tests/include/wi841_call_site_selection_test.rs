@@ -905,7 +905,7 @@ fn two_witnesses_for_one_spec_in_one_bracket_are_refused() {
     );
     refused_with(
         &src,
-        "selects two providers",
+        "two providers are selected",
         "the binder and the short name reached the same spec with different witnesses",
     );
 }

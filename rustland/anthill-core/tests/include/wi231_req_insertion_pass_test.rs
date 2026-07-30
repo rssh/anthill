@@ -227,13 +227,26 @@ end
 
     let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
 
-    // Every Defer row in this KB belongs to Wi232Two and must point at
-    // the same matched entry — `required_sort = Eq`, spec TermId is the
-    // SortView that the loader built for `requires Eq[T]`. Walk
-    // `kb.op_bodies` post-WI-251; the per-Apply RefCell is the
+    // Every Defer row OF `Wi232Two` must point at the same matched entry —
+    // `required_sort = Eq`, spec TermId is the SortView that the loader built for
+    // `requires Eq[T]`. Walk `kb.op_bodies` post-WI-251; the per-Apply RefCell is the
     // source of truth.
+    //
+    // SCOPED TO THIS SORT's ops, which the whole-KB walk used to get for free: until
+    // WI-844 no STDLIB op body deferred to a requirement, so "every Defer row in this
+    // KB" happened to mean Wi232Two's. `SortedSet.insertSorted`'s `Ordered.compare`
+    // (a sort-level `requires O: Ordered[T]` read from an operation BODY, where
+    // `Set`/`Map` read theirs from rule bodies, which are never typer-classified) is
+    // the first, and it made this fail with `Ordered` where `Eq` was expected. The
+    // claim was always about this fixture; the filter says so.
+    // By SYMBOL IDENTITY (`impl_parent_of_op`), not a qualified-name prefix — this
+    // file's whole subject is that a resolved spec is the matched ENTRY and not a name.
+    let owner = kb.try_resolve_symbol("test.wi232.resolved_spec.Wi232Two").expect("Wi232Two");
     let mut defer_rows: Vec<anthill_core::kb::typing::RequiresEntry> = Vec::new();
-    for (_, body) in kb.op_bodies_iter() {
+    for (op, body) in kb.op_bodies_iter() {
+        if anthill_core::kb::typing::impl_parent_of_op(&kb, op) != Some(owner) {
+            continue;
+        }
         anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_occ, c| {
             if let CallClass::DeferToRequirement { resolved_spec, .. } = c {
                 defer_rows.push(resolved_spec.clone());

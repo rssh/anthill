@@ -1,0 +1,149 @@
+-- SortedSet: a set kept in the order of a comparator the TYPE names (proposal 058
+-- §5.3, WI-844). The prelude's `Set` is an unordered spec whose equality is
+-- membership; this is a concrete, list-backed structure whose element order is part
+-- of what it IS — which is why its ordering slot is NAMED.
+--
+-- ── WHAT THE NAME BUYS (058 §4.7) ────────────────────────────────────────────────
+--
+-- `requires O: Ordered[T]` is a NAMED requirement slot, and a named slot IS a type
+-- parameter. So the chosen comparator is part of the type:
+--
+--   SortedSet[T = String, O = ByLength]  and  SortedSet[T = String, O = Alphabetical]
+--
+-- are two DIFFERENT types, and merging one into the other is a type error before it
+-- is a wrong answer. Had the slot been left anonymous (`requires Ordered[T]`, the
+-- spelling `Map`/`Set` use for their `Eq`) it would be a CONSTRAINT — solved at each
+-- dispatch, recorded nowhere — and two sets ordered differently would share one type.
+-- That is right for `Map`'s `Eq` (two `Map[K = Int64]`s must not differ by which `Eq`
+-- satisfied them) and wrong here. The author picks by naming it.
+--
+-- Choose the comparator at the CONSTRUCTION site, with the ordinary call bracket:
+--
+--   let a = SortedSet.empty[T = String, O = ByLength]()
+--   let b = SortedSet.empty[T = String, O = Alphabetical]()
+--   SortedSet.insert(a, "zz")            -- no bracket: `a`'s TYPE already says which
+--   SortedSet.union(a, b)                -- type error, naming both orderings
+--
+-- ── THE SCOPE OF THE GUARANTEE: PER-SIGNATURE, NOT GLOBAL ────────────────────────
+--
+-- Omitting `O` in TYPE position means ANY, deliberately — it is how "I work for any
+-- order" is written, and it is what lets a signature outlive a comparator choice:
+--
+--   operation tag(s: SortedSet[T = String]) -> Int64      -- takes BOTH of the above
+--
+-- So the merge safety above holds exactly where `O` is WRITTEN. A boundary that omits
+-- it erases the distinction at that boundary; two sets that disagree can meet there.
+-- This is not a hole to be closed later — `report[T, O](s: SortedSet[T = T, O = O])`
+-- (the abstract, universally-polymorphic form) is how a consumer stays order-agnostic
+-- AND keeps the distinction, and it is the form to prefer when the body dispatches
+-- through the order at all. Measured: an omitted `O` whose body DOES dispatch through
+-- the slot is a load error naming the candidate providers, not a silent pick — the
+-- comparator is genuinely under-determined there.
+--
+-- ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────────
+--
+-- A comparator chosen at RUN TIME does not exist as a concept (058 §7.1): every
+-- witness is a sort declared in the program text, and a dictionary can only be copied
+-- from one already chosen during typing. "Runtime choice" means which statically
+-- pinned branch executed — ordinary universal polymorphism, the `report[T, O]` form
+-- above. A HETEROGENEOUS collection of differently-ordered sets
+-- (`List[T = SortedSet[T = String, O = ?]]`) is the general existential question
+-- (WI-402), neither needed nor foreclosed here.
+--
+-- ── ONE CAVEAT, AND IT IS NOT THIS FILE'S (WI-857) ───────────────────────────────
+--
+-- NAME a comparator. Leaving `O` out entirely — `SortedSet.empty[T = Int64]()` —
+-- loads, and tier 2 resolves it to the carrier's own `Ordered[Int64]` provider, but
+-- then dies at eval with an arity mismatch. That is a pre-existing defect in how a
+-- requirement dictionary is built from a CARRIER-KEYED provider (the producer walks
+-- the provider's `requires` chain, the consumer names the frame from the SPEC's), and
+-- it needs none of this file: a bare `sort H { sort T = ?  requires Eq[T] … }` fails
+-- the same way. A comparator WITNESS sidesteps it, and naming one is the intended
+-- spelling anyway.
+--
+-- ── EQUALITY ─────────────────────────────────────────────────────────────────────
+--
+-- Equality is STRUCTURAL and that is exact: for one `O`, the sorted item list is
+-- canonical, so two sets with the same members are the same term. (`Set` needs its own
+-- extensional `eq` precisely because its `insert` algebra is not canonical.) No
+-- `provides Eq` is declared, so nothing is claimed about comparing across two `O`s —
+-- they are different types.
+--
+-- ── AND NO `provides Set` EITHER, deliberately ───────────────────────────────────
+--
+-- `Set` (`set.anthill`) demands `member` / `subset` / `intersection` / `difference` and
+-- an EXTENSIONAL `eq`, which is the equality this type deliberately does not have. The
+-- `empty`/`insert`/`union` overlap is surface. Nor does this provide `Iterable` /
+-- `FiniteCollection` / `PersistentCollection` — so no generic container consumer takes
+-- a `SortedSet` yet. That is scope, not an oversight: proposal 058 phase 4's job is to
+-- demonstrate that a NAMED requirement slot threads end to end, and every provision
+-- added here is surface to keep in agreement with a comparator that is part of the
+-- type. Use `toList` at the boundary.
+enum anthill.prelude.SortedSet
+  import anthill.prelude.{Ordered, List}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.PartialOrd.{lt, gt}
+
+  sort T = ?                                   -- element type
+  requires O: Ordered[T]                       -- NAMED ⇒ a parameter of the type
+
+  -- The items, ascending under `O` and duplicate-free. The invariant is maintained by
+  -- `insert`, which is the only producer; the constructor is not meant to be applied
+  -- directly with an arbitrary list.
+  entity sorted_set(items: List[T = T])
+
+  operation empty() -> SortedSet[T = T, O = O] = sorted_set(items: nil())
+
+  operation insert(s: SortedSet[T = T, O = O], x: T) -> SortedSet[T = T, O = O] =
+    match s
+      case sorted_set(items) -> sorted_set(items: insertSorted(items, x))
+
+  -- A single-pass MERGE, not a fold of `insert`: both operands already satisfy the
+  -- entity's invariant (ascending under `O`, duplicate-free), which is exactly the
+  -- precondition a merge needs — so re-searching from the head per element of `b` would
+  -- discard information the types already guarantee, at O(|a|·|b|) instead of
+  -- O(|a|+|b|). Read through `toList` rather than a second `case sorted_set(items)`:
+  -- the entity has one accessor.
+  operation union(a: SortedSet[T = T, O = O],
+                  b: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    sorted_set(items: merge(toList(a), toList(b)))
+
+  operation toList(s: SortedSet[T = T, O = O]) -> List[T = T] =
+    match s
+      case sorted_set(items) -> items
+
+  -- The two recursion carriers. Members rather than locals because Anthill has no
+  -- local recursive binding, and `internal` because they are the implementation and not
+  -- the interface — the modifier `list.anthill`'s own workers (`reverseOnto`,
+  -- `mapElemsOnto`) carry for the same reason. Hiding them is not cosmetic:
+  -- both take a bare `List`, so nothing in their signatures binds `O`, and an outside
+  -- caller would get either an under-determined refusal or the carrier's own provider —
+  -- neither of which respects the set's ordering. Called from WITHIN the sort, both
+  -- inherit the enclosing frame's `O` dictionary.
+  --
+  -- Both READ the order through `Ordered.compare`, which resolves via slot `O` — the
+  -- one the construction site filled. Two sets built with different comparators run
+  -- different code here, out of one body (058 §4.6).
+  internal operation insertSorted(l: List[T = T], x: T) -> List[T = T] =
+    match l
+      case nil() -> cons(head: x, tail: nil())
+      case cons(h, t) ->
+        let c = Ordered.compare(x, h)
+        if lt(c, 0) then cons(head: x, tail: cons(head: h, tail: t))
+        else if gt(c, 0) then cons(head: h, tail: insertSorted(t, x))
+        else cons(head: h, tail: t)          -- already present: a SET, so no duplicate
+
+  -- Merge two ascending, duplicate-free lists into one. Equal heads collapse to a
+  -- single element — the set property, applied across the two operands.
+  internal operation merge(xs: List[T = T], ys: List[T = T]) -> List[T = T] =
+    match xs
+      case nil() -> ys
+      case cons(x, xt) ->
+        match ys
+          case nil() -> cons(head: x, tail: xt)
+          case cons(y, yt) ->
+            let c = Ordered.compare(x, y)
+            if lt(c, 0) then cons(head: x, tail: merge(xt, cons(head: y, tail: yt)))
+            else if gt(c, 0) then cons(head: y, tail: merge(cons(head: x, tail: xt), yt))
+            else cons(head: x, tail: merge(xt, yt))    -- equal: one element, not two
+end
