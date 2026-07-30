@@ -36,8 +36,15 @@ namespace test.wi664
     entity point(x: Float, y: Float)
   end
 
-  sort Pair
-    entity pair(a: Int64, b: Int64)
+  -- RENAMED from `Pair` (WI-858): `anthill.prelude.Pair` now provides `PartialEq`, and
+  -- a provision's carrier binding is matched by SHORT NAME at dispatch, so a local sort
+  -- sharing a provider's short name is offered that provider's impl and then refused
+  -- ("no impl matches"). Pre-existing and not about `Pair` — a local `sort Set` collides
+  -- with `prelude.Set`'s provision identically (MEASURED, both at this HEAD). WI-872,
+  -- whose acceptance is that this rename is REVERTED; the name here was always
+  -- incidental, this fixture is "a two-Int64 composite".
+  sort Duple
+    entity duple(a: Int64, b: Int64)
   end
 
   sort Line
@@ -59,8 +66,8 @@ namespace test.wi664
   operation p_seq_nan() -> Bool = point(x: nan, y: 0.0) === point(x: nan, y: 0.0)
 
   -- All-Eq composite (no Float): unaffected, structural eq is lawful.
-  operation pair_eq()   -> Bool = eq(pair(a: 1, b: 2), pair(a: 1, b: 2))
-  operation pair_ne()   -> Bool = eq(pair(a: 1, b: 2), pair(a: 1, b: 9))
+  operation duple_eq()  -> Bool = eq(duple(a: 1, b: 2), duple(a: 1, b: 2))
+  operation duple_ne()  -> Bool = eq(duple(a: 1, b: 2), duple(a: 1, b: 9))
 
   -- Nested: a Float buried one level deeper still follows IEEE.
   operation line_nan_eq() -> Bool =
@@ -119,8 +126,8 @@ fn struct_eq_on_composite_nan_stays_structural() {
 #[test]
 fn all_eq_composite_unaffected() {
     let mut i = interp(SRC);
-    assert!(call_bool(&mut i, "test.wi664.pair_eq"), "eq(Pair(1,2), Pair(1,2)) must be true");
-    assert!(!call_bool(&mut i, "test.wi664.pair_ne"), "eq(Pair(1,2), Pair(1,9)) must be false");
+    assert!(call_bool(&mut i, "test.wi664.duple_eq"), "eq(Duple(1,2), Duple(1,2)) must be true");
+    assert!(!call_bool(&mut i, "test.wi664.duple_ne"), "eq(Duple(1,2), Duple(1,9)) must be false");
 }
 
 /// Nested: a `Float` two levels down (`Line(Point(nan,_), _)`) still follows IEEE

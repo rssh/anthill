@@ -375,3 +375,49 @@ pub const DESC_INSTANCES: &str = r#"
       add(mul(10, Desc.describe(w.inner)), 2)
   end
 "#;
+
+/// Assert that a dispatching dict's requirement-param name belongs to the SPEC the
+/// caller expects — `__req_partialeq`, or a DISAMBIGUATED sibling of it.
+///
+/// The names-model suites (`wi222_defer_rewrite_test`, `wi227_projection_search_test`)
+/// read `kb.dispatch_origin_iter()`, which is KB-GLOBAL, and take the first (or last)
+/// rewrite for a spec op. MEASURED at WI-858: the map keeps exactly ONE rewrite per
+/// spec op across the whole image, and which sort's survives is arbitrary — with the
+/// `wi227.flat` fixture loaded the surviving `PartialEq.eq` entry is
+/// `__req_partialeq_14325` (`anthill.prelude.Pair`'s, whose chain names `PartialEq`
+/// twice), while with `wi222.box` it is the fixture's own `__req_partialeq`, and in
+/// the same load the `Ordered.compare` entry is a `Pair` ordering's
+/// `__req_ordered_14331`. The eviction is pre-existing — **WI-873** — but before
+/// WI-858 no sort in the tree repeated a spec in its chain, so no disambiguated name
+/// existed and the exact spelling always matched.
+///
+/// So the SUFFIX is not the fixture's to control, and asserting it made the suites
+/// depend on symbol-interning order. What survives is the claim those suites are
+/// actually about: the dispatching dict is a `var_ref` naming a requirement param
+/// synthesized from a chain slot of THIS SPEC. A foreign spec still fails.
+///
+/// The accepted spellings are `synth_req_names`' (`kb::typing`), which is the one
+/// minter: the bare base when the parent's chain names the spec once, else
+/// `{base}_{TermId}` for a ground spec or `{base}_d{idx}` for a denoted one (WI-662).
+/// Both disambiguations are accepted here — matching only the ground form would leave
+/// this reader silently out of sync with its producer.
+#[allow(dead_code)]
+pub fn assert_req_param_spec(
+    kb: &KnowledgeBase,
+    actual: anthill_core::intern::Symbol,
+    expected_base: &str,
+    why: &str,
+) {
+    let actual_s = kb.resolve_sym(actual);
+    let disambiguated = |rest: &str| {
+        let digits = rest.strip_prefix("_d").or_else(|| rest.strip_prefix('_'));
+        digits.is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+    };
+    assert!(
+        actual_s == expected_base
+            || actual_s.strip_prefix(expected_base).is_some_and(disambiguated),
+        "{why}: expected the requirement-param name `{expected_base}` (or a \
+         `{expected_base}_<n>` / `{expected_base}_d<n>` disambiguation of the SAME spec \
+         — see `assert_req_param_spec`); got `{actual_s}`",
+    );
+}

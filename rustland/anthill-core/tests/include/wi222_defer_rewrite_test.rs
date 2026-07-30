@@ -45,10 +45,7 @@ namespace test.wi222.defer_rewrite
   end
 end
 "#;
-    let mut interp = interp_for(src);
-    // WI-644: the fixture now `requires PartialEq[T]` (the base holding `eq`), so the
-    // synthesized requirement-param name is `__req_partialeq`.
-    let expected_name = interp.kb_mut().intern("__req_partialeq");
+    let interp = interp_for(src);
     let kb = interp.kb();
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
@@ -142,9 +139,14 @@ end
     let name_tid = get_named_arg(kb, &head_named, "name")
         .expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        Term::Ref(s) => assert_eq!(*s, expected_name,
-            "var_ref name for slot 0 (Eq) must be Ref(__req_eq); got Ref({})",
-            kb.qualified_name_of(*s)),
+        // WI-644: the fixture `requires PartialEq[T]` (the base holding `eq`), so the
+        // synthesized name is `__req_partialeq`. WI-873: the entry read here may be
+        // ANOTHER sort's rewrite for the same spec, so only the spec is asserted.
+        Term::Ref(s) => crate::common::assert_req_param_spec(
+            kb, *s, "__req_partialeq",
+            "a `PartialEq`-deferred call's dispatching dict must read a requirement \
+             param synthesized from `PartialEq`",
+        ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 
@@ -192,8 +194,7 @@ namespace test.wi222.multi_requires
   end
 end
 "#;
-    let mut interp = interp_for(src);
-    let expected_name = interp.kb_mut().intern("__req_ordered");
+    let interp = interp_for(src);
     let kb = interp.kb();
 
     let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ordered.compare")
@@ -234,9 +235,13 @@ end
     let name_tid = get_named_arg(kb, &head_named, "name")
         .expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        Term::Ref(s) => assert_eq!(*s, expected_name,
-            "Ordered's chain slot maps to synthesized `__req_ordered`; got Ref({})",
-            kb.qualified_name_of(*s)),
+        // WI-873: KB-global map, so the surviving entry for this spec may be another
+        // sort's — the SPEC of the name is what this can establish, not the fixture.
+        Term::Ref(s) => crate::common::assert_req_param_spec(
+            kb, *s, "__req_ordered",
+            "an `Ordered` chain slot maps to a requirement param synthesized from \
+             `Ordered`",
+        ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 }
@@ -266,8 +271,7 @@ namespace test.wi222.proj_deps
   end
 end
 "#;
-    let mut interp = interp_for(src);
-    let expected_name = interp.kb_mut().intern("__req_ordered");
+    let interp = interp_for(src);
     let kb = interp.kb();
 
     let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ordered.compare")
@@ -318,9 +322,12 @@ end
     let name_tid = get_named_arg(kb, &head_named, "name")
         .expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        Term::Ref(s) => assert_eq!(*s, expected_name,
-            "var_ref must name the caller's Ordered slot (`__req_ordered`); got Ref({})",
-            kb.qualified_name_of(*s)),
+        // WI-873: was "the CALLER's own Ordered slot" — the KB-global map cannot
+        // establish whose rewrite this is, so the claim is narrowed to the spec.
+        Term::Ref(s) => crate::common::assert_req_param_spec(
+            kb, *s, "__req_ordered",
+            "the var_ref must name a requirement param synthesized from `Ordered`",
+        ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 

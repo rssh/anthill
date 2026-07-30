@@ -69,10 +69,7 @@ namespace test.wi227.flat
   end
 end
 "#;
-    let mut interp = interp_for(src);
-    // WI-644: `eq`'s spec is the `PartialEq` base, so the requirement (and its
-    // synthesized param name) is `PartialEq` / `__req_partialeq`.
-    let expected_name = interp.kb_mut().intern("__req_partialeq");
+    let interp = interp_for(src);
     let kb = interp.kb();
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
@@ -125,9 +122,14 @@ end
         kb.qualified_name_of(head_functor));
     let name_tid = get_named_arg(kb, &head_named, "name").expect("name arg");
     match kb.get_term(name_tid) {
-        Term::Ref(s) => assert_eq!(*s, expected_name,
-            "var_ref name must be Ref(__req_eq) for Eq at caller chain[0]; got Ref({})",
-            kb.qualified_name_of(*s)),
+        // WI-644: `eq`'s spec is the `PartialEq` base, so the param name is
+        // `__req_partialeq`. WI-873: was "at CALLER chain[0]" — the map is KB-global
+        // and the surviving entry may be another sort's, so only the spec is asserted.
+        Term::Ref(s) => crate::common::assert_req_param_spec(
+            kb, *s, "__req_partialeq",
+            "Strategy 1's var_ref must name a requirement param synthesized from \
+             `PartialEq`",
+        ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 

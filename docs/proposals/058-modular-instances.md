@@ -1,6 +1,6 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Active. The core (§3.1–§3.5) is delivered; defaults (§3.6) and the library architecture (§3.8) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered; §3.8's bundle rule is delivered as shipped library code (`prelude/pair.anthill`'s two orderings); defaults (§3.6) and per-provision conditions (§3.8) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -110,7 +110,18 @@ sort ListOrd
 end
 ```
 
-The chain does double duty: it *conditions* the provision and it *supplies the evidence* the provider's bodies dispatch through. A direct per-clause spelling — `provides Ordered[T = List[T = E]] :- Ordered[T = E]` — is the same clause with conditions scoped to one provision instead of the whole sort; a candidate surface refinement, recorded, not required, and the conditional leg of §4's provides-consolidation. Two boundaries: **a condition admits, it never ranks** — it shrinks where a provision applies, and provisions still applicable after their conditions resolve by the ladder (§3.2), which is the line between this and the predicate-directed selection §7 rejects; and a provider's chain does **not** discharge the *spec's* own requirements (`Eq[List[E]]` must come from `List`'s provision, not from the witness's chain) — lifting that is a separate, deferred increment.
+The chain does double duty: it *conditions* the provision and it *supplies the evidence* the provider's bodies dispatch through.
+
+***(proposed)* A CONDITION BELONGS TO ITS PROVISION, not to the sort.** A sort's `requires` chain is shared by every provision it makes, so a provider of two floors of one tower cannot condition them at two strengths — and that is not hypothetical, it is what the shipped `Pair` needs:
+
+```anthill
+provides PartialEq[Pair[A, B]] :- PartialEq[A], PartialEq[B]
+provides Eq[Pair[A, B]]        :- Eq[A], Eq[B]        -- STRICTLY stronger condition
+```
+
+With one chain the weaker condition must win — `Pair` takes `requires PartialEq[…]`, since an `Eq` chain would make `Pair[A = Float, B = Int64]` a load error and stop `Pair` being a general product — and the stronger provision then **over-claims**: `Eq[Pair]` asserts lawful equality wherever the components merely have the partial one. The rule is that a `:- goals` tail scopes its conditions to the one provision; a sort-level `requires` keeps its present meaning (every provision, plus the bodies' evidence), and the two compose. Not new machinery: a per-provision chain is a second contributor to the dictionary's **provider half**, not a new half.
+
+Two boundaries: **a condition admits, it never ranks** — it shrinks where a provision applies, and provisions still applicable after their conditions resolve by the ladder (§3.2), which is the line between this and the predicate-directed selection §7 rejects; and a provider's chain does **not** discharge the *spec's* own requirements (`Eq[List[E]]` must come from `List`'s provision, not from the witness's chain) — lifting that is a separate, deferred increment.
 
 *(proposed from here)* `Ordered`'s laws derive the inherited comparison surface from `compare`, so a lone alternative `Ordered` witness contradicts the `PartialOrd` it inherits from the carrier — for *any* order but the carrier's own. A lawful alternative therefore **bundles** its own `PartialOrd` + `Ordered`, mutually consistent, anchored to the one shared `Eq` (which stays outside the bundle — §3.7). This generalizes: in a spec tower, an alternative is a consistent bundle of floors, never one floor over shared lower floors. Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
 
@@ -129,13 +140,19 @@ Each branch's dictionary is static; only the branch taken is runtime. Two conseq
 
 ## 4. Syntax
 
-New grammar — **one production**: the named requirement binder, at sort level and operation level:
+New grammar — **one production**, delivered: the named requirement binder, at sort level and operation level:
 
 ```anthill
 requires O: Ordered[T]                          -- sort-level: a named slot, a type parameter
 
 operation biFold[T](xs: List[T]) -> T
   requires plus: Monoid[T], times: Monoid[T]    -- op-level: two slots of one spec, one name each
+```
+
+*(proposed)* **One more**: a `:- goals` tail on a provision, scoping its conditions to that provision (§3.8) — the same arrow a rule body already uses, in the one place a provision could not say "only where":
+
+```anthill
+provides Eq[Pair[A, B]] :- Eq[A], Eq[B]
 ```
 
 A named slot becomes an ordinary type parameter of its declarer — which is exactly what the bracket then binds (`biFold[plus = AddM, times = MulM](xs)`).
@@ -168,6 +185,14 @@ let a = SortedSet.empty[T = String, O = ByLength]()
 SortedSet.insert(a, "zz")          -- no bracket: a's TYPE says which
 SortedSet.union(a, b)              -- b Alphabetical ⇒ TYPE ERROR naming both orderings
 
+-- …and the SHIPPED instance of exactly that (prelude/pair.anthill): `Pair` has no
+-- canonical order, so two lexicographic ones coexist and every dispatch says which.
+-- NOT `String`: that carrier already has a provider, and a prelude rival would hand
+-- every downstream bracket-less compare a tier-3 error its author never opted into.
+let s = SortedSet.empty[T = Pair[Int64, Int64], O = PairByFst]()   -- (1,9) before (2,1)
+let t = SortedSet.empty[T = Pair[Int64, Int64], O = PairBySnd]()   -- (2,1) before (1,9)
+Ordered.compare(p, q)              -- no bracket ⇒ tier 3, naming PairByFst and PairBySnd
+
 -- a conditional provision (§3.8): lists are ordered wherever their elements are
 sort ListOrd
   sort E = ?
@@ -181,8 +206,9 @@ sort ListOrd
 end
 let s  = SortedSet.empty[T = List[T = Int64], O = ListOrd]()              -- OE inferred (§3.2)
 let s2 = SortedSet.empty[T = List[T = P],    O = ListOrd[OE = LexFst]]()  -- OE selected (§3.3)
--- status: loads and types by delivered legs; RUNS only after the dictionary-chain
--- settlement (implementation notes §7), which gates all of §3.8
+-- status: the inferred form is delivered and RUNS. The SELECTED form on the second
+-- line is NOT wired — driven, the value's bracket is validated against the witness's
+-- parameters and then discarded, so it steers no sub-goal (implementation notes §7)
 
 -- linking libraries you do NOT own (proposed, §3.6) — in lib_b, shipped UNMARKED:
 sort MoneyByAmount                             -- glue: a witness beside a foreign carrier

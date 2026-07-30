@@ -867,3 +867,6 @@ mod wi844_sorted_set_driver_test;
 
 #[path = "include/wi857_dictionary_layout_test.rs"]
 mod wi857_dictionary_layout_test;
+
+#[path = "include/wi858_pair_orderings_test.rs"]
+mod wi858_pair_orderings_test;

@@ -548,6 +548,22 @@ variance pattern (facts outside the sorts, absence = safe default, zero grammar)
 **WI-857 first** (extended acceptance: the ticket's reproducers + `q4e` + the locality
 rule), **then the library** (058 §9 phase 7 — the WI-844 instruction finally met), **then
 rung 2a** (phase 8 — obstacle A closed for `String` and every self-providing carrier).
+
+> **CLOSED 2026-07-30 as recommended.** WI-857 delivered, then WI-858 shipped option 2:
+> `prelude/pair.anthill` carries `PairByFst` / `PairBySnd`, `Pair` provides
+> `PartialEq`/`Eq` componentwise, and `wi858_pair_orderings_test` drives it end to end.
+> The recommendation held on both obstacles — A never bit (`Pair` has no provider to
+> displace, so tier 3 is the right answer and no `DefaultProvider` row is wanted) and B
+> was discharged exactly as predicted (the `Eq` leg from `Pair`'s own provision, the
+> `PartialOrd` leg from each bundle; the binding-free load is asserted directly). Three
+> things the drive found that this document did not anticipate: the shared `requires`
+> chain cannot condition `PartialEq[Pair]` and `Eq[Pair]` at their two different
+> strengths (**WI-869** — an `Eq` chain makes `Pair[A = Float, …]` a load error, so
+> `Pair` ships with the weaker `PartialEq` chain and `Eq[Pair]` over-claims); the
+> composition leg of §3.3 is validated and then discarded (**WI-870**); and a
+> componentwise provider's second requirement slot is read from the first when the
+> first's carrier is the provider itself (**WI-871**, pre-existing). Rung 2a (obstacle A
+> for `String`) remains phase 8c, unchanged.
 Option 5 remains the principled answer for library orderings of a PRIMITIVE and remains
 paired with WI-857, exactly as §Options concluded — the pairing is now tighter, since
 WI-857's settlement builds the machinery option 5's checker halves need.

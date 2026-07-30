@@ -203,6 +203,25 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   the marker is refused at `dispatch_via_sort_ops_table` — one owner — so an unread
   slot costs nothing and a read one names its missing requirement. LOCALITY: inside
   `W`'s dictionary a sub-goal `W` itself provides takes `W`'s own provision first.
+- **A sort's `requires` chain is SHARED by every provision it makes** (WI-858), so a
+  provider of two floors of one spec tower must take the WEAKEST chain the floors need
+  — per-provision conditions (`provides X[…] :- goals`) are 058 §3.8's proposed form,
+  not a spelling that exists. `anthill.prelude.Pair` is the shipped case: it provides
+  `PartialEq` and `Eq` componentwise, and takes `requires PartialEq[A], PartialEq[B]`.
+  NOT `Eq` — MEASURED, an `Eq` chain makes `Pair[A = Float, B = Int64]` a LOAD ERROR
+  (`Float` provides `NonEq`, and WI-835's use-site check refuses a `NonEq` carrier at a
+  parameter whose sort `requires Eq`), i.e. `Pair` stops being a general PRODUCT.
+  `Set`/`Map` genuinely need `Eq` on keys; a pair of anything is a pair. The cost is
+  recorded, not hidden: `provides Eq[Pair]` rides the same chain and OVER-CLAIMS.
+- **`Pair` carries the prelude's two orderings** — `PairByFst` / `PairBySnd`, each a
+  `PartialOrd` + `Ordered` BUNDLE with NAMED element slots (`requires OA: Ordered[A]`).
+  A bundle because `ordered.anthill` derives `gt`/`lt` from `compare` off the carrier's
+  inherited `PartialOrd`, so a lone `Ordered` witness contradicts what it inherits; a
+  compare-`fst`-only witness is a PREORDER that makes `SortedSet` drop elements. They
+  ship in the prelude only because `Pair` is prelude-LAWFUL — no primitive's `Eq` is
+  (it lives in the per-language bindings, proposal 038), so no prelude witness may order
+  `String` or `Int64`. A bracket-less `Ordered.compare` on a `Pair` is tier 3 naming
+  both, deliberately: `Pair` has no provider to displace, so no `DefaultProvider` row.
 
 # Repository rules
 
