@@ -1,34 +1,34 @@
 -- Pair: product type (two-element tuple), with the canonical EQUALITY of a product —
 -- componentwise, provided by `Pair` itself.
 --
--- ── NO ORDERING HERE YET, DELIBERATELY (WI-876) ─────────────────────────────────
+-- ── NO ORDERING HERE YET — THE OBSTACLE IS GONE, THE TICKET IS WI-877 ───────────
 --
 -- A pair has a canonical order — lexicographic `fst`-then-`snd`, as in every
 -- neighbouring language (Haskell's `Ord (a, b)`, Rust's `Ord for (A, B)`, Python
--- tuples, `std::pair`) — and `Pair` should provide it. It does not YET, because today
--- that costs SEVEN operations in this file where one would do: `compare` carries the
--- lexicographic logic, and `max`/`min`/`gt`/`gte`/`lt`/`lte` would each be one line
--- restating "call `compare`, check the sign".
+-- tuples, `std::pair`) — and `Pair` should provide it. It does not YET, but the reason
+-- is now only that the ordering is a SEPARATE, unblocked ticket: **WI-877**.
 --
--- That boilerplate is not `Pair`'s to carry. `ordered.anthill` already DERIVES all six
--- from `compare` by rule; they are unusable because the eval builtins registered on the
--- SPEC ops (`Ordered.compare`, `PartialOrd.gt`/`gte`/`lt`/`lte`) compare host SCALARS
--- only, and a builtin on a spec op shadows every carrier. That one builtin IS the
--- implementation for every primitive — `Int64` asserts `fact Ordered[T = Int64]` and
--- declares no `compare` of its own — which is why it sits on the spec op and why
--- `Pair`, the first `Ordered` provider it cannot handle, is the first to notice.
+-- WHAT USED TO BLOCK IT, and what WI-876 changed. Ordering `Pair` cost SEVEN
+-- operations in this file where one would do: `compare` carries the lexicographic
+-- logic, and `max`/`min`/`gt`/`gte`/`lt`/`lte` were each one line restating "call
+-- `compare`, check the sign". `ordered.anthill` already DERIVED all six from `compare`,
+-- but only as LAWS — and a rule is not backing (WI-818) — while the eval builtins for
+-- exactly those six sat on the SPEC ops (`Ordered.compare`, `PartialOrd.gt`/`gte`/
+-- `lt`/`lte`) and compared host SCALARS only. A builtin on a spec op shadows every
+-- carrier, so the derivation was unreachable and `Pair`, the first `Ordered` provider
+-- those builtins could not handle, was the first to notice.
 --
--- MEASURED: with the six written out the whole surface works; without them
--- `gt(pair(2, 1), pair(1, 9))` dies *"expected Ordered scalars of matching type, got
--- Entity and Entity"* on a program that LOADED CLEAN, and dropping `max`/`min` fails
--- the load outright (the load check demands a backing member for exactly those two).
--- It is seven-or-nothing.
+-- MEASURED at the time: with the six written out the whole surface worked; without them
+-- `gt(pair(2, 1), pair(1, 9))` died *"expected Ordered scalars of matching type, got
+-- Entity and Entity"* on a program that LOADED CLEAN, and dropping `max`/`min` failed
+-- the load outright. It was seven-or-nothing, and six workaround operations in the
+-- standard library for a defect that already had a ticket was the wrong trade.
 --
--- WI-876 is the fix — a spec-op builtin receives the frame's requirement dictionary and
--- dispatches through it when the operands are not host scalars — after which `Pair`
--- gains `provides PartialOrd`/`Ordered` plus `compare` ALONE. Shipping the boilerplate
--- first would have put six operations in the standard library whose only purpose was to
--- work around a defect that already has a ticket.
+-- WI-876 removed it: host implementations are keyed PER CARRIER (`operation_map` in a
+-- binding block) instead of on the spec op, so `PartialOrd`/`Ordered` now carry the
+-- derivation as real default BODIES. A structural `Ordered` carrier needs `compare`
+-- ALONE — see `wi876_operation_mapping_test`, which drives exactly that on a local
+-- carrier. WI-877 spends that on `Pair`.
 --
 -- ── EQUALITY IS COMPONENTWISE ────────────────────────────────────────────────────
 --
@@ -36,9 +36,10 @@
 -- EVIDENCE the `eq` body dispatches through. That is the `Set` precedent —
 -- `set.anthill`'s sort-level `requires Eq[T]`, honoured through the `provides` fact
 -- rather than op-scoped — applied to a two-parameter carrier. Equality needs no
--- per-carrier boilerplate because `PartialEq.eq`'s builtin ALREADY dispatches to a
--- carrier's own `eq` (`semantic_equal`); that asymmetry between the two builtin
--- families is precisely what WI-876 removes.
+-- per-carrier boilerplate because `PartialEq.eq`'s builtin ALREADY dispatched to a
+-- carrier's own `eq` (`semantic_equal`) — it was the ONE builtin family that did, and
+-- that asymmetry is what WI-876 removed: the ordering family now reaches a carrier's
+-- own implementation by being KEYED to it rather than by testing its operands.
 --
 -- THE CHAIN IS `PartialEq`, NOT `Eq`, deliberately: with an `Eq` chain,
 -- `Pair[A = Float, B = Int64]` became a LOAD ERROR (MEASURED) — `Float` provides

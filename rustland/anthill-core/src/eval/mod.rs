@@ -415,6 +415,18 @@ impl Interpreter {
         Ok(())
     }
 
+    /// [`Self::register_builtin`] for a caller that already holds the operation's
+    /// `Symbol` — no name resolution, and no "does it resolve?" question to answer,
+    /// because the caller resolved it. WI-876's `operation_map` registration takes
+    /// this: its symbols are resolved ONCE at load and cached on the KB, and it runs
+    /// again for every fresh interpreter.
+    pub fn register_builtin_sym<F>(&mut self, sym: crate::intern::Symbol, f: F)
+    where
+        F: Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError> + 'static,
+    {
+        self.builtins.insert(sym, std::sync::Arc::new(f));
+    }
+
     /// Register a durability mirror, keyed by its canonical store-value
     /// form. Anthill code that calls `persist`/`retract`/`flush` with a
     /// `Value::Entity` whose canonical form matches `key` routes to this

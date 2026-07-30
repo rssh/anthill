@@ -4127,6 +4127,13 @@ fn load_phase_inner(
     // `kb.sort_ops_lookup` instead of the string-concat fallback.
     build_sort_ops_table(kb);
     mark!("build_sort_ops_table");
+    // WI-876 — the set of operations a binding block gave a HOST implementation.
+    // After `build_sort_ops_table` because it is read alongside it (the
+    // carrier-override resolution asks "can the interpreter run this member?", and
+    // a host-mapped member is one it can), and after every file's items are loaded
+    // so the mapped operation's own declaration is resolvable.
+    all_errors.extend(build_host_op_mappings(kb));
+    mark!("build_host_op_mappings");
     // WI-616 — the semantic-eq dispatch index, off the table just built. WI-837:
     // it refuses two distinct `eq` impls for one carrier, because it has no later
     // site to complain from — equality dispatches from unification (058 §4.9).
@@ -5263,6 +5270,127 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     }
 
 }
+
+/// WI-876 — one `operation_map` entry as the KB records it: the operation being
+/// realized (`<carrier>.<operation>`, resolved and by name), the host runtime's key
+/// for the function realizing it, and the host language it is written in.
+///
+/// `op` is `None` when the qualified name resolves to nothing — the carrier named an
+/// operation it does not DECLARE. Kept rather than dropped, because that is a
+/// broken binding somebody must hear about, and the reader that can say so is the
+/// host runtime's registration pass, not this one.
+#[derive(Debug, Clone)]
+pub struct HostOperationMapping {
+    pub op: Option<Symbol>,
+    pub op_qn: String,
+    pub host_fn: String,
+    pub lang: String,
+}
+
+/// WI-876 — read every `anthill.realization.OperationMapping` fact and cache the
+/// result on the KB, resolving each mapped operation's symbol once.
+///
+/// THE ONE READER of these facts' shape, and the one resolution of their operation
+/// names. Both consumers take the cache — this module's `is_host_mapped_op`
+/// predicate (which the typer's dispatch and the load check read) and the
+/// evaluator's `register_operation_mappings` — so they cannot disagree about which
+/// operation a mapping is about, the failure mode where the load check believes an
+/// op is host-backed and the interpreter has no implementation registered for it.
+///
+/// CACHED rather than re-queried because the evaluator's pass runs far more often
+/// than once: `register_standard_builtins` is re-run for every FRESH interpreter,
+/// and `resolve.rs`'s `run_in_bridge_interp` builds one per bridged evaluation —
+/// per operand the structural fold cannot collapse, per instance-fact `eq`
+/// dispatch, per `[simp]` macro fire. A fact walk there would cost a
+/// `fact_head_named_args` clone and four linear named-arg scans per mapping, per
+/// crossing.
+///
+/// TWO QUESTIONS, TWO OWNERS. "This operation does not exist" is answered HERE, as a
+/// load error: the loader can see it, and `anthill load` / `anthill check` are the
+/// tools whose job is to say so — before this, a mapping for an undeclared operation
+/// passed both silently and surfaced only when `anthill run` reached it. "This
+/// RUNTIME has no such `host_fn`" stays with the runtime's registration pass, which
+/// is the only thing that can answer it (and which a cpp-only mapping must not be
+/// judged by).
+///
+/// A MALFORMED fact is REFUSED, not skipped. The loader's own producer cannot emit one
+/// (it writes all four fields and refuses a non-string `host_fn`), so the only way to
+/// reach this is a HAND-ASSERTED `fact OperationMapping(…)` in a user file —
+/// `anthill.realization.OperationMapping` being an ordinary public entity, readable and
+/// writable like any other. Dropping such a fact silently would be the exact shape this
+/// ticket exists to remove. NOTE the wider consequence, which this refusal does NOT
+/// close: a WELL-FORMED hand-asserted fact is indistinguishable from a loader-emitted
+/// one, so a program can rebind a carrier's operation without going through a binding
+/// block. That is a property of the whole realization vocabulary (`Implementation` is
+/// equally hand-assertable) and wants a provenance rule, not a check here.
+///
+/// Language-AGNOSTIC, unlike the evaluator's pass, which keeps only its own
+/// language's entries: the cache answers a question about the PROGRAM ("does this
+/// operation have a realization?"), not about this process ("can I call it?"). A
+/// cpp-only mapping still means the author supplied an implementation, and the load
+/// check must not call such a program unbacked just because the Rust interpreter
+/// cannot run it.
+#[must_use = "the undeclared-operation refusals are load-blocking and must be merged"]
+pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    use super::typing::get_named_string_arg as field;
+    let Some(om_sym) = kb.try_resolve_symbol("anthill.realization.OperationMapping") else {
+        kb.set_host_op_mappings(Vec::new());
+        return Vec::new();
+    };
+    let mut out: Vec<HostOperationMapping> = Vec::new();
+    let mut errors: Vec<LoadError> = Vec::new();
+    for rid in kb.rules_by_functor_iter(om_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let (Some(carrier), Some(op), Some(host_fn), Some(lang)) = (
+            field(kb, &named, "carrier"),
+            field(kb, &named, "operation"),
+            field(kb, &named, "host_fn"),
+            field(kb, &named, "lang"),
+        ) else {
+            errors.push(LoadError::Other {
+                message: "an `anthill.realization.OperationMapping` fact needs \
+                          `carrier`, `operation`, `host_fn` and `lang`, each a STRING. \
+                          (A binding block's `operation_map` clause always writes all \
+                          four, so this is a hand-written fact.)"
+                    .to_string(),
+            });
+            continue;
+        };
+        let op_qn = format!("{carrier}.{op}");
+        // The name must resolve AND be an OPERATION. Resolving alone is far too weak:
+        // an entity constructor is a qualified `<ns>.<Sort>.<entity>` name and a `const`
+        // is too, so `operation_map { pt: "ordered_compare" }` over `entity pt(…)`
+        // resolved, registered, and made the CONSTRUCTOR run a comparison — MEASURED.
+        // Every builtin lookup (`call_op_sym`, the const fetch, `dispatch_resolved_
+        // operation`) consults the builtin map FIRST, so a mis-keyed registration wins
+        // over the real thing.
+        let sym = match kb.try_resolve_symbol(&op_qn) {
+            Some(s) if kb.kind_of(s) == Some(SymbolKind::Operation) => Some(s),
+            found => {
+                errors.push(LoadError::Other {
+                    message: match found {
+                        Some(_) => format!(
+                            "operation_map maps `{op_qn}` to host function {host_fn:?}, but \
+                             `{op}` is not an OPERATION of `{carrier}` — a host function \
+                             may only realize an operation"
+                        ),
+                        None => format!(
+                            "operation_map maps `{op_qn}` to host function {host_fn:?}, but \
+                             `{carrier}` declares no operation `{op}` — the clause says what \
+                             BACKS an operation, it does not declare one"
+                        ),
+                    },
+                });
+                None
+            }
+        };
+        out.push(HostOperationMapping { op: sym, op_qn, host_fn, lang });
+    }
+    kb.set_host_op_mappings(out);
+    errors
+}
+
 
 /// WI-616 — build the semantic-equality dispatch index. Must run right AFTER
 /// [`build_sort_ops_table`], whose table it reads.
@@ -15399,7 +15527,8 @@ impl<'a> Loader<'a> {
                 ProvidesItem::Proof(p) => self.load_proof(p, spec_domain),
                 ProvidesItem::Artifact(_)
                 | ProvidesItem::Carrier(_)
-                | ProvidesItem::NamespaceMap(_) => {}
+                | ProvidesItem::NamespaceMap(_)
+                | ProvidesItem::OperationMap(_) => {}
             }
         }
 
@@ -15407,6 +15536,130 @@ impl<'a> Loader<'a> {
 
         if self.parsed.symbols.name(pb.language) != "anthill" {
             self.emit_implementation_fact(pb, spec_term, spec_domain);
+            self.emit_operation_mapping_facts(pb, spec_term, spec_domain);
+        } else if pb.items.iter().any(|i| matches!(i, ProvidesItem::OperationMap(_))) {
+            // WI-876: `language anthill` means "the implementation is in anthill", so
+            // there is no host function for `operation_map` to name. The grammar
+            // admits the clause in every binding block, so an author can write one
+            // here — and REFUSING is the point: silently ignoring it reproduces
+            // exactly the failure mode this ticket exists to remove (loads clean,
+            // runs clean, registers nothing, no layer ever mentions it).
+            // Names the spec, which is what identifies the block: like its two
+            // siblings this is an unspanned `LoadError::Other` (as are the 25 others
+            // in this file), so the message has to carry the locating information.
+            let which = self
+                .provides_block_identity(pb, spec_term)
+                .map(|(qn, _)| qn)
+                .unwrap_or_else(|| "?".to_string());
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "`operation_map` is not meaningful in `provides {which} language \
+                     anthill` — an anthill implementation is an operation BODY, not a \
+                     host function. Remove the clause, or give the block a host language."
+                ),
+            });
+        }
+    }
+
+    /// Who a `provides Spec language X … end` block is ABOUT: the qualified name
+    /// of its spec sort (the `Implementation.target`, and the carrier an
+    /// `operation_map` entry realizes an operation of) and its host language.
+    /// `None` when the spec did not lower to a functor-headed term.
+    ///
+    /// Shared by both fact emitters so they cannot answer it differently.
+    fn provides_block_identity(
+        &mut self,
+        pb: &ProvidesBlock,
+        spec_term: TermId,
+    ) -> Option<(String, String)> {
+        let Term::Fn { functor, .. } = self.kb.get_term(spec_term) else { return None };
+        let qn = self.kb.qualified_name_of(*functor).to_string();
+        Some((qn, self.parsed.symbols.name(pb.language).to_string()))
+    }
+
+    /// WI-876 — assert one `anthill.realization.OperationMapping` fact per
+    /// `operation_map { compare: "ordered_compare" }` entry.
+    ///
+    /// FLAT and TOP-LEVEL, deliberately, rather than a list field on the
+    /// `Implementation` fact `emit_implementation_fact` builds: that is the shape
+    /// WI-089 moved the realization tables to, and its reason applies here
+    /// unchanged — a flat keyed fact is read by an ORDINARY query over the
+    /// discrimination tree, where a nested cons-list needs a list walk. The
+    /// runtime's builtin registry is exactly such a reader.
+    fn emit_operation_mapping_facts(
+        &mut self,
+        pb: &ProvidesBlock,
+        spec_term: TermId,
+        spec_domain: Symbol,
+    ) {
+        // Nothing to emit for a block with no `operation_map` — which is every
+        // binding block but four. Checked before the setup below, which interns
+        // five symbols and allocates two literal terms per call.
+        if !pb.items.iter().any(|i| matches!(i, ProvidesItem::OperationMap(_))) {
+            return;
+        }
+        // The block's spec sort IS the carrier being realized (`provides Int64
+        // language rust`). Read through the SAME helper `emit_implementation_fact`
+        // reads its `target` with, so the two facts cannot disagree about who the
+        // block is about — an invariant that was maintained by hand and by comment.
+        let Some((carrier_qn, language_str)) = self.provides_block_identity(pb, spec_term)
+        else { return };
+        let carrier_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(carrier_qn.clone())));
+        let language_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(language_str.clone())));
+
+        let om_sym = self.kb.resolve_symbol("anthill.realization.OperationMapping");
+        let om_sort = self.kb.intern("anthill.realization.OperationMapping");
+        let carrier_arg = self.kb.intern("carrier");
+        let operation_arg = self.kb.intern("operation");
+        let host_fn_arg = self.kb.intern("host_fn");
+        let lang_arg = self.kb.intern("lang");
+
+        for item in &pb.items {
+            let ProvidesItem::OperationMap(entries) = item else { continue };
+            for e in entries {
+                let op_name = self.parsed.symbols.name(e.operation).to_string();
+                // The host function must be a STRING LITERAL, refused HERE — at the
+                // producer — so the fact this emits is always well-shaped and its
+                // readers need no "malformed?" arm to skip on. MEASURED: without
+                // this, `operation_map { squish: no_such_host_function }` (unquoted,
+                // which `bindings` accepts and which `carrier { T: i64 }` in the
+                // grammar's own doc comment teaches) produced a fact whose `host_fn`
+                // was not a string, the shape reader dropped it, and the mapping
+                // VANISHED — loading clean, running clean, registering nothing, with
+                // no layer ever mentioning it. A quoted key that the runtime does not
+                // know is a different question, answered by the runtime.
+                let host_fn_tid = self.host_type_to_string_term(e.host_fn);
+                let host_fn_str = match self.kb.get_term(host_fn_tid) {
+                    Term::Const(super::term::Literal::String(s)) => s.clone(),
+                    _ => {
+                        self.errors.push(LoadError::Other {
+                            message: format!(
+                                "operation_map entry `{op_name}` in `provides {carrier_qn} \
+                                 language {language_str}` must name its host function as a \
+                                 STRING (`{op_name}: \"host_fn\"`)"
+                            ),
+                        });
+                        continue;
+                    }
+                };
+                let op_term = self.kb.alloc(Term::Const(
+                    super::term::Literal::String(op_name)));
+                let host_fn_term = self.kb.alloc(Term::Const(
+                    super::term::Literal::String(host_fn_str)));
+                let fact = self.kb.alloc(Term::Fn {
+                    functor: om_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (carrier_arg, carrier_term),
+                        (operation_arg, op_term),
+                        (host_fn_arg, host_fn_term),
+                        (lang_arg, language_term),
+                    ]),
+                });
+                self.kb.assert_metadata_fact(fact, om_sort, spec_domain, None);
+            }
         }
     }
 
@@ -15415,20 +15668,10 @@ impl<'a> Loader<'a> {
     /// artifact, language, profile, carrier, and namespace_map fields per
     /// the entity definition in stdlib/anthill/realization/realization.anthill.
     fn emit_implementation_fact(&mut self, pb: &ProvidesBlock, spec_term: TermId, spec_domain: Symbol) {
-        // target: qualified name of the spec sort, as a String literal.
-        let spec_functor = match self.kb.get_term(spec_term) {
-            Term::Fn { functor, .. } => *functor,
-            _ => return,
-        };
-        let target_qn = match self.kb.symbols.get(spec_functor) {
-            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-            SymbolDef::Unresolved { name } => name.clone(),
-        };
+        let Some((target_qn, language_str)) = self.provides_block_identity(pb, spec_term)
+        else { return };
         let target_term = self.kb.alloc(Term::Const(
             super::term::Literal::String(target_qn.clone())));
-
-        // language: from pb.language (parsed-symbol → string).
-        let language_str = self.parsed.symbols.name(pb.language).to_string();
         let language_term = self.kb.alloc(Term::Const(
             super::term::Literal::String(language_str)));
 

@@ -914,6 +914,7 @@ pub enum ProvidesItem {
     Artifact(String),
     Carrier(Vec<CarrierBinding>),
     NamespaceMap(Vec<NamespaceMapEntry>),
+    OperationMap(Vec<OperationMapEntry>),
 }
 
 #[derive(Debug)]
@@ -926,6 +927,15 @@ pub struct CarrierBinding {
 pub struct NamespaceMapEntry {
     pub anthill_namespace: Symbol,
     pub host_module: TermId,
+}
+
+/// WI-876 — one `operation_map { compare: "ordered_compare" }` entry: the SHORT
+/// name of an operation the block's carrier declares, and the host function that
+/// realizes it. The operation-level peer of [`CarrierBinding`].
+#[derive(Debug)]
+pub struct OperationMapEntry {
+    pub operation: Symbol,
+    pub host_fn: TermId,
 }
 
 // ── Stage 0: import tools ───────────────────────────────────────

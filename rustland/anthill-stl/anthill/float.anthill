@@ -5,6 +5,17 @@ namespace anthill.prelude
   provides Float language rust
     artifact "rustland/anthill-stl/src/prelude/float.rs"
     carrier { Float: "f64" }
+    -- WI-876: `Float`'s comparisons are IEEE — a NaN operand is UNORDERED, so each
+    -- answers false — and they are DIFFERENT host functions from the total ones
+    -- `Int64`/`String`/`BigInt` name. No `compare`: `Float` provides no `Ordered`.
+    -- This is the fact that used to be a `float_pair` branch inside the shared
+    -- spec-op builtin.
+    operation_map {
+      gt: "float_gt",
+      gte: "float_gte",
+      lt: "float_lt",
+      lte: "float_lte"
+    }
     -- WI-644 / proposal 004: IEEE Float provides only the PARTIAL specs — its `==`
     -- is not reflexive (nan) and not a congruence (-0.0/+0.0), so it is NOT a
     -- lawful Eq/Ordered. `TotalFloat` (prelude) provides the total instances for

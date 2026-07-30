@@ -342,11 +342,11 @@ pub fn verify_proofs(kb: &mut KnowledgeBase) -> Vec<ProofReport> {
         // Only ground user proofs (a String `rule` QN) are dischargeable. The
         // KB also holds symbolic ProofRecords whose fields are bare `Ref`s (e.g.
         // template / partially-applied records); these are NOT user obligations,
-        // and `read_string_field` returns `None` for them — the same skip the
+        // and `get_named_string_arg` returns `None` for them — the same skip the
         // cli `read_proof_record` makes via `lookup_string`. A genuinely
         // malformed record is caught loudly downstream at the write
         // (`set_proof_result`), where a missing `result` field is a real bug.
-        let rule_qn = match read_string_field(kb, &named, "rule") {
+        let rule_qn = match super::typing::get_named_string_arg(kb, &named, "rule") {
             Some(s) => s,
             None => continue,
         };
@@ -706,7 +706,7 @@ fn strategy_tool_name(kb: &KnowledgeBase, strategy: TermId) -> Option<String> {
         return None;
     }
     match kb.get_term(strategy) {
-        Term::Fn { named_args, .. } => read_string_field(kb, named_args, "name"),
+        Term::Fn { named_args, .. } => super::typing::get_named_string_arg(kb, named_args, "name"),
         _ => None,
     }
 }
@@ -749,15 +749,4 @@ fn term_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     }
 }
 
-/// Read a `String`-const named field off a fact's named args.
-fn read_string_field(
-    kb: &KnowledgeBase,
-    named: &SmallVec<[(Symbol, TermId); 2]>,
-    key: &str,
-) -> Option<String> {
-    let tid = get_named_arg(kb, named, key)?;
-    match kb.get_term(tid) {
-        Term::Const(Literal::String(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
+

@@ -670,15 +670,19 @@ class ParserIntegrationTest extends munit.FunSuite:
       .getOrElse(fail("expected sort"))
     assertEquals(ns.name.segments.map(floatPf.symbols.name).mkString("."), "anthill.prelude.Float")
 
-    // No satisfaction facts in stdlib (moved to bindings); 28 operations,
-    // 4 rules, 6 constraints — a sort with no inner sorts.
+    // No satisfaction facts in stdlib (moved to bindings); 32 operations,
+    // 5 rules, 6 constraints — a sort with no inner sorts.
     assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 0,
       "Float spec should declare no satisfaction facts (moved to bindings)")
     val opCount = sumItems(ns.items) {
       case Item.OperationBlockItem(b) => b.entries.length
       case Item.OperationItem(_)      => 1
     }
-    assertEquals(opCount, 28, "Float should expose 28 operations")
+    // WI-876: 28 + the four comparisons (`gt`/`gte`/`lt`/`lte`). `Float` DECLARES
+    // them now because its host implementations are keyed per carrier — its
+    // binding's `operation_map` names the IEEE functions — where they used to be
+    // registered on the `PartialOrd` spec op and serve every carrier at once.
+    assertEquals(opCount, 32, "Float should expose 32 operations")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
       "Float should declare 5 algebraic rules (neg, abs, recip, tau, nonEqRefl)")
     assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,

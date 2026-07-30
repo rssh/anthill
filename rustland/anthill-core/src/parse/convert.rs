@@ -4146,12 +4146,19 @@ impl<'a> Converter<'a> {
                     }
                 }
                 "carrier_clause" => {
-                    items.push(ProvidesItem::Carrier(self.convert_provides_bindings(child)
+                    items.push(ProvidesItem::Carrier(
+                        self.convert_provides_bindings(child, "`carrier` binding", "each abstract sort maps to ONE host type")
                         .into_iter().map(|(s, t)| CarrierBinding { anthill_param: s, host_type: t }).collect()));
                 }
                 "namespace_map_clause" => {
-                    items.push(ProvidesItem::NamespaceMap(self.convert_provides_bindings(child)
+                    items.push(ProvidesItem::NamespaceMap(
+                        self.convert_provides_bindings(child, "`namespace_map` binding", "each anthill namespace maps to ONE host module")
                         .into_iter().map(|(s, t)| NamespaceMapEntry { anthill_namespace: s, host_module: t }).collect()));
+                }
+                "operation_map_clause" => {
+                    items.push(ProvidesItem::OperationMap(
+                        self.convert_provides_bindings(child, "`operation_map` entry", "each operation is realized by ONE host function")
+                        .into_iter().map(|(s, t)| OperationMapEntry { operation: s, host_fn: t }).collect()));
                 }
                 _ => {}
             }
@@ -4160,7 +4167,25 @@ impl<'a> Converter<'a> {
         Some(ProvidesBlock { spec, language, items, span })
     }
 
-    fn convert_provides_bindings(&mut self, node: Node) -> Vec<(Symbol, TermId)> {
+    /// The `{ key: value, … }` payload of a binding block's `carrier` /
+    /// `namespace_map` / `operation_map` clause.
+    ///
+    /// WI-876: a REPEATED KEY is refused here, as SYNTAX — repetition within one list
+    /// needs no type information to detect, which is the same reason the named-argument
+    /// rule (WI-809) and the tuple/entity label rules (WI-805/WI-808) are checked at
+    /// this layer. Without it every reader takes ONE of the two and the other is
+    /// silently unreachable: MEASURED, `operation_map { gt: "ordered_gt", gt:
+    /// "float_gt" }` emitted BOTH facts and the runtime's `HashMap` insert let the
+    /// second overwrite the first, so `gt` quietly acquired IEEE semantics with no
+    /// diagnostic from any layer. `carrier` and `namespace_map` had the same hole and
+    /// are covered by the same check — `what`/`why` name the clause so the message
+    /// says which list the duplicate is in.
+    fn convert_provides_bindings(
+        &mut self,
+        node: Node,
+        what: &'static str,
+        why: &'static str,
+    ) -> Vec<(Symbol, TermId)> {
         // bindings: '{' commaSep1(seq(identifier, ':', term)) '}'
         let mut out: Vec<(Symbol, TermId)> = Vec::new();
         if let Some(bindings) = self.field(node, "bindings") {
@@ -4171,6 +4196,8 @@ impl<'a> Converter<'a> {
             while i + 1 < children.len() {
                 if children[i].kind() == "identifier" {
                     let key = self.intern(self.text(children[i]));
+                    let seen: Vec<Symbol> = out.iter().map(|(k, _)| *k).collect();
+                    self.check_label_unique(what, why, seen.into_iter(), key, children[i]);
                     let val = self.convert_term(children[i + 1]);
                     out.push((key, val));
                     i += 2;

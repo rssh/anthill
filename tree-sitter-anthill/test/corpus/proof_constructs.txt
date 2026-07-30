@@ -305,7 +305,7 @@ end
           name: (identifier))))))
 
 =====================================
-Provides block (rust language) with artifact and carrier
+Provides block (rust language) with artifact, carrier and operation_map
 =====================================
 
 namespace test
@@ -314,6 +314,7 @@ namespace test
     artifact "src/stack.rs"
     carrier { T: i64 }
     namespace_map { Stack: "crate::stack" }
+    operation_map { push: "stack_push", pop: "stack_pop" }
   end
 end
 
@@ -343,6 +344,12 @@ end
             (identifier))))
       (namespace_map_clause
         bindings: (bindings
+          (identifier)
+          (string_literal)))
+      (operation_map_clause
+        bindings: (bindings
+          (identifier)
+          (string_literal)
           (identifier)
           (string_literal))))))
 

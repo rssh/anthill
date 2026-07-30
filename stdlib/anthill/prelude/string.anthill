@@ -2,9 +2,22 @@
 -- Spec satisfaction facts (Eq[String], Ordered[String]) live in the per-language
 -- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
 sort anthill.prelude.String
-  import anthill.prelude.{Eq, Ordered}
-  import anthill.prelude.PartialOrd.{gt}
+  import anthill.prelude.{Eq, Ordered, Int64}
   import anthill.prelude.Numeric.{sub}
+
+  -- WI-876: `String`'s ORDERING (lexicographic by code unit), declared here and
+  -- backed by the host in `rustland/anthill-stl/anthill/string.anthill`'s
+  -- `operation_map`. See `int64.anthill`'s note for why a host-backed operation
+  -- must still be DECLARED on its carrier.
+  operation {
+    compare(a: String, b: String) -> Int64  -- -1 | 0 | 1
+    gt(a: String, b: String) -> Bool        -- >
+    gte(a: String, b: String) -> Bool       -- >=
+    lt(a: String, b: String) -> Bool        -- <
+    lte(a: String, b: String) -> Bool       -- <=
+    max(a: String, b: String) -> String     -- the greater
+    min(a: String, b: String) -> String     -- the lesser
+  }
 
   operation {
     concat(a: String, b: String) -> String
@@ -27,9 +40,12 @@ sort anthill.prelude.String
   -- already that wide. The deficit is computed once and filled with one
   -- repeat + one concat — O(width), replacing the quadratic
   -- one-space-per-recursion shape callers used to hand-roll.
+  -- WI-876: `Int64.gt` explicitly — `d` is an `Int64`, and since this sort now
+  -- declares its OWN `gt` (over `String`), an unqualified `gt` here would resolve to
+  -- that one and be a type error. Qualifying names the carrier the operands have.
   operation padRight(s: String, width: Int64) -> String =
     let d = sub(width, length(s))
-    if gt(d, 0) then concat(s, repeat(" ", d)) else s
+    if Int64.gt(d, 0) then concat(s, repeat(" ", d)) else s
 
   -- Laws
   rule isEmpty(?s) <=> eq(length(?s), 0)

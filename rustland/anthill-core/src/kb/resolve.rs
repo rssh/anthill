@@ -5164,8 +5164,10 @@ impl KnowledgeBase {
                 // are IEEE — a NaN operand is UNORDERED, so the comparison is FALSE
                 // (`partial_cmp` = `None`), NOT `OrderedFloat`'s total_cmp where NaN
                 // ranks largest. This keeps rule-body comparisons agreeing with eval's
-                // `ordered_*` (float_pair) and the C++ codegen (the WI-645 acceptance:
-                // resolver == interpreter == codegen on Float).
+                // `Float`-mapped `float_gt`/`float_lt`/… (WI-876 moved those off the
+                // spec op, where a `float_pair` test inside the SHARED comparison
+                // decided which carrier it was serving) and with the C++ codegen — the
+                // WI-645 acceptance: resolver == interpreter == codegen on Float.
                 match x.into_inner().partial_cmp(&y.into_inner()) {
                     Some(o) => o,
                     None => return BuiltinResult::Failure,

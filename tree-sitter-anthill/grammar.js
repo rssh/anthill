@@ -934,7 +934,14 @@ module.exports = grammar({
     //     artifact "src/stack.rs"
     //     carrier { T: i64 }
     //     namespace_map { Stack: "crate::stack" }
+    //     operation_map { push: "stack_push" }
     //   end
+    //
+    // WI-876: `operation_map` is the OPERATION-level peer of `carrier` — `carrier`
+    // says which host TYPE realizes a sort, `operation_map` says which host
+    // FUNCTION realizes one of that carrier's operations. Its absence is the
+    // reason `Ordered.compare`'s host implementation had to be keyed on the SPEC
+    // op, where it shadowed every carrier that could not be a host scalar.
 
     provides_clause: $ => seq(
       'provides',
@@ -959,11 +966,13 @@ module.exports = grammar({
       $.artifact_clause,
       $.carrier_clause,
       $.namespace_map_clause,
+      $.operation_map_clause,
     ),
 
     artifact_clause: $ => seq('artifact', field('path', $.string_literal)),
     carrier_clause: $ => seq('carrier', field('bindings', $.bindings)),
     namespace_map_clause: $ => seq('namespace_map', field('bindings', $.bindings)),
+    operation_map_clause: $ => seq('operation_map', field('bindings', $.bindings)),
 
     // =========================================================
     // Sugar: operation block, rule block

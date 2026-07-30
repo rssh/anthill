@@ -1807,17 +1807,66 @@ end
     }
 }
 
+/// WI-876 — `Float` comparison, on the surface `Float` actually PROVIDES.
+///
+/// This test used to read `Ordered.max(1.5, 2.75)` and answer `2.75`. It no longer
+/// can, and that is the fix rather than a casualty of it: `Float` provides
+/// `PartialOrd` and deliberately NOT `Ordered` (WI-644 / proposal 004 — an IEEE order
+/// is PARTIAL, `NaN` is unordered), and `max` is an `Ordered` operation. The old
+/// answer came from a builtin registered on the SPEC op, which served every carrier
+/// whether or not it provided the spec — and served this one with `total_cmp`, under
+/// which `NaN` ranks LARGEST, exactly the "same program, opposite answers by backend"
+/// that `wi645_float_nan_ieee_test` exists to forbid. With the host implementations
+/// keyed per carrier, `Ordered.max` reaches only carriers that provide `Ordered`.
+///
+/// The second arm pins the refusal so the change is a decision and not a drift, and
+/// the third keeps `max` covered on a carrier that IS `Ordered`.
 #[test]
 fn m3_float_comparison_and_max() {
     let src = r#"
 namespace test.m3_float_cmp
+  import anthill.prelude.PartialOrd.{gt, lt, gte, lte}
   import anthill.prelude.Ordered.{max}
-  operation main() -> Float = max(1.5, 2.75)
+  import anthill.prelude.Float.{nan}
+  operation bigger() -> Bool = gt(2.75, 1.5)
+  operation smaller() -> Bool = lt(2.75, 1.5)
+  operation atLeast() -> Bool = gte(1.5, 1.5)
+  operation atMost() -> Bool = lte(1.5, 1.5)
+  operation nanIsUnordered() -> Bool = gt(nan, 1.5)
+  operation totalMax() -> Float = max(1.5, 2.75)
+  operation intMax() -> Int64 = max(1, 2)
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_float_cmp.main", &[]).expect("call main");
-    assert!((expect_float(result) - 2.75).abs() < 1e-9);
+    for (op, want) in [
+        ("bigger", true), ("smaller", false), ("atLeast", true), ("atMost", true),
+        // IEEE: a NaN operand is UNORDERED, so the comparison is false — `Float`'s
+        // OWN host implementation, named in its binding's `operation_map`, rather
+        // than a NaN branch inside a comparison shared with the total carriers.
+        ("nanIsUnordered", false),
+    ] {
+        let got = interp
+            .call(&format!("test.m3_float_cmp.{op}"), &[])
+            .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
+        assert_eq!(got.as_bool(), Some(want), "{op}");
+    }
+
+    // A `Float` is not `Ordered`, so the total `max` has no implementation for it.
+    // Asserted as "errors" rather than on the message: the diagnostic is poor (an
+    // `Internal` from the unfilled requirement slot rather than a load-time "Float
+    // does not provide Eq, which Ordered requires") because no use-site `requires
+    // Ordered` check exists — WI-883. Pinning the message would pin the defect.
+    let mut interp = interp_for(src);
+    assert!(
+        interp.call("test.m3_float_cmp.totalMax", &[]).is_err(),
+        "`Ordered.max` on a `Float` must not resolve — `Float` provides no `Ordered`",
+    );
+
+    let mut interp = interp_for(src);
+    match interp.call("test.m3_float_cmp.intMax", &[]).expect("call intMax") {
+        Value::Int(n) => assert_eq!(n, 2, "`max` still works on a carrier that IS `Ordered`"),
+        other => panic!("intMax: {other:?}"),
+    }
 }
 
 #[test]

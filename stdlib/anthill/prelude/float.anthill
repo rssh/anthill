@@ -8,6 +8,24 @@ sort anthill.prelude.Float
   import anthill.prelude.Ordered.{max}
   import anthill.prelude.algebra.{Ring}
 
+  -- WI-876: `Float`'s comparison surface, declared here and backed by the host in
+  -- `rustland/anthill-stl/anthill/float.anthill`'s `operation_map`, which names the
+  -- IEEE functions. NO `compare`: `Float` provides `PartialOrd` and NOT `Ordered`,
+  -- because a `NaN` operand is UNORDERED — every comparison answers false, and there
+  -- is no total `compare` for `PartialOrd`'s default derivation to bottom out in.
+  -- `TotalFloat` is the lawful-key wrapper.
+  --
+  -- That "Float's order is IEEE" is now a FACT IN FLOAT'S OWN BINDING rather than a
+  -- branch inside a shared spec-op builtin — the same registration that had to serve
+  -- every carrier, and therefore had to test its operands to find out which one it
+  -- was serving.
+  operation {
+    gt(a: Float, b: Float) -> Bool         -- >, false if either operand is NaN
+    gte(a: Float, b: Float) -> Bool        -- >=, false if either operand is NaN
+    lt(a: Float, b: Float) -> Bool         -- <, false if either operand is NaN
+    lte(a: Float, b: Float) -> Bool        -- <=, false if either operand is NaN
+  }
+
   -- Operations beyond what Numeric provides
   operation {
     abs(a: Float) -> Float

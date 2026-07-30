@@ -456,6 +456,11 @@ enum ProvidesItem:
   case ArtifactI(path: String)
   case CarrierI(bindings: IndexedSeq[CarrierBinding])
   case NamespaceMapI(entries: IndexedSeq[NamespaceMapEntry])
+  // WI-876: `operation_map { compare: "ordered_compare" }` — which host FUNCTION
+  // realizes one of the carrier's operations. The operation-level peer of
+  // `CarrierI`, which says which host TYPE realizes a sort.
+  case OperationMapI(entries: IndexedSeq[OperationMapEntry])
 
 case class CarrierBinding(anthillParam: TermSymbol, hostType: TermId)
 case class NamespaceMapEntry(anthillNamespace: TermSymbol, hostModule: TermId)
+case class OperationMapEntry(operation: TermSymbol, hostFn: TermId)

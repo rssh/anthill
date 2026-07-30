@@ -6,8 +6,21 @@
 -- — see proposal 038.
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
-  import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.Numeric.{sub}
+
+  -- WI-876: `BigInt`'s ORDERING, declared here and backed by the host in
+  -- `rustland/anthill-stl/anthill/bigint.anthill`'s `operation_map`. See
+  -- `int64.anthill`'s note for why a host-backed operation must still be DECLARED
+  -- on its carrier.
+  operation {
+    compare(a: BigInt, b: BigInt) -> Int64  -- -1 | 0 | 1
+    gt(a: BigInt, b: BigInt) -> Bool        -- >
+    gte(a: BigInt, b: BigInt) -> Bool       -- >=
+    lt(a: BigInt, b: BigInt) -> Bool        -- <
+    lte(a: BigInt, b: BigInt) -> Bool       -- <=
+    max(a: BigInt, b: BigInt) -> BigInt     -- the greater
+    min(a: BigInt, b: BigInt) -> BigInt     -- the lesser
+  }
 
   -- Conversion operations
   operation to_bigint(n: Int64) -> BigInt

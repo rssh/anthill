@@ -887,6 +887,33 @@ class ParseTest extends munit.FunSuite:
     * stdlib modules are added, this test catches a parser regression
     * before it bites a downstream consumer.
     */
+  // WI-876: the `operation_map` clause — which host FUNCTION realizes one of a
+  // carrier's operations. Added to the kernel language by rustland; scaland must be
+  // able to PARSE a binding file that uses it (`rustland/anthill-stl/anthill/*.anthill`
+  // all do), or it cannot read the shipped bindings at all.
+  test("WI-876: `operation_map` in a binding block parses") {
+    val src = """
+namespace test
+  provides Int64 language rust
+    artifact "src/int.rs"
+    carrier { Int64: "i64" }
+    operation_map { compare: "ordered_compare", gt: "ordered_gt" }
+  end
+end
+"""
+    val pf = Parser.parse(src, "opmap.anthill") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString(", ")}")
+    val nsItems = pf.items.collect { case Item.NamespaceItem(ns) => ns }.head.items
+    val blocks = nsItems.collect { case Item.ProvidesBlockItem(b) => b }
+    assertEquals(blocks.length, 1)
+    val maps = blocks.head.items.collect { case ProvidesItem.OperationMapI(es) => es }
+    assertEquals(maps.length, 1, "one operation_map clause")
+    assertEquals(maps.head.length, 2, "two entries")
+    assertEquals(maps.head.map(e => pf.symbols.name(e.operation)).toList,
+                 List("compare", "gt"))
+  }
+
   test("scaland parser covers the whole stdlib (every .anthill file parses)") {
     import java.nio.file.{Files, Paths}
     import scala.jdk.CollectionConverters.*

@@ -213,22 +213,55 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   parameter whose sort `requires Eq`), i.e. `Pair` stops being a general PRODUCT.
   `Set`/`Map` genuinely need `Eq` on keys; a pair of anything is a pair. The cost is
   recorded, not hidden: `provides Eq[Pair]` rides the same chain and OVER-CLAIMS.
-- **A SPEC-OP BUILTIN SERVES EVERY CARRIER, INCLUDING ONES IT CANNOT HANDLE** (WI-876).
-  `Ordered.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` are registered on the SPEC op
-  and compare host SCALARS only. That single registration IS the implementation for
-  every primitive — `Int64` asserts `fact Ordered[T = Int64]` and declares no `compare`
-  of its own, which is legitimate (the load check exempts a HOST carrier, whose ops the
-  host artifact backs) — but a binding block has NO clause that maps an operation to a
-  host function (`_provides_content`: `artifact`/`carrier`/`namespace_map`/facts/rules),
-  so the registration had nowhere else to go. Consequence: a STRUCTURAL carrier that
-  provides `Ordered` is intercepted. MEASURED — `gt(pair(2, 1), pair(1, 9))` died
-  *"expected Ordered scalars of matching type, got Entity and Entity"* on a program that
-  LOADED CLEAN, and the only way to make it work was seven per-carrier members. So
-  `anthill.prelude.Pair` deliberately provides `PartialEq`/`Eq` and **NO ORDERING** — a
-  pair's canonical lexicographic order waits for WI-876 rather than shipping six
-  one-line workarounds in the standard library. `PartialEq.eq` is exempt because its
-  builtin ALREADY dispatches to a carrier's own `eq` (`semantic_equal`); that asymmetry
-  between the two builtin families is the defect.
+- **A HOST IMPLEMENTATION IS KEYED PER CARRIER, NEVER ON THE SPEC OP** (WI-876).
+  `operation_map { compare: "ordered_compare" }` in a `provides X language rust` block
+  is the clause that says which host FUNCTION realizes one of `X`'s operations — the
+  operation-level peer of `carrier`, which says which host TYPE realizes a sort. It
+  reaches the KB as a flat `anthill.realization.OperationMapping` fact and the runtime's
+  builtin registry READS THOSE FACTS (`register_operation_mappings`), instead of the
+  hardcoded spec-op names it used. WHY: a binding block had no such clause, so `Int64`'s
+  host `compare` had nowhere to be keyed and went on `anthill.prelude.Ordered.compare` —
+  where ONE host-scalar implementation was the backing for EVERY carrier that never
+  wrote its own. MEASURED: `gt(pair(2, 1), pair(1, 9))` died *"expected Ordered scalars
+  of matching type, got Entity and Entity"* on a program that LOADED CLEAN, and the
+  carrier's only repair was seven per-carrier members (WI-858 withdrew `Pair`'s ordering
+  rather than ship six of them; WI-877 adds it now that ONE suffices). Three parts move
+  together and none works alone: the mapping (so the implementation has a per-carrier
+  key), the DEFAULT BODIES on `PartialOrd.gt`/`gte`/`lt`/`lte` and `Ordered.max`/`min`
+  (unshadowed at last — `ordered.anthill` stated the derivation only as LAWS, and a rule
+  is not backing, WI-818), and the carriers DECLARING the ops they map (an operation
+  must EXIST for a registration to attach to; body-less, the `LogicalStream.splitFirst`
+  shape). "Executable" is now ONE predicate — `op_is_executable` = body │ builtin │ host
+  mapping — read by both the load check (`op_backed`) and eval's carrier-override
+  resolution (`carrier_override_op`, whose runnable-BODY-only gate made a host-mapped
+  member read as ABSENT, so the spec default ran instead of the carrier's own host code:
+  `gt(nan, 1.5)` fell into `Ordered.compare`, which `Float` does not provide).
+  CONSEQUENCE, deliberate: an `Ordered` op on a carrier that provides no `Ordered` no
+  longer resolves — `Ordered.max(1.5, 2.75)` was only ever answered by the spec-op
+  builtin ignoring provisions, and with `total_cmp`, under which NaN ranks LARGEST. The
+  derivation on `PartialOrd` carries an OP-SCOPED `requires Ordered[T]`: it must live
+  with the DECLARATION (`sort_ops` has one slot per carrier+short-name, so declaring
+  these on `Ordered` too would let HashMap order pick the winner), and `PartialOrd`
+  itself cannot require `Ordered` — `Float` provides one and not the other.
+  `PartialEq.eq` was always exempt because its builtin ALREADY dispatched to a carrier's
+  own `eq` (`semantic_equal`); that asymmetry between the two builtin families was the
+  defect, and the ordering family no longer needs a dispatching builtin to avoid it.
+  NOT MIGRATED, and the half-migration must not read as a finished one: the SLD
+  registry (`kb.register_standard_builtins`, `BuiltinTag`) ADDED carrier-keyed entries
+  BESIDE the spec-op ones and deleted nothing, because a bare `gt(?x, 5)` in any other
+  namespace still resolves to `PartialOrd.gt`. So at SLD the defect stands — MEASURED,
+  the rule-body goal `PartialOrd.gt("b", "a")` yields NO SOLUTIONS (`builtin_cmp` reads
+  NUMERIC operands only and silently `Failure`s on a string pair) while the same
+  comparison in eval answers `true`. WI-879, which also notes that "it runs before
+  `load_all`" explains why THAT function cannot read the facts, not why the list is
+  hand-written: `build_host_op_mappings` is a post-load pass and could derive it.
+  Likewise every other spec-op-keyed EVAL registration (`Numeric.add`,
+  `String.concat`, `Bool.not`, …) has the same latent hole — WI-880; the ordering
+  family went first because it had a demonstrated defect. And the load check's reach
+  is still coarser than the mapping: `check_provider_operations` skips a HOST carrier
+  wholesale, so `op_backed`'s new host-mapping leg is correct-by-construction but
+  UNREACHED today — retiring that skip is WI-880's, now that backing is knowable per
+  operation.
 
 
 # Repository rules

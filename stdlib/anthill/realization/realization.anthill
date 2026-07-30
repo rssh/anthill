@@ -205,6 +205,41 @@ namespace anthill.realization
     key          : Option[T = String]               -- WI-089: query key — profile ("cpp20-stl") or binding ("webots") overlay. none = the language base.
   )
 
+  -- WI-876: which host FUNCTION realizes one of a carrier's operations. The
+  -- operation-level peer of `CarrierBinding` — that one says which host TYPE
+  -- realizes a sort, this one says which host function realizes an operation OF
+  -- that carrier. Produced by the `operation_map { compare: "ordered_compare" }`
+  -- clause of a `provides X language <lang>` block, and read by the runtime's
+  -- builtin registry, which registers `<carrier>.<operation>` against the named
+  -- host function.
+  --
+  -- WHY IT EXISTS. Before this, a binding block admitted an artifact, a carrier,
+  -- a namespace map, facts and rules — and NOTHING that mapped an operation to a
+  -- host function. So `Int64`'s host `compare` had nowhere to be keyed and the
+  -- registration went on the SPEC op (`anthill.prelude.Ordered.compare`), where
+  -- that ONE implementation served every carrier that never wrote its own —
+  -- including STRUCTURAL carriers whose values it cannot compare. MEASURED:
+  -- `gt(pair(2, 1), pair(1, 9))` died *"expected Ordered scalars of matching
+  -- type, got Entity and Entity"* on a program that LOADED CLEAN. Keyed here, the
+  -- host implementation reaches exactly the carrier that declared it, and a spec
+  -- op's own default body is no longer shadowed.
+  --
+  -- `host_fn` is a KEY into the host runtime's own registry, NOT a symbol the
+  -- host resolves by reflection: the runtime owns the list of functions it is
+  -- willing to expose, and a mapping naming one it does not know is a LOAD-time
+  -- refusal rather than a silently unregistered operation.
+  --
+  -- `operation` is the SHORT name as declared on the carrier sort — the carrier
+  -- must DECLARE the operation (`operation compare(a: Int64, b: Int64) -> Int64`,
+  -- body-less, the `LogicalStream.splitFirst` shape); this clause says what backs
+  -- it, it does not bring it into existence.
+  entity OperationMapping(
+    carrier   : String,                             -- carrier sort QN ("anthill.prelude.Int64")
+    operation : String,                             -- operation short name ("compare")
+    host_fn   : String,                             -- host runtime's key for the function ("ordered_compare")
+    lang      : String                              -- host language ("rust")
+  )
+
   -- Operation implementation: marks an operation that has an expression body.
   -- The body occurrence lives in the loader's op_body_node side-table and is
   -- reached via anthill.reflect.operation_body (WI-305), not a fact field.

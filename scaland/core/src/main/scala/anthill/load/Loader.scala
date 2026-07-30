@@ -537,7 +537,12 @@ object Loader:
         loadProof(kb, p, fileSym, scopeTerm)
       case ProvidesItem.ArtifactI(_)
          | ProvidesItem.CarrierI(_)
-         | ProvidesItem.NamespaceMapI(_) =>
+         | ProvidesItem.NamespaceMapI(_)
+         // WI-876: parsed so scaland can READ a binding file that uses the clause;
+         // scaland emits no `Implementation` fact either, so it emits no
+         // `OperationMapping` — the fact-emitting half is rustland's (see
+         // `emit_operation_mapping_facts`) and is the port that remains.
+         | ProvidesItem.OperationMapI(_) =>
 
   private def specName(fileSym: SymbolTable, te: TypeExpr): String = te match
     case TypeExpr.Simple(n) => joinSegments(fileSym, n.segments)

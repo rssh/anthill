@@ -3,6 +3,17 @@ namespace anthill.prelude
   provides String language rust
     artifact "rustland/anthill-stl/src/prelude/string.rs"
     carrier { String: "String" }
+    -- WI-876: `String`'s ordering is the host's lexicographic `Ord` — same total
+    -- comparison functions `Int64` names, keyed to this carrier.
+    operation_map {
+      compare: "ordered_compare",
+      gt: "ordered_gt",
+      gte: "ordered_gte",
+      lt: "ordered_lt",
+      lte: "ordered_lte",
+      max: "ordered_max",
+      min: "ordered_min"
+    }
     -- WI-644 / proposal 004: String is lawful — partial bases + total markers.
     fact PartialEq[T = String]
     fact Eq[T = String]

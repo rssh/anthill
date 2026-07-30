@@ -49,15 +49,20 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.kernel.struct_eq", builtin_struct_eq)?;
 
     // WI-644 / proposal 004: gt/lt/gte/lte are the PartialOrd comparison surface
-    // (IEEE for Float — a NaN operand answers false); compare/max/min stay on the
-    // total Ordered.
-    register_if_present(interp, "anthill.prelude.Ordered.compare", ordered_compare)?;
-    register_if_present(interp, "anthill.prelude.PartialOrd.gt", ordered_gt)?;
-    register_if_present(interp, "anthill.prelude.PartialOrd.gte", ordered_gte)?;
-    register_if_present(interp, "anthill.prelude.PartialOrd.lt", ordered_lt)?;
-    register_if_present(interp, "anthill.prelude.PartialOrd.lte", ordered_lte)?;
-    register_if_present(interp, "anthill.prelude.Ordered.max", ordered_max)?;
-    register_if_present(interp, "anthill.prelude.Ordered.min", ordered_min)?;
+    // (IEEE for Float — a NaN operand answers false); compare/max/min are the total
+    // `Ordered` surface.
+    //
+    // WI-876 — NOT REGISTERED HERE. This family is the one whose host
+    // implementations are keyed PER CARRIER, from the `operation_map` clause of
+    // each `provides <carrier> language rust` block (see
+    // [`register_operation_mappings`]). Registered on the SPEC op, one host-scalar
+    // implementation served every carrier that never wrote its own — so a
+    // STRUCTURAL `Ordered` provider was intercepted by code that could not compare
+    // its values, on a program that LOADED CLEAN, and the spec's own default bodies
+    // could never run. `max`/`min` are in the family too — they moved to `PartialOrd`,
+    // beside the `gte`/`lte` their default derivation reads, and each carrier maps
+    // them: the total scalars to `ordered_max`/`min`, `Float` to the IEEE
+    // `maxNum`/`minNum` that absorb NaN.
 
     register_if_present(interp, "anthill.prelude.Bool.not", bool_not)?;
     register_if_present(interp, "anthill.prelude.Bool.and", bool_and)?;
@@ -186,6 +191,136 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.realization.runtime.OpRef.op", opref_op)?;
     register_if_present(interp, "anthill.realization.runtime.OpRef.dict", opref_dict)?;
 
+    // WI-876 — last, because it is the KB-DRIVEN half: everything above is a
+    // hardcoded qualified name, this reads what the loaded binding blocks asked
+    // for. Registered after, so a mapping and a hardcoded entry naming the same
+    // operation resolve to the mapping (nothing does today; the ordering family
+    // moved out of the list above entirely).
+    register_operation_mappings(interp)?;
+
+    Ok(())
+}
+
+/// WI-876 — the host functions this runtime exposes to an `operation_map` clause,
+/// keyed by the name a binding block spells. A CLOSED list, and that is the point:
+/// `host_fn` is a key into this registry, not a symbol resolved by reflection, so
+/// the runtime keeps control of what a `.anthill` file can bind to and an unknown
+/// key is a refusal rather than a silently unregistered operation.
+///
+/// Registering here does NOT make an operation dispatchable on its own — the
+/// carrier must also DECLARE the operation (`operation compare(a: Int64, b: Int64)
+/// -> Int64`, body-less), which is what puts it in the `sort_ops` table both the
+/// typer's static pin and the evaluator's value-directed dispatch read.
+fn host_fn_by_key(key: &str) -> Option<HostFn> {
+    let (arity, f): (usize, fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>) =
+        match key {
+            // The TOTAL scalar order (`Ordered`): `Int64`, `BigInt`, `String`.
+            "ordered_compare" => (2, ordered_compare),
+            "ordered_gt" => (2, ordered_gt),
+            "ordered_gte" => (2, ordered_gte),
+            "ordered_lt" => (2, ordered_lt),
+            "ordered_lte" => (2, ordered_lte),
+            "ordered_max" => (2, ordered_max),
+            "ordered_min" => (2, ordered_min),
+            // The IEEE partial order (`PartialOrd` on `Float`): a NaN operand is
+            // UNORDERED, so every comparison answers false. Its own four functions
+            // rather than a carrier test inside the total ones — `Float` names these
+            // in its own binding, which is where "Float's order is IEEE" belongs.
+            "float_gt" => (2, float_gt),
+            "float_gte" => (2, float_gte),
+            "float_lt" => (2, float_lt),
+            "float_lte" => (2, float_lte),
+            _ => return None,
+        };
+    Some(HostFn { arity, f })
+}
+
+/// WI-876 — a host function this runtime exposes, with the ARITY it accepts.
+///
+/// The arity is carried because the registry is CLOSED, so it is known here and
+/// nowhere else — and without it a mapping may bind an operation to a host function
+/// that cannot take its arguments. MEASURED: `operation squish(a: Widget) -> Int64`
+/// mapped to `"ordered_compare"` (which is `expect_args::<2>`) loaded clean, passed
+/// `anthill check`, and died `ArityMismatch { expected: 2, got: 1 }` on the first
+/// call — a load-time claim of backing that does not imply the operation runs, which
+/// is the very defect class this ticket exists to close, one level down.
+#[derive(Clone, Copy)]
+struct HostFn {
+    arity: usize,
+    f: fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>,
+}
+
+/// WI-876 — register the per-carrier host implementations named by every loaded
+/// `operation_map` clause, read from the `anthill.realization.OperationMapping`
+/// facts the loader emits.
+///
+/// LOUD ON BOTH FAILURE MODES, per the repo's no-silent-skip rule — a mapping that
+/// registers nothing is invisible until the operation is called, and then it
+/// misreports as a missing implementation rather than as the broken binding it is:
+///   * an unknown `host_fn` key → [`EvalError::Internal`] naming the key;
+///   * a `<carrier>.<operation>` that does not resolve → the carrier did not
+///     DECLARE the operation, so nothing could ever dispatch to the registration.
+/// This is the reader that CAN complain; `build_host_op_mappings`, which caches the
+/// mappings, deliberately does not.
+///
+/// Mappings for another host language are skipped — a `provides X language cpp`
+/// block names cpp functions, which this runtime is right not to know.
+fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
+    // Snapshot the cache before registering — `register_builtin_sym` mutates the
+    // interpreter. `kb.host_op_mappings()` is built once at load; this function runs
+    // for every fresh interpreter, including the one `run_in_bridge_interp` builds
+    // per bridged evaluation, so it must not re-walk the facts.
+    let mappings: Vec<crate::kb::load::HostOperationMapping> = interp
+        .kb()
+        .host_op_mappings()
+        .iter()
+        .filter(|m| m.lang == "rust")
+        .cloned()
+        .collect();
+    for crate::kb::load::HostOperationMapping { op, op_qn, host_fn, .. } in mappings {
+        let Some(host) = host_fn_by_key(&host_fn) else {
+            // Loud, and it stops the whole interpreter — including the short-lived one
+            // the resolver builds per bridged evaluation, so an unrelated `[simp]` fire
+            // or `eq` dispatch reports this too. That breadth is deliberate: a binding
+            // block naming a function the runtime does not have is broken for the whole
+            // program, not for one call. The message says so, because the site it
+            // surfaces at will often have nothing to do with the mapping.
+            return Err(EvalError::Internal(format!(
+                "broken binding block: operation_map names host function {host_fn:?} for \
+                 {op_qn}, which the rust runtime does not provide. No interpreter can be \
+                 built for this program until the binding is fixed — this error may \
+                 surface at a call that has nothing to do with {op_qn}."
+            )));
+        };
+        // `op` is `None` only when the loader already refused this mapping (the
+        // operation is undeclared, or is not an operation at all), so the load errored
+        // and nothing should be registered against it.
+        let Some(sym) = op else { continue };
+        // The declared operation and the host function must AGREE ON ARITY. Checked
+        // at registration, which is the earliest point that knows both: the loader
+        // knows the operation's arity but not another language's function set, and
+        // this registry is the only thing that knows the host's.
+        let declared = crate::kb::op_info::lookup_operation_info(interp.kb(), sym)
+            .map(|r| r.params.len());
+        if let Some(n) = declared {
+            if n != host.arity {
+                return Err(EvalError::Internal(format!(
+                    "operation_map maps {op_qn} to {host_fn:?}, but {op_qn} takes {n} \
+                     argument(s) and {host_fn:?} takes {}",
+                    host.arity
+                )));
+            }
+        }
+        // Under BOTH spellings, matching `set_host_op_mappings`' index: a qualified
+        // name can be interned under several `Symbol`s, and eval's builtin lookup is a
+        // RAW map hit, so whichever spelling reaches dispatch must find the same
+        // implementation the predicate promised.
+        let canon = interp.kb().canonical_sym(sym);
+        interp.register_builtin_sym(sym, host.f);
+        if canon != sym {
+            interp.register_builtin_sym(canon, host.f);
+        }
+    }
     Ok(())
 }
 
@@ -670,6 +805,18 @@ fn composite_field_wise_eq(
 
 /// Total order on primitive scalars. Floats use `total_cmp` so NaN has a
 /// well-defined position — `partial_cmp` would lose transitivity.
+///
+/// WI-876 — THE `Float` ARM IS DELIBERATE AND STAYS, though `ordered_gt` & co. no
+/// longer guard against reaching it (the `float_pair` test they used to carry moved
+/// out to `Float`'s own `float_gt`/`lte`/… , named in its binding). The two families
+/// are now selected by the CARRIER, and each is right for the carriers that name it:
+/// `ordered_*` is the TOTAL comparison — which for a float-valued TOTAL carrier (the
+/// `TotalFloat` shape) must be `total_cmp`, since that is the only float order with
+/// transitivity — and `float_*` is IEEE, for the carrier whose order is partial.
+/// Deleting this arm would leave a would-be total float carrier with no sound
+/// comparison at all; the thing that must not happen is a carrier naming the WRONG
+/// family, and that is now a visible line in its `operation_map` rather than a branch
+/// buried here.
 fn value_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, EvalError> {
     Ok(match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
@@ -685,7 +832,7 @@ fn value_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, EvalError> 
 }
 
 fn ordered_compare(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.compare", args)?;
+    let [a, b] = expect_args::<2>("compare", args)?;
     Ok(Value::Int(match value_compare(&a, &b)? {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
@@ -697,50 +844,77 @@ fn ordered_compare(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 /// on a `Float` operand pair is IEEE — a `NaN` operand is UNORDERED, so every
 /// comparison answers `false` (`x > y` etc. are already `false` when either is NaN).
 /// This matches the C++ codegen (`>`/`<`) and is the ordering dual of the IEEE `eq`
-/// fix. `compare`/`max`/`min` (the total `Ordered` ops) keep `total_cmp` — they are
-/// only sound on a total carrier (`TotalFloat`, not raw `Float`). Returns `None`
-/// unless BOTH operands are raw `Float` scalars.
-fn float_pair(i: &Interpreter, a: &Value, b: &Value) -> Option<(f64, f64)> {
+/// fix. The TOTAL `Ordered` ops keep `total_cmp` — they are only sound on a total
+/// carrier (`TotalFloat`, not raw `Float`).
+///
+/// WI-876 — these four are `Float`'s OWN host implementations, named by
+/// `float.anthill`'s `operation_map`, rather than a `float_pair` test inside the
+/// total comparisons. Before, one spec-op registration had to serve both carriers,
+/// so "Float's order is IEEE" was a branch buried in shared code; now it is a fact
+/// in `Float`'s binding, where the reader looks. Errors on a non-`Float` pair
+/// because nothing else can reach them.
+fn float_operands(i: &Interpreter, a: &Value, b: &Value) -> Result<(f64, f64), EvalError> {
     match (float_val(i, a), float_val(i, b)) {
-        (Some(x), Some(y)) => Some((x, y)),
-        _ => None,
+        (Some(x), Some(y)) => Ok((x, y)),
+        _ => Err(EvalError::TypeMismatch {
+            expected: "Float operands",
+            got: format!("{} and {}", a.type_name(), b.type_name()),
+        }),
     }
 }
 
-fn ordered_gt(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("PartialOrd.gt", args)?;
-    if let Some((x, y)) = float_pair(i, &a, &b) {
-        return Ok(Value::Bool(x > y));
-    }
+fn float_gt(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.gt", args)?;
+    let (x, y) = float_operands(i, &a, &b)?;
+    Ok(Value::Bool(x > y))
+}
+
+fn float_gte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.gte", args)?;
+    let (x, y) = float_operands(i, &a, &b)?;
+    Ok(Value::Bool(x >= y))
+}
+
+fn float_lt(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.lt", args)?;
+    let (x, y) = float_operands(i, &a, &b)?;
+    Ok(Value::Bool(x < y))
+}
+
+fn float_lte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.lte", args)?;
+    let (x, y) = float_operands(i, &a, &b)?;
+    Ok(Value::Bool(x <= y))
+}
+
+fn ordered_gt(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("gt", args)?;
     Ok(Value::Bool(matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
 }
 
-fn ordered_gte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("PartialOrd.gte", args)?;
-    if let Some((x, y)) = float_pair(i, &a, &b) {
-        return Ok(Value::Bool(x >= y));
-    }
+fn ordered_gte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("gte", args)?;
     Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Less)))
 }
 
-fn ordered_lt(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("PartialOrd.lt", args)?;
-    if let Some((x, y)) = float_pair(i, &a, &b) {
-        return Ok(Value::Bool(x < y));
-    }
+fn ordered_lt(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("lt", args)?;
     Ok(Value::Bool(matches!(value_compare(&a, &b)?, std::cmp::Ordering::Less)))
 }
 
-fn ordered_lte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("PartialOrd.lte", args)?;
-    if let Some((x, y)) = float_pair(i, &a, &b) {
-        return Ok(Value::Bool(x <= y));
-    }
+fn ordered_lte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("lte", args)?;
     Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
 }
 
+/// `Ordered.max`/`min` on a total scalar carrier. `Ordered` derives both from
+/// `gte`/`lte` by default body, which is what a STRUCTURAL carrier gets — but for a
+/// scalar that derivation costs an interpreter frame and a dictionary dispatch where
+/// the host answers in one call, so the total carriers map these too. Same reasoning
+/// as `gt`/`gte`/`lt`/`lte`, and leaving them out made the surface inconsistent:
+/// four of the six keyed to the host and two not.
 fn ordered_max(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.max", args)?;
+    let [a, b] = expect_args::<2>("max", args)?;
     match value_compare(&a, &b)? {
         std::cmp::Ordering::Less => Ok(b),
         _ => Ok(a),
@@ -748,7 +922,7 @@ fn ordered_max(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
 }
 
 fn ordered_min(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Ordered.min", args)?;
+    let [a, b] = expect_args::<2>("min", args)?;
     match value_compare(&a, &b)? {
         std::cmp::Ordering::Greater => Ok(b),
         _ => Ok(a),

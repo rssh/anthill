@@ -3,6 +3,16 @@ namespace anthill.prelude
   provides BigInt language rust
     artifact "rustland/anthill-stl/src/prelude/bigint.rs"
     carrier { BigInt: "num_bigint::BigInt" }
+    -- WI-876: `BigInt`'s ordering — the same total comparison functions, keyed here.
+    operation_map {
+      compare: "ordered_compare",
+      gt: "ordered_gt",
+      gte: "ordered_gte",
+      lt: "ordered_lt",
+      lte: "ordered_lte",
+      max: "ordered_max",
+      min: "ordered_min"
+    }
     -- WI-644 / proposal 004: BigInt is lawful — partial bases + total markers.
     fact PartialEq[T = BigInt]
     fact Eq[T = BigInt]

@@ -997,6 +997,11 @@ pub struct KnowledgeBase {
     // Built at load time, read by dispatch consumers via
     // `sort_ops_lookup`.
     pub(crate) sort_ops: SortOpsTable,
+    // WI-876 — operations a binding block gave a host implementation
+    // (`operation_map`). The cache and the membership index derived from it; both
+    // written by `load::build_host_op_mappings`. See `is_host_mapped_op`.
+    host_mapped_ops: std::collections::HashSet<Symbol>,
+    host_op_mappings: Vec<load::HostOperationMapping>,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -1117,6 +1122,8 @@ impl KnowledgeBase {
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             sort_ops: SortOpsTable::default(),
+            host_mapped_ops: std::collections::HashSet::new(),
+            host_op_mappings: Vec::new(),
         }
     }
 
@@ -6181,6 +6188,53 @@ impl KnowledgeBase {
         self.register_builtin("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
         self.register_builtin("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
         self.register_builtin("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
+        // WI-876 — the same four, keyed to each SCALAR CARRIER that now declares them
+        // as its own operations. A bare `gt(?a, 0)` in a rule inside `sort Int64`
+        // resolves to `Int64.gt`, not to the spec op, so without these entries the
+        // resolver would lose a comparison it has always had. `builtin_cmp` is the
+        // same numeric comparator for all of them.
+        //
+        // WHAT THIS REGISTRY IS NOT: the evaluator's, which WI-876 made read the
+        // `operation_map` facts. Two things stayed here that should not have, and
+        // both are WI-879 — stated plainly because a half-migration reads as a
+        // finished one:
+        //
+        //   * THE FOUR SPEC-OP ENTRIES ABOVE ARE STILL LIVE. WI-876 ADDED the carrier
+        //     entries beside them; it did not delete them, because a bare `gt(?x, 5)`
+        //     in any other namespace still resolves to `PartialOrd.gt`. So at SLD the
+        //     ticket's own defect stands: MEASURED, `PartialOrd.gt("b", "a")` as a
+        //     rule-body goal yields NO SOLUTIONS — `builtin_cmp` reads NUMERIC
+        //     operands only and returns `Failure` on a string pair — while the same
+        //     comparison in eval answers `true`. The new `String.gt` entry inherits
+        //     that, claiming no more and no less than the spec op did.
+        //   * THE LIST IS STILL HARDCODED, and "it runs before `load_all`" is why
+        //     THIS function cannot read the facts — not why the list must be written
+        //     by hand. `load::build_host_op_mappings` is a post-load pass holding
+        //     `&mut KnowledgeBase`, and `register_builtin` is a `&mut self` method,
+        //     so the derivation site exists. Until it is taken, this array must be
+        //     hand-synced with four `.anthill` files in another crate.
+        // Spelled out rather than built with `format!`: this runs once per KB and the
+        // suite builds thousands, and a `&'static str` costs nothing.
+        for (qn, tag) in [
+            ("anthill.prelude.Int64.gt", BuiltinTag::Gt),
+            ("anthill.prelude.Int64.lt", BuiltinTag::Lt),
+            ("anthill.prelude.Int64.gte", BuiltinTag::Gte),
+            ("anthill.prelude.Int64.lte", BuiltinTag::Lte),
+            ("anthill.prelude.BigInt.gt", BuiltinTag::Gt),
+            ("anthill.prelude.BigInt.lt", BuiltinTag::Lt),
+            ("anthill.prelude.BigInt.gte", BuiltinTag::Gte),
+            ("anthill.prelude.BigInt.lte", BuiltinTag::Lte),
+            ("anthill.prelude.String.gt", BuiltinTag::Gt),
+            ("anthill.prelude.String.lt", BuiltinTag::Lt),
+            ("anthill.prelude.String.gte", BuiltinTag::Gte),
+            ("anthill.prelude.String.lte", BuiltinTag::Lte),
+            ("anthill.prelude.Float.gt", BuiltinTag::Gt),
+            ("anthill.prelude.Float.lt", BuiltinTag::Lt),
+            ("anthill.prelude.Float.gte", BuiltinTag::Gte),
+            ("anthill.prelude.Float.lte", BuiltinTag::Lte),
+        ] {
+            self.register_builtin(qn, tag);
+        }
         self.register_builtin("anthill.prelude.Numeric.add", BuiltinTag::Add);
         self.register_builtin("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
         self.register_builtin("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
@@ -6231,6 +6285,55 @@ impl KnowledgeBase {
     /// must treat it as satisfied.
     pub fn is_builtin(&self, sym: Symbol) -> bool {
         self.builtins.contains_key(&sym)
+    }
+
+    /// WI-876 — does `sym` name an operation a binding block gave a HOST
+    /// implementation (an `operation_map` entry)? Such a member is deliberately
+    /// body-LESS in anthill — its body is the host artifact's — so every reader
+    /// asking "can this be run?" must count it, or it reads as unimplemented.
+    /// Populated by `load::build_host_op_mappings`.
+    ///
+    /// Sits on the dispatch path (`typing::op_is_executable`), so the two cheap
+    /// answers come first: no mappings at all — every KB that loads no binding
+    /// block — and then the RAW symbol, which is the common case because
+    /// [`Self::set_host_op_mappings`] canonicalizes on insert. Canonicalizing here
+    /// hashes the operation's whole qualified name, so it is left to the miss.
+    pub fn is_host_mapped_op(&self, sym: Symbol) -> bool {
+        if self.host_mapped_ops.is_empty() {
+            return false;
+        }
+        self.host_mapped_ops.contains(&sym)
+    }
+
+    /// WI-876 — the cached `operation_map` entries, in load order. Read by the host
+    /// runtime's builtin registration, which needs the host function name as well
+    /// as the operation. See `load::build_host_op_mappings` for why it is cached.
+    pub fn host_op_mappings(&self) -> &[load::HostOperationMapping] {
+        &self.host_op_mappings
+    }
+
+    /// Replace the host-mapping cache and the membership index derived from it.
+    /// Sole caller: `load::build_host_op_mappings`.
+    /// BOTH SPELLINGS of each mapped operation are indexed — the symbol
+    /// `try_resolve_symbol` returned and its canonical twin — because one qualified
+    /// name can be interned under several `Symbol`s, and the reader that consumes this
+    /// (`typing::op_is_interpretable`, on the dispatch path) may be handed either. The
+    /// eq-dispatch index keys under both spellings for the same reason.
+    ///
+    /// A LOOKUP-ONLY fallback would be wrong here: this predicate promises the
+    /// INTERPRETER has an implementation, and the interpreter's builtin map is a RAW
+    /// `Symbol` lookup. Answering `true` for a spelling that map does not hold would
+    /// select a carrier override the evaluator then cannot find, skipping a spec
+    /// default that would have worked. So the two are populated in step —
+    /// `register_operation_mappings` registers under both spellings too.
+    pub(crate) fn set_host_op_mappings(&mut self, mappings: Vec<load::HostOperationMapping>) {
+        let mut index = std::collections::HashSet::new();
+        for sym in mappings.iter().filter_map(|m| m.op) {
+            index.insert(sym);
+            index.insert(self.canonical_sym(sym));
+        }
+        self.host_mapped_ops = index;
+        self.host_op_mappings = mappings;
     }
 
     /// Is `s` the prelude `Bool` sort, compared by SHORT name (robust to how

@@ -3854,6 +3854,21 @@ pub fn get_named_arg(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId)
         .map(|(_, v)| *v)
 }
 
+/// Read a `String`-const named field off a fact's named args — [`get_named_arg`]
+/// narrowed to the field kind the realization/proof facts are mostly made of.
+/// `None` for an absent field AND for one whose value is not a string literal, so
+/// a caller that needs those distinguished must ask separately.
+pub fn get_named_string_arg(
+    kb: &KnowledgeBase,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    key: &str,
+) -> Option<String> {
+    match kb.get_term(get_named_arg(kb, named_args, key)?) {
+        Term::Const(Literal::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 pub fn extract_sym_arg(
     kb: &KnowledgeBase,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
@@ -14892,6 +14907,20 @@ pub(crate) fn carrier_own_op(
 /// [`carrier_own_op`] narrowed to a RUNNABLE impl (the eval-side gate: a
 /// bodyless rule-backed member is not invocable by the interpreter).
 /// Returns the override op symbol, or `None` (run the spec's default body).
+///
+/// WI-876 widened "runnable" from a BODY to [`op_is_executable`] — a body-less
+/// member whose implementation is the HOST's is runnable too, and rejecting it here
+/// meant the spec's default body ran INSTEAD of the carrier's own host code.
+/// MEASURED once `Float` declared its own IEEE `gt`: `gt(nan, 1.0)` fell through to
+/// `PartialOrd`'s `compare`-based default and died `OperationBodyMissing
+/// {Ordered.compare}` — `Float` provides no `Ordered` — and a `String` comparison
+/// inside a witness ordering fell through the same way into an
+/// `AmbiguousSpecOpDispatch` between `String`'s own `compare` and the program's two
+/// witnesses. Both are the carrier's own implementation not being seen.
+///
+/// The gate still excludes what it was built to exclude: a member that is merely
+/// DECLARED, or backed only by rules, which the interpreter cannot invoke (and which
+/// a same-short-name collision — `sub` ↔ `Numeric.sub` — would otherwise capture).
 pub(crate) fn carrier_override_op(
     kb: &KnowledgeBase,
     carrier: Symbol,
@@ -14899,7 +14928,49 @@ pub(crate) fn carrier_override_op(
     op_short_sym: Symbol,
 ) -> Option<Symbol> {
     carrier_own_op(kb, carrier, spec_op, op_short_sym)
-        .filter(|&o| op_has_runnable_body(kb, o))
+        .filter(|&o| op_is_interpretable(kb, o))
+}
+
+/// WI-876 — can the INTERPRETER run `op`? A runnable body, or a HOST
+/// implementation: a resolver builtin, or an `operation_map` binding
+/// ([`KnowledgeBase::is_host_mapped_op`]).
+///
+/// The third leg is what a binding block's `operation_map` buys. Before it existed a
+/// host implementation had nowhere to be keyed per carrier, so it was registered on
+/// the SPEC op — where `is_builtin` answered `true` for EVERY carrier, including ones
+/// the implementation could not handle. Keyed per carrier, this predicate answers for
+/// the carrier that actually has an implementation, and for no other.
+///
+/// TWO PREDICATES, because there are two questions and they have different answers.
+/// This one is the LOAD CHECK's — "does an implementation exist anywhere?" — and its
+/// `kb.is_builtin` leg reads the RESOLVER's `BuiltinTag` registry, which is a real
+/// implementation for the SLD world even when the interpreter has none. Eval must not
+/// ask it: see [`op_is_interpretable`].
+///
+/// The two HOST legs are asked FIRST: both are `HashMap`/`HashSet` hits, whereas
+/// `op_has_runnable_body` goes through `lookup_operation_info`, which builds a whole
+/// `OpInfoRecord` (cloning params, return type, effects, type params, requires,
+/// ensures) to read one `is_some()`. The order is pure short-circuiting — all three
+/// legs are side-effect-free predicates — and every carrier this ticket introduces
+/// (`Int64.gt`, `Float.lte`, …) answers from a host leg.
+pub(crate) fn op_is_executable(kb: &KnowledgeBase, op: Symbol) -> bool {
+    kb.is_builtin(op) || kb.is_host_mapped_op(op) || op_has_runnable_body(kb, op)
+}
+
+/// WI-876 — can the INTERPRETER run `op`? [`op_is_executable`] MINUS the resolver
+/// builtin leg: a runnable body, or an `operation_map` host implementation.
+///
+/// The two registries are DIFFERENT MAPS and this ticket made them maximally
+/// divergent — `anthill.prelude.PartialOrd.gt` is in the resolver's (`kb.builtins`,
+/// `BuiltinTag::Gt`) and NOT in the interpreter's, its eval registration having moved
+/// per carrier. So `kb.is_builtin` answers "yes, an implementation exists" for four
+/// operations the interpreter cannot call, and an eval-side gate that trusted it would
+/// SELECT such a member as a carrier's override and skip the spec default that would
+/// have worked. Nothing routes through that today — every carrier-keyed resolver tag
+/// is also `operation_map`ped — but the gate must not depend on that coincidence, and
+/// WI-880's migration of the remaining families is exactly where it would stop holding.
+pub(crate) fn op_is_interpretable(kb: &KnowledgeBase, op: Symbol) -> bool {
+    kb.is_host_mapped_op(op) || op_has_runnable_body(kb, op)
 }
 
 /// WI-231 — per-call-site classification produced by the typer for
@@ -18850,11 +18921,13 @@ fn op_backed(
     if let Some(s) = kb.try_resolve_symbol(&format!("{carrier_qn}.{op_short}")) {
         cands.push(s);
     }
-    // WI-818: the two EXECUTABLE kinds, and only those. A rule under `c` — whether
-    // an equational law (`eq(op(args), rhs)`) or a relational clause
+    // WI-818: the EXECUTABLE kinds, and only those. A rule under `c` — whether an
+    // equational law (`eq(op(args), rhs)`) or a relational clause
     // (`op(args, r) :- body`) — is not something the evaluator can dispatch to, so
-    // it no longer reads as backing.
-    cands.iter().any(|&c| op_has_runnable_body(kb, c) || kb.is_builtin(c))
+    // it no longer reads as backing. WI-876 added the `operation_map` leg to the
+    // shared [`op_is_executable`], so a member realized by the host counts here for
+    // the SAME reason a builtin does, and counts only for the carrier that mapped it.
+    cands.iter().any(|&c| op_is_executable(kb, c))
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.

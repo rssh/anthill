@@ -1753,6 +1753,7 @@ private class AnthillParserImpl(
       providesArtifact |
       providesCarrier |
       providesNamespaceMap |
+      providesOperationMap |
       providesProof |
       providesRule |
       providesFact
@@ -1769,6 +1770,14 @@ private class AnthillParserImpl(
   private def providesNamespaceMap[$: P]: P[ProvidesItem] =
     P(keyword("namespace_map") ~/ providesBindings).map { bs =>
       ProvidesItem.NamespaceMapI(bs.map { case (k, v) => NamespaceMapEntry(k, v) })
+    }
+
+  /** WI-876: `operation_map { compare: "ordered_compare" }` — the operation-level
+    * peer of `carrier`. Mirrors rustland's `operation_map_clause`.
+    */
+  private def providesOperationMap[$: P]: P[ProvidesItem] =
+    P(keyword("operation_map") ~/ providesBindings).map { bs =>
+      ProvidesItem.OperationMapI(bs.map { case (k, v) => OperationMapEntry(k, v) })
     }
 
   private def providesBindings[$: P]: P[IndexedSeq[(TermSymbol, TermId)]] =
