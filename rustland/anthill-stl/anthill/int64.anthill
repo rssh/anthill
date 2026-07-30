@@ -16,7 +16,11 @@ namespace anthill.prelude
       lt: "ordered_lt",
       lte: "ordered_lte",
       max: "ordered_max",
-      min: "ordered_min"
+      min: "ordered_min",
+      -- WI-884: the two BOUNDS, `i64::MIN` / `i64::MAX`. Nothing to settle — the
+      -- carrier above says `i64`, and these are its ends.
+      minValue: "int_min_value",
+      maxValue: "int_max_value"
     }
     -- WI-644 / proposal 004: Int64 is lawful — it provides the partial bases
     -- (PartialEq/PartialOrd) AND the total markers (Eq/Ordered).

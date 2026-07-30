@@ -191,10 +191,19 @@ fn the_whole_comparison_surface_works_from_one_operation() {
 /// rest of `Float`'s surface in through this same clause, so the assertion is on the
 /// ABSENCE of `compare` and on `Float`'s own IEEE host functions rather than on an
 /// exact list — the ordering-only list was this ticket's shape, not a rule.
+///
+/// WI-884 — the same is now true of `Int64` and `String`, which gained their bounds
+/// and their search/edit surface through this clause: every carrier is asserted by
+/// CONTAINMENT of the family under test. An exact-list assertion here reads as "these
+/// are the mappings" and is really "these are the mappings I happened to write", so
+/// each later ticket that legitimately adds one has to edit it — and the edit is
+/// indistinguishable from one that papers over a mapping that went missing.
 #[test]
 fn a_binding_blocks_operation_map_lands_as_facts() {
     let kb = crate::common::load_kb_with("\nnamespace wi876.facts\n  sort S\n  end\nend\n");
     let mappings = kb.host_op_mappings();
+    // Sorted only so a failure message reads in a fixed order — every assertion below
+    // is by containment, so the order carries no meaning.
     let mapped = |carrier: &str| -> Vec<String> {
         let prefix = format!("anthill.prelude.{carrier}.");
         let mut v: Vec<String> = mappings
@@ -205,14 +214,18 @@ fn a_binding_blocks_operation_map_lands_as_facts() {
         v.sort();
         v
     };
+    let maps_all = |carrier: &str, ops: &[&str]| {
+        let have = mapped(carrier);
+        for op in ops {
+            assert!(have.iter().any(|m| m == op), "{carrier} maps {op}; has {have:?}");
+        }
+    };
     let total = ["compare", "gt", "gte", "lt", "lte", "max", "min"];
-    assert_eq!(mapped("Int64"), total, "Int64");
-    assert_eq!(mapped("String"), total, "String");
-    assert_eq!(mapped("BigInt"), total, "BigInt");
+    maps_all("Int64", &total);
+    maps_all("String", &total);
+    maps_all("BigInt", &total);
+    maps_all("Float", &["gt", "gte", "lt", "lte"]);
     let float_mapped = mapped("Float");
-    for op in ["gt", "gte", "lt", "lte"] {
-        assert!(float_mapped.iter().any(|m| m == op), "Float maps {op}");
-    }
     assert!(
         !float_mapped.iter().any(|m| m == "compare"),
         "`Float` maps no `compare` — it provides `PartialOrd` and not the total \

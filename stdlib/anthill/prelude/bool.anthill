@@ -4,11 +4,40 @@
 sort anthill.prelude.Bool
   import anthill.prelude.{Eq}
 
+  -- WI-884 audited this sort (WI-881's did not reach it): `and`, `or` and `not` are
+  -- backed by host builtins and answer. `ite` DOES NOT RUN, ANYWHERE, and that is a
+  -- known open state rather than an oversight — see below.
   operation {
     and(a: Bool, b: Bool) -> Bool
     or(a: Bool, b: Bool) -> Bool
     not(a: Bool) -> Bool
-    ite(cond: Bool, then: ?A, else: ?A) -> ?A          -- if-then-else
+    -- if-then-else. NOT EXECUTABLE, on either route, MEASURED by WI-884:
+    -- `ite(true, 1, 2)` in an operation body dies `OperationBodyMissing`, and the
+    -- same call as a rule-body goal yields NO solutions.
+    --
+    -- The value-level half is DELIBERATE: an operation's arguments are evaluated
+    -- before the call, so a host `ite` would evaluate BOTH branches, and `if`/`then`/
+    -- `else` is the lazy form. `ordered.anthill` records the same decision from the
+    -- other side — it writes `max`'s LAW with `ite` and `max`'s BODY with `if`.
+    --
+    -- The rule-level half is NOT deliberate. The runtime's own comment claimed
+    -- "rule-level uses of `ite` are handled by the prelude's rewrite rules during SLD
+    -- resolution", and that was false. The cause is that the two case laws below are
+    -- UNTAGGED, which is WI-881's finding one file over: `[simp]` is the ENABLEMENT,
+    -- and an untagged equation is inert whichever connective it is spelled with. (Not
+    -- the `=` spelling — that was the first diagnosis and driving refuted it; see
+    -- `the_head_connective_is_not_what_enables_an_equation`, and WI-888 for the spec
+    -- text that made it plausible.)
+    --
+    -- Left standing rather than tagged, because tagging is a trap: it makes `ite` run
+    -- only where the CONDITION IS ALREADY A LITERAL. A `[simp]` head matches
+    -- STRUCTURALLY, so `ite(gte(?a, ?b), …)` — the shape every real use has, and the
+    -- one `ordered.anthill`'s own `max` law writes — has no redex and still dies
+    -- (MEASURED, `a_simp_ite_reaches_only_a_literal_condition`). Half-backed is worse
+    -- than dead: it looks backed. WI-887 chooses between that, a value-level body with
+    -- its strictness, and deleting `ite` for a term-level conditional that says it is
+    -- one.
+    ite(cond: Bool, then: ?A, else: ?A) -> ?A
   }
 
   -- Laws: Boolean algebra

@@ -19,19 +19,55 @@ sort anthill.prelude.String
     min(a: String, b: String) -> String     -- the lesser
   }
 
+  -- THE INDEX UNIT IS THE UNICODE SCALAR (code point), for every operation here that
+  -- counts or addresses positions: `length`, `substring` and `indexOf` are one scale,
+  -- never bytes and never grapheme clusters. WI-884 settled it by driving the
+  -- alternative: the host primitive behind `indexOf` answers in BYTES, and
+  -- `indexOf("éb", "b")` is 2 there where the character index is 1 — so a byte answer
+  -- would make `substring(s, indexOf(s, sub), …)` cut the wrong span on any string
+  -- with a multi-byte prefix. The round trip
+  -- `substring(s, indexOf(s, sub), indexOf(s, sub) + length(sub)) = sub` is what pins
+  -- the three together, and is driven as a test.
+  --
+  -- THE EMPTY STRING OCCURS AT EVERY BOUNDARY. That is not new here — three of this
+  -- sort's laws below already say it (`contains(?s, "")`, `startsWith(?s, "")`,
+  -- `endsWith(?s, "")` are all `true`) — but WI-884 is where it had to be carried
+  -- into the operations that RETURN something, and the per-operation comments say
+  -- what each one does with it rather than leaving the degenerate case to be
+  -- discovered.
+  --
+  -- WI-884: `contains`, `indexOf`, `replace`, `trim` and `split` are HOST-BACKED,
+  -- named in `rustland/anthill-stl/anthill/string.anthill`'s `operation_map`. All
+  -- five were declared and backed by NOTHING — they died `OperationBodyMissing` on a
+  -- program that loaded clean, WI-881's defect one sort over. `isEmpty` is the one
+  -- that needed no host function; see its law below.
   operation {
     concat(a: String, b: String) -> String
-    length(s: String) -> Int64
+    length(s: String) -> Int64                     -- Unicode scalars, not bytes
     isEmpty(s: String) -> Bool
-    contains(s: String, sub: String) -> Bool
+    contains(s: String, sub: String) -> Bool       -- true for sub = ""
     startsWith(s: String, prefix: String) -> Bool
     endsWith(s: String, suffix: String) -> Bool
+    -- The half-open character range [start, end). Out-of-range indices CLAMP to the
+    -- string's bounds and a reversed range gives "" — so it is total, and a second
+    -- backend has to reproduce that rather than trap.
     substring(s: String, start: Int64, end: Int64) -> String
-    indexOf(s: String, sub: String) -> Int64       -- -1 if not found
+    -- The CHARACTER index of the first occurrence, -1 if not found; 0 for sub = "".
+    indexOf(s: String, sub: String) -> Int64
+    -- EVERY non-overlapping occurrence, scanned left to right — `replace("aaa", "aa",
+    -- "b")` is "ba", not "ab". A first-only replace is expressible from this one with
+    -- `indexOf` and `substring`; the reverse is not. `old = ""` interleaves `new` at
+    -- every boundary, ends included.
     replace(s: String, old: String, new: String) -> String
+    -- Leading and trailing UNICODE whitespace (the White_Space property), not the
+    -- ASCII subset — the same scale `length` and `toUpper`/`toLower` already use.
     trim(s: String) -> String
     toUpper(s: String) -> String
     toLower(s: String) -> String
+    -- Every piece between consecutive separators, with no limit and nothing dropped.
+    -- Keeping the EMPTY pieces is what makes it invertible: rejoining the result with
+    -- `sep` reproduces `s` for every input, including `split("", ",")` = [""],
+    -- `split(",a,", ",")` = ["", "a", ""] and `split("abc", "")` = ["","a","b","c",""].
     split(s: String, sep: String) -> List[T = String]
     repeat(s: String, n: Int64) -> String          -- n copies of s; n <= 0 → ""
   }
@@ -47,8 +83,44 @@ sort anthill.prelude.String
     let d = sub(width, length(s))
     if Int64.gt(d, 0) then concat(s, repeat(" ", d)) else s
 
-  -- Laws
-  rule isEmpty(?s) <=> eq(length(?s), 0)
+  -- Laws and definitions.
+  --
+  -- WI-884 settles which of these six is WHICH, the way WI-881 settled `float.
+  -- anthill`'s four: a `[simp]` equation is EXECUTABLE — it inlines LHS→RHS and makes
+  -- a body-less operation run — while an untagged one is inert specification (a rule
+  -- is not backing, WI-818). The file said "-- Laws" over all six and meant it for
+  -- five of them.
+
+  -- DEFINITION, and the only one of the six. A string has zero code points exactly
+  -- when it is empty, for every string — so the equation IS `isEmpty`, and it needs no
+  -- host function of its own; `length` and `eq` already have theirs. That `[simp]`
+  -- REACHES every way `isEmpty` is written was measured before relying on it, since
+  -- inlining is not dispatch and `Float.tau` failed exactly that test: the qualified
+  -- call `String.isEmpty(s)`, the dot call on a bound parameter `s.isEmpty()` and the
+  -- dot call on a literal `"".isEmpty()` all answer. `tau`'s reach failure does not
+  -- recur here because `isEmpty` is APPLIED at every call site, where a nullary
+  -- constant need not be.
+  --
+  -- TWO COSTS, both stated because neither settled it. Routing through `length` is
+  -- O(n) where a host `is_empty` is O(1) — real, and NOT what decided this: an attempt
+  -- to measure it through the interpreter was swamped by the per-call argument copy,
+  -- and an unmeasured number is not a reason. And inlining puts `eq(length(s), 0)`
+  -- into every proof and codegen output where the author wrote `isEmpty(s)`, which is
+  -- the symbolic-quality cost WI-885 raises against tagging `Float.recip`.
+  --
+  -- WI-885 IS THE OPEN QUESTION THIS SHIPS THE SECOND INSTANCE OF, and it is answered
+  -- here only in the narrow sense `recip` was: `carrier_override_op` reads a
+  -- `[simp]`-backed member as ABSENT, but it is only asked about an operation some
+  -- spec the carrier PROVIDES declares — `String` provides PartialEq/Eq/PartialOrd/
+  -- Ordered and none of them declares `isEmpty`, so the exposure is unreached. If
+  -- WI-885 settles on its option (c) — `[simp]` is not backing — this operation and
+  -- `Float.recip` are the two that need host functions.
+  rule isEmpty(?s) <=> eq(length(?s), 0) [simp]
+
+  -- SPECIFICATIONS. Each is true and each is PARTIAL — a single case of an operation
+  -- whose other cases the host answers — so none of them could back its operation
+  -- even tagged. `contains(?s, "")` says what `contains` does with the empty pattern,
+  -- not what `contains` is.
   rule concat("", ?s) <=> ?s
   rule concat(?s, "") <=> ?s
   rule startsWith(?s, "") <=> true

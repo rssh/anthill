@@ -12,7 +12,18 @@ namespace anthill.prelude
       lt: "ordered_lt",
       lte: "ordered_lte",
       max: "ordered_max",
-      min: "ordered_min"
+      min: "ordered_min",
+      -- WI-884: the SEARCH / EDIT surface, five operations that were declared on the
+      -- sort and backed by nothing. The semantics each one commits to — the index
+      -- unit for `indexOf`, and what the empty pattern means for all of them — are
+      -- argued on the declarations in `stdlib/anthill/prelude/string.anthill`, which
+      -- is where a reader of the spec will look. `isEmpty` is deliberately absent:
+      -- its own equation defines it, and carries `[simp]` there.
+      contains: "string_contains",
+      indexOf: "string_index_of",
+      replace: "string_replace",
+      trim: "string_trim",
+      split: "string_split"
     }
     -- WI-644 / proposal 004: String is lawful — partial bases + total markers.
     fact PartialEq[T = String]

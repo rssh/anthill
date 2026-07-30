@@ -316,3 +316,42 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
 # Development principles
  - avoid fallbacks, better know about errors early.
  - prefer a loud error over a silent skip: when a case can't be handled — a not-yet-supported / gated path, an unexpected value carrier, a missing field — surface it as an explicit error or diagnostic rather than silently `continue`/dropping it. Silent skips hide bugs and read as "handled" when they aren't.
+- **`[simp]` IS THE ENABLEMENT — AND THE CONNECTIVE IS NOT** (WI-884, the sibling audit
+  of WI-881). Driving every operation the four primitive sorts DECLARE found EIGHT dead
+  the same way — `OperationBodyMissing` on a program that LOADS CLEAN, because a host
+  carrier is exempt from the load-time backing check wholesale (WI-880). `Int64`:
+  `minValue`/`maxValue`, host-mapped (`i64::MIN`/`MAX`) and NOT stated as equations,
+  because a `[simp]` head is an APPLICATION and `in_bounds` writes the BARE `minValue`.
+  `String`: `contains`/`indexOf`/`replace`/`trim`/`split` host-mapped, `isEmpty` backed
+  by its OWN `[simp]` equation (`eq(length(?s), 0)` IS the definition; its reach was
+  MEASURED across the qualified, dot-on-parameter and dot-on-literal call forms, which is
+  the test `tau` failed). `BigInt` was clean.
+  TWO SEMANTICS DECISIONS, each settled by DRIVING the alternative. **The index unit is
+  the UNICODE SCALAR** for `length`/`substring`/`indexOf` alike — the host `str::find`
+  answers in BYTES (`"éb".find("b")` = 2 where the character index is 1), so a byte
+  answer makes `substring(s, indexOf(s, sub), …)` cut the wrong span; the round trip
+  `substring(s, indexOf(s,sub), +length(sub)) = sub` is what pins the three together.
+  **The empty pattern occurs at EVERY BOUNDARY**, which three of the sort's own laws
+  already said (`contains`/`startsWith`/`endsWith` of `""` are `true`); `split` keeps its
+  empty pieces so that rejoining by `sep` reproduces `s` for EVERY input.
+  `Bool.ite` IS THE ONE LEFT DEAD (WI-887), on BOTH routes. Its value-level absence is
+  deliberate — an operation's arguments are evaluated BEFORE the call, so a registered
+  `ite` evaluates both branches — but the runtime's claim that "rule-level uses are
+  handled by the prelude's rewrite rules" was FALSE, and tagging the laws is not the fix:
+  a `[simp]` head matches STRUCTURALLY, so it reaches `ite(true, …)` and NOT
+  `ite(gte(?a,?b), …)`, which is every real use (MEASURED). Half-backed looks backed.
+  THE FIRST DIAGNOSIS OF THAT WAS WRONG AND IS WORTH KEEPING: kernel-language.md §5.3
+  says an equational rule's head connective is `<=>` and NOT `=` ("`=` … never binds"),
+  which reads exactly like the cause. It is not — `is_equational_head` classifies through
+  `is_equality_connective_functor`, which matches the `eq` symbol OR the `unify` symbol,
+  so BOTH spellings load as equations. Driven across all four (connective × attribute)
+  combinations, THE ANSWER TRACKS THE ATTRIBUTE ALONE: `=` + `[simp]` fires, `<=>` bare
+  is inert. The spec states a distinction the loader does not make (WI-888); §5.3 now
+  says so. Do not diagnose an inert rule from its connective — check the tag.
+  `host_fn_by_key` is now an ITERABLE `HOST_FNS` slice, so the arity-column test is
+  exhaustive by construction rather than against a second hand-written key list.
+  NOT MIGRATED: `String`'s other eight host operations (and `Int64`'s nine) are still
+  registered by hardcoded qualified name, so one carrier's surface sits at TWO altitudes
+  — `op_is_interpretable` and `kb.host_op_mappings()` see only the mapped half, and only
+  it is arity-checked. Carrier-owned, so they answer correctly and WI-880's spec-op-worded
+  acceptance does not claim them; recorded as feedback there.

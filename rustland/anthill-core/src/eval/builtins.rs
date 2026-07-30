@@ -13,8 +13,15 @@
 //! `anthill.prelude.Bool.ite(cond, t, e)` is deliberately **not** registered:
 //! registering it would eagerly evaluate both branches, silently breaking
 //! short-circuit semantics users expect. The `if_expr` form in expression
-//! bodies already gives lazy branching; rule-level uses of `ite` are handled
-//! by the prelude's rewrite rules during SLD resolution.
+//! bodies already gives lazy branching.
+//!
+//! WI-884 — this paragraph USED to continue "…; rule-level uses of `ite` are handled
+//! by the prelude's rewrite rules during SLD resolution", and that was FALSE: the goal
+//! `eq(Bool.ite(true, 10, 20), 10)` yields no solutions, in either orientation, beside
+//! a control that yields one. So `ite` reduces NOWHERE, and the deliberate half above
+//! is only half the story. The cause, why tagging the laws is not the fix, and the
+//! open decision are recorded once, on the declaration in `bool.anthill`; WI-887 owns
+//! it.
 
 use super::{EvalError, Interpreter, Value};
 
@@ -69,6 +76,25 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Bool.and", bool_and)?;
     register_if_present(interp, "anthill.prelude.Bool.or", bool_or)?;
 
+    // WI-884 — HALF OF `String`'S SURFACE IS REGISTERED HERE AND HALF IN ITS BINDING
+    // BLOCK, and a reader adding the next one has to know that. These eight are keyed
+    // by hardcoded qualified name; `contains`/`indexOf`/`replace`/`trim`/`split` are
+    // keyed by `rustland/anthill-stl/anthill/string.anthill`'s `operation_map`. Same
+    // for `Int64` (nine here, `minValue`/`maxValue` there).
+    //
+    // NOT the WI-879/WI-880 defect, which is about an operation declared on a SPEC
+    // (`Numeric.add`, `Bool.not`) where one registration serves every carrier: these
+    // are the CARRIER's own operations, so the qualified name already keys them per
+    // carrier and they answer correctly. It is still a split with a cost, and the cost
+    // is that the two halves are not equivalent to their READERS —
+    // `op_is_interpretable` (kb/typing.rs) counts a host MAPPING and not a hardcoded
+    // registration, so `String.contains` reads as backed and `String.concat` does not
+    // though one interpreter runs both; `kb.host_op_mappings()`, which is what WI-886
+    // wants a second backend to consume, sees five of thirteen; and only the mapped
+    // half has its arity checked against the declaration. Unreached today because no
+    // spec declares `concat`, which is the same coincidence WI-876's review refused to
+    // rely on. Migrating the eight is recorded as feedback on WI-880 — whose acceptance
+    // is worded for SPEC ops and so does not currently claim them.
     register_if_present(interp, "anthill.prelude.String.concat", string_concat)?;
     register_if_present(interp, "anthill.prelude.String.length", string_length)?;
     register_if_present(interp, "anthill.prelude.String.startsWith", string_starts_with)?;
@@ -212,56 +238,78 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 /// carrier must also DECLARE the operation (`operation compare(a: Int64, b: Int64)
 /// -> Int64`, body-less), which is what puts it in the `sort_ops` table both the
 /// typer's static pin and the evaluator's value-directed dispatch read.
+///
+/// WI-884 — a SLICE rather than a `match` on the key, so that the registry can be
+/// ITERATED. The arity column is written by hand and
+/// [`every_host_fn_key_declares_the_arity_its_function_accepts`] is what checks it,
+/// and while the entries lived in a `match` that test had to restate every key in a
+/// second hand-written list — which a new entry escapes SILENTLY, one level up from
+/// the defect the test exists to catch. Iterating makes it exhaustive by
+/// construction. The lookup is a linear scan over a few dozen `&'static str`s, run
+/// once per mapping per fresh interpreter, against a stdlib parse.
+const HOST_FNS: &[(&str, usize, fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>)] = &[
+    // The TOTAL scalar order (`Ordered`): `Int64`, `BigInt`, `String`.
+    ("ordered_compare", 2, ordered_compare),
+    ("ordered_gt", 2, ordered_gt),
+    ("ordered_gte", 2, ordered_gte),
+    ("ordered_lt", 2, ordered_lt),
+    ("ordered_lte", 2, ordered_lte),
+    ("ordered_max", 2, ordered_max),
+    ("ordered_min", 2, ordered_min),
+    // The IEEE partial order (`PartialOrd` on `Float`): a NaN operand is
+    // UNORDERED, so every comparison answers false. Its own four functions
+    // rather than a carrier test inside the total ones — `Float` names these
+    // in its own binding, which is where "Float's order is IEEE" belongs.
+    ("float_gt", 2, float_gt),
+    ("float_gte", 2, float_gte),
+    ("float_lt", 2, float_lt),
+    ("float_lte", 2, float_lte),
+    // WI-881 — `Float`'s IEEE ARITHMETIC. Every one of these is an `f64`
+    // intrinsic; see the section header above the definitions for why they
+    // are host functions rather than laws over the other operations.
+    ("float_abs", 1, float_abs),
+    ("float_neg", 1, float_neg),
+    ("float_sqrt", 1, float_sqrt),
+    ("float_sin", 1, float_sin),
+    ("float_cos", 1, float_cos),
+    ("float_tan", 1, float_tan),
+    ("float_asin", 1, float_asin),
+    ("float_acos", 1, float_acos),
+    ("float_atan", 1, float_atan),
+    ("float_exp", 1, float_exp),
+    ("float_log", 1, float_log),
+    ("float_log10", 1, float_log10),
+    ("float_log2", 1, float_log2),
+    ("float_hypot", 2, float_hypot),
+    ("float_fmod", 2, float_fmod),
+    ("float_pow", 2, float_pow),
+    ("float_atan2", 2, float_atan2),
+    ("float_max", 2, float_max),
+    ("float_min", 2, float_min),
+    ("float_floor", 1, float_floor),
+    ("float_ceil", 1, float_ceil),
+    ("float_round", 1, float_round),
+    ("float_pi", 0, float_pi),
+    ("float_e", 0, float_e),
+    ("float_tau", 0, float_tau),
+    // WI-884 — the sibling audit: `Int64`'s BOUNDS and `String`'s search / edit
+    // surface, dead in exactly the shape WI-881 found on `Float`. See the two
+    // section headers above their definitions for the semantics each one commits
+    // to (the index unit, and the empty pattern).
+    ("int_min_value", 0, int_min_value),
+    ("int_max_value", 0, int_max_value),
+    ("string_contains", 2, string_contains),
+    ("string_index_of", 2, string_index_of),
+    ("string_replace", 3, string_replace),
+    ("string_trim", 1, string_trim),
+    ("string_split", 2, string_split),
+];
+
 fn host_fn_by_key(key: &str) -> Option<HostFn> {
-    let (arity, f): (usize, fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>) =
-        match key {
-            // The TOTAL scalar order (`Ordered`): `Int64`, `BigInt`, `String`.
-            "ordered_compare" => (2, ordered_compare),
-            "ordered_gt" => (2, ordered_gt),
-            "ordered_gte" => (2, ordered_gte),
-            "ordered_lt" => (2, ordered_lt),
-            "ordered_lte" => (2, ordered_lte),
-            "ordered_max" => (2, ordered_max),
-            "ordered_min" => (2, ordered_min),
-            // The IEEE partial order (`PartialOrd` on `Float`): a NaN operand is
-            // UNORDERED, so every comparison answers false. Its own four functions
-            // rather than a carrier test inside the total ones — `Float` names these
-            // in its own binding, which is where "Float's order is IEEE" belongs.
-            "float_gt" => (2, float_gt),
-            "float_gte" => (2, float_gte),
-            "float_lt" => (2, float_lt),
-            "float_lte" => (2, float_lte),
-            // WI-881 — `Float`'s IEEE ARITHMETIC. Every one of these is an `f64`
-            // intrinsic; see the section header above the definitions for why they
-            // are host functions rather than laws over the other operations.
-            "float_abs" => (1, float_abs),
-            "float_neg" => (1, float_neg),
-            "float_sqrt" => (1, float_sqrt),
-            "float_sin" => (1, float_sin),
-            "float_cos" => (1, float_cos),
-            "float_tan" => (1, float_tan),
-            "float_asin" => (1, float_asin),
-            "float_acos" => (1, float_acos),
-            "float_atan" => (1, float_atan),
-            "float_exp" => (1, float_exp),
-            "float_log" => (1, float_log),
-            "float_log10" => (1, float_log10),
-            "float_log2" => (1, float_log2),
-            "float_hypot" => (2, float_hypot),
-            "float_fmod" => (2, float_fmod),
-            "float_pow" => (2, float_pow),
-            "float_atan2" => (2, float_atan2),
-            "float_max" => (2, float_max),
-            "float_min" => (2, float_min),
-            "float_floor" => (1, float_floor),
-            "float_ceil" => (1, float_ceil),
-            "float_round" => (1, float_round),
-            "float_pi" => (0, float_pi),
-            "float_e" => (0, float_e),
-            "float_tau" => (0, float_tau),
-            _ => return None,
-        };
-    Some(HostFn { arity, f })
+    HOST_FNS
+        .iter()
+        .find(|&&(k, _, _)| k == key)
+        .map(|&(_, arity, f)| HostFn { arity, f })
 }
 
 /// WI-876 — a host function this runtime exposes, with the ARITY it accepts.
@@ -616,6 +664,32 @@ fn int_sign(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
         Value::Int(x) => Ok(Value::Int(x.signum())),
         other => Err(type_mismatch("Int64", &other, None)),
     }
+}
+
+// ── Int64 bounds (WI-884) ──────────────────────────────────────
+//
+// `Int64` declares `minValue()` / `maxValue()` and nothing backed them: both died
+// `OperationBodyMissing` on a program that loaded clean, the only two of the sort's
+// eighteen declared operations that were dead. The carrier is `i64`, so the bounds
+// are its ends and there is nothing to settle here; why they are host-backed rather
+// than stated as equations is argued on the declarations in
+// `stdlib/anthill/prelude/int64.anthill`.
+
+/// Nullary host constants, over any `Value` constructor: `Int64`'s two bounds here,
+/// and `Float`'s mathematical constants plus the IEEE specials below. One macro rather
+/// than one per value type — the constructor is the only thing that differed.
+macro_rules! nullary_const {
+    ($ctor:path; $($fname:ident($op:literal) = $v:expr;)+) => { $(
+        fn $fname(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+            let [] = expect_args::<0>($op, args)?;
+            Ok($ctor($v))
+        }
+    )+ };
+}
+
+nullary_const! { Value::Int;
+    int_min_value("Int64.minValue") = i64::MIN;
+    int_max_value("Int64.maxValue") = i64::MAX;
 }
 
 // ── Eq / Ordered ───────────────────────────────────────────────
@@ -1175,21 +1249,6 @@ macro_rules! float_rounding {
     )+ };
 }
 
-/// Nullary `-> Float`, covering BOTH kinds of host-supplied float value: the
-/// mathematical constants, which are nullary OPERATIONS reaching eval through
-/// `operation_map`, and the IEEE specials, which are term-level `const`s reaching it
-/// through the hardcoded list below (`force_const` invokes those with no args). The
-/// two differ only in how they are registered — the function is the same shape, so it
-/// is written once.
-macro_rules! float_nullary {
-    ($($fname:ident($op:literal) = $v:expr;)+) => { $(
-        fn $fname(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-            let [] = expect_args::<0>($op, args)?;
-            Ok(Value::Float($v))
-        }
-    )+ };
-}
-
 float_unary! {
     float_abs("Float.abs")     = f64::abs;
     float_neg("Float.neg")     = |x| -x;
@@ -1228,7 +1287,12 @@ float_rounding! {
     float_round("Float.round") = f64::round;  // half away from zero
 }
 
-float_nullary! {
+// BOTH kinds of host-supplied float value go through [`nullary_const`]: the
+// mathematical constants, which are nullary OPERATIONS reaching eval through
+// `operation_map`, and the IEEE specials, which are term-level `const`s reaching it
+// through the hardcoded registration list (`force_const` invokes those with no args).
+// The two differ only in how they are registered — the function is the same shape.
+nullary_const! { Value::Float;
     float_pi("Float.pi") = std::f64::consts::PI;
     float_e("Float.e")   = std::f64::consts::E;
     // `tau`'s equation `tau() <=> mul(2.0, pi())` is EXACT (doubling only increments
@@ -1277,14 +1341,11 @@ fn bigint_to_float(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 
 fn string_length(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("String.length", args)?;
-    match a {
-        // Unicode scalar count to match `anthill.prelude.String.length`'s
-        // declared character-level semantics (the prelude's rules refer to
-        // `length("") = 0`, which is unambiguous either way, but Unicode is
-        // the natural choice for user-facing length).
-        Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-        other => Err(type_mismatch("String", &other, None)),
-    }
+    // Unicode scalar count to match `anthill.prelude.String.length`'s
+    // declared character-level semantics (the prelude's rules refer to
+    // `length("") = 0`, which is unambiguous either way, but Unicode is
+    // the natural choice for user-facing length).
+    Ok(Value::Int(str_operand(&a)?.chars().count() as i64))
 }
 
 fn string_starts_with(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -1305,18 +1366,12 @@ fn string_ends_with(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 
 fn string_to_upper(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("String.toUpper", args)?;
-    match a {
-        Value::Str(s) => Ok(Value::Str(s.to_uppercase())),
-        other => Err(type_mismatch("String", &other, None)),
-    }
+    Ok(Value::Str(str_operand(&a)?.to_uppercase()))
 }
 
 fn string_to_lower(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("String.toLower", args)?;
-    match a {
-        Value::Str(s) => Ok(Value::Str(s.to_lowercase())),
-        other => Err(type_mismatch("String", &other, None)),
-    }
+    Ok(Value::Str(str_operand(&a)?.to_lowercase()))
 }
 
 // substring(s, start, end) — character-indexed half-open range, matching
@@ -1324,7 +1379,7 @@ fn string_to_lower(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 // clamp to the string's bounds; reversed ranges produce the empty string.
 fn string_substring(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, start, end] = expect_args::<3>("String.substring", args)?;
-    let s = match &s { Value::Str(x) => x.clone(), _ => return Err(type_mismatch("String", &s, None)) };
+    let s = str_operand(&s)?.to_string();
     let start = start.as_int().ok_or_else(|| type_mismatch("Int64", &start, None))?;
     let end = end.as_int().ok_or_else(|| type_mismatch("Int64", &end, None))?;
     let n = s.chars().count() as i64;
@@ -1346,7 +1401,7 @@ fn string_substring(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 // abort (the same defensive stance as substring's bounds clamping).
 fn string_repeat(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, n] = expect_args::<2>("String.repeat", args)?;
-    let s = match &s { Value::Str(x) => x.clone(), _ => return Err(type_mismatch("String", &s, None)) };
+    let s = str_operand(&s)?.to_string();
     let n = n.as_int().ok_or_else(|| type_mismatch("Int64", &n, None))?;
     if n <= 0 {
         return Ok(Value::Str(String::new()));
@@ -1358,6 +1413,83 @@ fn string_repeat(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
         return Err(EvalError::Overflow { op: "String.repeat" });
     }
     Ok(Value::Str(s.repeat(n as usize)))
+}
+
+// ── String search / edit (WI-884) ──────────────────────────────
+//
+// Five of `String`'s twenty-two declared operations were backed by nothing and died
+// `OperationBodyMissing` on a program that loaded clean — WI-881's defect one sort
+// over. They are keyed per carrier through `string.anthill`'s `operation_map`
+// (WI-876's channel), which is also what checks their arity against the declaration.
+//
+// WHAT EACH ONE MEANS IS NOT WRITTEN HERE. The index unit, what the empty pattern
+// does, which whitespace `trim` takes and why `split` keeps its empty pieces are the
+// OPERATIONS' contract, and they are argued on the declarations in
+// `stdlib/anthill/prelude/string.anthill`, which is where a reader of the library
+// looks and where a second backend has to read them from. This module states only
+// what is true of THIS host: which `str` primitive backs each operation, and where
+// that primitive's behaviour has to be adjusted to meet the declared contract. There
+// is exactly one such adjustment, in `string_index_of`.
+
+/// The `&str` behind a `String` operand — [`float_operand`]'s peer, and the same
+/// accessor-plus-[`type_mismatch`] shape `string_substring` and `string_repeat`
+/// already use for their `Int64` arguments (`as_int().ok_or_else(…)`).
+///
+/// The single-operand String builtins that predate this ticket are routed through it
+/// too. The three BINARY ones are not: they report `type_mismatch(…, Some(&b))`, which
+/// names both operands, and narrowing that message to one is a change to a diagnostic
+/// rather than a deduplication.
+fn str_operand(v: &Value) -> Result<&str, EvalError> {
+    v.as_str().ok_or_else(|| type_mismatch("String", v, None))
+}
+
+fn string_contains(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, sub] = expect_args::<2>("String.contains", args)?;
+    Ok(Value::Bool(str_operand(&s)?.contains(str_operand(&sub)?)))
+}
+
+/// THE ONE PLACE THE HOST PRIMITIVE DISAGREES WITH THE DECLARATION: `str::find`
+/// answers in BYTES and `indexOf` is declared in Unicode scalars (see
+/// `string.anthill`, which argues the unit and drives the round trip that pins it).
+/// The byte offset is converted by counting the characters before it — `find`'s answer
+/// is always on a character boundary, so the prefix slice is exact. `-1` when absent.
+fn string_index_of(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, sub] = expect_args::<2>("String.indexOf", args)?;
+    let (s, sub) = (str_operand(&s)?, str_operand(&sub)?);
+    Ok(Value::Int(match s.find(sub) {
+        Some(byte) => s[..byte].chars().count() as i64,
+        None => -1,
+    }))
+}
+
+/// `str::replace` — every non-overlapping occurrence, left to right, which is what
+/// the declaration specifies.
+fn string_replace(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, old, new] = expect_args::<3>("String.replace", args)?;
+    let (s, old, new) = (str_operand(&s)?, str_operand(&old)?, str_operand(&new)?);
+    Ok(Value::Str(s.replace(old, new)))
+}
+
+/// `str::trim`, whose whitespace set is the Unicode `White_Space` property — the
+/// declaration says Unicode and not the ASCII subset, so this is `trim` and not
+/// `trim_ascii`.
+fn string_trim(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s] = expect_args::<1>("String.trim", args)?;
+    Ok(Value::Str(str_operand(&s)?.trim().to_string()))
+}
+
+/// `str::split`, which keeps the empty pieces the declaration requires.
+///
+/// The one host function here that BUILDS a structured value rather than a scalar;
+/// `bigint_to_int` (which builds an `Option`) is the shape it follows, through the
+/// shared [`build_value_list`] so the `cons`/`nil` spine is minted in one place.
+fn string_split(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, sep] = expect_args::<2>("String.split", args)?;
+    let pieces: Vec<Value> = str_operand(&s)?
+        .split(str_operand(&sep)?)
+        .map(|p| Value::Str(p.to_string()))
+        .collect();
+    build_value_list(interp, pieces)
 }
 
 // ── LogicalStream / KB.execute ─────────────────────────────────
@@ -4232,19 +4364,15 @@ mod tests {
     /// and assert it did not answer `ArityMismatch`. Operand TYPES are wrong on purpose
     /// — a `TypeMismatch` (or any other error, or a value) all mean the arity was
     /// accepted, which is the only thing under test.
+    ///
+    /// WI-884 — driven off [`HOST_FNS`] itself. It used to restate every key in a
+    /// second hand-written list here, which a newly registered function escapes
+    /// SILENTLY: the omission is invisible, and the entry it would have caught is one
+    /// whose wrong arity survives registration and dies at the first call. A test
+    /// against a hand-copied roster of the thing under test checks the copy.
     #[test]
     fn every_host_fn_key_declares_the_arity_its_function_accepts() {
-        const KEYS: &[&str] = &[
-            "ordered_compare", "ordered_gt", "ordered_gte", "ordered_lt", "ordered_lte",
-            "ordered_max", "ordered_min",
-            "float_gt", "float_gte", "float_lt", "float_lte",
-            "float_abs", "float_neg", "float_sqrt", "float_sin", "float_cos", "float_tan",
-            "float_asin", "float_acos", "float_atan", "float_exp", "float_log",
-            "float_log10", "float_log2", "float_hypot", "float_fmod", "float_pow",
-            "float_atan2", "float_max", "float_min", "float_floor", "float_ceil",
-            "float_round", "float_pi", "float_e", "float_tau",
-        ];
-        for key in KEYS {
+        for (key, _, _) in HOST_FNS {
             let host = host_fn_by_key(key).unwrap_or_else(|| panic!("{key} is registered"));
             let args = vec![Value::Float(1.0); host.arity];
             if let Err(EvalError::ArityMismatch { expected, got, .. }) =

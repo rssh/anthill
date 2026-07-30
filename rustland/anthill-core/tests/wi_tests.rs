@@ -876,3 +876,6 @@ mod wi876_operation_mapping_test;
 
 #[path = "include/wi881_float_arithmetic_test.rs"]
 mod wi881_float_arithmetic_test;
+
+#[path = "include/wi884_sibling_backing_test.rs"]
+mod wi884_sibling_backing_test;

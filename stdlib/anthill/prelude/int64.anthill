@@ -35,6 +35,19 @@ sort anthill.prelude.Int64
   }
 
   -- Bounds: Int64 is finite (platform-dependent, e.g. i64)
+  --
+  -- WI-884: host-backed, named in `rustland/anthill-stl/anthill/int64.anthill`'s
+  -- `operation_map`. Until then these were the only two of this sort's eighteen
+  -- declared operations backed by NOTHING — both died `OperationBodyMissing` on a
+  -- program that loaded clean, the shape WI-881 found twenty-four times over on
+  -- `Float`, and invisible for the same reason (a host carrier is exempt from the
+  -- load-time backing check wholesale; WI-880 narrows that).
+  --
+  -- A HOST MAPPING AND NOT AN EQUATION, though `minValue() <=> ...` would be exact
+  -- for a fixed carrier: a `[simp]` head is an APPLICATION, so it rewrites
+  -- `minValue()` and not the BARE `minValue` that `in_bounds` just below writes.
+  -- MEASURED on `Float.tau`, which is why the three float constants are host-backed
+  -- too. Nullary operations want dispatch, not inlining.
   operation minValue() -> Int64
   operation maxValue() -> Int64
 
