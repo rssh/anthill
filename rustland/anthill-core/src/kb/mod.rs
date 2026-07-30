@@ -6184,6 +6184,14 @@ impl KnowledgeBase {
         self.register_builtin("anthill.prelude.Numeric.add", BuiltinTag::Add);
         self.register_builtin("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
         self.register_builtin("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
+        // div/mod live on Int64 (division is not total on Numeric); the `/` `div`
+        // `%` `mod` operators desugar to the bare names, resolved to these
+        // registrations so a query computes them (WI-863). divExact aliases div (a
+        // stdlib rule); it is registered for the QUALIFIED form but deliberately
+        // kept out of PRELUDE_QUALIFIED — no operator mints a bare `divExact`.
+        self.register_builtin("anthill.prelude.Int64.div", BuiltinTag::Div);
+        self.register_builtin("anthill.prelude.Int64.divExact", BuiltinTag::Div);
+        self.register_builtin("anthill.prelude.Int64.mod", BuiltinTag::Mod);
         // Conversions
         self.register_builtin("anthill.prelude.BigInt.to_bigint", BuiltinTag::ToBigInt);
         self.register_builtin("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);

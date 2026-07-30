@@ -170,6 +170,20 @@ pub enum BuiltinTag {
     Sub,
     /// `anthill.prelude.Numeric.mul(?a, ?b)` — arithmetic multiplication (equation builtin).
     Mul,
+    /// `anthill.prelude.Int64.div(?a, ?b)` — truncated integer division (also the
+    /// `divExact` alias); the `/` and `div` operators desugar here. PARTIAL: a
+    /// zero divisor yields no solution — the SLD reading of the declared
+    /// `Error[DivisionByZero] :- eq(b, 0)` (SLD has no effect machinery, so the
+    /// guard firing = the goal has no result; the eval interpreter raises the
+    /// catchable effect instead). WI-863; the guard is hard-coded here pending
+    /// WI-874's declaration-driven extraction.
+    Div,
+    /// `anthill.prelude.Int64.mod(?a, ?b)` — Euclidean remainder (always
+    /// non-negative), the `%` / `mod` operators. PARTIAL: a zero divisor yields no
+    /// solution (WI-863). Int + BigInt; the int slot is CHECKED, so it is safe on
+    /// the `i64::MIN mod -1` overflow that eval's unchecked `int_mod` panics on —
+    /// at the cost of dropping that one answer (0) as `no solution`.
+    Mod,
     // ── Conversion builtins ─────────────────────────────────
     /// `anthill.prelude.BigInt.to_bigint(?n, ?result)` — Int → BigInt.
     ToBigInt,
@@ -3320,9 +3334,21 @@ impl KnowledgeBase {
             BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
             BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
             BuiltinTag::Lte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater),
-            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
-            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
-            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
+            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| Some(a + b), |a, b| Some(a + b), |a, b| Some(a + b)),
+            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| Some(a - b), |a, b| Some(a - b), |a, b| Some(a - b)),
+            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| Some(a * b), |a, b| Some(a * b), |a, b| Some(a * b)),
+            // div/mod are PARTIAL: a zero divisor → None → Failure — the SLD reading
+            // of the declared `Error[DivisionByZero] :- eq(b, 0)` (eval raises the
+            // catchable effect). div truncates, mod is Euclidean (always
+            // non-negative). Int AND BigInt compute (matching add/sub/mul's carrier
+            // coverage). The float slot is IEEE division (±inf on /0) — the
+            // `Float.div` behavior, NOT eval's `Int64.div` which type-errors on
+            // floats. `Mod`'s int slot is CHECKED, so it is SAFE (not a mirror)
+            // where eval's unchecked `int_mod` overflow-panics; the sole cost is
+            // i64::MIN mod -1, whose answer 0 is dropped as `no solution` (see the
+            // overflow-panic WI-875). Float has no `mod` op → None. WI-863.
+            BuiltinTag::Div => self.builtin_arith(goal, answer_subst, |a, b| a.checked_div(b), Self::bigint_checked_div, |a, b| Some(a / b)),
+            BuiltinTag::Mod => self.builtin_arith(goal, answer_subst, |a, b| a.checked_rem_euclid(b), Self::bigint_rem_euclid, |_, _| None),
             BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
             BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
             // Occurrence reflection builtins (WI-297).
@@ -5246,17 +5272,21 @@ impl KnowledgeBase {
 
     // ── Arithmetic builtins ──────────────────────────────────
 
-    /// Generic arithmetic builtin for add/sub/mul.
+    /// Generic arithmetic builtin for add/sub/mul and the PARTIAL div/mod.
     /// If 2 positional args: used as an equation builtin (reduces term to result).
     /// If 3 positional args: binds the 3rd arg to the computed result.
-    /// Operates on Int, BigInt, or Float constants.
+    /// Operates on Int, BigInt, or Float constants. Each `*_op` returns `Option`:
+    /// `None` marks an argument outside the operation's domain (a zero divisor, or
+    /// a carrier the op does not define) and yields `Failure` — the SLD reading of
+    /// a partial operation's guard firing (WI-863). Total operations (add/sub/mul)
+    /// always return `Some`.
     fn builtin_arith<V: TermView>(
         &mut self,
         goal: &V,
         subst: &Substitution,
-        int_op: impl Fn(i64, i64) -> i64,
-        bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> num_bigint::BigInt,
-        float_op: impl Fn(f64, f64) -> f64,
+        int_op: impl Fn(i64, i64) -> Option<i64>,
+        bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> Option<num_bigint::BigInt>,
+        float_op: impl Fn(f64, f64) -> Option<f64>,
     ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } if pos_arity >= 2 => pos_arity,
@@ -5290,15 +5320,20 @@ impl KnowledgeBase {
         // WI-685: `value_num` reads a numeric literal carrier-neutrally through
         // the view (Term or Node), so no collapse-to-Term step is needed.
         let result_term = match (self.value_num(&a), self.value_num(&b)) {
-            (Some(Num::Int(x)), Some(Num::Int(y))) => {
-                self.alloc(Term::Const(Literal::Int(int_op(x, y))))
-            }
-            (Some(Num::Big(x)), Some(Num::Big(y))) => {
-                self.alloc(Term::Const(Literal::BigInt(bigint_op(&x, &y))))
-            }
-            (Some(Num::Float(x)), Some(Num::Float(y))) => {
-                self.alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(float_op(x.0, y.0)))))
-            }
+            // `None` from an `*_op` = argument outside the op's domain (zero
+            // divisor / unsupported carrier) → Failure, same as a cross-type pair.
+            (Some(Num::Int(x)), Some(Num::Int(y))) => match int_op(x, y) {
+                Some(r) => self.alloc(Term::Const(Literal::Int(r))),
+                None => return BuiltinResult::Failure,
+            },
+            (Some(Num::Big(x)), Some(Num::Big(y))) => match bigint_op(&x, &y) {
+                Some(r) => self.alloc(Term::Const(Literal::BigInt(r))),
+                None => return BuiltinResult::Failure,
+            },
+            (Some(Num::Float(x)), Some(Num::Float(y))) => match float_op(x.0, y.0) {
+                Some(r) => self.alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(r)))),
+                None => return BuiltinResult::Failure,
+            },
             // unbound handled above; cross-type / non-numeric → fail
             _ => return BuiltinResult::Failure,
         };
@@ -5308,6 +5343,35 @@ impl KnowledgeBase {
             // 2-arg form: succeeds as a ground test (both args are concrete constants)
             None => BuiltinResult::Success,
         }
+    }
+
+    /// The BigInt slot of `BuiltinTag::Div`. `num_bigint`'s `/` panics on a zero
+    /// divisor, so the guard is load-bearing; `None` → Failure. BigInt has no
+    /// overflow, so unlike i64 `div` only the zero case is partial (WI-863).
+    fn bigint_checked_div(
+        a: &num_bigint::BigInt,
+        b: &num_bigint::BigInt,
+    ) -> Option<num_bigint::BigInt> {
+        (b.sign() != num_bigint::Sign::NoSign).then(|| a / b)
+    }
+
+    /// The BigInt slot of `BuiltinTag::Mod`: Euclidean (always non-negative)
+    /// remainder, matching i64 `rem_euclid` and the eval `Int64.mod`. `None` on a
+    /// zero divisor. `%` follows the dividend's sign, so a negative remainder is
+    /// lifted by `|b|` (WI-863).
+    fn bigint_rem_euclid(
+        a: &num_bigint::BigInt,
+        b: &num_bigint::BigInt,
+    ) -> Option<num_bigint::BigInt> {
+        if b.sign() == num_bigint::Sign::NoSign {
+            return None;
+        }
+        let r = a % b;
+        Some(if r.sign() == num_bigint::Sign::Minus {
+            if b.sign() == num_bigint::Sign::Minus { r - b } else { r + b }
+        } else {
+            r
+        })
     }
 
     // ── Conversion builtins ────────────────────────────────────
