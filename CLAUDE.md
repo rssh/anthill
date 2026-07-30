@@ -213,15 +213,18 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   parameter whose sort `requires Eq`), i.e. `Pair` stops being a general PRODUCT.
   `Set`/`Map` genuinely need `Eq` on keys; a pair of anything is a pair. The cost is
   recorded, not hidden: `provides Eq[Pair]` rides the same chain and OVER-CLAIMS.
-- **`Pair` carries the prelude's two orderings** — `PairByFst` / `PairBySnd`, each a
-  `PartialOrd` + `Ordered` BUNDLE with NAMED element slots (`requires OA: Ordered[A]`).
-  A bundle because `ordered.anthill` derives `gt`/`lt` from `compare` off the carrier's
-  inherited `PartialOrd`, so a lone `Ordered` witness contradicts what it inherits; a
-  compare-`fst`-only witness is a PREORDER that makes `SortedSet` drop elements. They
-  ship in the prelude only because `Pair` is prelude-LAWFUL — no primitive's `Eq` is
-  (it lives in the per-language bindings, proposal 038), so no prelude witness may order
-  `String` or `Int64`. A bracket-less `Ordered.compare` on a `Pair` is tier 3 naming
-  both, deliberately: `Pair` has no provider to displace, so no `DefaultProvider` row.
+- **`Pair`'s ORDER IS CANONICAL and `Pair` provides it ITSELF** (WI-858) — lexicographic
+  `fst`-then-`snd`, the order every neighbouring language gives a pair. So a bracket-less
+  `Ordered.compare` on a `Pair` ANSWERS (one provider, tier 2) and a `SortedSet` of pairs
+  needs no ordering bracket; nothing ordered a `Pair` before. A `PartialOrd` + `Ordered`
+  BUNDLE, because `ordered.anthill` derives `gt`/`lt` from `compare` off the carrier's
+  `PartialOrd`. An ALTERNATIVE ordering is the PROGRAM's to declare, never the library's:
+  shipping a rival here would make every downstream bracket-less pair compare an error
+  its author never opted into — obstacle A, the same reason no prelude witness orders
+  `String`. MEASURED LIMIT: while a rival IS declared the canonical order is UNREACHABLE
+  through a `requires` slot — `Pair` is a CONCRETE provider so `[Ordered = Pair]` is
+  refused (the value decides, §3.5 check 3) while the rival makes the bare goal
+  ambiguous. Rung 2a (WI-861) is the missing rung and needs no edit to `pair.anthill`.
 
 # Repository rules
 

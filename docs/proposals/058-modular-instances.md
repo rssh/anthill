@@ -1,6 +1,6 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Active. The core (§3.1–§3.5) is delivered; §3.8's bundle rule is delivered as shipped library code (`prelude/pair.anthill`'s two orderings); defaults (§3.6) and per-provision conditions (§3.8) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered; §3.8's bundle rule is delivered as shipped library code (`prelude/pair.anthill`'s canonical `Pair` ordering); defaults (§3.6) and per-provision conditions (§3.8) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -185,13 +185,20 @@ let a = SortedSet.empty[T = String, O = ByLength]()
 SortedSet.insert(a, "zz")          -- no bracket: a's TYPE says which
 SortedSet.union(a, b)              -- b Alphabetical ⇒ TYPE ERROR naming both orderings
 
--- …and the SHIPPED instance of exactly that (prelude/pair.anthill): `Pair` has no
--- canonical order, so two lexicographic ones coexist and every dispatch says which.
--- NOT `String`: that carrier already has a provider, and a prelude rival would hand
--- every downstream bracket-less compare a tier-3 error its author never opted into.
-let s = SortedSet.empty[T = Pair[Int64, Int64], O = PairByFst]()   -- (1,9) before (2,1)
-let t = SortedSet.empty[T = Pair[Int64, Int64], O = PairBySnd]()   -- (2,1) before (1,9)
-Ordered.compare(p, q)              -- no bracket ⇒ tier 3, naming PairByFst and PairBySnd
+-- …and the SHIPPED shape (prelude/pair.anthill). A pair HAS a canonical order —
+-- lexicographic fst-then-snd, as in every neighbouring language — so `Pair` provides
+-- it ITSELF and silence answers (tier 2). An ALTERNATIVE is the PROGRAM's to declare;
+-- a library that shipped one would hand every downstream bracket-less compare a
+-- tier-3 error its author never opted into (§3.7's obstacle, the same one that keeps
+-- any prelude witness off `String`):
+let s = SortedSet.empty[T = Pair[Int64, Int64]]()          -- canonical, no bracket
+sort BySnd  requires OA: Ordered[A]  requires OB: Ordered[B]   -- the program's own
+  provides PartialOrd[Pair[A, B]]  provides Ordered[Pair[A, B]]  … end
+let t = SortedSet.empty[T = Pair[Int64, Int64], O = BySnd]()   -- the alternative, named
+-- LIMIT while a rival is declared: the canonical order is unreachable through a
+-- `requires` slot — the bare goal is ambiguous, and `[Ordered = Pair]` is refused
+-- because `Pair` is CONCRETE (§3.5 check 3: the value decides). Rung 2a is the fix:
+-- the carrier's own provision is the inferred default, so silence takes it again.
 
 -- a conditional provision (§3.8): lists are ordered wherever their elements are
 sort ListOrd

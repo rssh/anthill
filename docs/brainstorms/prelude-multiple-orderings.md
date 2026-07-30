@@ -1,6 +1,6 @@
 # Two orderings of one carrier, in the SHIPPED library
 
-## Status: DRIVEN and converged (2026-07-30, same day) — see the Addendum at the end. Design now in proposal 058 (rules: §3.2 rung 2a, §3.6 defaults, §3.8 bundles) + `docs/design/058-implementation.md` (§7 probe matrix, §8 build order; it also maps the older 058 section numbers cited below). The body below is the pre-drive record; two of its claims are corrected in the addendum (option 2's cost, and open question 5's "lawful" list).
+## Status: CLOSED (2026-07-30) — see the Addendum and its closing note at the end. The title is now a misnomer: what shipped is ONE canonical ordering in the library, with alternatives left to the program. Design now in proposal 058 (rules: §3.2 rung 2a, §3.6 defaults, §3.8 bundles) + `docs/design/058-implementation.md` (§7 probe matrix, §8 build order; it also maps the older 058 section numbers cited below). The body below is the pre-drive record; two of its claims are corrected in the addendum (option 2's cost, and open question 5's "lawful" list).
 
 Triggered by **WI-844** (proposal 058 phase 4). That ticket delivered
 `stdlib/anthill/prelude/sortedset.anthill` — a set whose comparator is a NAMED
@@ -549,21 +549,39 @@ variance pattern (facts outside the sorts, absence = safe default, zero grammar)
 rule), **then the library** (058 §9 phase 7 — the WI-844 instruction finally met), **then
 rung 2a** (phase 8 — obstacle A closed for `String` and every self-providing carrier).
 
-> **CLOSED 2026-07-30 as recommended.** WI-857 delivered, then WI-858 shipped option 2:
-> `prelude/pair.anthill` carries `PairByFst` / `PairBySnd`, `Pair` provides
-> `PartialEq`/`Eq` componentwise, and `wi858_pair_orderings_test` drives it end to end.
-> The recommendation held on both obstacles — A never bit (`Pair` has no provider to
-> displace, so tier 3 is the right answer and no `DefaultProvider` row is wanted) and B
-> was discharged exactly as predicted (the `Eq` leg from `Pair`'s own provision, the
-> `PartialOrd` leg from each bundle; the binding-free load is asserted directly). Three
-> things the drive found that this document did not anticipate: the shared `requires`
-> chain cannot condition `PartialEq[Pair]` and `Eq[Pair]` at their two different
+> **CLOSED 2026-07-30, with option 2's CARRIER but not its shape.** WI-857 delivered,
+> then WI-858 took `Pair` — as this document recommended — but ships **one** ordering,
+> not two: `Pair` provides its own canonical `PartialOrd`/`Ordered` (lexicographic
+> fst-then-snd) beside componentwise `PartialEq`/`Eq`, and an ALTERNATIVE is left to the
+> program that wants it (`wi858_pair_orderings_test` declares two and selects them by
+> name). The correction to this document's framing: **obstacle A bites `Pair` too.** The
+> Options table assumed a `Pair` witness pair costs nothing because `Pair` self-provides
+> nothing — true when written, but the moment `Pair` gains `Eq` (which obstacle B
+> *requires* for any prelude ordering of it), shipping two rivals hands every downstream
+> bracket-less pair compare the same tier-3 error that rules `String` out. And a pair is
+> not `Monoid[Int64]`: it HAS a canonical order, the one every neighbouring language
+> gives it, so "no default to want" was wrong on the facts.
+>
+> Obstacle B was discharged exactly as predicted (the `Eq` leg from `Pair`'s own
+> provision, the `PartialOrd` leg from the bundle; the provision facts asserted directly
+> in a binding-free load). Question 4's parametric witness carrier: confirmed again, now
+> from the test side. Question 5 ("which orderings ship?") is answered differently than
+> the addendum guessed — **the canonical one ships, the alternatives do not.**
+>
+> Five things the drive found that this document did not anticipate: the shared
+> `requires` chain cannot condition `PartialEq[Pair]` and `Eq[Pair]` at their two
 > strengths (**WI-869** — an `Eq` chain makes `Pair[A = Float, …]` a load error, so
-> `Pair` ships with the weaker `PartialEq` chain and `Eq[Pair]` over-claims); the
-> composition leg of §3.3 is validated and then discarded (**WI-870**); and a
-> componentwise provider's second requirement slot is read from the first when the
-> first's carrier is the provider itself (**WI-871**, pre-existing). Rung 2a (obstacle A
-> for `String`) remains phase 8c, unchanged.
+> `Pair` takes the weaker `PartialEq` chain and `Eq[Pair]` over-claims); §3.3's
+> composition leg is validated and then discarded (**WI-870**); a componentwise
+> provider's second requirement slot is read from the first when the first's carrier is
+> the provider itself (**WI-871**, pre-existing); a provision's carrier is matched by
+> SHORT NAME at dispatch (**WI-872**, pre-existing); and `dispatch_origin` keeps one
+> rewrite per spec op for the whole image (**WI-873**, pre-existing).
+>
+> Rung 2a is now load-bearing for `Pair` as well as `String`: while a rival is declared,
+> the canonical order is unreachable through a `requires` slot, because a CONCRETE
+> provider cannot be named (§3.5 check 3) and the bare goal is ambiguous. §3.6's
+> inference rule closes it with no edit to the prelude — phase 8c, **WI-861**.
 Option 5 remains the principled answer for library orderings of a PRIMITIVE and remains
 paired with WI-857, exactly as §Options concluded — the pairing is now tighter, since
 WI-857's settlement builds the machinery option 5's checker halves need.
