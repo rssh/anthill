@@ -3094,6 +3094,12 @@ fn render_as_math_call(
         ("Float.floor", "std::floor"),
         ("Float.ceil",  "std::ceil"),
         ("Float.round", "std::round"),
+        // WI-881 — `std::fmax`/`std::fmin`, NOT `std::max`/`std::min`: the `f`
+        // versions are IEEE-754 `maxNum`/`minNum` and ABSORB NaN, which is what
+        // `Float.max`/`min` mean and what the interpreter's `f64::max`/`min` do. The
+        // comparison-based `std::max` would answer differently on a NaN operand.
+        ("Float.max",   "std::fmax"),
+        ("Float.min",   "std::fmin"),
     ];
     let cpp = lookup_prelude_qn(fn_qn, table)?;
     ctx.requested_includes.borrow_mut()

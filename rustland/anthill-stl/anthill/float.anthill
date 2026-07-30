@@ -10,11 +10,45 @@ namespace anthill.prelude
     -- `Int64`/`String`/`BigInt` name. No `compare`: `Float` provides no `Ordered`.
     -- This is the fact that used to be a `float_pair` branch inside the shared
     -- spec-op builtin.
+    --
+    -- WI-881: and the ARITHMETIC below it. `Float` declared 32 operations and 8 ran;
+    -- the rest were body-less with nothing behind them, so `sqrt(4.0)` died
+    -- `OperationBodyMissing` on a program that loaded clean — a host carrier is exempt
+    -- from the load-time backing check wholesale (`check_provider_operations`; WI-880
+    -- narrows it now that backing is knowable per operation). `recip` is absent from
+    -- this list ON PURPOSE: its equation in `stdlib/anthill/prelude/float.anthill` is
+    -- an exact definition and carries `[simp]`, so it inlines instead of dispatching.
+    -- Every other declared operation is here.
     operation_map {
       gt: "float_gt",
       gte: "float_gte",
       lt: "float_lt",
-      lte: "float_lte"
+      lte: "float_lte",
+      max: "float_max",
+      min: "float_min",
+      abs: "float_abs",
+      neg: "float_neg",
+      floor: "float_floor",
+      ceil: "float_ceil",
+      round: "float_round",
+      sqrt: "float_sqrt",
+      hypot: "float_hypot",
+      fmod: "float_fmod",
+      pow: "float_pow",
+      sin: "float_sin",
+      cos: "float_cos",
+      tan: "float_tan",
+      asin: "float_asin",
+      acos: "float_acos",
+      atan: "float_atan",
+      atan2: "float_atan2",
+      exp: "float_exp",
+      log: "float_log",
+      log10: "float_log10",
+      log2: "float_log2",
+      pi: "float_pi",
+      e: "float_e",
+      tau: "float_tau"
     }
     -- WI-644 / proposal 004: IEEE Float provides only the PARTIAL specs — its `==`
     -- is not reflexive (nan) and not a congruence (-0.0/+0.0), so it is NOT a

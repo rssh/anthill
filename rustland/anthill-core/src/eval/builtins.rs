@@ -59,10 +59,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // implementation served every carrier that never wrote its own — so a
     // STRUCTURAL `Ordered` provider was intercepted by code that could not compare
     // its values, on a program that LOADED CLEAN, and the spec's own default bodies
-    // could never run. `max`/`min` are in the family too — they moved to `PartialOrd`,
-    // beside the `gte`/`lte` their default derivation reads, and each carrier maps
-    // them: the total scalars to `ordered_max`/`min`, `Float` to the IEEE
-    // `maxNum`/`minNum` that absorb NaN.
+    // could never run. `max`/`min` are in the family too: they are DECLARED on
+    // `Ordered` (with the default bodies that derive them from `gte`/`lte`), and each
+    // total scalar carrier maps them to `ordered_max`/`ordered_min` so the derivation
+    // costs no interpreter frame where the host answers in one call. WI-881 — `Float`
+    // maps its OWN `max`/`min` to the IEEE pair; the argument is beside `float_max`.
 
     register_if_present(interp, "anthill.prelude.Bool.not", bool_not)?;
     register_if_present(interp, "anthill.prelude.Bool.and", bool_and)?;
@@ -230,6 +231,34 @@ fn host_fn_by_key(key: &str) -> Option<HostFn> {
             "float_gte" => (2, float_gte),
             "float_lt" => (2, float_lt),
             "float_lte" => (2, float_lte),
+            // WI-881 — `Float`'s IEEE ARITHMETIC. Every one of these is an `f64`
+            // intrinsic; see the section header above the definitions for why they
+            // are host functions rather than laws over the other operations.
+            "float_abs" => (1, float_abs),
+            "float_neg" => (1, float_neg),
+            "float_sqrt" => (1, float_sqrt),
+            "float_sin" => (1, float_sin),
+            "float_cos" => (1, float_cos),
+            "float_tan" => (1, float_tan),
+            "float_asin" => (1, float_asin),
+            "float_acos" => (1, float_acos),
+            "float_atan" => (1, float_atan),
+            "float_exp" => (1, float_exp),
+            "float_log" => (1, float_log),
+            "float_log10" => (1, float_log10),
+            "float_log2" => (1, float_log2),
+            "float_hypot" => (2, float_hypot),
+            "float_fmod" => (2, float_fmod),
+            "float_pow" => (2, float_pow),
+            "float_atan2" => (2, float_atan2),
+            "float_max" => (2, float_max),
+            "float_min" => (2, float_min),
+            "float_floor" => (1, float_floor),
+            "float_ceil" => (1, float_ceil),
+            "float_round" => (1, float_round),
+            "float_pi" => (0, float_pi),
+            "float_e" => (0, float_e),
+            "float_tau" => (0, float_tau),
             _ => return None,
         };
     Some(HostFn { arity, f })
@@ -300,8 +329,23 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         // at registration, which is the earliest point that knows both: the loader
         // knows the operation's arity but not another language's function set, and
         // this registry is the only thing that knows the host's.
-        let declared = crate::kb::op_info::lookup_operation_info(interp.kb(), sym)
-            .map(|r| r.params.len());
+        //
+        // Off the CACHED signature (WI-656) rather than `lookup_operation_info`, whose
+        // record build clones every per-field `Vec` to be dropped after one `.len()` —
+        // the same reason `operation_is_declared` exists beside it. This runs per
+        // mapping for every fresh interpreter, including the short-lived one
+        // `run_in_bridge_interp` builds per bridged evaluation; the fact-scan fallback
+        // is kept for a KB whose signatures are not built yet, where the old reader
+        // would still have answered.
+        let declared = interp
+            .kb()
+            .op_record(sym)
+            .and_then(|r| r.signature.as_ref())
+            .map(|s| s.params.len())
+            .or_else(|| {
+                crate::kb::op_info::lookup_operation_info(interp.kb(), sym)
+                    .map(|r| r.params.len())
+            });
         if let Some(n) = declared {
             if n != host.arity {
                 return Err(EvalError::Internal(format!(
@@ -1037,23 +1081,172 @@ fn float_is_finite(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     }
 }
 
-// ── Float IEEE constants (WI-532, host value source for the term-level consts) ──
-// Value sources for the bodyless `const infinity/negativeInfinity/nan: Float`
-// declared in stdlib float.anthill. `force_const` invokes these with no args.
+// ── Float IEEE arithmetic (WI-881) ─────────────────────────────
+//
+// `Float`'s arithmetic surface, one host function per operation the sort declares,
+// keyed per carrier through `float.anthill`'s `operation_map` (WI-876's channel).
+// Before this existed the sort declared 32 operations and 8 ran; the other 24 died
+// `OperationBodyMissing` on a program that loaded clean, because a host carrier is
+// exempt from the load-time backing check wholesale (`check_provider_operations`;
+// narrowing that is WI-880).
+//
+// WHY THE HOST AND NOT A LAW. `float.anthill` states four of them as equations, and
+// two of those ARE the definition and are now `[simp]`-tagged so they run as one
+// (`recip`, `tau` — see that file). The two here are NOT, and the reason is the same
+// both times: IEEE arithmetic distinguishes `+0.0` from `-0.0` while every COMPARISON
+// reads them equal, so no ordering- or arithmetic-over-zero law pins the sign bit.
+//   * `neg(?a) = sub(0.0, ?a)` is FALSE at `?a = 0.0` — `neg(0.0)` is `-0.0`,
+//     `0.0 - 0.0` is `+0.0`, and `recip` tells them apart (`-inf` vs `+inf`).
+//   * `abs(?a) = max(?a, neg(?a))` is worse than false, it is UNDEFINED at ±0.0:
+//     `f64::max` documents that it may return EITHER input when they compare equal.
+// Both are `f64` intrinsics that clear or flip the sign bit directly, and that is
+// what the operation means.
 
-fn float_infinity(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [] = expect_args::<0>("Float.infinity", args)?;
-    Ok(Value::Float(f64::INFINITY))
+/// The single `f64` operand of a unary `Float` host function — [`float_operands`]'
+/// arity-1 peer. Reads through the same [`float_val`], so a `Value::Term`-wrapped
+/// literal (a reflected / stored-structure operand) is accepted exactly where the
+/// comparisons accept one.
+fn float_operand(i: &Interpreter, a: &Value) -> Result<f64, EvalError> {
+    float_val(i, a).ok_or_else(|| type_mismatch("Float", a, None))
 }
 
-fn float_negative_infinity(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [] = expect_args::<0>("Float.negativeInfinity", args)?;
-    Ok(Value::Float(f64::NEG_INFINITY))
+/// `Float -> Int64` for `floor` / `ceil` / `round`, which is where the two carriers
+/// stop lining up: `f64` has NaN, ±Infinity, and a range far past `i64`, and `as i64`
+/// SATURATES them silently (`floor(nan)` would answer `0`, `floor(1e300)` would answer
+/// `i64::MAX`). A saturated answer is a wrong answer that looks like a right one, so
+/// the out-of-domain operand raises instead — the repo's loud-error rule.
+///
+/// These three are therefore PARTIAL, which their declarations do not yet say; giving
+/// them a guarded `Error` effect row is exactly WI-882's shape and is noted there.
+///
+/// `Overflow` is this file's variant for "the result cannot be represented in the
+/// target" — `String.repeat` already uses it that way, not only for integer
+/// arithmetic. Its Display sentence ("integer overflow") is correspondingly loose for
+/// a NaN operand; that wording is shared with the arithmetic sites, where it is exact.
+fn float_as_int64(op: &'static str, rounded: f64) -> Result<Value, EvalError> {
+    // `i64::MIN as f64` is exact (-2^63) and its negation is the first f64 ABOVE the
+    // i64 range, so the domain is the HALF-OPEN `[lo, -lo)`. `contains` is false for
+    // NaN, which lands in the same arm.
+    let lo = i64::MIN as f64;
+    if (lo..-lo).contains(&rounded) {
+        Ok(Value::Int(rounded as i64))
+    } else {
+        Err(EvalError::Overflow { op })
+    }
 }
 
-fn float_nan(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [] = expect_args::<0>("Float.nan", args)?;
-    Ok(Value::Float(f64::NAN))
+/// Unary `Float -> Float`. One arm per `f64` intrinsic; the shape is identical and the
+/// macro keeps the family aligned and grep-able, as `effect_dispatcher!` does below.
+///
+/// The `fn(f64) -> f64` annotation is the macro's CONTRACT, not decoration: it makes a
+/// wrong-shaped intrinsic a type error at the entry line rather than an arity error
+/// inside the expansion — `f64::log` is base-`b` and takes TWO arguments, which is the
+/// hazard the `float_log` entry's comment flags.
+macro_rules! float_unary {
+    ($($fname:ident($op:literal) = $f:expr;)+) => { $(
+        fn $fname(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+            let [a] = expect_args::<1>($op, args)?;
+            let g: fn(f64) -> f64 = $f;
+            Ok(Value::Float(g(float_operand(i, &a)?)))
+        }
+    )+ };
+}
+
+/// Binary `Float -> Float -> Float`.
+macro_rules! float_binary {
+    ($($fname:ident($op:literal) = $f:expr;)+) => { $(
+        fn $fname(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+            let [a, b] = expect_args::<2>($op, args)?;
+            let (x, y) = float_operands(i, &a, &b)?;
+            let g: fn(f64, f64) -> f64 = $f;
+            Ok(Value::Float(g(x, y)))
+        }
+    )+ };
+}
+
+/// Unary `Float -> Int64`, through [`float_as_int64`]'s domain check.
+macro_rules! float_rounding {
+    ($($fname:ident($op:literal) = $f:expr;)+) => { $(
+        fn $fname(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+            let [a] = expect_args::<1>($op, args)?;
+            let g: fn(f64) -> f64 = $f;
+            float_as_int64($op, g(float_operand(i, &a)?))
+        }
+    )+ };
+}
+
+/// Nullary `-> Float`, covering BOTH kinds of host-supplied float value: the
+/// mathematical constants, which are nullary OPERATIONS reaching eval through
+/// `operation_map`, and the IEEE specials, which are term-level `const`s reaching it
+/// through the hardcoded list below (`force_const` invokes those with no args). The
+/// two differ only in how they are registered — the function is the same shape, so it
+/// is written once.
+macro_rules! float_nullary {
+    ($($fname:ident($op:literal) = $v:expr;)+) => { $(
+        fn $fname(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+            let [] = expect_args::<0>($op, args)?;
+            Ok(Value::Float($v))
+        }
+    )+ };
+}
+
+float_unary! {
+    float_abs("Float.abs")     = f64::abs;
+    float_neg("Float.neg")     = |x| -x;
+    float_sqrt("Float.sqrt")   = f64::sqrt;   // NaN for a negative operand (IEEE)
+    float_sin("Float.sin")     = f64::sin;
+    float_cos("Float.cos")     = f64::cos;
+    float_tan("Float.tan")     = f64::tan;
+    float_asin("Float.asin")   = f64::asin;
+    float_acos("Float.acos")   = f64::acos;
+    float_atan("Float.atan")   = f64::atan;
+    float_exp("Float.exp")     = f64::exp;
+    float_log("Float.log")     = f64::ln;     // NATURAL log — `f64::log` is base-b
+    float_log10("Float.log10") = f64::log10;
+    float_log2("Float.log2")   = f64::log2;
+}
+
+float_binary! {
+    float_hypot("Float.hypot") = f64::hypot;
+    float_fmod("Float.fmod")   = |x, y| x % y;  // C fmod: the sign follows the dividend
+    float_pow("Float.pow")     = f64::powf;
+    float_atan2("Float.atan2") = f64::atan2;
+    // IEEE-754 maxNum/minNum: they ABSORB NaN (`max(nan, 1.0) = 1.0`) and are
+    // commutative, which a `gte`-derived max is not — MEASURED before this ticket,
+    // the derived one answers `1.0` on `(nan, 1.0)` and `nan` on `(1.0, nan)`. That
+    // asymmetry is why `Float` exposes the IEEE pair rather than inheriting
+    // `Ordered`'s derivation, which it could not reach anyway (`Float` provides
+    // `PartialOrd`, not `Ordered` — so until this ticket there was NO way to take
+    // the maximum of two floats at all).
+    float_max("Float.max")     = f64::max;
+    float_min("Float.min")     = f64::min;
+}
+
+float_rounding! {
+    float_floor("Float.floor") = f64::floor;
+    float_ceil("Float.ceil")   = f64::ceil;
+    float_round("Float.round") = f64::round;  // half away from zero
+}
+
+float_nullary! {
+    float_pi("Float.pi") = std::f64::consts::PI;
+    float_e("Float.e")   = std::f64::consts::E;
+    // `tau`'s equation `tau() <=> mul(2.0, pi())` is EXACT (doubling only increments
+    // a binary exponent), so it could have been a `[simp]` definition like `recip`'s
+    // — and it was, until driving found what inlining cannot do. A `[simp]` head is an
+    // APPLICATION; a BARE nullary call site is a `var_ref`, so nothing matches it and
+    // `tau` written without parentheses stayed dead while `pi` and `e` — dispatched,
+    // not inlined — answered. Three constants of one family must behave alike, so the
+    // equation stays as a (true) specification and the host backs the operation.
+    float_tau("Float.tau") = std::f64::consts::TAU;
+
+    // The IEEE specials (WI-532): value sources for the bodyless
+    // `const infinity/negativeInfinity/nan: Float` declared in stdlib float.anthill.
+    // Registered by qualified name, not by `operation_map` — a `const` is not an
+    // operation — but the function is the same nullary shape as the three above.
+    float_infinity("Float.infinity")                 = f64::INFINITY;
+    float_negative_infinity("Float.negativeInfinity") = f64::NEG_INFINITY;
+    float_nan("Float.nan")                           = f64::NAN;
 }
 
 /// Int → Float. Exact for |n| < 2^53; rounds to nearest representable
@@ -4022,6 +4215,52 @@ mod tests {
 
     fn dummy() -> Interpreter {
         Interpreter::new(crate::kb::KnowledgeBase::new())
+    }
+
+    /// WI-881 — every `host_fn_by_key` entry's declared ARITY is the arity its function
+    /// actually accepts.
+    ///
+    /// The registry writes that number by hand, a second time, beside a function whose
+    /// `expect_args::<N>` already fixed it. A disagreement is SILENT where it matters:
+    /// `register_operation_mappings` compares the column against the *anthill*
+    /// declaration, so a wrong column paired with a matching declaration passes
+    /// registration and dies `ArityMismatch` at the first call — which is exactly the
+    /// defect class WI-876 added that check to close, one level down, and the ticket
+    /// that opened 25 new chances to hit it is the one that owes the check.
+    ///
+    /// Probed rather than proved: call each function with `arity` placeholder operands
+    /// and assert it did not answer `ArityMismatch`. Operand TYPES are wrong on purpose
+    /// — a `TypeMismatch` (or any other error, or a value) all mean the arity was
+    /// accepted, which is the only thing under test.
+    #[test]
+    fn every_host_fn_key_declares_the_arity_its_function_accepts() {
+        const KEYS: &[&str] = &[
+            "ordered_compare", "ordered_gt", "ordered_gte", "ordered_lt", "ordered_lte",
+            "ordered_max", "ordered_min",
+            "float_gt", "float_gte", "float_lt", "float_lte",
+            "float_abs", "float_neg", "float_sqrt", "float_sin", "float_cos", "float_tan",
+            "float_asin", "float_acos", "float_atan", "float_exp", "float_log",
+            "float_log10", "float_log2", "float_hypot", "float_fmod", "float_pow",
+            "float_atan2", "float_max", "float_min", "float_floor", "float_ceil",
+            "float_round", "float_pi", "float_e", "float_tau",
+        ];
+        for key in KEYS {
+            let host = host_fn_by_key(key).unwrap_or_else(|| panic!("{key} is registered"));
+            let args = vec![Value::Float(1.0); host.arity];
+            if let Err(EvalError::ArityMismatch { expected, got, .. }) =
+                (host.f)(&mut dummy(), &args)
+            {
+                panic!(
+                    "host_fn_by_key says {key} takes {}, but the function wants {expected} \
+                     (it was given {got})",
+                    host.arity
+                );
+            }
+        }
+        assert!(
+            host_fn_by_key("no_such_host_function").is_none(),
+            "the control: the registry is CLOSED, so an unknown key has no entry",
+        );
     }
 
     #[test]

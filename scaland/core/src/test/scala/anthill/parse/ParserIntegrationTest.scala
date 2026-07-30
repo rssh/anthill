@@ -682,7 +682,11 @@ class ParserIntegrationTest extends munit.FunSuite:
     // them now because its host implementations are keyed per carrier — its
     // binding's `operation_map` names the IEEE functions — where they used to be
     // registered on the `PartialOrd` spec op and serve every carrier at once.
-    assertEquals(opCount, 32, "Float should expose 32 operations")
+    // WI-881: + the IEEE `max`/`min` pair. `max`/`min` live on `Ordered`, which
+    // `Float` does not provide, so before this there was no way to take the maximum
+    // of two floats at all — and `Ordered`'s `gte`-based derivation would have been
+    // the wrong answer anyway (not commutative with a NaN operand).
+    assertEquals(opCount, 34, "Float should expose 34 operations")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
       "Float should declare 5 algebraic rules (neg, abs, recip, tau, nonEqRefl)")
     assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,

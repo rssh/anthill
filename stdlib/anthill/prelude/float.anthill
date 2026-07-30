@@ -5,7 +5,6 @@
 -- — see proposal 038.
 sort anthill.prelude.Float
   import anthill.prelude.{Eq, NonEq, Ordered, Numeric}
-  import anthill.prelude.Ordered.{max}
   import anthill.prelude.algebra.{Ring}
 
   -- WI-876: `Float`'s comparison surface, declared here and backed by the host in
@@ -19,21 +18,53 @@ sort anthill.prelude.Float
   -- branch inside a shared spec-op builtin — the same registration that had to serve
   -- every carrier, and therefore had to test its operands to find out which one it
   -- was serving.
+  --
+  -- WI-881: `max`/`min` are the IEEE-754 `maxNum`/`minNum`, and they are declared
+  -- HERE rather than inherited. `Ordered` is where the library's other `max`/`min`
+  -- live, `Float` does not provide it, and `PartialOrd` has none — so until this
+  -- there was NO WAY TO TAKE THE MAXIMUM OF TWO FLOATS AT ALL. Nor would inheriting
+  -- have been right: `Ordered`'s derivation is `if gte(a, b) then a else b`, and with
+  -- a NaN operand every comparison is false, so it answers `1.0` on `(nan, 1.0)` and
+  -- `nan` on `(1.0, nan)` — not commutative. The IEEE pair ABSORBS NaN instead, which
+  -- is the `max` a float programmer means.
+  --
+  -- WHAT IS STILL MISSING, so the next reader does not read more into this than it
+  -- says: these are reachable only by NAMING `Float`. No spec `Float` provides declares
+  -- `max`, so a GENERIC `f[T](a: T, b: T) requires PartialOrd[T]` still cannot take a
+  -- maximum, where the same code over `Int64` reaches `Ordered.max`. Closing that needs
+  -- a spec that owns "has a max" independent of totality, or 058 §3.8's per-provision
+  -- conditions so `Ordered`'s derivation can be conditioned rather than inherited.
   operation {
     gt(a: Float, b: Float) -> Bool         -- >, false if either operand is NaN
     gte(a: Float, b: Float) -> Bool        -- >=, false if either operand is NaN
     lt(a: Float, b: Float) -> Bool         -- <, false if either operand is NaN
     lte(a: Float, b: Float) -> Bool        -- <=, false if either operand is NaN
+    max(a: Float, b: Float) -> Float       -- IEEE maxNum: max(nan, x) = x
+    min(a: Float, b: Float) -> Float       -- IEEE minNum: min(nan, x) = x
   }
 
-  -- Operations beyond what Numeric provides
+  -- Operations beyond what Numeric provides.
+  --
+  -- WI-881: every one of these is BACKED BY A HOST FUNCTION, named per operation in
+  -- `rustland/anthill-stl/anthill/float.anthill`'s `operation_map`. They are body-less
+  -- for the same reason the comparisons above are — the implementation is the host
+  -- artifact's `f64` intrinsic — and before that clause existed they were body-less
+  -- and backed by NOTHING: 24 of this sort's 32 declared operations died
+  -- `OperationBodyMissing` at eval on a program that loaded clean, because a host
+  -- carrier is exempt from the load-time backing check wholesale (WI-880 narrows it).
+  --
+  -- `floor`/`ceil`/`round` are PARTIAL, and that is the one place the two carriers
+  -- stop lining up: `Float` has NaN, ±Infinity and a range far past `Int64`, so
+  -- `floor(nan)` and `floor(1e300)` have no answer. The host raises rather than
+  -- saturating silently; giving them a guarded `Error` effect row, which is what would
+  -- say so in the SIGNATURE, is WI-882's shape.
   operation {
-    abs(a: Float) -> Float
-    neg(a: Float) -> Float                -- -a
+    abs(a: Float) -> Float                -- |a|; clears the sign bit (abs(-0.0) = 0.0)
+    neg(a: Float) -> Float                -- -a; flips the sign bit (neg(0.0) = -0.0)
     div(a: Float, b: Float) -> Float      -- IEEE division; also `/` infix
-    floor(a: Float) -> Int64                -- round toward negative infinity
-    ceil(a: Float) -> Int64                 -- round toward positive infinity
-    round(a: Float) -> Int64                -- round to nearest
+    floor(a: Float) -> Int64                -- round toward negative infinity; partial
+    ceil(a: Float) -> Int64                 -- round toward positive infinity; partial
+    round(a: Float) -> Int64                -- round to nearest, half away from zero; partial
     recip(a: Float) -> Float              -- 1/a
     -- IEEE 754 predicates: needed because Float.eq returns false for NaN
     -- (NaN != NaN in IEEE), so users can't detect NaN via equality.
@@ -80,11 +111,60 @@ sort anthill.prelude.Float
   const negativeInfinity: Float           -- -∞
   const nan: Float                        -- IEEE NaN (the canonical quiet NaN)
 
-  -- Laws
-  rule neg(?a) <=> sub(0.0, ?a)
-  rule abs(?a) <=> max(?a, neg(?a))
-  rule recip(?a) <=> div(1.0, ?a)
-  rule tau <=> mul(2.0, pi)
+  -- Laws and definitions.
+  --
+  -- WI-881 settles which of these four is WHICH, because the file used to say
+  -- "-- Laws" over all of them and some were meant to be DEFINITIONS: a `[simp]`
+  -- equation is executable — it inlines LHS→RHS and makes a body-less operation run —
+  -- while an untagged rule is inert specification (a rule is not backing, WI-818), and
+  -- the marker was simply forgotten here. `set.anthill`, `map.anthill` and
+  -- `relation.anthill` all tag theirs and argue each one; this file did not.
+  --
+  -- THE DIVIDING LINE IS THE SIGN OF ZERO. IEEE `Float` distinguishes `+0.0` from
+  -- `-0.0` (`recip` tells them apart: `+inf` vs `-inf`) while EVERY COMPARISON reads
+  -- them equal. So a law that reconstructs a sign bit out of arithmetic or ordering
+  -- is not the definition, however much it looks like one — which is what settles
+  -- `neg` and `abs`. `tau`'s equation IS exact and is a law anyway, for the second
+  -- reason: INLINING IS NOT DISPATCH, and it does not reach every call form.
+
+  -- DEFINITION. `recip` IS `1/a`, bit for bit, for every input including ±0.0, ±inf
+  -- and NaN — the host `f64::recip` is literally `1.0/self`. So the equation is the
+  -- implementation and `recip` needs no host mapping of its own; `div` already has one.
+  rule recip(?a) <=> div(1.0, ?a) [simp]
+
+  -- SPECIFICATION, and an EXACT one — `2·π` is exact in binary floating point (doubling
+  -- only increments the exponent), so this is the same f64 as the host's `TAU`. It
+  -- WOULD have been a `[simp]` definition like `recip`'s, and it was until driving
+  -- found what inlining cannot do: a `[simp]` head is an APPLICATION, so it matches
+  -- `tau()` and NOT the BARE `tau` this sort's own comment advertises as a call form
+  -- (a bare nullary call site is a `var_ref`). MEASURED — with `[simp]`, `pi` and `e`
+  -- answered bare while `tau` alone still died `OperationBodyMissing`. Three constants
+  -- of one family must behave alike, so `tau` is host-backed with its siblings and
+  -- this stays a law. (Written with parentheses on both nullary names regardless: the
+  -- bare spelling `rule tau <=> mul(2.0, pi)` matches nothing, which is how these four
+  -- equations came to be inert in the first place. `map.anthill` records the
+  -- mirror-image hazard on the RIGHT-hand side — `<=> none [simp]` parses as an
+  -- instantiation `none[simp]`.)
+  rule tau() <=> mul(2.0, pi())
+
+  -- SPECIFICATION, restated. The old law was `neg(?a) <=> sub(0.0, ?a)`, which is
+  -- FALSE: `neg(0.0)` is `-0.0` and `0.0 - 0.0` is `+0.0` (MEASURED — `recip` of the
+  -- two answers `-inf` and `+inf`). Multiplication by `-1.0` flips the sign bit
+  -- exactly, at zero and everywhere else, so this one is true; `neg` is still backed
+  -- by the host intrinsic rather than by inlining it, because negating is one
+  -- instruction and a `Numeric.mul` dispatch is not.
+  rule neg(?a) <=> mul(-1.0, ?a)
+
+  -- SPECIFICATION, restated. The old law was `abs(?a) <=> max(?a, neg(?a))`, and it
+  -- was DOUBLY dead: it named `Ordered.max`, which no `Float` value can reach
+  -- (`Float` provides `PartialOrd`, not `Ordered` — so `float.anthill` imported a name
+  -- that could never be used), and `abs` is not definable by comparison at all. `abs`
+  -- CLEARS the sign bit, `-0.0` and `+0.0` compare EQUAL, and the IEEE `max` this sort
+  -- now declares is documented to return EITHER input when they compare equal — so the
+  -- law is not merely wrong at `-0.0`, it is undefined there. The `ite(lt(?a, 0.0),
+  -- neg(?a), ?a)` restatement the ticket floated fails on the same input. What is left
+  -- is the true and useful part: `abs` erases whatever the sign was.
+  rule abs(neg(?a)) <=> abs(?a)
 
   -- WI-658: Float provides NonEq (see the fact in the rust binding). The witness
   -- for "IEEE eq is not reflexive" is `nan` — `eq(nan, nan) = false`.

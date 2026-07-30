@@ -262,6 +262,49 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   wholesale, so `op_backed`'s new host-mapping leg is correct-by-construction but
   UNREACHED today — retiring that skip is WI-880's, now that backing is knowable per
   operation.
+- **`[simp]` IS THE ENABLEMENT, NOT THE DIRECTION** (WI-881), and that is what left 24
+  of `anthill.prelude.Float`'s 32 declared operations dying `OperationBodyMissing` on a
+  program that LOADED CLEAN. An UNTAGGED equational rule is INERT — the normalizer never
+  fires it — while a `[simp]` one is EXECUTED by INLINING LHS→RHS in operation bodies
+  before dispatch, so a body-less operation whose defining equation carries the marker
+  RUNS. `float.anthill` stated four equations under a bare `-- Laws` heading with no
+  attribute, where `set`/`map`/`relation` all tag theirs and argue each one. TWO SPELLING
+  TRAPS, both MEASURED: a NULLARY head must carry its PARENTHESES (`rule tau <=> …` never
+  fires — the bare identifier is not an application, so no redex matches; `rule tau() <=>
+  …` does), the left-hand mirror of `map.anthill`'s recorded right-hand hazard (`<=> none
+  [simp]` parses as `none[simp]`). INLINING IS NOT DISPATCH, twice over. (i)
+  `op_is_executable` (body │ builtin │ host mapping) does not count a `[simp]` equation,
+  so one cannot discharge a SPEC operation's obligation (WI-818) — it gives a sort's OWN
+  operation a meaning, which is why `Float.recip` is safe and `Float.neg` (a `Numeric`
+  op) is host-mapped. (ii) A `[simp]` head is an APPLICATION, so it rewrites `tau()` and
+  NOT a BARE `tau` call site (a `var_ref`) — MEASURED, and it is why `tau` ended up
+  host-backed after all: with `[simp]` alone `pi` and `e` answered bare while `tau` died,
+  and three constants of one family must behave alike.
+  THE FOUR LAWS ARE SETTLED ONE BY ONE, and the dividing line for two of them is THE SIGN
+  OF ZERO — IEEE distinguishes `+0.0` from `-0.0` while every COMPARISON reads them EQUAL,
+  so no ordering- or arithmetic-over-zero law pins the sign bit. `recip(?a) <=> div(1.0,
+  ?a)` IS the definition (`f64::recip` IS `1.0/self`) and is now `[simp]` with NO host
+  mapping — the only one of the four. `tau() <=> mul(2.0, pi())` is EXACT too (`2·π` only
+  increments a binary exponent) but stays a law, for reason (ii).
+  `neg(?a) <=> sub(0.0, ?a)` was FALSE (MEASURED: `recip(neg(0.0))` = `-inf`,
+  `recip(0.0 - 0.0)` = `+inf`) and is restated over `mul(-1.0, ?a)`. `abs(?a) <=>
+  max(?a, neg(?a))` was DOUBLY dead — it named `Ordered.max`, unreachable for a
+  `PartialOrd`-only carrier, and `abs` is not definable by comparison AT ALL (it CLEARS
+  the sign bit; the ticket's floated `ite(lt(?a, 0.0), neg(?a), ?a)` answers `-0.0`,
+  MEASURED) — so it is replaced by the true part, `abs(neg(?a)) <=> abs(?a)`. Everything
+  else is one `f64` intrinsic per operation through WI-876's `operation_map`. `Float`
+  DECLARES its own `max`/`min` (IEEE `maxNum`/`minNum`, which ABSORB NaN): they live on
+  `Ordered`, `Float` provides `PartialOrd`, so there was NO way to take the maximum of
+  two floats — and the `gte`-based derivation is not commutative with a NaN operand
+  anyway. `floor`/`ceil`/`round` are the only PARTIAL ones (`f64` has NaN, ±inf and a
+  range past `i64`), and they RAISE rather than let `as i64` saturate silently; their
+  signatures do not say so, which is WI-882's shape. THREE FOLLOW-UPS, each MEASURED
+  here: the sibling audit is WI-884 (`Int64.minValue`/`maxValue` and six `String`
+  operations dead the same way; `BigInt` clean); the predicate gap `recip` opens is
+  WI-885 (`carrier_override_op` reads a `[simp]`-backed member as ABSENT, which is
+  WI-876's own defect shape); and the per-carrier host surface is enumerated in three
+  disagreeing hand-written tables — cpp-gen SILENTLY emits a call to a C++ function
+  that does not exist for an operation it lacks — which is WI-886.
 
 
 # Repository rules

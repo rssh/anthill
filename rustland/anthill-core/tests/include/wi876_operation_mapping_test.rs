@@ -185,9 +185,12 @@ fn the_whole_comparison_surface_works_from_one_operation() {
 /// than on "the comparisons work", because the comparisons would also work if the
 /// registrations had quietly stayed on the spec op, which is the defect.
 ///
-/// `Float` is the discriminating carrier: it maps the FOUR IEEE comparisons and NOT
+/// `Float` is the discriminating carrier: it maps the four IEEE comparisons and NOT
 /// `compare` (it provides `PartialOrd`, not `Ordered`), so a mapping table that had
-/// collapsed to one per-language entry would show `compare` here.
+/// collapsed to one per-language entry would show `compare` here. WI-881 filled the
+/// rest of `Float`'s surface in through this same clause, so the assertion is on the
+/// ABSENCE of `compare` and on `Float`'s own IEEE host functions rather than on an
+/// exact list — the ordering-only list was this ticket's shape, not a rule.
 #[test]
 fn a_binding_blocks_operation_map_lands_as_facts() {
     let kb = crate::common::load_kb_with("\nnamespace wi876.facts\n  sort S\n  end\nend\n");
@@ -206,11 +209,15 @@ fn a_binding_blocks_operation_map_lands_as_facts() {
     assert_eq!(mapped("Int64"), total, "Int64");
     assert_eq!(mapped("String"), total, "String");
     assert_eq!(mapped("BigInt"), total, "BigInt");
-    assert_eq!(
-        mapped("Float"),
-        ["gt", "gte", "lt", "lte"],
-        "`Float` maps only the four `PartialOrd` comparisons — no `compare`, and no \
-         `max`/`min`, because it provides `PartialOrd` and not the total `Ordered`",
+    let float_mapped = mapped("Float");
+    for op in ["gt", "gte", "lt", "lte"] {
+        assert!(float_mapped.iter().any(|m| m == op), "Float maps {op}");
+    }
+    assert!(
+        !float_mapped.iter().any(|m| m == "compare"),
+        "`Float` maps no `compare` — it provides `PartialOrd` and not the total \
+         `Ordered`, so there is no total comparison for the derivation to bottom out \
+         in; got {float_mapped:?}",
     );
 
     // And each mapping names a DIFFERENT host function for `Float` than for the total
