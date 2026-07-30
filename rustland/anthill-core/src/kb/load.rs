@@ -1867,6 +1867,15 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.Numeric.sub",
     "anthill.prelude.Numeric.mul",
     "anthill.prelude.Numeric.neg",  // prefix `-` (WI-529); not position-directed
+    // WI-863: `/` and word-`div` desugar to `div`, `%` and word-`mod` to `mod`.
+    // Division is not total on Numeric, so these live on Int64 (partial: a zero
+    // divisor yields no solution). Bare `div`/`mod` resolve here so a query
+    // computes them, as `+`/`-`/`*` already do above. NOT yet computing in a query
+    // (named-resolvable but with no resolver builtin, so they refuse/flounder):
+    // `^`→`pow` (no Int `pow` op exists at all), prefix `-`→`neg`, and `and`→
+    // `Bool.and` — each needs its own resolver builtin, tracked separately.
+    "anthill.prelude.Int64.div",
+    "anthill.prelude.Int64.mod",
     // WI-529: `&`/word-`and` is value-only (no goal connective — conjunction is the
     // comma, there is no kernel.and), so it resolves to the dispatched Bool op
     // everywhere via this general fallback. `not`/`or` are position-directed instead
