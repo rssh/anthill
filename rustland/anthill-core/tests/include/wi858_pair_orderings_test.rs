@@ -1,36 +1,29 @@
-//! WI-858 (proposal 058 §3.2, §3.8, §5; implementation notes §8 phase 7) — `Pair`'s
-//! CANONICAL ordering in the prelude, and an alternative ordering as the PROGRAM's
-//! opt-in.
+//! WI-858 (proposal 058 §3.2, §3.8, §5; implementation notes §8 phase 7) — 058's
+//! coexistence over `Pair`, and what the PRELUDE does and does not ship for it.
 //!
-//! WHAT THE PRELUDE SHIPS, and why it is one order and not two. `Pair` provides
-//! `PartialOrd`/`Ordered` for itself, lexicographic `fst`-then-`snd` — the order every
-//! neighbouring language gives a pair (Haskell `Ord (a, b)`, Rust `Ord for (A, B)`,
-//! Python tuples, `std::pair`). Nothing in the prelude ordered a `Pair` before, so this
-//! is a capability added rather than a choice imposed: a bracket-less
-//! `Ordered.compare` on a pair now ANSWERS, and `SortedSet.empty[T = Pair[…]]()` needs
-//! no ordering bracket.
+//! WHAT THE PRELUDE SHIPS: componentwise `PartialEq`/`Eq` on `Pair`, and NOT an
+//! ordering. A pair has a canonical order (lexicographic `fst`-then-`snd`, as in every
+//! neighbouring language) and `Pair` should provide it — but today that would cost
+//! SEVEN operations in `pair.anthill` where one would do, because the eval builtins on
+//! `Ordered.compare` / `PartialOrd.gt` & co. compare host SCALARS only and a builtin on
+//! a SPEC op shadows every carrier. Six of those seven would be one-line restatements
+//! of "call `compare`, check the sign". That is WI-876's to remove, and `pair.anthill`'s
+//! header carries the measurement; the library stays free of the workaround.
 //!
-//! Shipping two co-equal witnesses instead would have made every downstream
-//! bracket-less compare on a pair a tier-3 error its author never opted into — the
-//! same reason no prelude witness may order `String`
-//! (`docs/brainstorms/prelude-multiple-orderings.md`, obstacle A). So 058's coexistence
-//! is exercised here the way a real program would: the ALTERNATIVE is declared by the
-//! program that wants it, and selected by name.
+//! WHICH LEAVES `Pair` A CARRIER THAT PROVIDES NO ORDERING — and that is exactly the
+//! shape 058's coexistence wants. Two orderings are declared HERE, by the program that
+//! wants them, and selected by name. Same story as `wi844_sorted_set_driver_test` tells
+//! over `String`, but cleaner: `String` already has a host `Ordered` provider, so its
+//! ties are three-way and a bracket-less compare there is unavoidably an error. `Pair`
+//! has none, so two witnesses tie exactly two ways and every repair is writable.
 //!
-//! WHY `Pair` COULD CARRY IT AT ALL is obstacle B: `Ordered requires Eq[T]`, and in a
-//! binding-free `stdlib/` load no primitive's `Eq` exists (those live in the
-//! per-language binding files, proposal 038). A prelude-LAWFUL carrier can be ordered
-//! by the prelude; a primitive cannot. `Pair` gained componentwise `PartialEq`/`Eq` in
-//! the same change, which is what makes its `Ordered` provision acceptable.
+//! WHY THE PRELUDE COULD HAVE CARRIED AN ORDERING (and what still holds): obstacle B —
+//! `Ordered requires Eq[T]`, and in a binding-free `stdlib/` load no primitive's `Eq`
+//! exists (those live in the per-language binding files, proposal 038). `Pair`'s
+//! componentwise `Eq` is what makes an ordering of it prelude-expressible at all, and
+//! it is what lets the two witnesses below discharge their own `Eq` leg.
 //!
-//! AND THE LIMIT THAT COMES WITH IT, driven and pinned below: while a rival IS
-//! declared, the canonical order becomes unreachable through a `requires` slot — `Pair`
-//! is a CONCRETE provider, so an explicit `[Ordered = Pair]` is refused (the value
-//! decides, §3.5 check 3) while the rival makes the bracket-less goal ambiguous. Rung
-//! 2a (WI-861) is the missing rung, and it needs no edit to `pair.anthill`.
-//!
-//! Reference: `stdlib/anthill/prelude/pair.anthill`, `wi844_sorted_set_driver_test`
-//! (the same pipeline over a carrier with no canonical order),
+//! Reference: `stdlib/anthill/prelude/pair.anthill`, `wi844_sorted_set_driver_test`,
 //! `wi857_dictionary_layout_test` (the locality rule the bundles rely on).
 
 use anthill_core::eval::Value;
@@ -46,11 +39,10 @@ fn program(ns: &str, body: &str) -> String {
     )
 }
 
-/// A LOCAL alternative ordering — lexicographic `snd`-then-`fst`, the mirror of the
-/// prelude's. A `PartialOrd` + `Ordered` BUNDLE with NAMED element slots, which is the
-/// lawful form (058 §3.8): `ordered.anthill` derives `gt`/`lt` from `compare` off the
-/// carrier's `PartialOrd`, so a lone `Ordered` witness would contradict what it
-/// inherits.
+/// A LOCAL ordering — lexicographic `snd`-then-`fst`. A `PartialOrd` + `Ordered`
+/// BUNDLE with NAMED element slots, which is the lawful form (058 §3.8):
+/// `ordered.anthill` derives `gt`/`lt` from `compare` off the carrier's `PartialOrd`,
+/// so a lone `Ordered` witness would contradict what it inherits.
 const BY_SND: &str = r#"
   sort BySnd
     import anthill.prelude.{Int64, Pair, Ordered, PartialOrd, PartialEq}
@@ -70,11 +62,11 @@ const BY_SND: &str = r#"
               if PartialEq.eq(c, 0) then Ordered.compare(al, bl) else c
 "#;
 
-/// A SECOND local alternative — descending by `fst`. Needed wherever an assertion is
-/// about two RIVALS rather than about a rival beside the canonical order, since the
-/// canonical one cannot be named (see `the_canonical_order_is_unreachable_beside_a_rival`).
-const BY_FST_DESC: &str = r#"
-  sort ByFstDesc
+/// The SECOND local ordering — lexicographic `fst`-then-`snd`, the one a canonical
+/// `Ordered[Pair]` would be. Declared here rather than in the prelude for WI-876's
+/// reason (see this file's header).
+const BY_FST: &str = r#"
+  sort ByFst
     import anthill.prelude.{Int64, Pair, Ordered, PartialOrd, PartialEq}
     import anthill.prelude.Pair.{pair}
     sort A = ?
@@ -88,7 +80,7 @@ const BY_FST_DESC: &str = r#"
         case pair(al, ar) ->
           match b
             case pair(bl, br) ->
-              let c = Ordered.compare(bl, al)
+              let c = Ordered.compare(al, bl)
               if PartialEq.eq(c, 0) then Ordered.compare(ar, br) else c
 "#;
 
@@ -106,8 +98,9 @@ const RENDER: &str = r#"
                      render(t))
 "#;
 
-/// Insert `(2,1)` then `(1,9)` into a `SortedSet` and read the whole set back. `bracket`
-/// is the ordering selection — EMPTY for the canonical order, which is the point.
+/// Insert `(2,1)` then `(1,9)` into a `SortedSet` and read the whole set back. `Pair`
+/// provides no ordering, so the construction site always names one — 058's tier-1
+/// selection, and the only thing that can answer here.
 fn pipeline(op: &str, bracket: &str) -> String {
     format!(
         "    operation {op}(n: Int64) -> String =\n      \
@@ -165,21 +158,22 @@ fn positive_control_a_broken_program_is_refused() {
 
 // ── Obstacle B: why the prelude may order a `Pair` at all ────────────
 
-/// THE OBSTACLE-B CONTROL, and it is what decides that this provision may be
-/// prelude-owned rather than whether it works: `stdlib/` must load with NO language
-/// binding present. `load_stdlib_kb` is exactly that load (it collects `stdlib/` alone
+/// THE OBSTACLE-B CONTROL: `Pair`'s componentwise equality must hold with NO language
+/// binding present — that is what makes an ordering of `Pair` prelude-EXPRESSIBLE at
+/// all (`Ordered requires Eq[T]`), and it is what the two witnesses below discharge
+/// their own `Eq` leg from. `stdlib/` must load bindings-free. `load_stdlib_kb` is exactly that load (it collects `stdlib/` alone
 /// and panics on failure), and it is what many suites use.
 ///
 /// Not ceremony. The identical experiment on `String` — one prelude witness beside
 /// `Ordered[String]` — MEASURED two errors here (*"provides `Ordered`, which requires
 /// `Eq`, but … does not provide `Eq`"*), because `Eq[String]` exists only in the Rust
-/// binding. `Pair` passes because its `Eq` leg discharges from its OWN provision.
+/// binding. `Pair` passes because its `Eq` is its own.
 /// Asserted on the PROVISION FACT rather than on "the load did not panic": without the
 /// `Ordered` provision `stdlib/` loads perfectly well (it did, until this change), so a
 /// bare `load_stdlib_kb()` would be vacuous for this claim. (`wi362_stream_provides_
 /// iterable`'s shape.)
 #[test]
-fn the_prelude_orders_a_pair_with_no_language_binding() {
+fn the_prelude_makes_a_pair_lawful_with_no_language_binding() {
     use anthill_core::kb::term::Term;
     let kb = crate::common::load_stdlib_kb();
     let provides = kb
@@ -210,7 +204,7 @@ fn the_prelude_orders_a_pair_with_no_language_binding() {
             }
         })
         .collect();
-    for spec in ["anthill.prelude.Ordered", "anthill.prelude.PartialOrd", "anthill.prelude.Eq"] {
+    for spec in ["anthill.prelude.PartialEq", "anthill.prelude.Eq"] {
         assert!(
             pair_provides.iter().any(|s| s == spec),
             "`Pair` must provide {spec} in a BINDING-FREE load — that is the property \
@@ -220,118 +214,79 @@ fn the_prelude_orders_a_pair_with_no_language_binding() {
     }
 }
 
-// ── The canonical order, with no bracket anywhere ────────────────────
+// ── 058's coexistence: two orderings the PROGRAM declares ───────────
 
-/// THE HEADLINE: lexicographic `fst`-then-`snd`, answering with NO bracket at all —
-/// one provider, tier 2. Three arms, because a comparator has three ways to be wrong:
-/// the first component deciding, the TIE handing over to the second, and equality.
+/// THE HEADLINE. Two orderings of one carrier coexist, each chosen at a CONSTRUCTION
+/// site, each threaded to the comparison that reads it. The same two pairs through the
+/// same bracket-less downstream pipeline give opposite answers — one answer twice would
+/// mean the selection reached nothing.
 #[test]
-fn the_canonical_order_is_lexicographic_fst_then_snd() {
+fn each_construction_site_selects_its_own_ordering() {
     let src = program(
-        "wi858.canonical",
-        "  sort Driver\n    \
-         operation byFst(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n    \
-         operation bySndOnTie(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 5, snd: 9), pair(fst: 5, snd: 1))\n    \
-         operation equal(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 5, snd: 9), pair(fst: 5, snd: 9))\n  end",
-    );
-    assert_eq!(
-        eval_int(&src, "wi858.canonical.Driver.byFst", "fst decides"),
-        -1,
-        "1 < 2 on `fst`, and `snd` (9 vs 1) must NOT get a vote — a 1 here would mean \
-         the order is by `snd`",
-    );
-    assert_eq!(
-        eval_int(&src, "wi858.canonical.Driver.bySndOnTie", "fst ties, snd decides"),
-        1,
-        "`fst` ties at 5, so 9 > 1 decides — a 0 here would mean the second component \
-         is never consulted",
-    );
-    assert_eq!(eval_int(&src, "wi858.canonical.Driver.equal", "both components equal"), 0);
-}
-
-/// …and it threads into a `SortedSet` with NO ordering bracket, which is the capability
-/// that did not exist before: nothing in the prelude ordered a `Pair`, so a set of
-/// pairs was unconstructible.
-#[test]
-fn a_sorted_set_of_pairs_needs_no_ordering_bracket() {
-    let src = program(
-        "wi858.set",
-        &format!("  sort Driver\n{RENDER}{}  end", pipeline("sorted", "")),
-    );
-    assert_eq!(
-        eval_str(&src, "wi858.set.Driver.sorted", "canonical, bracket-free"),
-        "(1,9)(2,1)",
-        "inserted (2,1) then (1,9); ascending by `fst` puts (1,9) first",
-    );
-}
-
-// ── An alternative is the PROGRAM's to declare ───────────────────────
-
-/// 058's coexistence, exercised the way a real program would: the rival is declared by
-/// the program that wants it, and selected by name at the construction site. The SAME
-/// two pairs through the same bracket-less downstream pipeline give the other answer.
-#[test]
-fn a_program_declared_alternative_is_selected_by_name() {
-    let src = program(
-        "wi858.alt",
-        &format!("{BY_SND}  end\n  sort Driver\n{RENDER}{}  end", pipeline("bySnd", ", O = BySnd")),
-    );
-    assert_eq!(
-        eval_str(&src, "wi858.alt.Driver.bySnd", "the alternative, selected"),
-        "(2,1)(1,9)",
-        "ascending by `snd` puts (2,1) first — the canonical answer is the reverse, so \
-         `(1,9)(2,1)` would mean the selection reached nothing",
-    );
-}
-
-/// THE MEASURED LIMIT that comes with it, and it is the LADDER's, not `pair.anthill`'s:
-/// while a rival is declared, the canonical order is unreachable through a `requires`
-/// slot. Both halves are driven, because either alone is explicable:
-///
-///  * the bracket-LESS goal is now AMBIGUOUS — two providers, and tier 3 refuses;
-///  * and the canonical one cannot be NAMED, because `Pair` is a CONCRETE provider and
-///    §3.5 check 3 refuses an explicit witness where the value decides.
-///
-/// So the repair the first error suggests is refused by the second. Rung 2a (WI-861)
-/// is exactly the missing rung — the carrier's own provision is the INFERRED default,
-/// so silence would take `Pair` and the rival stay opt-in, with no edit to the prelude.
-/// When that lands, this test's first arm becomes a VALUE assertion.
-#[test]
-fn the_canonical_order_is_unreachable_beside_a_rival() {
-    let bare = program(
-        "wi858.shadowed",
-        &format!("{BY_SND}  end\n  sort Driver\n{RENDER}{}  end", pipeline("canonical", "")),
-    );
-    let errs = load_errs(&bare);
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("ambiguous among providers")
-                && e.contains("anthill.prelude.Pair")
-                && e.contains("wi858.shadowed.BySnd")
-        }),
-        "RECORDED (WI-861): with a rival declared, the bracket-less goal names both the \
-         carrier's own provision and the rival. If this ever RESOLVES, rung 2a landed — \
-         turn this into a value assertion expecting the canonical `(1,9)(2,1)`: {errs:?}"
-    );
-
-    let named = program(
-        "wi858.namedcanon",
+        "wi858.thread",
         &format!(
-            "{BY_SND}  end\n  sort Driver\n{RENDER}{}  end",
-            pipeline("canonical", ", O = Pair")
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}{}  end",
+            pipeline("byFst", ", O = ByFst"),
+            pipeline("bySnd", ", O = BySnd")
         ),
     );
-    let errs = load_errs(&named);
-    assert!(
-        errs.iter().any(|e| e.contains("CONCRETE provider")),
-        "…and the repair the first error suggests is itself refused: `Pair`'s values \
-         carry their own sort, so §3.5 check 3 rejects an explicit `[Ordered = Pair]`. \
-         That pincer is why WI-861 is the fix and not a bracket: {errs:?}"
+    assert_eq!(
+        eval_str(&src, "wi858.thread.Driver.byFst", "lexicographic by `fst`"),
+        "(1,9)(2,1)",
+    );
+    assert_eq!(
+        eval_str(&src, "wi858.thread.Driver.bySnd", "lexicographic by `snd`"),
+        "(2,1)(1,9)",
     );
 }
+
+/// …and the discrimination control, driven rather than assumed: SWAP the two brackets
+/// and the two answers swap. Each answer is therefore attributable to the bracket at
+/// its own construction site, not to declaration order or entry name.
+#[test]
+fn swapping_the_brackets_swaps_the_answers() {
+    let src = program(
+        "wi858.swap",
+        &format!(
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}{}  end",
+            pipeline("byFst", ", O = BySnd"),
+            pipeline("bySnd", ", O = ByFst")
+        ),
+    );
+    // The entry NAMES are deliberately left as they were: only the brackets moved.
+    assert_eq!(eval_str(&src, "wi858.swap.Driver.byFst", "the pin, swapped"), "(2,1)(1,9)");
+    assert_eq!(eval_str(&src, "wi858.swap.Driver.bySnd", "the pin, swapped"), "(1,9)(2,1)");
+}
+
+/// …AND THE PRICE OF COEXISTENCE, which is 058's whole subject: with both declared, a
+/// bracket-LESS `Ordered.compare` on a `Pair` is a loud tier-3 error naming both. This
+/// is the configuration every phase before 3b refused at the DECLARATION; it is now
+/// refused at the one call that has to choose, with the repair spelled out.
+///
+/// It is also why the prelude ships NO ordering for `Pair` (see this file's header):
+/// were one of these two in `pair.anthill`, every downstream program declaring the other
+/// would inherit this error without opting in.
+#[test]
+fn a_bracketless_compare_with_two_orderings_names_both() {
+    let src = program(
+        "wi858.bare",
+        &format!(
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Use\n    \
+             operation cmp(a: Pair[Int64, Int64], b: Pair[Int64, Int64]) -> Int64 =\n      \
+             Ordered.compare(a, b)\n  end"
+        ),
+    );
+    let errs = load_errs(&src);
+    let tie: Vec<&String> =
+        errs.iter().filter(|e| e.contains("ambiguous dispatch of")).collect();
+    assert_eq!(tie.len(), 1, "one ambiguous call, one error; all errors: {errs:?}");
+    assert!(
+        tie[0].contains("wi858.bare.ByFst") && tie[0].contains("wi858.bare.BySnd"),
+        "the tie must name BOTH declared orderings: {}",
+        tie[0]
+    );
+}
+
 
 /// §3.4's merge safety, over two RIVALS — two differently-ordered sets have two TYPES,
 /// so `union` is a type error before it is a wrong answer. Two locally-declared
@@ -342,10 +297,10 @@ fn union_across_two_orderings_is_a_type_error() {
     let src = program(
         "wi858.merge",
         &format!(
-            "{BY_SND}  end\n{BY_FST_DESC}  end\n  sort Driver\n    \
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n    \
              operation mixed(n: Int64) -> List[T = Pair[Int64, Int64]] =\n      \
              let a = SortedSet.empty[T = Pair[Int64, Int64], O = BySnd]()\n      \
-             let b = SortedSet.empty[T = Pair[Int64, Int64], O = ByFstDesc]()\n      \
+             let b = SortedSet.empty[T = Pair[Int64, Int64], O = ByFst]()\n      \
              SortedSet.toList(SortedSet.union(a, b))\n  end"
         ),
     );
@@ -353,7 +308,7 @@ fn union_across_two_orderings_is_a_type_error() {
     assert!(
         errs.iter().any(|e| {
             e.contains("expected SortedSet[T = Pair[A = Int64, B = Int64], O = BySnd]")
-                && e.contains("got SortedSet[T = Pair[A = Int64, B = Int64], O = ByFstDesc]")
+                && e.contains("got SortedSet[T = Pair[A = Int64, B = Int64], O = ByFst]")
         }),
         "the merge hazard must be refused by ordinary parameter agreement, naming BOTH \
          orderings: {errs:?}"
@@ -367,12 +322,12 @@ fn union_within_one_ordering_merges() {
     let src = program(
         "wi858.agree",
         &format!(
-            "  sort Driver\n{RENDER}    \
+            "{BY_FST}  end\n  sort Driver\n{RENDER}    \
              operation same(n: Int64) -> String =\n      \
              let a = SortedSet.insert(\n        \
-             SortedSet.empty[T = Pair[Int64, Int64]](), pair(fst: 1, snd: 9))\n      \
+             SortedSet.empty[T = Pair[Int64, Int64], O = ByFst](), pair(fst: 1, snd: 9))\n      \
              let b = SortedSet.insert(\n        \
-             SortedSet.empty[T = Pair[Int64, Int64]](), pair(fst: 2, snd: 1))\n      \
+             SortedSet.empty[T = Pair[Int64, Int64], O = ByFst](), pair(fst: 2, snd: 1))\n      \
              render(SortedSet.toList(SortedSet.union(a, b)))\n  end"
         ),
     );
@@ -388,11 +343,15 @@ fn union_within_one_ordering_merges() {
 fn a_heterogeneous_pair_orders_through_two_element_orderings() {
     let src = program(
         "wi858.het",
-        "  sort Driver\n    \
-         operation sndDecides(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 1, snd: \"zz\"), pair(fst: 1, snd: \"aaa\"))\n    \
-         operation fstDecides(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 1, snd: \"zz\"), pair(fst: 2, snd: \"aaa\"))\n  end",
+        &format!(
+            "{BY_FST}  end\n  sort Driver\n    \
+             operation sndDecides(n: Int64) -> Int64 =\n      \
+             Ordered.compare[Ordered = ByFst](pair(fst: 1, snd: \"zz\"), \
+             pair(fst: 1, snd: \"aaa\"))\n    \
+             operation fstDecides(n: Int64) -> Int64 =\n      \
+             Ordered.compare[Ordered = ByFst](pair(fst: 1, snd: \"zz\"), \
+             pair(fst: 2, snd: \"aaa\"))\n  end"
+        ),
     );
     assert_eq!(
         eval_int(&src, "wi858.het.Driver.sndDecides", "Int64 fst ties, String snd decides"),
@@ -408,10 +367,11 @@ fn a_heterogeneous_pair_orders_through_two_element_orderings() {
     );
 }
 
+
 // ── What `Pair` gaining `Eq` did, and did not, do ────────────────────
 
-/// `Pair`'s componentwise equality — the change that made the carrier prelude-LAWFUL
-/// and so let the ordering live here at all. Asserted in both directions and on both
+/// `Pair`'s componentwise equality — the change that makes the carrier prelude-LAWFUL,
+/// which is what lets an ordering of it discharge its `Eq` leg at all. Asserted in both directions and on both
 /// components: a constant `true`, or a body reading only one component, would pass a
 /// weaker test.
 #[test]
@@ -624,7 +584,7 @@ fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
 ///
 ///  * the KEY is checked — an unknown slot name is refused, naming the real ones. So
 ///    the value's bracket list is parsed and validated against the witness.
-///  * the VALUE steers nothing — a NONSENSE binding (`OA = ByFstDesc`, which provides
+///  * the VALUE steers nothing — a NONSENSE binding (`OA = ByFst`, which provides
 ///    no `Ordered[Int64]` at all) loads clean and computes the unbound answer.
 ///
 /// The consequence that makes this a defect rather than a gap: `TieRepair::SubGoal`
@@ -653,16 +613,16 @@ fn a_named_slot_bound_in_a_bracket_value_steers_nothing() {
     let nonsense = program(
         "wi858.compose.value",
         &format!(
-            "{BY_SND}  end\n{BY_FST_DESC}  end\n  sort Driver\n    \
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n    \
              operation go(n: Int64) -> Int64 =\n      \
-             Ordered.compare[Ordered = BySnd[OA = ByFstDesc]](\n        \
+             Ordered.compare[Ordered = BySnd[OA = ByFst]](\n        \
              pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
         ),
     );
     assert_eq!(
         eval_int(&nonsense, "wi858.compose.value.Driver.go", "the nonsense binding"),
         1,
-        "RECORDED: `ByFstDesc` provides no `Ordered[Int64]`, so a binding that reached \
+        "RECORDED: `ByFst` provides no `Ordered[Int64]`, so a binding that reached \
          the sub-goal would be refused. Loading clean AND computing the unbound answer \
          (`BySnd`: 9 > 1) is the measurement — the value's slot bindings are validated \
          and then dropped. If this ever REFUSES, the composition leg was implemented: \

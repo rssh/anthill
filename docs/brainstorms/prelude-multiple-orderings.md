@@ -1,6 +1,6 @@
 # Two orderings of one carrier, in the SHIPPED library
 
-## Status: CLOSED (2026-07-30) — see the Addendum and its closing note at the end. The title is now a misnomer: what shipped is ONE canonical ordering in the library, with alternatives left to the program. Design now in proposal 058 (rules: §3.2 rung 2a, §3.6 defaults, §3.8 bundles) + `docs/design/058-implementation.md` (§7 probe matrix, §8 build order; it also maps the older 058 section numbers cited below). The body below is the pre-drive record; two of its claims are corrected in the addendum (option 2's cost, and open question 5's "lawful" list).
+## Status: CLOSED (2026-07-30) — see the Addendum and its closing note at the end. The title is a misnomer for what shipped: NO ordering went into the library. `Pair` gained componentwise equality; both orderings are the program's, and an `Ordered[Pair]` provision waits on WI-876. Design now in proposal 058 (rules: §3.2 rung 2a, §3.6 defaults, §3.8 bundles) + `docs/design/058-implementation.md` (§7 probe matrix, §8 build order; it also maps the older 058 section numbers cited below). The body below is the pre-drive record; two of its claims are corrected in the addendum (option 2's cost, and open question 5's "lawful" list).
 
 Triggered by **WI-844** (proposal 058 phase 4). That ticket delivered
 `stdlib/anthill/prelude/sortedset.anthill` — a set whose comparator is a NAMED
@@ -549,12 +549,17 @@ variance pattern (facts outside the sorts, absence = safe default, zero grammar)
 rule), **then the library** (058 §9 phase 7 — the WI-844 instruction finally met), **then
 rung 2a** (phase 8 — obstacle A closed for `String` and every self-providing carrier).
 
-> **CLOSED 2026-07-30, with option 2's CARRIER but not its shape.** WI-857 delivered,
-> then WI-858 took `Pair` — as this document recommended — but ships **one** ordering,
-> not two: `Pair` provides its own canonical `PartialOrd`/`Ordered` (lexicographic
-> fst-then-snd) beside componentwise `PartialEq`/`Eq`, and an ALTERNATIVE is left to the
-> program that wants it (`wi858_pair_orderings_test` declares two and selects them by
-> name). The correction to this document's framing: **obstacle A bites `Pair` too.** The
+> **CLOSED 2026-07-30, with option 2's CARRIER and NEITHER of its shapes.** WI-857
+> delivered; WI-858 took `Pair` — as this document recommended — and then shipped **no
+> ordering at all**. `Pair` gained componentwise `PartialEq`/`Eq`; both orderings are
+> declared by the test program and selected by name. Two co-equal witnesses were built
+> first and withdrawn (obstacle A, below); a single CANONICAL `Ordered[Pair]` was then
+> built, driven working end to end, and withdrawn too — because it costs SEVEN
+> operations in `pair.anthill` where one would do, six of them one-line restatements of
+> "call `compare`, check the sign". Those six exist only because the eval builtins sit
+> on the SPEC ops and compare host scalars only, which is **WI-876**; the library should
+> not carry a workaround for a defect that has a ticket. The correction to this
+> document's framing: **obstacle A bites `Pair` too.** The
 > Options table assumed a `Pair` witness pair costs nothing because `Pair` self-provides
 > nothing — true when written, but the moment `Pair` gains `Eq` (which obstacle B
 > *requires* for any prelude ordering of it), shipping two rivals hands every downstream

@@ -1,65 +1,60 @@
--- Pair: product type (two-element tuple), with the CANONICAL equality and ordering of
--- a product — both componentwise, both provided by `Pair` itself.
+-- Pair: product type (two-element tuple), with the canonical EQUALITY of a product —
+-- componentwise, provided by `Pair` itself.
 --
--- ── THE ORDER IS LEXICOGRAPHIC, fst-THEN-snd, AND IT IS CANONICAL ────────────────
+-- ── NO ORDERING HERE YET, DELIBERATELY (WI-876) ─────────────────────────────────
 --
--- That is the order every neighbouring language gives a pair (Haskell's `Ord (a, b)`,
--- Rust's `Ord for (A, B)`, Python tuples, `std::pair`), so `Pair` provides it ITSELF
--- rather than shipping it as a named witness beside a rival. The consequence is the
--- point: a bracket-less `Ordered.compare` on a `Pair` ANSWERS — one provider, tier 2 —
--- and `SortedSet.empty[T = Pair[Int64, Int64]]()` needs no ordering bracket at all.
--- Before this, nothing in the prelude ordered a `Pair`, so pairs could not be sorted.
+-- A pair has a canonical order — lexicographic `fst`-then-`snd`, as in every
+-- neighbouring language (Haskell's `Ord (a, b)`, Rust's `Ord for (A, B)`, Python
+-- tuples, `std::pair`) — and `Pair` should provide it. It does not YET, because today
+-- that costs SEVEN operations in this file where one would do: `compare` carries the
+-- lexicographic logic, and `max`/`min`/`gt`/`gte`/`lt`/`lte` would each be one line
+-- restating "call `compare`, check the sign".
 --
--- AN ALTERNATIVE ORDERING IS THE PROGRAM'S TO DECLARE, not the library's to impose.
--- A witness bundling its own `PartialOrd` + `Ordered` over `Pair[A, B]` coexists with
--- this provision and is selected by name (`SortedSet.empty[…, O = MyOrder]()`) — the
--- 058 §3.2 tier-3 machinery, exercised in `wi858_pair_orderings_test`. Shipping such a
--- rival HERE would have made every downstream bracket-less compare on a pair an error
--- its author never opted into, which is the same reason no prelude witness may order
--- `String` (`docs/brainstorms/prelude-multiple-orderings.md`, obstacle A).
+-- That boilerplate is not `Pair`'s to carry. `ordered.anthill` already DERIVES all six
+-- from `compare` by rule; they are unusable because the eval builtins registered on the
+-- SPEC ops (`Ordered.compare`, `PartialOrd.gt`/`gte`/`lt`/`lte`) compare host SCALARS
+-- only, and a builtin on a spec op shadows every carrier. That one builtin IS the
+-- implementation for every primitive — `Int64` asserts `fact Ordered[T = Int64]` and
+-- declares no `compare` of its own — which is why it sits on the spec op and why
+-- `Pair`, the first `Ordered` provider it cannot handle, is the first to notice.
 --
--- ONE MEASURED LIMIT OF THAT COEXISTENCE, and it is the ladder's, not this file's:
--- while a rival is declared, the CANONICAL order becomes unreachable through a
--- `requires` slot. `Pair` is a CONCRETE provider (its values carry their own sort), so
--- 058 §3.5 check 3 refuses an explicit `[Ordered = Pair]` — the value decides — while
--- the rival makes the bracket-less goal ambiguous. So such a program can bracket the
--- rival but cannot ask for the canonical one back. Rung 2a (058 §3.2, WI-861) is
--- exactly the missing rung: the carrier's own provision is the INFERRED default, so
--- silence takes `Pair` and the rival stays opt-in — with no edit to this file.
+-- MEASURED: with the six written out the whole surface works; without them
+-- `gt(pair(2, 1), pair(1, 9))` dies *"expected Ordered scalars of matching type, got
+-- Entity and Entity"* on a program that LOADED CLEAN, and dropping `max`/`min` fails
+-- the load outright (the load check demands a backing member for exactly those two).
+-- It is seven-or-nothing.
+--
+-- WI-876 is the fix — a spec-op builtin receives the frame's requirement dictionary and
+-- dispatches through it when the operands are not host scalars — after which `Pair`
+-- gains `provides PartialOrd`/`Ordered` plus `compare` ALONE. Shipping the boilerplate
+-- first would have put six operations in the standard library whose only purpose was to
+-- work around a defect that already has a ticket.
 --
 -- ── EQUALITY IS COMPONENTWISE ────────────────────────────────────────────────────
 --
--- The `requires` clauses below do double duty: they CONDITION the provisions and they
--- are the EVIDENCE the `eq` / `compare` bodies dispatch through. That is the `Set`
--- precedent — `set.anthill`'s sort-level `requires Eq[T]`, honoured through the
--- `provides` fact rather than op-scoped — applied to a two-parameter carrier.
+-- The `requires` clauses do double duty: they CONDITION the provisions and they are the
+-- EVIDENCE the `eq` body dispatches through. That is the `Set` precedent —
+-- `set.anthill`'s sort-level `requires Eq[T]`, honoured through the `provides` fact
+-- rather than op-scoped — applied to a two-parameter carrier. Equality needs no
+-- per-carrier boilerplate because `PartialEq.eq`'s builtin ALREADY dispatches to a
+-- carrier's own `eq` (`semantic_equal`); that asymmetry between the two builtin
+-- families is precisely what WI-876 removes.
 --
--- THE EQUALITY CHAIN IS `PartialEq`, NOT `Eq`, deliberately: with an `Eq` chain,
+-- THE CHAIN IS `PartialEq`, NOT `Eq`, deliberately: with an `Eq` chain,
 -- `Pair[A = Float, B = Int64]` became a LOAD ERROR (MEASURED) — `Float` provides
 -- `NonEq`, and WI-835's use-site check refuses a `NonEq` carrier at a parameter whose
 -- sort `requires Eq` — i.e. `Pair` stopped being a general PRODUCT. `Set`/`Map`
 -- genuinely need `Eq` on keys; a pair of anything is a pair.
 --
--- TWO OVER-CLAIMS RIDE THAT DECISION, recorded rather than hidden, because a sort has
--- ONE `requires` chain shared by every provision it makes:
---
---   * `provides Eq[Pair]` rides the `PartialEq` chain, so it claims LAWFUL equality
---     even where a component has only the partial one. MEASURED consequence:
---     `Set[T = Pair[Float, Int64]]` loads while `Set[T = Float]` is refused — a NaN
---     reaches a lawful-key position inside a pair. (That gap PREDATES these provisions
---     — measured on the pre-provision `Pair`, which provided neither `Eq` nor `NonEq`
---     and so was simply *unconstrained*; what changed is that the claim is now
---     positively asserted rather than absent. `eq.anthill`'s own note calls the
---     congruent `NonEq` derivation for composites a follow-up.)
---   * `requires Ordered[A], Ordered[B]` conditions the ORDERING but sits on that same
---     shared chain, so every `Pair` nominally demands ordered components — false for
---     `Pair[A = Term, B = Term]` and its kin, and unenforced (no use-site check exists
---     for `Ordered`, unlike `Eq`'s). Those dictionary slots simply go unresolved, and
---     nothing reads them.
---
--- Both are one fix: per-provision conditions (058 §3.8's `provides X[…] :- goals`),
--- which would spell `provides Eq[Pair] :- Eq[A], Eq[B]` beside
--- `provides Ordered[Pair] :- Ordered[A], Ordered[B]`. WI-869.
+-- The residue, recorded rather than hidden: a sort has ONE `requires` chain shared by
+-- every provision it makes, so `provides Eq[Pair]` rides the `PartialEq` chain and
+-- claims LAWFUL equality even where a component has only the partial one. MEASURED:
+-- `Set[T = Pair[Float, Int64]]` loads while `Set[T = Float]` is refused — a NaN reaches
+-- a lawful-key position inside a pair. (That gap PREDATES these provisions: the old
+-- `Pair` provided neither `Eq` nor `NonEq` and was simply *unconstrained*; what changed
+-- is that the claim is now positively asserted. `eq.anthill`'s own note calls the
+-- congruent `NonEq` derivation for composites a follow-up.) Per-provision conditions —
+-- 058 §3.8's `provides Eq[Pair] :- Eq[A], Eq[B]` — are the fix: WI-869.
 --
 -- ONE MORE MEASURED LIMIT, and it is not this file's defect: a NESTED pair whose FIRST
 -- component is a `Pair` and whose second is a primitive
@@ -69,25 +64,16 @@
 -- but it is this file that makes it reachable from the standard library. WI-871, and
 -- pinned in `wi858_pair_orderings_test` so it is not discovered twice.
 enum anthill.prelude.Pair
-  import anthill.prelude.{Bool, Int64, PartialEq, Eq, Ordered, PartialOrd}
-  import anthill.prelude.PartialOrd.{gte, lte}
+  import anthill.prelude.{Bool, PartialEq, Eq}
 
   sort A = ?
   sort B = ?
   requires PartialEq[A]
   requires PartialEq[B]
-  requires Ordered[A]
-  requires Ordered[B]
   entity pair(fst: A, snd: B)
 
   provides PartialEq[Pair]
   provides Eq[Pair]
-  -- The BUNDLE (058 §3.8): `ordered.anthill` derives `gt`/`lt`/`gte`/`lte` from
-  -- `compare` off the carrier's `PartialOrd`, so a provider of `Ordered` must supply
-  -- the `PartialOrd` those derivations read. Supplying one floor over a foreign other
-  -- is what makes a lone `Ordered` witness unlawful.
-  provides PartialOrd[Pair]
-  provides Ordered[Pair]
 
   operation fst(p: Pair) -> A
   operation snd(p: Pair) -> B
@@ -98,29 +84,14 @@ enum anthill.prelude.Pair
   rule fst(pair(?a, ?b)) <=> ?a
   rule snd(pair(?a, ?b)) <=> ?b
 
-  -- Component compares go through the SEMANTIC spec ops, not through structural
-  -- unification, so both dispatch all the way down — a pair of `Set`s compares its
-  -- component by MEMBERSHIP. Each call resolves through the matching `requires` slot.
+  -- Component compares go through the SEMANTIC spec op `PartialEq.eq`, not through
+  -- structural unification, so equality dispatches all the way down — a pair of `Set`s
+  -- compares its component by MEMBERSHIP. Each call resolves through the matching
+  -- `requires` slot above.
   operation eq(a: Pair, b: Pair) -> Bool =
     match a
       case pair(al, ar) ->
         match b
           case pair(bl, br) ->
             if PartialEq.eq(al, bl) then PartialEq.eq(ar, br) else false
-
-  -- Lexicographic. The second component decides only on a TIE, so the only question
-  -- the first compare's result has to answer is whether it is 0 — a three-way
-  -- `lt`/`gt` split would return `c` from two of its arms.
-  operation compare(a: Pair, b: Pair) -> Int64 =
-    match a
-      case pair(al, ar) ->
-        match b
-          case pair(bl, br) ->
-            let c = Ordered.compare(al, bl)
-            if PartialEq.eq(c, 0) then Ordered.compare(ar, br) else c
-
-  -- `Ordered` derives `max`/`min` by rule from `compare`, but a PROVIDER must still
-  -- back them (WI-818: a rule is not backing), so they are spelled here.
-  operation max(a: Pair, b: Pair) -> Pair = if gte(compare(a, b), 0) then a else b
-  operation min(a: Pair, b: Pair) -> Pair = if lte(compare(a, b), 0) then a else b
 end

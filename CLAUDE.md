@@ -213,18 +213,23 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   parameter whose sort `requires Eq`), i.e. `Pair` stops being a general PRODUCT.
   `Set`/`Map` genuinely need `Eq` on keys; a pair of anything is a pair. The cost is
   recorded, not hidden: `provides Eq[Pair]` rides the same chain and OVER-CLAIMS.
-- **`Pair`'s ORDER IS CANONICAL and `Pair` provides it ITSELF** (WI-858) — lexicographic
-  `fst`-then-`snd`, the order every neighbouring language gives a pair. So a bracket-less
-  `Ordered.compare` on a `Pair` ANSWERS (one provider, tier 2) and a `SortedSet` of pairs
-  needs no ordering bracket; nothing ordered a `Pair` before. A `PartialOrd` + `Ordered`
-  BUNDLE, because `ordered.anthill` derives `gt`/`lt` from `compare` off the carrier's
-  `PartialOrd`. An ALTERNATIVE ordering is the PROGRAM's to declare, never the library's:
-  shipping a rival here would make every downstream bracket-less pair compare an error
-  its author never opted into — obstacle A, the same reason no prelude witness orders
-  `String`. MEASURED LIMIT: while a rival IS declared the canonical order is UNREACHABLE
-  through a `requires` slot — `Pair` is a CONCRETE provider so `[Ordered = Pair]` is
-  refused (the value decides, §3.5 check 3) while the rival makes the bare goal
-  ambiguous. Rung 2a (WI-861) is the missing rung and needs no edit to `pair.anthill`.
+- **A SPEC-OP BUILTIN SERVES EVERY CARRIER, INCLUDING ONES IT CANNOT HANDLE** (WI-876).
+  `Ordered.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` are registered on the SPEC op
+  and compare host SCALARS only. That single registration IS the implementation for
+  every primitive — `Int64` asserts `fact Ordered[T = Int64]` and declares no `compare`
+  of its own, which is legitimate (the load check exempts a HOST carrier, whose ops the
+  host artifact backs) — but a binding block has NO clause that maps an operation to a
+  host function (`_provides_content`: `artifact`/`carrier`/`namespace_map`/facts/rules),
+  so the registration had nowhere else to go. Consequence: a STRUCTURAL carrier that
+  provides `Ordered` is intercepted. MEASURED — `gt(pair(2, 1), pair(1, 9))` died
+  *"expected Ordered scalars of matching type, got Entity and Entity"* on a program that
+  LOADED CLEAN, and the only way to make it work was seven per-carrier members. So
+  `anthill.prelude.Pair` deliberately provides `PartialEq`/`Eq` and **NO ORDERING** — a
+  pair's canonical lexicographic order waits for WI-876 rather than shipping six
+  one-line workarounds in the standard library. `PartialEq.eq` is exempt because its
+  builtin ALREADY dispatches to a carrier's own `eq` (`semantic_equal`); that asymmetry
+  between the two builtin families is the defect.
+
 
 # Repository rules
 
