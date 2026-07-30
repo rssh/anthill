@@ -1,0 +1,86 @@
+# 058 implementation notes — mechanisms, status, measurements
+
+Companion to [proposal 058](../proposals/058-modular-instances.md), which states the rules and surface. This document maps each rule to its mechanisms, records delivery status and the measured boundaries, and carries the build order. History: the review-by-review chronology lives in git (the pre-2026-07-30 revisions of the proposal held it inline), in the `modinst` tickets' feedback entries (`anthill-todo show WI-8xx`), and in `docs/brainstorms/prelude-multiple-orderings.md`.
+
+**Reference map for older citations.** Documents and ticket feedback written before the 2026-07-30 restructure cite the proposal's old section numbers: old §4.1 (ladder) → proposal §3.2 + here §3; old §4.5 (resolve hook) → here §4; old §4.7 (named slots) → proposal §3.4; old §4.9 (reader hardening) → here §5; old §4.10 (default relations) → proposal §3.6 + here §6; old §5.3 (SortedSet) → here §2/§4; old §5.4 (library architecture, probe matrix) → proposal §3.8 + here §7; old §9 phases → here §8.
+
+## 1. Substrate (pre-existing, unchanged)
+
+- **Declare**: witness sorts (WI-450, named by their sort symbol) and instance facts (WI-431, unnamed — the §3.1 nameability gate's reason). `SortProvidesInfo(sort_ref, spec)` records every provision.
+- **Select**: the 042 bracket channel — `parse/convert.rs` → `build_call_type_args` (`load.rs`) → `seed_op_type_args` (`typing.rs`). Phase 0 (WI-839) closed every silent drop site: an unmatched key at a classified call is loud even when the callee declares no type params; a rule-/term-body bracket is a loud not-supported-here refusal, keyed on the `ParseAux type_args` channel (a rule-body *type application* is a different producer and stays checked).
+- **Thread**: `Value::Requirement(handle)` dictionaries, `construct_requirement`, per-call frames rebuilt from `sub_requires` (`design/operation-call-model.md`, `design/requirement-dictionaries.md`). Selection changes only where `ResolvedTree::leaf { impl }`'s `impl` comes from.
+
+## 2. Classifier work (proposal §3.3–§3.4) — delivered
+
+- **Key resolution rule 1** spans the op's and the enclosing sort's type params — the sort-level seeding leg was a missing feature, built as WI-841 (one more WI-708-style key); the two scopes never both answer because the collision is refused at the declaration (phase 1's guard). Rule 1 matches by symbol identity on bare labels; rule 2 (spec short name) is a lookup gated by the same-spec context — WI-672's discipline, `same_label` family 2, never a short-name identity comparison.
+- **A named slot's parameter is read back out of σ** once argument unification completes (`selections_from_slot_bindings` → `InstanceSelection`, WI-844): the bracket, the argument's type, and an eta'd op reference's expected arrow (`attach_eta_dispatch_dict`) are **three producers of one channel**. They are compared **unconditionally** — ranking them re-opens first-match across two same-spec slots (measured: a bracket `[A = ByLength]` beside an argument-typed `B = Alphabetical` deleted the conflict refusal under a ranked cut). `push_selection` owns the rule; the conflict diagnostic names both witnesses without attributing a producer, because a mixed pair is reachable. An **abstract** binding derives nothing (`is_type_param_value`) — that is what keeps `report[T, O]` a forward.
+- **Merge safety** is argument-position type-variable agreement — WI-836, delivered; without it `union` across two orderings loaded clean. Omission-means-any is `check_sort_type_args` requiring no declared param be bound.
+- Guards: the §3.3 shadowing refusals at the declaration; qualified keys refused (`unknown type-param`, no resolution rung by design — a resolved key would make selection depend on caller imports, while `build_concrete_dispatch_dict` takes no scope at all).
+
+## 3. Ladder mechanics (proposal §3.2) — tiers 1–3 delivered, 2a proposed
+
+- Tier 3 is `DispatchOutcome::Ambiguous` (carrying the tied providers) → `TypeError::DispatchAmbiguous` → `LoadError::UnselectedInstance`, rendered with a typed `TieRepair` decided at the render boundary. `LoadError::AmbiguousWitness` is **deleted**, not gated. `AmbiguousInstanceFact` and `MixedProviderKinds` (WI-838's one grouping per `(spec, dispatch carrier)` over all provider kinds) remain — they are the §3.1 nameability gate; the group loop gates on `Provider::is_nameable`.
+- **Boundaries, each driven and pinned** (WI-843): a tie whose candidates are all concrete has no bracket (§3.5 check 3 refuses explicit witnesses there — the value decides); a sub-goal's tie propagates verbatim and must be stamped at its own level, not the outer goal's (`resolve_at_goal` mis-attribution, fixed); a **specificity-ordered pair never reaches tier 3** — `pick_most_specific` answers silently. That last is a recorded *widening* (tier 2 reaching cases the old load refusal made unreachable); WI-841's committed acceptance depends on it; making it loud would be a new coherence rule needing its own measurement.
+- **Rung 2a (proposed)**: at the classifier's tie, consult `default_provider` (a materialized index over the §6 facts — the `EqDispatchIndex` pattern; the relations are the authority, the hot path reads the index). Flip inventory to assert at delivery: `two_string_orderings_make_a_bare_compare_ambiguous` becomes the acceptance (bracket-less `compare` = host order beside two loadable witnesses); WI-855's `AmbiguousRequirement` on the self-provider + rival pair resolves to the self-provider (the witness-only tie keeps it); the value-directed `AmbiguousSpecOpDispatch` likewise where one candidate is the carrier's own. Prerequisite: the coherence grouping must gain the **self-provider candidate kind** — measured absent (WI-855: *"a self-provider is a candidate of neither kind"* — `provision_binds_any_op` and `witness_dispatch_carrier` both miss it), which is also why `one_default` cannot be checked today.
+
+## 4. Resolve hook (proposal §3.3's pinning) — delivered, one correction
+
+`resolve(goal, scope)` step 0: a pinned goal returns the pinned provider after validation — as a `leaf` **only when the witness's own `requires` chain is empty**; a chain-bearing witness must yield the conditional node with sub-goals resolved under σ. (Corrected 2026-07-30: the leaf-always reading built an arity-0 dictionary that dies at eval — see §7. The repair belongs to WI-857's settlement.) Sub-resolutions always search; a bracket key cannot reach them (pinning changes which subgoals exist).
+
+**Slot routes**: a `requires` slot is served by the enclosing sort's dictionary build, the spec-op dispatch, or an **op-scoped** clause — and the op-scoped route has no dictionary channel (`synth_req_names` is keyed by the parent sort; WI-822 leg 1, open), so WI-841 refuses a selection there whenever ≥2 providers answer, accepting only the sole-provider case. An op-scoped clause's spec is a bare application, so `goal_from_requires_entry` yields a bindings-free goal that every provider matches — a check routed through it passes vacuously; witness validation therefore runs once at the call site. A selection is keyed by the **spec** (a `SortGoal`'s coordinate): two anonymous same-spec slots are indistinguishable to a pin — two keys naming different witnesses for one spec are refused at the site.
+
+## 5. Reader hardening (proposal §3.7) — delivered
+
+Tier 3's use-site error exists only at typer-classified calls; every other provider consumer follows: **existence reads stay boolean, selecting reads go loud on the second candidate, never first-match.**
+
+| consumer | discipline | diagnostic |
+|---|---|---|
+| sem-eq dispatch index (`load::EqDispatchIndex`, WI-837) | **load** refusal — dispatch fires from unification, no later site exists; collects all three supply routes (own member / fact binding / witness member); counts **targets**, not provisions (a memberless provision contributes no candidate — the measured `CoinEqB` admission survives; any declarable `Coherent` must keep this) | `AmbiguousEqDispatch`, naming each candidate by route |
+| a carrier's own provision bindings (`provider_spec_view_bindings`, WI-842) | **load** refusal — carrier-keyed provisions have no name to select; bucketed per *application* (the stdlib's `Console provides Effect` ×3 is three instances, not a conflict) | `ConflictingProvisionBindings` |
+| value-directed chain (rule/constraint/quantifier bodies, WI-842) | loud **at the read** over the collected routes (`spec_op_suppliers_for_carrier`); `witness_provision`/`witness_op_for_carrier` deleted | `EvalError::AmbiguousSpecOpDispatch` |
+| eval-bridge requirements (WI-855) | value-directed dispatch **raises**; the SLD bridge suspends with the tie named (a bridged eval may not abort the enclosing rule, WI-483) | `AmbiguousRequirement`, naming requirement + candidates |
+| existence guards (`sort_provides`, WI-300 / `[simp]`) | boolean, unchanged — two providers satisfy a constraint as well as one | — |
+
+## 6. Defaults implementation (proposal §3.6) — proposed
+
+Reflect-layer file (a sibling section of `reflect/typing.anthill`, or `reflect/instance.anthill`): `entity DefaultProvider(spec, provider)`, `entity Coherent(spec)` (deferred data rows re-homing the `Eq` family list — ownership only, the check exists), `self_provides`, `default_provider` (declared ∪ inferred — consumers read the derived relation only), `constraint one_default`, `constraint coherent_one_target`. Load checks materialize into Rust (the `EqDispatchIndex` pattern); `DefaultProvider`'s provider field is a sort reference in a fact argument — proven surface (`fact Covariant(sort: List, param: T)`, proposal 035). Validation reuses §3.5 check 1 as a load check. No-displacement needs no code: the inferred row + `one_default` refuse the displacing fact. **Conditional defaults need no code either** — the declared-row rule joins through `provides`, which for a conditional provision holds only where its chain discharges (proposal §3.6/§5's `ListOrd` row) — but `one_default` must compare rows at **unifiable** carriers, so a ground default beside a parametric one for one family is refused: layering defaults by specificity would be a boundary-3-style widening — pin the refusal in phase 8's acceptance, don't inherit the question. **The inline sugar** (`default provides`, proposal §4) is loader work: one optional leading modifier token (the `internal` pattern; a trailing `[default]` was rejected — a bracket list after a bracketed type invites a GLR tie) desugaring in the converter to a `DefaultProvider` row with `provider =` the enclosing sort. The same family gives `coherent sort X … end` → a `Coherent(spec: X)` row (the `enum sort` precedent; arrives with the deferred re-homing), and `coherent` on a *provision* is refused — a provision must not foreclose coexistence for a spec/carrier it does not own. **`provides`-vs-`fact` synonymy is measured** (probe q5): a witness spelled with `provides Spec[T = Foreign]` loads and runs identically to the `fact` spelling — one construct, two conventional spellings — which grounds proposal §4's retirement of the `fact` spelling for provisions. Migration scope for that retirement: the stdlib bindings' fact rows (`anthill-stl/anthill/*.anthill`), the wi84x fixtures, examples, and the binding-block idiom (proposal 038's `provides X language rust` blocks); the deprecation warning sits at the loader's provision-lowering site, which already distinguishes a provision fact from a plain one. Namespace-level op-binding instance facts are out of scope (outside sorts; already quarantined by the nameability gate). Deferred: `within:` scoped rows (explicit field, NOT placement — a fact inside a sort already means "this sort provides"; scoped rows are classification-time only, so a sort with a scoped row and a rule body dispatching the same goal is refused); per-carrier `NoDefault`.
+
+## 7. WI-857 — the gate, and the probe matrix (2026-07-30)
+
+WI-857's split: the dictionary **producer** walks the *provider's* `requires` chain, the **consumer** names the frame from the *spec's* — they agree only when the provider is a chain-free witness. Probes (scratchpad `q4a`–`q4g`, `anthill load`/`run` at HEAD; reproducers spelled in WI-857's feedback entry):
+
+| shape | spec's own chain | load | eval |
+|---|---|---|---|
+| parametric witness, own chain 2, spec chain **empty** (local `Sized`) | 0 | clean | **threads** — 3+6=9 through the conditional chain |
+| same form over `Ordered`, nothing provides `Eq`/`PartialOrd[Duo]` | 2 | **refused** — provider must provide or the goal must resolve at the bindings | — |
+| carrier provides `Eq` componentwise + witness bundles own `PartialOrd`+`Ordered`, parametric | 2 | clean — `Eq` leg discharged from the carrier, `PartialOrd` from the witness | **dies both routes** (σ-pinned and searched): `dispatching dict … arity 0 but its requires chain has 2 entries`; count stays 2 with own chain cut to 1 ⇒ frame named from the **spec's** chain |
+| ground, chain-free, bundled, slot-free body | 2 | clean | **runs** (−1) |
+
+Consequences: **WI-857 gates the entire §3.8 library goal and rung 2a** (an unselected dispatch routes into carrier-keyed dictionaries — the same death). Its acceptance gains the parametric-witness reproducer. Its settlement must include the **locality rule** (proposal §3.8): once the producer bundles the spec's chain, `PartialOrd[Pair]` has two candidates inside each of two coexisting bundles' chains, and the only right answer is witness-local. `check_provider_requires`'s discharge rule as measured: provider-provides OR resolves-at-the-bindings (binding-precise and transitive when σ grounds; base-level fallback when abstract); the provider's own `requires` chain does **not** discharge a spec-level requirement — the conditional spelling stays refused, exactly as the brainstorm drove.
+
+**Conditional provisions (proposal §3.8)**: the provider-chain spelling works today for the provision's *own* evidence — q4a threads it (`candidate_sub_goals_owned` walks the provider's chain) — while the chain does **not** discharge the *spec's* requirements (`check_provider_requires` never consults it; the brainstorm's obstacle-B drive). The per-clause `provides X :- goals` surface would need grammar plus per-provision chains — the same "one chain, one owner" object this settlement defines — so it lands here or after here, not before. **One composition leg is unmeasured**: binding a witness's own *named* slot inside a bracket value (`O = ListOrd[OE = LexFst]`, proposal §5) — the pre-restructure §4.5 recorded it as the composition of two measured legs, and the q4 series drove only the inferred form (`O = LexFst`, params bound by unification). Drive it when this phase restores eval.
+
+Probe harness note: `anthill query -p` diverges from `anthill load` (sort-level member imports refused; panics on `realization.CarrierBinding` with the bindings dir) — drive reproducers via `anthill run` + a `Main` sort.
+
+## 8. Build order
+
+Tagged sequence `modinst`; WI-648 is the umbrella.
+
+| phase | content | status / gate |
+|---|---|---|
+| 0 | close every bracket drop site | ✅ WI-839 |
+| 1 | the named binder grammar + loader; shadowing guards | ✅ WI-840 |
+| 2 | sort-level seeding; key→slot; validation; resolve step 0 | ✅ WI-841 |
+| 3a | reader hardening (§5) | ✅ WI-842 (+ WI-837) |
+| 3b | coexistence; `UnselectedInstance` + `TieRepair`; nameability | ✅ WI-843 (+ WI-838) |
+| 4 | `SortedSet` driver; σ-read; three producers, one channel | ✅ WI-844 (+ WI-836) |
+| 5 | `kernel-language.md` amendment (proposal §8) | open — **WI-845**, last (its §8 text includes the defaults sentence, so it follows 8c; see its feedback) |
+| 6 | **WI-857 settlement, extended**: one chain, one owner; the q4e reproducer; the locality rule | open — **WI-857**, gates 7 and 8c |
+| 7 | library: `Pair` provides `PartialEq`/`Eq` componentwise; two bundled lex witnesses (`fst`-then-`snd`, `snd`-then-`fst` — compare-`fst`-only is a preorder, inadmissible); driver value tests | open — **WI-858**, after WI-857 |
+| 8a | the self-provider candidate kind in the coherence grouping (verdict matrix measured cell by cell) | open — **WI-859**, independent — the sequence's next claimable |
+| 8b | the §6 relations + `one_default` / check-1 load checks + the materialized index (no consumer yet) | open — **WI-860**, after 8a |
+| 8c | rung 2a: the classifier tie reads the index; the five-flip inventory | open — **WI-861**, after 8b + WI-857 |
+| 9 | surface consolidation: `default provides` sugar + the `fact`-as-provision retirement (proposal §4) | open — **WI-862**, after 8b |
+| deferred | named instance facts; implicit scoped selection; the general existential (WI-402); `Coherent` rows + `coherent sort` sugar; `within:`; `NoDefault`; the per-clause `provides … :- goals` form; WI-822 leg 1 (op-scoped dictionary channel) | — |
+
+**The standing lesson** (earned three times before delivery, once after): a design that moves an error — or asserts a mechanism already runs — must enumerate the consumers of the thing it moves and check each still has a site to complain from and a check that fires there. Rung 2a's flip inventory (§3) is written before implementation for exactly this reason.

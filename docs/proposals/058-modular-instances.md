@@ -1,480 +1,217 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Draft (2026-07-25; amended 2026-07-28 after review — §4.9 (the bracket-less first-match readers, phase 3's prerequisite) and rule (1)'s sort-level seeding leg are the substantive additions; §2.2 gains the measured drop-site inventory. **Amended again 2026-07-28 after a second review**, which drove a fresh probe series: §5.3's merge guarantee is measured **false today** (→ **WI-836**), §4.9's witness-`eq` blind spot is reclassified from candidate ticket to **phase-3a prerequisite** (→ **WI-837**), a mixed provider pair is measured to load clean (→ **WI-838**, the reason coexistence is gated on NAMEABILITY), and phases 2 / 3a get acceptances that are neither unloadable nor vacuous). Design phase of WI-648. **Recommendation: explicit selection first, implicit scoped selection deferred** — and, consequently, an **amendment to `kernel-language.md` §Instance coherence**, whose per-`import` promise is not merely unimplemented but *cannot express either driver* (§3).
-
-**Tracks:** WI-648 (design + implement). WI-817 depends on it for its provider-selection dimension.
-**Driving clients:** `SortedSet` / sorted `Map` ordered by a *chosen* comparator (the ticket's standing example); `Int64` carrying **both** the additive and the multiplicative monoid (the deciding argument, §1).
-**Depends on:** [042-explicit-type-parameters-on-operations](042-explicit-type-parameters-on-operations.md) (the call-site `[bindings]` channel this reuses — already parsed and lowered, §2.2), [020-bracket-type-parameters](020-bracket-type-parameters.md) (the `[bindings]` syntax), WI-431 (instance facts — the op-binding declare form), WI-448 (op-scoped `requires`), WI-450 (witness sorts — the named declare form).
-**Blocked by (all three found by the second review; all pre-existing, none caused here):** **WI-836** — a parameter whose declared type contains a type VARIABLE accepts any argument after the variable's first binding occurrence, so two arguments sharing one type param are never checked against each other. §5.3's merge guarantee is exactly that check; phase 4 cannot land without it. **WI-837** — a WI-450 witness-supplied `eq` never keys the semantic-eq dispatch index, so §4.9's index-build hardening never sees a witness candidate; phase 3a depends on it, and phase 3b is unsound without it (§6). **DELIVERED 2026-07-29** — all three supply routes are collected by one owner (`load::EqDispatchIndex`) and a second candidate is refused at the index build with `AmbiguousEqDispatch`, naming each candidate's route. **WI-838** — a mixed instance-fact + witness pair for one `(spec, carrier)` loaded clean (the two ambiguity checks were grouped by provider KIND); phase 3b's nameability rule (§4.3) depends on it. **DELIVERED 2026-07-29** — one coherence grouping over all provider kinds, with `MixedProviderKinds` as the cross-kind diagnostic (§4.3).
-**Related:** [library/004-partial-vs-total-equality-and-ordering](library/004-partial-vs-total-equality-and-ordering.md) (its "Out of scope — modular typeclasses" clause defers exactly this; §6 here spells out the interaction), WI-577 (first-class `Dictionary[S]` values — §7.1 explains why they do not supply a *named* slot), WI-300 (rule-body requirement goals), [`design/operation-call-model.md`](../design/operation-call-model.md) (the `requirements` channel and `resolve`), [`design/requirement-dictionaries.md`](../design/requirement-dictionaries.md) (what the dictionary *is*), [`design/spec-instance-dispatch.md`](../design/spec-instance-dispatch.md) (§Coherence — options A/B/C; this proposal is neither, see §8).
-**Affects:** `docs/kernel-language.md` §Instance coherence (amended) + §5.4 (named requirement slots); `rustland/anthill-core/src/kb/typing.rs` (`seed_op_type_args`, the two load-time coherence checks, the dispatch classifier, and the **first-match provider readers** — §4.9: `provider_spec_view_bindings`, `witness_provision`, the sem-eq dispatch index, the value-directed `or_else` chain); `rustland/anthill-core/src/kb/load.rs` (`build_call_type_args` `:9285`, the rule-/term-body `type_args` drop sites — §2.2); grammar (the `requires name: Spec[…]` binder, §4.7 — the *select* surface itself needs **no** grammar change); `stdlib/anthill/prelude/` (`SortedSet`, later). Runtime: **none new** (§5.3). Rust + scaland.
-
----
+**Status:** Active. The core (§3.1–§3.5) is delivered; defaults (§3.6) and the library architecture (§3.8) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
-**`Int64` cannot carry both the additive and the multiplicative monoid.** An algebraic-specification language must be able to state both structures — `5` is an element of `(Int64, +, 0)` and of `(Int64, ×, 1)` — but in Anthill, declaring two providers of one spec for one carrier does not load. And even if it did, a call `Monoid.combine(a, b)` has no way to say which of the two it means: the call must run one body, and nothing in the program picks it.
+`5` is an element of `(Int64, +, 0)` and of `(Int64, ×, 1)`, but Anthill refused two providers of one spec for one carrier at load — and even without that refusal, a call `Monoid.combine(a, b)` had no way to say which instance it means. Bundling (`algebra.Ring`) serves only fixed pairs known in advance. The spec's per-`import` selection promise cannot express the need at all: `fold[Monoid = AddM](xs)` beside `fold[Monoid = MulM](ys)` requires both providers in one body, and a sorted set chooses its order per construction site, not per scope.
 
-Measured (probe run 2026-07-25, `try_load_kb_with`, both diagnostics verbatim):
+## 2. Model
 
-```anthill
-sort Monoid  sort T = ?  operation combine(a: T, b: T) -> T  operation unit() -> T  end
-sort AddM   fact Monoid[T = Int64]   operation combine(a: Int64, b: Int64) -> Int64 = add(a, b)  …
-sort MulM   fact Monoid[T = Int64]   operation combine(a: Int64, b: Int64) -> Int64 = mul(a, b)  …
-sort Use    operation go(a: Int64, b: Int64) -> Int64 = Monoid.combine(a, b)                     end
-```
+Supply and demand are two ends of one relation, and the language already has it. Every `provides Spec[…]` or `fact Spec[…]` declaration is recorded by the loader as a `SortProvidesInfo` fact, and the reflect layer exposes those facts as a queryable relation: `provides(?A, ?S_inst)` — "sort `?A` provides the spec instance `?S_inst`" (`stdlib/anthill/reflect/typing.anthill`, whose own comment calls `requires X` and `fact X[Y]` "the two ends of one relation").
 
-```
-20:49: type mismatch in Monoid.combine.dispatch: expected unique impl for per-call bindings,
-       got multiple impls match (coherence rule)
-ambiguous witness: 2 distinct witness sorts provide 'Monoid' for carrier 'anthill.prelude.Int64'
-       (keep exactly one)
-```
+A `requires Spec[…]` clause is the demand end. It adds nothing to the `provides` relation; it asks it a question: *which sort `?W` provides `Spec[…]`?* In SLD terms that question is the **goal** `provides(?W, Spec[…])` — "goal" being the ordinary name for a query the resolver tries to prove, binding its variables as it succeeds. Instance resolution is therefore not a new subsystem: it is the language's own relational search, aimed at its own `provides` relation. Each answer binds `?W` to a provider, and the requirement dictionary the runtime threads is that answer made concrete — the chosen provider plus, recursively, the answers to that provider's own requirements.
 
-Two independent refusals fire: the **per-call-site** one (`typing.rs:10731`) and the **load-time global** one (`typing.rs:15999`; the instance-fact flavor is `typing.rs:15937`). Both diagnostics name the missing capability by name — *"there is no way to select between them (scoped/named instance selection is not yet supported)"* (`load.rs:726`, `:731`).
+Every rule in §3 is a policy about this one query's answers:
 
-The second one does not depend on the call at all. Delete `sort Use` from the program above — leaving `AddM` and `MulM` and nothing that calls `Monoid.combine` — and the load still fails with the same *"keep exactly one"*. What Anthill rejects is the pair of declarations; the question of which monoid a call wants is never reached.
+- **Coherence** (§3.7) demands the query have at most one answer for a given carrier.
+- **Ambiguity** (§3.2 tier 3) is a call site that faces two answers and picks neither — a two-answer query is itself ordinary.
+- **Explicit selection** `f[Spec = W]` (§3.3) substitutes `W` for `?W` *before* asking, so the query only checks that `W` provides the spec.
+- **A named slot** `requires O: Spec[T]` (§3.4) gives the answer a source-level name — which is what lets the chosen provider appear in a type.
+- **A default** (§3.6) is the answer silence prefers when several exist.
 
-The stdlib works around this by **bundling**: `algebra.Ring` (`stdlib/anthill/prelude/algebra.anthill:28`) declares `add`/`sub`/`mul`/`zero`/`one` in one spec, so the two monoids never appear as two instances. That is the Num-style dodge — it works for a fixed pair known in advance and does not generalize (a fold over `max`, over `∧`, over string concatenation).
+(The checker implements this account inside the typer rather than by literally querying the reflect KB at each check, and `requires provides(O, Spec[T])` is not an available spelling — the model is the semantics, not the code path.)
 
-**The same refusal, in its committed form,** is `two_describers_for_one_carrier_rejected_globally` (`rustland/anthill-core/tests/include/wi817_polyrec_requirement_test.rs:662`) — a *selection-discriminating* fixture: `LoudDesc.describe = 5`, `QuietDesc.describe = 7`, a lambda created in the loud scope and invoked from the quiet one. Scoped-correct is **75**, both-loud **55**, both-quiet **77**. It is the acceptance program.
+## 3. Rules
 
-### 1.1 What is already permitted, and why it decides the shape
+### 3.1 Coexistence, gated on nameability
 
-The witness-coherence check **already exempts** providers whose carrier is *concrete* (`typing.rs:15977`):
+Two or more providers of one spec for one carrier **may coexist** — if and only if every ambiguous call they could cause has a repair the author can write. There are two repair currencies. Concrete providers pay in **values**: their values carry their own sort, dispatch answers by the value, and they coexist as before with no names involved. Abstract providers pay in **names**: an unselected call's repair is `[Spec = W]`, so every candidate needs a spelling. A witness sort has one — its declared sort name. An instance fact does not — its identity *is* the bindings it asserts — so a group containing one keeps the load-time refusal: coexistence one cannot select out of is a trap, not a feature.
 
-> a **concrete** provider (with constructors) is a backend whose VALUES carry their own sort, so value-directed dispatch distinguishes them by the value … NOT an ambiguity.
+The missing names are **not generated**, deliberately. A bracket value is a *declared identity* — stable under edits, resolved through the ordinary name system. A generated name would be either derived from the fact's content (a fingerprint: editing the fact breaks every site that wrote it, or silently re-binds them if another fact matches the old fingerprint) or ordinal (reordering two declarations silently swaps what every written selection means — last-wins in a new costume). Wanting a name is served by declaring one: wrap the fact in a witness sort, or — the deferred increment — an *authored* name slot on the fact form (`fact AddM: Monoid[…]`).
 
-So Anthill already ships a two-instances-per-spec rule, and its criterion is exactly §1's — **it asks whether the CALL has one answer**, not whether the fact base does: with a concrete provider the value answers, so two providers are no ambiguity. This proposal changes nothing about that criterion. It supplies a way for the call to be answered in the other case, where the value is silent — and moves the refusal to the call that picks no variant (§4.1 tier 3).
+### 3.2 Dispatch — the ladder
 
----
+An unselected spec-op dispatch resolves, in order:
 
-## 2. What exists today (measured inventory)
+1. **Explicit selection** written at the use site (§3.3).
+2. **The unique provider** for `(spec, carrier)` — the pre-existing rule, unchanged.
+   - *2a (proposed):* **the default provider** (§3.6), when exactly one of the tied most-specific candidates is it. Specificity ranks first — a strictly-more-specific candidate wins silently; a default is a fallback, not a competitor.
+3. Otherwise: a **loud error at that use site**, naming every candidate and the repair (the bracket to write, or the reason none applies — a value-directed tie has no bracket; a sub-goal's tie is reported at its own level, never re-attributed to the outer spec).
 
-### 2.1 Declare — two forms, one of them already named
+### 3.3 Selection surface
 
-| form | example | identity | named? |
-|---|---|---|---|
-| **witness sort** (WI-450) | `sort QuietDesc  fact Desc[T = Pebble]  operation describe(…) = 7  end` | the provider **sort symbol** | **yes** — `QuietDesc` |
-| **instance fact** (WI-431) | `fact Monoid[T = Int64, combine = add]` | the bindings it asserts | **no** |
-
-`SortProvidesInfo(sort_ref: Term, spec: Term)` (`stdlib/anthill/reflect/reflect.anthill:697` — `:687` is its twin `SortRequiresInfo`) carries **two fields and no declaring-scope field** — though for a witness sort the declaring namespace is *derivable* from the qualified `sort_ref`, which is why `spec-instance-dispatch.md:581` counts the record as sufficient for its rule B. Explicit selection needs only `sort_ref`. (An earlier draft called the missing provenance "load-bearing for §8"; it is not — §8's rejection of scoped-implicit stands on its other legs.)
-
-### 2.2 Select — the surface already parses, and today means nothing
-
-Call-site brackets (`f[T = X](args)`) parse into a `type_args` named-arg channel (`parse/convert.rs:1724`), lower via `build_call_type_args` (`load.rs:9285`) to `(Option<Symbol>, Value)` pairs, and are consumed by `seed_op_type_args` (`typing.rs:12912`). Measured, six probes (rows 5–6 driven 2026-07-28):
-
-| program | today |
-|---|---|
-| `idy[Bogus = Int64](n)` — callee **has** type params | **loud**: `unknown type-param 'Bogus'` |
-| `plain[Bogus = Int64](n)` — callee has **no** type params | **loads clean — silently dropped** |
-| `go[Desc = QuietDesc](pebble())` — a spec-name binding | **loads clean — silently dropped** |
-| `idy[Id.T = Int64](n)` — a **qualified** spelling of a *real* type param | **loud**: `unknown type-param 'Id.T'` — the key is a bare label and the channel has **no resolution rung** (§4.2) |
-| `Box.mk[T = String](5)` — the callee's params are **sort-level** only (`sort Box  sort T = ?`) | **inert** — it errors, but at the *return* (`expected Box[T = String], got Box[T = Int64]`): `T` was inferred from the **argument**; the binding contributed nothing. **FLIPPED by WI-841**: the binding lands first, so the *argument* is the mismatch |
-| `Box.mk[Bogus = Int64](5)` — same callee | **loads clean — silently dropped** (no op-level params ⇒ the guard swallows the whole list). **CLOSED by WI-839** (`unknown type-param 'Bogus'`) |
-
-The silent drop at a classified call is `typing.rs:12925`: `if type_args.is_empty() || op.type_params.is_empty() { return Ok(()) }` — which rows 2–3 hit because the callee has no *op-level* params, and rows 5–6 hit for the same reason even though the callee *has* sort-level params: **a call-site bracket cannot bind a sort-level type param at all today** (row 5's error is at the return, `T` having been inferred from the argument). So §5.3's construction-site selection is not merely unconsumed — its rule-(1) rung was a *missing feature*, **built by WI-841** (§4.2, §9 phase 2): the bracket's `declared` list is now the operation's parameters followed by its enclosing sort's, concatenated rather than laddered because phase 1's declaration-site collision guard makes them disjoint.
-
-And that guard is not the only drop site — enumerate the producers (the WI-805 lesson) before believing a producer list. A **rule-body** atom's bracket parses (committed corpus fixture: `term_as_entity[E = WorkItem](?t)` in a rule body, `tree-sitter-anthill/test/corpus/op_type_params.txt:175`), is attached by `parse/convert.rs:1726` — and is then discarded by *both* loader lowerings: the occurrence body skips `ParseAux` children (`load.rs:9679`) and hard-codes `type_args: Vec::new()` (`load.rs:9711`); the term/constraint path filters them at `load.rs:7574`/`:8155`. So `Monoid.combine[Monoid = AddM](?a, ?b)` in a rule body loads clean and means nothing. All of it is a "loud error over silent skip" violation in its own right, and a **hazard for this proposal specifically**: the surface below is *already accepted and already inert*, so a program written against it would load silently wrong before the typer leg lands. Closing every drop site is a prerequisite (§9 phase 0), not a nicety.
-
-### 2.3 Thread — complete, and needs nothing new
-
-A resolved instance already rides as a **dictionary**: `Value::Requirement(handle)`, a `(functor, [sub-requirements])` tree in a refcounted arena (`design/requirement-dictionaries.md` §1). It is built by `construct_requirement(impl, [...])`, read by `var_ref(__req_*)`, and supplied per call — at every `apply_within`, `requirements[0]` is the dispatching node and the callee's `frame.requirements` is **rebuilt from its `sub_requires`** (`design/operation-call-model.md:257`, `:787`; the literal copy rule `frame.requirements = closure.requirements` is `ho_apply_within`'s, for closures). The runtime **is already parameter-inserted dictionary passing**; the design doc names Scala's `using` explicitly. `resolve(goal, scope)` already returns `ResolvedTree = leaf | conditional | from_scope`, and the cross-sort constructing case already emits a `dispatch_dict` at classification (WI-829, `typing.rs:8610`).
-
-Selecting an instance therefore adds nothing to the threading. The whole change is **where the `impl` in `ResolvedTree::leaf { impl }` comes from**: the call site, instead of a search.
-
----
-
-## 3. The three-way divergence, and the ruling
-
-Three texts describe three different rules; none matches the code.
-
-| source | rule |
-|---|---|
-| `kernel-language.md:2109`, `:2111` | **per-scope**: "different scopes may resolve the same `Spec[carrier]` to different providers, the per-`import` choice" |
-| WI-648's framing | **global default + named opt-in** |
-| the implementation | **global**, unconditional, refused at load (§1) |
-
-**Ruling: the spec's per-`import` text is not merely unimplemented — it cannot express either driver, so it is the text that must change.**
-
-- The deciding argument needs **both monoids in one body**: `fold[Monoid = AddM](xs)` beside `fold[Monoid = MulM](ys)`. Per-`import` selection admits at most one provider per scope, so no scope can write both.
-- `SortedSet.new(cmp)` chooses per **construction site**, not per scope; two differently-ordered sets routinely coexist in one function.
-- Per-`import` selection is also *implicit*: adding an import silently changes what existing code computes, and §2111 concedes the consequence — "a diamond whose arms captured providers from different scopes may observe different `A[X]` behavior". That is the Haskell orphan-instance hazard, adopted as the default rather than opted into.
-
-The amendment is in §10. It **narrows a promise the code never kept**, so no loading program changes meaning.
-
----
-
-## 4. Design
-
-### 4.1 The coherence ladder
-
-Selection at a spec-op call site resolves in order:
-
-1. **Explicit selection** at the use site — highest precedence, `[Spec = Witness]` (§4.2). Explicit beats *searched*, always; the one dispatch it does not outrank is value-directed on a concrete carrier, where an explicit witness is **refused** rather than preferred (§4.4 check 3 — refusal, not precedence).
-2. **The unique provider** for `(spec, carrier)` — today's rule, unchanged. Programs that load today load identically.
-3. **Two or more providers and no explicit selection** — a **loud error at that use site**, naming the candidates.
-
-**DELIVERED 2026-07-29 as WI-843.** The change from today is entirely tier 3: the refusal moves **from load time to the unselected use site**. Two instances may now *coexist*; what is refused is an *unselected* dispatch against them. **Coexistence requires that every candidate be NAMEABLE** — a tier-3 diagnostic that lists a candidate the author cannot write is a dead end, not a fix, so a `(spec, carrier)` group containing an unnameable provider keeps the **load** refusal (§4.3). Nothing may become silently dispatched — an ambiguous site that says nothing is still an error, with a better message (it can name the witnesses and the syntax that picks one). **And that clause has teeth beyond the classifier**: a *use-site* error exists only where a use site does — at typer-classified calls. Every other provider consumer reads **first-match today, licensed by the very load refusal this tier deletes** (`witness_provision`'s own doc says so verbatim) — so tier 3 is admissible only together with §4.9's hardening: a *selecting* read with two candidates goes loud (at load for the sem-eq index, at the read elsewhere), never first-match.
-
-**What landed, and the one thing this section had not thought through.** `LoadError::AmbiguousWitness` is **deleted** rather than gated — the group it refused is now admissible, and a dormant variant would invite a second grouping to grow back around it. The refusal it carried moves into `DispatchOutcome::Ambiguous`, which now carries the tied providers (and so is no longer `Copy`) up to `TypeError::DispatchAmbiguous` and out as `LoadError::UnselectedInstance`: a span-bearing diagnostic naming every candidate and the bracket, since a use-site refusal is only an improvement if the author can act on it *at* that use site. Its predecessor said merely *"multiple impls match (coherence rule)"*, which was enough only because a second error was simultaneously pointing at the declarations.
-
-**Three boundaries the first cut got wrong, all found by review and each DRIVEN to its refusal.** They are recorded together because they are one mistake: a refusal that MOVES must also check that the repair it now advertises is reachable *from where it fires*.
-
-1. **The bracket is not always the repair.** §4.4 check 3 refuses an explicit witness on a **concrete** provider — there the value decides — so a tie whose candidates are *all* concrete has no selection to write. That is not hypothetical: the receiver-less `Zeroable.zero()` of `wi822_op_scoped_supply_test` ties two concrete carriers, and `Zeroable.zero[Zeroable = Pebble]()` on that program was driven to *"an explicit `[Zeroable = Pebble]` cannot change it"*. §4.4 check 3 refuses an explicit witness on a **concrete** provider — there the value decides — so a tie whose candidates are *all* concrete has no selection to write. Not hypothetical: the receiver-less `Zeroable.zero()` of `wi822_op_scoped_supply_test` ties two concrete carriers, and `Zeroable.zero[Zeroable = Pebble]()` on that program was driven to *"an explicit `[Zeroable = Pebble]` cannot change it"*.
-
-2. **A tie in a SUB-GOAL is not a tie at this call**, and reporting it as one was a false statement, not merely unhelpful advice. `resolve_inner` propagates a sub-goal's tie verbatim, so a conditional witness's `:-` subgoal tie was stamped by `resolve_at_goal` with the OUTER goal's spec — announcing *"2 instances provide `Pretty` … write `[Pretty = ShowA]`"* when `ShowA`/`ShowB` provide `Show`. Both spellings were driven and both are refused: `[Pretty = ShowA]` is *"ShowA does not provide Pretty"* (check 1), and the honest `[Show = ShowA]` is *"unknown type-param 'Show'"* — because §4.5 step 0 deliberately keeps a key out of sub-resolutions. **No bracket repairs that shape**; §4.2's answer is the witness declaring a NAMED slot bound in the key's value position.
-
-3. **A specificity-ordered pair is not a tie at all — and this one is a WIDENING, pinned rather than fixed.** Two providers in one `(spec, carrier)` group whose heads differ in groundness never reach tier 3: `pick_most_specific` picks the more specific one and the call runs with no diagnostic anywhere. MEASURED — a ground `Monoid[T = List[T = Int64]]` beside a parametric `Monoid[T = List[T = E]]` loads and answers the ground one, in a program the deleted refusal used to reject (control: the mixed-kind twin is still refused *"for carrier 'anthill.prelude.List'"*, proving both provisions are one group). Tier 3's wording above reads as though two providers and no selection is always loud; it is not. This is tier 2's rule — *"today's rule, unchanged"* — reaching a case the load refusal used to make unreachable, and WI-841's committed acceptance depends on that rule, so making it loud is a new coherence rule needing its own measurement rather than part of 3b.
-
-So the diagnostic carries a typed `TieRepair` — the bracket to write, or which of the two reasons none applies — decided once at the render boundary, with the concreteness scan moved there out of the resolver (it was running on paths that discard the result; measured 5 of 19 calls).
-
-### 4.2 Select — surface
-
-Reuse the call-site bracket channel, keyed by the **requirement slot** rather than by a type parameter:
+The call-site bracket, keyed by the **requirement slot**; the value names a witness sort:
 
 ```anthill
-operation fold[T](xs: List[T]) -> T requires Monoid[T]     -- 042 type param + op-scoped requires (WI-448)
-
-fold[Monoid = AddM]([2, 3, 4])            -- 0 + 2 + 3 + 4 =  9
-fold[Monoid = MulM]([2, 3, 4])            -- 1 × 2 × 3 × 4 = 24
-fold[T = Int64, Monoid = AddM]([2, 3, 4]) -- both channels in one bracket list
+fold[Monoid = AddM](xs)                    -- key = the slot's spec
+Desc.describe[Desc = LoudDesc](w)          -- a direct spec-op call: key = the spec itself
+biFold[plus = AddM, times = MulM](xs)      -- two slots of one spec: keys = the slot NAMES (§3.4)
 ```
 
-The key names a requirement the callee declares; the value names a **witness sort**. **No grammar change** — this is the production 042 already added and `parse/convert.rs` already lowers (§2.2).
+A key resolves as: (1) a declared **type parameter** of the operation or its enclosing sort — a named slot *is* one; (2) a requirement's **spec short name**, when unambiguous among the callee's anonymous slots. A **qualified** key is refused, not resolved — selection must not depend on the caller's imports, and any selection a short name cannot express is written with a named slot instead. Name collisions across the two scopes, with a requirement's short name, or with the spec's own name are refused **at the declaration**: one name, one channel. A bracket in a **rule body** is refused loudly (selection there is deferred, not ignored); route through an operation.
 
-**Two slots of one spec** need a name per slot. A named slot is written as a **type parameter carrying a bound** (§4.7) — the witness is the *supplier*, so the clause is `provides`:
+Pinning does not reach into the resolution tree: a witness's own sub-goals always resolve by search. Steering one is written as a named slot **on the witness**, bound in the key's value position — `fold[Monoid = ListM[O = MyEq]]`, an ordinary type application.
+
+### 3.4 A named requirement slot is a parameter; an anonymous one is a constraint
 
 ```anthill
-operation biFold[T, plus { provides Monoid[T] }, times { provides Monoid[T] }](xs: List[T]) -> T
-
-biFold[plus = AddM, times = MulM](xs)
+requires Eq[T]              -- anonymous: a CONSTRAINT — solved, not recorded
+requires O: Ordered[T]      -- named: a PARAMETER — part of the type's identity
 ```
 
-Resolution of a bracket key, in order: (1) a declared **type parameter** name — the operation's, **or its enclosing sort's**. For an op-level param this is today's meaning, unchanged and first, so no existing program shifts; the **sort-level leg was new** — measured (§2.2 rows 5–6), a call-site bracket bound no sort-level param, so it had to be built (one more WI-708-style seeding rung) before §5.3's construction-site selection could mean anything; **delivered as WI-841**, §9 phase 2. Rule (1) now *subsumes* the named-slot case, because a named slot **is** a type parameter; (2) a requirement's **spec short name**, when unambiguous among the callee's remaining (anonymous) requirement slots.
+An anonymous slot fixes nothing about the type: `List[T = Int64]` is one type no matter which `Eq` satisfied it. A named slot is an ordinary type parameter, addressable in brackets and in type position — `SortedSet[T = String, O = ByLength]` and `…O = Alphabetical]` are **different types**, so merging them is a type error before it is a wrong answer. The author chooses by naming. Omitting a named slot in type position means "any" — it is how order-agnostic signatures are written, so the merge guarantee is per-signature, holding exactly where the slot is written. Omitting it at a call leaves it to inference (the ladder, §3.2).
 
-**Rule (1) spans two scopes, so the two must never both answer.** With the sort-level leg added, `Box.mk[T = …]` has two possible targets when `Box` declares `sort T = ?` *and* `mk` declares `[T]` — and an ordered ladder here would be a silent capture, not a resolution: the reader cannot see which `T` the key hit. So the collision is refused **at the declaration**, exactly like the shadowing guard below: an operation may not declare a type parameter whose name collides with one of its **enclosing sort's** type parameters (including a sort-level named requirement slot, which §4.7 makes a type parameter). One name, one target — the same discipline the WI-708 dual-keying note applies to the two *symbols* one param already has. Anything else is a **loud error** — including on a callee with no type parameters, which is the §2.2 silent drop closed.
+### 3.5 Validation at the selection site
 
-**A key is a bare LABEL, so rule (2) is a name LOOKUP — not a short-name comparison of two identities.** The distinction is WI-672's, and it is load-bearing here because "matches on short name" is what that work *deleted*:
+`f[Spec = W](…)` requires: `W` provides `Spec` at the call's bindings (else loud, naming both); the slot exists on the callee; and the dispatch is not value-directed on a concrete carrier — there the value decides, and an explicit witness is **refused**, not preferred.
 
-- Rule (1) matches by **symbol identity** — `n == name_sym` (`typing.rs:12931`) — because both sides are the bare spelling: a written key lowers to a bare interned `Symbol`, *"the param label (`A`) … **NOT a caller-scope value**"* (`build_call_type_args`, `load.rs:9285`), and `op.type_params` holds `kb.intern("T")` (WI-708, `typing.rs:12892`, whose doc says the bare symbol *"stays the call-site / seeding key"*).
-- Rule (2) **cannot** match by identity: its candidate set is *derived* from the slots' **canonical spec symbols**, which are qualified. Crossing bare-label → qualified-symbol is exactly `same_label`'s sanctioned family 2 — *"a type-param binding key matched WITHIN an already-established same-spec context … the same-spec gate makes short names unique"* (`typing.rs:11328`). **The "unambiguous among the callee's remaining slots" clause IS that gate**, not a courtesy: without a gate this is the unsound identity comparison whose owners are `same_sort_canonical` / `same_qname`, *neither of which matches on last segment*.
+### 3.6 Defaults — one relation, one inference rule *(proposed)*
 
-**A qualified key is refused, not resolved.** Rule (1) already refuses one — §2.2's fourth row, measured: a *qualified spelling of a real type param* is `unknown type-param`, while the bare key loads. Rule (2) adds no rung either, so `fold[algebra.Monoid = AddM]` is a loud error, and `same_label`'s own `debug_assert` (`typing.rs:11336`) fires on the partially-qualified pair (`algebra.Monoid` vs `anthill.prelude.algebra.Monoid`) if one tries to match it. Three reasons, in order of force:
-
-1. **A resolved key would be a second name law in one bracket list.** Rule (1)'s key is unresolvable *in principle* — `T` is a binder of the *callee*, visible in no scope — so a ladder mixing the two would rank a label against a reference, and resolve-then-fall-back-to-label is a fallback (`CLAUDE.md`: "avoid fallbacks, better know about errors early").
-2. **It would make selection depend on the caller's imports.** Measured: a cross-namespace call into a `requires`-carrying callee (`sort Lib  sort LT = ?  requires Desc[T = LT]  …`) from a namespace that **never imports `Desc`** loads clean; structurally, the supply path takes no scope at all — `build_concrete_dispatch_dict(kb, subst, callee_spec_sort, caller_sort, caller_requires, rigids)` (`typing.rs:11700`) reads provider facts and resolved symbols only. (Load-strength: the clean load is measured, the threaded dictionary was not driven to a value.) So a callee whose `requires` names `a.Monoid[T]`, called from a scope that imported `b.Monoid`, would be refused at a *one-slot* call with nothing ambiguous about it. A short name is the only spelling either side can write without consulting the other's imports. The **value** half is caller-resolved and must be — it denotes a witness the caller picks, which is what §10's "an import governs *visibility*" governs.
-3. **It buys no expressiveness** — every selection a short name cannot express is written with the §4.7 binder instead ("When the short name does not discriminate", below).
-
-**A direct spec-op call is the same case.** `Desc.describe(w)` has no `requires` slot of its own — the thing being selected is the *dispatching dictionary*, `requirements[0]` (`design/operation-call-model.md` §"Dispatch site"). Rule (2) therefore also admits the **dispatched spec's own short name**:
+Whether silence may pick is **not a property of the spec** — `Monoid[Int64]` has no canonical instance while `Monoid[List]` has concatenation — so it is a per-`(spec, carrier)` partial function, expressed as reflect-layer facts (the variance pattern, proposal 035; **zero new grammar**):
 
 ```anthill
-Desc.describe[Desc = LoudDesc](w)      -- pick the provider backing this very call
+entity DefaultProvider(spec: Symbol, provider: Symbol)
+
+rule default_provider(?S, ?C, ?W) :- DefaultProvider(spec: ?S, provider: ?W), …
+rule default_provider(?S, ?C, ?C) :- self_provides(?C, ?S)      -- the inference rule
+
+constraint one_default: eq(?W1, ?W2) :-
+  default_provider(?S, ?C, ?W1), default_provider(?S, ?C, ?W2)  -- refused at load
 ```
 
-One key, one meaning, whether the spec arrives as a callee's requirement or as the call's own dispatch target.
+- **The carrier's own provision is its default**, inferred — the existing standard library needs no edits.
+- A `DefaultProvider` fact marks an *existing* provider (typically a witness for a foreign carrier) as the fallback — the **application's** act when linking libraries that don't know each other; the carrier is derived from the provider's provision.
+- **Conditionality composes for free.** The rule above joins the mark with `provides`, and a conditional provision (§3.8) provides only where its chain discharges — so marking `ListOrd` default for `Ordered` yields a default for `List[T = E]` at exactly those `E` whose `Ordered[E]` resolves. Two default rows whose carriers *unify* (a ground row beside a parametric one) are refused by `one_default`; layering defaults by specificity would be a widening needing its own measurement.
+- **Sugar *(proposed)*: a provision may mark itself** — `default provides X[…]`, one leading modifier (the `internal` pattern), desugaring to the same `DefaultProvider` row. (A trailing `[default]` annotation was considered and dropped: a bracket list right after a bracketed type invites a parse tie, and the `[simp]` precedent follows a rule body, not a type.) The reference-form fact keeps its own job — marking a provider you *cannot edit*. Discipline: mark inline when you own the carrier or ship its canonical companion; mark by reference as the assembler otherwise; `one_default` arbitrates all rows regardless of origin.
+- **No-displacement is derived, not stated**: for a self-providing carrier the inferred row already exists, so an explicit fact naming a rival violates `one_default`. *Fill silence, never overwrite speech* — no one line can flip what every linked library's bracket-less dispatch means.
+- No row means: say which (§3.2 tier 3). Deferred, same idiom: a `within:` field for sort-scoped defaults; a per-carrier `NoDefault` guard.
 
-**When the short name does not discriminate, the binder does.** Two anonymous slots of the *same* spec (`requires Monoid[T], Monoid[U]`), or of two specs sharing a last segment (`a.Monoid` and `b.Monoid`), leave rule (2) with no unique answer — that *is* the loud error, and the fix is to **name** the slot (§4.7), which makes it a type parameter and so puts it under rule (1). Rule (1) is therefore the **complete** mechanism and rule (2) a gated shorthand: no expressible selection depends on the short name, which is why refusing a qualified key costs nothing.
+The learnable core: **a silent dispatch takes the carrier's own provision, or the one a `DefaultProvider` fact names; two such rows for one carrier refuse to load; no row means say which.**
 
-**Shadowing guard.** An operation that declares a type parameter whose name collides with one of its own requirement **spec short names** — or with one of its enclosing sort's type parameters (the rule-(1) two-scope collision above) — is refused **at the declaration**, not at the call. For a spec's own operations the guard extends to the **spec's own short name**: a spec op declaring a type parameter named after its spec would shadow the direct-dispatch key above (`Desc.describe[Desc = …]`). One name, one channel. Binder-vs-parameter collision is no longer a separate case: a named slot *is* a parameter, so the ordinary duplicate-parameter rule already covers it — one more thing the bound form removes rather than adds.
+### 3.7 Coherent specs
 
-**Rule bodies are out of scope for selection.** A rule-body atom is never typer-classified (§4.9), and its bracket is today parsed and then dropped at load (§2.2). Phase 0 turns that drop into a **loud refusal** — selection inside rule bodies is *deferred*, not silently ignored. A rule body needing a chosen witness routes through an operation, where the surface exists.
+One property *is* per-spec: when a spec's dispatch fires from **unification**, no call site exists anywhere to select, so two suppliers per carrier are refused **at load**. The `Eq` family is such a spec, permanently — semantic equality cannot be selected, and no bracket alters which spec a carrier provides. In general: a read that asks *existence* of a provider stays boolean; a read that *selects* one goes loud on the second candidate — never first-match.
 
-### 4.3 Declare
+### 3.8 Conditional provisions; an alternative to an ordered carrier is a BUNDLE
 
-Witness sorts need nothing — they are already named (§2.1). Instance facts (`fact Monoid[T = Int64, combine = add]`) have no name; two of them for one `(spec, carrier)` therefore stay refused at load exactly as today. Naming them is a possible later increment (`fact AddM: Monoid[…]`); it is **out of scope** here, and the diagnostic should say so rather than imply a selection that cannot be written.
-
-**The MIXED pair must be refused too** — one witness sort *and* one instance fact for the same `(spec, carrier)`. Measured 2026-07-28 it was **not** refused: it loaded clean, because the two existing checks were each grouped by provider KIND (`AmbiguousInstanceFact`; `AmbiguousWitness`, which explicitly skips a provision whose provider *is* the carrier), so neither saw the cross-kind pair, while the same program with the instance fact replaced by a second witness sort *was* refused (the control). **DELIVERED 2026-07-29 as WI-838** (pre-existing, independent of this proposal): `check_provider_operations` now builds **one** coherence grouping per `(spec, dispatch carrier)` over all provider kinds and reads all three diagnostics off it — the two same-kind ones unchanged, plus `LoadError::MixedProviderKinds` for the cross-kind pair. The delivery also measured what the coexisting pair actually did: value-directed dispatch silently ran the **instance fact**'s op (declaration order made no difference), while the threaded-dict route died `EvalError::Internal("unhandled Expr variant in eval")` — the two routes did not even agree.
-
-It matters here because tier 3 would otherwise produce a use-site diagnostic offering `[Monoid = TheWitness]` beside a candidate with **no spelling at all**. That is the §4.1 nameability rule: **coexistence is admitted only when every candidate in the group is nameable**, so the mixed pair keeps the *load* refusal until instance facts gain names. An implementation that merely deletes the witness check inherits WI-838's blind spot as its coexistence rule.
-
-**As shipped (WI-843), the gate is per-GROUP and is exactly what the two surviving load diagnostics are.** `AmbiguousInstanceFact` (two facts) and `MixedProviderKinds` (a fact beside a witness) are what remains of the one WI-838 grouping; the witness leg still *records* its candidates there, because dropping witnesses from the grouping would re-open the cross-kind blind spot. One unspellable candidate is enough to keep the whole group refused at load — in the mixed case the other candidate *is* nameable, and it makes no difference.
-
-### 4.4 Validation at the selection site
-
-Given `f[Spec = W](…)`, the typer checks:
-
-1. `W` provides `Spec` at the call's bindings — i.e. a `SortProvidesInfo(sort_ref = W, spec = Spec[…])` whose spec view unifies with the goal. A witness that does not provide the goal is a loud error naming both.
-2. The slot exists on the callee (§4.2 resolution order).
-3. The selection is **not** applied to a call whose dispatch is already value-directed on a concrete carrier (§1.1) — there, the value decides and an explicit witness would silently contradict it. Refuse, do not prefer.
-
-### 4.5 Resolve — one hook
-
-`resolve(goal, scope)` (`design/operation-call-model.md` §Algorithm) gains a **step 0**: if the call site explicitly bound this goal's spec, return `ResolvedTree::leaf { impl: W, type_args }` after check (1). Steps 1–4 are untouched — a conditional witness still recursively resolves its own `:-` subgoals, and those sub-resolutions always **search** (tier 2). A bracket key cannot reach them: rule (2)'s candidate set is the *callee's* slots, and extending it into the resolution tree would make key resolution depend on which witness was pinned — pinning changes which subgoals exist. When a sub-resolution must be steered, the *witness* declares a named slot (§4.7) and the caller binds it in the key's **value** position — `fold[Monoid = ListM[O = MyEq]]`, an ordinary type application of the witness sort. (Not measured here; it is the composition of two measured legs — §4.7's type-position binding and this section's key. The selection then happens at the witness's own boundary, where it is a callee slot again.)
-
-**Three things WI-841 measured that the rest of the arc needs.** (a) A slot is served by one of **three** routes, and only two can THREAD a selection at all — the third (an OP-SCOPED `requires`) has no dictionary channel, so a bracket there was measured to compute the answer of the provider the author did NOT name (`probe[Monoid = AddM]` → `AnyM`'s 99, in a program that loaded). Phase 2 therefore REFUSES a selection on an op-scoped slot whenever two or more providers answer the goal, and accepts it only where the pin provably cannot differ — which is the sole-provider case §9's acceptance names. **So phase 2 delivers selection on two routes, not three**; the third waits on WI-822 leg 1. Only two routes also have a site to complain from: the enclosing sort's dictionary build, the spec-op dispatch, and — for an **op-scoped** `requires` — value-direction at eval, which has no dictionary channel at all (`synth_req_names` is keyed by the parent SORT; WI-822 leg 1, undelivered). Driven with a witness that provides the spec at *other* bindings, the three failed three different ways: loud, load-clean-then-`Internal`-at-eval, and silently ignored. So witness validation is done at the **call site**, once, rather than at each consumer. (b) An op-scoped `requires` clause's spec is a **bare application** (`Monoid[T = HT]`), not the `SortView` a sort-level requirement's `spec` field carries — `push_op_requires_clause_term` reads the clause's own head functor AS the spec base, which a `SortView`'s head never is. `goal_from_requires_entry` therefore returns a goal with **no bindings** for one, and a goal with no bindings is matched by every provider: a check routed through it passes vacuously, which reads as covered. (c) A selection is keyed by the **spec**, because that is the coordinate a `SortGoal` carries, so two slots of ONE spec are indistinguishable to a pin. Two keys naming different witnesses for one spec are refused at the site rather than first-matched; giving a pin a slot-precise key is phase 3b's business, and unreachable before it (the pair does not load).
-
-
-### 4.6 Thread — nothing
-
-`ResolvedTree::leaf { impl: W }` is emitted as `construct_requirement(W, [...])` in the callee's `requirements[0]` (or the named slot), by the machinery that already emits it for a searched result (§2.3). A body that forwards its own requirement (`var_ref(__req_monoid)`) forwards the selected one automatically — so `fold[Monoid = AddM](xs)` reaches `Monoid.combine` inside `fold`'s body with no per-call plumbing.
-
-### 4.7 A **named** requirement slot is a parameter; an **anonymous** one is a constraint
-
-This is the rule that resolves the `SortedSet` type-identity question, and it is worth stating on its own because it is what makes `SortedSet` work without new type machinery.
-
-**Measured — type identity keys on declared type parameters, and on nothing else:**
-
-| probe | result |
-|---|---|
-| `Option[T = Int64]` returned where `Option[T = String]` declared | loud: `expected Option[T = String], got Option[T = Int64]` |
-| `Box[E = Pebble, Desc = QuietDesc]` — bind a `requires` slot in type position | loud: **`Box` has no type parameter named 'Desc' — it declares type parameter(s) E** |
-| `sort Box  sort E = ?  sort O = ?  end`, `Box[E = Pebble, O = QuietDesc]` vs `…O = LoudDesc` | loud: `expected Box[E = Pebble, O = LoudDesc], got Box[E = Pebble, O = QuietDesc]` |
-| the same two bindings **agreeing** | loads clean |
-
-So a **witness sort binds an ordinary type parameter today**, and two different witnesses in one parameter are already two distinct types, refused by the existing checker with **no new mechanism at all**. What a `requires` slot lacks is not expressiveness — it is a *name*.
-
-**Read that third row for exactly what it says: it is a RETURN-position measurement.** A second review (2026-07-28) drove the **argument** position, and the check does **not** run there:
-
-| probe (argument position) | result |
-|---|---|
-| `same[X](a: List[T = X], b: List[T = X])` applied to a `List[T = Int64]` and a `List[T = String]` | **loads clean** |
-| the same call with the binding seeded explicitly — `same[X = Int64](li(), ls())` | **loads clean** (so it is not an inference-only gap) |
-| the sort-level twin: `union(a: Box[T = T, O = O], b: Box[T = T, O = O])` applied to `Box[…O = Q]` and `Box[…O = R]` | **loads clean** — this is §5.3's `union`, verbatim |
-| control — a **variable-free** param: `takeR(b: Box[T = Int64, O = R])` applied to a `Box[…O = Q]` | **loud**: `type mismatch in takeR.b (op-arg)` |
-| control — does the variable bind at all? `idbox[X](a: List[T = X]) -> List[T = X]` on a `List[Int64]`, declared return `List[String]` | **loud** at `go.return`: `got List[T = Int64]` — so it binds from argument 1 |
-
-A parameter whose declared type contains a type **variable** accepts any argument after that variable's first binding occurrence: binding happens, conformance happens, but a *later* argument is never re-checked against the already-bound variable. Filed as **WI-836**. The rule §4.7 states is still the right rule — but the claim that the existing checker already enforces it is true only where the binding is variable-free.
-
-Hence the rule:
-
-- **`requires Eq[T]`** (anonymous) — a *constraint*. Solve it, do not record it. `List[T = Int64]` is one type no matter which `Eq` witness satisfies it, which is correct: the `Eq` instance is incidental to what a list *is*.
-- **`requires O: Ordered[T]`** (named) — a *parameter*. It is addressable by name in brackets, in **type** position as well as at a call, so `SortedSet[T = String, O = ByLength]` and `SortedSet[T = String, O = Alphabetical]` are different types. That is correct too: the ordering is not incidental to what a sorted set *is*.
-
-**The author chooses by naming it**, and the choice is visible in the declaration. The same rule holds at both levels — an operation's named binder (§4.2) is addressable in that operation's bracket list; a sort's named binder is addressable in that sort's type application. One rule, two scopes.
-
-Three consequences to keep honest:
-
-- **The binder is new grammar, and namelessness is currently deliberate.** `requires d: Desc[E]` does not parse (measured: `syntax error near ': Desc'`). The two existing productions carry no name slot — `requires_declaration: 'requires' <type>` (sort/namespace-level, a bare **type**) and `requires_clause: 'requires' <rule_body>` (op-scoped, WI-448). `design/operation-call-model.md` states the current property outright: sub-requirements are *"positional and nameless (impl-side `requires` clauses have no source-level names)"*. The *select* surface needs no grammar change (§4.2); the *declare* binder does. Three wrinkles, all found by reading the productions rather than assumed:
-  1. **The op-scoped clause is overloaded.** One `rule_body` list holds both spec requirements (`operation member(x: T, l: List) -> Bool requires Eq[T]`, `stdlib/anthill/prelude/list.anthill:58`) and value **preconditions** (`requires neq(b, 0), gt(b, 0)`, WI-539). A binder attaches only to the *type* flavor and must coexist with predicates in the same comma list. The sort-level form takes a type only, so it is clean there.
-  2. **`d: Desc[E]` sits next to named-argument syntax** inside a `rule_body` (`f(x: 1)`). A bare `name: Type` is not valid at rule-body top level today, so the extension is available — but `requires_clause` already needs `prec.dynamic(1)` to win a GLR tie against `requires_declaration`, so this wants a corpus test, not an assumption.
-  3. **The binder names the top-level slot only.** Sub-nodes inside a `ResolvedSortNode` stay positional (`requirement_at_sort(node, k)`), exactly as today. Phase 1 adds a name where a name was missing; it does not re-key the projection path.
-
-  Related spec refinement for phase 5: `kernel-language.md:909` describes operation-level `requires` as *preconditions on individual operations*, which is right and needs only to be **split in two** — a **value** precondition (`requires neq(b, 0)`, WI-539), and a **type** precondition (`requires Ord[T]`, WI-448). The implementation already draws that line: the call-site contract check filters to the value goals via `is_value_precondition_clause`, leaving the type ones to dispatch.
-- **Adding a binder to an existing sort adds a parameter.** Bindings are by name, so omitting it stays legal and it infers — resolving to the unique provider by §4.1 tier 2. If it cannot be inferred and has no unique provider, that is `UnconstrainedTypeParam` — loud, and right.
-- **Omission in TYPE position means "any", and that is where the guarantee is scoped.** Measured: `check_sort_type_args` (`kb/mod.rs:1357`) requires no declared param to be bound — only *undeclared*, *duplicate* and *excess-positional* are errors — and `take(b: Box[T = Int64])` accepts a `Box[T = Int64, O = Q]` argument, loading clean. So a signature that omits `O` erases the ordering distinction **at that boundary**, deliberately: it is how "I work for any order" is written, and it is what makes `report[T, O]` (§7.1) and today's `SortedSet[T = Int64]` code keep working. The consequence to state, rather than discover: **§5.3's merge safety is per-signature, not global** — it holds exactly where `O` is written. WI-836 does not change this; an omitted slot has no variable to disagree with (an *intermediate* op that omits `O` and then calls a slot-sharing callee is separately loud — measured: `expected a type for 'X', got unconstrained — use pick[X = …](…)`).
-
-### 4.8 Reading `requires` as a goal — why the binder is not a new kind of thing
-
-The named binder is best explained as **sugar over machinery Anthill already has**, in the language's own idiom. The demand/supply relation is already a rule in the reflect layer:
+**A provision may be conditional** — `Ordered[List[T = E]]` exists only where `Ordered[E]` does. In the §2 model this is a Horn clause over the `provides` relation, and it is written today as the provider's own `requires` chain:
 
 ```anthill
--- stdlib/anthill/reflect/typing.anthill
-rule provides(?A, ?S_inst) :- SortProvidesInfo(sort_ref: ?A, spec: ?S_inst)
-```
-
-whose own comment names the framing: *"The demand/supply twin of `refines`: `requires X` and `fact X[Y]` are the two ends of one relation."* Read that way, a `requires` clause **is a goal**, and its witness is the goal's answer:
-
-| surface | reading |
-|---|---|
-| `requires Ord[T]` | the goal `provides(?W, Ord[T])` must be solvable; **`?W` is discarded** |
-| `requires O: Ord[T]` | `sort O = ?`, plus the goal `provides(O, Ord[T])`; **the answer is bound to a name** |
-
-That is the whole content of §4.7: the anonymous form cannot appear in a type because *nothing named its witness*; the named form can because it is an ordinary bound variable. Nothing new is introduced — a name is given to an answer that was always being computed.
-
-The rest of the proposal falls out of the same reading:
-
-| concept | as a goal |
-|---|---|
-| the requirement dictionary | the **witness** of `provides(?W, Spec[…])`. `design/operation-call-model.md` says it verbatim: `construct_requirement` builds *"the SLD resolution chain materialized"* |
-| instance resolution | SLD search for `?W` |
-| **global coherence** | a demand that the goal's answer set be a **singleton** |
-| **ambiguity** (§1) | a **call** that picks neither of two answers. The two-answer goal itself is ordinary |
-| **explicit selection** `f[Ord = ByLength](…)` | **pinning the variable before asking**: the goal becomes `provides(ByLength, Ord[…])`. Both answers still exist — the call has named the variant it wants, rather than the goal having become single-answered |
-
-So §4.1's ladder is not a new coherence policy bolted on: it says *pin the variable; or leave the search to answer with a single witness; or, when it answers with several and the call pinned none, be told so at that call*. And §4.4's validation is just checking that the pinned value satisfies the goal it was pinned into.
-
-**One distinction the reading must keep.** An op-scoped `requires` carries **two kinds of precondition** — and both are goals, so what separates them is not the goal but what is kept:
-
-> a **value** precondition (`requires neq(b, 0)`, WI-539) keeps the goal's *success*; a **type** precondition (`requires Ord[T]`) keeps its *answer*, the witness.
-
-The binder names that answer. This is an explanation, **not a working desugaring today**: writing `requires provides(O, Ord[T])` in a body parses (the clause takes a `rule_body`) but is treated as a precondition — proved and discarded — so no dictionary is threaded. Stated so no reader mistakes the synonym for an available spelling.
-
-### 4.9 Coexistence must not reach a first-match read — the bracket-less consumers
-
-Tier 3 says "loud at the unselected use site". Audited (2026-07-28), **only one consumer can say that**: `resolve_inner` → `pick_most_specific` (`typing.rs:15030`), which returns `Ambiguous` on a tie and is reachable only from `check_apply` — op-body calls and rule-body *dot*-calls, exactly the sites that have a bracket. Every other consumer of provider facts selects by **first match with no ambiguity arm**, and the code names today's load-time refusal as its license:
-
-| consumer | read | two candidates |
-|---|---|---|
-| ~~`witness_provision` / `witness_op_for_carrier`~~ (`kb/typing.rs`) | ~~first witness wins~~ **DELETED (WI-842)** | ~~its own doc: "Coherence … is rejected at load … so first-match is the sole instance" — tier 3 deletes that premise~~ — both readers are gone; their sole consumer (the value-directed chain) now reads every candidate |
-| `provider_spec_view_bindings` — ~12 call sites incl. type conformance and member projection | ~~first `SortProvidesInfo` fact wins~~ **HARDENED (WI-842)** | ~~the "first-provider-wins contract"~~ — provisions of ONE application are MERGED, and a param bound two ways within one application is a **load** error (`ConflictingProvisionBindings`), for the sem-eq index's reason: a carrier-keyed provision has no NAME to select (§4.3), so the refusal that licenses this read is one 3b does *not* delete |
-| ~~**semantic eq/neq dispatch**~~ — resolver `resolve.rs:4242`, interpreter `builtins.rs:549`; index built by `build_sort_ops_table` pass 3 | ~~last write wins~~ **HARDENED (WI-837)** | ~~non-deterministic per load~~ — a second candidate is a **load error** (`AmbiguousEqDispatch`), which is the whole rule for this row: no call site exists *anywhere* to bracket, because the dispatch fires from unification |
-| rule-body / constraint-body / quantifier-goal / `proof … by derivation` spec-op atoms — never typer-classified (`type_rule_bodies`, recurses through a plain `Apply` without `check_apply`) | ~~the value-directed `or_else` chain (`eval.rs:934`)~~ **HARDENED (WI-842)** | ~~first match, silently~~ — the three routes are COLLECTED (`typing::spec_op_suppliers_for_carrier`) and a second candidate raises `EvalError::AmbiguousSpecOpDispatch`, naming each by its supply route |
-| WI-300 `find_dictionary` + the `[simp]` guards | boolean `sort_provides` (`typing.rs:31372`) | two providers are *more* true — the guard fires and hands the real choice to the row above |
-| eval-bridge dictionary supply (`resolve_bridge_requirements`, `typing.rs:12567`) | *does* detect the tie | ~~and converts it into a silently **unsupplied** frame (`eval.rs:1785`, trace-only)~~ **HARDENED (WI-855)** — a tie is its own verdict (`BridgeRequirements::Ambiguous`, carrying the candidates) and value-directed dispatch **raises** `AmbiguousRequirement` naming the requirement and both providers; the *other* unresolvable causes keep WI-822's measured trace-and-continue |
-
-**The hardening rule — phase 3's prerequisite, not its cleanup.** A read that asks *existence* (`sort_provides`, the guards) stays boolean: two providers satisfy a constraint as well as one (§4.7). A read that **selects** — returns one provider's op binding — goes **loud on the second candidate**: the sem-eq index build refuses at *load* (an index has no later site to complain from); the value-directed chain refuses at the read with a named diagnostic, in the spirit of WI-737's `Error[RelationFloundered]`. Never first-match.
-
-**PHASE 3a IS DELIVERED (WI-842, 2026-07-29), and one leg landed differently than this section specified** — the difference is recorded here rather than smoothed over, because the reason bounds what phase 3b may assume. The value-directed chain hardens *at the read*, as written; `witness_provision` / `witness_op_for_carrier` are **deleted** rather than hardened (their sole consumer was that chain, so the first-match witness read cannot come back); but `provider_spec_view_bindings` refuses **at load**, not at the read. Three findings drove that, each measured:
-
-1. **The reader's ambiguity is UNNAMEABLE.** It keys on `sort_ref == carrier`, so it sees a carrier's OWN provisions — a `provides` block or a namespace-level `fact Spec[T = C, …]` — and never a witness (whose `sort_ref` is the witness sort). Neither has a name for a bracket to quote (§4.3). So this is the sem-eq index's situation, not tier 3's: nothing later can select, and the refusal that licenses the read is precisely the one 3b does **not** delete. Its ~12 consumers are also `bool`/`Option` type predicates, where a "loud" read would surface as an ordinary type mismatch.
-2. **The defect is real and was measured by DRIVING it**, not inferred: two provisions of one spec for one carrier binding `Element` two ways made the *identical program* load clean or fail to type — decided entirely by **which provision was written first**.
-3. **"Two provisions of one spec on one carrier" is NOT the defect.** A first cut refused the stdlib: `sort Console` holds `fact Effect[T = ConsoleOutput]`, `[T = ConsoleError]` and `[T = ConsoleInput]` — three genuine instances differing in the spec's CARRIER PARAM. The check therefore buckets provisions by that param first (one bucket per *application*) and refuses only a disagreement **within** one bucket. The Console shape also bounds what WI-842 fixed: asked for `Console`'s view of `Effect`, the reader still answers the first of three applications. No op binding is selected by that, and no consumer asks for it today — but a reader that must distinguish applications needs the application as an INPUT, which is a design increment of its own.
-
-Two further recorded findings, both about where a diagnostic can *land*. (a) A rule-body atom does reach the value-directed read, through the SLD→eval bridge — but an eval error inside a bridged body **residualizes** rather than aborting the enclosing rule (WI-483, and the same is already true of WI-855's `AmbiguousRequirement`). So in a rule body the tie shows as a **delay**: measured, with first-match restored the two-provider program answered `described(leaf(), 1)` *definitely* and refuted `7`; hardened, it decides neither. The named diagnostic is what an eval entry sees. (b) `resolve_op_target` (`typing.rs`) is a fourth `own .or_else(fact)` chain and is deliberately **out of scope**: its input is a dictionary's functor — a provider already selected by `pick_most_specific`, the one consumer that *can* be loud — so it selects an op *within* one pinned provider, not a provider.
-
-**Consequence for the `Eq` family, stated honestly:** hardening the sem-eq index means two `PartialEq`/`Eq` providers for one carrier remain a **load** error — semantic equality dispatches from unification, where no selection can ever be written, so for that family tier 3's coexistence simply never applies. §6's "the `Eq` hierarchy is untouched" is this mechanism, not an accident.
-
-**One of those blind spots was a PREREQUISITE, not a neighbour** (a second review, 2026-07-28, reclassified it) — **WI-837, DELIVERED 2026-07-29**. The sem-eq index consulted only `carrier_own_op` and the carrier-keyed instance fact, so a **WI-450 witness-supplied `eq` never keyed it** — and semantic-eq dispatch reads *only* that index (`sem_eq_dispatch_target`, `builtins.rs:549`), never `witness_provision`. Two `PartialEq` witnesses for one carrier were stopped only by `AmbiguousWitness`, which is **spec-generic**; phase 3b deletes it (and did, WI-843), 3a hardens an index those candidates never reached, so the pair would have coexisted with **no diagnostic from either check** and equality would have silently answered structurally.
-
-What landed: the witness route joins the other two behind ONE owner, `load::EqDispatchIndex`, which returns *every* candidate instead of `or_else`-chaining to the first; the index build refuses a second **distinct** target with `AmbiguousEqDispatch`, rendering each candidate by its ROUTE (own member / fact binding / named witness) since the three are written in three syntaxes and only the witness is spellable (§4.3). Two consequences worth recording. (a) The multi-candidate walk `typing::collect_spec_op_suppliers_by_carrier` is **op-generic**, not an `eq` special case — phase 3a's remaining readers harden at the read, but they can share this collector rather than restating who supplies what. It buckets by DISPATCH CARRIER in one pass over the provisions, because a provision's supplier is a function of the provision and not of the carrier asking: the first cut re-walked per carrier and cost +1.6 ms on the stdlib, while the bucketed form is *faster than the pre-ticket code* (index build 1.4 ms → 0.54 ms, `eq_derive` 2.4 ms → 0.53 ms — the two-route original re-scanned per carrier too). (b) WI-664's lawful-Eq boundary classifier (`eq_derive::is_eq_boundary`) *documented* that it used the same check as the index and in fact spelled its own copy; it now calls `EqDispatchIndex::candidates`, so adding the witness route could not silently falsify the claim — otherwise a Float-containing composite whose `eq` came from a witness would have been field-wise-derived `NonEq` and then false-conflicted with its own `provides Eq`.
-
-**The genuinely independent blind spots** (recorded, candidate tickets): a first `SortProvidesInfo` fact that binds no `eq` hides a second that does (`provider_spec_view_bindings` returns early), silently degrading to structural eq — **retired for the sem-eq index** by WI-837's all-suppliers walk (the reader itself is still first-match for its ~15 other call sites, which is phase 3a); and the bridge's `Unresolvable` outcome is trace-only (`eval.rs:1785`) — **WI-855, DELIVERED 2026-07-29** (below). A THIRD, found while delivering WI-837 and measured with a control pair: the index build enumerates only `SortInfo`-carrying sorts, so a NAMESPACE-LEVEL entity carrier's `eq` supplier never keys it and equality stays structural — pre-existing, route-independent, **WI-856**. It also means the predicate WI-837 gave one owner is shared by the index build and the WI-664 boundary classifier while their DOMAINS still differ.
-
-**WI-855 (delivered 2026-07-29) — the tie the resolver detected and the dispatcher discarded.** `resolve_bridge_requirements` folded four unrelated verdicts (no provider / AMBIGUOUS provider / cyclic / under-determined carrier) into one `Unresolvable { detail }`, so its value-directed consumer could only apply one policy to all four: enter the frame unsupplied. What landed is the **split**, not a new policy for the bucket — `BridgeRequirements::Ambiguous { requirement, candidates }` is a variant of its own carrying the tied provider names, and each of the two consumers decides: value-directed dispatch **raises** `EvalError::AmbiguousRequirement`, while the SLD bridge still suspends (a bridged eval may not abort the enclosing rule — WI-483) but now *names* the tie in its suspend detail. WI-822's measurement is untouched, and the reason is the distinction the split makes: its 29 stdlib tests are chains that cannot be PINNED at these argument types (a `Value::Map` handle carries no element type) whose bodies never read the slot — "has a chain" and "needs it" differ there, and only the body answers the second. A tie answers both: the chain is pinned, a dictionary is constructible, and no rule picks one, so deferring to the read buys nothing. MEASURED on the pin's own program, the pre-fix failure was `Internal(DeferToRequirement: … __req_desc not bound …)` — a **missing**-dictionary report from a frame the author never wrote, naming neither the tie nor the candidates.
-
-**And the tie LOADS CLEAN, which is why the runtime is its owner** — measured, and the first explanation for it was wrong, so the right one is worth stating. It is **not** the concrete-provider exemption: the pin was re-driven with its rival made ABSTRACT (so the exemption cannot apply) and the program still loads. The actual blind spot is that a **self-provider is a candidate of neither kind**. WI-838's grouping (one group per `(spec, dispatch carrier)`, over all provider kinds) admits a candidate only as an instance FACT (`provision_binds_any_op` — a provision that binds an op) or as a WITNESS (`witness_dispatch_carrier`, which returns `None` when the provider IS the carrier). The ordinary `sort Leaf { fact Desc[T = Leaf]; operation describe … }` is neither, so a `(Desc, Leaf)` group can never reach two while one half of the pair is `Leaf` itself — whatever the other half is. `Leaf` + a concrete `Rival` forms no group at all; `Leaf` + an abstract `Rival` forms a group of **one**. Both spellings are pinned, both load, both tie at dispatch (`the_tie_is_invisible_to_load_coherence_either_way`).
-
-So the general mechanism WI-838 built is **one candidate kind short**, and that — not the exemption — is what a load-time fix would have to add (a self-provider candidate: a provision of an op-bearing spec whose carrier is the provider and whose ops are its own members). Recorded, not filed: it is a design increment on 058's own coherence grouping, and the runtime verdict is needed either way, since phase 3's coexistence lets a tie reach dispatch **by design**.
-
----
-
-## 5. Worked examples
-
-### 5.1 Two monoids on one carrier (§1's program)
-
-The two witnesses coexist (§4.1 tier 3 no longer refuses them at load); every site that says which resolves by tier 1. The unselected `Use.go` becomes an error naming `AddM`/`MulM` and the syntax that picks one — the diagnostic moves from the *declarations* to the *one call that is actually ambiguous*. Adding `[Monoid = AddM]` to it makes the program load and compute `add`.
-
-**Measured as shipped** (`wi843_coexisting_instances_test`): the declarations alone load clean, and a `fold` over `Monoid` computes **9** with `[Monoid = AddM]` beside **24** with `[Monoid = MulM]`, in one program over one carrier. One caveat on the spelling: §4.2 writes `fold` with an **op-scoped** `requires`, which this phase cannot use — an op-scoped slot has no dictionary channel, so WI-841 refuses a selection there whenever two or more providers answer, which is precisely the situation 3b creates. The committed fixture puts the `requires` on the enclosing **sort**, the route that can carry a pin. Closing the other one is WI-822 leg 1, not this phase.
-
-### 5.2 The committed fixture
-
-`two_describers_for_one_carrier_rejected_globally` flips, with one selection written per site:
-
-```anthill
-LoudOps.run:     QuietOps.invoke(lambda w -> Desc.describe[Desc = LoudDesc](w), z)
-QuietOps.invoke: add(fn(z), mul(10, Desc.describe[Desc = QuietDesc](z)))
-```
-
-Each selection is a **per-occurrence static constant**, emitted at classification (§4.5 step 0) — the lambda's pin is decided where its body is *written*, and capture plays no part in it (`reduce_lambda`'s requirement snapshot, `eval/eval.rs:761`, matters for *unpinned* forwarding, not for a pinned call). So the quiet caller invoking the lambda still gets 5: **5 + 10·7 = 75**. **55 or 77 is a failure, not a variant** — either betrays a pin ignored or cross-wired. Note what the flip changes in the fixture's meaning: with both sites pinned it no longer measures scope-capture at all — it measures that a pin survives a closure hop, which is the right acceptance for *this* proposal (implicit scoped selection being deferred, §8). The test's own doc already records 75 as the WI-648 acceptance value.
-
-**Two chores that go with the flip, or the tree keeps a false claim.** (a) The fixture's doc comment currently reads *"lambda keeps its creation-scope provider (5), the quiet hop uses its own (7)"* — a scope-capture reading the pinned program no longer demonstrates. Rewrite it to the pin-survival reading when the program is edited; the value 75 is unchanged, which is exactly why a stale comment here would go unnoticed. (b) **Keep an UNPINNED twin as the tier-3 control** — the current test's own name (`two_describers_for_one_carrier_rejected_globally`) is that control, and it must keep failing to load, at the *use site* rather than the declarations. Editing the only fixture into the pinned form would leave tier 3's refusal untested.
-
-**Both done (WI-843).** The pinned form is a NEW test (`two_describers_pinned_per_site_survive_the_closure_hop`, **75**) and the old one keeps the program unpinned under the honest name `two_describers_unpinned_are_refused_at_the_use_site`, asserting the tier-3 diagnostic *and* the absence of the declaration-level *"keep exactly one"* — otherwise "the refusal moved" and "the refusal doubled" would read alike. The 75 was checked for discrimination rather than assumed: flipping the **lambda**'s pin to `QuietDesc` gives **77** and flipping the **quiet site**'s to a loud witness gives **55**, so each leg is attributable to the bracket written at it.
-
-### 5.3 `SortedSet` — the driver, threaded end to end
-
-**Declare.** The ordering is *not* incidental to a sorted set, so its slot is **named** (§4.7) and thereby becomes a type parameter:
-
-```anthill
-sort SortedSet
-  sort T = ?
-  requires O: Ord[T]                                            -- NAMED ⇒ a parameter of the type
-
-  operation empty()                                    -> SortedSet[T = T, O = O]
-  operation insert(s: SortedSet[T = T, O = O], x: T)   -> SortedSet[T = T, O = O]
-  operation union(a: SortedSet[T = T, O = O],
-                  b: SortedSet[T = T, O = O])          -> SortedSet[T = T, O = O]
-  operation toList(s: SortedSet[T = T, O = O])         -> List[T = T]
+sort ListOrd
+  sort E = ?
+  requires OE: Ordered[T = E]            -- the condition, AND the evidence the body uses.
+                                         -- NAMED (§3.4): the element ordering is not
+                                         -- incidental — selectable (`ListOrd[OE = …]`,
+                                         -- §3.3) and part of ListOrd's identity
+  provides PartialOrd[T = List[T = E]]   -- the bundle (below): List has no order of its own
+  provides Ordered[T = List[T = E]]
+  operation compare(…) = … Ordered.compare(headA, headB) …
 end
-
-sort ByLength      fact Ord[T = String]  operation compare(a: String, b: String) -> Int64 = … end
-sort Alphabetical  fact Ord[T = String]  operation compare(a: String, b: String) -> Int64 = … end
 ```
 
-Two providers of `Ord[String]` now **coexist** — §4.1 tier 3 no longer refuses them at load; only an *unselected* dispatch is an error.
+The chain does double duty: it *conditions* the provision and it *supplies the evidence* the provider's bodies dispatch through. A direct per-clause spelling — `provides Ordered[T = List[T = E]] :- Ordered[T = E]` — is the same clause with conditions scoped to one provision instead of the whole sort; a candidate surface refinement, recorded, not required, and the conditional leg of §4's provides-consolidation. Two boundaries: **a condition admits, it never ranks** — it shrinks where a provision applies, and provisions still applicable after their conditions resolve by the ladder (§3.2), which is the line between this and the predicate-directed selection §7 rejects; and a provider's chain does **not** discharge the *spec's* own requirements (`Eq[List[E]]` must come from `List`'s provision, not from the witness's chain) — lifting that is a separate, deferred increment.
 
-**Select**, at the construction site — the ordinary §4.2 bracket path, no new *grammar* — but note it rides rule (1)'s **sort-level seeding leg** (§4.2, §9 phase 2): today this exact spelling parses and binds nothing (§2.2 rows 5–6):
+*(proposed from here)* `Ordered`'s laws derive the inherited comparison surface from `compare`, so a lone alternative `Ordered` witness contradicts the `PartialOrd` it inherits from the carrier — for *any* order but the carrier's own. A lawful alternative therefore **bundles** its own `PartialOrd` + `Ordered`, mutually consistent, anchored to the one shared `Eq` (which stays outside the bundle — §3.7). This generalizes: in a spec tower, an alternative is a consistent bundle of floors, never one floor over shared lower floors. Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
 
-```anthill
-let a = SortedSet.empty[T = String, O = ByLength]()
-let b = SortedSet.empty[T = String, O = Alphabetical]()
-```
+### 3.9 Dictionaries are PASSED at run time — instances are never CHOSEN at run time
 
-**Thread** — nothing new (§4.6). `insert`'s body calls `Ord.compare(x, y)`; that resolves through slot `O`, which the caller filled with `construct_requirement(ByLength, [])`. `a` and `b` carry different dictionaries at run time because they were constructed with different ones.
+When a body dispatches through an abstract slot — `report[T, O](s: SortedSet[T = T, O = O])` — the provider arrives as a **dictionary in the frame**, passed like an argument: two calls may carry two different orders through one body. That is ordinary dictionary passing, the delivered threading.
 
-**And the merge hazard is caught statically — by ordinary parameter agreement, once that agreement is actually checked:**
+What does not exist is an operation that *constructs or selects* a dictionary from runtime data. Every dictionary in flight was built at a site where the typer resolved the witness (by the §3.2 ladder); run time only copies it along. "Choosing at run time" therefore always means *which statically-resolved branch executed*:
 
 ```anthill
-SortedSet.union(a, b)
--- expected SortedSet[T = String, O = ByLength], got SortedSet[T = String, O = Alphabetical]
-```
-
-**This is the one place the proposal promised measured behaviour and did not have it.** An earlier draft cited §4.7's third probe as evidence that the check runs today; that probe is in **return** position. Driven in *argument* position (§4.7's second table), the identical shape — `union(a: Box[T = T, O = O], b: Box[T = T, O = O])` applied to a `Box[… O = Q]` and a `Box[… O = R]` — **loads clean**: a param type containing a type variable never re-checks a later argument against the bound variable (**WI-836**).
-
-So `union` still needs no special rule — but it needs WI-836, and until then §5.3's headline safety property does not exist: a `union` of a `ByLength` set and an `Alphabetical` one type-checks and silently merges. **Phase 4 is blocked on WI-836**, and the acceptance for it is not "no new rule was needed" but "the WI-836 fix makes this exact program a type error".
-
-**Omitting the binding keeps existing code working.** `SortedSet.empty[T = Int64]()` leaves `O` to inference, which resolves it to the unique `Ord[Int64]` provider by tier 2 — the same program you write today, meaning the same thing.
-
-No *expressiveness* gap remains here (the enforcement gap above is WI-836): a comparator cannot be chosen at run time at all, and the abstract case is ordinary polymorphism — §7.1.
-
----
-
-## 6. What this does not change: `Eq` / `Ord`, and `Map[K = Float]`
-
-§5.3 chooses a comparator for a container, so a reader will ask whether the same bracket can choose an `Eq` for `Map[K = Float]`. It cannot, and the two mechanisms are orthogonal:
-
-- The `PartialEq` / `Eq` / `PartialOrd` / `Ord` hierarchy is untouched. Explicit selection picks *among providers of a spec*; it does not change which spec a carrier provides, nor whether `Eq`'s reflexivity law is checked. `Float` provides `NonEq`, not `Eq` (`float.anthill:71`), and no bracket key alters that. And "untouched" is meant to be *enforced*, not incidental: the §4.9 hardening keeps two `Eq`-family providers per carrier a **load** error, because semantic-eq dispatch fires from unification, where no selection can be written. That enforcement **is** a mechanism as of **WI-837** (delivered 2026-07-29): the index build collects all three supply routes — the carrier's own member, an instance fact's `eq` binding, and a witness sort's member — and refuses a second distinct target with `AmbiguousEqDispatch`, naming each. It no longer rests on the spec-generic `AmbiguousWitness` refusal — which phase 3b has since deleted (WI-843), leaving `AmbiguousEqDispatch` to carry the claim — and it covers the WITNESS form, which never reached the index at all before (§4.9). **Its scope is narrower than the deleted refusal's, and the difference is measured:** it refuses two distinct `eq` *targets*, so a second provision supplying no `eq` at all (`sort CoinEqB provides PartialEq[T = Coin]`, no member, no binding) contributes no candidate and is admitted — that pair loads and equality answers by the one supplier there is, which is not the structural fallback §6 promises against. One dictionary, not two; the spec-generic refusal rejected it only incidentally, by counting *provisions*.
-- **`TotalFloat` remains the answer for `Map[K = Float]`.** A container's key requirement is embedded in the **sort** — `requires Eq[T = K]` (`map.anthill`), `requires Eq[T]` (`set.anthill`) — a slot that is **anonymous**, so by §4.7 it is a constraint and stays out of `Map`'s type identity, which is why no key can address it. Naming it would be a different (and wrong) design: two `Map[K = Int64]`s must not differ by which `Eq` satisfied them. The newtype changes the *type*; selection changes the *witness*.
-- **That embedded requirement IS enforced as of WI-835** (delivered 2026-07-29), closing WI-644's one outstanding acceptance item — *"`Map[K=Float]` is a load error, `Map[K=TotalFloat]` loads"*. Until then it was unenforced and `Map[K = Float]` loaded clean (measured 2026-07-28, the reading this §6 was written against). WI-644 had shipped the check scoped to ENTITY FIELD types only, so its own acceptance program — an operation signature — still loaded; WI-835 moved the site collection to the type *lowerings*, so the scope rides on the producers rather than on a list — every position where a type is written (entity field, operation parameter and return, `const`, sort alias, body `let` annotation, typed lambda binder, a binding value inside a `requires`/`provides` clause, and any of those nested inside a tuple, an arrow, or another instantiation) is covered, each measured. Two gaps remain and are documented at the check: a *transitive* `Eq` requirement is not chased, and a key whose unlawfulness is in its own argument (`Map[K = List[T = Float]]`, `Map[K = (a: Float)]`) is not caught — the key's own provisions are what is read, and neither `List` nor a tuple functor provides `NonEq`. The check is NEGATIVE by construction — it fires on a binding whose carrier provides `NonEq`, never on "does not provide `Eq`", which WI-616's universal structural default would make vacuous and WI-664's asymmetric derivation would make over-rejecting. This proposal neither caused nor closed that gap; the pointer is kept so §6 reads against the current state. (WI-835 also repairs WI-658's stale "sibling WI-649" pointer — WI-649 is the reify cyclic-σ ticket.)
-
----
-
-## 7. Consequences, and what is genuinely left open
-
-### 7.1 There is **no** runtime-chosen order — settled, not deferred
-
-An earlier draft of this section deferred "a comparator chosen at run time" to an existential. That was wrong, and the reason is worth stating, because it is what makes §4.7 safe rather than merely convenient.
-
-**An order cannot be conjured at run time.** Every witness is a *sort*, declared in the program text. At run time a dictionary can only be copied from one that was already chosen during typing — there is no operation that builds a new witness. So "runtime choice" only ever means *which statically-pinned branch executed*, and that is expressible with ordinary universal polymorphism, which already works:
-
-```anthill
-operation report[T, O](s: SortedSet[T = T, O = O]) -> String   -- O abstract: usable, unnameable
-
 if cfg then report(SortedSet.empty[T = String, O = ByLength]())
        else report(SortedSet.empty[T = String, O = Alphabetical]())
 ```
 
-`report` calls `Ord.compare` through slot `O` and can never *name* which order it received. That is precisely the abstract case — and the branch lives at the **call**, where each side is statically pinned, not in the type. Nothing is unwritable.
+Each branch's dictionary is static; only the branch taken is runtime. Two consequences: a witness is not a value (`let o = if cfg then ByLength else …` is unwritable — sorts are not terms), and a first-class dictionary *value*, if ever added, may fill an anonymous slot — a constraint records nothing in the type — but never a named one: a named slot is a type parameter, and a value cannot determine a type.
 
-**Why a first-class `Dictionary[S]` value cannot erase it either.** WI-577's own design already puts the witness on the static side: the runtime slot carries only `(functor, sub-handles)`, and *"the witnessed spec is not recoverable from the value … the spec lives in the **type** (`S`), which the typer already has"* (`design/requirement-dictionaries.md` §2.5); the value face is deliberately **accessor-only** (§2.3). A dict *value* may therefore fill an **anonymous** requires slot — a constraint records nothing in the type, so nothing is erased. It cannot fill a **named** one, and not by prohibition: a named slot **is a type parameter** (§4.7), and a value does not determine a type. The two channels do not mix, by construction rather than by rule.
+## 4. Syntax
 
-**The one residual existential** — a heterogeneous collection holding sets of *differing* orders, `List[SortedSet[T = String, O = ?]]` — is not a `SortedSet` question and not this proposal's to answer. It is the general existential the design already names elsewhere: *"bare `Dictionary` (S unknown) **is** the existential form"* (§2.5). If Anthill wants it, it wants it uniformly (WI-402, `design/path-dependent-types.md`); this proposal neither needs nor forecloses it.
+New grammar — **one production**: the named requirement binder, at sort level and operation level:
 
-### 7.2 Codegen
+```anthill
+requires O: Ordered[T]                          -- sort-level: a named slot, a type parameter
 
-The C++ backend rejects `lambda_within` today for want of a static record of which dictionaries a closure needs (WI-817's note). Explicit selection makes that record *more* static, not less — the selected witness is a load-time constant — so this is expected to help. Not verified; verify before claiming it.
+operation biFold[T](xs: List[T]) -> T
+  requires plus: Monoid[T], times: Monoid[T]    -- op-level: two slots of one spec, one name each
+```
 
----
+A named slot becomes an ordinary type parameter of its declarer — which is exactly what the bracket then binds (`biFold[plus = AddM, times = MulM](xs)`).
 
-## 8. Rejected alternatives
+Two notes on the surface this rides on. Inside a sort, `provides X[…]` and `fact X[…]` are today **one construct** — both record the same provision (measured end to end). *(Proposed)* **the `fact` spelling of provisions retires**: `provides` becomes the one spelling, and `fact` returns to meaning only a plain data assertion (`WorkItem`, `Covariant`, `DefaultProvider`) — removing the language's one construct whose meaning depended on its container. The retirement converges with §3.8's per-clause surface (`provides X[…] :- goals` is the conditional leg of the same consolidation) and halves the sugar: `default provides X[…]` — one leading modifier, the `internal` pattern, marking the enclosing sort as that instance's default (sugar for the §3.6 row) — needs no `default fact` twin. Namespace-level op-binding instance facts (§3.1) sit outside sorts and are untouched. Migration is mechanical, warned at the loader's own lowering site.
 
-- **Scoped implicit selection first** (`spec-instance-dispatch.md` rule B — scope distance + import-edge constant *K*). Rejected as the *first* increment, not on principle: it needs *K* and a tie policy settled (the design doc's own reason for staying at rule C), it is implicit — so an import silently changes results — and it still cannot express the deciding argument (§3). (Provenance is *not* the blocker: a witness's declaring namespace is derivable from its qualified `sort_ref`, and `spec-instance-dispatch.md:581` counts the record as sufficient for B — §2.1.)
-- **Last-wins** (`spec-instance-dispatch.md` option A). Order-dependent across module loads; silently picks. Contradicts the repository's "loud error over silent skip" principle.
-- **Keep the global rule, wrap instead** (the newtype-per-order status quo). Already available, and library/004 uses it deliberately for `TotalFloat`. It does not scale to the algebra case: a newtype per monoid means `Int64`'s arithmetic must be re-exported per wrapper.
-- **A new keyword** (`using` / `given` block). More surface for the same effect; the bracket channel already parses, already lowers, and already carries type arguments through the identical frame slot (§2.2, §2.3).
+The modifier family generalizes by one principle: **a modifier attaches where its relation's key lives.** `default` is keyed per `(spec, carrier)` derived from a provision, so it rides `provides`; `Coherent` is keyed per **spec**, so its sugar rides the spec's own declaration — `coherent sort PartialEq … end`, desugaring to the `Coherent(spec)` row (the `enum sort` precedent; arrives with §3.6's deferred re-homing). On a *provision*, `coherent` is **refused**: a provision must not foreclose coexistence for a spec and carrier it does not own — the mirror image of the no-displacement rule.
 
----
+Everything else rides existing surface: selection uses the 042 bracket channel (already parsed and lowered — new *meaning*, no new grammar); defaults are ordinary facts of a reflect entity (§3.6, no grammar).
 
-## 9. Build order
+## 5. Examples
 
-Filed 2026-07-28 as the tagged sequence **`modinst`** (`anthill-todo list --tag modinst`), one ticket per phase, driven one per session; WI-648 stays open as the umbrella and depends on all ten. Phase 0 = **WI-839**, 1 = **WI-840**, 2 = **WI-841**, 3a = **WI-842**, 3b = **WI-843**, 4 = **WI-844**, 5 = **WI-845**, beside the three blockers **WI-836 / WI-837 / WI-838**.
+```anthill
+-- two monoids on one carrier, both in one body
+fold[Monoid = AddM]([2, 3, 4])    --  9
+fold[Monoid = MulM]([2, 3, 4])    -- 24
 
-| phase | content | acceptance |
-|---|---|---|
-| **0 — prerequisite** | close **every** §2.2 silent drop, at all three producers: an unmatched bracket key at a classified call is a loud error even when the callee declares no type params (`typing.rs:12925`); a rule-/term-body bracket, today parsed then discarded (`load.rs:9679`/`:9711`, `:7574`/`:8155`), is a **loud refusal** (§4.2 — selection in rule bodies is deferred, not ignored) | `plain[Bogus = Int64](n)` fails to load (the existing `NoSuchTypeParam` message is reused); a rule body containing `f[T = X](…)` fails to load with a not-supported-here diagnostic. **Control — the refusal must key on the ParseAux `type_args` channel, not on "a bracket in a rule body":** a rule-body *type application* still loads and stays checked (`:- Modifiable[T = ?t]`, `is_modifiable(Cell[V = Int64])`), which is WI-710's path (`load.rs:9694-9709`), a different producer |
-| **1 — declare** | grammar + loader for the named binder `requires name: Spec[…]`, on an **operation** and on a **sort** (§4.7); the §4.2 shadowing guard | a two-slot op loads; a named sort-level slot is addressable in type position (`Box[E = …, O = …]`); a colliding type-param name is refused **at the declaration** |
-| **2 — select** — **DELIVERED 2026-07-29 (WI-841)** | rule (1)'s **sort-level seeding leg** (a call bracket binds the enclosing sort's type params — the §2.2 measured-inert rung, one more WI-708-style key) and its two-scope collision guard (§4.2, inherited from phase 1); bracket key → requirement slot (§4.2 order, incl. the direct spec-op case); witness validation (§4.4); `resolve` step 0 (§4.5) | `Box.mk[T = String](5)` fails at the **argument**, not the return (§2.2 row 5 flipped) — measured. **The pin turned out observable IN A VALUE, which this row did not expect**: two providers whose *dispatch carriers* differ coexist today (a ground `fact Monoid[T = Int64]` beside a parametric `fact Monoid[T = E]`) and both answer the concrete goal, so one program computes 5 or 99 by its bracket key alone, with the bracket-less control measuring what `pick_most_specific` picks. The `[Monoid = NotAProvider]` / wrong-spec refusals hold too, and a **third** was needed: a witness that provides the spec at OTHER bindings, which had a different silent failure on each of the three routes a slot can be served by. A **qualified** key, a short name ambiguous across two anonymous slots, and an op type param colliding with its enclosing sort's are each a **loud error**. **`AddM` beside `MulM` on ONE carrier still belongs to 3b** — that pair does not load until tier 3 moves |
-| **3a — harden** ✅ **DELIVERED (WI-842, 2026-07-29)** | §4.9: every *selecting* provider read goes loud on the second candidate — the sem-eq index build at load (WI-837); the value-directed chain at the read; `witness_provision` / `witness_op_for_carrier` **deleted**, their one consumer now reading every candidate through `spec_op_suppliers_for_carrier` (the per-carrier dual of WI-837's collector, sharing its `provision_supplier` classification); `provider_spec_view_bindings` merges one application's provisions and its conflict refuses **at load** — §4.9 records why that leg moved, and what the stdlib's `Console provides Effect` ×3 forced | a two-`PartialEq`-provider program is a load error **raised by the index build** — assert the *diagnostic identity*, not merely that the load fails: `AmbiguousWitness` already refuses that program today, so a failure-only assertion passes with nothing implemented (WI-837 asserts `AmbiguousEqDispatch` and names both providers; the **witness**-supplied pair is refused by that same check); a two-provider rule-body dispatch is a **named diagnostic**, never first-match; existence guards (`sort_provides`) still fire |
-| **3b — coherence** ✅ **DELIVERED (WI-843, 2026-07-29)** | `LoadError::AmbiguousWitness` **deleted**; the group loop now gates on `Provider::is_nameable` — the §4.1 rule stated as itself, so a new provider kind must answer it — and the refusal moves to the call: an `InstanceTie` (spec + candidate SYMBOLS, stamped at the level that tied) rides `DispatchOutcome::Ambiguous` → `TypeError::DispatchAmbiguous` → `LoadError::UnselectedInstance`, rendered with a typed `TieRepair`. `AmbiguousInstanceFact` / `MixedProviderKinds` stay | met — and three boundaries the row did not anticipate, each driven and now pinned: a CONCRETE-provider tie has no bracket; a SUB-GOAL tie has none either *and was being mis-attributed to the outer spec*; a SPECIFICITY-ordered pair never reaches tier 3 at all and dispatches silently (a widening, recorded not fixed). See §4.1 |
-| **4 — `SortedSet`** | the stdlib driver on phases 1–3 (§5.3). **Blocked on WI-836** — without argument-position agreement the driver's safety property does not exist | two orderings coexist; `union` of a `ByLength` set and an `Alphabetical` one is a **type** error **(this is WI-836's acceptance, not a free consequence of the existing checker — measured, that program loads clean today)**; omitting `O` still resolves to the unique provider |
-| **5 — spec** | amend `kernel-language.md` §Instance coherence (§10); document §5.4 named slots + the §4.7 named-vs-anonymous rule | spec and implementation agree, which is what §3 says they do not today |
-| **deferred** | named instance facts (§4.3); implicit scoped selection (§8); the general existential (§7.1 — *not* a `SortedSet` blocker) | — |
+-- the opposite pole (§3.7): equality dispatches from UNIFICATION — `eq(?a, ?b)` in a
+-- rule body has no call site where a bracket could ever be written — so a second
+-- supplier is refused at LOAD, naming both. The check is delivered (keyed to the Eq
+-- family); declaring the family as data rows is the deferred §3.6 re-homing:
+fact Coherent(spec: PartialEq)
+sort Coin       provides PartialEq[T = Coin]  operation eq(a: Coin, b: Coin) -> Bool = …  end
+sort CoinEqAlt  provides PartialEq[T = Coin]  operation eq(a: Coin, b: Coin) -> Bool = …  end
+-- load error: two `eq` suppliers for `Coin` — coexistence would leave rule matching
+-- with two answers and no way to say which, so it is refused where it is declared
 
-Phases 0–3b are one WI-648 implementation arc; each is independently green — **all delivered as of 2026-07-29** (WI-839 / WI-840 / WI-841 / WI-842 / WI-843). What is left is phase 4 (blocked on WI-836) and phase 5 (the `kernel-language.md` amendment, §10). Phase 4 is the driver landing and is what makes phases 1–3b worth having. scaland mirrors phases 1–2 (it has no operation loading — the divergence is pre-existing).
+-- an ordered container: choose at construction, thread by type
+let a = SortedSet.empty[T = String, O = ByLength]()
+SortedSet.insert(a, "zz")          -- no bracket: a's TYPE says which
+SortedSet.union(a, b)              -- b Alphabetical ⇒ TYPE ERROR naming both orderings
 
-**Three tickets gate the arc, all filed 2026-07-28 and all pre-existing** (none is caused by this proposal; each is a check this proposal's design *assumed* was already running): **WI-836** (argument-position type-variable agreement) gates phase 4; **WI-837** (a witness-supplied `eq` never keys the sem-eq index; **delivered 2026-07-29**) gates phase 3a; **WI-838** (a mixed instance-fact + witness pair for one `(spec, carrier)` loaded clean; **delivered 2026-07-29**) gates 3b's nameability rule. The common shape is worth naming, because it is how this proposal went wrong twice: **a design that MOVES an error must enumerate the consumers of the thing it moves, and check each still has both a site to complain from and a check that actually fires there.** §4.9 did that for the provider readers; §5.3 and §6 assumed it for the type checker and the eq index, and both assumptions were false when driven.
+-- a conditional provision (§3.8): lists are ordered wherever their elements are
+sort ListOrd
+  sort E = ?
+  requires OE: Ordered[T = E]              -- named: the element ordering is selectable
+  provides PartialOrd[T = List[T = E]]
+  default provides Ordered[T = List[T = E]]   -- sugar (§3.6/§4): = a DefaultProvider row.
+                                           -- CONDITIONAL for free — holds where Ordered[E]
+                                           -- does; matters once a rival (say ShortLex)
+                                           -- coexists: silence takes ListOrd, rival opt-in
+  operation compare(a: List[T = E], b: List[T = E]) -> Int64 = …   -- lexicographic over OE
+end
+let s  = SortedSet.empty[T = List[T = Int64], O = ListOrd]()              -- OE inferred (§3.2)
+let s2 = SortedSet.empty[T = List[T = P],    O = ListOrd[OE = LexFst]]()  -- OE selected (§3.3)
+-- status: loads and types by delivered legs; RUNS only after the dictionary-chain
+-- settlement (implementation notes §7), which gates all of §3.8
 
-**Note on phase 1's cost.** The binder is the only grammar in the proposal, and it is what buys §4.7 — so it is not optional plumbing: without a *name*, a witness cannot enter a type, and `SortedSet`'s merge hazard has no static answer.
+-- linking libraries you do NOT own (proposed, §3.6) — in lib_b, shipped UNMARKED:
+sort MoneyByAmount                             -- glue: a witness beside a foreign carrier
+  provides PartialOrd[T = lib_a.Money]         -- the §3.8 bundle
+  provides Ordered[T = lib_a.Money]
+  operation compare(a: lib_a.Money, b: lib_a.Money) -> Int64 = …
+end
+-- …and in the APPLICATION, the default declared by REFERENCE — the spelling for a
+-- provider you cannot edit (the inline `default` sugar is lib_b's to write, not yours):
+fact DefaultProvider(spec: Ordered, provider: lib_b.MoneyByAmount)
+```
 
----
+## 6. What does not change
 
-## 10. Spec amendment (`kernel-language.md` §Instance coherence)
+The `Eq`/`Ordered` hierarchy and its laws (§3.7 makes "untouched" enforced); `TotalFloat` for `Map[K = Float]` — a container's key requirement is anonymous, hence a constraint, hence outside the type's identity: the newtype changes the *type*, selection changes the *witness*.
 
-Replace the per-`import` promise with the ladder actually implemented. Proposed text:
+## 7. Rejected alternatives
 
-> **Instance coherence.** A spec has at most one *default* provider for a given carrier. A second provider is permitted — but only when **every** candidate can be named, and every dispatch against that carrier must then say **which**, by binding the requirement slot at the call: `fold[Monoid = AddM](xs)`. An unselected dispatch with two candidates is an error naming both. A sort's *embedded* requirements are handled by whether the slot is **named**: a **named** slot is a type parameter, so the chosen provider is part of the sort's type identity and every value of that type carries it (`SortedSet[T = String, O = ByLength]`); an **anonymous** slot is a constraint — it is solved, not recorded, so it fixes nothing about the type and is re-answered at each dispatch, which is why two `Map[K = Int64]`s cannot differ by which `Eq` satisfied them. Selection is therefore **explicit and per-call**, not per-scope: two routes to `A[X]` agree unless a call site deliberately says otherwise. (Implicit scope-directed selection — a nearer provider silently winning — is deliberately **not** the rule; see proposal 058 §3.)
+- **Per-`import` / scoped-implicit selection** — cannot express two providers in one body; an import silently changes results.
+- **Numeric priorities** — a global scale nobody owns; every surveyed language ranks by a partial order and errors on incomparable pairs.
+- **Scope-distance ranking** of provisions — couples supply to caller imports. Its sound residues are in the design: self-provision inference and provider-locality (§3.6, §3.8).
+- **Predicate-directed selection AMONG applicable candidates** — ranking by arbitrary computation makes coherence undecidable at load, and two libraries' predicates claiming one carrier re-create the unowned total order. Not to be confused with the **conditional provision** (§3.8), which is embraced: a condition *admits* a provision into the candidate set; nothing ranks within it.
+- **Keyword surfaces / spec-level dispatch modes** — selectable-vs-default is per-carrier state, not a spec property (§3.6); relations carry it with zero grammar.
+- **Last-wins** — silent and order-dependent. **Newtype-per-instance** as the general answer — kept for `TotalFloat`; does not scale to algebra (re-exporting arithmetic per wrapper). **A new keyword** (`using`/`given`) — the bracket channel already exists.
 
-The retained-from-today sentence *"resolved in that sort's scope and captured when its instance is constructed, so `Spec[carrier]` behaves consistently within any one instance"* is **deliberately dropped**, not reworded: under §4.7 an anonymous slot records nothing, and every embedded requirement in the stdlib today is anonymous (`map.anthill`, `set.anthill`). Keeping it would repeat in the replacement exactly what §3 charges the current text with — promising a capture the implementation does not perform.
+## 8. Spec amendment (`kernel-language.md` §Instance coherence)
 
-The sentence at `:2109` ("A consumer chooses which instantiation to use via `import`") is likewise replaced: an import governs *visibility*, and among visible providers the call selects.
+Replace the per-`import` promise with:
+
+> **Instance coherence.** A spec has at most one *default* provider for a given carrier — the carrier's own provision when one exists, or the provider a `DefaultProvider` fact names; a second default for one carrier is a load error naming both declarations. A second provider is permitted — but only when **every** candidate can be named, and every dispatch against that carrier must then say **which**, by binding the requirement slot at the call: `fold[Monoid = AddM](xs)`. An unselected dispatch with two or more candidates takes the default when exactly one of the tied most-specific candidates is it, and is an error naming every candidate otherwise. A sort's *embedded* requirements are handled by whether the slot is **named**: a **named** slot is a type parameter, so the chosen provider is part of the sort's type identity and every value of that type carries it (`SortedSet[T = String, O = ByLength]`); an **anonymous** slot is a constraint — it is solved, not recorded, so it fixes nothing about the type and is re-answered at each dispatch, which is why two `Map[K = Int64]`s cannot differ by which `Eq` satisfied them. Selection is therefore **explicit and per-call**, not per-scope: two routes to `A[X]` agree unless a call site deliberately says otherwise. (Implicit scope-directed selection — a nearer provider silently winning — is deliberately **not** the rule.)
+
+The sentence *"resolved in that sort's scope and captured when its instance is constructed…"* is dropped, not reworded — an anonymous slot records nothing. *"A consumer chooses which instantiation to use via `import`"* is replaced: an import governs **visibility**; among visible providers the call selects.
