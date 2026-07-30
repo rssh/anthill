@@ -1,0 +1,8 @@
+-- WI-754: three independent query patterns for `--query-file` — a resolvable one,
+-- an UNKNOWN functor, then another resolvable one. The middle unknown must not
+-- abort the run: each pattern is independent, so the THIRD still runs, and the
+-- process exits non-zero because one pattern named no known functor. Queried
+-- against props.anthill (base/holds are defined there; nonesuch is not).
+fact base(1)
+fact nonesuch(1)
+fact holds

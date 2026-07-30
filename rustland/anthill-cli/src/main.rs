@@ -1361,6 +1361,13 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
             let queries = collect_queries(args, &mut kb)?;
             let multi = queries.len() > 1;
 
+            // WI-754: an unknown-functor query is reported as it is met but does
+            // NOT abort the run — a `--query-file` with several patterns must
+            // attempt every one, or an unknown pattern would silently drop the
+            // queries after it. The failure is banked here and surfaced as a
+            // non-zero exit once all have run.
+            let mut any_unknown = false;
+
             for (label, query_terms) in &queries {
                 if multi {
                     println!("--- query: {} ---", label);
@@ -1375,8 +1382,9 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // functor, that is an unresolved name, not an empty
                         // browse. Checked AFTER browsing so a defined functor
                         // with no matching clause still reports `0 result(s)`.
-                        if results.is_empty() {
-                            refuse_if_unknown_functor(&kb, qt)?;
+                        if results.is_empty() && report_if_unknown_functor(&kb, qt) {
+                            any_unknown = true;
+                            continue;
                         }
                         print_program_clause_match_results(&kb, &results, args.max_results);
                     } else {
@@ -1413,8 +1421,11 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // sits in no functor table yet answers `true` — is never
                         // refused, and a known functor with no matching row still
                         // prints `no solutions`.
-                        if solutions.is_empty() && !stats.truncated {
-                            refuse_if_unknown_functor(&kb, qt)?;
+                        if solutions.is_empty() && !stats.truncated
+                            && report_if_unknown_functor(&kb, qt)
+                        {
+                            any_unknown = true;
+                            continue;
                         }
                         print_solutions(&kb, &solutions, qt, cap, stats.truncated);
                     }
@@ -1423,6 +1434,11 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 if multi {
                     println!();
                 }
+            }
+
+            // WI-754: every query ran; fail now if any named an unknown functor.
+            if any_unknown {
+                return Err(1);
             }
         }
     }
@@ -1600,15 +1616,20 @@ fn collect_queries(
     }
 }
 
-/// WI-754: a query that produced NO answer, whose head names a concrete functor
-/// the KB does not resolve, is refused loudly instead of printing an empty answer
-/// — otherwise `no solutions` reads as "no such fact" when the truth is "that name
+/// WI-754: report — to stderr — a query that produced NO answer whose head names
+/// a concrete functor the KB does not resolve, returning `true` when it did.
+/// Otherwise `no solutions` reads as "no such fact" when the truth is "that name
 /// could not resolve". Called AFTER the query resolved/browsed to empty, never
 /// before: resolving first lets an arity-0 proposition (reachable only through a
 /// rule body, so in no functor table) answer normally when it is TRUE, and keeps a
 /// KNOWN functor with no matching row at `no solutions`. A non-functor head (`?x`,
-/// a literal) and a resolver scoping marker (`forall_in` / …) are never refused —
+/// a literal) and a resolver scoping marker (`forall_in` / …) are never reported —
 /// `undefined_query_functor` returns `None`.
+///
+/// Returns a bool rather than `Err` so the caller can attempt EVERY query in a
+/// `--query-file` before failing: one unknown pattern must not silently drop the
+/// queries after it (the caller records the failure and exits non-zero once all
+/// have run).
 ///
 /// The discrim-index check is the backstop for the one case
 /// `undefined_query_functor` cannot see: a TOP-LEVEL arity-0 rule head that
@@ -1618,16 +1639,13 @@ fn collect_queries(
 /// consults that tree, so such a proposition is recognised as known-and-false
 /// (`no solutions`), while a genuinely absent name (and a namespaced name queried
 /// out of scope, whose qualified head the bare query does not match) still heads
-/// no clause and is refused.
-fn refuse_if_unknown_functor(
-    kb: &KnowledgeBase,
-    qt: anthill_core::kb::term::TermId,
-) -> Result<(), i32> {
+/// no clause and is reported.
+fn report_if_unknown_functor(kb: &KnowledgeBase, qt: anthill_core::kb::term::TermId) -> bool {
     let Some(sym) = kb.undefined_query_functor(qt) else {
-        return Ok(());
+        return false;
     };
     if !kb.browse_program_clauses_matching(&qt).is_empty() {
-        return Ok(());
+        return false;
     }
     eprintln!(
         "error: '{}' in query pattern does not resolve to a known functor — no \
@@ -1635,7 +1653,7 @@ fn refuse_if_unknown_functor(
          bring its namespace into scope with -i.",
         kb.resolve_sym(sym)
     );
-    Err(1)
+    true
 }
 
 // ── Check command ───────────────────────────────────────────────────

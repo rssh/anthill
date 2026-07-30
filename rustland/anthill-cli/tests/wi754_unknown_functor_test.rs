@@ -201,3 +201,36 @@ fn an_unknown_functor_is_refused_under_match() {
     assert_eq!(ok.code, 0, "the browse itself must work; stderr:\n{}", ok.stderr);
     assert!(ok.has_stdout_line("1 result(s)"), "stdout:\n{}", ok.stdout);
 }
+
+// ── multi-query files ───────────────────────────────────────────────
+
+/// An unknown functor in the MIDDLE of a `--query-file` must not abort the run:
+/// each pattern is independent, so the pattern AFTER it still runs. The refusal
+/// is reported as it is met and the process exits non-zero once all have run —
+/// refusing by returning out of the loop would silently drop the tail, the very
+/// silent-skip this ticket is about.
+#[test]
+fn an_unknown_functor_mid_file_does_not_drop_later_queries() {
+    let kb = fixtures_dir("wi754").join("props.anthill");
+    let qf = fixtures_dir("wi754").join("multi-query.anthill");
+    let out = anthill(&[
+        "query", "-p", kb.to_str().unwrap(), "--query-file", qf.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.code, 1, "one unknown pattern must make the run fail; stderr:\n{}", out.stderr);
+    assert!(
+        out.has_diagnostic("error:", "'nonesuch'"),
+        "the unknown middle pattern must be reported; stderr:\n{}",
+        out.stderr
+    );
+    // THE pin: `holds` comes AFTER `nonesuch` in the file, so its presence proves
+    // the loop did not abort at the unknown one. (Its header prints only if the
+    // loop reached it; the old `?` return would have stopped at `nonesuch`.)
+    assert!(
+        out.stdout.contains("holds"),
+        "the query after the unknown one must still run; stdout:\n{}",
+        out.stdout
+    );
+    // And the one BEFORE it ran too — every pattern is attempted.
+    assert!(out.stdout.contains("base(1)"), "stdout:\n{}", out.stdout);
+}
