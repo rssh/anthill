@@ -2559,6 +2559,126 @@ impl KnowledgeBase {
         (!defined).then_some(sym)
     }
 
+    /// Every concrete functor in query pattern `tid` that the KB does not define
+    /// AND that sits in a position COMMITTED to its truth — the top-level goal, or
+    /// anywhere inside a `not` — so refusing it is correct (WI-863). Generalises
+    /// [`Self::undefined_query_functor`] (head only) to catch a nested undefined
+    /// predicate whose emptiness NAF would otherwise launder into a WRONG answer:
+    /// `not(P)` over an undefined `P` resolves the inner goal to a complete-empty
+    /// search, and NAF flips that to a confident `true`, asserting a negation for
+    /// a name that does not exist — directly, or a connective deep, `not(P | q)`.
+    ///
+    /// The walk enters negation scope through `not`, and once inside descends
+    /// through every goal connective — a nested `not`, the surface `or` / `and`,
+    /// `push_choice`, a bounded quantifier's body — collecting each undefined
+    /// functor. It deliberately does NOT descend into a BARE (un-negated)
+    /// disjunction or quantifier: an `or` / `push_choice` branch may fail while its
+    /// sibling succeeds, and a quantifier body over a possibly-empty collection may
+    /// never run, so an undefined name there does not corrupt the (correct) answer
+    /// and refusing it would reject a valid query (`push_choice(base(1), absent)`
+    /// answers `true`; `forall ?x in []: absent(?x)` is vacuously `true`). `not` is
+    /// the one goal context where an undefined functor NECESSARILY falsifies its
+    /// negand, so it is the one whose branches are always followed.
+    ///
+    /// A DATA slot — a constructor argument, `Widget(id: absent(42))` — is never a
+    /// goal and is never walked. Each candidate keeps the head-only exemptions
+    /// (scoping marker skipped, defined functor skipped) plus the per-node
+    /// discrimination-tree backstop (`browse_program_clauses_matching`, as the
+    /// CLI's `report_if_unknown_functor` does for the head): an arity-0
+    /// proposition reachable only through a rule body sits in no functor table yet
+    /// IS declared, so the tree clears it and resolve-first's known-and-false
+    /// results still answer. `forall_impl` (not a `query` surface form) and
+    /// `ho_apply` (applies a possibly-unbound predicate variable) are not walked.
+    pub fn undefined_query_goal_functors(&self, tid: TermId) -> SmallVec<[Symbol; 4]> {
+        let mut out = SmallVec::new();
+        // The top-level goal commits to its head (WI-754); `under_not` starts
+        // false and turns true the moment the walk steps through a `not`.
+        self.collect_undefined_goal_functors(tid, false, &mut out);
+        out
+    }
+
+    /// Recursive worker for [`Self::undefined_query_goal_functors`]. Every node the
+    /// walk reaches is in a committed position, so its head is always checked; the
+    /// gating is on DESCENT — a bare connective (`under_not` false and head not
+    /// `not`) is left to resolution and never entered. `out` dedups. Terminates
+    /// because terms are acyclic and every goal child is a strict subterm.
+    fn collect_undefined_goal_functors(
+        &self,
+        tid: TermId,
+        under_not: bool,
+        out: &mut SmallVec<[Symbol; 4]>,
+    ) {
+        if let Some(sym) = self.undefined_query_functor(tid) {
+            // Discrim backstop, per node — an arity-0 proposition reachable only
+            // through a rule body is in no functor table but matches the tree.
+            // Ordered cheap-check first: skip the tree walk for a name already
+            // recorded from a sibling branch.
+            if !out.contains(&sym) && self.browse_program_clauses_matching(&tid).is_empty() {
+                out.push(sym);
+            }
+        }
+        // Follow goal branches only inside a negation: `not` opens the scope, and
+        // once open every connective within it is followed. A bare disjunction /
+        // quantifier is left to resolution (see the type-level doc).
+        let entering_not = self.is_negation_functor(tid);
+        if under_not || entering_not {
+            for child in self.goal_arg_termids(tid) {
+                self.collect_undefined_goal_functors(child, true, out);
+            }
+        }
+    }
+
+    /// True iff `tid`'s head is the negation builtin `not` — the one goal
+    /// connective the walk always enters (WI-863).
+    fn is_negation_functor(&self, tid: TermId) -> bool {
+        matches!(self.head_functor(tid), Some(f) if self.builtin_of(f) == Some(BuiltinTag::Not))
+    }
+
+    /// The child `TermId`s of `tid` the resolver evaluates as GOALS — empty for a
+    /// plain predicate or data constructor (whose arguments are data, not goals).
+    /// The goal connectives: `not`'s negand, the two branches of `push_choice` and
+    /// of the surface `or` / `and`, and a bounded quantifier's `tuple(...)` body.
+    /// Read for DESCENT only; whether these are followed is gated on negation scope
+    /// by [`Self::collect_undefined_goal_functors`].
+    fn goal_arg_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
+        let Term::Fn { functor, pos_args, .. } = self.get_term(tid) else {
+            return SmallVec::new();
+        };
+        // Recognised by name: a bounded quantifier's body is a `tuple(...)` of
+        // goals at arg 2 (the loader always wraps it; `resolve::unwrap_tuple_args`
+        // reads the same shape), and `or` / `and` are the kernel disjunction /
+        // conjunction RULES (`a | b` lowers to `or(a, b)`) — not builtins, so
+        // `builtin_of` would miss them.
+        match self.resolve_sym(*functor) {
+            "forall_in" | "some_in" => {
+                return pos_args
+                    .get(2)
+                    .map(|&body| self.tuple_goal_termids(body))
+                    .unwrap_or_default();
+            }
+            "or" | "and" => return pos_args.iter().take(2).copied().collect(),
+            _ => {}
+        }
+        match self.builtin_of(*functor) {
+            Some(BuiltinTag::Not) => pos_args.iter().take(1).copied().collect(),
+            Some(BuiltinTag::PushChoice) => pos_args.iter().take(2).copied().collect(),
+            _ => SmallVec::new(),
+        }
+    }
+
+    /// Components of a bounded-quantifier body `tid`: the positional args of its
+    /// `tuple(...)` wrapper. A body that is not a tuple is treated as a single
+    /// goal (the loader wraps every body, so this is defensive) — returned as-is
+    /// rather than dropped, so no goal escapes the walk (loud over silent).
+    fn tuple_goal_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
+        match self.get_term(tid) {
+            Term::Fn { functor, pos_args, .. } if self.resolve_sym(*functor) == "tuple" => {
+                pos_args.iter().copied().collect()
+            }
+            _ => SmallVec::from_elem(tid, 1),
+        }
+    }
+
     /// True iff `qualified_name` names a reserved system-metadata functor — one
     /// the loader is permitted to head a metadata fact with. The reflect and
     /// realization declaration records live under `anthill.reflect.` /

@@ -1382,6 +1382,11 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // functor, that is an unresolved name, not an empty
                         // browse. Checked AFTER browsing so a defined functor
                         // with no matching clause still reports `0 result(s)`.
+                        // Head-only here, deliberately: a structural browse never
+                        // evaluates a body, so the nested-goal NAF-laundering the
+                        // resolve path's `undefined_query_goal_functors` guards
+                        // (WI-863) cannot arise — an unknown nested functor just
+                        // fails to match and reports `0 result(s)`, not a false answer.
                         if results.is_empty() && report_if_unknown_functor(&kb, qt) {
                             any_unknown = true;
                             continue;
@@ -1414,16 +1419,24 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // depth-truncated "no solutions" is UNDECIDED, not a
                         // refutation (WI-628).
                         let (solutions, stats) = kb.resolve_with_stats(&[qt], &config);
-                        // WI-754: a DEFINITE empty answer (not depth-truncated)
-                        // whose head names no known functor is an unresolved
-                        // name, not "no such fact". Resolved FIRST, so an arity-0
-                        // proposition reachable only through a rule body — which
-                        // sits in no functor table yet answers `true` — is never
-                        // refused, and a known functor with no matching row still
-                        // prints `no solutions`.
-                        if solutions.is_empty() && !stats.truncated
-                            && report_if_unknown_functor(&kb, qt)
-                        {
+                        // WI-863: refuse a query naming an undefined functor in a
+                        // position COMMITTED to its truth — the head, or anywhere
+                        // inside a `not` (directly or a connective deep,
+                        // `not(p | absent)`). Checked after resolution, so
+                        // resolve-first (WI-754) holds — an arity-0 proposition
+                        // reachable only through a rule body still answers, cleared
+                        // per node by the discrim backstop — but NOT gated on
+                        // emptiness: `not(absent(42))` resolves the undefined inner
+                        // goal to a complete-empty search that NAF launders into a
+                        // confident `true`, so the old empty-only gate never saw it.
+                        // A bare disjunction / quantifier branch is left to
+                        // resolution (its undefined name may be tolerated), and a
+                        // known functor with no matching row prints `no solutions`.
+                        let unknown = kb.undefined_query_goal_functors(qt);
+                        if !unknown.is_empty() {
+                            for &sym in &unknown {
+                                report_unknown_functor_name(&kb, sym);
+                            }
                             any_unknown = true;
                             continue;
                         }
@@ -1647,13 +1660,21 @@ fn report_if_unknown_functor(kb: &KnowledgeBase, qt: anthill_core::kb::term::Ter
     if !kb.browse_program_clauses_matching(&qt).is_empty() {
         return false;
     }
+    report_unknown_functor_name(kb, sym);
+    true
+}
+
+/// The WI-754 unknown-functor diagnostic for one `sym`. Shared by the head-only
+/// [`report_if_unknown_functor`] (--match browse) and the goal-position walk
+/// `undefined_query_goal_functors` (resolve path, WI-863), so both spell the
+/// refusal identically.
+fn report_unknown_functor_name(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) {
     eprintln!(
         "error: '{}' in query pattern does not resolve to a known functor — no \
          rule, fact, or declaration is in scope for it. Qualify the name, or \
          bring its namespace into scope with -i.",
         kb.resolve_sym(sym)
     );
-    true
 }
 
 // ── Check command ───────────────────────────────────────────────────
