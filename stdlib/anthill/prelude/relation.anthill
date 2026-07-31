@@ -135,7 +135,10 @@ sort anthill.prelude.Relation
   -- syntax, into a LogicalQuery (`eq`/`lt`/… → a goal atom, `c.x` → the column's
   -- logic variable BY schema position, a literal → a term constant, and `and`/`or`/
   -- `not` → conjunction/disjunction/negation of the same, WI-730).
-  -- Anything not goal-expressible is a compile error (LINQ's "cannot translate").
+  -- Anything not goal-expressible is a compile error (LINQ's "cannot translate"),
+  -- reported at the offending sub-condition with the reason (WI-757: the macro
+  -- REJECTS rather than declining, so the message is this compiler's, not the
+  -- residual lowering's).
   --
   -- A DISJUNCTIVE condition explores BOTH branches, so a row satisfying both is
   -- PROVED twice; the resolver's choice-point dedup then collapses those repeats

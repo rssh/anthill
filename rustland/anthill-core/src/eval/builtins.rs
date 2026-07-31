@@ -1847,6 +1847,24 @@ fn fill_column_holes(
     }
 }
 
+/// WI-757 — a row-lambda macro's REJECTION of its input, on the macro diagnostic
+/// channel ([`EvalError::MacroRejected`]): the condition the author wrote is
+/// definitively not goal-expressible, so the macro reports WHY instead of declining
+/// and leaving the residual `guarded_of` template's type error to speak for it.
+///
+/// `at` is the OFFENDING occurrence — the one atom / operand / lambda that does not
+/// translate, not the whole `where` call — so the load error points at the text the
+/// author must change. Every rejection below passes one; only an invariant break (a
+/// non-occurrence argument, which the macro classifier makes unreachable) stays an
+/// ordinary [`type_mismatch`] DECLINE.
+fn macro_rejects(
+    expected: &'static str,
+    got: String,
+    at: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+) -> EvalError {
+    EvalError::MacroRejected { expected, got, span: Some(at.span) }
+}
+
 /// `Relation.guarded_of` (WI-714 / proposal 052) — the compile-time MACRO behind
 /// `where` (occurrence→occurrence, so the `[simp]` engine fires it at compile time,
 /// WI-722). It reads the row lambda `cond` and compiles its body — AS SYNTAX, never
@@ -1880,19 +1898,21 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
             let binder = match param.as_pattern() {
                 Some(Pattern::Var { name, .. }) => *name,
                 _ => {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "a row lambda with a single binder (`c -> …`)",
-                        got: "a lambda whose parameter is not a plain binder".to_string(),
-                    })
+                    return Err(macro_rejects(
+                        "a row lambda with a single binder (`c -> …`)",
+                        "a lambda whose parameter is not a plain binder".to_string(),
+                        param,
+                    ))
                 }
             };
             (binder, Rc::clone(body))
         }
         _ => {
-            return Err(EvalError::TypeMismatch {
-                expected: "a row lambda (`c -> eq(c.x, …)`) as `where`'s condition",
-                got: "a non-lambda condition (a logic-variable goal belongs in a rule)".to_string(),
-            })
+            return Err(macro_rejects(
+                "a row lambda (`c -> eq(c.x, …)`) as `where`'s condition",
+                "a non-lambda condition (a logic-variable goal belongs in a rule)".to_string(),
+                &cond_occ,
+            ))
         }
     };
 
@@ -1993,38 +2013,42 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
                         match sub.as_pattern() {
                             Some(Pattern::Var { name, .. }) => bs.push(*name),
                             _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "a two-row lambda `(c, q) -> …` binding two plain rows",
-                                    got: "a join lambda whose tuple binder nests a non-plain sub-pattern"
+                                return Err(macro_rejects(
+                                    "a two-row lambda `(c, q) -> …` binding two plain rows",
+                                    "a join lambda whose tuple binder nests a non-plain sub-pattern"
                                         .to_string(),
-                                })
+                                    sub,
+                                ))
                             }
                         }
                     }
                     bs
                 }
                 _ => {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "a two-row lambda `(c, q) -> eq(c.x, q.y)` as `join`'s condition",
-                        got: "a `join` condition that is not a two-row tuple lambda".to_string(),
-                    })
+                    return Err(macro_rejects(
+                        "a two-row lambda `(c, q) -> eq(c.x, q.y)` as `join`'s condition",
+                        "a `join` condition that is not a two-row tuple lambda".to_string(),
+                        param,
+                    ))
                 }
             };
             (binders, Rc::clone(body))
         }
         _ => {
-            return Err(EvalError::TypeMismatch {
-                expected: "a two-row lambda `(c, q) -> eq(c.x, q.y)` as `join`'s condition",
-                got: "a non-lambda condition (a logic-variable goal belongs in a rule)".to_string(),
-            })
+            return Err(macro_rejects(
+                "a two-row lambda `(c, q) -> eq(c.x, q.y)` as `join`'s condition",
+                "a non-lambda condition (a logic-variable goal belongs in a rule)".to_string(),
+                &cond_occ,
+            ))
         }
     };
     // First increment: exactly two rows. A different arity is a clean user-facing error.
     if binders.len() != 2 {
-        return Err(EvalError::TypeMismatch {
-            expected: "a `join` row lambda binding exactly two rows `(c, q) -> …`",
-            got: format!("a join row lambda binding {} rows", binders.len()),
-        });
+        return Err(macro_rejects(
+            "a `join` row lambda binding exactly two rows `(c, q) -> …`",
+            format!("a join row lambda binding {} rows", binders.len()),
+            &cond_occ,
+        ));
     }
     let recipe = compile_condition(interp, &body, &binders)?;
     splice_query_runner(interp, "anthill.prelude.Relation.join_run", &[r1_occ, r2_occ], recipe)
@@ -2303,13 +2327,14 @@ fn compile_condition(
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
     let Some(Expr::Apply { functor, pos_args, named_args, .. }) = body.as_expr() else {
-        return Err(EvalError::TypeMismatch {
-            expected: "a goal-expressible row-lambda condition — a predicate \
-                       (`eq(c.x, …)`) or an `and`/`or`/`not` of them",
-            got: "a condition that does not translate to a query goal (an `if`, a \
-                  `match`, a literal — compute it with `.map` on the stream instead)"
+        return Err(macro_rejects(
+            "a goal-expressible row-lambda condition — a predicate \
+             (`eq(c.x, …)`) or an `and`/`or`/`not` of them",
+            "a condition that does not translate to a query goal (an `if`, a \
+             `match`, a literal — compute it with `.map` on the stream instead)"
                 .to_string(),
-        });
+            body,
+        ));
     };
     // A boolean CONNECTIVE — recurse over the spine into the matching query
     // constructor. Its operands are conditions in their own right, so any depth of
@@ -2322,15 +2347,16 @@ fn compile_condition(
         // labels (`and(a: p, b: q)`) would have to be matched to them by name, which is
         // not wired. Refuse it loudly rather than read the operands in the wrong order.
         if pos_args.len() != fields.len() || !named_args.is_empty() {
-            return Err(EvalError::TypeMismatch {
-                expected: "a boolean connective applied to positional operands \
-                           (`and(p, q)` / `or(p, q)` / `not(p)`)",
-                got: format!(
+            return Err(macro_rejects(
+                "a boolean connective applied to positional operands \
+                 (`and(p, q)` / `or(p, q)` / `not(p)`)",
+                format!(
                     "`{op_qn}` applied to {} positional and {} named argument(s)",
                     pos_args.len(),
                     named_args.len()
                 ),
-            });
+                body,
+            ));
         }
         let mut operands = Vec::with_capacity(fields.len());
         for (field, arg) in fields.iter().zip(pos_args) {
@@ -2347,11 +2373,12 @@ fn compile_condition(
     // works. Recognized through the shared `field_access_parts` contract, the same one
     // `compile_operand` reads a column reference by (no second copy of the desugaring).
     if crate::kb::body_specialize::field_access_parts(&interp.kb, *functor, pos_args).is_some() {
-        return Err(EvalError::TypeMismatch {
-            expected: "a predicate as a row-lambda condition — COMPARE the column \
-                       (`eq(c.ok, true)`), do not merely name it",
-            got: "a bare column projection in condition position".to_string(),
-        });
+        return Err(macro_rejects(
+            "a predicate as a row-lambda condition — COMPARE the column \
+             (`eq(c.ok, true)`), do not merely name it",
+            "a bare column projection in condition position".to_string(),
+            body,
+        ));
     }
     // An ATOM. The predicate FUNCTOR is kept verbatim — the lambda's `eq`
     // (`PartialEq.eq`) IS the resolver's eq connective, so there is no value→goal
@@ -2368,15 +2395,16 @@ fn compile_condition(
             Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
         )
     {
-        return Err(EvalError::TypeMismatch {
-            expected: "a goal-expressible predicate (a builtin such as `eq`/`neq`/`lt`, \
-                       or a rule) as a row-lambda condition atom",
-            got: format!(
+        return Err(macro_rejects(
+            "a goal-expressible predicate (a builtin such as `eq`/`neq`/`lt`, \
+             or a rule) as a row-lambda condition atom",
+            format!(
                 "`{}`, which is neither — it has no meaning as a query goal \
                  (compute it with `.map` on the stream instead)",
                 interp.kb.qualified_name_of(*functor)
             ),
-        });
+            body,
+        ));
     }
     let mut pos = Vec::with_capacity(pos_args.len());
     for a in pos_args {
@@ -2423,16 +2451,18 @@ fn compile_operand(
             Literal::Bool(b) => Value::Bool(*b),
             Literal::String(s) => Value::Str(s.clone()),
             other => {
-                return Err(EvalError::TypeMismatch {
-                    expected: "an Int/Float/Bool/String literal in the `where` condition",
-                    got: format!("an unsupported literal kind: {other:?}"),
-                })
+                return Err(macro_rejects(
+                    "an Int/Float/Bool/String literal in the `where` condition",
+                    format!("an unsupported literal kind: {other:?}"),
+                    occ,
+                ))
             }
         }),
-        _ => Err(EvalError::TypeMismatch {
-            expected: "a column (`c.x`) or a literal in the `where` condition",
-            got: "an operand that is neither a row column nor a literal".to_string(),
-        }),
+        _ => Err(macro_rejects(
+            "a column (`c.x`) or a literal in the `where` condition",
+            "an operand that is neither a row column nor a literal".to_string(),
+            occ,
+        )),
     }
 }
 

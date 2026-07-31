@@ -260,15 +260,25 @@ namespace test.wi730untranslatable
 end
 "#;
     match try_load_kb_with(SRC) {
-        Err(errs) => assert!(
-            // The macro DECLINES on an untranslatable condition (WI-722: a macro that
-            // cannot expand keeps its template), so what surfaces is the kept
-            // `guarded_of` template failing to type — loud, and naming the `where`
-            // lowering. (Carrying the compiler's own "cannot translate" text out to the
-            // user needs a macro DIAGNOSTIC channel, which WI-722 does not have.)
-            errs.iter().any(|e| e.contains("guarded_of")),
-            "expected the where lowering to fail loudly on an untranslatable condition, got: {errs:?}",
-        ),
+        Err(errs) => {
+            // WI-757: the COMPILER'S OWN "cannot translate" text, at the offending
+            // condition — not the residual template's type error. Before the macro
+            // diagnostic channel this same program reported `guarded_of.r (op-arg):
+            // expected NodeOccurrence, got Relation[…]`, which named neither the
+            // condition nor the reason; asserting only "mentions guarded_of" would
+            // pass for BOTH, so the assertion pins the reason and the offending name.
+            assert!(
+                errs.iter().any(|e| e.contains("alwaysTrue")
+                    && e.contains("it has no meaning as a query goal")),
+                "expected the macro's own untranslatable-condition text naming \
+                 `alwaysTrue`, got: {errs:?}",
+            );
+            assert!(
+                !errs.iter().any(|e| e.contains("op-arg")),
+                "the residual `guarded_of` template's op-arg type error must no longer \
+                 be what the author reads, got: {errs:?}",
+            );
+        }
         Ok(_) => panic!(
             "a `where` whose condition is not goal-expressible must not load — \
              compiled verbatim it silently yields an empty relation"
@@ -296,10 +306,19 @@ namespace test.wi730bare
     person_row.where(lambda c -> c.ok).takeN(5)
 end
 "#;
+    let errs = try_load_kb_with(SRC).err().unwrap_or_else(|| {
+        panic!(
+            "a bare column projection in condition position must not load — compiled \
+             into goal position it is a projection the resolver cannot read as a filter"
+        )
+    });
+    // WI-757: and the refusal must say WHICH spelling works. `is_err()` alone was
+    // satisfied by the residual template's `expected NodeOccurrence, got Relation[…]`,
+    // which told the author nothing about the column they wrote.
     assert!(
-        try_load_kb_with(SRC).is_err(),
-        "a bare column projection in condition position must not load — compiled into \
-         goal position it is a projection the resolver cannot read as a filter"
+        errs.iter().any(|e| e.contains("COMPARE the column")
+            && e.contains("bare column projection in condition position")),
+        "expected the macro's own bare-projection text, got: {errs:?}",
     );
 }
 

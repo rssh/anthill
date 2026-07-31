@@ -369,6 +369,25 @@ pub enum TypeError {
         entity: Symbol,
         field: Symbol,
     },
+    /// WI-757 (the WI-722 macro contract's diagnostic channel): a `[simp]` lowering
+    /// whose macro-headed RHS was expanded here, and the MACRO rejected the
+    /// occurrences it was handed — `where(λ c -> ite(true, true, false))`, whose
+    /// condition is `Bool`-valued but not goal-expressible.
+    ///
+    /// Reported at the sub-expression the macro named, with the macro's own
+    /// `expected`/`got` text. Its own variant, not [`Self::Other`]: the failing
+    /// check ran in a MACRO, whose vocabulary is the source syntax it was handed,
+    /// not the typer's expected-vs-inferred TYPES — flattening it through
+    /// `TypeErrorContext` would have to name an operation parameter (`guarded_of.r`)
+    /// the author never wrote, which is exactly the residual-template message this
+    /// channel replaces.
+    MacroRejected {
+        span: Option<Span>,
+        /// The macro that rejected — the `[simp]` RHS head.
+        macro_name: Symbol,
+        expected: &'static str,
+        got: String,
+    },
     /// Aggregation node — collects multiple sibling failures
     /// (e.g. a list literal with two ill-typed elements).
     Multiple {
@@ -746,6 +765,16 @@ impl TypeError {
                     kb.resolve_sym(*field), kb.qualified_name_of(*entity),
                 )
             }
+            // WI-757: the ONE wording of a macro rejection — `to_load_error` builds
+            // `LoadError::MacroRejected` from the same three fields, so the load
+            // renderer and this one cannot drift.
+            TypeError::MacroRejected { macro_name, expected, got, .. } => {
+                super::load::macro_rejection_message(
+                    kb.qualified_name_of(*macro_name),
+                    expected,
+                    got,
+                )
+            }
             TypeError::Multiple { errors } => {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
                 parts.join("; ")
@@ -791,6 +820,7 @@ impl TypeError {
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
             | TypeError::UnsatisfiedPrecondition { span, .. }
+            | TypeError::MacroRejected { span, .. }
             | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
@@ -1113,6 +1143,17 @@ impl TypeError {
                     name: kb.resolve_sym(*field).to_string(),
                     declared_in,
                     scope_name: "another scope".to_string(),
+                    span: self.span(kb).unwrap_or_default(),
+                }
+            }
+            // WI-757: SPANNED and its own variant, for the reason WI-819 gave —
+            // it is user-reachable, and an unspanned diagnostic renders with no
+            // `line:col` at all.
+            TypeError::MacroRejected { macro_name, expected, got, .. } => {
+                LoadError::MacroRejected {
+                    macro_name: kb.qualified_name_of(*macro_name).to_string(),
+                    expected,
+                    got: got.clone(),
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
@@ -7680,13 +7721,34 @@ fn reassemble_match(
 /// `simp_rewrite`'s matcher + RHS builder, including its type-directed
 /// guard ([`simp_fire_guard_holds`]) — `node`'s children are already typed
 /// (bottom-up), so their `min_sort` is available for the guard here.
+///
+/// WI-757: `Err` is a macro-RHS lowering whose MACRO rejected the occurrences it
+/// was handed. The caller turns it into a [`TypeError::MacroRejected`] at this
+/// redex via [`macro_rejection_error`] and abandons the node — so one rejection
+/// yields exactly one error, and a fire that instead succeeds leaves nothing
+/// behind that could go stale.
 fn fire_simp(
     kb: &mut KnowledgeBase,
     node: &Rc<NodeOccurrence>,
     rids: &[RuleId],
-) -> Option<Rc<NodeOccurrence>> {
+) -> Result<Option<Rc<NodeOccurrence>>, super::simp_rewrite::MacroRejection> {
     let pass = super::simp_rewrite::simp_pass(kb);
     super::simp_rewrite::try_fire(kb, node, pass, rids)
+}
+
+/// WI-757: render a carried-out [`MacroRejection`](super::simp_rewrite::MacroRejection)
+/// as the typer's error, located at the offending sub-expression the macro named —
+/// falling back to `redex`, the node the rule fired on, when it named none.
+fn macro_rejection_error(
+    rejection: super::simp_rewrite::MacroRejection,
+    redex: &Rc<NodeOccurrence>,
+) -> TypeError {
+    TypeError::MacroRejected {
+        span: Some(rejection.span.map_or(redex.span.span, |s| s.span)),
+        macro_name: rejection.macro_name,
+        expected: rejection.expected,
+        got: rejection.got,
+    }
 }
 
 /// WI-374 (kernel-language §8.1 expansion, let-annotation site): rewrite a bare
@@ -8011,9 +8073,20 @@ fn build_type(
                 // so the chain is bounded — a non-terminating rule bottoms
                 // out at fuel 0 leaving a partial redex, not a stack overflow.
                 if simp_enabled && fuel > 0 {
-                    if let Some(rhs) = fire_simp(kb, &node, simp_rids) {
-                        push_visit(work, rhs, env, expected, fuel - 1);
-                        return;
+                    match fire_simp(kb, &node, simp_rids) {
+                        Ok(Some(rhs)) => {
+                            push_visit(work, rhs, env, expected, fuel - 1);
+                            return;
+                        }
+                        Ok(None) => {}
+                        // WI-757: a macro REJECTED this redex's occurrences — report
+                        // its own words at the sub-expression it named, and abandon
+                        // the node (the residual template would only add a second,
+                        // less informative error naming the lowering's parameter).
+                        Err(rejection) => {
+                            results.push(Err(macro_rejection_error(rejection, &node)));
+                            return;
+                        }
                     }
                 }
                 node
@@ -8088,9 +8161,17 @@ fn build_type(
                     pos_results.iter().chain(named_results.iter()).collect();
                 let node = reassemble_children(&occ, &child_refs);
                 if simp_enabled && fuel > 0 {
-                    if let Some(rhs) = fire_simp(kb, &node, simp_rids) {
-                        push_visit(work, rhs, env, expected, fuel - 1);
-                        return;
+                    match fire_simp(kb, &node, simp_rids) {
+                        Ok(Some(rhs)) => {
+                            push_visit(work, rhs, env, expected, fuel - 1);
+                            return;
+                        }
+                        Ok(None) => {}
+                        // WI-757 — same contract as the Apply arm above.
+                        Err(rejection) => {
+                            results.push(Err(macro_rejection_error(rejection, &node)));
+                            return;
+                        }
                     }
                 }
                 node

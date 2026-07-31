@@ -69,6 +69,39 @@ pub(super) const SIMP_FUEL: usize = 100;
 
 const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 
+/// WI-757 — a compile-time MACRO's REJECTION of its input, carried out of
+/// `try_expand_macro` to whoever drove the fire.
+///
+/// The macro seam has TWO negative outcomes and this type is the one that
+/// distinguishes them. A **decline** (`Ok(None)`) says "not me / not yet": the
+/// `[simp]` template call is kept and whatever downstream check the residual
+/// fails is the diagnostic — the WI-722 contract, unchanged. A **rejection** says
+/// the macro IS the right one and the input is definitively wrong; the reason is
+/// known here and nowhere downstream, so it must be carried out rather than
+/// dropped. The typer reports it as a load error at `span`; before WI-757 it was
+/// mapped to a decline and the user read the residual `guarded_of` template's
+/// type error instead.
+///
+/// No dedup key rides here on purpose: a rejection is reported by the fire's
+/// CALLER, at the node it fired on, and it ABORTS that node's typing — so one
+/// rejection produces one error, and an attempt that instead succeeds leaves
+/// nothing behind to go stale. (Buffering rejections on the KB for a later drain
+/// would need both, and would leak a rejection from a speculative walk whose
+/// errors are discarded.)
+#[derive(Debug)]
+pub struct MacroRejection {
+    /// The macro that rejected — the symbol at the head of the `[simp]` RHS.
+    pub macro_name: Symbol,
+    /// What the macro needed, and what it found instead: the macro's own words,
+    /// rendered verbatim into the load error.
+    pub expected: &'static str,
+    pub got: String,
+    /// The OFFENDING sub-expression's span when the macro named one (it holds the
+    /// argument occurrences, so it usually can). `None` leaves the location to the
+    /// reporter, which falls back to the redex.
+    pub span: Option<crate::span::SourceSpan>,
+}
+
 /// Whether any indexed `[simp]` equation exists — the gate the typer's firing
 /// sites (`typing::type_check_node`'s `simp_enabled`, and [`run`]) use to skip
 /// all firing work in the common no-rule case. Read once per typer walk (WI-283)
@@ -130,6 +163,12 @@ pub(super) trait SimpFirer {
 /// `[simp]`-synthesis `PassId` the RHS builder stamps onto new nodes.
 pub(super) struct TyperFirer {
     pub(super) pass: PassId,
+    /// WI-757: the FIRST macro rejection this walk saw. The [`SimpFirer`] face is
+    /// `Option`-valued (the resolver's firer has no diagnostic to report), so this
+    /// harness keeps the rejection here instead of discarding it — [`run`] hands it
+    /// back to its caller. The typer's own firing site does NOT go through this
+    /// firer; it calls [`try_fire`] directly and reports at the redex.
+    pub(super) rejected: Option<MacroRejection>,
 }
 
 impl SimpFirer for TyperFirer {
@@ -139,7 +178,16 @@ impl SimpFirer for TyperFirer {
         // occurrence carrier is closed under descent + rewrite). A non-Node
         // here is a carrier-routing bug, not a recoverable case.
         match redex {
-            Value::Node(occ) => try_fire(kb, occ, self.pass, rids).map(Value::Node),
+            Value::Node(occ) => match try_fire(kb, occ, self.pass, rids) {
+                Ok(fired) => fired.map(Value::Node),
+                // Keep the first rejection and DECLINE at this node, so the walk
+                // still completes and `run` reports one failure rather than the
+                // last one. Not a silent skip: `run` returns it.
+                Err(rejection) => {
+                    self.rejected.get_or_insert(rejection);
+                    None
+                }
+            },
             other => unreachable!(
                 "typer simp carrier is always an occurrence, got {}",
                 other.type_name()
@@ -155,12 +203,17 @@ impl SimpFirer for TyperFirer {
 /// typer* (`typing::build_type`), where it is type-directed. Kept as the
 /// helper-level test harness exercising [`try_fire`] / [`reassemble`] /
 /// [`substitute_to_occurrence`] over the bare occurrence representation.
-pub fn run(kb: &mut KnowledgeBase) {
+///
+/// WI-757: returns the FIRST macro rejection the walk saw, if any — this harness
+/// has no error sink of its own, and a rejection is a definitive user-caused
+/// failure that must not evaporate. `None` = every body rewrote (or declined)
+/// cleanly.
+pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
     if !has_simp_equations(kb) {
-        return;
+        return None;
     }
     let pass = kb.register_pass(PASS_NAME);
-    let mut firer = TyperFirer { pass };
+    let mut firer = TyperFirer { pass, rejected: None };
     // Snapshot (op_sym, body) so we don't hold a borrow on `op_bodies` while
     // rewriting (which mutates `kb` — fresh vars, interning).
     let bodies: Vec<(Symbol, Rc<NodeOccurrence>)> =
@@ -180,6 +233,7 @@ pub fn run(kb: &mut KnowledgeBase) {
             kb.set_op_body_node(op_sym, rewritten);
         }
     }
+    firer.rejected
 }
 
 /// Bottom-up rewrite: rewrite children first, then try firing a `[simp]`
@@ -448,7 +502,7 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
 }
 
 /// Try to fire a `[simp]` equation at this node. Returns the rewritten
-/// occurrence, or `None` if no equation matches (or its type-directed
+/// occurrence, or `Ok(None)` if no equation matches (or its type-directed
 /// guard fails).
 ///
 /// WI-283: matches the rule LHS structurally via `match_view`, then — for
@@ -458,16 +512,21 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
 /// concrete-functor redex (a top-level monomorphic identity like
 /// `transpose(transpose(?m)) = ?m`) is guard-free: the functor symbol
 /// already pins the sort, so structural match alone is sound.
+///
+/// WI-757: `Err` is a matched macro-RHS lowering whose MACRO rejected the
+/// occurrences it was handed ([`MacroRejection`]) — a definitive, user-caused
+/// failure the caller must report at this redex, as distinct from the `Ok(None)`
+/// decline that keeps the template.
 pub(super) fn try_fire(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     pass: PassId,
     rids: &[RuleId],
-) -> Option<Rc<NodeOccurrence>> {
-    let node_functor = match occ.as_expr()? {
-        Expr::Apply { functor, .. } => *functor,
-        Expr::Constructor { name, .. } => *name,
-        _ => return None,
+) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
+    let node_functor = match occ.as_expr() {
+        Some(Expr::Apply { functor, .. }) => *functor,
+        Some(Expr::Constructor { name, .. }) => *name,
+        _ => return Ok(None),
     };
     // WI-655: the type-directed guard (`simp_fire_guard_holds`) is deferred to the
     // FIRST rid whose LHS functor matches this node (checked once, below, before any
@@ -539,13 +598,13 @@ pub(super) fn try_fire(
             // §3.1), evaluate it over its argument occurrences and splice the
             // occurrence it returns, instead of leaving the template call. The
             // typer's `push_visit` continuation re-types the spliced subtree.
-            if let Some(expanded) = try_expand_macro(kb, &template) {
-                return Some(expanded);
+            if let Some(expanded) = try_expand_macro(kb, &template)? {
+                return Ok(Some(expanded));
             }
-            return Some(template);
+            return Ok(Some(template));
         }
     }
-    None
+    Ok(None)
 }
 
 /// The functor of an equation's RHS (`Fn{eq/unify, [lhs, rhs]}` → rhs head), read
@@ -593,13 +652,21 @@ fn stored_eq_operand_functor(kb: &KnowledgeBase, rid: RuleId, idx: usize) -> Opt
 /// build builtins (`make_apply`, …). The body returns a `Value::Node`, spliced.
 ///
 /// A macro that fails to produce an occurrence (a non-`Node` return, an eval
-/// error, or the re-entry cap) yields `None`: the template call is kept, and its
-/// downstream type-check surfaces the failure loudly at the redex — never a
-/// silently-wrong rewrite.
+/// error, or the re-entry cap) DECLINES — `Ok(None)`: the template call is kept,
+/// and its downstream type-check surfaces the failure loudly at the redex — never
+/// a silently-wrong rewrite.
+///
+/// WI-757: except when the macro used its DIAGNOSTIC channel
+/// ([`crate::eval::EvalError::MacroRejected`]) to say the input is definitively
+/// wrong AND why. That is `Err(MacroRejection)` — the reason is known here and
+/// nowhere downstream, so it is carried out to be reported at the redex instead
+/// of being flattened into a decline. Every other `Err` still declines: a
+/// `Suspended` flounder is "not yet", and an unrelated evaluator error is not the
+/// author's to read.
 fn try_expand_macro(
     kb: &mut KnowledgeBase,
     template: &Rc<NodeOccurrence>,
-) -> Option<Rc<NodeOccurrence>> {
+) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
     // Read the head cheaply and gate on `is_macro` BEFORE building the argument
     // vector: `try_expand_macro` runs on EVERY fired `[simp]` rewrite, and the gate
     // is false for all but a macro head, so the common path allocates nothing. The
@@ -607,11 +674,11 @@ fn try_expand_macro(
     // pattern-var occurrences; named / type args are not part of the Inc-1 surface,
     // so a macro carrying those declines to expand and stays a template.
     let Some(Expr::Apply { functor, pos_args, named_args, type_args }) = template.as_expr() else {
-        return None;
+        return Ok(None);
     };
     let functor = *functor;
     if !named_args.is_empty() || !type_args.is_empty() || !super::typing::is_macro(kb, functor) {
-        return None;
+        return Ok(None);
     }
     // Bind the macro's params to the argument occurrences as `Value::Node` — NOT
     // materialized: the flatten in `bridge_op_to_eval` is deliberately skipped (it
@@ -620,10 +687,13 @@ fn try_expand_macro(
     // carries the occurrence build builtins (`make_apply`, …). `None` = re-entry
     // cap hit (`run_in_bridge_interp` mem::takes the KB and reclaims it).
     let node_args: Vec<Value> = pos_args.iter().map(|o| Value::Node(Rc::clone(o))).collect();
-    let outcome = kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args))?;
+    let Some(outcome) = kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args))
+    else {
+        return Ok(None);
+    };
     match outcome {
         // The body returned a spliceable occurrence — the rewrite result.
-        Ok(Value::Node(result)) => Some(result),
+        Ok(Value::Node(result)) => Ok(Some(result)),
         // A macro's declared return is `NodeOccurrence`, so a non-`Node` value is a
         // type/evaluator invariant break — loud in debug, decline in release.
         Ok(other) => {
@@ -632,9 +702,15 @@ fn try_expand_macro(
                 "WI-722: macro `{}` returned a non-occurrence value: {other:?}",
                 kb.qualified_name_of(functor),
             );
-            None
+            Ok(None)
         }
-        // A macro that fails to produce an occurrence declines: the template call is
+        // WI-757: the macro's DIAGNOSTIC channel — it read the occurrences, found
+        // them definitively untranslatable, and said why. Carry it out, span and
+        // all; a macro that named no span leaves the location to the reporter.
+        Err(crate::eval::EvalError::MacroRejected { expected, got, span }) => {
+            Err(MacroRejection { macro_name: functor, expected, got, span })
+        }
+        // Any OTHER failure to produce an occurrence declines: the template call is
         // kept, and its downstream type-check surfaces the failure loudly at the
         // redex. A `Suspended` flounder / runtime-domain error residualizes quietly;
         // an `Internal` evaluator bug is asserted loudly, mirroring `bridge_op_to_eval`.
@@ -644,7 +720,7 @@ fn try_expand_macro(
                 "WI-722: internal evaluator error expanding macro `{}`: {e}",
                 kb.qualified_name_of(functor),
             );
-            None
+            Ok(None)
         }
     }
 }

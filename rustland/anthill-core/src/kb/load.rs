@@ -522,6 +522,29 @@ pub enum LoadError {
     PatternAnnotatedTwice {
         span: Span,
     },
+    /// WI-757 (the WI-722 macro contract's diagnostic channel): a compile-time
+    /// MACRO — the head of a `[simp]` lowering's RHS, e.g. `Relation.guarded_of`
+    /// behind `where` — read the occurrences it was handed and REJECTED them,
+    /// saying why. Reported at the sub-expression the macro named.
+    ///
+    /// The alternative this replaces is what a macro's failure looked like before:
+    /// the macro declined, its template call stayed, and the author read the
+    /// residual's type error — `guarded_of.r (op-arg): expected NodeOccurrence,
+    /// got Relation[…]`, which names neither the offending condition nor the
+    /// reason. A rejection is not a decline: the macro IS the right one and the
+    /// input is the author's, so the reason is known at the macro and nowhere
+    /// downstream.
+    ///
+    /// SPANNED (not `LoadError::Other`), per WI-819: it is user-reachable, and an
+    /// unspanned diagnostic renders with no `line:col` at all.
+    MacroRejected {
+        /// The macro's qualified name.
+        macro_name: String,
+        /// The macro's own words — what it needed, and what it found.
+        expected: &'static str,
+        got: String,
+        span: Span,
+    },
     /// WI-819: a `let` annotation on a term that is not a pattern form at all —
     /// neither a `Fn` nor the nullary `Ref` spelling `KnowledgeBase::alloc`
     /// canonicalizes a 0-ary constructor into. No grammar path reaches it (the
@@ -809,6 +832,21 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
     }
 }
 
+/// WI-757: the one wording of [`LoadError::MacroRejected`], shared by the two
+/// renderings AND by `TypeError::MacroRejected`'s `format` — WI-852's rule that a
+/// diagnostic has ONE owner.
+///
+/// The sentence names the MACRO, not the surface spelling that expanded to it
+/// (`where` → `guarded_of`): the macro is what read the syntax and what the author
+/// must satisfy, and the `[simp]` rule that connects the two is greppable from the
+/// name. `expected`/`got` are the macro's own words, verbatim.
+pub(super) fn macro_rejection_message(macro_name: &str, expected: &str, got: &str) -> String {
+    format!(
+        "compile-time macro `{macro_name}` cannot expand this expression: \
+         expected {expected}, got {got}"
+    )
+}
+
 /// WI-840: what an operation's declared type parameter collides with (proposal 058
 /// §4.2's shadowing guard). One rule, three sources — and they need different advice,
 /// because the move that fixes each is different: rename here, rename here but for a
@@ -958,6 +996,7 @@ impl LoadError {
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
+            | LoadError::MacroRejected { span, .. }
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -1081,6 +1120,13 @@ impl LoadError {
                 } else {
                     msg
                 }
+            }
+            LoadError::MacroRejected { macro_name, expected, got, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    macro_rejection_message(macro_name, expected, got),
+                )
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
                 format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
@@ -1437,6 +1483,15 @@ impl std::fmt::Display for LoadError {
                 } else {
                     write!(f, "{}", msg)
                 }
+            }
+            LoadError::MacroRejected { macro_name, expected, got, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    macro_rejection_message(macro_name, expected, got),
+                    span.start,
+                    span.end,
+                )
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
                 write!(f, "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'",

@@ -128,6 +128,29 @@ pub enum EvalError {
     /// ([`crate::kb::typing::SpecOpSupplier::render`]) because the three are written
     /// in three syntaxes and the author must know which text to delete.
     AmbiguousSpecOpDispatch { op: String, carrier: String, candidates: Vec<String> },
+    /// WI-757 — the WI-722 macro contract's DIAGNOSTIC channel: a compile-time
+    /// MACRO read its argument occurrences, found them definitively
+    /// untranslatable, and says why.
+    ///
+    /// The distinction this variant exists to draw: every OTHER failure of a
+    /// macro is a DECLINE — the macro is merely not applicable (or not ready
+    /// yet), so the `[simp]` template call is kept and whatever downstream check
+    /// the residual fails is the diagnostic. A rejection is the opposite: the
+    /// macro IS the right one, the input is the user's, and the reason is known
+    /// HERE and nowhere downstream. Before this channel existed, `where(λ c ->
+    /// ite(…))` reported `guarded_of.r (op-arg): expected NodeOccurrence, got
+    /// Relation[…]` — the residual template's type error, naming neither the
+    /// offending condition nor the reason, while the macro's own "cannot
+    /// translate" text was discarded.
+    ///
+    /// `span` is the OFFENDING SUB-EXPRESSION's, not the macro call's: the macro
+    /// holds the argument occurrences, so it can point at the one condition atom
+    /// that does not translate. `None` leaves the redex span to the reporter.
+    /// `simp_rewrite::try_expand_macro` carries this out as a
+    /// [`crate::kb::simp_rewrite::MacroRejection`] and the typer reports it as a
+    /// load error; at a RUNTIME call of the same op it renders like any other
+    /// eval error.
+    MacroRejected { expected: &'static str, got: String, span: Option<SourceSpan> },
     Internal(String),
 }
 
@@ -221,6 +244,12 @@ impl std::fmt::Display for EvalError {
                 candidates.len(),
                 candidates.join(", "),
             ),
+            // WI-757: the same sentence the typer renders into a load error, so a
+            // macro invoked at runtime and one expanded at compile time report the
+            // rejection identically (only the location wrapper differs).
+            EvalError::MacroRejected { expected, got, .. } => {
+                write!(f, "macro cannot expand this expression: expected {expected}, got {got}")
+            }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }
