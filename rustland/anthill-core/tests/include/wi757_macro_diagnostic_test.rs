@@ -38,6 +38,13 @@ pub(crate) fn rejections(errs: &[String]) -> Vec<&String> {
     errs.iter().filter(|e| e.contains(REJECTION_MARKER)).collect()
 }
 
+/// The WI-702/054 effectful-rewrite gate's marker — the refusal the macro
+/// exemption below is carved out of. Owned here, beside the three tests that
+/// assert it PRESENT, so the WI-903 suite (which asserts it ABSENT, to prove the
+/// exemption now covers a case it used to miss) cannot pass vacuously on a
+/// re-spelled literal — the same hazard [`REJECTION_MARKER`] names.
+pub(crate) const EFFECTFUL_REWRITE_MARKER: &str = "an effectful operation is not equational";
+
 // ── REJECT: the macro's own words, at the offending sub-expression ──────────
 
 const UNTRANSLATABLE: &str = r#"
@@ -303,7 +310,7 @@ end
     let errs = load_errors(SRC);
     assert!(
         errs.iter().any(|e| e.contains("test.wi757ordinary.risky")
-            && e.contains("an effectful operation is not equational")),
+            && e.contains(EFFECTFUL_REWRITE_MARKER)),
         "an effectful NON-macro rewrite must stay refused, got: {errs:?}",
     );
 }
@@ -336,7 +343,7 @@ end
     let errs = load_errors(SRC);
     assert!(
         errs.iter().any(|e| e.contains("test.wi757unfold.m")
-            && e.contains("an effectful operation is not equational")),
+            && e.contains(EFFECTFUL_REWRITE_MARKER)),
         "an effectful macro under `[unfold]` is never expanded, so it must stay \
          refused, got: {errs:?}",
     );
@@ -400,7 +407,7 @@ end
     let errs = load_errors(SRC);
     assert!(
         errs.iter().any(|e| e.contains("test.wi757nested.risky")
-            && e.contains("an effectful operation is not equational")),
+            && e.contains(EFFECTFUL_REWRITE_MARKER)),
         "an effectful macro ARGUMENT must stay refused, got: {errs:?}",
     );
 }

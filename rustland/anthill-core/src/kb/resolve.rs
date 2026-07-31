@@ -3243,7 +3243,11 @@ impl KnowledgeBase {
     /// would fire (the WI-643 regression class). The additional fire-time filters
     /// (`Value::Term` head, functor match, guards) only NARROW this, so the gate
     /// stays a sound necessary condition.
-    fn is_directional_equation(&self, rid: RuleId) -> bool {
+    /// `pub(super)` since WI-903: the LOADER asks it too, to decide whether a typed
+    /// pattern bound (`?x: T`) has an enforcer at all — the same reason WI-902
+    /// raised the typer's `is_simp_equation`. A refusal stated in the loader's own
+    /// vocabulary was measurably wider than this.
+    pub(super) fn is_directional_equation(&self, rid: RuleId) -> bool {
         self.is_equation(rid) && self.equation_is_directional_rewrite(rid)
     }
 

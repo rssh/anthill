@@ -149,6 +149,9 @@ mod wi279_dot_dispatch_test;
 #[path = "include/wi902_dot_rule_macro_test.rs"]
 mod wi902_dot_rule_macro_test;
 
+#[path = "include/wi903_typed_bound_dot_rule_test.rs"]
+mod wi903_typed_bound_dot_rule_test;
+
 #[path = "include/wi281_spec_dot_dispatch_test.rs"]
 mod wi281_spec_dot_dispatch_test;
 

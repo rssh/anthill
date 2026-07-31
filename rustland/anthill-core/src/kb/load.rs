@@ -492,6 +492,31 @@ pub enum LoadError {
         declared: String,
         span: Span,
     },
+    /// WI-582 / WI-903 — a typed rule pattern (`?x: T`) written on a rule shape
+    /// whose firing site never consults it. The bound has exactly ONE enforcer:
+    /// the resolver's `apply_eq_rules`, via [`super::typing::typed_pattern_bounds_hold`],
+    /// over a `[simp]`/`[unfold]` directional rewrite. Carried on any other shape
+    /// the annotation would load and do nothing — so it is refused here rather
+    /// than installed (loud-over-silent). See [`TypedPatternRefusal`] for the two
+    /// shapes and why each cannot enforce it.
+    ///
+    /// A span-bearing variant rather than a bare `Other`, for the reason spelled
+    /// at [`Self::UnknownEntityField`]: `Other` renders unlocated, and
+    /// `dedup_load_errors` (keyed on the rendering) would collapse two offending
+    /// rules into one message. Within a file that is now exact; ACROSS files two
+    /// unlabeled rules at equal byte offsets still collapse, since `dedup_key`
+    /// peels the `Located` wrapper — the pre-existing limit `NonEqKeyRequiresLawfulEq`
+    /// documents, not one this variant introduces.
+    TypedPatternNotEnforced {
+        /// The offending rule's citation LABEL, qualified — raw, not a phrase:
+        /// [`typed_pattern_refusal_detail`] owns every word of the rendering.
+        /// `None` for an unlabeled rule, which has no citation handle.
+        rule: Option<String>,
+        reason: TypedPatternRefusal,
+        /// The rule head's span, as `KnowledgeBase::rule_head_span` reports it
+        /// (whence the `Option`).
+        span: Option<Span>,
+    },
     Other {
         message: String,
     },
@@ -905,6 +930,67 @@ fn type_param_shadow_detail(op: &str, param: &str, shadowed: &ShadowedSlot) -> S
     }
 }
 
+/// Why a typed rule pattern (`?x: T`) cannot be enforced on the rule carrying it
+/// — the two shapes [`LoadError::TypedPatternNotEnforced`] refuses. Named cases,
+/// not a pre-rendered string, so both renderings share one wording via
+/// [`typed_pattern_refusal_detail`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypedPatternRefusal {
+    /// Not a directional rewrite — the only shape the resolver fires through
+    /// `typed_pattern_bounds_hold`. Keyed on `KnowledgeBase::is_directional_
+    /// equation`, the predicate `fire_simp_equation` itself gates on, so this
+    /// covers an untagged equation, a non-equational head, AND (WI-903, MEASURED)
+    /// a GUARDED one — `f(?x: T) = g(?x) :- p(?x)` has a body, so `is_equation`
+    /// rejects it and its bound was installed for no reader.
+    NotARewrite,
+    /// WI-903: an equational `[simp]` rewrite whose LHS is the reflect
+    /// `Expr.dot_apply` ENTITY — a WI-279 INC2 DOT rule, which clears
+    /// [`Self::NotARewrite`]'s test and still cannot enforce the bound. It is
+    /// fired by `typing::try_fire_dot_rule`, against a surface `Expr::DotApply`
+    /// occurrence; the resolver never sees that head, and NO typer-side site
+    /// enforces typed bounds (`simp_rewrite::try_fire` skips a bound-carrying rule
+    /// outright). So the bound could only be ignored — MEASURED before this
+    /// refusal: an unsatisfiable `?x: String` against a literal `5` loaded clean
+    /// and fired.
+    ///
+    /// Keyed on `simp_rewrite::is_typer_fired_dot_rule` — the firing site's OWN
+    /// conditions — so it stays exactly as wide as that site: an `[unfold]` dot
+    /// rule, fired by the RESOLVER (which does enforce the bound), keeps its
+    /// annotation.
+    DotRule,
+}
+
+/// The one wording of [`LoadError::TypedPatternNotEnforced`], shared by the two
+/// renderings (`display_with_source` and `Display`) so they cannot drift —
+/// WI-852's rule that a diagnostic has ONE owner. That includes how the rule is
+/// NAMED: the variant carries the raw label (proposal 032 — the label IS the
+/// citation handle; `None` for an unlabeled rule, which has no handle to print),
+/// and the citation phrase is built here rather than at the construction site.
+fn typed_pattern_refusal_detail(rule: Option<&str>, reason: TypedPatternRefusal) -> String {
+    let rule = match rule {
+        Some(qn) => format!("rule `{qn}`"),
+        None => "an unlabeled rule".to_string(),
+    };
+    match reason {
+        TypedPatternRefusal::NotARewrite => format!(
+            "WI-582: a typed rule pattern (`?x: T`) is enforced only where the \
+             resolver fires a directional rewrite — a `[simp]`/`[unfold]` EQUATION, \
+             which is bodyless (§8.3). {rule} is not one, so it would silently \
+             ignore the bound. Give it that shape or drop the annotation. (A \
+             `Spec[T]` introducer guard is NOT what disqualifies a rule — \
+             `k[T](?x: T, ?y) = ?x :- Summable[T] [simp]` folds its guard away and \
+             is a legal bounded equation; any OTHER body goal does not fold.)"
+        ),
+        TypedPatternRefusal::DotRule => format!(
+            "WI-903: {rule} is a DOT rule (`dot_apply(?receiver, member, …)`), \
+             fired by the typer's sort-scoped dot path. A typed rule pattern \
+             (`?x: T`) is enforced only by the RESOLVER, which never sees a \
+             `dot_apply` head, so the bound would be silently ignored. Drop the \
+             annotation, or write the law as an operation-headed `[simp]` equation"
+        ),
+    }
+}
+
 impl LoadError {
     /// WI-745: stamp this error with the file it came from (see
     /// [`LoadError::Located`]). Idempotent — an already-`Located` error is
@@ -987,6 +1073,7 @@ impl LoadError {
             | LoadError::BareMemberCall { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
             | LoadError::UnselectedInstance { span, .. }
+            | LoadError::TypedPatternNotEnforced { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -1272,6 +1359,13 @@ impl LoadError {
                     "{}: '{}' has no field '{}' (declares: {})",
                     loc.format_start(*span), entity, field, declared,
                 )
+            }
+            LoadError::TypedPatternNotEnforced { rule, reason, span } => {
+                let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
             }
             LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
                 format!(
@@ -1646,6 +1740,13 @@ impl std::fmt::Display for LoadError {
                     "'{}' has no field '{}' (declares: {}) at {}..{}",
                     entity, field, declared, span.start, span.end,
                 )
+            }
+            LoadError::TypedPatternNotEnforced { rule, reason, span } => {
+                let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::ForbiddenInternalAccess { name, declared_in, scope_name, span } => {
                 write!(
@@ -13991,31 +14092,54 @@ impl<'a> Loader<'a> {
             // WI-582: install this head's typed-pattern bounds (if any) on the
             // RuleEntry, mapping each head variable to its DeBruijn index. A
             // denial (`⊥`) head has no positive-head bounds (index out of range
-            // → `get` is None), so this is a no-op there. The bound is ENFORCED
-            // only by the resolver's `apply_eq_rules` (a `[simp]`/`[unfold]`
-            // directional rewrite over an equational head); on any other rule the
-            // guard would be silently ignored, so reject it loudly rather than
-            // load a rule whose `?x: T` does nothing (loud-over-silent).
+            // → `get` is None), so this is a no-op there.
+            //
+            // The bound has exactly ONE enforcer, the resolver's `apply_eq_rules`
+            // (`typed_pattern_bounds_hold`); on any rule it does not reach, the
+            // guard would be silently ignored, so refuse it loudly rather than load
+            // a rule whose `?x: T` does nothing (loud-over-silent). Both tests below
+            // are therefore asked in a FIRING site's OWN terms — `is_directional_
+            // equation` is the very predicate `fire_simp_equation` gates on, and
+            // `is_typer_fired_dot_rule` the one `try_fire_dot_rule` selects by — so
+            // the refusal cannot drift wider than the firing that justifies it.
+            // WI-903: both were previously restated in the loader's vocabulary, and
+            // both were wider. MEASURED: `is_equational_head && [simp]` admits a
+            // GUARDED equation (`f(?x: T) = g(?x) :- p(?x)`), which `is_equation`
+            // rejects for its non-empty body, so its bound installed and no site
+            // could read it — the same silent-ignore as the dot case.
             if let Some(bounds) = head_type_bounds.get(head_idx) {
                 if !bounds.is_empty() {
-                    let enforced = is_equational_head(self.kb, kb_head)
-                        && (meta_has_flag(self.kb, meta, "simp")
-                            || meta_has_flag(self.kb, meta, "unfold"));
-                    if enforced {
-                        self.kb.install_rule_type_bounds(rid, bounds);
+                    let refusal = if !self.kb.is_directional_equation(rid) {
+                        Some(TypedPatternRefusal::NotARewrite)
+                    } else if super::simp_rewrite::is_typer_fired_dot_rule(self.kb, rid) {
+                        Some(TypedPatternRefusal::DotRule)
                     } else {
-                        self.errors.push(LoadError::Other {
-                            message: "WI-582: typed rule patterns (`?x: T`) are supported only on \
-                                      `[simp]`/`[unfold]` equational rewrite rules, where the \
-                                      resolver enforces the bound; a non-rewrite rule would \
-                                      silently ignore it. Tag the rule `[simp]`/`[unfold]` or \
-                                      drop the annotation."
-                                .to_string(),
+                        None
+                    };
+                    if let Some(reason) = refusal {
+                        self.errors.push(LoadError::TypedPatternNotEnforced {
+                            // The label's qualified name, or `None` when unlabeled —
+                            // RAW, with the phrasing left to the one wording owner
+                            // (`typed_pattern_refusal_detail`).
+                            rule: self
+                                .kb
+                                .rule_label(rid)
+                                .map(|l| self.kb.qualified_name_of(l).to_string()),
+                            reason,
+                            // The head span this loop just installed, read back
+                            // through the KB accessor so the diagnostic and the rule
+                            // cannot disagree about where the head is.
+                            span: self.kb.rule_head_span(rid).map(|s| s.span),
                         });
+                    } else {
+                        self.kb.install_rule_type_bounds(rid, bounds);
                     }
                 }
             }
-            // WI-139: equational rules are cite-required by default.
+            // WI-139: equational rules are cite-required by default. Deliberately
+            // NOT folded into the tags read above: this asks about the head SHAPE
+            // (an untagged equational head is a cite-required law whether or not it
+            // is bodyless), the check above about what actually FIRES.
             if is_equational_head(self.kb, kb_head)
                 && !meta_has_flag(self.kb, meta, "simp")
                 && !meta_has_flag(self.kb, meta, "unfold")

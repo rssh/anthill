@@ -6421,6 +6421,16 @@ fn collect_arg_errors<'a>(
 /// handed, for the caller to report at this redex (WI-757), the same contract as
 /// [`fire_simp`].
 ///
+/// WI-903: this site does NOT consult `kb.rule_type_bounds`, and does not have to
+/// — a dot rule it fires can carry none. A `?x: T` bound is enforced at one site,
+/// the RESOLVER's `apply_eq_rules`, which never sees a `dot_apply` head; the loader
+/// therefore refuses the annotation here rather than letting it load and be ignored
+/// (`load::TypedPatternRefusal::DotRule`). Adding a second, typer-side enforcer was
+/// the alternative and was declined: the typer does not enforce typed bounds
+/// anywhere ([`super::simp_rewrite::try_fire`] skips bound-carrying rules), and a
+/// compile-time firing decision keyed on an inferred type would make the rule's
+/// reach depend on inference order.
+///
 /// `rids` are the SAME eq+unify candidates [`fire_simp`] gets — gathered once per
 /// typing pass (WI-657(9)) and filtered here by `is_simp_equation`. This site used
 /// to re-scan the `eq` bucket alone, per DotApply, behind its own inlined copy of
@@ -6439,13 +6449,15 @@ fn try_fire_dot_rule(
     from: &Rc<NodeOccurrence>,
     rids: &[RuleId],
 ) -> Result<Option<Rc<NodeOccurrence>>, super::simp_rewrite::MacroRejection> {
-    let Some(dot_apply_sym) = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply") else {
+    // WI-903: hoisted out of the loop, as before — but the selection itself is now
+    // `fires_as_dot_rule`, the SAME predicate the loader's typed-bound refusal
+    // asks. A third condition added here therefore narrows the refusal with it,
+    // instead of silently leaving it wider (this function's WI-902 defect exactly).
+    let Some(dot_apply_sym) = super::simp_rewrite::dot_apply_head_sym(kb) else {
         return Ok(None);
     };
     for &rid in rids {
-        if !super::simp_rewrite::is_simp_equation(kb, rid)
-            || super::simp_rewrite::stored_lhs_functor(kb, rid) != Some(dot_apply_sym)
-        {
+        if !super::simp_rewrite::fires_as_dot_rule(kb, rid, dot_apply_sym) {
             continue;
         }
         // Enclosing-sort guard: a dot rule fires only where the receiver's

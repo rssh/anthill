@@ -684,13 +684,13 @@ fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
 ///   under `[unfold]` loaded clean.
 /// - NO typed-pattern bounds. WI-582: [`try_fire`] skips a rule carrying `?x: T`
 ///   bounds outright, leaving it to the resolver's `apply_eq_rules` — which, again,
-///   does not expand macros. `typing::try_fire_dot_rule` does NOT consult the bounds,
-///   so a typed-bound DOT rule fires — and, since WI-902, expands its macro — while
-///   reading `None` here. The gate therefore refuses an
-///   `Error`-declaring macro under a typed-bound dot rule that it does in fact expand
-///   away. MEASURED, and deliberately left conservative (loud, and refused before
-///   WI-902 too): the bound on such a rule is itself silently ignored, which is the
-///   defect to fix — WI-903, whose fix retires this whole case.
+///   does not expand macros. WI-903 made this condition EXACT rather than merely
+///   sufficient: the loader now REFUSES a typed bound on the one rule shape the
+///   typer expands without passing through [`try_fire`] — a `[simp]` DOT rule
+///   ([`super::load::TypedPatternRefusal::DotRule`], keyed on
+///   [`is_typer_fired_dot_rule`], since `try_fire_dot_rule` does not consult the
+///   bounds either). So every bound-carrying rule that can exist is one the typer
+///   does not fire, and reading `None` here is right for all of them.
 /// - NO named arguments on the RHS head, mirroring [`try_expand_macro`]'s own
 ///   positional-only surface: a macro spelled `m(x: ?x)` declines and its template
 ///   is kept. (That residual is separately refused today — the pattern var arrives
@@ -847,6 +847,66 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
     stored_eq_operand_functor(kb, rid, 0)
 }
 
+/// The reflect `Expr.dot_apply` ENTITY symbol — the LHS head a WI-279 INC2 DOT
+/// rule (`rule dr: dot_apply(?e, m, ?x) = rhs [simp]`) loads as. The one owner of
+/// the qualified name *for rule-shape tests*, so the site that FIRES dot rules
+/// (`typing::try_fire_dot_rule`) and the site that REFUSES a typed pattern bound on
+/// one (WI-903, `load::load_rule`) cannot drift apart on what a dot rule IS. (The
+/// same string is also spelled by the declarative reflect tables — `KERNEL_VOCAB`,
+/// `ExprBuilderSyms`, `term_view`'s field map — which this does not claim to own.)
+///
+/// `None` only if the reflect vocabulary is absent. `register_prelude` →
+/// `register_stdlib_scopes` DEFINES this symbol (it does not wait for
+/// `reflect.anthill` to load), so every KB built the documented way resolves it
+/// before any rule loads — the `Option` is the reader's honesty, not a live case.
+pub(super) fn dot_apply_head_sym(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")
+}
+
+/// WI-903 — would the TYPER's dot-rule site FIRE `rid`? Exactly the two conditions
+/// `typing::try_fire_dot_rule` applies before it matches: the rule is a `[simp]`
+/// EQUATION ([`is_simp_equation`]) and its LHS is the reflect `Expr.dot_apply`
+/// entity. That site never consults `rule_type_bounds`, so the loader refuses a
+/// typed pattern bound (`?x: T`) on any rule this accepts — read it as "fired where
+/// the bound is not enforced".
+///
+/// The firing site CALLS this rather than re-spelling the conjunction, so the
+/// refusal cannot outrun the firing that justifies it (the discipline
+/// [`macro_expanded_rhs_head`] follows for the WI-702 gate — and the failure this
+/// very function had in WI-902, when an inlined third copy of [`is_simp_equation`]
+/// scanned the `eq` bucket alone). `dot_apply` is [`dot_apply_head_sym`]'s result,
+/// passed IN so the per-`DotApply` firing loop keeps hoisting that one string
+/// lookup out; [`is_typer_fired_dot_rule`] is the self-contained form for the cold
+/// loader path.
+///
+/// Deliberately shape-only — no `rule_type_bounds` test. Adding one would make the
+/// loader's gate circular (a refused rule would read as "not typer-fired", hence
+/// not refused).
+pub(super) fn fires_as_dot_rule(kb: &KnowledgeBase, rid: RuleId, dot_apply: Symbol) -> bool {
+    is_simp_equation(kb, rid) && stored_lhs_functor(kb, rid) == Some(dot_apply)
+}
+
+/// [`fires_as_dot_rule`] resolving the symbol itself — for a caller that tests one
+/// rule rather than looping (the loader's WI-903 refusal).
+///
+/// `[simp]`-only, exactly as [`is_simp_equation`] is — but read the reason
+/// precisely, because the obvious one is WRONG: the resolver fires `[simp]`
+/// equations TOO (`fire_simp_equation` gates on `is_directional_equation`, which
+/// accepts `[simp]` OR `[unfold]`) and enforces the bound there. What singles
+/// `[simp]` out is that it ALSO has a firing site that IGNORES the bound, so the
+/// bound cannot be relied on; nothing in the typer selects `[unfold]`, so refusing
+/// that would refuse a shape this refusal has no evidence against.
+///
+/// Two residuals, both WI-906, both code-read rather than driven: whether a
+/// `dot_apply` TERM redex ever reaches the resolver at all is UNMEASURED (if it
+/// does not, the `[unfold]` carve-out is unjustified and both should be refused);
+/// and this is NOT narrowed by the typer's per-receiver enclosing-SORT guard, which
+/// a rule alone cannot decide — so a `dot_apply` `[simp]` rule whose `rule_domain`
+/// no receiver can conform to is refused although only the resolver could fire it.
+pub(super) fn is_typer_fired_dot_rule(kb: &KnowledgeBase, rid: RuleId) -> bool {
+    dot_apply_head_sym(kb).is_some_and(|dot| fires_as_dot_rule(kb, rid, dot))
+}
+
 /// Open an equation's DeBruijn vars to fresh globals and return its
 /// `(lhs, rhs, fresh)` — the matchable/buildable LHS/RHS terms plus the fresh
 /// globals the DeBruijn slots opened to (empty for a legacy arity-0 Global
@@ -854,8 +914,11 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
 /// uses) — not a reimplementation of the resolver's rule-opening. The `fresh`
 /// set lets the resolver's `fire_simp_equation` (WI-641 Phase 2) key typed-
 /// pattern bounds by the opened globals and share this ONE opener rather than
-/// re-inlining it. `pub(super)`: the typer's dot-rule firing (WI-279 INC2) opens
-/// a matched `[simp]` dot rule (and ignores `fresh` — it skips typed rules).
+/// re-inlining it. `pub(super)`: the typer's dot-rule firing (WI-279 INC2) opens a
+/// matched `[simp]` dot rule and ignores `fresh` — soundly, since WI-903: a dot
+/// rule THAT SITE fires can carry no typed-pattern bounds (the loader refuses
+/// them, [`is_typer_fired_dot_rule`]), so there is nothing for the opened globals
+/// to key.
 pub(super) fn open_equation(
     kb: &mut KnowledgeBase,
     rid: RuleId,

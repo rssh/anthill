@@ -4442,7 +4442,11 @@ impl KnowledgeBase {
     /// opens to a fresh VarId. A variable absent from `globals` is a loader bug
     /// (a typed annotation on a non-head variable); flag it loudly rather than
     /// silently dropping the bound.
-    pub fn install_rule_type_bounds(&mut self, id: RuleId, var_bounds: &[(VarId, TermId)]) {
+    ///
+    /// `pub(crate)`, not `pub` (WI-903): the loader's refusal is what keeps a bound
+    /// off a rule no site enforces it on, so the installer must not be reachable
+    /// around it from outside the crate.
+    pub(crate) fn install_rule_type_bounds(&mut self, id: RuleId, var_bounds: &[(VarId, TermId)]) {
         let globals = self.rules[id.index()].globals.clone();
         let mut bounds: Vec<(u32, TermId)> = Vec::with_capacity(var_bounds.len());
         for &(vid, bound) in var_bounds {
