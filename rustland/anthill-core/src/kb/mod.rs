@@ -2528,6 +2528,19 @@ impl KnowledgeBase {
         }
     }
 
+    /// Positional arity of the head application at `tid` — 0 for a bare
+    /// `Ref` / `Ident` or any non-`Fn` head. Companion to [`Self::head_functor`]
+    /// for the arity-aware scoping-marker check (WI-878): a marker NAME at a
+    /// non-marker arity (`some_in/1`) is a user typo, not the resolver's 3-ary
+    /// quantifier, so it must NOT take the marker exemption in
+    /// [`Self::undefined_query_functor`].
+    pub(crate) fn head_pos_arity(&self, tid: TermId) -> usize {
+        match self.get_term(tid) {
+            Term::Fn { pos_args, .. } => pos_args.len(),
+            _ => 0,
+        }
+    }
+
     /// The head functor of a query pattern `tid` WHEN it is a concrete name the
     /// KB does not define — no rule or fact indexes it and no declaration of any
     /// kind (sort / entity constructor / operation / const / builtin) names it.
@@ -2541,12 +2554,17 @@ impl KnowledgeBase {
     ///   * a head with no functor at all (`Var` / `Const` / `Bottom` — a bare
     ///     `?x` or a literal is a legitimate pattern the resolver answers empty);
     ///   * a functor that IS defined;
-    ///   * a resolver SCOPING MARKER (`forall_in` / `some_in` / `forall_impl` /
-    ///     `__pop_assumption`) — the resolver recognises these by short name and
-    ///     skolemises / expands them in place, so they carry no rule / fact /
-    ///     declaration yet are not unknown. A bounded-quantifier query that
-    ///     evaluates to FALSE produces zero solutions, and without this arm that
-    ///     empty result would be mis-refused as an unknown functor (WI-027).
+    ///   * a resolver SCOPING MARKER (`forall_in` / `some_in` / `forall_impl`
+    ///     at arity 3, `__pop_assumption` at arity 1) — the resolver recognises
+    ///     these by short name AND arity and skolemises / expands them in place,
+    ///     so they carry no rule / fact / declaration yet are not unknown. A
+    ///     bounded-quantifier query that evaluates to FALSE produces zero
+    ///     solutions, and without this arm that empty result would be mis-refused
+    ///     as an unknown functor (WI-027). The arity gate (WI-878) means a marker
+    ///     NAME at any OTHER arity — a typo like `some_in(x)` — is NOT exempted
+    ///     and IS reported, exactly as the resolver no longer treats it as a
+    ///     quantifier; the shared [`crate::kb::resolve::is_scoping_marker`]
+    ///     predicate keeps the two in lockstep.
     ///
     /// The `rules_by_functor` disjunct is load-bearing, not redundant with
     /// `kind_of`: a predicate defined PURELY by facts keeps an `Unresolved`
@@ -2561,7 +2579,7 @@ impl KnowledgeBase {
     /// before resolution (WI-754).
     pub fn undefined_query_functor(&self, tid: TermId) -> Option<Symbol> {
         let sym = self.head_functor(tid)?;
-        if crate::kb::resolve::is_scoping_marker_name(self.resolve_sym(sym)) {
+        if crate::kb::resolve::is_scoping_marker(self.resolve_sym(sym), self.head_pos_arity(tid)) {
             return None;
         }
         let defined =

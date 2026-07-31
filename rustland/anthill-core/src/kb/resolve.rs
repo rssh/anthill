@@ -875,7 +875,9 @@ impl SearchStream {
         // `__pop_assumption` classifies carrier-neutrally; the forall/quant
         // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
-            ViewHead::Functor { functor: Some(f), .. } => is_scoping_marker_name(kb.resolve_sym(f)),
+            ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
+                is_scoping_marker(kb.resolve_sym(f), pos_arity)
+            }
             _ => false,
         };
         if is_marker {
@@ -1375,21 +1377,17 @@ impl SearchStream {
         // before dispatch), so read its structure directly through `TermView`
         // — carrier-neutral (WI-683), no whole-goal reify: a rule-body
         // `forall … ==>` flows through as its `Value::Node` occurrence.
-        let pos_arity = match goal.head(kb) {
-            ViewHead::Functor { pos_arity, .. } => pos_arity,
-            _ => 0,
-        };
+        // Arity is guaranteed 3 by `step_init`'s `is_scoping_marker` gate (WI-878) —
+        // the SOLE arity authority — so all three positional args are present. The
+        // `else` is a defensive fallback for a malformed occurrence, not a reachable
+        // path (the old separate `if pos_arity != 3` re-check is now dead: a non-3
+        // `forall_impl` never passes the gate to reach here).
         let (Some(binders_arg), Some(antes_arg), Some(cons_arg)) =
             (goal.pos_arg(kb, 0), goal.pos_arg(kb, 1), goal.pos_arg(kb, 2))
         else {
-            // Malformed forall_impl — treat as failure.
             self.stack.pop();
             return Some(StepResult::Continue);
         };
-        if pos_arity != 3 {
-            self.stack.pop();
-            return Some(StepResult::Continue);
-        }
         let binders = Self::unwrap_tuple_args(kb, &binders_arg);
         let antecedents = Self::unwrap_tuple_args(kb, &antes_arg);
         let consequents = Self::unwrap_tuple_args(kb, &cons_arg);
@@ -1611,21 +1609,16 @@ impl SearchStream {
         // — carrier-neutral (WI-683). The binder / body ride as `Value`; only
         // the COLLECTION structural-arg is reified (below), for the term-spine
         // walk, mirroring `forall_impl`'s antecedent path.
-        let pos_arity = match goal.head(kb) {
-            ViewHead::Functor { pos_arity, .. } => pos_arity,
-            _ => 0,
-        };
+        // Arity is guaranteed 3 by `step_init`'s `is_scoping_marker` gate (WI-878) —
+        // the SOLE arity authority — so all three positional args are present. The
+        // `else` is a defensive fallback for a malformed occurrence, not a reachable
+        // path (the old separate `if pos_arity != 3` re-check is now dead).
         let (Some(binder_arg), Some(coll_arg), Some(body_arg)) =
             (goal.pos_arg(kb, 0), goal.pos_arg(kb, 1), goal.pos_arg(kb, 2))
         else {
-            // Malformed bounded quantifier — treat as failure.
             self.stack.pop();
             return Some(StepResult::Continue);
         };
-        if pos_arity != 3 {
-            self.stack.pop();
-            return Some(StepResult::Continue);
-        }
         let binder = binder_arg.to_value();
         let collection = coll_arg.to_value();
         let body: Vec<Value> = Self::unwrap_tuple_args(kb, &body_arg);
@@ -6744,17 +6737,19 @@ impl KnowledgeBase {
             let walked = Value::Node(node_occurrence::substitute_occurrence(self, node, subst));
             // Need a concrete functor to look up; a var-/non-functor-headed goal
             // is not refutable here.
-            let functor = match walked.head(self) {
-                ViewHead::Functor { functor: Some(f), .. } => f,
+            let (functor, pos_arity) = match walked.head(self) {
+                ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
                 _ => continue,
             };
             // Skip every non-builtin functor that `step_init` resolves off the
             // discrim path — otherwise its zero candidates would falsely refute.
             // A mounted extent functor (WI-797) resolves via its source's rows,
-            // which `query_view` does not see.
+            // which `query_view` does not see. The scoping-marker skip is arity-
+            // keyed in lockstep with `step_init`'s dispatch (WI-878): a mis-arity
+            // marker name is NOT resolved off-discrim, so it is refutable here.
             if self.extent_owner(functor).is_some()
                 || self.bare_bodied_bool_relation(functor)
-                || is_scoping_marker_name(self.resolve_sym(functor))
+                || is_scoping_marker(self.resolve_sym(functor), pos_arity)
             {
                 continue;
             }
@@ -7054,20 +7049,48 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
     }
 }
 
-/// The scoping / quantifier MARKER functor names `step_init` resolves off the
+/// The scoping / quantifier MARKER applications `step_init` resolves off the
 /// discrim path — skolemised / expanded in place, never via rule/fact
-/// candidates: `forall_impl` (WI-108 hereditary-Harrop), `forall_in` / `some_in`
-/// (WI-027 bounded quantification), and the `__pop_assumption` scope discharge.
+/// candidates: `forall_impl` (WI-108 hereditary-Harrop) and `forall_in` /
+/// `some_in` (WI-027 bounded quantification), each 3-ary, plus the 1-ary
+/// `__pop_assumption` scope discharge.
+///
+/// Recognised by short name AND positional arity (WI-878). A marker is only ever
+/// BUILT at its canonical arity (the parser desugars `forall … ==>` / `forall ?x
+/// in xs: …` to 3-ary heads; `make_pop_assumption_marker` builds `__pop_assumption`
+/// 1-ary) and the handlers consume exactly that shape (`step_bounded_quant` /
+/// `step_forall_impl` read positional args 0/1/2; `pop_assumption_arg` matches
+/// `pos_arity: 1`), so a marker NAME carried at any OTHER arity — `some_in(x)` —
+/// is a user typo, never the resolver's quantifier. Keying on the name alone let
+/// such a typo escape the undefined-functor report as a silent `no solutions`.
+/// This predicate is the SOLE arity guard: once it admits a marker the handlers
+/// assume canonical arity and no longer re-check it.
+///
+/// Narrow residual: `__pop_assumption`'s full recognition is stricter than name +
+/// arity — `pop_assumption_arg` also requires `named_arity == 0` and a non-negative
+/// int argument. A malformed pos-arity-1 `__pop_assumption` (a non-int or a named
+/// arg) is thus exempted here yet unhandled by the resolver, the WI-878 silent-skip
+/// class surviving for this one form. It is effectively unreachable — the name is
+/// internal, synthesised only as `__pop_assumption(IntLiteral)`, never user-typed —
+/// and the arg-shape check is a resolver-internal extraction detail a name+arity
+/// predicate cannot express, so it stays in `pop_assumption_arg`.
+///
 /// Shared by `step_init`'s marker dispatch and WI-670's refutation skip so the
-/// two name sets never drift (a marker missing from the refutation set would be
-/// mistaken for a 0-candidate goal and falsely refute a rule that uses it).
+/// two recognitions never drift (a marker missing from the refutation set would
+/// be mistaken for a 0-candidate goal and falsely refute a rule that uses it).
 ///
 /// `pub(crate)` so `KnowledgeBase::undefined_query_functor` (WI-754) shares this
-/// one authority for "the resolver recognises this functor by short name":
-/// a marker carries no rule/fact/declaration, so without consulting this set a
-/// bare `(forall … )` query would be mistaken for an unknown functor and refused.
-pub(crate) fn is_scoping_marker_name(name: &str) -> bool {
-    matches!(name, "forall_impl" | "forall_in" | "some_in" | "__pop_assumption")
+/// ONE authority: a marker carries no rule/fact/declaration, so without consulting
+/// it a well-formed `(forall … )` query would be mis-refused as an unknown functor
+/// — yet a mis-arity marker name MUST be refused. Routing both the CLI exemption
+/// and the resolver dispatch through this one predicate keeps them in LOCKSTEP
+/// (WI-878): tighten the arity here and both tighten together.
+pub(crate) fn is_scoping_marker(name: &str, pos_arity: usize) -> bool {
+    match name {
+        "forall_impl" | "forall_in" | "some_in" => pos_arity == 3,
+        "__pop_assumption" => pos_arity == 1,
+        _ => false,
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────
