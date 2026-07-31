@@ -53,6 +53,9 @@ mod wi714_join_test;
 #[path = "include/wi730_boolean_condition_test.rs"]
 mod wi730_boolean_condition_test;
 
+#[path = "include/wi757_macro_diagnostic_test.rs"]
+mod wi757_macro_diagnostic_test;
+
 #[path = "include/wi714_project_test.rs"]
 mod wi714_project_test;
 

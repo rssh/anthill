@@ -82,12 +82,14 @@ const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 /// mapped to a decline and the user read the residual `guarded_of` template's
 /// type error instead.
 ///
-/// No dedup key rides here on purpose: a rejection is reported by the fire's
-/// CALLER, at the node it fired on, and it ABORTS that node's typing — so one
-/// rejection produces one error, and an attempt that instead succeeds leaves
-/// nothing behind to go stale. (Buffering rejections on the KB for a later drain
-/// would need both, and would leak a rejection from a speculative walk whose
-/// errors are discarded.)
+/// No dedup key rides here on purpose. On the TYPER's path — the only one that
+/// reports — a rejection is handed to the fire's CALLER, at the node it fired on,
+/// and ABORTS that node's typing: one rejection produces one error, and an attempt
+/// that instead succeeds leaves nothing behind to go stale. (Buffering rejections on
+/// the KB for a later drain would need both, and would leak a rejection from a
+/// speculative walk whose errors are discarded.) [`run`] — the unit-test harness,
+/// which has no reporter — is the one place that does keep a rejection, and it keeps
+/// only the FIRST and hands it straight back rather than accumulating.
 #[derive(Debug)]
 pub struct MacroRejection {
     /// The macro that rejected — the symbol at the head of the `[simp]` RHS.
@@ -210,6 +212,7 @@ impl SimpFirer for TyperFirer {
 /// has no error sink of its own, and a rejection is a definitive user-caused
 /// failure that must not evaporate. `None` = every body rewrote (or declined)
 /// cleanly.
+#[must_use = "a macro rejection is a user-facing diagnostic; dropping it silences it"]
 pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
     if !has_simp_equations(kb) {
         return None;
@@ -618,11 +621,49 @@ pub(super) fn try_fire(
 /// non-`Fn` RHS (a bare const / nullary ref, e.g. `peek(?s) <=> true`) reads `None` —
 /// never a macro, so it stays guard-gated.
 ///
-/// `pub(super)`: WI-757 — the typer's WI-702 effectful-rewrite gate
-/// (`check_simp_effectful_ops`) exempts exactly this position when it holds a macro,
-/// and must read it the same way the firing site does.
-pub(super) fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
+fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
     stored_eq_operand_functor(kb, rid, 1)
+}
+
+/// WI-757 — the RHS-head MACRO that [`try_fire`] would EVALUATE AWAY for `rid`, or
+/// `None` when this rule's RHS head is not macro-expanded at all.
+///
+/// The one owner of "would the expander actually run this macro?", so the WI-702
+/// effectful-rewrite gate (`typing::check_simp_effectful_ops`) can exempt the macro
+/// position — whose call is consumed by compilation and never reaches runtime —
+/// WITHOUT the exemption drifting wider than the expansion it is justified by. Every
+/// condition below is one [`try_fire`] itself applies; each one it does NOT is a
+/// rule the typer leaves alone, where the RHS call really does survive the rewrite
+/// into the program and must stay gated:
+///
+/// - `[simp]` ONLY. `[unfold]` is fired by the RESOLVER (`fire_simp_equation`),
+///   which substitutes the RHS template verbatim and never macro-expands — so an
+///   `[unfold]` rule's effectful RHS is exactly the hazard WI-702 exists for.
+///   MEASURED: with the exemption keyed on `is_macro` alone, an effectful macro
+///   under `[unfold]` loaded clean.
+/// - NO typed-pattern bounds. WI-582: [`try_fire`] skips a rule carrying `?x: T`
+///   bounds outright, leaving it to the resolver's `apply_eq_rules` — which, again,
+///   does not expand macros.
+/// - NO named arguments on the RHS head, mirroring [`try_expand_macro`]'s own
+///   positional-only surface: a macro spelled `m(x: ?x)` declines and its template
+///   is kept. (That residual is separately refused today — the pattern var arrives
+///   as its VALUE type against an occurrence parameter — but the exemption should
+///   not be leaning on a downstream check for its narrowness.)
+pub(super) fn macro_expanded_rhs_head(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
+    if !is_simp_equation(kb, rid) || !kb.rule_type_bounds(rid).is_empty() {
+        return None;
+    }
+    let head = kb.fact_head_term(rid)?;
+    let rhs = match kb.get_term(head) {
+        Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[1],
+        _ => return None,
+    };
+    match kb.get_term(rhs) {
+        Term::Fn { functor, named_args, .. } if named_args.is_empty() => {
+            Some(*functor).filter(|f| super::typing::is_macro(kb, *f))
+        }
+        _ => None,
+    }
 }
 
 /// The functor of one operand of an equation's stored head (`Fn{eq/unify, [lhs, rhs]}`)
@@ -1241,7 +1282,7 @@ mod tests {
         let foo = kb.intern("foo");
         kb.set_op_body_node(foo, Rc::clone(&body));
 
-        run(&mut kb);
+        assert!(run(&mut kb).is_none(), "no macro rejection expected here");
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         // add(7, 0) fired add_zero → ?x, i.e. the reused `7` child occurrence.
@@ -1279,7 +1320,7 @@ mod tests {
         let foo = kb.intern("foo");
         kb.set_op_body_node(foo, body);
 
-        run(&mut kb);
+        assert!(run(&mut kb).is_none(), "no macro rejection expected here");
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         match rewritten.as_expr() {
@@ -1324,7 +1365,7 @@ mod tests {
         );
         let foo = kb.intern("foo");
         kb.set_op_body_node(foo, body);
-        run(&mut kb);
+        assert!(run(&mut kb).is_none(), "no macro rejection expected here");
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         assert!(
@@ -1352,7 +1393,7 @@ mod tests {
         let foo = kb.intern("foo");
         kb.set_op_body_node(foo, body);
 
-        run(&mut kb);
+        assert!(run(&mut kb).is_none(), "no macro rejection expected here");
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         assert!(
@@ -1401,7 +1442,7 @@ mod tests {
         let foo = kb.intern("foo");
         kb.set_op_body_node(foo, body);
 
-        run(&mut kb);
+        assert!(run(&mut kb).is_none(), "no macro rejection expected here");
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         match rewritten.as_expr() {
@@ -1450,7 +1491,7 @@ mod tests {
         let foo = kb.intern("foo");
         kb.set_op_body_node(foo, node);
 
-        run(&mut kb);
+        assert!(run(&mut kb).is_none(), "no macro rejection expected here");
 
         // Walk down the wrap chain and confirm the innermost add(7, 0) → 7.
         let mut cur = Rc::clone(kb.op_body_node(foo).expect("op body present"));

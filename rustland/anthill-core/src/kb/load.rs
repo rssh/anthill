@@ -832,18 +832,6 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
     }
 }
 
-/// WI-757: the one wording of [`LoadError::MacroRejected`], shared by the two
-/// renderings AND by `TypeError::MacroRejected`'s `format` — WI-852's rule that a
-/// diagnostic has ONE owner.
-///
-/// The sentence names the MACRO, not the surface spelling that expanded to it
-/// (`where` → `guarded_of`): the macro is what read the syntax and what the author
-/// must satisfy, and the `[simp]` rule that connects the two is greppable from the
-/// name. `expected`/`got` are the macro's own words, verbatim.
-pub(super) fn macro_rejection_message(macro_name: &str, detail: &str) -> String {
-    format!("compile-time macro `{macro_name}` cannot expand this expression: {detail}")
-}
-
 /// WI-840: what an operation's declared type parameter collides with (proposal 058
 /// §4.2's shadowing guard). One rule, three sources — and they need different advice,
 /// because the move that fixes each is different: rename here, rename here but for a
@@ -1122,7 +1110,7 @@ impl LoadError {
                 format!(
                     "{}: {}",
                     loc.format_start(*span),
-                    macro_rejection_message(macro_name, detail),
+                    crate::eval::macro_rejection_message(Some(macro_name), detail),
                 )
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
@@ -1485,7 +1473,7 @@ impl std::fmt::Display for LoadError {
                 write!(
                     f,
                     "{} at {}..{}",
-                    macro_rejection_message(macro_name, detail),
+                    crate::eval::macro_rejection_message(Some(macro_name), detail),
                     span.start,
                     span.end,
                 )

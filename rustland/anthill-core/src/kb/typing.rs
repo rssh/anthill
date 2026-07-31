@@ -766,11 +766,13 @@ impl TypeError {
                     kb.resolve_sym(*field), kb.qualified_name_of(*entity),
                 )
             }
-            // WI-757: the ONE wording of a macro rejection — `to_load_error` builds
-            // `LoadError::MacroRejected` from the same three fields, so the load
-            // renderer and this one cannot drift.
+            // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
+            // shared with the eval `Display` and both `LoadError` renderings.
             TypeError::MacroRejected { macro_name, detail, .. } => {
-                super::load::macro_rejection_message(kb.qualified_name_of(*macro_name), detail)
+                crate::eval::macro_rejection_message(
+                    Some(kb.qualified_name_of(*macro_name)),
+                    detail,
+                )
             }
             TypeError::Multiple { errors } => {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
@@ -7739,6 +7741,20 @@ fn macro_rejection_error(
     rejection: super::simp_rewrite::MacroRejection,
     redex: &Rc<NodeOccurrence>,
 ) -> TypeError {
+    // WI-745: a `TypeError`'s span is a bare byte range; the FILE it indexes into is
+    // stamped separately, per operation body (`check_operation_bodies` tags each error
+    // with `op.body_node.span.source`). So a span from another file would render a
+    // `path:line:col` that is silently wrong. Every rejection today names an occurrence
+    // descended from the macro's own arguments — same file as the redex by
+    // construction — and this makes that a CHECKED precondition rather than a latent
+    // assumption, for the `reject(message, at:)` op 043.1 §7 plans.
+    debug_assert!(
+        rejection.span.is_none_or(|s| s.source == redex.span.source),
+        "WI-757: macro `{:?}` rejected at a span from another file than the redex — \
+         the load error would resolve it against the redex's file and render the \
+         wrong line:col",
+        rejection.macro_name,
+    );
     TypeError::MacroRejected {
         span: Some(rejection.span.map_or(redex.span.span, |s| s.span)),
         macro_name: rejection.macro_name,
@@ -35273,25 +35289,28 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         for node in kb.rule_body_nodes(rid) {
             super::op_requirements::walk_calls_node(node, &mut |sym, _| functors.push(sym));
         }
-        // WI-757 — the ONE exemption: a MACRO at the RHS HEAD. The gate above is
-        // about the call this rewrite EMITS; the RHS-head macro is the REWRITER, and
-        // `try_expand_macro` evaluates it at compile time and splices its RESULT, so
-        // the call never reaches runtime and cannot be duplicated, reordered, or
-        // dropped there — the hazard this check exists for does not exist for it. Its
-        // `Error` is therefore a COMPILE-TIME diagnostic (proposal 043.1 §3.6: a macro
-        // rejects by raising), not a runtime effect, and without this exemption
-        // `check_macro_purity`'s "at most `Error`" allowance would be dead — every
-        // macro declaring it refused at the rule that names it.
+        // WI-757 — the ONE exemption: a MACRO whose call the expander EVALUATES AWAY.
+        // The gate above is about the call this rewrite EMITS; that macro is the
+        // REWRITER — `try_expand_macro` runs it at compile time and splices its
+        // RESULT, so the call never reaches runtime and cannot be duplicated,
+        // reordered, or dropped there. Its `Error` is a COMPILE-TIME diagnostic
+        // (proposal 043.1 §3.6: a macro rejects by raising), not a runtime effect, and
+        // without this exemption `check_macro_purity`'s "at most `Error`" allowance
+        // would be dead — every macro declaring it refused at the rule that names it.
         //
-        // NARROW by construction: read through the SAME `stored_rhs_functor` the
-        // firing site uses, so only the position that is actually macro-expanded is
-        // exempt. Anywhere else — the LHS, an argument, a nested RHS call, a body goal
-        // — an occurrence-typed macro call is not expanded, so it would ride into the
-        // program and stays gated. (Skipping by SYMBOL also exempts the same macro
-        // written elsewhere in the same rule; that spelling cannot type-check — a
-        // macro takes and returns occurrences — so it is refused ahead of here.)
-        let rhs_macro = super::simp_rewrite::stored_rhs_functor(kb, rid)
-            .filter(|f| is_macro(kb, *f));
+        // `macro_expanded_rhs_head` — NOT a local `is_macro` test — is what keeps the
+        // exemption tied to the expansion that justifies it: it re-applies `try_fire`'s
+        // own conditions ([simp] only, no typed bounds, positional RHS), so a rule the
+        // typer does NOT expand keeps the gate. MEASURED: keyed on `is_macro` alone,
+        // an effectful macro under `[unfold]` — fired by the RESOLVER, which never
+        // macro-expands — loaded clean and rewrote the effectful call into the program.
+        //
+        // Skipping by SYMBOL also exempts that macro elsewhere in the same rule. Every
+        // such spelling is refused AHEAD of here, measured: as a body goal by WI-583
+        // ("no relational reading" — an occurrence-returning op is not a predicate),
+        // and in any value position by the occurrence-vs-value parameter mismatch.
+        // `wi757_macro_diagnostic_test` pins both, so this stays a checked claim.
+        let rhs_macro = super::simp_rewrite::macro_expanded_rhs_head(kb, rid);
         let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         for f in functors {
             if Some(f) == rhs_macro {

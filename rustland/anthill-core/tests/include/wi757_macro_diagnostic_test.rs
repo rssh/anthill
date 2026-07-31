@@ -14,9 +14,7 @@
 //! `LoadError::MacroRejected`, reported at the sub-expression the macro named).
 //! These tests pin both, and the split between them.
 
-mod common;
-
-use common::try_load_kb_with;
+use crate::common::try_load_kb_with;
 
 /// The rendered load errors for `src`, which MUST fail to load.
 fn load_errors(src: &str) -> Vec<String> {
@@ -301,6 +299,72 @@ end
         errs.iter().any(|e| e.contains("test.wi757ordinary.risky")
             && e.contains("an effectful operation is not equational")),
         "an effectful NON-macro rewrite must stay refused, got: {errs:?}",
+    );
+}
+
+/// …and not for a macro the typer's expander does NOT fire. `[unfold]` is fired by
+/// the RESOLVER (`fire_simp_equation`), which substitutes the RHS template verbatim
+/// and never macro-expands — so the effectful call really is rewritten into the
+/// program, exactly the hazard WI-702 exists for.
+///
+/// This was a live hole: with the exemption keyed on `is_macro` alone, this source
+/// LOADED CLEAN. `macro_expanded_rhs_head` ties the exemption to `try_fire`'s own
+/// firing conditions so it cannot outrun the expansion that justifies it.
+#[test]
+fn the_rewrite_gate_still_refuses_an_effectful_macro_the_typer_never_expands() {
+    const SRC: &str = r#"
+namespace test.wi757unfold
+  import anthill.prelude.{Int64, String}
+  import anthill.prelude.Numeric.{add}
+  import anthill.reflect.{NodeOccurrence}
+  sort Boom
+    entity boom(why: String)
+  end
+  operation m(x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
+    Error.raise(boom(why: "nope"))
+  operation trigger(x: Int64) -> Int64 = x
+  rule trigger(?x) <=> m(?x) [unfold]
+  operation consumer() -> Int64 = add(trigger(5), 1)
+end
+"#;
+    let errs = load_errors(SRC);
+    assert!(
+        errs.iter().any(|e| e.contains("test.wi757unfold.m")
+            && e.contains("an effectful operation is not equational")),
+        "an effectful macro under `[unfold]` is never expanded, so it must stay \
+         refused, got: {errs:?}",
+    );
+}
+
+/// The exemption skips the macro's SYMBOL, so it also lifts the gate off that macro
+/// written elsewhere in the same rule. That is safe only because every such spelling
+/// is refused AHEAD of the gate — this pins the case that is not obvious: a macro in
+/// a rule-body GOAL, which is not an operation call at all and so cannot be caught
+/// by the occurrence-vs-value parameter mismatch. WI-583 refuses it: an
+/// occurrence-returning op has no relational reading.
+#[test]
+fn a_macro_in_a_body_goal_is_refused_ahead_of_the_gate() {
+    const SRC: &str = r#"
+namespace test.wi757bodygoal
+  import anthill.prelude.{Int64, String}
+  import anthill.prelude.Numeric.{add}
+  import anthill.reflect.{NodeOccurrence}
+  sort Boom
+    entity boom(why: String)
+  end
+  operation m(x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
+    Error.raise(boom(why: "nope"))
+  operation trigger(x: Int64) -> Int64 = x
+  rule trigger(?x) <=> m(?x) :- m(?x) [simp]
+  operation consumer() -> Int64 = add(trigger(5), 1)
+end
+"#;
+    let errs = load_errors(SRC);
+    assert!(
+        errs.iter().any(|e| e.contains("test.wi757bodygoal.m")
+            && e.contains("rule-body goal position")),
+        "a macro cited as a body goal must be refused for having no relational \
+         reading, got: {errs:?}",
     );
 }
 

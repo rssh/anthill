@@ -250,8 +250,15 @@ impl std::fmt::Display for EvalError {
             // WI-757: the same sentence the typer renders into a load error, so a
             // macro invoked at runtime and one expanded at compile time report the
             // rejection identically (only the location wrapper differs).
-            EvalError::MacroRejected { detail, .. } => {
-                write!(f, "macro cannot expand this expression: {detail}")
+            EvalError::MacroRejected { detail, span } => {
+                write!(f, "{}", macro_rejection_message(None, detail))?;
+                // Byte offsets, like the sibling `LoadError` `Display`s: this face has
+                // no source text to resolve `line:col` against, and dropping the span
+                // entirely would throw away the precision the variant exists to carry.
+                match span {
+                    Some(s) => write!(f, " at {}..{}", s.span.start, s.span.end),
+                    None => Ok(()),
+                }
             }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
@@ -259,6 +266,26 @@ impl std::fmt::Display for EvalError {
 }
 
 impl std::error::Error for EvalError {}
+
+/// WI-757 — the ONE wording of a macro rejection, shared by every face it has:
+/// [`EvalError::MacroRejected`]'s `Display` (the RUNTIME face, which has no macro
+/// name to give), `kb::typing::TypeError::MacroRejected`'s `format`, and both
+/// renderings of `kb::load::LoadError::MacroRejected`. WI-852's rule that a
+/// diagnostic has one owner — the sentence used to be written twice, so rewording
+/// the load-side copy would have silently diverged the eval-side one.
+///
+/// The sentence names the MACRO, not the surface spelling that expanded to it
+/// (`where` → `guarded_of`): the macro is what read the syntax and what the author
+/// must satisfy, and the `[simp]` rule connecting the two is greppable from the
+/// name. `detail` is the macro's own words, verbatim.
+pub fn macro_rejection_message(macro_name: Option<&str>, detail: &str) -> String {
+    match macro_name {
+        Some(name) => {
+            format!("compile-time macro `{name}` cannot expand this expression: {detail}")
+        }
+        None => format!("macro cannot expand this expression: {detail}"),
+    }
+}
 
 /// Render a raised `Error` payload ([`EvalError::Raised`]) as a human-readable
 /// line. Store-I/O builtins raise `Str` payloads (printed verbatim); WI-467 made

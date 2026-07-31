@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
 
-pub use error::{render_raised_payload, EvalError};
+pub use error::{macro_rejection_message, render_raised_payload, EvalError};
 pub use eval::value_functor;
 pub use frame::{ActivationStack, Frame, FrameTypeArgs};
 pub use value::Value;
