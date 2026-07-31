@@ -17,8 +17,15 @@ namespace anthill.prelude
       -- sort and backed by nothing. The semantics each one commits to — the index
       -- unit for `indexOf`, and what the empty pattern means for all of them — are
       -- argued on the declarations in `stdlib/anthill/prelude/string.anthill`, which
-      -- is where a reader of the spec will look. `isEmpty` is deliberately absent:
-      -- its own equation defines it, and carries `[simp]` there.
+      -- is where a reader of the spec will look.
+      --
+      -- `isEmpty` joined them: WI-884 shipped it defined by its own `[simp]` equation
+      -- over `length`, and that is the one thing about it that is HOST-SPECIFIC and so
+      -- belongs here. `length` counts UNICODE SCALARS, which is O(n) — `str::len` is
+      -- O(1) but counts BYTES, and no host anthill is likely to target has an O(1)
+      -- character count over UTF-8 (C++'s `std::string::size` is the same byte-length
+      -- story). Emptiness is the one question that does not need the count.
+      isEmpty: "string_is_empty",
       contains: "string_contains",
       indexOf: "string_index_of",
       replace: "string_replace",

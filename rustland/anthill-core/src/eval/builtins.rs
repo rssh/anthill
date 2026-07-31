@@ -78,9 +78,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     // WI-884 — HALF OF `String`'S SURFACE IS REGISTERED HERE AND HALF IN ITS BINDING
     // BLOCK, and a reader adding the next one has to know that. These eight are keyed
-    // by hardcoded qualified name; `contains`/`indexOf`/`replace`/`trim`/`split` are
-    // keyed by `rustland/anthill-stl/anthill/string.anthill`'s `operation_map`. Same
-    // for `Int64` (nine here, `minValue`/`maxValue` there).
+    // by hardcoded qualified name; `contains`/`indexOf`/`replace`/`trim`/`split`/
+    // `isEmpty` are keyed by `rustland/anthill-stl/anthill/string.anthill`'s
+    // `operation_map`. Same for `Int64` (nine here, `minValue`/`maxValue` there).
     //
     // NOT the WI-879/WI-880 defect, which is about an operation declared on a SPEC
     // (`Numeric.add`, `Bool.not`) where one registration serves every carrier: these
@@ -90,7 +90,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // `op_is_interpretable` (kb/typing.rs) counts a host MAPPING and not a hardcoded
     // registration, so `String.contains` reads as backed and `String.concat` does not
     // though one interpreter runs both; `kb.host_op_mappings()`, which is what WI-886
-    // wants a second backend to consume, sees five of thirteen; and only the mapped
+    // wants a second backend to consume, sees six of fourteen; and only the mapped
     // half has its arity checked against the declaration. Unreached today because no
     // spec declares `concat`, which is the same coincidence WI-876's review refused to
     // rely on. Migrating the eight is recorded as feedback on WI-880 — whose acceptance
@@ -298,6 +298,7 @@ const HOST_FNS: &[(&str, usize, fn(&mut Interpreter, &[Value]) -> Result<Value, 
     // to (the index unit, and the empty pattern).
     ("int_min_value", 0, int_min_value),
     ("int_max_value", 0, int_max_value),
+    ("string_is_empty", 1, string_is_empty),
     ("string_contains", 2, string_contains),
     ("string_index_of", 2, string_index_of),
     ("string_replace", 3, string_replace),
@@ -1343,6 +1344,25 @@ fn string_length(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
     // `length("") = 0`, which is unambiguous either way, but Unicode is
     // the natural choice for user-facing length).
     Ok(Value::Int(str_operand(&a)?.chars().count() as i64))
+}
+
+/// `String.isEmpty` — `str::is_empty`, NOT `length(s) == 0`. The two always agree (a
+/// UTF-8 sequence has zero bytes exactly when it has zero scalars) but not on COST:
+/// `String.length` counts UNICODE SCALARS (WI-884), so [`string_length`] is O(n).
+/// Why the operation is host-backed at all: `rustland/anthill-stl/anthill/string.anthill`.
+///
+/// BORROWS its argument instead of taking [`expect_args`], which is
+/// `std::array::from_fn(|i| args[i].clone())` — and `Value::Str` owns its `String`, so
+/// the uniform helper would malloc-and-memcpy the whole subject before the O(1) test
+/// ran, leaving this function Θ(|s|) and its reason for existing unfulfilled. Every
+/// other string builtin does O(n) work anyway, so there the clone is a constant factor
+/// and the uniform shape is right; this is the one where the clone IS the cost. The
+/// borrowing arity check is [`error_raise`]'s.
+fn string_is_empty(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a] = args else {
+        return Err(EvalError::ArityMismatch { op: "String.isEmpty", expected: 1, got: args.len() });
+    };
+    Ok(Value::Bool(str_operand(a)?.is_empty()))
 }
 
 fn string_starts_with(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {

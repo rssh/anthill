@@ -63,8 +63,7 @@ namespace wi884.siblings
     operation dTrim(s: String) -> String = String.trim(s)
     operation dSplit(s: String, sep: String) -> List[T = String] = String.split(s, sep)
 
-    -- isEmpty in all three call forms: `[simp]` INLINES, and inlining is not
-    -- dispatch, so each spelling has to be driven rather than assumed from one.
+    -- isEmpty in all three call forms; see `is_empty_reaches_every_call_form`.
     operation dEmptyQualified(s: String) -> Bool = String.isEmpty(s)
     operation dEmptyDot(s: String) -> Bool = s.isEmpty()
     operation dEmptyLiteralDot(n: Int64) -> Bool = "".isEmpty()
@@ -257,13 +256,12 @@ fn split_keeps_its_empty_pieces_so_it_round_trips() {
     }
 }
 
-/// `isEmpty` is backed by its own equation and by NO host function, so every call form
-/// has to be driven: `[simp]` INLINES, and inlining does not reach what dispatch does.
-/// This is the test `Float.tau` failed — there the bare nullary spelling stayed dead
-/// while the parenthesized one answered — and it is why the equation is safe here:
-/// `isEmpty` is APPLIED at every call site, so every site has a redex.
+/// `isEmpty` in all three call forms — qualified, dot on a bound parameter, dot on a
+/// literal. Written when `isEmpty` was `[simp]`-backed, where every spelling had to be
+/// driven because INLINING IS NOT DISPATCH (this is the test `Float.tau` failed); kept
+/// now that it is host-backed, as the guard that no form lost its answer in the move.
 #[test]
-fn the_simp_definition_of_is_empty_reaches_every_call_form() {
+fn is_empty_reaches_every_call_form() {
     let mut interp = crate::common::interp_for(DRIVER);
     for entry in ["dEmptyQualified", "dEmptyDot"] {
         assert!(call_bool(&mut interp, entry, &[""]), "{entry}(\"\")");

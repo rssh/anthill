@@ -36,11 +36,13 @@ sort anthill.prelude.String
   -- what each one does with it rather than leaving the degenerate case to be
   -- discovered.
   --
-  -- WI-884: `contains`, `indexOf`, `replace`, `trim` and `split` are HOST-BACKED,
-  -- named in `rustland/anthill-stl/anthill/string.anthill`'s `operation_map`. All
-  -- five were declared and backed by NOTHING — they died `OperationBodyMissing` on a
-  -- program that loaded clean, WI-881's defect one sort over. `isEmpty` is the one
-  -- that needed no host function; see its law below.
+  -- WI-884: `contains`, `indexOf`, `replace`, `trim`, `split` and `isEmpty` are
+  -- HOST-BACKED, named in `rustland/anthill-stl/anthill/string.anthill`'s
+  -- `operation_map`. All six were declared and backed by NOTHING — they died
+  -- `OperationBodyMissing` on a program that loaded clean, WI-881's defect one sort
+  -- over. `isEmpty` is host-backed for a reason the others are not: it is DEFINABLE
+  -- here (`length(s) = 0`, the law below), but only at O(n) — see the binding block,
+  -- which owns the cost argument because it is the HOST's.
   operation {
     concat(a: String, b: String) -> String
     length(s: String) -> Int64                     -- Unicode scalars, not bytes
@@ -83,44 +85,27 @@ sort anthill.prelude.String
     let d = sub(width, length(s))
     if Int64.gt(d, 0) then concat(s, repeat(" ", d)) else s
 
-  -- Laws and definitions.
-  --
-  -- WI-884 settles which of these six is WHICH, the way WI-881 settled `float.
-  -- anthill`'s four: a `[simp]` equation is EXECUTABLE — it inlines LHS→RHS and makes
-  -- a body-less operation run — while an untagged one is inert specification (a rule
-  -- is not backing, WI-818). The file said "-- Laws" over all six and meant it for
-  -- five of them.
+  -- Laws. ALL SIX ARE SPECIFICATION and none is tagged: a `[simp]` equation is
+  -- EXECUTABLE (it inlines LHS→RHS, so a body-less operation runs) while an untagged
+  -- one only states what is true — WI-881 settled that on `float.anthill`.
 
-  -- DEFINITION, and the only one of the six. A string has zero code points exactly
-  -- when it is empty, for every string — so the equation IS `isEmpty`, and it needs no
-  -- host function of its own; `length` and `eq` already have theirs. That `[simp]`
-  -- REACHES every way `isEmpty` is written was measured before relying on it, since
-  -- inlining is not dispatch and `Float.tau` failed exactly that test: the qualified
-  -- call `String.isEmpty(s)`, the dot call on a bound parameter `s.isEmpty()` and the
-  -- dot call on a literal `"".isEmpty()` all answer. `tau`'s reach failure does not
-  -- recur here because `isEmpty` is APPLIED at every call site, where a nullary
-  -- constant need not be.
-  --
-  -- TWO COSTS, both stated because neither settled it. Routing through `length` is
-  -- O(n) where a host `is_empty` is O(1) — real, and NOT what decided this: an attempt
-  -- to measure it through the interpreter was swamped by the per-call argument copy,
-  -- and an unmeasured number is not a reason. And inlining puts `eq(length(s), 0)`
-  -- into every proof and codegen output where the author wrote `isEmpty(s)`, which is
-  -- the symbolic-quality cost WI-885 raises against tagging `Float.recip`.
-  --
-  -- WI-885 IS THE OPEN QUESTION THIS SHIPS THE SECOND INSTANCE OF, and it is answered
-  -- here only in the narrow sense `recip` was: `carrier_override_op` reads a
-  -- `[simp]`-backed member as ABSENT, but it is only asked about an operation some
-  -- spec the carrier PROVIDES declares — `String` provides PartialEq/Eq/PartialOrd/
-  -- Ordered and none of them declares `isEmpty`, so the exposure is unreached. If
-  -- WI-885 settles on its option (c) — `[simp]` is not backing — this operation and
-  -- `Float.recip` are the two that need host functions.
-  rule isEmpty(?s) <=> eq(length(?s), 0) [simp]
+  -- `isEmpty`'s law is the only TOTAL one — a string has zero code points exactly when
+  -- it is empty — so it COULD be the implementation, and WI-884 tagged it. Reverted
+  -- (WI-885) on two grounds. CHANNEL: a definition anthill can express belongs in a
+  -- BODY, from which the equational, relational and proof views are DERIVED (WI-580,
+  -- WI-669) — `[simp]` is 043's directional-rewrite attribute, and it cannot back a
+  -- DISPATCHED call at all, since no requirement dictionary can hold a rewrite rule.
+  -- COST: this one wants no body either, because routing through `length` is O(n)
+  -- where the host answers emptiness in O(1) — the argument is host-specific and
+  -- lives on the mapping, in `rustland/anthill-stl/anthill/string.anthill`. Untagged,
+  -- the law also stops `eq(length(s), 0)` inlining into every proof and codegen
+  -- output where the author wrote `isEmpty(s)`.
+  rule isEmpty(?s) <=> eq(length(?s), 0)
 
-  -- SPECIFICATIONS. Each is true and each is PARTIAL — a single case of an operation
-  -- whose other cases the host answers — so none of them could back its operation
-  -- even tagged. `contains(?s, "")` says what `contains` does with the empty pattern,
-  -- not what `contains` is.
+  -- The other five are each true and each PARTIAL — a single case of an operation
+  -- whose other cases the host answers, so none of them could back its operation even
+  -- tagged. `contains(?s, "")` says what `contains` does with the empty pattern, not
+  -- what `contains` is.
   rule concat("", ?s) <=> ?s
   rule concat(?s, "") <=> ?s
   rule startsWith(?s, "") <=> true
