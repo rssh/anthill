@@ -888,4 +888,7 @@ mod wi893_comment_eats_simp_test;
 #[path = "include/wi894_rule_functor_scope_test.rs"]
 mod wi894_rule_functor_scope_test;
 
+#[path = "include/wi896_labeled_predicate_head_test.rs"]
+mod wi896_labeled_predicate_head_test;
+
 

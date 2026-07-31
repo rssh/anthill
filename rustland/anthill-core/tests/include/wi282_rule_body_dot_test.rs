@@ -214,7 +214,11 @@ fn rule_body_dot_unresolved_receiver_left_alone() {
 // projection (the `*_evaluates_*` tests below use ground queries that run the
 // body and assert the computed value).
 
-fn resolve_query(kb: &mut KnowledgeBase, functor_qn: &str, arity: usize) -> usize {
+/// Resolve `functor_qn` applied to `arity` fresh logic vars; return the solution count.
+/// `pub(crate)` so a sibling include-module can reuse it rather than re-spelling the
+/// mint-vars/build-goal/resolve/count sequence (the cross-module pattern
+/// `wi424_iterable_members_test::load_errors` already establishes).
+pub(crate) fn resolve_query(kb: &mut KnowledgeBase, functor_qn: &str, arity: usize) -> usize {
     let functor = kb.resolve_symbol(functor_qn);
     let args: SmallVec<[anthill_core::kb::term::TermId; 4]> = (0..arity)
         .map(|i| {

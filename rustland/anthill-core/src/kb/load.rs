@@ -2246,20 +2246,8 @@ fn scan_rule(
 /// rhs`): its head functor is the CONNECTIVE, so the name it introduces sits at
 /// `pos_args[0]` ([`rule_introduced_functor_name`]) and was never looked at here.
 ///
-/// A LABEL DOES NOT SUPPRESS AN EQUATION, and that is not an exception to the
-/// rule above but a consequence of it: a label names the RULE, an equation's LHS
-/// names the FUNCTION the rule is one clause OF, and those are different names.
-/// `bool.anthill` writes `ite_true:` / `ite_false:` precisely because two labeled
-/// clauses make up one `ite`. The label skip below therefore applies to PREDICATE
-/// heads only, where it keeps its original meaning (proposal 032): an unlabeled
-/// rule's head functor IS the rule's identity, a labeled rule already has one, so
-/// its head reads as a CONCLUSION about an existing predicate rather than a
-/// definition. Removing the skip for predicates too was MEASURED and is wrong —
-/// `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about the prelude's
-/// `gte`, and minting a local `<ns>.gte` silently changes what it is about (it
-/// broke 9 targets, incl. every smt-gen policy render). A labeled PREDICATE rule
-/// introducing a genuinely-new head name is therefore still globally scoped —
-/// WI-894's mechanism in a shape this ticket does not close: WI-896.
+/// WHICH name that is — and why a rule's LABEL has no say in it (WI-896) — is
+/// [`rule_introduced_functor_name`]'s question, answered there.
 ///
 /// The two halves of the ticket land together: scoping alone would break every
 /// cross-file bare use (`ordered.anthill`'s `max` law reaching `bool.anthill`'s
@@ -2327,35 +2315,52 @@ fn parse_equation_lhs(
 /// call site can name it and a sibling scope's same-spelled rule cannot silently
 /// merge with it (WI-894). `None` when the rule introduces nothing.
 ///
-/// TWO KINDS OF HEAD, and the label rule differs between them, which is why it
-/// lives here beside the split rather than in the caller. A PREDICATE head names
-/// the rule itself, so a label — which already gives the rule an identity — means
-/// the head is a CONCLUSION about an existing predicate, not a definition
-/// (proposal 032). An EQUATION's head functor is the `=`/`<=>` CONNECTIVE and its
-/// subject is the LHS, so a label there names the *clause* while the LHS names the
-/// *function*: `bool.anthill`'s `ite_true:` / `ite_false:` are two labeled clauses
-/// of one `ite`, and a label must not suppress it. A BODIED rule is not an
-/// equation at all (§8.3: an equation is bodyless), so `f(?x) = ?y :- guard` takes
-/// the predicate path — its head names `eq`, which the guard below then refuses.
+/// WHICH NODE THE RULE IS ABOUT is the only thing the two kinds of head disagree
+/// on. A PREDICATE head is its own subject; an EQUATION's head functor is the
+/// `=`/`<=>` CONNECTIVE and its subject is the LHS, so `rule ite(true, ?t, ?_) =
+/// ?t` is about `ite`, never `eq`. A BODIED rule is not an equation at all (§8.3:
+/// an equation is bodyless), so `f(?x) = ?y :- guard` is about `eq` — which the
+/// implicit-prelude guard below then refuses, WI-530's outcome reached without
+/// WI-530's special case.
 ///
-/// THE GUARD THAT KEEPS WI-530's REASON, not just its letter. WI-530 skipped an
-/// `eq`/`unify` head because minting a scope-local copy of a name that resolves by
-/// the implicit-prelude FALLBACK shadows the canonical target; `resolve_in_scope`
-/// answers `NotFound` for every such name, so the caller's own check cannot see
-/// them. Descending into the LHS re-opened exactly that hole one level down —
-/// MEASURED: `rule cons(?h, ?t) <=> ?h [simp]` loaded clean, minted a local `cons`,
-/// and silently re-pointed every bare `cons` in the sort, so `cons(1, nil())`
-/// answered `1`. That is this ticket's own defect class, and `implicit_qualified`
-/// (the STATIC const WI-530 chose over a load-order-dependent `by_qualified_name`
-/// lookup) is what closes it. `ite` is not implicit vocab, so the stdlib's naming
-/// path is untouched.
+/// WI-896 — EVERYTHING AFTER THAT POINT IS ONE RULE FOR BOTH KINDS. WI-894 ran
+/// two different guards here — the equation path skipped every
+/// `implicit_qualified` name, the predicate path skipped only the equation
+/// CONNECTIVES and additionally skipped any LABELED head — so the same head
+/// scoped two ways: `rule gte(…) :- gte(…)` captured a local `<ns>.gte` while
+/// `rule bound: gte(…) :- gte(…)` did not. The predicate path was simply missing
+/// the tier (its WI-530 skip is `implicit_qualified`'s subset), and proposal 032's
+/// label carve-out was standing in for it by accident — right for the labeled
+/// cell, wrong for the other three.
 ///
-/// A MINTED LHS also introduces nothing — `?x.foo(?y) = ?y` carries the
-/// converter's `dot_apply`, `?a + ?b = ?c` its `add`. Those are the desugar's
-/// functors, not the rule's, and `minted` (WI-618) is provenance carried rather
-/// than re-derived from a blocklist of accessor names. The guard is kept beside
-/// the `implicit_qualified` one because the two answer different questions: whose
-/// functor is this, versus does this name already mean something globally.
+/// THE GUARD KEEPS WI-530's REASON, not just its letter: a name that already
+/// resolves through the implicit-prelude / reserved-kernel FALLBACK is never
+/// captured, because `resolve_in_scope` answers `NotFound` for every such name and
+/// the caller's own check cannot see them. MEASURED on both paths, same defect
+/// class each time — `rule cons(?h, ?t) <=> ?h [simp]` minted a local `cons` and
+/// made `cons(1, nil())` answer `1`; `rule or(?x) :- p(?x)` minted a local `or` and
+/// made the disjunction two lines down yield NOTHING. Both loaded clean. `ite` is
+/// not implicit vocab, so the stdlib's naming path is untouched.
+///
+/// THE TIER IS STATIC, NOT LOADED — a deliberate divergence from the ladder, and
+/// the reason `implicit_qualified` is consulted here rather than
+/// `resolve_name_in_kb_opt` (which spells the same ladder but gates the tier on the
+/// target being present in `by_qualified_name`). WI-530 measured that gate at scan
+/// time as load-order dependent — it passed in isolation and failed intermittently
+/// in the full test binary — and chose the static const for determinism. The cost
+/// is real and MEASURED: in a KB where an implicit name's target is NOT loaded, the
+/// head is neither captured here nor resolved by the ladder, so it falls to a bare
+/// global. Two sorts each writing `rule and(?x) :- …` in a stdlib-less KB share one
+/// `and`, which is WI-894's own defect class. With the stdlib loaded every implicit
+/// target is present and the two agree, so this is confined to embedders and
+/// stdlib-less harnesses. WI-900.
+///
+/// A MINTED SUBJECT introduces nothing — `?x.foo(?y) = ?y` carries the converter's
+/// `dot_apply`, `?a + ?b = ?c` its `add`. Those are the desugar's functors, not the
+/// rule's, and `minted` (WI-618) is provenance carried rather than re-derived from a
+/// blocklist of accessor names. That guard is kept beside the `implicit_qualified`
+/// one because the two answer different questions: whose functor is this, versus
+/// does this name already mean something globally.
 fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
@@ -2373,15 +2378,10 @@ fn rule_introduced_functor_name<'a>(
         .then(|| parse_equation_lhs(parse_sym, parse_terms, *tid))
         .flatten();
     // The SUBJECT of the head — the node whose functor the rule is about. For an
-    // equation that is the LHS; for a predicate head it is the head itself.
-    let (subject, is_equation) = match equation_lhs {
-        Some(lhs) => (lhs, true),
-        // A labeled PREDICATE rule already has an identity, so its head is a
-        // conclusion, not a definition. (A labeled EQUATION is not suppressed —
-        // see above.)
-        None if r.label.is_some() => return None,
-        None => (*tid, false),
-    };
+    // equation that is the LHS; for a predicate head it is the head itself. This is
+    // the ONLY place the two kinds part ways (WI-896): `r.label` is deliberately
+    // never read.
+    let subject = equation_lhs.unwrap_or(*tid);
     // A DESUGARED subject introduces nothing, on EITHER path: the converter's
     // accessor builds put their own functor there (`?x.m(?y)` → `dot_apply`,
     // `?x.f` → `field_access`, `?a + ?b` → `add`), and those names are the
@@ -2396,7 +2396,9 @@ fn rule_introduced_functor_name<'a>(
         return None;
     };
     let name = parse_sym.name(*functor);
-    // A QUALIFIED name REFERENCES an existing symbol; it never introduces one.
+    // A QUALIFIED name REFERENCES an existing symbol; it never introduces one — a
+    // SPEC rule, deliberately stricter than `resolve_dotted_in_kb`, not a third
+    // ladder tier: a dotted head that resolves to nothing still introduces nothing.
     // `resolve_in_scope` matches SHORT names only — it does not run the dotted
     // ladder — so it answers `NotFound` for `String.isEmpty` and the caller's
     // check cannot see the reference. MEASURED: `rule String.isEmpty(?s) <=> true`
@@ -2405,29 +2407,12 @@ fn rule_introduced_functor_name<'a>(
     if name.contains('.') {
         return None;
     }
-    if is_equation {
-        // WI-530's REASON, not just its letter. A name that already resolves through
-        // the implicit-prelude / reserved-kernel FALLBACK is never captured:
-        // `resolve_in_scope` answers `NotFound` for every such name, so the caller
-        // cannot see them. MEASURED: `rule cons(?h, ?t) <=> ?h [simp]` loaded clean,
-        // minted a local `cons`, and silently repointed every bare `cons` in the sort
-        // — `cons(1, nil())` answered `1`. `ite` is not implicit vocab, so the
-        // stdlib's naming path is untouched.
-        if implicit_qualified(name).is_some() {
-            return None;
-        }
-    } else {
-        // The predicate path keeps WI-530's NARROW skip instead: only the equation
-        // CONNECTIVES. A bodied equation-shaped head (`gate(?m) <=> 0 :- guard`) lands
-        // here, and minting `<ns>.eq` / `<ns>.unify` shadows the canonical symbol that
-        // `apply_eq_rules` and the `[simp]` gates select on — MEASURED, it silently
-        // switched off `wi698`'s effectful-guard rejection. Narrow and NOT
-        // `implicit_qualified`, because a user predicate rule headed `or` / `not` must
-        // still get its own Goal: the WI-523 regression a broad skip caused. That
-        // asymmetry between the two paths is WI-896.
-        if crate::parse::pratt::is_equation_functor(name) {
-            return None;
-        }
+    // The FALLBACK TIER of the name ladder, which `resolve_in_scope` cannot see. A
+    // name that already means something globally is REFERENCED by the head, never
+    // introduced by it — so the rule is a clause about that name (the smt-gen
+    // `bound: gte(…)` lemma's shape) rather than a definition shadowing it.
+    if implicit_qualified(name).is_some() {
+        return None;
     }
     Some(name)
 }

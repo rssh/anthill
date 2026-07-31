@@ -73,11 +73,9 @@ fn each_sort_uses_its_own_rules() {
 /// LABELED (`ite_true:` / `ite_false:`) and the ticket's own example writes them bare.
 /// If only one were scoped, `ite` — this ticket's worked example — would still travel.
 ///
-/// The PREDICATE column is the deliberate non-change, driven so the asymmetry is a
-/// recorded decision and not an oversight: a labeled predicate head stays unscoped,
-/// because `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma ABOUT the prelude's
-/// `gte`, and minting a local `<ns>.gte` silently changes what it is about (measured:
-/// it broke 9 targets, every smt-gen policy render among them).
+/// The PREDICATE column scopes alike since WI-896, which removed the label carve-out this
+/// file originally recorded. The four label x name cells live in
+/// `wi896_labeled_predicate_head_test`; the rows here keep the SHAPES honest.
 const HEAD_SHAPES: &str = r#"
 namespace wi894.labels
   sort S
@@ -89,7 +87,7 @@ namespace wi894.labels
       lblPred894: labeledPred894(?x) :- Int64.gt(?x, 0)
       barePred894(?x) :- Int64.gt(?x, 0)
       -- a BODIED `=` head is not an equation (§8.3: an equation is bodyless), so it
-      -- takes the predicate path, where the label suppresses it
+      -- takes the predicate path, where its head names the CONNECTIVE
       lblBodied894: bodied894(?x) = ?y :- Int64.gt(?x, 0), ?y = 1
       -- the same shape UNLABELED: the predicate path must still refuse to mint the
       -- CONNECTIVE (`eq`/`unify`), which is what WI-530 forbids
@@ -153,8 +151,11 @@ fn which_name_a_rule_head_introduces() {
         ("S.bareEq894", true, "an unlabeled equation defines its LHS function"),
         ("S.labeledUnify894", true, "`<=>` is the same definition as `=` here"),
         ("S.barePred894", true, "an unlabeled predicate head IS the rule's identity"),
-        ("S.labeledPred894", false, "a labeled predicate head is a CONCLUSION, not a definition"),
-        ("S.bodied894", false, "a bodied `=` head is a predicate rule, and it is labeled"),
+        ("S.labeledPred894", true, "WI-896: a label names the CLAUSE, so it does not decide \
+                                    whether the head introduces — this row read `false` \
+                                    while the carve-out stood"),
+        ("S.bodied894", false, "a bodied `=` head is a predicate rule ABOUT `eq`, not about \
+                                its LHS — the label is not what stops it"),
         ("S.eq", false, "WI-530: a bodied equation-SHAPED head must never mint the connective"),
         ("S.unify", false, "same for `<=>` — a local shadow silently reclassifies the rule"),
         ("S.bareBodied894", false, "nor its subject: a bodied rule is not an equation, so \
