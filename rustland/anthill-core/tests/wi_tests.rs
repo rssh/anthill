@@ -768,7 +768,6 @@ mod wi788_tuple_component_order_identity_test;
 #[path = "include/wi800_tuple_threading_alignment_test.rs"]
 mod wi800_tuple_threading_alignment_test;
 
-
 #[path = "include/wi803_destructure_by_label_test.rs"]
 mod wi803_destructure_by_label_test;
 
@@ -885,3 +884,8 @@ mod wi886_cpp_mapping_language_test;
 
 #[path = "include/wi893_comment_eats_simp_test.rs"]
 mod wi893_comment_eats_simp_test;
+
+#[path = "include/wi894_rule_functor_scope_test.rs"]
+mod wi894_rule_functor_scope_test;
+
+

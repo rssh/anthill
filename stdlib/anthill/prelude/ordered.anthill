@@ -66,6 +66,12 @@ end
 
 sort anthill.prelude.Ordered
   import anthill.prelude.Int64.{neg}
+  -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, and a rule does not
+  -- travel to the global namespace from its place — so the `max`/`min` laws
+  -- below reach `bool.anthill`'s `[simp]` rules by THIS import, not by the name
+  -- being global. Resolves through the deferred-import retry (WI-295): a rule
+  -- head's symbol is registered in scan pass 3, after imports are processed.
+  import anthill.prelude.Bool.{ite}
 
   sort T = ?
   requires Eq[T]

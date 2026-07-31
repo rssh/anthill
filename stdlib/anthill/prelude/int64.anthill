@@ -5,6 +5,9 @@
 sort anthill.prelude.Int64
   import anthill.prelude.{Eq, Ordered, Numeric}
   import anthill.prelude.Numeric.{add, sub}
+  -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, reached by an explicit
+  -- import rather than by a global name — see the note in `ordered.anthill`.
+  import anthill.prelude.Bool.{ite}
 
   -- WI-876: `Int64`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/int64.anthill`'s `operation_map`. Body-less

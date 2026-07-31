@@ -13,7 +13,7 @@
 //! `ite` is not an operation — WI-887 deleted the declaration, leaving the functor its
 //! two `[simp]` rules introduce. See
 //! [`bool_is_audited_and_ite_is_not_one_of_its_operations`] and
-//! [`ite_reduces_bare_and_is_refused_as_a_member`]; `bool.anthill` carries the why.
+//! [`ite_reduces_under_both_spellings`]; `bool.anthill` carries the why.
 //!
 //! TWO SEMANTICS DECISIONS carry the weight, and both are driven rather than argued:
 //! [`index_of_agrees_with_substring_and_length`] pins the INDEX UNIT (the byte answer
@@ -44,6 +44,11 @@ use smallvec::SmallVec;
 const DRIVER: &str = r#"
 namespace wi884.siblings
   import anthill.prelude.{Int64, String, Bool, List}
+  -- WI-894: `ite` is a rule-introduced functor SCOPED to `Bool`, so the
+  -- `ite_reduces` rule below names it by an explicit import rather than by the
+  -- bare global name it used to ride. Without this the load is REFUSED (measured:
+  -- "unknown functor"), which is the point — the old globality failed silently.
+  import anthill.prelude.Bool.{ite}
 
   sort I
     import anthill.prelude.{Int64, String, Bool}
@@ -336,57 +341,57 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
 }
 
 /// `ite` IS NOT AN OPERATION — the half of WI-887's decision that a reducing rule
-/// cannot show, and the observable difference from the alternatives it was chosen
-/// over: given a body or a host mapping, the MEMBER spelling below would still load.
+/// cannot show. It reduces because two `[simp]` rule heads DEFINE it, and the typer's
+/// `[simp]` pass inlines it before dispatch, even in an operation body.
 ///
-/// THE TWO SPELLINGS DIVERGE, and the split is the finding. The BARE `ite(...)` is what
-/// the two `[simp]` rule heads introduce, so it REDUCES — even in an operation body,
-/// where the typer's `[simp]` pass inlines it before dispatch. The MEMBER spelling
-/// `Bool.ite(...)` names nothing: a rule head introduces a functor, not a qualified
-/// operation symbol, so it is refused as an unknown functor.
+/// THE TWO SPELLINGS NO LONGER DIVERGE, and that reversal is WI-894. This test used to
+/// assert that `Bool.ite(...)` "names nothing — a rule head introduces a functor, not a
+/// qualified operation symbol", and that was true only because a rule-introduced functor
+/// was ONE BARE GLOBAL NAME with no qualified identity to name. WI-894 scopes it to its
+/// declaring sort, so `anthill.prelude.Bool.ite` now EXISTS and both spellings reach the
+/// same symbol and the same `[simp]` rules. The member arm is kept, inverted: it is the
+/// regression guard for the naming path this ticket added.
+///
+/// The un-imported REFUSAL — the negative control that makes the scoping safe — lives in
+/// `wi894_rule_functor_scope_test`, which owns that claim; this file drives the positive
+/// twin only.
 ///
 /// An earlier cut of this test asserted BOTH spellings were refused. That was written
 /// off a program in which a comment line above `ite_true` had silently eaten its
 /// `[simp]` (WI-893), leaving the bare form genuinely dead — half-backed looking
-/// backed, from the parser. The tags now sit clear of that position, and the bare form
-/// answers.
+/// backed, from the parser.
 ///
-/// ONE LOAD serves both, and the member arm's error carries its own callee name, so
-/// attribution does not depend on ordering.
+/// ONE LOAD serves both spellings: neither call traps, so both sorts ride one source and
+/// one interpreter.
 #[test]
-fn ite_reduces_bare_and_is_refused_as_a_member() {
-    const SRC: &str = r#"
+fn ite_reduces_under_both_spellings() {
+    const SPELLINGS: &str = r#"
 namespace wi887.spellings
   import anthill.prelude.{Int64, Bool}
   sort R
     import anthill.prelude.{Int64, Bool}
+    import anthill.prelude.Bool.{ite}
     operation viaBare(n: Int64) -> Int64 = ite(true, 1, 2)
   end
-end
-"#;
-    // The bare spelling loads AND reduces: a literal condition has a redex.
-    let mut interp = crate::common::interp_for(SRC);
-    match interp.call("wi887.spellings.R.viaBare", &[Value::Int(0)]) {
-        Ok(Value::Int(1)) => {}
-        other => panic!("bare `ite` must inline to its then-branch; got {other:?}"),
-    }
-
-    const MEMBER: &str = r#"
-namespace wi887.member
-  import anthill.prelude.{Int64, Bool}
+  -- WI-894: the qualified spelling resolves to the same scoped symbol, so it inlines
+  -- identically — no import needed, since the name is written out in full.
   sort Q
     import anthill.prelude.{Int64, Bool}
     operation viaMember(n: Int64) -> Int64 = Bool.ite(true, 1, 2)
   end
 end
 "#;
-    let Err(errs) = crate::common::try_load_kb_with(MEMBER) else {
-        panic!("`Bool.ite` must not load: a rule head is not a qualified operation");
-    };
-    assert!(
-        errs.iter().any(|e| e.contains("Bool.ite") && e.contains("unknown functor")),
-        "expected `Bool.ite` refused as an unknown functor, got {errs:?}",
-    );
+    let mut interp = crate::common::interp_for(SPELLINGS);
+    for (entry, why) in [
+        ("R.viaBare", "an imported bare `ite` must inline to its then-branch"),
+        ("Q.viaMember", "`Bool.ite` must name the scoped rule functor and inline"),
+    ] {
+        let path = format!("wi887.spellings.{entry}");
+        match interp.call(&path, &[Value::Int(0)]) {
+            Ok(Value::Int(1)) => {}
+            other => panic!("{why}; got {other:?}"),
+        }
+    }
 }
 
 /// THE LIMIT OF A REWRITE, driven rather than argued: a `[simp]` head is matched

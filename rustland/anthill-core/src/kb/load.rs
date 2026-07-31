@@ -2229,20 +2229,49 @@ fn scan_rule(
     }
 }
 
-/// Register an unlabeled rule's head functor as a scoped Goal symbol — UNLESS
-/// the name already resolves in scope (proposal 044 / B2). The transitional
-/// load strategy (proposal 032) is:
+/// Register a rule's INTRODUCED FUNCTOR as a scoped Goal symbol — UNLESS the
+/// name already resolves in scope (proposal 044 / B2). Runs in pass 3, so the
+/// `requires` parent chain and every declared name already exist.
 ///
-///   * labeled rule: the label IS the rule's identity (registered in pass 1);
-///     no separate Goal entry is needed.
-///   * unlabeled single-head rule: the head functor IS the rule's identity.
+/// WI-894 — A RULE DOES NOT TRAVEL TO THE GLOBAL NAMESPACE FROM ITS PLACE. A
+/// name a rule introduces belongs to the scope the rule is WRITTEN IN: the sort
+/// when written inside a sort, the namespace when written at namespace level —
+/// the same rule every other member (`operation`, `entity`, `const`) follows. A
+/// functor with no scoped symbol falls to `remap_name_str`'s bare `intern(name)`
+/// fallback, which is ONE GLOBAL NAME: two sorts defining the same short name
+/// then share one definition and the loser's own laws are ignored INSIDE ITS OWN
+/// SORT, on a program that loads clean.
 ///
-/// B2: when the head functor already resolves — an operation inherited via
-/// `requires` (e.g. `Ordered`'s `eq` law resolving to `PartialEq.eq`), or a locally
-/// declared operation — the rule binds to that ORIGIN symbol instead of
-/// minting a shadowing sort-local `Goal`. Only a genuinely-new head predicate
-/// (NotFound) gets a fresh Goal. Runs in pass 3 so the `requires` parent chain
-/// is already wired.
+/// The shape that reached that fallback is an EQUATION (`lhs = rhs` / `lhs <=>
+/// rhs`): its head functor is the CONNECTIVE, so the name it introduces sits at
+/// `pos_args[0]` ([`rule_introduced_functor_name`]) and was never looked at here.
+///
+/// A LABEL DOES NOT SUPPRESS AN EQUATION, and that is not an exception to the
+/// rule above but a consequence of it: a label names the RULE, an equation's LHS
+/// names the FUNCTION the rule is one clause OF, and those are different names.
+/// `bool.anthill` writes `ite_true:` / `ite_false:` precisely because two labeled
+/// clauses make up one `ite`. The label skip below therefore applies to PREDICATE
+/// heads only, where it keeps its original meaning (proposal 032): an unlabeled
+/// rule's head functor IS the rule's identity, a labeled rule already has one, so
+/// its head reads as a CONCLUSION about an existing predicate rather than a
+/// definition. Removing the skip for predicates too was MEASURED and is wrong —
+/// `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about the prelude's
+/// `gte`, and minting a local `<ns>.gte` silently changes what it is about (it
+/// broke 9 targets, incl. every smt-gen policy render). A labeled PREDICATE rule
+/// introducing a genuinely-new head name is therefore still globally scoped —
+/// WI-894's mechanism in a shape this ticket does not close: WI-896.
+///
+/// The two halves of the ticket land together: scoping alone would break every
+/// cross-file bare use (`ordered.anthill`'s `max` law reaching `bool.anthill`'s
+/// `ite`), and the naming path is the qualified name minted here — a selective
+/// import (`import anthill.prelude.Bool.{ite}`) resolves it through pass 4's
+/// deferred retry (WI-295), which already existed for rule-defined PREDICATES.
+///
+/// B2: when the introduced name already resolves — an operation inherited via
+/// `requires` (e.g. `Ordered`'s `eq` law resolving to `PartialEq.eq`), a locally
+/// declared operation, or an IMPORT of another scope's rule functor — the rule
+/// binds to that ORIGIN symbol instead of minting a shadowing sort-local `Goal`.
+/// Only a genuinely-new name (NotFound) gets a fresh Goal.
 fn scan_rule_goal(
     kb: &mut KnowledgeBase,
     r: &Rule,
@@ -2251,44 +2280,83 @@ fn scan_rule_goal(
     scope: TermId,
     prefix: &str,
 ) {
-    if r.label.is_some() {
+    let Some(functor_name) = rule_introduced_functor_name(r, parse_sym, parse_terms) else {
+        return;
+    };
+    if !matches!(
+        kb.symbols.resolve_in_scope(functor_name, scope.raw()),
+        crate::intern::ResolveResult::NotFound
+    ) {
         return;
     }
-    if let Some(functor_name) = unlabeled_head_functor_name(r, parse_sym, parse_terms) {
-        if matches!(
-            kb.symbols.resolve_in_scope(functor_name, scope.raw()),
-            crate::intern::ResolveResult::NotFound
-        ) {
-            // WI-530: don't shadow an equation-connective head. `eq` / `unify`
-            // are the `=` / `<=>` desugar (proposal 049) and live in the implicit
-            // prelude, so they resolve to the canonical `anthill.prelude.PartialEq.eq` /
-            // `anthill.kernel.unify` at load time (`remap_name_str` consults
-            // `implicit_qualified`). Minting a `<ns>.eq` / `<ns>.unify` Goal here
-            // would instead index a (migrated) equation under that local shadow,
-            // silently hiding it from `apply_eq_rules`, whose selection keys on the
-            // canonical functor — and would force every `<=>` equation to carry an
-            // `import anthill.kernel.{unify}`. The skip is deliberately NARROW (only
-            // these two connectives) so a user PREDICATE rule with any other
-            // reserved-name head (`or` / `not` / …) still gets its own Goal symbol
-            // rather than silently rerouting to the kernel primitive — the
-            // regression the broad "skip every implicit name" attempt hit (WI-523
-            // handoff). The check is the STATIC `implicit_qualified` const, not the
-            // load-order-dependent `by_qualified_name` lookup that made that attempt
-            // flaky.
-            let is_equation_connective = (functor_name == "eq" || functor_name == "unify")
-                && implicit_qualified(functor_name).is_some();
-            if !is_equation_connective {
-                let qualified = make_qualified(prefix, functor_name);
-                kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
-            }
+    let qualified = make_qualified(prefix, functor_name);
+    kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+}
+
+/// The LHS operand of a parse-layer EQUATION head (`lhs = rhs` / `<=>` / `===`),
+/// or `None` when `head` is not one. THE ONE OWNER of that shape knowledge — the
+/// connective sits at the head and its subject at `pos_args[0]` — so the two
+/// readers cannot answer it differently: [`rule_introduced_functor_name`] (which
+/// name the rule introduces) and `Loader::collect_rule_tvar_names` (where a head's
+/// `[T]` introducer rides, WI-619). They were separate walks 11k lines apart and
+/// had already drifted on the arity guard.
+///
+/// Arity 2 is load-bearing and WI-619 records why: a plain 2-ary predicate head
+/// (`same_ty[t](?x, ?y)`) is told from an equation by the CONNECTIVE
+/// ([`is_equation_functor`](crate::parse::pratt::is_equation_functor), the one
+/// source of truth for the functors the infix desugar mints), never by arity
+/// alone — but a connective-named head of some other arity is not an equation
+/// either.
+fn parse_equation_lhs(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    head: TermId,
+) -> Option<TermId> {
+    match parse_terms.get(head) {
+        Term::Fn { functor, pos_args, .. }
+            if pos_args.len() == 2
+                && crate::parse::pratt::is_equation_functor(parse_sym.name(*functor)) =>
+        {
+            Some(pos_args[0])
         }
+        _ => None,
     }
 }
 
-/// For an unlabeled rule with a single positive Fn head, return the
-/// head's functor name. Multi-head, denial, or non-Fn heads return
-/// None.
-fn unlabeled_head_functor_name<'a>(
+/// The name a rule INTRODUCES — the name that must become a scoped symbol so a
+/// call site can name it and a sibling scope's same-spelled rule cannot silently
+/// merge with it (WI-894). `None` when the rule introduces nothing.
+///
+/// TWO KINDS OF HEAD, and the label rule differs between them, which is why it
+/// lives here beside the split rather than in the caller. A PREDICATE head names
+/// the rule itself, so a label — which already gives the rule an identity — means
+/// the head is a CONCLUSION about an existing predicate, not a definition
+/// (proposal 032). An EQUATION's head functor is the `=`/`<=>` CONNECTIVE and its
+/// subject is the LHS, so a label there names the *clause* while the LHS names the
+/// *function*: `bool.anthill`'s `ite_true:` / `ite_false:` are two labeled clauses
+/// of one `ite`, and a label must not suppress it. A BODIED rule is not an
+/// equation at all (§8.3: an equation is bodyless), so `f(?x) = ?y :- guard` takes
+/// the predicate path — its head names `eq`, which the guard below then refuses.
+///
+/// THE GUARD THAT KEEPS WI-530's REASON, not just its letter. WI-530 skipped an
+/// `eq`/`unify` head because minting a scope-local copy of a name that resolves by
+/// the implicit-prelude FALLBACK shadows the canonical target; `resolve_in_scope`
+/// answers `NotFound` for every such name, so the caller's own check cannot see
+/// them. Descending into the LHS re-opened exactly that hole one level down —
+/// MEASURED: `rule cons(?h, ?t) <=> ?h [simp]` loaded clean, minted a local `cons`,
+/// and silently re-pointed every bare `cons` in the sort, so `cons(1, nil())`
+/// answered `1`. That is this ticket's own defect class, and `implicit_qualified`
+/// (the STATIC const WI-530 chose over a load-order-dependent `by_qualified_name`
+/// lookup) is what closes it. `ite` is not implicit vocab, so the stdlib's naming
+/// path is untouched.
+///
+/// A MINTED LHS also introduces nothing — `?x.foo(?y) = ?y` carries the
+/// converter's `dot_apply`, `?a + ?b = ?c` its `add`. Those are the desugar's
+/// functors, not the rule's, and `minted` (WI-618) is provenance carried rather
+/// than re-derived from a blocklist of accessor names. The guard is kept beside
+/// the `implicit_qualified` one because the two answer different questions: whose
+/// functor is this, versus does this name already mean something globally.
+fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -2296,12 +2364,72 @@ fn unlabeled_head_functor_name<'a>(
     if r.heads.len() != 1 {
         return None;
     }
-    if let RuleHead::Term(tid) = &r.heads[0] {
-        if let Term::Fn { functor, .. } = parse_terms.get(*tid) {
-            return Some(parse_sym.name(*functor));
+    let RuleHead::Term(tid) = &r.heads[0] else {
+        return None;
+    };
+    let equation_lhs = r
+        .body
+        .is_none()
+        .then(|| parse_equation_lhs(parse_sym, parse_terms, *tid))
+        .flatten();
+    // The SUBJECT of the head — the node whose functor the rule is about. For an
+    // equation that is the LHS; for a predicate head it is the head itself.
+    let (subject, is_equation) = match equation_lhs {
+        Some(lhs) => (lhs, true),
+        // A labeled PREDICATE rule already has an identity, so its head is a
+        // conclusion, not a definition. (A labeled EQUATION is not suppressed —
+        // see above.)
+        None if r.label.is_some() => return None,
+        None => (*tid, false),
+    };
+    // A DESUGARED subject introduces nothing, on EITHER path: the converter's
+    // accessor builds put their own functor there (`?x.m(?y)` → `dot_apply`,
+    // `?x.f` → `field_access`, `?a + ?b` → `add`), and those names are the
+    // desugar's, not the rule's. `minted` (WI-618) is provenance carried rather
+    // than re-derived from a blocklist. MEASURED on the predicate path too, where
+    // the guard was missing: `rule ?x.m(?y) :- p(?x)` minted `<ns>.dot_apply`,
+    // shadowing reserved kernel vocab for that whole scope.
+    if parse_terms.is_minted(subject) {
+        return None;
+    }
+    let Term::Fn { functor, .. } = parse_terms.get(subject) else {
+        return None;
+    };
+    let name = parse_sym.name(*functor);
+    // A QUALIFIED name REFERENCES an existing symbol; it never introduces one.
+    // `resolve_in_scope` matches SHORT names only — it does not run the dotted
+    // ladder — so it answers `NotFound` for `String.isEmpty` and the caller's
+    // check cannot see the reference. MEASURED: `rule String.isEmpty(?s) <=> true`
+    // defined a symbol whose SHORT name was literally `String.isEmpty`, which the
+    // loader's ladder then ranks ahead of the real target for the whole scope.
+    if name.contains('.') {
+        return None;
+    }
+    if is_equation {
+        // WI-530's REASON, not just its letter. A name that already resolves through
+        // the implicit-prelude / reserved-kernel FALLBACK is never captured:
+        // `resolve_in_scope` answers `NotFound` for every such name, so the caller
+        // cannot see them. MEASURED: `rule cons(?h, ?t) <=> ?h [simp]` loaded clean,
+        // minted a local `cons`, and silently repointed every bare `cons` in the sort
+        // — `cons(1, nil())` answered `1`. `ite` is not implicit vocab, so the
+        // stdlib's naming path is untouched.
+        if implicit_qualified(name).is_some() {
+            return None;
+        }
+    } else {
+        // The predicate path keeps WI-530's NARROW skip instead: only the equation
+        // CONNECTIVES. A bodied equation-shaped head (`gate(?m) <=> 0 :- guard`) lands
+        // here, and minting `<ns>.eq` / `<ns>.unify` shadows the canonical symbol that
+        // `apply_eq_rules` and the `[simp]` gates select on — MEASURED, it silently
+        // switched off `wi698`'s effectful-guard rejection. Narrow and NOT
+        // `implicit_qualified`, because a user predicate rule headed `or` / `not` must
+        // still get its own Goal: the WI-523 regression a broad skip caused. That
+        // asymmetry between the two paths is WI-896.
+        if crate::parse::pratt::is_equation_functor(name) {
+            return None;
         }
     }
-    None
+    Some(name)
 }
 
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
@@ -13561,14 +13689,9 @@ impl<'a> Loader<'a> {
         // type-args off `pos_args[0]` (the first ARGUMENT `?x`, which has none)
         // there would silently drop the head's `[t]` introducer (1-ary and 3-ary
         // heads read off the head node and worked; exactly 2-ary misfired).
-        let target = match self.parsed.terms.get(head_parse_id) {
-            Term::Fn { functor, pos_args, .. }
-                if pos_args.len() == 2 && self.is_parse_equation_functor(*functor) =>
-            {
-                pos_args[0]
-            }
-            _ => head_parse_id,
-        };
+        let target =
+            parse_equation_lhs(&self.parsed.symbols, &self.parsed.terms, head_parse_id)
+                .unwrap_or(head_parse_id);
         if let Some(bindings) = self.read_parse_call_type_args(target) {
             let mut all_introducers = true;
             for b in &bindings {
@@ -13596,17 +13719,6 @@ impl<'a> Loader<'a> {
                 self.rule_head_bracket_bindings.insert(target);
             }
         }
-    }
-
-    /// WI-619 — is this PARSE-side functor an equation connective (`eq` / `unify`
-    /// / `struct_eq`, the pratt desugar of `=` / `<=>` / `===`)? Used to recognize
-    /// an equational rule head `lhs = rhs` at the parse layer — where the head's
-    /// `[T]` introducer rides on the LHS operand, not the `eq(lhs, rhs)` node.
-    /// Delegates to [`pratt::is_equation_functor`] (single source of truth with the
-    /// infix table that mints these functors), mirroring the KB-side
-    /// [`is_equational_head`] which classifies the resolved qualified name instead.
-    fn is_parse_equation_functor(&self, functor: Symbol) -> bool {
-        pratt::is_equation_functor(self.parsed.symbols.name(functor))
     }
 
     /// WI-582 — recognize a body guard `Spec[X]` where `X` is a head-introduced

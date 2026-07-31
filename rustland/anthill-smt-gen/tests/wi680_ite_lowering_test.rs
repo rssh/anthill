@@ -20,7 +20,7 @@
 //!   - a genuinely-free input var appearing ONLY inside an `ite` in a
 //!     `FunctionLike` result's `(define-fun ...)` is still declared.
 
-use super::common::{load_kb_with, run_z3, z3_available};
+use super::common::{load_kb_strict, load_kb_with, run_z3, z3_available};
 
 use anthill_smt_gen::{emit_satisfiability_check, emit_satisfiability_check_with, ProofConfig};
 
@@ -90,6 +90,49 @@ fn emit(rule: &str) -> String {
     let kb = load_kb_with(SRC);
     emit_satisfiability_check(&kb, rule)
         .unwrap_or_else(|e| panic!("emit {rule}: {}", e.message))
+}
+
+/// WI-894 — THE SAME SOURCE WITH `ite` IMPORTED. `SRC` writes a bare, un-imported `ite`,
+/// which still interns bare, so `is_ite_op`'s short-name arm carries it; that is the ONLY
+/// spelling this file used to exercise. Once a rule-introduced functor is scoped to its
+/// declaring sort (WI-894), `import anthill.prelude.Bool.{ite}` resolves and the very
+/// same rules reach smt-gen as `anthill.prelude.Bool.ite` instead — MEASURED to die
+/// `unhandled arithmetic op 'anthill.prelude.Bool.ite'` before the qualified arm existed.
+/// The stdlib's own `ordered.anthill` / `int64.anthill` take this path now, so the
+/// un-imported spelling alone is no longer representative.
+///
+/// DERIVED from `SRC` by adding one import line rather than copied, so the two cannot
+/// drift. Same reason `wi893_comment_eats_simp_test`'s `without_comments` derives its
+/// control half. (Only `clamp_negative` is emitted below — the other rules ride along
+/// to keep the sources identical, not because they are exercised.)
+fn imported_src() -> String {
+    let marker = "  import anthill.prelude.Bool.{and, or, not}\n";
+    assert!(SRC.contains(marker), "SRC's Bool import line moved; update this derivation");
+    SRC.replace(marker, &format!("{marker}  import anthill.prelude.Bool.{{ite}}\n"))
+}
+
+/// LOADED STRICTLY, and that is the whole point of the test rather than a detail. This
+/// harness' `load_kb_with` DISCARDS load errors, and `is_ite_op` still matches the bare
+/// short name — so if the import ever stopped resolving, `ite` would intern bare, the
+/// SMT would still contain `(ite ...)`, and this test would pass while exercising the
+/// pre-WI-894 path it exists to distinguish from. WI-887 recorded this harness hiding a
+/// live load error in this very file. `load_kb_strict` + the qualified-symbol assertion
+/// are what make the claim falsifiable.
+#[test]
+fn an_imported_ite_lowers_by_its_qualified_name() {
+    let kb = load_kb_strict(&imported_src());
+    assert!(
+        kb.has_qualified_name("anthill.prelude.Bool.ite"),
+        "WI-894 must give the rule-introduced `ite` a qualified identity, or the import \
+         below is resolving to nothing and this test is measuring the bare path",
+    );
+    let smt = emit_satisfiability_check(&kb, "test.wi680.clamp_negative")
+        .unwrap_or_else(|e| panic!("emit imported-ite rule: {}", e.message));
+    assert!(
+        smt.contains("(ite (>= "),
+        "an `ite` reached through `import anthill.prelude.Bool.{{ite}}` must lower to \
+         an SMT `(ite ...)` exactly as the bare spelling does — got:\n{smt}"
+    );
 }
 
 /// Emit + run z3, returning its trimmed verdict. A z3 error (e.g. an undeclared

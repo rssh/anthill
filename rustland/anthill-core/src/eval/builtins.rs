@@ -15,13 +15,19 @@
 //! short-circuit semantics users expect. The `if_expr` form in expression
 //! bodies already gives lazy branching.
 //!
-//! WI-884 — this paragraph USED to continue "…; rule-level uses of `ite` are handled
-//! by the prelude's rewrite rules during SLD resolution", and that was FALSE: the goal
-//! `eq(Bool.ite(true, 10, 20), 10)` yields no solutions, in either orientation, beside
-//! a control that yields one. So `ite` reduces NOWHERE, and the deliberate half above
-//! is only half the story. The cause, why tagging the laws is not the fix, and the
-//! open decision are recorded once, on the declaration in `bool.anthill`; WI-887 owns
-//! it.
+//! WI-884 recorded here that `ite` "reduces NOWHERE", and that has since been RETRACTED
+//! twice over, so do not read it as a live measurement. WI-893 found the measurement was
+//! a parser artifact — a comment above `ite_true` had silently eaten its `[simp]`, so the
+//! probed branch was the untagged one. WI-887 then deleted the `ite` DECLARATION this
+//! paragraph pointed at (the reason above stands and is why: an operation evaluates its
+//! arguments, so an `ite` operation computes BOTH branches), leaving `ite` defined solely
+//! by its two `[simp]` rules. It reduces: driven in `wi884_sibling_backing_test::
+//! ite_reduces_under_both_spellings`.
+//!
+//! WI-894 then scoped that functor to `Bool`, so the name is reached by `import
+//! anthill.prelude.Bool.{ite}` or written `Bool.ite(…)` — not by a global name. The
+//! non-registration above is unaffected: it is about EVAL, and the reason is strictness,
+//! not naming.
 
 use super::{EvalError, Interpreter, Value};
 

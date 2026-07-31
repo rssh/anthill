@@ -1930,15 +1930,40 @@ fn map_unary_op(qn: &str) -> Option<&'static str> {
 /// defining-equation body uses the `Expr::If` occurrence directly; this covers the
 /// hand-written / stdlib `ite(...)` spelling of the same conditional.
 ///
-/// WI-887 made `ite` a rule-level functor rather than an operation, so it never
-/// resolves and `qualified_name_of` hands back the bare short name — the two qualified
-/// arms this used to carry (`anthill.prelude.Bool.ite`, `Bool.ite`) became unreachable
-/// and are gone. That leaves the short name as the ONLY match, so a user's own
-/// unresolved 3-ary `ite` is indistinguishable from the prelude's: a pre-existing
-/// hazard of this table's short-name style (WI-680 recorded it), now with nothing
-/// more specific in front of it.
+/// BOTH SPELLINGS ARE LIVE, and which one arrives depends on whether the use site
+/// named `ite`. WI-887 made `ite` a rule-level functor rather than an operation, and
+/// deleted the qualified arms as unreachable — correctly at the time, because a
+/// rule-introduced functor had no qualified identity at all and `qualified_name_of`
+/// always handed back the bare short name. WI-894 SCOPES such a functor to its
+/// declaring sort, so `anthill.prelude.Bool.ite` now exists and an `import
+/// anthill.prelude.Bool.{ite}` (the naming path WI-894 added — and the one
+/// `ordered.anthill` / `int64.anthill` now use) resolves to it. MEASURED: without the
+/// qualified arm an imported `ite` in a rule body dies `unhandled arithmetic op
+/// 'anthill.prelude.Bool.ite'`.
+///
+/// The bare arm stays for the UN-imported use, which still interns bare in a rule body
+/// (`wi680_ite_lowering_test`'s own fixture writes it that way). That arm keeps WI-680's
+/// recorded hazard — a user's own unresolved 3-ary `ite` is indistinguishable from the
+/// prelude's — but WI-894 makes the hazard AVOIDABLE again rather than unavoidable:
+/// importing `ite` gives the qualified name, which cannot collide with a user's.
+///
+/// Only TWO arms, though the neighbouring tables carry a sort-qualified third (`Bool.and`,
+/// `Int64.neg`). WI-887 deleted the `Bool.ite` arm as unreachable and nothing since made
+/// it reachable, so it stays deleted rather than restored for symmetry with no
+/// measurement behind it. NOT because such a program cannot get here: a `Bool.ite`
+/// spelling with `Bool` out of scope is a load ERROR, but a load error does not stop
+/// smt-gen — this crate's own test harness does `let _ = load_all(..)` and the CLI's run
+/// path mutes load errors too. The arm is absent because it is unmeasured, and if a real
+/// program is ever found reaching it the fix is a test plus the arm, not a symmetry
+/// argument.
+///
+/// WI-894 also UNBLOCKS the principled form this table has never had: `functor: Symbol`
+/// and `self.kb` are both in hand at the call site, so `by_qualified_name["anthill.
+/// prelude.Bool.ite"] == functor` would be a symbol-identity compare immune to a user's
+/// same-named op. Table-wide (every `map_*_op` here matches by name), so it is WI-897 —
+/// recorded because WI-887's comment on this function stated the opposite.
 fn is_ite_op(qn: &str) -> bool {
-    qn == "ite"
+    qn == "ite" || qn == "anthill.prelude.Bool.ite"
 }
 
 /// Map the Bool connectives to their SMT-LIB spelling (WI-680), for the

@@ -31,6 +31,33 @@ static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Like [`load_kb_with`] but PANICS on a load error instead of discarding it.
+///
+/// [`load_kb_with`] does `let _ = load_all(..)`, which is load-bearing for the fixtures
+/// that deliberately carry an unresolvable shape — but it means a fixture whose IMPORT
+/// silently stops resolving still returns a KB, and a test asserting on emitted SMT can
+/// then pass through a fallback path while claiming to pin the imported one. That is not
+/// hypothetical: WI-887 recorded exactly this harness hiding a live load error in
+/// `wi680_ite_lowering_test`. Any test whose claim depends on a name RESOLVING must load
+/// through here.
+#[allow(dead_code)]
+pub fn load_kb_strict(source: &str) -> KnowledgeBase {
+    let user = parse::parse(source).expect("parse user source");
+    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.push(&user);
+
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+        panic!(
+            "load must be clean for a test that depends on name resolution; got: {:?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+        );
+    }
+    kb
+}
+
 #[allow(dead_code)]
 pub fn load_kb_with(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
