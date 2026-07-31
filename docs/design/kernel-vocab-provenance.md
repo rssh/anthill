@@ -8,9 +8,13 @@ doc's "Primary approach" below), *not* node-keyed converter provenance (kept bel
 as a documented escape hatch only) and *not* a literal `anthill.prelude` import
 edge. Concretely: one `pub(crate) fn implicit_qualified(name)` =
 `kernel_vocab_qualified(name).or_else(prelude_qualified(name))` over two
-fully-qualified `&[&str]` lists, consulted *after* scope resolution fails in
-**three** resolvers — `remap_name_str` (loader), `resolve_name_in_kb_opt` (query
-patterns), and `KnowledgeBase::resolve_name_in_global` (the reflect bridge). A user
+fully-qualified `&[&str]` lists, consulted *after* scope resolution fails. Every
+consumer reaches it through one function, `resolve_implicit(kb, name)`, which applies
+the `by_qualified_name` gate that makes a table hit an answer (WI-900: one consumer
+that read the table without the gate collapsed rule heads onto a bare global) —
+`remap_name_str` (loader), `resolve_name_in_kb_opt` (query patterns),
+`KnowledgeBase::resolve_name_in_global` (the reflect bridge), and
+`name_denotes_for_rule_head` (the rule-head mint guard). A user
 name in scope always wins, so a name can never go `Ambiguous` against a user name —
 which dissolved the WI-476 collision blocklist. The boolean-`!` / NAF-`not` split
 was deferred to **WI-529**; its decided shape is **§C.1**. The rest of this doc is the

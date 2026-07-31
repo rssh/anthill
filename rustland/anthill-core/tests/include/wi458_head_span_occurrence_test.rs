@@ -12,9 +12,7 @@
 //! The fix records each head's span keyed by its `RuleId` (`rule_head_span`),
 //! which is unique per stored fact/rule and so cannot cross-file-alias.
 
-use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
+use crate::common::load_kb_bare as load_kb;
 
 /// Two files, two namespaces, byte-identical fact HEAD (`enabled(feature: "x")`).
 /// `enabled` is an undeclared ad-hoc predicate, so it short-name-interns to the
@@ -33,21 +31,6 @@ namespace wi458b
 end
 "#;
 
-fn load_kb(sources: &[&str]) -> KnowledgeBase {
-    let parsed: Vec<_> = sources.iter()
-        .map(|s| parse::parse(s).expect("parse source"))
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("Load error: {e}"); }
-            panic!("load failed with {} errors", errs.len());
-        });
-    kb
-}
 
 #[test]
 fn head_span_keys_on_occurrence_not_hashconsed_termid() {

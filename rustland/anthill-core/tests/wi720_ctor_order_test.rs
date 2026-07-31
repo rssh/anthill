@@ -16,11 +16,12 @@
 /// WRITTEN bare `red` already lowered to `Ref(red)` directly and so was never
 /// affected; the reproducing surface is the Fn-built `red()`.
 
-use anthill_core::parse;
+mod common;
+
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term, Var, Literal};
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
+use common::load_kb_bare as load_kb;
 use smallvec::SmallVec;
 
 /// Declares the sort (`enum Color`), the fact shape (`entity Paint`), and the
@@ -52,21 +53,6 @@ namespace demo720
 end
 "#;
 
-fn load_kb(sources: &[&str]) -> KnowledgeBase {
-    let parsed: Vec<_> = sources.iter()
-        .map(|s| parse::parse(s).expect("parse source"))
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("Load error: {e}"); }
-            panic!("load failed with {} errors", errs.len());
-        });
-    kb
-}
 
 /// Resolve `demo720.<rule>(?id)` and return the sorted `?id` bindings. Loud: a
 /// solution whose `?id` is unbound / not a String panics rather than dropping.

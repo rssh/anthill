@@ -222,6 +222,30 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
     kb
 }
 
+/// The MIRROR IMAGE of [`load_stdlib_kb`]: the user sources with NO stdlib files —
+/// `register_prelude` + `register_standard_builtins` + `load_all`, nothing else. The
+/// configuration an EMBEDDER uses, and the one where a name's implicit-prelude target may
+/// simply not exist (WI-900).
+///
+/// Lifted here for the reason [`load_stdlib_kb`] records: verbatim copies of this exact
+/// sequence had accumulated (`wi720_ctor_order_test`, `wi458_head_span_occurrence_test`),
+/// and a change to the load sequence otherwise lands in one and not the others.
+#[allow(dead_code)]
+pub fn load_kb_bare(sources: &[&str]) -> KnowledgeBase {
+    let parsed: Vec<_> = sources.iter().map(|s| parse::parse(s).expect("parse source")).collect();
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("Load error: {e}");
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
+    kb
+}
+
 /// [`load_stdlib_kb`] plus ONE user source, returning the `LoadResult` too — the split-step
 /// form a re-type test needs (`type_check_sorts(&result.defined_sorts)`, then
 /// `type_check_sorts(&[])`). Parse and load failures panic: both are test-authoring bugs here,

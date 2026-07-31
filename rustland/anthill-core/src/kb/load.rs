@@ -2058,12 +2058,45 @@ fn prelude_qualified(name: &str) -> Option<&'static str> {
 
 /// WI-040 / WI-521: short name → qualified target for ALL implicitly-available
 /// names — the reserved kernel desugaring vocab and the implicit prelude — or
-/// `None`. The single source every resolver consults as a LOWEST-PRECEDENCE
-/// fallback (after scope resolution fails), so a user name in scope always wins.
-/// Callers: `remap_name_str` (loader), `resolve_name_in_kb_opt` (query patterns),
-/// `KnowledgeBase::resolve_name_in_global` (the reflect bridge).
-pub(crate) fn implicit_qualified(name: &str) -> Option<&'static str> {
+/// `None`. Private: a NAME here is a candidate, and turning a candidate into an answer
+/// is [`resolve_implicit`]'s job, which is what every consumer must call.
+fn implicit_qualified(name: &str) -> Option<&'static str> {
     kernel_vocab_qualified(name).or_else(|| prelude_qualified(name))
+}
+
+/// THE IMPLICIT TIER of the name ladder: the symbol a bare `name` denotes through the
+/// reserved kernel vocab / implicit prelude, or `None`. The LOWEST-PRECEDENCE rung —
+/// consulted only after scope resolution fails, so a user name in scope always wins.
+///
+/// THE `by_qualified_name` GATE IS PART OF THE RUNG, not a caller's option: a target
+/// that is not loaded denotes nothing, and the name must go on falling through to the
+/// next rung. WI-900 is what happens when one consumer reads the const without it — the
+/// rule-head mint guard skipped names the resolvers could not resolve, so those names
+/// were neither captured nor bound and collapsed onto one bare global. The gate lived
+/// as four hand-written copies and a comment saying they agreed; it is one function so
+/// that they cannot not agree. Consumers: [`Loader::remap_name_str_inner`]
+/// (references), [`resolve_name_in_kb_opt`] (query patterns),
+/// `KnowledgeBase::resolve_name_in_global` (the reflect bridge), and
+/// [`name_denotes_for_rule_head`] (the mint guard).
+pub(crate) fn resolve_implicit(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
+    implicit_qualified(name).and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied())
+}
+
+/// WI-900: the implicit TARGETS that resolve to nothing in `kb` — empty in any KB that
+/// loads the stdlib, and that is an invariant worth pinning rather than a coincidence.
+/// The tier resolves a bare name only when its target is loaded, so an orphaned entry (a
+/// stdlib rename, a moved operation) does not fail loudly: the name silently stops
+/// resolving, and a rule head spelled that way starts INTRODUCING it instead of
+/// referencing it. Lives beside the tables so a future edit to them sees the invariant;
+/// asserted by
+/// `wi900_implicit_tier_agreement_test::every_implicit_target_is_declared_by_the_standard_load`.
+pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
+    KERNEL_VOCAB_QUALIFIED
+        .iter()
+        .chain(PRELUDE_QUALIFIED.iter())
+        .copied()
+        .filter(|qn| !kb.symbols.by_qualified_name.contains_key(*qn))
+        .collect()
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -2400,7 +2433,8 @@ fn scan_rule(
 /// `requires` (e.g. `Ordered`'s `eq` law resolving to `PartialEq.eq`), a locally
 /// declared operation, or an IMPORT of another scope's rule functor — the rule
 /// binds to that ORIGIN symbol instead of minting a shadowing sort-local `Goal`.
-/// Only a genuinely-new name (NotFound) gets a fresh Goal.
+/// Only a genuinely-new name gets a fresh Goal, and WHICH names those are is
+/// [`name_denotes_for_rule_head`]'s question — the ladder, read-only.
 fn scan_rule_goal(
     kb: &mut KnowledgeBase,
     r: &Rule,
@@ -2412,10 +2446,7 @@ fn scan_rule_goal(
     let Some(functor_name) = rule_introduced_functor_name(r, parse_sym, parse_terms) else {
         return;
     };
-    if !matches!(
-        kb.symbols.resolve_in_scope(functor_name, scope.raw()),
-        crate::intern::ResolveResult::NotFound
-    ) {
+    if name_denotes_for_rule_head(kb, functor_name, scope.raw()) {
         return;
     }
     let qualified = make_qualified(prefix, functor_name);
@@ -2460,9 +2491,8 @@ fn parse_equation_lhs(
 /// on. A PREDICATE head is its own subject; an EQUATION's head functor is the
 /// `=`/`<=>` CONNECTIVE and its subject is the LHS, so `rule ite(true, ?t, ?_) =
 /// ?t` is about `ite`, never `eq`. A BODIED rule is not an equation at all (§8.3:
-/// an equation is bodyless), so `f(?x) = ?y :- guard` is about `eq` — which the
-/// implicit-prelude guard below then refuses, WI-530's outcome reached without
-/// WI-530's special case.
+/// an equation is bodyless), so `f(?x) = ?y :- guard` is about `eq` — which the caller's
+/// mint guard then refuses, WI-530's outcome reached without WI-530's special case.
 ///
 /// WI-896 — EVERYTHING AFTER THAT POINT IS ONE RULE FOR BOTH KINDS. WI-894 ran
 /// two different guards here — the equation path skipped every
@@ -2474,34 +2504,16 @@ fn parse_equation_lhs(
 /// label carve-out was standing in for it by accident — right for the labeled
 /// cell, wrong for the other three.
 ///
-/// THE GUARD KEEPS WI-530's REASON, not just its letter: a name that already
-/// resolves through the implicit-prelude / reserved-kernel FALLBACK is never
-/// captured, because `resolve_in_scope` answers `NotFound` for every such name and
-/// the caller's own check cannot see them. MEASURED on both paths, same defect
-/// class each time — `rule cons(?h, ?t) <=> ?h [simp]` minted a local `cons` and
-/// made `cons(1, nil())` answer `1`; `rule or(?x) :- p(?x)` minted a local `or` and
-/// made the disjunction two lines down yield NOTHING. Both loaded clean. `ite` is
-/// not implicit vocab, so the stdlib's naming path is untouched.
-///
-/// THE TIER IS STATIC, NOT LOADED — a deliberate divergence from the ladder, and
-/// the reason `implicit_qualified` is consulted here rather than
-/// `resolve_name_in_kb_opt` (which spells the same ladder but gates the tier on the
-/// target being present in `by_qualified_name`). WI-530 measured that gate at scan
-/// time as load-order dependent — it passed in isolation and failed intermittently
-/// in the full test binary — and chose the static const for determinism. The cost
-/// is real and MEASURED: in a KB where an implicit name's target is NOT loaded, the
-/// head is neither captured here nor resolved by the ladder, so it falls to a bare
-/// global. Two sorts each writing `rule and(?x) :- …` in a stdlib-less KB share one
-/// `and`, which is WI-894's own defect class. With the stdlib loaded every implicit
-/// target is present and the two agree, so this is confined to embedders and
-/// stdlib-less harnesses. WI-900.
+/// WHAT THIS FUNCTION DOES NOT DECIDE (WI-900): whether that name is FREE. Every "does
+/// it already mean something here?" rung belongs to [`name_denotes_for_rule_head`], so
+/// the guard and `remap_name_str_inner` cannot answer differently. What stays HERE is
+/// only what the SOURCE SHAPE decides.
 ///
 /// A MINTED SUBJECT introduces nothing — `?x.foo(?y) = ?y` carries the converter's
 /// `dot_apply`, `?a + ?b = ?c` its `add`. Those are the desugar's functors, not the
 /// rule's, and `minted` (WI-618) is provenance carried rather than re-derived from a
-/// blocklist of accessor names. That guard is kept beside the `implicit_qualified`
-/// one because the two answer different questions: whose functor is this, versus
-/// does this name already mean something globally.
+/// blocklist of accessor names. It is a shape question — whose functor is this — which
+/// is why it stays here while the ladder does not.
 fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
@@ -2538,21 +2550,17 @@ fn rule_introduced_functor_name<'a>(
     };
     let name = parse_sym.name(*functor);
     // A QUALIFIED name REFERENCES an existing symbol; it never introduces one — a
-    // SPEC rule, deliberately stricter than `resolve_dotted_in_kb`, not a third
-    // ladder tier: a dotted head that resolves to nothing still introduces nothing.
-    // `resolve_in_scope` matches SHORT names only — it does not run the dotted
-    // ladder — so it answers `NotFound` for `String.isEmpty` and the caller's
-    // check cannot see the reference. MEASURED: `rule String.isEmpty(?s) <=> true`
-    // defined a symbol whose SHORT name was literally `String.isEmpty`, which the
-    // loader's ladder then ranks ahead of the real target for the whole scope.
+    // SPEC rule about the SPELLING (kernel-language.md §"A rule-introduced functor is
+    // scoped where it is written"), NOT a ladder tier, and deliberately stricter than
+    // `resolve_dotted_in_kb`: a dotted head that resolves to NOTHING still introduces
+    // nothing, whereas the ladder's dotted rung would simply miss and descend.
+    // `resolve_in_scope` matches SHORT names only, so it answers `NotFound` for
+    // `String.isEmpty` and the caller's check cannot see the reference. MEASURED: `rule
+    // String.isEmpty(?s) <=> true` defined a symbol whose SHORT name was literally
+    // `String.isEmpty`, which the loader's ladder then ranks ahead of the real target
+    // for the whole scope. `name_denotes_for_rule_head` DEPENDS on this refusal (it
+    // omits the dotted rung on the strength of it) and asserts it.
     if name.contains('.') {
-        return None;
-    }
-    // The FALLBACK TIER of the name ladder, which `resolve_in_scope` cannot see. A
-    // name that already means something globally is REFERENCED by the head, never
-    // introduced by it — so the rule is a clause about that name (the smt-gen
-    // `bound: gte(…)` lemma's shape) rather than a definition shadowing it.
-    if implicit_qualified(name).is_some() {
         return None;
     }
     Some(name)
@@ -6922,10 +6930,50 @@ fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Opt
             // has won. (Distinct from WI-476's deliberate no-rescue for arbitrary user
             // short-names — these are RESERVED / PRELUDE names that always denote
             // their target.)
-            .or_else(|| {
-                implicit_qualified(name)
-                    .and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied())
-            }),
+            .or_else(|| resolve_implicit(kb, name)),
+    }
+}
+
+/// WI-900: does `name` ALREADY DENOTE something at `scope_raw` — the question the MINT
+/// GUARD ([`scan_rule_goal`]) asks before letting a rule head introduce a name? A head
+/// that names something introduces nothing; it is a CLAUSE ABOUT that thing.
+///
+/// IT MUST ANSWER FOR THE SAME NAMES [`Loader::remap_name_str_inner`] RESOLVES. A name
+/// the guard skips but the ladder cannot resolve is neither captured nor bound, so it
+/// falls to the ladder's bare `intern(name)`: ONE GLOBAL NAME that two scopes'
+/// same-spelled heads then share, WI-894's defect class. That is WI-900 — the guard read
+/// the implicit tier as a STATIC const while every resolver gated it on the target being
+/// loaded, so in a stdlib-less KB two sorts' `rule and(?x) :- …` shared one bare `and` on
+/// a program that loaded clean. Both rungs below are now the shared functions, so the
+/// two can only agree; DO NOT re-inline either, and in particular do not restore the
+/// static const — WI-530 chose it because the loaded gate was reported flaky in the full
+/// test binary, which WI-900 re-measured over repeated full-workspace runs and did not
+/// reproduce. Sub-pass 1 defines every file's declarations before any sub-pass 3 runs, so
+/// within a load phase this rung reads the same table the reference path will.
+///
+/// TWO RUNGS OF THE LADDER ARE ABSENT, both because they cannot apply here rather than
+/// by choice. The DOTTED rung is `split_once('.')`-guarded and the caller refuses any
+/// dotted subject, which the `debug_assert` below pins rather than narrates. The
+/// `internal` rungs REPORT, and a guard is not a diagnostic site — a name a scope cannot
+/// see denotes nothing there, which is exactly what `NotFound` already says.
+///
+/// `Ambiguous` COUNTS AS DENOTING, for [`Loader::qualified_name_resolves`]'s stated
+/// reason: an ambiguity is a real finding with a real error to emit, and the reference
+/// emits it. Minting instead would bury it — a fresh scope-local `Goal` is a LOCAL,
+/// which outranks the ambiguous candidates, so the conflict the author has to see would
+/// be silently decided in their favour. Pinned by
+/// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
+fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> bool {
+    debug_assert!(
+        !name.contains('.'),
+        "`{name}`: the mint guard is SHORT-NAME-ONLY, which is why it omits the dotted \
+         rung — `rule_introduced_functor_name` refuses a dotted subject upstream. If that \
+         refusal is relaxed, this function needs `resolve_dotted_in_kb` before it can \
+         answer.",
+    );
+    match kb.symbols.resolve_in_scope(name, scope_raw) {
+        ResolveResult::Found(_) | ResolveResult::Ambiguous(_) => true,
+        ResolveResult::NotFound => resolve_implicit(kb, name).is_some(),
     }
 }
 
@@ -8130,10 +8178,8 @@ impl<'a> Loader<'a> {
                 // `_global` imports. This is a FALLBACK (we are already past scope
                 // resolution), so a user-written same-spelling name has won
                 // already; these names only catch a reference no scope defines.
-                if let Some(qn) = implicit_qualified(name) {
-                    if let Some(&sym) = self.kb.symbols.by_qualified_name.get(qn) {
-                        return sym;
-                    }
+                if let Some(sym) = resolve_implicit(self.kb, name) {
+                    return sym;
                 }
                 // WI-369: distinguish a forbidden cross-scope reference to an
                 // `internal` name from a genuinely-unknown one before falling back.

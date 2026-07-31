@@ -904,3 +904,6 @@ mod wi894_rule_functor_scope_test;
 mod wi896_labeled_predicate_head_test;
 
 
+
+#[path = "include/wi900_implicit_tier_agreement_test.rs"]
+mod wi900_implicit_tier_agreement_test;

@@ -5151,8 +5151,7 @@ impl KnowledgeBase {
             // bare reflection name (`OperationInfo`, …) or prelude name still
             // resolves here (e.g. the reflect bridge's `SortQuery`) after the
             // `_global` imports were removed.
-            _ => crate::kb::load::implicit_qualified(name)
-                .and_then(|qn| self.symbols.by_qualified_name.get(qn).copied()),
+            _ => crate::kb::load::resolve_implicit(self, name),
         }
     }
 
