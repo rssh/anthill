@@ -45,8 +45,6 @@ sort anthill.prelude.Bool
   -- They fire on a literal condition. That is the whole reach and it is enough: the
   -- functor's other consumer is smt-gen's `(ite c t e)`, which wants the condition left
   -- symbolic and no reduction at all.
-  --
-  -- Keep the tags clear of a preceding comment line — see WI-893.
   rule {
     ite_true:   ite(true, ?t, ?_) = ?t [simp]
     ite_false:  ite(false, ?_, ?e) = ?e [simp]

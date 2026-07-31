@@ -1005,6 +1005,15 @@ module.exports = grammar({
       '{', repeat($.rule_entry), '}',
     ),
 
+    // WI-893: the same comment-tips-the-tie hazard as `requires_clause` above, in
+    // the `[$.rule_entry]` production pair — entries are juxtaposed, so a `[` after
+    // an entry's heads reads either as this entry's `meta_block` or as the NEXT
+    // entry's `collection_literal` head. Untreated, a preceding comment picked the
+    // second: the `[simp]` became a junk rule and the equation went INERT with no
+    // diagnostic (WI-881 — `[simp]` is the enablement).
+    // The bias is EXACT, not just deterministic: a bare-literal conclusion is
+    // refused outright (`convert_rule_heads`, spec §"A head is an atom"), so the
+    // reading it discards is one nothing may write.
     rule_entry: $ => seq(
       optional(seq(field('label', $.name), ':')),
       choice(
@@ -1012,7 +1021,7 @@ module.exports = grammar({
         seq(field('body', $.rule_body), '-:', field('heads', $.rule_heads)),
         field('heads', $.rule_heads),
       ),
-      optional($.meta_block),
+      optional(prec.dynamic(1, $.meta_block)),
     ),
 
     // =========================================================

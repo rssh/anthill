@@ -2740,22 +2740,17 @@ fn parse_entity_with_distinct_named_variables() {
 
 use anthill_core::parse::ir::SimpleTermStore;
 
-/// Helper: parse a rule and return the parse-IR term for the head.
-fn parse_rule_head_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::SymbolTable, TermId) {
-    let source = format!("rule r: {expr}\n");
-    let parsed = parse::parse(&source).expect("parse failed");
-    // Extract the head term from the first rule item
-    let head_tid = match &parsed.items[0] {
-        Item::Rule(r) => {
-            assert_eq!(r.heads.len(), 1, "expected single head");
-            match &r.heads[0] {
-                anthill_core::parse::ir::RuleHead::Term(tid) => *tid,
-                _ => panic!("expected rule head term"),
-            }
-        },
-        other => panic!("expected Rule, got {:?}", std::mem::discriminant(other)),
-    };
-    (parsed.terms, parsed.symbols, head_tid)
+/// Helper: parse a standalone TERM and return its parse-IR node.
+///
+/// The term rides as a rule-BODY goal, the position that admits every term shape.
+/// It used to be the rule HEAD, which stopped working when WI-893 made a bare
+/// literal head an error (a head is a conclusion; a literal denotes a value —
+/// spec §"A head is an atom"), and a head was never the right position anyway:
+/// `parse_rule_body_goals_ir` below already had one that is unconstrained.
+fn parse_term_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::SymbolTable, TermId) {
+    let (terms, symbols, goals) = parse_rule_body_goals_ir(expr);
+    assert_eq!(goals.len(), 1, "expected a single goal for `{expr}`");
+    (terms, symbols, goals[0])
 }
 
 /// Recursively format a parse-IR term for test assertions.
@@ -2786,22 +2781,22 @@ fn fmt_ir_term(terms: &SimpleTermStore, symbols: &anthill_core::intern::SymbolTa
 #[test]
 fn parse_multi_operator_chain() {
     // ?a + ?b * ?c → add(?a, mul(?b, ?c)): mul binds tighter than add
-    let (terms, symbols, head) = parse_rule_head_ir("?a + ?b * ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(?a, mul(?b, ?c))");
+    let (terms, symbols, term) = parse_term_ir("?a + ?b * ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(?a, mul(?b, ?c))");
 }
 
 #[test]
 fn parse_left_assoc_add() {
     // ?a + ?b + ?c → add(add(?a, ?b), ?c): left-associative
-    let (terms, symbols, head) = parse_rule_head_ir("?a + ?b + ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(add(?a, ?b), ?c)");
+    let (terms, symbols, term) = parse_term_ir("?a + ?b + ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(add(?a, ?b), ?c)");
 }
 
 #[test]
 fn parse_right_assoc_pow() {
     // ?a ^ ?b ^ ?c → pow(?a, pow(?b, ?c)): right-associative
-    let (terms, symbols, head) = parse_rule_head_ir("?a ^ ?b ^ ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "pow(?a, pow(?b, ?c))");
+    let (terms, symbols, term) = parse_term_ir("?a ^ ?b ^ ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "pow(?a, pow(?b, ?c))");
 }
 
 // ── Unify `<=>` and goal-position `let` (proposal 049 / WI-522) ──────
@@ -2856,65 +2851,65 @@ fn parse_let_in_rule_head_is_rejected() {
 #[test]
 fn parse_prefix_not() {
     // add(!?a, ?b) → add(not(?a), ?b)
-    let (terms, symbols, head) = parse_rule_head_ir("add(!?a, ?b)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(not(?a), ?b)");
+    let (terms, symbols, term) = parse_term_ir("add(!?a, ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(not(?a), ?b)");
 }
 
 #[test]
 fn parse_prefix_in_infix() {
     // !?a + ?b → add(not(?a), ?b): prefix binds tighter
-    let (terms, symbols, head) = parse_rule_head_ir("!?a + ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(not(?a), ?b)");
+    let (terms, symbols, term) = parse_term_ir("!?a + ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(not(?a), ?b)");
 }
 
 #[test]
 fn parse_new_operators() {
-    let (terms, symbols, head) = parse_rule_head_ir("?a | ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "or(?a, ?b)");
+    let (terms, symbols, term) = parse_term_ir("?a | ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "or(?a, ?b)");
 
-    let (terms, symbols, head) = parse_rule_head_ir("?a != ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "neq(?a, ?b)");
+    let (terms, symbols, term) = parse_term_ir("?a != ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "neq(?a, ?b)");
 }
 
 #[test]
 fn parse_ternary_arrow_effect() {
     // ?a -> ?b @ ?c → arrow_effect(?a, ?b, ?c)
-    let (terms, symbols, head) = parse_rule_head_ir("?a -> ?b @ ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "arrow_effect(?a, ?b, ?c)");
+    let (terms, symbols, term) = parse_term_ir("?a -> ?b @ ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "arrow_effect(?a, ?b, ?c)");
 }
 
 #[test]
 fn parse_binary_arrow() {
     // ?a -> ?b (no continuation) → arrow(?a, ?b)
-    let (terms, symbols, head) = parse_rule_head_ir("?a -> ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "arrow(?a, ?b)");
+    let (terms, symbols, term) = parse_term_ir("?a -> ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "arrow(?a, ?b)");
 }
 
 #[test]
 fn parse_existing_infix_unchanged() {
     // Verify backward compatibility: single-operator expressions produce same output
-    let (t, s, h) = parse_rule_head_ir("?a + ?b");
+    let (t, s, h) = parse_term_ir("?a + ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "add(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a * ?b");
+    let (t, s, h) = parse_term_ir("?a * ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "mul(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a = ?b");
+    let (t, s, h) = parse_term_ir("?a = ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "eq(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a > ?b");
+    let (t, s, h) = parse_term_ir("?a > ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "gt(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a >= ?b");
+    let (t, s, h) = parse_term_ir("?a >= ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "gte(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a < ?b");
+    let (t, s, h) = parse_term_ir("?a < ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "lt(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a <= ?b");
+    let (t, s, h) = parse_term_ir("?a <= ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "lte(?a, ?b)");
 
-    let (t, s, h) = parse_rule_head_ir("?a - ?b");
+    let (t, s, h) = parse_term_ir("?a - ?b");
     assert_eq!(fmt_ir_term(&t, &s, h), "sub(?a, ?b)");
 }
 
@@ -2923,29 +2918,29 @@ fn parse_existing_infix_unchanged() {
 #[test]
 fn parse_empty_set_literal() {
     // {} → SetLiteral()
-    let (terms, symbols, head) = parse_rule_head_ir("{}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral()");
+    let (terms, symbols, term) = parse_term_ir("{}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral()");
 }
 
 #[test]
 fn parse_single_element_set_literal() {
     // {?x} → SetLiteral(?x)
-    let (terms, symbols, head) = parse_rule_head_ir("{?x}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral(?x)");
+    let (terms, symbols, term) = parse_term_ir("{?x}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral(?x)");
 }
 
 #[test]
 fn parse_multi_element_set_literal() {
     // {?a, ?b, ?c} → SetLiteral(?a, ?b, ?c)
-    let (terms, symbols, head) = parse_rule_head_ir("{?a, ?b, ?c}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral(?a, ?b, ?c)");
+    let (terms, symbols, term) = parse_term_ir("{?a, ?b, ?c}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral(?a, ?b, ?c)");
 }
 
 #[test]
 fn parse_set_literal_with_integers() {
     // {1, 2, 3} → SetLiteral(1, 2, 3)
-    let (terms, symbols, head) = parse_rule_head_ir("{1, 2, 3}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral(1, 2, 3)");
+    let (terms, symbols, term) = parse_term_ir("{1, 2, 3}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral(1, 2, 3)");
 }
 
 // ── Tuple tests (Proposal 004) ─────────────────────────────────
@@ -2953,29 +2948,29 @@ fn parse_set_literal_with_integers() {
 #[test]
 fn parse_unit_tuple() {
     // () → TupleLiteral()
-    let (terms, symbols, head) = parse_rule_head_ir("()");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral()");
+    let (terms, symbols, term) = parse_term_ir("()");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral()");
 }
 
 #[test]
 fn parse_positional_tuple() {
     // (1, 2) → TupleLiteral(_1: 1, _2: 2)
-    let (terms, symbols, head) = parse_rule_head_ir("(1, 2)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral(_1: 1, _2: 2)");
+    let (terms, symbols, term) = parse_term_ir("(1, 2)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral(_1: 1, _2: 2)");
 }
 
 #[test]
 fn parse_named_tuple() {
     // (x: 1, y: 2) → TupleLiteral(x: 1, y: 2)
-    let (terms, symbols, head) = parse_rule_head_ir("(x: 1, y: 2)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral(x: 1, y: 2)");
+    let (terms, symbols, term) = parse_term_ir("(x: 1, y: 2)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral(x: 1, y: 2)");
 }
 
 #[test]
 fn parse_tuple_variables() {
     // (?a, ?b) → TupleLiteral(_1: ?a, _2: ?b)
-    let (terms, symbols, head) = parse_rule_head_ir("(?a, ?b)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral(_1: ?a, _2: ?b)");
+    let (terms, symbols, term) = parse_term_ir("(?a, ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral(_1: ?a, _2: ?b)");
 }
 
 #[test]
@@ -3024,26 +3019,26 @@ fn parse_named_tuple_type_in_operation() {
 
 #[test]
 fn parse_empty_collection_literal() {
-    let (terms, symbols, head) = parse_rule_head_ir("[]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral()");
+    let (terms, symbols, term) = parse_term_ir("[]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral()");
 }
 
 #[test]
 fn parse_single_element_collection_literal() {
-    let (terms, symbols, head) = parse_rule_head_ir("[?x]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?x)");
+    let (terms, symbols, term) = parse_term_ir("[?x]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(?x)");
 }
 
 #[test]
 fn parse_multi_element_collection_literal() {
-    let (terms, symbols, head) = parse_rule_head_ir("[?a, ?b, ?c]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?a, ?b, ?c)");
+    let (terms, symbols, term) = parse_term_ir("[?a, ?b, ?c]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(?a, ?b, ?c)");
 }
 
 #[test]
 fn parse_collection_literal_with_integers() {
-    let (terms, symbols, head) = parse_rule_head_ir("[1, 2, 3]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(1, 2, 3)");
+    let (terms, symbols, term) = parse_term_ir("[1, 2, 3]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(1, 2, 3)");
 }
 
 #[test]
@@ -3053,10 +3048,10 @@ fn head_tail_literal_surface_removed() {
     // `cons(?h, ?t)` constructor instead. `|` is a plain infix operator, so
     // `[?h | ?t]` now parses as a SINGLE-element list whose element is the
     // infix `or(?h, ?t)` — NOT a head-tail `ListLiteral(?h, tail: ?t)`.
-    let (terms, symbols, head) = parse_rule_head_ir("[?h | ?t]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(or(?h, ?t))");
-    let (terms, symbols, head) = parse_rule_head_ir("[?a, ?b | ?t]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?a, or(?b, ?t))");
+    let (terms, symbols, term) = parse_term_ir("[?h | ?t]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(or(?h, ?t))");
+    let (terms, symbols, term) = parse_term_ir("[?a, ?b | ?t]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(?a, or(?b, ?t))");
 }
 
 // ── Field access tests ───────────────────────────────────────
@@ -3065,29 +3060,29 @@ fn head_tail_literal_surface_removed() {
 fn parse_field_access_variable() {
     // WI-278: a value (variable) receiver routes to dot_apply, not the
     // field_access builtin. ?x.y → dot_apply(?x, y)
-    let (terms, symbols, head) = parse_rule_head_ir("?x.y");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "dot_apply(?x, y)");
+    let (terms, symbols, term) = parse_term_ir("?x.y");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "dot_apply(?x, y)");
 }
 
 #[test]
 fn parse_field_access_chained() {
     // ?x.y.z → dot_apply(dot_apply(?x, y), z)
-    let (terms, symbols, head) = parse_rule_head_ir("?x.y.z");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "dot_apply(dot_apply(?x, y), z)");
+    let (terms, symbols, term) = parse_term_ir("?x.y.z");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "dot_apply(dot_apply(?x, y), z)");
 }
 
 #[test]
 fn parse_field_access_in_fn_arg() {
     // f(?a.b, ?c) → f(dot_apply(?a, b), ?c)
-    let (terms, symbols, head) = parse_rule_head_ir("f(?a.b, ?c)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "f(dot_apply(?a, b), ?c)");
+    let (terms, symbols, term) = parse_term_ir("f(?a.b, ?c)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "f(dot_apply(?a, b), ?c)");
 }
 
 #[test]
 fn parse_field_access_in_infix() {
     // ?x.y = ?z → eq(dot_apply(?x, y), ?z)
-    let (terms, symbols, head) = parse_rule_head_ir("?x.y = ?z");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "eq(dot_apply(?x, y), ?z)");
+    let (terms, symbols, term) = parse_term_ir("?x.y = ?z");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "eq(dot_apply(?x, y), ?z)");
 }
 
 #[test]
@@ -3095,16 +3090,16 @@ fn parse_dot_method_call_preserves_receiver() {
     // WI-278: `?x.m(?a)` parses as a method call; the receiver (formerly
     // dropped by collect_field_access_segments) is the first arg of
     // dot_apply, then the name, then the call args.
-    let (terms, symbols, head) = parse_rule_head_ir("?x.m(?a)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "dot_apply(?x, m, ?a)");
+    let (terms, symbols, term) = parse_term_ir("?x.m(?a)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "dot_apply(?x, m, ?a)");
 }
 
 #[test]
 fn parse_dot_method_call_chained() {
     // ?xs.map(?f).filter(?p) → nested dot_apply, receivers intact.
-    let (terms, symbols, head) = parse_rule_head_ir("?xs.map(?f).filter(?p)");
+    let (terms, symbols, term) = parse_term_ir("?xs.map(?f).filter(?p)");
     assert_eq!(
-        fmt_ir_term(&terms, &symbols, head),
+        fmt_ir_term(&terms, &symbols, term),
         "dot_apply(dot_apply(?xs, map, ?f), filter, ?p)",
     );
 }
@@ -3113,8 +3108,8 @@ fn parse_dot_method_call_chained() {
 fn parse_dot_static_call_still_flattens() {
     // `Foo.bar(?a)` — name (non-value) receiver keeps qualified-name
     // flattening: a normal call `Foo.bar(?a)`, not a dot_apply.
-    let (terms, symbols, head) = parse_rule_head_ir("Foo.bar(?a)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "Foo.bar(?a)");
+    let (terms, symbols, term) = parse_term_ir("Foo.bar(?a)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "Foo.bar(?a)");
 }
 
 #[test]

@@ -3262,6 +3262,32 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// A CONCLUSION may not be a bare data literal: it denotes a VALUE, and a value
+    /// is not a proposition (spec §"A head is an atom"). Returns whether `node` was
+    /// refused, so a caller can drop it. Only the conclusion AS WRITTEN is judged —
+    /// a literal inside it (`p(42)`, `f(?x) <=> 42`) is ordinary data.
+    ///
+    /// ONE OWNER for the TWO producers of a conclusion, because a fact IS a rule with
+    /// an empty body: `convert_rule_heads` and `convert_fact`. `fact 42` reached
+    /// `assert_fact` unguarded until WI-893, which is the same junk-entry outcome on
+    /// the surface a user is likelier to hand-write.
+    ///
+    /// It is also what makes the grammar's `prec.dynamic` bias EXACT rather than
+    /// arbitrary tie-breaking (WI-893, `grammar.js` `rule_entry`): the reading that
+    /// bias discards — a next entry headed by a `collection_literal` — is one this
+    /// refuses outright, so nothing expressible is lost by preferring the other.
+    fn reject_literal_conclusion(&mut self, node: Node, position: &str) -> bool {
+        if !is_data_literal_kind(node.kind()) {
+            return false;
+        }
+        self.err(
+            &format!("a {position} must be an atom, not a bare literal \
+                      (a value is not a proposition)"),
+            node,
+        );
+        true
+    }
+
     /// Convert a `rule_heads` CST node into a list of head terms.
     /// `rule_heads ::= '⊥' | term (',' term)*` per proposal 032 — the
     /// `⊥` arm has no named children (the symbol is an anonymous
@@ -3274,15 +3300,17 @@ impl<'a> Converter<'a> {
         node.named_children(&mut cursor)
             .filter(|c| is_term_kind(c.kind()))
             .filter_map(|c| {
-                // proposal 049: heads and body share the `_goal` rule, so a `let_binding`
-                // can appear here syntactically — reject it loudly (a head is a conclusion,
-                // not a binding goal). proposal 033.1 / WI-568: a `cut` (`!`) is a body
-                // control primitive, equally meaningless in a head — reject it too.
-                if c.kind() == "let_binding" {
+                // `let_binding` (proposal 049) and `cut` (proposal 033.1 / WI-568)
+                // are body control that the shared `_goal` grammar admits here and
+                // a CONCLUSION cannot be.
+                let kind = c.kind();
+                if kind == "let_binding" {
                     self.err("`let` binding is not allowed in a rule head", c);
                     None
-                } else if c.kind() == "cut" {
+                } else if kind == "cut" {
                     self.err("cut `!` is not allowed in a rule head", c);
+                    None
+                } else if self.reject_literal_conclusion(c, "rule head") {
                     None
                 } else {
                     Some(RuleHead::Term(self.convert_term(c)))
@@ -3595,8 +3623,12 @@ impl<'a> Converter<'a> {
 
     fn convert_fact(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
-        let term = self.field(node, "term")
-            .map(|t| self.convert_term(t))?;
+        let term_node = self.field(node, "term")?;
+        // A fact IS a rule with an empty body, so its term is a conclusion.
+        if self.reject_literal_conclusion(term_node, "fact") {
+            return None;
+        }
+        let term = self.convert_term(term_node);
         let meta = self.convert_meta_block(node);
         Some(Fact { term, sort: None, meta, span })
     }
@@ -4245,13 +4277,12 @@ enum ItemOwner {
 
 /// Check if a node kind is a term.
 fn is_term_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "string_literal"
-            | "integer_literal"
-            | "float_literal"
-            | "boolean_literal"
-            | "variable"
+    // The literal kinds are factored into `is_data_literal_kind` so the two lists
+    // cannot drift — a new literal in `grammar.js` is added in one place.
+    is_data_literal_kind(kind)
+        || matches!(
+            kind,
+            "variable"
             | "variable_term"
             // WI-582: `?x: T` typed rule-pattern arg — a positional call arg
             // whose `visit_term` arm builds the `typed_var` marker the loader
@@ -4266,9 +4297,6 @@ fn is_term_kind(kind: &str) -> bool {
             | "prefix_term"
             | "field_access"
             | "distributive_projection"
-            | "set_literal"
-            | "collection_literal"
-            | "tuple_literal"
             | "paren_expr"
             | "identifier"
             | "name"
@@ -4287,6 +4315,24 @@ fn is_term_kind(kind: &str) -> bool {
             // other `is_term_kind` call sites never receive one). Rejected in head
             // position by `convert_rule_heads`.
             | "cut"
+    )
+}
+
+/// The term kinds that denote a VALUE and nothing else — the scalars and the three
+/// bracketed aggregates. Folded into [`is_term_kind`]; read on its own by
+/// [`Converter::reject_literal_conclusion`] (WI-893). The whole family, not
+/// just the `collection_literal` a dropped `meta_block` re-parsed as: the argument
+/// that refuses it does not distinguish `[simp]` from `42`.
+fn is_data_literal_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "string_literal"
+            | "integer_literal"
+            | "float_literal"
+            | "boolean_literal"
+            | "collection_literal"
+            | "set_literal"
+            | "tuple_literal"
     )
 }
 

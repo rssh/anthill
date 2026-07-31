@@ -1,0 +1,181 @@
+==================================
+WI-893 control — tagged entries with no preceding comment
+==================================
+
+rule {
+  p(?x)
+  q(?a) [simp]
+  r(?b) [simp]
+}
+
+---
+
+(source_file
+  (rule_block
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable)))))
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))))
+
+==================================
+WI-893 line comment before the first tagged entry keeps its meta_block
+==================================
+
+rule {
+  p(?x)
+  -- tagged below
+  q(?a) [simp]
+  r(?b) [simp]
+}
+
+---
+
+(source_file
+  (rule_block
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable)))))
+    (line_comment)
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))))
+
+==================================
+WI-893 line comment before the second tagged entry keeps its meta_block
+==================================
+
+rule {
+  p(?x)
+  q(?a) [simp]
+  -- tagged below
+  r(?b) [simp]
+}
+
+---
+
+(source_file
+  (rule_block
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable)))))
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))
+    (line_comment)
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))))
+
+==================================
+WI-893 block comment before a tagged entry keeps its meta_block
+==================================
+
+rule {
+  p(?x)
+  {- tagged below -}
+  q(?a) [simp]
+  r(?b) [simp]
+}
+
+---
+
+(source_file
+  (rule_block
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable)))))
+    (block_comment)
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))
+    (rule_entry
+      heads: (rule_heads
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (meta_block
+        (meta_entry
+          key: (name
+            (identifier)))))))

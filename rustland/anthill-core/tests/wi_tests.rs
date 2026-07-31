@@ -882,3 +882,6 @@ mod wi884_sibling_backing_test;
 
 #[path = "include/wi886_cpp_mapping_language_test.rs"]
 mod wi886_cpp_mapping_language_test;
+
+#[path = "include/wi893_comment_eats_simp_test.rs"]
+mod wi893_comment_eats_simp_test;
