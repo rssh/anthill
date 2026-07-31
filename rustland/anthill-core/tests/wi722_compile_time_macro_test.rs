@@ -17,7 +17,6 @@ mod common;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::KnowledgeBase;
 
 const SRC: &str = r#"
@@ -56,16 +55,6 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
     kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol `{qn}` not found"))
 }
 
-/// The short name of an occurrence's head functor (`wrapped(...)` → `"wrapped"`).
-fn head_short(kb: &KnowledgeBase, occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>) -> String {
-    match occ.as_expr() {
-        Some(Expr::Apply { functor, .. }) => {
-            kb.resolve_sym(*functor).rsplit('.').next().unwrap_or("").to_string()
-        }
-        other => panic!("expected a functor application, got {other:?}"),
-    }
-}
-
 /// The macro fires at COMPILE time: the consumer's stored body is rewritten from
 /// `trigger(5)` to the macro's output `wrapped(5)`. (If the macro machinery were
 /// absent, `wrap(5)` would type-error on `NodeOccurrence` vs `Int64` and the
@@ -77,7 +66,7 @@ fn macro_rewrites_consumer_body_at_compile_time() {
     let consumer = sym(&kb, "test.wi722.consumer");
     let body = kb.op_body_node(consumer).expect("consumer has a body node");
     assert_eq!(
-        head_short(&kb, &body),
+        common::head_short(&kb, &body),
         "wrapped",
         "the macro should have rewritten the consumer body to `wrapped(...)` at compile time",
     );

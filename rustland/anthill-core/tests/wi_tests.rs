@@ -146,6 +146,9 @@ mod wi506_modify_field_coverage_test;
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 
+#[path = "include/wi902_dot_rule_macro_test.rs"]
+mod wi902_dot_rule_macro_test;
+
 #[path = "include/wi281_spec_dot_dispatch_test.rs"]
 mod wi281_spec_dot_dispatch_test;
 

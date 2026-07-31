@@ -26,9 +26,15 @@ fn load_errors(src: &str) -> Vec<String> {
 /// The rejection text a `LoadError::MacroRejected` renders with — the one marker
 /// that distinguishes it from every OTHER way a bad `where` could fail to load
 /// (in particular from the residual-template type error it replaces).
-const REJECTION_MARKER: &str = "cannot expand this expression";
+///
+/// `pub(crate)` (with [`rejections`]) so the WI-902 dot-site suite pins the SAME
+/// marker rather than re-spelling the literal: both suites assert the marker's
+/// ABSENCE to prove a decline, and a re-spelled copy would pass vacuously if the
+/// rendering ever changed. Same-binary reuse across `wi_tests` submodules, as
+/// `wi424_iterable_members_test::load_errors` established.
+pub(crate) const REJECTION_MARKER: &str = "cannot expand this expression";
 
-fn rejections(errs: &[String]) -> Vec<&String> {
+pub(crate) fn rejections(errs: &[String]) -> Vec<&String> {
     errs.iter().filter(|e| e.contains(REJECTION_MARKER)).collect()
 }
 

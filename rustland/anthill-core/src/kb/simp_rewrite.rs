@@ -130,7 +130,13 @@ pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
 /// can't drift (the typer's peer of the resolver's `is_directional_equation`).
 /// `[simp]`-only, not `[simp]`/`[unfold]`: the typer fires only `[simp]` (never
 /// `[unfold]`), so gating on both would enable an always-declining walk.
-fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
+///
+/// WI-902 raised it to `pub(super)`: `typing::try_fire_dot_rule` had inlined a
+/// third copy of the predicate, which is how it came to select on the `eq` bucket
+/// alone and never fire a `<=>`-spelled dot rule. Both properties this test names —
+/// equation-hood (connective-agnostic, `is_equation`) and the `[simp]` tag — are
+/// exactly the ones a firing site must not re-derive.
+pub(super) fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
     kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp")
 }
 
@@ -163,10 +169,8 @@ pub(super) trait SimpFirer {
     fn fire(&mut self, kb: &mut KnowledgeBase, redex: &Value, rids: &[RuleId]) -> Option<Value>;
 }
 
-/// The typer's firing strategy: type-directed [`try_fire`], carrying the
-/// `[simp]`-synthesis `PassId` the RHS builder stamps onto new nodes.
+/// The typer's firing strategy: type-directed [`try_fire`].
 pub(super) struct TyperFirer {
-    pub(super) pass: PassId,
     /// WI-757: the FIRST macro rejection this walk saw. The [`SimpFirer`] face is
     /// `Option`-valued (the resolver's firer has no diagnostic to report), so this
     /// harness keeps the rejection here instead of discarding it — [`run`] hands it
@@ -182,7 +186,7 @@ impl SimpFirer for TyperFirer {
         // occurrence carrier is closed under descent + rewrite). A non-Node
         // here is a carrier-routing bug, not a recoverable case.
         match redex {
-            Value::Node(occ) => match try_fire(kb, occ, self.pass, rids) {
+            Value::Node(occ) => match try_fire(kb, occ, rids) {
                 Ok(fired) => fired.map(Value::Node),
                 // Keep the first rejection and DECLINE at this node, so the walk
                 // still completes and `run` reports one failure rather than the
@@ -217,8 +221,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
     if !has_simp_equations(kb) {
         return None;
     }
-    let pass = kb.register_pass(PASS_NAME);
-    let mut firer = TyperFirer { pass, rejected: None };
+    let mut firer = TyperFirer { rejected: None };
     // Snapshot (op_sym, body) so we don't hold a borrow on `op_bodies` while
     // rewriting (which mutates `kb` — fresh vars, interning).
     let bodies: Vec<(Symbol, Rc<NodeOccurrence>)> =
@@ -525,7 +528,6 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
 pub(super) fn try_fire(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
-    pass: PassId,
     rids: &[RuleId],
 ) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
     let node_functor = match occ.as_expr() {
@@ -597,19 +599,58 @@ pub(super) fn try_fire(
             if subst.is_contradiction() {
                 continue;
             }
-            let template = substitute_to_occurrence(kb, rhs, &subst, occ, pass);
-            // WI-722 (043.1): if the substituted RHS is headed by a compile-time
-            // MACRO (a syntax→syntax op — every param + result an occurrence,
-            // §3.1), evaluate it over its argument occurrences and splice the
-            // occurrence it returns, instead of leaving the template call. The
-            // typer's `push_visit` continuation re-types the spliced subtree.
-            if let Some(expanded) = try_expand_macro(kb, &template)? {
-                return Ok(Some(expanded));
-            }
-            return Ok(Some(template));
+            return Ok(Some(instantiate_rhs(kb, rhs, &subst, occ)?));
         }
     }
     Ok(None)
+}
+
+/// WI-902 — INSTANTIATE a fired `[simp]` rule's RHS: build the template from the
+/// match substitution, then macro-expand it if it is headed by a macro. The whole
+/// of "what a fire produces", owned once. The expansion itself is
+/// [`try_expand_macro`]'s (WI-722); the typer's `push_visit` continuation re-types
+/// the spliced subtree.
+///
+/// Both typer-side firing sites go through this — [`try_fire`] (the Apply /
+/// Constructor redex) and `typing::try_fire_dot_rule` (the WI-279 INC2 sort-scoped
+/// dot rule). They were split before WI-902: the dot site stopped at
+/// [`substitute_to_occurrence`]. Keeping the two steps welded together is what
+/// makes "a fired `[simp]` RHS is macro-expanded" a property of the ENGINE rather
+/// than of each caller remembering. `Err` is the rejection, for the caller to
+/// report at its redex.
+///
+/// The synthesis [`PassId`] is fetched HERE rather than threaded in: [`simp_pass`]
+/// is idempotent for exactly this reason, and a fire that does not match should not
+/// pay for one. That let both callers drop a parameter and `TyperFirer` drop a field.
+pub(super) fn instantiate_rhs(
+    kb: &mut KnowledgeBase,
+    rhs: TermId,
+    subst: &Substitution,
+    from: &Rc<NodeOccurrence>,
+) -> Result<Rc<NodeOccurrence>, MacroRejection> {
+    let pass = simp_pass(kb);
+    let template = substitute_to_occurrence(kb, rhs, subst, from, pass);
+    Ok(try_expand_macro(kb, &template)?.unwrap_or(template))
+}
+
+/// [`instantiate_rhs`]'s sibling for the RESOLVER's fire (`resolve.rs`
+/// `fire_simp_equation`): build the RHS and stop — NO macro expansion, deliberately.
+/// 043.1 §5: a macro is a compile-time syntax transform, so it runs occurrence-side
+/// at the typer only; a runtime `Term` goal is not a syntax bracket.
+///
+/// The two intents are NAMED so that neither is the default: [`substitute_to_occurrence`]
+/// is private, and a future firing site must pick `instantiate_rhs` (expands) or this
+/// (does not) rather than reach the raw builder and silently get the WI-902 defect —
+/// which is precisely how the dot site came to keep its templates. Illegal state
+/// unrepresentable, over a doc comment asking callers to remember.
+pub(super) fn instantiate_rhs_verbatim(
+    kb: &mut KnowledgeBase,
+    rhs: TermId,
+    subst: &Substitution,
+    from: &Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    let pass = simp_pass(kb);
+    substitute_to_occurrence(kb, rhs, subst, from, pass)
 }
 
 /// The functor of an equation's RHS (`Fn{eq/unify, [lhs, rhs]}` → rhs head), read
@@ -643,7 +684,13 @@ fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
 ///   under `[unfold]` loaded clean.
 /// - NO typed-pattern bounds. WI-582: [`try_fire`] skips a rule carrying `?x: T`
 ///   bounds outright, leaving it to the resolver's `apply_eq_rules` — which, again,
-///   does not expand macros.
+///   does not expand macros. `typing::try_fire_dot_rule` does NOT consult the bounds,
+///   so a typed-bound DOT rule fires — and, since WI-902, expands its macro — while
+///   reading `None` here. The gate therefore refuses an
+///   `Error`-declaring macro under a typed-bound dot rule that it does in fact expand
+///   away. MEASURED, and deliberately left conservative (loud, and refused before
+///   WI-902 too): the bound on such a rule is itself silently ignored, which is the
+///   defect to fix — WI-903, whose fix retires this whole case.
 /// - NO named arguments on the RHS head, mirroring [`try_expand_macro`]'s own
 ///   positional-only surface: a macro spelled `m(x: ?x)` declines and its template
 ///   is kept. (That residual is separately refused today — the pattern var arrives
@@ -714,9 +761,11 @@ fn try_expand_macro(
     kb: &mut KnowledgeBase,
     template: &Rc<NodeOccurrence>,
 ) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
-    // Read the head cheaply and gate on `is_macro` BEFORE building the argument
-    // vector: `try_expand_macro` runs on EVERY fired `[simp]` rewrite, and the gate
-    // is false for all but a macro head, so the common path allocates nothing. The
+    // Read the head and gate on `is_macro` BEFORE building the argument vector:
+    // `try_expand_macro` runs on EVERY fired `[simp]` rewrite, and the gate is false
+    // for all but a macro head. The structural conjuncts here are free; `is_macro`
+    // itself is NOT — it materializes an `OpInfoRecord` (WI-904 makes it zero-alloc,
+    // which is what would make this ordering pay off fully). The
     // head must be a positional `apply` — a macro is called on the matched
     // pattern-var occurrences; named / type args are not part of the Inc-1 surface,
     // so a macro carrying those declines to expand and stays a template.
@@ -834,7 +883,10 @@ pub(super) fn open_equation(
 /// matched child occurrence (`Value::Node`) is reused in place (identity
 /// preserved); a functor builds a synthesized `Apply`; a literal builds a
 /// `Const`. New nodes carry `origin: Synthesized { from, by }`.
-pub(super) fn substitute_to_occurrence(
+///
+/// PRIVATE (WI-902): reach it through [`instantiate_rhs`] (expands a macro RHS) or
+/// [`instantiate_rhs_verbatim`] (does not), so a firing site states which it means.
+fn substitute_to_occurrence(
     kb: &KnowledgeBase,
     term: TermId,
     subst: &Substitution,

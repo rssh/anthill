@@ -6410,9 +6410,25 @@ fn collect_arg_errors<'a>(
 // case); a name mismatch, a non-var pattern, a named-arg dot call, or an arity
 // mismatch makes it skip the rule, falling through to the default.
 
-/// Fire a sort-specific `[simp]` dot rule at a DotApply, or `None` to fall to
+/// Fire a sort-specific `[simp]` dot rule at a DotApply, or `Ok(None)` to fall to
 /// the default. `recv_sort` is the receiver's least sort (the firing guard's
 /// key); `from` is the DotApply occ (synthesized-RHS provenance).
+///
+/// WI-902: the RHS is instantiated by the shared
+/// [`super::simp_rewrite::instantiate_rhs`], so a macro-headed dot rule expands at
+/// compile time exactly as a macro-headed `Apply` rule does — this site used to
+/// stop at the template. `Err` is that macro's REJECTION of the occurrences it was
+/// handed, for the caller to report at this redex (WI-757), the same contract as
+/// [`fire_simp`].
+///
+/// `rids` are the SAME eq+unify candidates [`fire_simp`] gets — gathered once per
+/// typing pass (WI-657(9)) and filtered here by `is_simp_equation`. This site used
+/// to re-scan the `eq` bucket alone, per DotApply, behind its own inlined copy of
+/// that predicate: a `<=>`-spelled `[simp]` dot rule was therefore NEVER SEEN, and
+/// silently did not fire (MEASURED; WI-646 unified the other three selection sites
+/// and missed this one). `[simp]` is the enablement, the connective is not —
+/// `is_equation` accepts both, so selection must too, and 043.1's own macro rules
+/// are written `<=>`.
 fn try_fire_dot_rule(
     kb: &mut KnowledgeBase,
     recv_sort: Symbol,
@@ -6421,12 +6437,13 @@ fn try_fire_dot_rule(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     from: &Rc<NodeOccurrence>,
-) -> Option<Rc<NodeOccurrence>> {
-    let dot_apply_sym = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")?;
-    let eq_sym = kb.eq_functor();
-    for rid in kb.rules_by_functor(eq_sym) {
-        if !kb.is_equation(rid)
-            || !super::load::meta_has_flag(kb, kb.rule_meta(rid), "simp")
+    rids: &[RuleId],
+) -> Result<Option<Rc<NodeOccurrence>>, super::simp_rewrite::MacroRejection> {
+    let Some(dot_apply_sym) = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply") else {
+        return Ok(None);
+    };
+    for &rid in rids {
+        if !super::simp_rewrite::is_simp_equation(kb, rid)
             || super::simp_rewrite::stored_lhs_functor(kb, rid) != Some(dot_apply_sym)
         {
             continue;
@@ -6446,11 +6463,10 @@ fn try_fire_dot_rule(
         }
         let Some((lhs, rhs, _fresh)) = super::simp_rewrite::open_equation(kb, rid) else { continue };
         if let Some(subst) = match_dot_rule_lhs(kb, lhs, member, receiver, pos_args, named_args) {
-            let pass = super::simp_rewrite::simp_pass(kb);
-            return Some(super::simp_rewrite::substitute_to_occurrence(kb, rhs, &subst, from, pass));
+            return super::simp_rewrite::instantiate_rhs(kb, rhs, &subst, from).map(Some);
         }
     }
-    None
+    Ok(None)
 }
 
 /// WI-281: spec-satisfaction method resolution. When `member` is not declared
@@ -7714,24 +7730,23 @@ fn reassemble_match(
     super::simp_rewrite::reassemble(occ, &children)
 }
 
-/// WI-283: try firing a `[simp]` rule at `node`, fetching the simp pass
-/// for synthesized-RHS provenance. The typer's firing site; reuses
-/// `simp_rewrite`'s matcher + RHS builder, including its type-directed
-/// guard ([`simp_fire_guard_holds`]) — `node`'s children are already typed
-/// (bottom-up), so their `min_sort` is available for the guard here.
+/// WI-283: try firing a `[simp]` rule at `node` — the typer's Apply/Constructor
+/// firing site. Reuses `simp_rewrite`'s matcher + RHS builder, including its
+/// type-directed guard ([`simp_fire_guard_holds`]): `node`'s children are already
+/// typed (bottom-up), so their `min_sort` is available for the guard there.
 ///
 /// WI-757: `Err` is a macro-RHS lowering whose MACRO rejected the occurrences it
 /// was handed. The caller turns it into a [`TypeError::MacroRejected`] at this
 /// redex via [`macro_rejection_error`] and abandons the node — so one rejection
 /// yields exactly one error, and a fire that instead succeeds leaves nothing
-/// behind that could go stale.
+/// behind that could go stale. `try_fire_dot_rule` is the sibling site under the
+/// same contract.
 fn fire_simp(
     kb: &mut KnowledgeBase,
     node: &Rc<NodeOccurrence>,
     rids: &[RuleId],
 ) -> Result<Option<Rc<NodeOccurrence>>, super::simp_rewrite::MacroRejection> {
-    let pass = super::simp_rewrite::simp_pass(kb);
-    super::simp_rewrite::try_fire(kb, node, pass, rids)
+    super::simp_rewrite::try_fire(kb, node, rids)
 }
 
 /// WI-757: render a carried-out [`MacroRejection`](super::simp_rewrite::MacroRejection)
@@ -8248,11 +8263,21 @@ fn build_type(
             // firing guard's key).
             if fuel > 0 && simp_enabled {
                 if let Some(rs) = recv_sort {
-                    if let Some(synth) = try_fire_dot_rule(
-                        kb, rs, member, &receiver_node, &pos_nodes, &named_nodes, &occ,
+                    match try_fire_dot_rule(
+                        kb, rs, member, &receiver_node, &pos_nodes, &named_nodes, &occ, simp_rids,
                     ) {
-                        push_visit(work, synth, env, expected, fuel - 1);
-                        return;
+                        Ok(Some(synth)) => {
+                            push_visit(work, synth, env, expected, fuel - 1);
+                            return;
+                        }
+                        Ok(None) => {}
+                        // WI-902 — same contract as the Apply arm above (WI-757);
+                        // falling through would instead take the default dispatch,
+                        // whose diagnostic names neither the macro nor the reason.
+                        Err(rejection) => {
+                            results.push(Err(macro_rejection_error(rejection, &occ)));
+                            return;
+                        }
                     }
                 }
             }

@@ -20,7 +20,6 @@ mod common;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::KnowledgeBase;
 
 const SRC: &str = r#"
@@ -77,16 +76,6 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
     kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol `{qn}` not found"))
 }
 
-/// The short name of an occurrence's head functor (`wrapped(...)` → `"wrapped"`).
-fn head_short(kb: &KnowledgeBase, occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>) -> String {
-    match occ.as_expr() {
-        Some(Expr::Apply { functor, .. }) => {
-            kb.resolve_sym(*functor).rsplit('.').next().unwrap_or("").to_string()
-        }
-        other => panic!("expected a functor application, got {other:?}"),
-    }
-}
-
 fn eval_int(consumer: &str) -> i64 {
     let mut interp = common::interp_for(SRC);
     match interp.call(consumer, &[]).unwrap_or_else(|e| panic!("{consumer} evaluates: {e:?}")) {
@@ -102,7 +91,7 @@ fn eval_int(consumer: &str) -> i64 {
 fn sub_occurrences_children_rebuild() {
     let kb = common::load_kb_with(SRC);
     let body = kb.op_body_node(sym(&kb, "test.wi722read.consumer_a")).expect("consumer_a body");
-    assert_eq!(head_short(&kb, &body), "wrapped", "sub_occurrences should have rebuilt wrapped(...)");
+    assert_eq!(common::head_short(&kb, &body), "wrapped", "sub_occurrences should have rebuilt wrapped(...)");
     assert_eq!(eval_int("test.wi722read.consumer_a"), 105, "wrapped(5) = 105");
 }
 

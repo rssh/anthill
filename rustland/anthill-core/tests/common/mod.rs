@@ -421,3 +421,31 @@ pub fn assert_req_param_spec(
          — see `assert_req_param_spec`); got `{actual_s}`",
     );
 }
+
+/// The short name of an occurrence's head functor (`test.ns.wrapped(…)` →
+/// `"wrapped"`) — the assertion every `[simp]`/macro suite makes about a rewritten
+/// operation body: *which* functor the rewrite produced.
+///
+/// WI-902: byte-identical copies had accumulated in `wi669_defining_equations_test`,
+/// `wi722_compile_time_macro_test` and `wi722_read_builtins_test`, and this ticket
+/// was about to add a fourth — the same trigger under which `load_stdlib_kb`,
+/// `function_slot_case` and `DESC_INSTANCES` were lifted here. (Not
+/// `wi687_match_specialization_test`'s same-named helper, which also maps
+/// `Expr::If` → `"if"` — a different assertion, deliberately left as its own.)
+///
+/// Panics on a non-`Apply` head: a suite reaching for this is asserting on a
+/// rewritten CALL, so a `Const`/`DotApply` head means the rewrite under test did
+/// not happen — louder as a panic naming the shape than as a silent mismatch.
+#[allow(dead_code)]
+pub fn head_short(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+) -> String {
+    use anthill_core::kb::node_occurrence::Expr;
+    match occ.as_expr() {
+        Some(Expr::Apply { functor, .. }) => {
+            kb.resolve_sym(*functor).rsplit('.').next().unwrap_or("").to_string()
+        }
+        other => panic!("expected a functor application, got {other:?}"),
+    }
+}

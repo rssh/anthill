@@ -3165,15 +3165,13 @@ impl KnowledgeBase {
                 continue;
             }
             // Build the RHS in the redex's carrier: a `Value::Node` redex keeps
-            // occurrence identity (`substitute_to_occurrence`, the typer's RHS
-            // builder); a term redex rebuilds its hash-consed term.
+            // occurrence identity (`instantiate_rhs_verbatim` — the shared RHS builder,
+            // with NO macro expansion: macros are the typer's, 043.1 §5); a term redex
+            // rebuilds its hash-consed term.
             let rewritten = match redex {
-                Value::Node(occ) => {
-                    let pass = super::simp_rewrite::simp_pass(self);
-                    Value::Node(super::simp_rewrite::substitute_to_occurrence(
-                        self, rhs, &msubst, occ, pass,
-                    ))
-                }
+                Value::Node(occ) => Value::Node(
+                    super::simp_rewrite::instantiate_rhs_verbatim(self, rhs, &msubst, occ),
+                ),
                 _ => Value::term(self.apply_subst(rhs, &msubst)),
             };
             return Some((rid, rewritten));

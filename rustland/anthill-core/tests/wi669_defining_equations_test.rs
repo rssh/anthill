@@ -75,16 +75,6 @@ fn op_sym(kb: &KnowledgeBase, short: &str) -> Symbol {
         .unwrap_or_else(|| panic!("operation `{short}` not found"))
 }
 
-/// The short name of an occurrence's head functor (`add(...)` → `"add"`).
-fn head_short(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
-    match occ.as_expr() {
-        Some(Expr::Apply { functor, .. }) => {
-            kb.resolve_sym(*functor).rsplit('.').next().unwrap_or("").to_string()
-        }
-        other => panic!("expected a functor application, got {other:?}"),
-    }
-}
-
 #[test]
 fn single_arm_body_yields_one_unconditional_equation() {
     let mut kb = common::load_kb_with(SRC);
@@ -92,7 +82,7 @@ fn single_arm_body_yields_one_unconditional_equation() {
     let eqs = kb.op_defining_equations(d).expect("double must derive an equation");
     assert_eq!(eqs.len(), 1, "one arm for a single-expression body");
     assert!(eqs[0].guards.is_empty(), "an unconditional body has no guards");
-    assert_eq!(head_short(&kb, &eqs[0].result), "add", "result is the body `add(?0, ?0)`");
+    assert_eq!(common::head_short(&kb, &eqs[0].result), "add", "result is the body `add(?0, ?0)`");
     if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
         assert_eq!(pos_args.len(), 2);
     }
@@ -108,12 +98,12 @@ fn if_body_yields_two_guarded_arms() {
     // then-arm: guarded by `gte(?0, 0)` (not negated).
     assert_eq!(eqs[0].guards.len(), 1);
     assert!(!eqs[0].guards[0].negated, "then-arm holds when the condition is true");
-    assert_eq!(head_short(&kb, &eqs[0].guards[0].cond), "gte");
+    assert_eq!(common::head_short(&kb, &eqs[0].guards[0].cond), "gte");
 
     // else-arm: the SAME condition, negated.
     assert_eq!(eqs[1].guards.len(), 1);
     assert!(eqs[1].guards[0].negated, "else-arm holds when the condition is false");
-    assert_eq!(head_short(&kb, &eqs[1].guards[0].cond), "gte");
+    assert_eq!(common::head_short(&kb, &eqs[1].guards[0].cond), "gte");
 }
 
 #[test]
@@ -126,7 +116,7 @@ fn let_binding_inlines_into_condition() {
     assert_eq!(eqs.len(), 2, "the inlined `let` leaves the same then/else arms as clamp");
     assert_eq!(eqs[0].guards.len(), 1);
     assert!(!eqs[0].guards[0].negated);
-    assert_eq!(head_short(&kb, &eqs[0].guards[0].cond), "gte", "the let-bound guard inlined");
+    assert_eq!(common::head_short(&kb, &eqs[0].guards[0].cond), "gte", "the let-bound guard inlined");
     assert!(eqs[1].guards[0].negated, "else-arm negates the same inlined guard");
 }
 
@@ -139,11 +129,11 @@ fn let_binding_inlines_into_nested_expression() {
     let eqs = kb.op_defining_equations(s).expect("shifted must derive an equation");
     assert_eq!(eqs.len(), 1, "no branches — one unconditional arm");
     assert!(eqs[0].guards.is_empty());
-    assert_eq!(head_short(&kb, &eqs[0].result), "add", "outer body is `add(y, x)`");
+    assert_eq!(common::head_short(&kb, &eqs[0].result), "add", "outer body is `add(y, x)`");
     // The first argument is the inlined `y = add(x, x)`, not a residual binder ref.
     if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
         assert_eq!(
-            head_short(&kb, &pos_args[0]), "add",
+            common::head_short(&kb, &pos_args[0]), "add",
             "the let value `add(x, x)` was spliced into the first argument"
         );
     }
@@ -274,7 +264,7 @@ fn synth_single_arm_body_is_bare_result_no_if() {
     );
     // A single-expression body refolds to its bare result — no `if`.
     let rhs = synth_body_rhs(&mut kb, d);
-    assert_eq!(head_short(&kb, &rhs), "add", "double's body is `add(?0, ?0)`, no conditional");
+    assert_eq!(common::head_short(&kb, &rhs), "add", "double's body is `add(?0, ?0)`, no conditional");
 }
 
 #[test]
@@ -284,7 +274,7 @@ fn synth_if_body_refolds_to_ite() {
     let rhs = synth_body_rhs(&mut kb, c);
     match rhs.as_expr() {
         Some(Expr::If { condition, .. }) => {
-            assert_eq!(head_short(&kb, condition), "gte", "clamp's guard is `gte(x, 0)`");
+            assert_eq!(common::head_short(&kb, condition), "gte", "clamp's guard is `gte(x, 0)`");
         }
         other => panic!("clamp's body must refold to an `Expr::If`, got {other:?}"),
     }
@@ -301,15 +291,15 @@ fn synth_nested_if_refolds_with_and_not() {
     let Some(Expr::If { condition, else_branch, .. }) = rhs.as_expr() else {
         panic!("grade must refold to a nested `Expr::If`");
     };
-    assert_eq!(head_short(&kb, condition), "and", "the outer arm's guard is a conjunction");
+    assert_eq!(common::head_short(&kb, condition), "and", "the outer arm's guard is a conjunction");
     let Some(Expr::If { condition: inner_cond, .. }) = else_branch.as_expr() else {
         panic!("grade's else must be the next `Expr::If`");
     };
     // inner condition is `and(gte(x,0), not(gte(x,5)))` — assert the `not` appears.
-    assert_eq!(head_short(&kb, inner_cond), "and", "the middle arm's guard is a conjunction");
+    assert_eq!(common::head_short(&kb, inner_cond), "and", "the middle arm's guard is a conjunction");
     if let Some(Expr::Apply { pos_args, .. }) = inner_cond.as_expr() {
         assert!(
-            pos_args.iter().any(|a| head_short(&kb, a) == "not"),
+            pos_args.iter().any(|a| common::head_short(&kb, a) == "not"),
             "the middle arm negates the inner guard"
         );
     }
