@@ -222,6 +222,119 @@ end
     );
 }
 
+// ── REJECT from anthill: a macro raises ────────────────────────────────────
+
+/// An anthill-WRITTEN macro reaches the same channel by RAISING (proposal 043.1
+/// §3.6). `Error.raise`'s payload renders into the rejection's text through the
+/// shared `render_raised_payload` — the same words the CLI prints for an unhandled
+/// top-level raise.
+///
+/// This is only reachable because the WI-702 / proposal 054 rewrite gate exempts a
+/// MACRO at the `[simp]` RHS head (see the two narrowness tests below). Without
+/// that exemption `wrap`'s `effects Error[…]` was refused at the rule naming it, so
+/// 043.1 §6's "a macro that raises `Error` becomes a compile-time diagnostic" could
+/// never fire and the channel was host-only.
+#[test]
+fn an_anthill_macro_rejects_by_raising() {
+    const SRC: &str = r#"
+namespace test.wi757raise
+  import anthill.prelude.{Int64, String}
+  import anthill.prelude.Numeric.{add}
+  import anthill.reflect.{NodeOccurrence}
+
+  sort NotAllowed
+    entity not_allowed(why: String)
+  end
+
+  operation wrap(x: NodeOccurrence) -> NodeOccurrence effects Error[NotAllowed] =
+    Error.raise(not_allowed(why: "trigger takes a column, not a literal"))
+
+  operation trigger(x: Int64) -> Int64 = x
+  rule trigger(?x) <=> wrap(?x) [simp]
+
+  operation consumer() -> Int64 = add(trigger(5), 1)
+end
+"#;
+    let errs = load_errors(SRC);
+    let [rejection] = rejections(&errs)[..] else {
+        panic!("expected exactly one macro rejection, got: {errs:?}");
+    };
+    assert!(
+        rejection.contains("compile-time macro `test.wi757raise.wrap`")
+            && rejection.contains(
+                r#"not_allowed(why: "trigger takes a column, not a literal")"#
+            ),
+        "expected the raised payload rendered as the rejection text, got: {rejection}",
+    );
+    // `raise` carries a payload and NO occurrence, so the location is the redex —
+    // `trigger(5)`, the call the rule fired on, not `wrap`'s own body.
+    let body_line = SRC.lines().position(|l| l.contains("add(trigger(5)")).unwrap() + 1;
+    let line_text = SRC.lines().nth(body_line - 1).unwrap();
+    let redex_col = line_text.find("trigger(5)").unwrap() + 1;
+    assert!(
+        rejection.starts_with(&format!("{body_line}:{redex_col}:")),
+        "expected the raised rejection at the redex ({body_line}:{redex_col}), got: {rejection}",
+    );
+}
+
+/// The exemption is for the MACRO, not for `[simp]` rules in general. An ORDINARY
+/// effectful operation at the RHS head is still refused by WI-702 / 054 — its call
+/// SURVIVES the rewrite into the program, so firing really can duplicate, reorder
+/// or drop it.
+#[test]
+fn the_rewrite_gate_still_refuses_an_effectful_non_macro() {
+    const SRC: &str = r#"
+namespace test.wi757ordinary
+  import anthill.prelude.{Int64, String}
+  import anthill.prelude.Numeric.{add}
+  sort Boom
+    entity boom(why: String)
+  end
+  operation risky(x: Int64) -> Int64 effects Error[Boom] = Error.raise(boom(why: "no"))
+  operation trigger(x: Int64) -> Int64 = x
+  rule trigger(?x) <=> risky(?x) [simp]
+  operation consumer() -> Int64 = add(trigger(5), 1)
+end
+"#;
+    let errs = load_errors(SRC);
+    assert!(
+        errs.iter().any(|e| e.contains("test.wi757ordinary.risky")
+            && e.contains("an effectful operation is not equational")),
+        "an effectful NON-macro rewrite must stay refused, got: {errs:?}",
+    );
+}
+
+/// …and not for an effectful operation the macro is merely APPLIED TO. Only the
+/// RHS HEAD is evaluated away at compile time; an argument rides into the spliced
+/// result, so it keeps the gate.
+#[test]
+fn the_rewrite_gate_still_refuses_an_effectful_macro_argument() {
+    const SRC: &str = r#"
+namespace test.wi757nested
+  import anthill.prelude.{Int64, String}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Numeric.{add}
+  import anthill.reflect.{NodeOccurrence, make_apply}
+  sort Boom
+    entity boom(why: String)
+  end
+  operation risky(x: Int64) -> Int64 effects Error[Boom] = Error.raise(boom(why: "no"))
+  operation wrapped(v: Int64) -> Int64 = add(v, 100)
+  operation wrap(x: NodeOccurrence) -> NodeOccurrence =
+    make_apply("test.wi757nested.wrapped", cons(x, nil()), x)
+  operation trigger(x: Int64) -> Int64 = x
+  rule trigger(?x) <=> wrap(risky(?x)) [simp]
+  operation consumer() -> Int64 = add(trigger(5), 1)
+end
+"#;
+    let errs = load_errors(SRC);
+    assert!(
+        errs.iter().any(|e| e.contains("test.wi757nested.risky")
+            && e.contains("an effectful operation is not equational")),
+        "an effectful macro ARGUMENT must stay refused, got: {errs:?}",
+    );
+}
+
 // ── DECLINE: the WI-722 contract, unchanged ────────────────────────────────
 
 /// A macro that is NOT APPLICABLE still DECLINES quietly: its `[simp]` template
@@ -236,10 +349,10 @@ end
 /// parameter meets the value type `Int64` — the loud downstream error the kept
 /// template is supposed to produce, at the redex.
 ///
-/// (This pins the "not applicable" half of the split, which is what the acceptance
-/// names. The other decline — a macro whose EVALUATION fails with something that
-/// is not a rejection — is `try_expand_macro`'s `Err(e) => Ok(None)` arm, left
-/// untouched: WI-757 only added an arm ahead of it.)
+/// (This pins the "not applicable" half of the split. The other decline — a macro
+/// whose EVALUATION fails with something that is neither a host rejection nor a
+/// raise — is `try_expand_macro`'s `Err(e) => Ok(None)` arm: a `Suspended` flounder
+/// is "not yet", and an unrelated evaluator error is not the author's to read.)
 #[test]
 fn a_macro_that_is_not_applicable_still_declines_quietly() {
     const SRC: &str = r#"

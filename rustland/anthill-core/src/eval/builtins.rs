@@ -1857,12 +1857,19 @@ fn fill_column_holes(
 /// author must change. Every rejection below passes one; only an invariant break (a
 /// non-occurrence argument, which the macro classifier makes unreachable) stays an
 /// ordinary [`type_mismatch`] DECLINE.
+///
+/// The `expected …, got …` phrasing is built HERE — the channel itself carries one
+/// rendered `detail`, because its other producer is an anthill macro's `raise`,
+/// whose payload has no such structure (proposal 043.1 §3.6).
 fn macro_rejects(
-    expected: &'static str,
+    expected: &str,
     got: String,
     at: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
 ) -> EvalError {
-    EvalError::MacroRejected { expected, got, span: Some(at.span) }
+    EvalError::MacroRejected {
+        detail: format!("expected {expected}, got {got}"),
+        span: Some(at.span),
+    }
 }
 
 /// `Relation.guarded_of` (WI-714 / proposal 052) — the compile-time MACRO behind

@@ -540,9 +540,9 @@ pub enum LoadError {
     MacroRejected {
         /// The macro's qualified name.
         macro_name: String,
-        /// The macro's own words — what it needed, and what it found.
-        expected: &'static str,
-        got: String,
+        /// The macro's own words, already rendered — see
+        /// [`MacroRejection::detail`](crate::kb::simp_rewrite::MacroRejection).
+        detail: String,
         span: Span,
     },
     /// WI-819: a `let` annotation on a term that is not a pattern form at all —
@@ -840,11 +840,8 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
 /// (`where` → `guarded_of`): the macro is what read the syntax and what the author
 /// must satisfy, and the `[simp]` rule that connects the two is greppable from the
 /// name. `expected`/`got` are the macro's own words, verbatim.
-pub(super) fn macro_rejection_message(macro_name: &str, expected: &str, got: &str) -> String {
-    format!(
-        "compile-time macro `{macro_name}` cannot expand this expression: \
-         expected {expected}, got {got}"
-    )
+pub(super) fn macro_rejection_message(macro_name: &str, detail: &str) -> String {
+    format!("compile-time macro `{macro_name}` cannot expand this expression: {detail}")
 }
 
 /// WI-840: what an operation's declared type parameter collides with (proposal 058
@@ -1121,11 +1118,11 @@ impl LoadError {
                     msg
                 }
             }
-            LoadError::MacroRejected { macro_name, expected, got, span } => {
+            LoadError::MacroRejected { macro_name, detail, span } => {
                 format!(
                     "{}: {}",
                     loc.format_start(*span),
-                    macro_rejection_message(macro_name, expected, got),
+                    macro_rejection_message(macro_name, detail),
                 )
             }
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
@@ -1484,11 +1481,11 @@ impl std::fmt::Display for LoadError {
                     write!(f, "{}", msg)
                 }
             }
-            LoadError::MacroRejected { macro_name, expected, got, span } => {
+            LoadError::MacroRejected { macro_name, detail, span } => {
                 write!(
                     f,
                     "{} at {}..{}",
-                    macro_rejection_message(macro_name, expected, got),
+                    macro_rejection_message(macro_name, detail),
                     span.start,
                     span.end,
                 )
@@ -4024,9 +4021,19 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// registry turns an unhandled effect into a residualize → a confusing downstream
 /// type error), so the gate moves the rejection early and names the cause.
 ///
-/// No existing stdlib op is a macro (the reflect occurrence ops return
-/// `Term`/`List`/`Option`, not a bare occurrence), so this gate is a no-op until a
-/// user authors an occurrence→occurrence op.
+/// WI-757 — `Error` is admitted here because a macro's raise IS its rejection
+/// channel (043.1 §3.6): the payload becomes the load error's text. That is also
+/// why the WI-702 effectful-rewrite gate (`typing::check_simp_effectful_ops`)
+/// exempts a macro at the `[simp]` RHS head — without the exemption this "at most
+/// `Error`" allowance would be dead, every macro declaring it refused at the rule
+/// that names it. The two gates are complementary and must stay so: this one caps
+/// WHICH label a macro may carry, that one keeps the exemption to the ONE position
+/// whose call is evaluated away.
+///
+/// The stdlib's macros are `Relation.guarded_of` / `conjoin_of` (WI-714); both
+/// declare no effects and reject through the host channel. (Other reflect
+/// occurrence ops return `Term`/`List`/`Option`, not a bare occurrence, so they are
+/// not macros — see `is_macro`'s container exclusion.)
 fn check_macro_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
     let error_sym = kb.try_resolve_symbol("anthill.prelude.Error");
     let mut errors = Vec::new();
@@ -4049,7 +4056,9 @@ fn check_macro_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
                     "macro `{}` (an occurrence→occurrence operation, evaluated at compile time by \
                      the [simp] engine) declares an impure effect row — a macro must be pure (at \
                      most `Error`), since it runs during type-checking with no effect handlers. \
-                     Drop the effects, or make it an ordinary (non-occurrence-returning) operation.",
+                     `Error` alone is admitted because a macro's raise is its REJECTION channel: \
+                     the payload becomes a load error at the redex. Drop the other effects, or \
+                     make it an ordinary (non-occurrence-returning) operation.",
                     kb.qualified_name_of(op),
                 ),
             });

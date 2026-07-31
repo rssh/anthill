@@ -92,13 +92,15 @@ const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 pub struct MacroRejection {
     /// The macro that rejected — the symbol at the head of the `[simp]` RHS.
     pub macro_name: Symbol,
-    /// What the macro needed, and what it found instead: the macro's own words,
-    /// rendered verbatim into the load error.
-    pub expected: &'static str,
-    pub got: String,
-    /// The OFFENDING sub-expression's span when the macro named one (it holds the
-    /// argument occurrences, so it usually can). `None` leaves the location to the
-    /// reporter, which falls back to the redex.
+    /// The macro's own words, already rendered, quoted verbatim into the load
+    /// error. One string rather than a structured pair because the channel has TWO
+    /// producers whose shapes differ: a HOST macro writes `expected …, got …`, an
+    /// anthill macro RAISES a payload (proposal 043.1 §3.6).
+    pub detail: String,
+    /// The OFFENDING sub-expression's span when the macro named one — a host macro
+    /// holds the argument occurrences, so it usually can. `None` leaves the location
+    /// to the reporter, which falls back to the redex; that is what a RAISED
+    /// rejection gets, `raise` carrying a payload and no occurrence.
     pub span: Option<crate::span::SourceSpan>,
 }
 
@@ -615,7 +617,11 @@ pub(super) fn try_fire(
 /// guard while the common value-RHS path keeps guarding first (WI-655 cost model). A
 /// non-`Fn` RHS (a bare const / nullary ref, e.g. `peek(?s) <=> true`) reads `None` —
 /// never a macro, so it stays guard-gated.
-fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
+///
+/// `pub(super)`: WI-757 — the typer's WI-702 effectful-rewrite gate
+/// (`check_simp_effectful_ops`) exempts exactly this position when it holds a macro,
+/// and must read it the same way the firing site does.
+pub(super) fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
     stored_eq_operand_functor(kb, rid, 1)
 }
 
@@ -707,9 +713,21 @@ fn try_expand_macro(
         // WI-757: the macro's DIAGNOSTIC channel — it read the occurrences, found
         // them definitively untranslatable, and said why. Carry it out, span and
         // all; a macro that named no span leaves the location to the reporter.
-        Err(crate::eval::EvalError::MacroRejected { expected, got, span }) => {
-            Err(MacroRejection { macro_name: functor, expected, got, span })
+        Err(crate::eval::EvalError::MacroRejected { detail, span }) => {
+            Err(MacroRejection { macro_name: functor, detail, span })
         }
+        // WI-757 — the SAME channel, reached from anthill: a macro rejects by
+        // RAISING (proposal 043.1 §3.6). A macro's declared row is capped at `Error`
+        // (`check_macro_purity`) and its call is evaluated away at compile time, so
+        // this `Error` is a compile-time DIAGNOSTIC and never a runtime effect —
+        // which is why the WI-702 rewrite gate exempts a macro at the `[simp]` RHS
+        // head. `raise` carries a payload and no occurrence, so the span is the
+        // reporter's redex; a narrower one needs a `reject(…, at:)` op (043.1 §7).
+        Err(crate::eval::EvalError::Raised { payload }) => Err(MacroRejection {
+            macro_name: functor,
+            detail: crate::eval::render_raised_payload(kb, &payload),
+            span: None,
+        }),
         // Any OTHER failure to produce an occurrence declines: the template call is
         // kept, and its downstream type-check surfaces the failure loudly at the
         // redex. A `Suspended` flounder / runtime-domain error residualizes quietly;

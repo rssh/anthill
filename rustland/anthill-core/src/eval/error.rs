@@ -128,9 +128,11 @@ pub enum EvalError {
     /// ([`crate::kb::typing::SpecOpSupplier::render`]) because the three are written
     /// in three syntaxes and the author must know which text to delete.
     AmbiguousSpecOpDispatch { op: String, carrier: String, candidates: Vec<String> },
-    /// WI-757 — the WI-722 macro contract's DIAGNOSTIC channel: a compile-time
-    /// MACRO read its argument occurrences, found them definitively
-    /// untranslatable, and says why.
+    /// WI-757 — the WI-722 macro contract's DIAGNOSTIC channel for a HOST macro:
+    /// it read its argument occurrences, found them definitively untranslatable,
+    /// and says why. An anthill-written macro reaches the same channel by
+    /// RAISING (proposal 043.1 §3.6) — `Raised`'s payload renders through
+    /// [`render_raised_payload`] into the same `detail`.
     ///
     /// The distinction this variant exists to draw: every OTHER failure of a
     /// macro is a DECLINE — the macro is merely not applicable (or not ready
@@ -145,12 +147,13 @@ pub enum EvalError {
     ///
     /// `span` is the OFFENDING SUB-EXPRESSION's, not the macro call's: the macro
     /// holds the argument occurrences, so it can point at the one condition atom
-    /// that does not translate. `None` leaves the redex span to the reporter.
-    /// `simp_rewrite::try_expand_macro` carries this out as a
+    /// that does not translate. `None` leaves the redex span to the reporter —
+    /// which is what a RAISED rejection gets, since `raise` carries a payload and
+    /// no occurrence. `simp_rewrite::try_expand_macro` carries this out as a
     /// [`crate::kb::simp_rewrite::MacroRejection`] and the typer reports it as a
     /// load error; at a RUNTIME call of the same op it renders like any other
     /// eval error.
-    MacroRejected { expected: &'static str, got: String, span: Option<SourceSpan> },
+    MacroRejected { detail: String, span: Option<SourceSpan> },
     Internal(String),
 }
 
@@ -247,8 +250,8 @@ impl std::fmt::Display for EvalError {
             // WI-757: the same sentence the typer renders into a load error, so a
             // macro invoked at runtime and one expanded at compile time report the
             // rejection identically (only the location wrapper differs).
-            EvalError::MacroRejected { expected, got, .. } => {
-                write!(f, "macro cannot expand this expression: expected {expected}, got {got}")
+            EvalError::MacroRejected { detail, .. } => {
+                write!(f, "macro cannot expand this expression: {detail}")
             }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
@@ -256,3 +259,96 @@ impl std::fmt::Display for EvalError {
 }
 
 impl std::error::Error for EvalError {}
+
+/// Render a raised `Error` payload ([`EvalError::Raised`]) as a human-readable
+/// line. Store-I/O builtins raise `Str` payloads (printed verbatim); WI-467 made
+/// div-by-zero raise the structured `division_by_zero(op: "Int64.div")` entity,
+/// and user code can `Error.raise` any `Value`. Renders an entity as
+/// `functor(pos…, field: val…)` using `kb` to resolve the interned functor/field
+/// symbols to their short names — so an unhandled `10 / 0` prints
+/// `division_by_zero(op: "Int64.div")` rather than a `Symbol`-index debug dump.
+///
+/// `Raised`'s own `Display` drops the payload (the payload is an opaque `Value`;
+/// error-ness lives in the CHANNEL, not the value), so every consumer that wants
+/// the payload's text comes here. WI-757 moved this out of `anthill-stl`'s
+/// runner, which was its only caller: a **macro** that raises at compile time now
+/// reports through the same words (`kb::simp_rewrite::try_expand_macro`), and
+/// `anthill-core` is the only crate both it and the binaries can share.
+pub fn render_raised_payload(kb: &crate::kb::KnowledgeBase, v: &Value) -> String {
+    render_payload_at(kb, v, 0)
+}
+
+/// The recursion behind [`render_raised_payload`]; `depth` bounds it against
+/// pathological nesting and selects the top-level `Str` spelling.
+fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> String {
+    const MAX_DEPTH: usize = 6;
+    match v {
+        // A bare top-level Str (store-I/O raises these) prints verbatim, as it
+        // did before; a Str nested in an entity field is quoted so the field
+        // reads as a string literal (`op: "Int64.div"`).
+        Value::Str(s) if depth == 0 => s.clone(),
+        Value::Str(s) => format!("{s:?}"),
+        Value::Int(n) => n.to_string(),
+        Value::BigInt(n) => n.to_string(),
+        Value::Float(x) => x.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Unit => "()".to_string(),
+        Value::Entity { functor, pos, named, .. } => {
+            let name = kb.resolve_sym(*functor);
+            if (pos.is_empty() && named.is_empty()) || depth >= MAX_DEPTH {
+                return name.to_string();
+            }
+            let mut parts: Vec<String> =
+                pos.iter().map(|p| render_payload_at(kb, p, depth + 1)).collect();
+            for (fname, fv) in named.iter() {
+                parts.push(format!(
+                    "{}: {}",
+                    kb.resolve_sym(*fname),
+                    render_payload_at(kb, fv, depth + 1)
+                ));
+            }
+            format!("{}({})", name, parts.join(", "))
+        }
+        // Handles / streams / substitutions have no readable surface form; name
+        // the carrier kind rather than leaking a debug dump.
+        other => other.type_name().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kb::KnowledgeBase;
+    use std::rc::Rc;
+
+    /// WI-467: the `division_by_zero(op:)` entity payload an unhandled
+    /// `10 / 0` carries renders as a readable line — `resolve_sym` turns the
+    /// interned functor/field symbols into names — not the `Symbol`-index
+    /// debug dump the old `format!("{payload:?}")` fallback produced.
+    #[test]
+    fn render_payload_renders_division_by_zero_entity_readably() {
+        let mut kb = KnowledgeBase::new();
+        let functor = kb.intern("division_by_zero");
+        let op_field = kb.intern("op");
+        let payload = Value::Entity {
+            functor,
+            pos: Rc::from([]),
+            named: Rc::from([(op_field, Value::Str("Int64.div".to_string()))]),
+        };
+        assert_eq!(
+            render_raised_payload(&kb, &payload),
+            r#"division_by_zero(op: "Int64.div")"#,
+        );
+    }
+
+    /// A bare top-level `Str` payload (store-I/O builtins raise these) still
+    /// prints verbatim — unquoted — as before WI-467's renderer landed.
+    #[test]
+    fn render_payload_prints_bare_string_verbatim() {
+        let kb = KnowledgeBase::new();
+        assert_eq!(
+            render_raised_payload(&kb, &Value::Str("persist failed: disk full".to_string())),
+            "persist failed: disk full",
+        );
+    }
+}

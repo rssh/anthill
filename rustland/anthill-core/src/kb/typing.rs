@@ -385,8 +385,9 @@ pub enum TypeError {
         span: Option<Span>,
         /// The macro that rejected — the `[simp]` RHS head.
         macro_name: Symbol,
-        expected: &'static str,
-        got: String,
+        /// The macro's own words, already rendered — see
+        /// [`MacroRejection::detail`](super::simp_rewrite::MacroRejection).
+        detail: String,
     },
     /// Aggregation node — collects multiple sibling failures
     /// (e.g. a list literal with two ill-typed elements).
@@ -768,12 +769,8 @@ impl TypeError {
             // WI-757: the ONE wording of a macro rejection — `to_load_error` builds
             // `LoadError::MacroRejected` from the same three fields, so the load
             // renderer and this one cannot drift.
-            TypeError::MacroRejected { macro_name, expected, got, .. } => {
-                super::load::macro_rejection_message(
-                    kb.qualified_name_of(*macro_name),
-                    expected,
-                    got,
-                )
+            TypeError::MacroRejected { macro_name, detail, .. } => {
+                super::load::macro_rejection_message(kb.qualified_name_of(*macro_name), detail)
             }
             TypeError::Multiple { errors } => {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
@@ -1149,11 +1146,10 @@ impl TypeError {
             // WI-757: SPANNED and its own variant, for the reason WI-819 gave —
             // it is user-reachable, and an unspanned diagnostic renders with no
             // `line:col` at all.
-            TypeError::MacroRejected { macro_name, expected, got, .. } => {
+            TypeError::MacroRejected { macro_name, detail, .. } => {
                 LoadError::MacroRejected {
                     macro_name: kb.qualified_name_of(*macro_name).to_string(),
-                    expected,
-                    got: got.clone(),
+                    detail: detail.clone(),
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
@@ -7746,8 +7742,7 @@ fn macro_rejection_error(
     TypeError::MacroRejected {
         span: Some(rejection.span.map_or(redex.span.span, |s| s.span)),
         macro_name: rejection.macro_name,
-        expected: rejection.expected,
-        got: rejection.got,
+        detail: rejection.detail,
     }
 }
 
@@ -35278,8 +35273,30 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         for node in kb.rule_body_nodes(rid) {
             super::op_requirements::walk_calls_node(node, &mut |sym, _| functors.push(sym));
         }
+        // WI-757 — the ONE exemption: a MACRO at the RHS HEAD. The gate above is
+        // about the call this rewrite EMITS; the RHS-head macro is the REWRITER, and
+        // `try_expand_macro` evaluates it at compile time and splices its RESULT, so
+        // the call never reaches runtime and cannot be duplicated, reordered, or
+        // dropped there — the hazard this check exists for does not exist for it. Its
+        // `Error` is therefore a COMPILE-TIME diagnostic (proposal 043.1 §3.6: a macro
+        // rejects by raising), not a runtime effect, and without this exemption
+        // `check_macro_purity`'s "at most `Error`" allowance would be dead — every
+        // macro declaring it refused at the rule that names it.
+        //
+        // NARROW by construction: read through the SAME `stored_rhs_functor` the
+        // firing site uses, so only the position that is actually macro-expanded is
+        // exempt. Anywhere else — the LHS, an argument, a nested RHS call, a body goal
+        // — an occurrence-typed macro call is not expanded, so it would ride into the
+        // program and stays gated. (Skipping by SYMBOL also exempts the same macro
+        // written elsewhere in the same rule; that spelling cannot type-check — a
+        // macro takes and returns occurrences — so it is refused ahead of here.)
+        let rhs_macro = super::simp_rewrite::stored_rhs_functor(kb, rid)
+            .filter(|f| is_macro(kb, *f));
         let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         for f in functors {
+            if Some(f) == rhs_macro {
+                continue;
+            }
             if !reported.insert(f) {
                 continue;
             }
