@@ -9,9 +9,11 @@
 //! sort, exempt from the load-time backing check because the carrier is a host
 //! `Implementation.target` (WI-880), backed by nothing.
 //!
-//! `Bool` was outside WI-881's audit and is checked here: `and`/`or`/`not` answer and
-//! `ite` does NOT — see [`bool_is_audited_and_ite_reduces_nowhere`], the one finding
-//! this ticket could not close, and `bool.anthill` for why.
+//! `Bool` was outside WI-881's audit and is checked here: `and`/`or`/`not` answer, and
+//! `ite` is not an operation — WI-887 deleted the declaration, leaving the functor its
+//! two `[simp]` rules introduce. See
+//! [`bool_is_audited_and_ite_is_not_one_of_its_operations`] and
+//! [`ite_reduces_bare_and_is_refused_as_a_member`]; `bool.anthill` carries the why.
 //!
 //! TWO SEMANTICS DECISIONS carry the weight, and both are driven rather than argued:
 //! [`index_of_agrees_with_substring_and_length`] pins the INDEX UNIT (the byte answer
@@ -19,7 +21,7 @@
 //! [`split_keeps_its_empty_pieces_so_it_round_trips`] pins what the EMPTY pattern
 //! means for the operations that return structure.
 //!
-//! STDLIB LOADS: NINE, which is the number of interpreters the trap discipline and the
+//! STDLIB LOADS: TEN, which is the number of interpreters the trap discipline and the
 //! per-claim naming actually force — `crate::common::interp_for` parses and loads all
 //! ~76 stdlib and binding files each time (~0.5s), so this is the file's whole cost.
 //! One per `#[test]` that drives `DRIVER`, plus one extra wherever a call is expected
@@ -81,14 +83,14 @@ namespace wi884.siblings
     operation dAnd(n: Int64) -> Bool = Bool.and(true, false)
     operation dOr(n: Int64) -> Bool = Bool.or(true, false)
     operation dNot(n: Int64) -> Bool = Bool.not(true)
-    operation dIte(n: Int64) -> Int64 = Bool.ite(true, 1, 2)
+    -- no `ite`: it is not an operation, and `if`/`then`/`else` is the form here
   end
 
-  -- `ite` at RULE level, with a control that isolates the goal machinery from the
-  -- operation under test.
-  rule ite_is_ten(?x)     :- eq(Bool.ite(true, 10, 20), 10), ?x = 1
-  rule ite_is_twenty(?x)  :- eq(Bool.ite(true, 10, 20), 20), ?x = 1
-  rule control_ten(?x)    :- eq(10, 10), ?x = 1
+  -- `ite` at RULE level, where it does resolve, with a control that isolates the
+  -- goal machinery from the functor under test.
+  rule ite_reduces(?x)  :- holds(ite(true, 10, 20)), ?x = 1
+  rule control_pred(?x) :- holds(10), ?x = 1
+  fact holds(10)
 end
 "#;
 
@@ -273,28 +275,30 @@ fn is_empty_reaches_every_call_form() {
     }
 }
 
-/// `Bool` — the sort WI-881's audit did not reach. Three of its four operations
-/// answer; `ite` is dead on BOTH routes, and that is this ticket's one open finding.
+/// `Bool` — the sort WI-881's audit did not reach. All three of its operations answer,
+/// and `ite` reduces at SLD, which is the one position it has.
 ///
-/// The four are driven in one test because a stdlib load is ~0.5s and the `ite` half
-/// needs a KB anyway. `and`/`or`/`not` are also driven by
-/// `wi529_boolean_operator_split_test`; they are here so the audit's own record is
-/// complete rather than split across a suite that is about something else.
+/// Driven in one test because a stdlib load is ~0.5s and the `ite` half needs a KB
+/// anyway. `and`/`or`/`not` are also driven by `wi529_boolean_operator_split_test`;
+/// they are here so the audit's own record is complete rather than split across a
+/// suite that is about something else.
 ///
-/// WHY `ite` IS LEFT DEAD, in one line each — `bool.anthill`'s declaration carries the
-/// argument, and it is not repeated here. Value level: deliberate, an operation's
-/// arguments are evaluated before the call. Rule level: NOT deliberate, and the cause
-/// is the missing `[simp]` — see [`the_head_connective_is_not_what_enables_an_equation`]
-/// for the diagnosis that had to be refuted first, and
-/// [`a_simp_ite_reaches_only_a_literal_condition`] for why tagging is not the fix.
-/// WI-887 chooses.
+/// THE SLD ARM NEEDS BOTH HALVES OF ITS SETUP, and WI-887 got there by having each
+/// half wrong in turn. (1) The redex must be nested in a COMPOUND goal: under the `eq`
+/// builtin it never reduces, because `eq` short-circuits ahead of the rule-candidate
+/// path that hosts the rewrite — that shape yields zero for any `[simp]` redex, and
+/// reading its zero as a fact about `ite` is what sent WI-884 looking for a missing
+/// implementation. (2) It needs `ResolveConfig.simplify`, which is NOT the default
+/// (`resolve.rs` sets `simplify: false`), so the same goal yields zero under
+/// `ResolveConfig::default()` for a reason that has nothing to do with `ite` either.
+/// Both configs are driven below so neither cause can masquerade as the other.
 #[test]
-fn bool_is_audited_and_ite_reduces_nowhere() {
-    // The SLD half FIRST, off a KB this test then hands to the interpreter — the eval
-    // call below TRAPS, and one stdlib load serves both halves.
+fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
+    // The SLD half FIRST, off a KB this test then hands to the interpreter — one
+    // stdlib load serves both halves.
     let mut kb = crate::common::load_kb_with(DRIVER);
     {
-        let mut solutions = |goal: &str| {
+        let mut solutions = |goal: &str, simplify: bool| {
             let sym = kb.try_resolve_symbol(goal).unwrap_or_else(|| panic!("{goal} not in KB"));
             let name = kb.intern("X");
             let vid = kb.fresh_var(name);
@@ -304,15 +308,15 @@ fn bool_is_audited_and_ite_reduces_nowhere() {
                 pos_args: SmallVec::from_slice(&[v]),
                 named_args: SmallVec::new(),
             });
-            kb.resolve(&[g], &ResolveConfig::default()).len()
+            kb.resolve(&[g], &ResolveConfig { simplify, ..Default::default() }).len()
         };
-        assert_eq!(
-            solutions("wi884.siblings.control_ten"),
-            1,
-            "the control must answer, or this test proves nothing about `ite`",
-        );
-        for goal in ["wi884.siblings.ite_is_ten", "wi884.siblings.ite_is_twenty"] {
-            assert_eq!(solutions(goal), 0, "{goal}: `ite` reduces at SLD after all");
+        for (goal, simplify, want, why) in [
+            ("control_pred", false, 1, "the control must answer, or nothing below proves anything"),
+            ("ite_reduces", true, 1, "a nested redex rewrites once `simplify` is on"),
+            ("ite_reduces", false, 0, "`simplify` is off by default, so no equation fires"),
+        ] {
+            let qn = format!("wi884.siblings.{goal}");
+            assert_eq!(solutions(&qn, simplify), want, "{goal} (simplify={simplify}): {why}");
         }
     }
 
@@ -329,24 +333,70 @@ fn bool_is_audited_and_ite_reduces_nowhere() {
             other => panic!("call {entry}: expected a Bool, got {other:?}"),
         }
     }
-    // LAST: a trapped call poisons every later call on this interpreter.
-    match interp.call("wi884.siblings.B.dIte", &[Value::Int(0)]) {
-        Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. }) => {
-            assert_eq!(name, "anthill.prelude.Bool.ite")
-        }
-        other => panic!("Bool.ite has no value-level implementation; got {other:?}"),
-    }
 }
 
-/// THE REPAIR NOT TAKEN for `ite`, driven rather than argued, because it is why
-/// `bool.anthill`'s two case laws are left untagged.
+/// `ite` IS NOT AN OPERATION — the half of WI-887's decision that a reducing rule
+/// cannot show, and the observable difference from the alternatives it was chosen
+/// over: given a body or a host mapping, the MEMBER spelling below would still load.
 ///
-/// Tagging them `[simp]` does make the operation run — but ONLY where the condition is
-/// already a LITERAL, because a `[simp]` head is matched STRUCTURALLY and
-/// `ite(true, ?t, ?_)` has `true` in it. `mixed` below is the other case: a computed
-/// condition, which is every interesting use and the shape `ordered.anthill`'s own
-/// `max` law writes, has no redex and still dies. `bool.anthill` records what follows
-/// from that and what the alternatives cost; WI-887 chooses.
+/// THE TWO SPELLINGS DIVERGE, and the split is the finding. The BARE `ite(...)` is what
+/// the two `[simp]` rule heads introduce, so it REDUCES — even in an operation body,
+/// where the typer's `[simp]` pass inlines it before dispatch. The MEMBER spelling
+/// `Bool.ite(...)` names nothing: a rule head introduces a functor, not a qualified
+/// operation symbol, so it is refused as an unknown functor.
+///
+/// An earlier cut of this test asserted BOTH spellings were refused. That was written
+/// off a program in which a comment line above `ite_true` had silently eaten its
+/// `[simp]` (WI-893), leaving the bare form genuinely dead — half-backed looking
+/// backed, from the parser. The tags now sit clear of that position, and the bare form
+/// answers.
+///
+/// ONE LOAD serves both, and the member arm's error carries its own callee name, so
+/// attribution does not depend on ordering.
+#[test]
+fn ite_reduces_bare_and_is_refused_as_a_member() {
+    const SRC: &str = r#"
+namespace wi887.spellings
+  import anthill.prelude.{Int64, Bool}
+  sort R
+    import anthill.prelude.{Int64, Bool}
+    operation viaBare(n: Int64) -> Int64 = ite(true, 1, 2)
+  end
+end
+"#;
+    // The bare spelling loads AND reduces: a literal condition has a redex.
+    let mut interp = crate::common::interp_for(SRC);
+    match interp.call("wi887.spellings.R.viaBare", &[Value::Int(0)]) {
+        Ok(Value::Int(1)) => {}
+        other => panic!("bare `ite` must inline to its then-branch; got {other:?}"),
+    }
+
+    const MEMBER: &str = r#"
+namespace wi887.member
+  import anthill.prelude.{Int64, Bool}
+  sort Q
+    import anthill.prelude.{Int64, Bool}
+    operation viaMember(n: Int64) -> Int64 = Bool.ite(true, 1, 2)
+  end
+end
+"#;
+    let Err(errs) = crate::common::try_load_kb_with(MEMBER) else {
+        panic!("`Bool.ite` must not load: a rule head is not a qualified operation");
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("Bool.ite") && e.contains("unknown functor")),
+        "expected `Bool.ite` refused as an unknown functor, got {errs:?}",
+    );
+}
+
+/// THE LIMIT OF A REWRITE, driven rather than argued: a `[simp]` head is matched
+/// STRUCTURALLY, so `ite(true, ?t, ?_)` has a redex only where the condition is
+/// already a LITERAL. `mixed` below is the other case — a computed condition, the
+/// shape `ordered.anthill`'s own `max` law writes — and it does not reduce.
+///
+/// WI-887 accepted that limit. It costs nothing because no shipped use wants the
+/// reduction: smt-gen lowers the functor to SMT-LIB `(ite c t e)` with the condition
+/// left SYMBOLIC, and the stdlib's two spellings are specification.
 #[test]
 fn a_simp_ite_reaches_only_a_literal_condition() {
     const CONTROL: &str = r#"

@@ -65,7 +65,6 @@ sort anthill.prelude.PartialOrd
 end
 
 sort anthill.prelude.Ordered
-  import anthill.prelude.Bool.{ite}
   import anthill.prelude.Int64.{neg}
 
   sort T = ?
@@ -82,9 +81,8 @@ sort anthill.prelude.Ordered
   -- demanded nothing and they broke at eval instead. Two halves of one surface
   -- treated oppositely; both are now backed by the same derivation.
   --
-  -- Written as `if`/`then`/`else` rather than the `ite` of the law below: `ite` is
-  -- deliberately not an eval builtin (it would evaluate both branches), and only the
-  -- expression form is lazy.
+  -- Written as `if`/`then`/`else` rather than the `ite` of the law below: `ite` is not
+  -- an operation (WI-887), and `if` is the operation-body conditional.
   operation {
     max(a: T, b: T) -> T = if gte(a, b) then a else b
     min(a: T, b: T) -> T = if lte(a, b) then a else b
@@ -99,7 +97,7 @@ sort anthill.prelude.Ordered
   -- what the equational/`[simp]`/proof layers rewrite with. Two spellings of one
   -- definition, deliberately, and they are allowed to differ where the surfaces do:
   -- `max` is stated here with `ite` and written as `if`/`then`/`else` there, because
-  -- `ite` is not an eval builtin (it would evaluate both branches).
+  -- `ite` is a rule-level functor and `if` is the operation-body form (WI-887).
   rule {
     gt(?a, ?b)  <=> gt(compare(?a, ?b), 0)
     lt(?a, ?b)  <=> lt(compare(?a, ?b), 0)

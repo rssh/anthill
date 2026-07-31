@@ -6,7 +6,6 @@ enum anthill.prelude.List
   import anthill.prelude.Iteration
   import anthill.prelude.Stream
   import anthill.prelude.IndexedSeq
-  import anthill.prelude.Bool.{ite}
   import anthill.prelude.PartialEq.{eq}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}

@@ -11,12 +11,12 @@
 -- `cpp_std.anthill`, which a profile overlay can remap; a `carrier` clause is read
 -- ahead of that query and would silently disable the overlay).
 --
--- `ite` IS NOT MAPPED, matching the rust host, which does not back it either: an
--- operation's arguments are evaluated before the call, so any `ite` realized as a
--- function evaluates BOTH branches, and `if`/`then`/`else` is the lazy form. C++'s
--- `?:` IS lazy and would tempt a mapping here — but `ite` is dead on both routes in
--- the interpreter (MEASURED by WI-884), and WI-887 owns the choice between backing it,
--- replacing it, and deleting it. cpp cannot be the one host where it works.
+-- `ite` HAS NO MAPPING AND CANNOT HAVE ONE: since WI-887 it is not an operation but a
+-- functor defined by two `[simp]` rules, and `operation_map` keys on a declared
+-- operation. C++'s `?:` is lazy and would tempt a mapping — but the reason `ite` is
+-- not an operation is that its branches are VALUES, so any function realizing it
+-- evaluates both; a lazy C++ spelling would make cpp the one host with a semantics
+-- the language does not have.
 namespace anthill.prelude
   provides Bool language cpp
     operation_map {

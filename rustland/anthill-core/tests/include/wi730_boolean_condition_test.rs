@@ -239,24 +239,24 @@ fn wi730_join_negation_is_an_antijoin() {
 }
 
 /// A condition outside the goal-expressible `Bool` subset is a LOUD compile error —
-/// 052's analog of LINQ's "cannot translate to SQL". `ite` is `Bool`-valued and so
-/// type-checks as the lambda's body, but it is not a predicate any rule or builtin
-/// can prove: compiled verbatim it would be an atom nothing satisfies, and the
+/// 052's analog of LINQ's "cannot translate to SQL". `alwaysTrue()` is `Bool`-valued
+/// and so type-checks as the lambda's body, but it is not a predicate any rule or
+/// builtin can prove: compiled verbatim it would be an atom nothing satisfies, and the
 /// filtered relation would come back silently EMPTY. It must fail to LOAD instead.
 #[test]
 fn wi730_untranslatable_condition_is_a_load_error() {
     const SRC: &str = r#"
-namespace test.wi730ite
+namespace test.wi730untranslatable
   import anthill.prelude.{String, Int64, List, Bool}
   import anthill.prelude.Relation.{where}
-  import anthill.prelude.Bool.{ite}
   sort Person
     entity person(name: String, age: Int64)
+    operation alwaysTrue() -> Bool = true
   end
   fact person(name: "alice", age: 30)
   rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
   operation p() -> List[(name: String, age: Int64)] effects Error =
-    person_row.where(lambda c -> ite(true, true, false)).takeN(5)
+    person_row.where(lambda c -> Person.alwaysTrue()).takeN(5)
 end
 "#;
     match try_load_kb_with(SRC) {

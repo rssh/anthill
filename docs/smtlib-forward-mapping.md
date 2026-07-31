@@ -160,7 +160,8 @@ rule length(cons(?x, ?xs)) = add(1, length(?xs))
 
 ### 3.3 Arithmetic and Comparison Builtins
 
-Prelude operations on primitives map to SMT-LIB built-ins:
+Prelude operations on primitives map to SMT-LIB built-ins (plus `ite`, which is a
+rule-level functor rather than an operation — WI-887):
 
 | Anthill | SMT-LIB |
 |---|---|

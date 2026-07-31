@@ -4,7 +4,6 @@
 -- — see proposal 038.
 sort anthill.prelude.Int64
   import anthill.prelude.{Eq, Ordered, Numeric}
-  import anthill.prelude.Bool.{ite}
   import anthill.prelude.Numeric.{add, sub}
 
   -- WI-876: `Int64`'s ORDERING, declared here and backed by the host in

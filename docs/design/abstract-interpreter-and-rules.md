@@ -269,7 +269,8 @@ is a **rule-less bodied op** and, for each, synthesizes a transient defining rul
 `translate_expr` had **no** expression-position conditional path (only arithmetic + inequalities-as-goals),
 so an `ite`/`if` subterm died with `unhandled arithmetic op 'ite'` — a *general* gap that also blocks
 stdlib's own hand-written `ite` twins (`sign`/`max`/`min`). Extracted as prerequisite **WI-680**: teach
-`translate_expr` to emit `(ite …)` for `Expr::If` and the `Bool.ite` functor, with a `translate_condition`
+`translate_expr` to emit `(ite …)` for `Expr::If` and the `ite` functor (WI-887 removed the
+`Bool.ite` operation, so the functor is the bare name), with a `translate_condition`
 helper (inequalities + `eq` + `Bool.and/or/not`). *(An earlier draft of this note claimed "no smt-gen
 change"; that was wrong — the conditional lowering is unavoidable, and belongs in smt-gen as a general
 capability, not smuggled through the seam.)* A residual the emitter still can't lower (an ADT arm) is

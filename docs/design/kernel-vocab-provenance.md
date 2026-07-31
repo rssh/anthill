@@ -184,7 +184,8 @@ implements. 049's rows are `=`→`Eq.eq` vs `<=>`→`kernel.unify`; the boolean 
 
 **Correction (the dispatched ops already exist).** Contrary to this section's first draft, the
 value-side ops are *already implemented*: `bool.anthill` declares `sort anthill.prelude.Bool`
-with `not` / `and` / `or` / `ite`, a full Boolean-algebra rule set (`not_true`, `not_false`,
+with `not` / `and` / `or` (`ite` is a rule-level functor, not an operation — WI-887),
+a full Boolean-algebra rule set (`not_true`, `not_false`,
 `not_not`, de Morgan, …), **and** registered evaluator builtins (`bool_not` / `bool_and` /
 `bool_or`, `eval/builtins.rs:50-52`). So there is **no `Bool.not` home to invent** — the home
 is `anthill.prelude.Bool`, and most of WI-529 is **resolution routing**, not new stdlib.

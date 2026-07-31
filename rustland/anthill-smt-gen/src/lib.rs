@@ -1926,12 +1926,19 @@ fn map_unary_op(qn: &str) -> Option<&'static str> {
     }
 }
 
-/// True if `qn` names the `ite` (if-then-else) op — `anthill.prelude.Bool.ite`
-/// or the bare short form (WI-680). The refolded defining-equation body uses the
-/// `Expr::If` occurrence directly; this covers the hand-written / stdlib
-/// `Bool.ite(...)` functor spelling of the same conditional.
+/// True if `qn` names the `ite` (if-then-else) functor (WI-680). The refolded
+/// defining-equation body uses the `Expr::If` occurrence directly; this covers the
+/// hand-written / stdlib `ite(...)` spelling of the same conditional.
+///
+/// WI-887 made `ite` a rule-level functor rather than an operation, so it never
+/// resolves and `qualified_name_of` hands back the bare short name — the two qualified
+/// arms this used to carry (`anthill.prelude.Bool.ite`, `Bool.ite`) became unreachable
+/// and are gone. That leaves the short name as the ONLY match, so a user's own
+/// unresolved 3-ary `ite` is indistinguishable from the prelude's: a pre-existing
+/// hazard of this table's short-name style (WI-680 recorded it), now with nothing
+/// more specific in front of it.
 fn is_ite_op(qn: &str) -> bool {
-    qn == "anthill.prelude.Bool.ite" || qn == "Bool.ite" || qn == "ite"
+    qn == "ite"
 }
 
 /// Map the Bool connectives to their SMT-LIB spelling (WI-680), for the

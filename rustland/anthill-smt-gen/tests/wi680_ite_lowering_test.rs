@@ -28,7 +28,7 @@ const SRC: &str = r#"
 namespace test.wi680
   import anthill.prelude.{Int64, Bool}
   import anthill.prelude.Ordered.{gte, lt, lte}
-  import anthill.prelude.Bool.{and, or, not, ite}
+  import anthill.prelude.Bool.{and, or, not}
 
   -- Hand-written stand-in for the WI-669 body-derived defining rule:
   -- clamp(x) = if x >= 0 then x else 0, spelled with the `ite` functor
