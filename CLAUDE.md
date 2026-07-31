@@ -355,3 +355,62 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
   — `op_is_interpretable` and `kb.host_op_mappings()` see only the mapped half, and only
   it is arity-checked. Carrier-owned, so they answer correctly and WI-880's spec-op-worded
   acceptance does not claim them; recorded as feedback there.
+- **WHAT `host_fn` MEANS IS THE HOST'S TO SAY, AND A SECOND LANGUAGE SPLITS TWO
+  PREDICATES THAT WERE ONE** (WI-886). cpp-gen enumerated the per-carrier host surface in
+  THREE hand-written Rust tables one commit after WI-876 built the declarative channel,
+  and they disagreed with the rust runtime AND with each other — `Float.isNaN`/`isInfinite`/
+  `isFinite` and every `Int64` operation WI-876/WI-884 declared were absent, while the
+  comparisons were still keyed on the SPEC op `PartialOrd.gt` that WI-876 had moved to
+  `Float.gt`. MEASURED through `anthill codegen cpp` on a program that codegen'd
+  "successfully": `isNaN(a)`, `compare(a, b)`, `max(a, b)`, `gt(a, minValue())` — four
+  unresolvable C++ names in a written header, because the fall-through was
+  `Ok(format!("{fn_short}(...)"))`. The tables are DELETED; `HostOpTable` reads
+  `kb.host_op_mappings()` filtered to `lang == "cpp"`, fed by
+  `rustland/anthill-cpp-gen/anthill/{float,int64}.anthill`, which the CLI now loads for
+  the cpp targets (`load_kb_for_cpp_codegen`) and cpp-gen's tests walk from disk.
+  A cpp `host_fn` is an EXPRESSION TEMPLATE — `$1`, `$2` for the arguments — not a
+  function name, and the difference is not cosmetic: for rust the column is a key into a
+  CLOSED registry the runtime owns (`HOST_FNS`), because the host code exists and the
+  binding only selects it; a code GENERATOR has no registry, it WRITES the host code, so
+  what it needs is the SPELLING. A name alone cannot express `neg` (`(-$1)`), `pi`
+  (a literal), `floor` (`static_cast<int64_t>(std::floor($1))` — the signature returns
+  `Int64` and `<cmath>` returns `double`), or `compare`/`sign`/`mod`, which read an
+  argument TWICE and must BIND it in a non-capturing lambda: the arguments arrive as
+  already-lowered expressions, which may be calls. The template is PARSED ONCE into
+  literal spans and slots and the PARSE is what is stored, so rendering cannot re-read
+  the grammar differently; slots must be exactly `$1`..`$n`, EACH ONCE — the review
+  caught a first cut that compared SETS, accepting the repeat its own message forbade.
+  THE FALL-THROUGH IS NOW A REFUSAL, and BODY-LESS is the line (the same one `op_backed`
+  draws): an operation with a body has an anthill definition the backend could emit; one
+  without gets its meaning from the host. It is NOT degraded into `synthesise_body_for`'s
+  `// TODO:` comment, because that also emits `return {};` — which COMPILES and answers
+  zero, strictly LESS loud than the bogus call it replaced.
+  THE SECOND PREDICATE: `op_is_interpretable` asked `is_host_mapped_op`, which indexes
+  EVERY language, while `register_operation_mappings` registers `lang == "rust"` only —
+  so a cpp-only mapping promised eval an implementation it has none of, and
+  `carrier_override_op` selected that member over a spec default that would have worked.
+  MEASURED (positive control): `OperationBodyMissing { Box.max }` on a program that loads
+  clean. `is_interpreter_mapped_op` (rust) now answers eval; `is_host_mapped_op` (any
+  language) still answers the LOAD check, which asks about the PROGRAM.
+  THREE SMALLER THINGS FOUND BY DRIVING: `Int64.mod` was mapped to `%`, a SILENT WRONG
+  ANSWER (anthill's `mod` is always non-negative; C++ `%` follows the dividend — `%` is
+  `rem`); `Includes::render` deduped nothing, so three `<cmath>` probes emitted three
+  includes; and `provides Float language cpp` must carry NO `carrier` clause, because
+  `CarrierTable` is consulted AHEAD of the keyed `TypeMapping` query and would silently
+  disable a profile overlay (MEASURED: `keyed_overlay_test` fails with the clause).
+  THE SPEC-OP OPERATOR TABLE SURVIVES AND IS NOW A REAL BOUNDARY: one C++ operator serves
+  every arithmetic carrier and no carrier declares an `add` to hang a mapping on, so
+  `Numeric.add` / `PartialOrd.gt` / `PartialEq.eq` follow WI-880 rather than this ticket.
+  Review found the first cut's "spec ops only" claim FALSE — `Bool.and`/`or`/`not` are
+  `Bool`'s OWN operations, a gap list wearing a boundary's clothes — so `Bool` got its
+  binding block and the claim became true. `ite` is NOT mapped: C++ `?:` is lazy and
+  would tempt one, but `ite` is dead on both rust routes (WI-887 owns it) and cpp must
+  not be the single host where it works.
+  STILL HAND-WRITTEN: `render_as_float_special` is the LAST per-carrier table, and it
+  survives because `infinity`/`negativeInfinity`/`nan` are `const`s, which `operation_map`
+  refuses BY DESIGN — so a host-supplied CONST has no declarative channel in ANY language
+  (WI-889). `String`/`BigInt` have no cpp binding block at all (WI-890), now a loud
+  codegen gap rather than a silent one. AND ONE HAZARD THIS TICKET NEWLY EXPOSES:
+  `check_provider_operations` builds its host-carrier skip set from `Implementation` facts
+  with NO language filter, so attaching a cpp binding block to a carrier disables its
+  RUST-side backing check — recorded as feedback on WI-880, which owns that exemption.

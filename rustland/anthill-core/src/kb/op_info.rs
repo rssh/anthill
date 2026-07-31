@@ -231,6 +231,30 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
         .any(|rid| kb.is_fact(rid) && head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
 }
 
+/// WI-886 — how many parameters does `op_sym` DECLARE? [`operation_is_declared`]'s
+/// sibling: same two tiers (the WI-656 cached record, then the pre-
+/// `build_op_signatures` fact scan), and the same reason for existing — reading one
+/// number should not build an [`OpInfoRecord`], whose construction clones every
+/// per-field `Vec` to be dropped immediately.
+///
+/// ONE OWNER for a question two host backends ask of the same mappings. The rust
+/// runtime checks a registered `host_fn`'s arity against this at
+/// `register_operation_mappings` (`eval/builtins.rs`), and cpp-gen checks an
+/// expression template's `$N` slots against it at `HostOpTable::from_kb`. Before this
+/// the two were written separately and could not share: the cheap path is
+/// `kb.op_record`, which is `pub(crate)`, so a backend crate could only reach
+/// `lookup_operation_info` — the very call the rust side documents itself as avoiding.
+pub fn declared_arity(kb: &KnowledgeBase, op_sym: Symbol) -> Option<usize> {
+    if let Some(n) = kb
+        .op_record(op_sym)
+        .and_then(|r| r.signature.as_ref())
+        .map(|s| s.params.len())
+    {
+        return Some(n);
+    }
+    lookup_operation_info(kb, op_sym).map(|r| r.params.len())
+}
+
 /// WI-656 — decode the body-independent [`OpSignature`] from an `OperationInfo`
 /// fact head. The SINGLE field-decode, shared by [`lookup_operation_info`]'s
 /// fallback and [`build_op_signatures`], so a cached signature and a scanned one

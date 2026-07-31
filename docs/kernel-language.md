@@ -2357,6 +2357,20 @@ A mapping counts as *executable* backing for §8.7's check, **and only for the c
 
 Each entry reaches the KB as an `anthill.realization.OperationMapping` fact (`carrier`, `operation`, `host_fn`, `lang`) — the flat, queryable form the realization tables use, so the runtime's registry reads facts rather than a hardcoded list.
 
+**What `host_fn` denotes is the host's to say (WI-886).** For a language whose runtime *interprets* the program, it is a key into a closed registry of functions that runtime is willing to expose — the host code already exists and the binding only selects it, so an unknown key is a load-time refusal. For a language the toolchain *generates*, there is no registry, because the backend writes the host code; what it needs from the binding is the **spelling**. The C++ backend therefore reads `host_fn` as an expression template, with `$1`, `$2`, … standing for the operation's arguments:
+
+```
+namespace anthill.prelude
+  provides Float language cpp
+    operation_map { sqrt: "std::sqrt($1)", neg: "(-$1)", pi: "3.141592653589793" }
+  end
+end
+```
+
+A bare function name would not do: a host language's primitive operations are not all functions (`neg` is an operator, `pi` a literal), and a template also lets the mapping state a conversion its anthill signature requires (`Float.floor` returns `Int64`, `std::floor` a `double`). Neither reading resolves the string by reflection, and neither can check it: whether `std::sqrt` exists is the C++ compiler's question. What *is* checked, in both, is agreement with the declaration — the interpreter compares its registry's arity, the generator requires the template's placeholders to be exactly `$1`..`$n` for the operation's `n` parameters.
+
+The mapping is also what a generating backend must have: an operation with no body and no host realization for the target language cannot be lowered at all, and is a codegen error naming the operation and the carrier rather than a call emitted into the output for a function that does not exist.
+
 **Profile compatibility:** When assembling a build, all selected implementations must share a compatible profile. For example, in Rust `no_std` targets, every component must use `no_std`-compatible implementations — mixing `std` and `no_std` profiles is an error. This is a build-time constraint analogous to feature unification in Cargo.
 
 ### 10.3 Namespace with Nested Sub-namespaces

@@ -69,4 +69,42 @@ namespace anthill.realization.cpp_std
   fact IncludeMapping(lang: "cpp", host_type: "std::variant",        include: "#include <variant>")
   fact IncludeMapping(lang: "cpp", host_type: "std::numeric_limits", include: "#include <limits>")
   fact IncludeMapping(lang: "cpp", host_type: "std::string_view",    include: "#include <string_view>")
+
+  -- WI-886: the spellings the PER-CARRIER `operation_map` clauses emit
+  -- (rustland/anthill-cpp-gen/anthill/{float,int64}.anthill). One entry per host
+  -- function because the probe is a plain substring search over emitted text and
+  -- these share no distinguishing prefix — the same shape as the ten above, whose
+  -- `<cmath>` used to be an unconditional `ctx.requested_includes` insert inside
+  -- cpp-gen's now-deleted math table.
+  --
+  -- `std::numeric_limits` (Int64.minValue/maxValue) and `std::string` are already
+  -- probed above; `std::to_string` is NOT covered by the `std::string` probe (it is
+  -- not a substring of it) and needs its own.
+  fact IncludeMapping(lang: "cpp", host_type: "std::fabs",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::sqrt",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::hypot",          include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::fmod",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::pow",            include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::sin",            include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::cos",            include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::tan",            include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::asin",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::acos",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::atan",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::exp",            include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::log",            include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::floor",          include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::ceil",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::round",          include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::fmax",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::fmin",           include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::isgreater",      include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::isless",         include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::isnan",          include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::isinf",          include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::isfinite",       include: "#include <cmath>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::max",            include: "#include <algorithm>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::min",            include: "#include <algorithm>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::llabs",          include: "#include <cstdlib>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::to_string",      include: "#include <string>")
 end

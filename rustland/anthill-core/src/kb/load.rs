@@ -5287,6 +5287,19 @@ pub struct HostOperationMapping {
     pub lang: String,
 }
 
+/// WI-886 — the `lang` this crate's interpreter registers mappings for. ONE OWNER of
+/// the string, because two places must agree on it or the promise breaks: the index
+/// [`KnowledgeBase::is_interpreter_mapped_op`] answers from, and the filter
+/// `builtins::register_operation_mappings` registers by. When they disagree, the
+/// predicate claims an implementation the interpreter's raw builtin map does not hold
+/// — which is exactly the failure `set_host_op_mappings` documents.
+///
+/// A literal rather than something threaded: this crate IS the rust runtime, and
+/// `HOST_FNS` is a closed registry it owns. What made a constant necessary is that
+/// WI-886 gave the tree a SECOND language, so `lang` became a discriminator instead of
+/// a formality.
+pub const INTERPRETER_LANG: &str = "rust";
+
 /// WI-876 — read every `anthill.realization.OperationMapping` fact and cache the
 /// result on the KB, resolving each mapped operation's symbol once.
 ///

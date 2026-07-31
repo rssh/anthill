@@ -35,7 +35,7 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         return run_gc_cache(args, days);
     }
 
-    let mut kb = load_kb_with_stdlib(&args.paths, args.verbose, true)?;
+    let mut kb = load_kb_with_stdlib(&args.paths, args.verbose, true, &[])?;
 
     let report = discharge_loaded_kb(&mut kb, args, false);
     if report.collected == 0 {
@@ -2307,7 +2307,7 @@ mod wi558_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("src.anthill");
         std::fs::write(&path, src).unwrap();
-        crate::load_kb_with_stdlib(&[path], false, true)
+        crate::load_kb_with_stdlib(&[path], false, true, &[])
             .unwrap_or_else(|c| panic!("load failed with code {c}"))
     }
 

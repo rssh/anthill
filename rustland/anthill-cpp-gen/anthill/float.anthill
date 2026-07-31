@@ -1,0 +1,106 @@
+-- C++ binding for anthill.prelude.Float. Proposal 038 — host-specific spec
+-- satisfaction lives separately from the language-agnostic spec in
+-- stdlib/anthill/prelude/float.anthill.
+--
+-- WI-886: the C++ peer of `rustland/anthill-stl/anthill/float.anthill`, and the file
+-- that replaced cpp-gen's hand-written `Float` tables.
+--
+-- `host_fn` here is a C++ EXPRESSION TEMPLATE — `$1`, `$2`, … stand for the operation's
+-- arguments. `docs/kernel-language.md` §10.2 defines that reading and why it is not a
+-- bare function name; cpp-gen checks each template's slots against the operation's
+-- declared arity (`HostOpTable::from_kb`).
+--
+-- The `#include` a spelling needs is NOT here: it rides the `IncludeMapping` probe
+-- table in `stdlib/anthill/realization/cpp_std.anthill`, which is where "host spelling
+-- -> header" already lives for cpp. A mapping whose spelling is not probed there emits
+-- a header that does not compile, which
+-- `every_std_spelling_a_cpp_mapping_emits_has_an_include_probe` is what prevents.
+--
+-- NO `carrier` CLAUSE, and that is load-bearing rather than an omission: `Float`'s
+-- C++ spelling is `TypeMapping(anthill_type: "Float", host_type: "double")` in
+-- `cpp_std.anthill`, which is the PROFILE-OVERLAYABLE channel — a `cpp20-stl` overlay
+-- can remap it. `CarrierTable` is consulted AHEAD of that query, so adding
+-- `carrier { Float: "double" }` here silently disables the overlay. MEASURED:
+-- `keyed_overlay_test::profile_threads_into_declared_signature_lowering` fails with the
+-- clause present. (`int64.anthill` beside this one still carries a `carrier` clause and
+-- therefore still shadows an `Int64` overlay — pre-existing, and no test pins it.)
+namespace anthill.prelude
+  provides Float language cpp
+    -- IEEE comparison. `std::isgreater` and friends are `<cmath>`'s ordered
+    -- comparisons: false when either operand is NaN, which is exactly what
+    -- `Float`'s `PartialOrd` means and what the rust `float_gt` family answers.
+    -- (Bare `>` would answer the same for IEEE doubles; the named forms are used
+    -- because they also suppress the FP exception a quiet-NaN comparison raises.)
+    --
+    -- `max`/`min` are IEEE-754 `maxNum`/`minNum` — `std::fmax`/`std::fmin`, NOT
+    -- `std::max`/`std::min`. The `f` versions ABSORB NaN, which is what
+    -- `Float.max`/`min` mean (WI-881) and what the interpreter's `f64::max`/`min`
+    -- do; the comparison-based `std::max` answers differently on a NaN operand.
+    --
+    -- `floor`/`ceil`/`round` RETURN `Int64` in anthill and `double` in `<cmath>`,
+    -- so each carries the cast. Without it the value still converted — a `return`
+    -- statement narrows implicitly — but silently, and only because the enclosing
+    -- signature happened to say `int64_t`; written here it is the mapping's own
+    -- statement of what it produces. (They are PARTIAL: `floor(nan)` and
+    -- `floor(1e300)` have no `Int64` answer. The rust host raises; C++ narrowing is
+    -- undefined for an out-of-range double. Giving them a guarded `Error` row, which
+    -- is what would say so in the SIGNATURE, is WI-882's shape — the two hosts will
+    -- diverge until then.)
+    --
+    -- `recip` is DELIBERATELY ABSENT, as it is from the rust binding: its equation in
+    -- `stdlib/anthill/prelude/float.anthill` carries `[simp]`, so `recip(a)` is
+    -- inlined to `div(1.0, a)` at LOAD and never reaches any backend. Every other
+    -- declared operation of the sort is here.
+    operation_map {
+      gt: "std::isgreater($1, $2)",
+      gte: "std::isgreaterequal($1, $2)",
+      lt: "std::isless($1, $2)",
+      lte: "std::islessequal($1, $2)",
+      max: "std::fmax($1, $2)",
+      min: "std::fmin($1, $2)",
+
+      abs: "std::fabs($1)",
+      neg: "(-$1)",
+      div: "($1 / $2)",
+      floor: "static_cast<int64_t>(std::floor($1))",
+      ceil: "static_cast<int64_t>(std::ceil($1))",
+      round: "static_cast<int64_t>(std::round($1))",
+
+      isNaN: "std::isnan($1)",
+      isInfinite: "std::isinf($1)",
+      isFinite: "std::isfinite($1)",
+
+      sqrt: "std::sqrt($1)",
+      hypot: "std::hypot($1, $2)",
+      fmod: "std::fmod($1, $2)",
+      pow: "std::pow($1, $2)",
+
+      sin: "std::sin($1)",
+      cos: "std::cos($1)",
+      tan: "std::tan($1)",
+      asin: "std::asin($1)",
+      acos: "std::acos($1)",
+      atan: "std::atan($1)",
+      atan2: "std::atan2($1, $2)",
+
+      exp: "std::exp($1)",
+      log: "std::log($1)",
+      log10: "std::log10($1)",
+      log2: "std::log2($1)",
+
+      -- Inline literals rather than `std::numbers::pi_v<double>`: those are C++20
+      -- and cpp-gen targets C++17, and a literal needs no header at all.
+      pi: "3.141592653589793",
+      e: "2.718281828459045",
+      tau: "6.283185307179586"
+    }
+  end
+end
+
+-- NO SPEC-SATISFACTION FACTS (`fact PartialEq[T = Float]`, `fact Numeric[T = Float]`,
+-- …), unlike the rust binding and unlike `int64.anthill` beside this file. MEASURED:
+-- the whole cpp-gen suite is green without them, so nothing codegen does needs `Float`
+-- to dispatch a typeclass operation. `int64.anthill` keeps its set because the harness
+-- says the typer's primitive dispatch in these tests does need THOSE (see
+-- `tests/common/mod.rs`, `cpp_bindings_dir`). A `provides` fact is not free — it enters
+-- coherence and dispatch — so this file asserts only what it is for: the C++ spellings.

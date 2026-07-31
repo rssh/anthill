@@ -14958,7 +14958,8 @@ pub(crate) fn op_is_executable(kb: &KnowledgeBase, op: Symbol) -> bool {
 }
 
 /// WI-876 — can the INTERPRETER run `op`? [`op_is_executable`] MINUS the resolver
-/// builtin leg: a runnable body, or an `operation_map` host implementation.
+/// builtin leg: a runnable body, or an `operation_map` host implementation THIS
+/// runtime registers.
 ///
 /// The two registries are DIFFERENT MAPS and this ticket made them maximally
 /// divergent — `anthill.prelude.PartialOrd.gt` is in the resolver's (`kb.builtins`,
@@ -14969,8 +14970,16 @@ pub(crate) fn op_is_executable(kb: &KnowledgeBase, op: Symbol) -> bool {
 /// have worked. Nothing routes through that today — every carrier-keyed resolver tag
 /// is also `operation_map`ped — but the gate must not depend on that coincidence, and
 /// WI-880's migration of the remaining families is exactly where it would stop holding.
+///
+/// WI-886 — the LANGUAGE is part of "can this runtime run it", and the mapping leg
+/// therefore reads [`KnowledgeBase::is_interpreter_mapped_op`] (rust only) rather than
+/// the program-wide `is_host_mapped_op` that [`op_is_executable`] wants. The same
+/// argument, one axis over: a cpp `operation_map` entry is a real implementation of
+/// the operation and NOT one this interpreter has registered, so counting it here
+/// would select a carrier override eval cannot find. Live as of WI-886, which gives
+/// cpp-gen the first non-rust `operation_map` blocks in the tree.
 pub(crate) fn op_is_interpretable(kb: &KnowledgeBase, op: Symbol) -> bool {
-    kb.is_host_mapped_op(op) || op_has_runnable_body(kb, op)
+    kb.is_interpreter_mapped_op(op) || op_has_runnable_body(kb, op)
 }
 
 /// WI-231 — per-call-site classification produced by the typer for

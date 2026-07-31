@@ -1,0 +1,28 @@
+-- C++ binding for anthill.prelude.Bool. Proposal 038.
+--
+-- WI-886: `and`/`or`/`not` are `Bool`'s OWN operations (stdlib/anthill/prelude/
+-- bool.anthill declares them), not spec operations — so their C++ spelling belongs
+-- here, with the rest of the per-carrier surface, and not in cpp-gen's spec-op
+-- operator table where they sat. They were the counterexample to that table's claim to
+-- be "spec ops only": a gap list wearing a boundary's clothes.
+--
+-- See `float.anthill` in this directory for what `host_fn` means under `language cpp`
+-- and for why there is no `carrier` clause (`Bool -> bool` is a `TypeMapping` in
+-- `cpp_std.anthill`, which a profile overlay can remap; a `carrier` clause is read
+-- ahead of that query and would silently disable the overlay).
+--
+-- `ite` IS NOT MAPPED, matching the rust host, which does not back it either: an
+-- operation's arguments are evaluated before the call, so any `ite` realized as a
+-- function evaluates BOTH branches, and `if`/`then`/`else` is the lazy form. C++'s
+-- `?:` IS lazy and would tempt a mapping here — but `ite` is dead on both routes in
+-- the interpreter (MEASURED by WI-884), and WI-887 owns the choice between backing it,
+-- replacing it, and deleting it. cpp cannot be the one host where it works.
+namespace anthill.prelude
+  provides Bool language cpp
+    operation_map {
+      and: "($1 && $2)",
+      or: "($1 || $2)",
+      not: "(!$1)"
+    }
+  end
+end

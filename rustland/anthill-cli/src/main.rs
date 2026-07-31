@@ -506,11 +506,34 @@ fn output_filename(input: &Path) -> String {
 // ── Shared KB loader ────────────────────────────────────────────────
 
 fn load_kb(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
-    load_kb_with_stdlib(paths, verbose, false)
+    load_kb_with_stdlib(paths, verbose, false, &[])
 }
 
-fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
-    -> Result<KnowledgeBase, i32>
+/// WI-886 — the KB a C++ codegen run needs: the embedded stdlib PLUS this
+/// toolchain's `provides <carrier> language cpp` binding blocks, which are what say
+/// how each primitive operation is spelled in C++ (`anthill_cpp_gen::BINDING_SOURCES`).
+///
+/// Loaded only for the cpp targets, not unconditionally the way the RUST bindings sit
+/// at the tail of `anthill::stdlib::SOURCES`: these blocks assert `fact Eq[T = Int64]`
+/// and friends a SECOND time beside the rust ones — harmless (measured: `anthill load`
+/// over the cpp binding directory alongside the full stdlib is clean), but there is no
+/// reason for `anthill run` to carry another language's realization facts. The
+/// principled end state is "the binding set is a property of the selected target",
+/// which would pull the rust bindings out of `SOURCES` too; one non-rust backend does
+/// not pay for that mechanism yet.
+fn load_kb_for_cpp_codegen(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
+    load_kb_with_stdlib(paths, verbose, true, anthill_cpp_gen::BINDING_SOURCES)
+}
+
+/// `embedded_extras` is a slice of `(label, source)` pairs loaded straight after the
+/// stdlib and before the user's files — the same position and ordering rationale as
+/// `anthill::stdlib::SOURCES`' own trailing binding entries.
+fn load_kb_with_stdlib(
+    paths: &[PathBuf],
+    verbose: bool,
+    include_stdlib: bool,
+    embedded_extras: &[(&str, &str)],
+) -> Result<KnowledgeBase, i32>
 {
     let files = match collect_anthill_files(paths) {
         Ok(f) => f,
@@ -540,6 +563,16 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
         for e in &stdlib_errors {
             errors.push(e.clone());
         }
+    }
+
+    if !embedded_extras.is_empty() {
+        let (extra_files, extra_errors) =
+            anthill::stdlib::parse_embedded_sources(embedded_extras, "host binding");
+        if verbose {
+            eprintln!("included {} embedded host-binding file(s)", extra_files.len());
+        }
+        parsed_files.extend(extra_files);
+        errors.extend(extra_errors);
     }
 
     for file in &files {
@@ -934,7 +967,7 @@ fn profile_for_namespace(
 
 fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // WI-760: codegen threads `&mut` so realization lookups can run SLD.
-    let mut kb = load_kb_with_stdlib(&args.paths, false, true)?;
+    let mut kb = load_kb_for_cpp_codegen(&args.paths, false)?;
 
     // WI-089(a): the active compilation profile selects profile-keyed
     // TypeMapping / EffectMapping overlays. Read it from the namespace's
@@ -1012,7 +1045,7 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
 
 fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     // WI-760: codegen threads `&mut` so realization lookups can run SLD.
-    let mut kb = load_kb_with_stdlib(&args.paths, false, true)?;
+    let mut kb = load_kb_for_cpp_codegen(&args.paths, false)?;
 
     // Source of truth: `fact Generated(kind: "controller", language: "cpp", ...)`
     // entries scoped to the requested namespace. Each fact names one
@@ -1274,7 +1307,7 @@ CFLAGS += -std=c++20 -Wall -Wextra
 // ── Load command ────────────────────────────────────────────────────
 
 fn run_load(args: &LoadArgs) -> Result<(), i32> {
-    let kb = load_kb_with_stdlib(&args.paths, args.verbose, !args.no_stdlib)?;
+    let kb = load_kb_with_stdlib(&args.paths, args.verbose, !args.no_stdlib, &[])?;
     println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
     Ok(())
 }
@@ -1680,7 +1713,7 @@ fn report_unknown_functor_name(kb: &KnowledgeBase, sym: anthill_core::intern::Sy
 // ── Check command ───────────────────────────────────────────────────
 
 fn run_check(args: &CheckArgs) -> Result<(), i32> {
-    let mut kb = load_kb_with_stdlib(&args.paths, false, true)?;
+    let mut kb = load_kb_with_stdlib(&args.paths, false, true, &[])?;
     println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
     let opts = check::CheckOpts {
         shallow: args.shallow,

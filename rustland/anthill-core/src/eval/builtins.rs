@@ -351,7 +351,10 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         .kb()
         .host_op_mappings()
         .iter()
-        .filter(|m| m.lang == "rust")
+        // WI-886 — the SAME constant `KnowledgeBase::is_interpreter_mapped_op`'s index
+        // is built from. That predicate promises this pass registered the operation, so
+        // the two filters must be one string.
+        .filter(|m| m.lang == crate::kb::load::INTERPRETER_LANG)
         .cloned()
         .collect();
     for crate::kb::load::HostOperationMapping { op, op_qn, host_fn, .. } in mappings {
@@ -384,16 +387,10 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         // mapping for every fresh interpreter, including the short-lived one
         // `run_in_bridge_interp` builds per bridged evaluation; the fact-scan fallback
         // is kept for a KB whose signatures are not built yet, where the old reader
-        // would still have answered.
-        let declared = interp
-            .kb()
-            .op_record(sym)
-            .and_then(|r| r.signature.as_ref())
-            .map(|s| s.params.len())
-            .or_else(|| {
-                crate::kb::op_info::lookup_operation_info(interp.kb(), sym)
-                    .map(|r| r.params.len())
-            });
+        // would still have answered. WI-886 moved both tiers behind `declared_arity`,
+        // so cpp-gen's peer check of the same mappings asks the same question the same
+        // way — `op_record` being `pub(crate)`, it could not before.
+        let declared = crate::kb::op_info::declared_arity(interp.kb(), sym);
         if let Some(n) = declared {
             if n != host.arity {
                 return Err(EvalError::Internal(format!(

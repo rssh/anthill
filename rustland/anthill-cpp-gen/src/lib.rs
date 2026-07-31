@@ -13,6 +13,28 @@
 
 use std::collections::HashMap;
 
+/// WI-886 — this crate's `anthill/` tree of C++ host bindings, embedded so that a
+/// SHIPPED BINARY can load them. `(label, source)`, in load order; the label is the
+/// name a parse error is reported against, matching `anthill::stdlib::SOURCES`'
+/// convention for the rust-side bindings.
+///
+/// These files carry the `provides <carrier> language cpp` blocks whose
+/// `operation_map` clauses say which C++ expression realizes each primitive
+/// operation, so a cpp codegen run WITHOUT them lowers no primitive at all — the
+/// unmapped-operation refusal names that case specifically. The crate's own tests
+/// walk the directory instead (`tests/common/mod.rs`); `binding_sources_match_on_disk`
+/// reconciles the two so a new file cannot reach only one of them.
+pub static BINDING_SOURCES: &[(&str, &str)] = &[
+    ("rustland/anthill-cpp-gen/bool", include_str!("../anthill/bool.anthill")),
+    ("rustland/anthill-cpp-gen/float", include_str!("../anthill/float.anthill")),
+    ("rustland/anthill-cpp-gen/int64", include_str!("../anthill/int64.anthill")),
+];
+
+/// The `language` keyword this backend answers to — the value of the `lang` column on
+/// every realization fact it reads, and of `provides X language cpp`. One owner, the
+/// peer of `anthill_core::kb::load::INTERPRETER_LANG` on the rust side.
+const CPP_LANG: &str = "cpp";
+
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
@@ -335,6 +357,206 @@ impl OpImplTable {
     }
 }
 
+/// WI-886 — the per-carrier C++ implementations named by every loaded
+/// `provides <carrier> language cpp` block's `operation_map` clause, read from the
+/// KB's `anthill.realization.OperationMapping` cache (`kb.host_op_mappings()`).
+///
+/// This is cpp-gen's peer of the rust runtime's [`register_operation_mappings`]
+/// (`anthill-core/src/eval/builtins.rs`), and it replaces THREE hand-written Rust
+/// tables — `render_as_math_call`, `render_as_math_constant`, and the per-carrier half
+/// of `render_as_operator` — which had drifted from the rust runtime's surface and from
+/// each other. The measurement is in `wi886_host_operation_mapping_test`'s module doc;
+/// see [`lower_node`]'s unmapped-operation refusal for the other half of the fix.
+///
+/// `host_fn` under `lang = "cpp"` is a C++ EXPRESSION TEMPLATE — `$1`, `$2`, … stand
+/// for the operation's already-lowered arguments. `docs/kernel-language.md` §10.2 is
+/// where that reading and its reason are defined.
+///
+/// ## What is checked, and where
+///
+/// The template is PARSED ONCE, here, at table-build time — for every cpp mapping,
+/// not lazily at a call site, so a binding nothing calls is still checked — and what
+/// is stored is the parse, not the string. Its argument slots must be exactly
+/// `$1`..`$n` for the operation's `n` declared parameters, EACH ONCE. This is the peer
+/// of the rust registry's arity column (WI-876), and it is the only check available:
+/// whether `std::fabs` exists and takes a double is the C++ compiler's question.
+pub struct HostOpTable {
+    by_op: HashMap<Symbol, HostOpTemplate>,
+}
+
+/// One `operation_map` entry as cpp-gen consumes it: the parsed C++ expression
+/// template, and the operation's declared arity (kept so a bare nullary reference —
+/// `pi` without parentheses — can be told from a reference to an operation that takes
+/// arguments).
+struct HostOpTemplate {
+    /// The source spelling, kept only so a diagnostic can quote what the author wrote.
+    source: String,
+    parts: Vec<TemplatePart>,
+    arity: usize,
+}
+
+/// One piece of a parsed cpp `host_fn` template: literal C++, or the ONE-based index
+/// of an argument to substitute.
+enum TemplatePart {
+    Text(String),
+    Arg(usize),
+}
+
+impl HostOpTable {
+    /// Build the table from the KB's cpp `operation_map` entries. `Err` when a
+    /// template is malformed or its slots do not match its operation's declared arity.
+    pub fn from_kb(kb: &KnowledgeBase) -> Result<Self, CppCodegenError> {
+        let mut by_op = HashMap::new();
+        for m in kb.host_op_mappings().iter().filter(|m| m.lang == CPP_LANG) {
+            // `op` is `None` only when the loader already refused this mapping (the
+            // carrier declares no such operation, or the name is not an operation),
+            // so the load errored and there is nothing to key. Same reasoning as
+            // `register_operation_mappings`.
+            let Some(sym) = m.op else { continue };
+            let subject = format!(
+                "operation_map maps `{}` to the C++ template {:?}",
+                m.op_qn, m.host_fn
+            );
+            let arity = anthill_core::kb::op_info::declared_arity(kb, sym).ok_or_else(|| {
+                CppCodegenError {
+                    message: format!(
+                        "{subject}, but `{}` has no recorded signature — cpp-gen cannot check \
+                         the template against an arity it does not know",
+                        m.op_qn
+                    ),
+                }
+            })?;
+            let parts = parse_host_template(&m.host_fn).map_err(|what| CppCodegenError {
+                message: format!(
+                    "{subject}, which {what}. A cpp `host_fn` is an expression template: \
+                     `$1`, `$2`, … stand for the operation's arguments"
+                ),
+            })?;
+            // EACH slot ONCE, in any order: a template that drops an argument silently
+            // discards a computed value, one that invents an index has nothing to
+            // substitute, and one that REPEATS an index evaluates that argument twice —
+            // the arguments arrive as already-lowered expressions, which may be calls.
+            // (An operation whose C++ genuinely reads an operand twice binds it in a
+            // non-capturing lambda instead; see `Int64.compare` in the binding file.)
+            let mut slots: Vec<usize> = parts
+                .iter()
+                .filter_map(|p| match p {
+                    TemplatePart::Arg(i) => Some(*i),
+                    TemplatePart::Text(_) => None,
+                })
+                .collect();
+            let rendered_slots = if slots.is_empty() {
+                "none".to_string()
+            } else {
+                slots.iter().map(|i| format!("${i}")).collect::<Vec<_>>().join(", ")
+            };
+            slots.sort_unstable();
+            if slots.iter().copied().ne(1..=arity) {
+                return Err(CppCodegenError {
+                    message: format!(
+                        "{subject}, but `{}` takes {arity} argument(s) and the template uses \
+                         {rendered_slots}. Each argument must appear EXACTLY ONCE as \
+                         `$1`..`${arity}`",
+                        m.op_qn
+                    ),
+                });
+            }
+            by_op.insert(sym, HostOpTemplate { source: m.host_fn.clone(), parts, arity });
+        }
+        Ok(Self { by_op })
+    }
+
+    /// The C++ expression template realizing `op`, with the operation's declared
+    /// arity. `None` when no cpp binding block named this operation.
+    fn lookup(&self, op: Symbol) -> Option<&HostOpTemplate> {
+        self.by_op.get(&op)
+    }
+
+    /// Whether any cpp `operation_map` entry was loaded. Read by the
+    /// unmapped-operation refusal, whose message points at the likely cause when the
+    /// answer is "none at all" (the cpp binding files were not loaded).
+    fn is_empty(&self) -> bool {
+        self.by_op.is_empty()
+    }
+}
+
+/// WI-886 — parse a cpp `host_fn` into literal spans and argument slots. `Err` carries
+/// a phrase describing the malformation, for the caller to fold into a message that
+/// also names the operation.
+///
+/// A `$` must introduce a decimal index; there is no escape and none is needed,
+/// because `$` is not part of any C++ token (an implementation may accept it in
+/// identifiers, which is exactly why a stray one is refused rather than passed
+/// through). `$` and the digits are ASCII, so byte offsets are char boundaries and the
+/// scan needs no `Vec<char>`.
+fn parse_host_template(template: &str) -> Result<Vec<TemplatePart>, String> {
+    let mut parts = Vec::new();
+    let bytes = template.as_bytes();
+    let mut lit_from = 0;
+    let mut i = 0;
+    while let Some(off) = template[i..].find('$') {
+        let dollar = i + off;
+        let start = dollar + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == start {
+            return Err("has a `$` that is not followed by an argument index".to_string());
+        }
+        let digits = &template[start..end];
+        let idx: usize = digits
+            .parse()
+            .map_err(|_| format!("has an argument index `${digits}` that is not a usable number"))?;
+        if idx == 0 {
+            return Err("uses `$0`; argument indexes are ONE-based".to_string());
+        }
+        if dollar > lit_from {
+            parts.push(TemplatePart::Text(template[lit_from..dollar].to_string()));
+        }
+        parts.push(TemplatePart::Arg(idx));
+        lit_from = end;
+        i = end;
+    }
+    if lit_from < template.len() {
+        parts.push(TemplatePart::Text(template[lit_from..].to_string()));
+    }
+    Ok(parts)
+}
+
+/// WI-886 — substitute already-lowered arguments into a parsed cpp `host_fn`.
+///
+/// A fold over the parse, so there is no second reading of the `$N` grammar and no
+/// out-of-range slot to guard against — `HostOpTable::from_kb` settled both, and
+/// storing the parse rather than the string is what makes that hold by construction.
+/// The one thing it cannot settle is the CALL SITE's argument count, which is checked
+/// here rather than left to substitute the wrong operand.
+fn render_host_template(
+    tmpl: &HostOpTemplate,
+    op_qn: &str,
+    args: &[String],
+) -> Result<String, CppCodegenError> {
+    if args.len() != tmpl.arity {
+        return Err(CppCodegenError {
+            message: format!(
+                "`{op_qn}` is realized in C++ by the template {:?}, which expects {} \
+                 argument(s), but the call site supplies {}",
+                tmpl.source,
+                tmpl.arity,
+                args.len()
+            ),
+        });
+    }
+    let mut out = String::with_capacity(tmpl.source.len() + 16);
+    for part in &tmpl.parts {
+        match part {
+            TemplatePart::Text(t) => out.push_str(t),
+            TemplatePart::Arg(i) => out.push_str(&args[i - 1]),
+        }
+    }
+    Ok(out)
+}
+
 /// Bundles a derived `CarrierTable` and `OpImplTable` so emit functions don't
 /// have to re-scan facts on every lookup. Construct once per codegen run; pass
 /// to every emit function alongside the KB. (Type/effect mappings are not
@@ -350,6 +572,11 @@ impl OpImplTable {
 pub struct CodegenContext {
     pub carriers: CarrierTable,
     pub op_impls: OpImplTable,
+    /// WI-886: which C++ expression realizes each of a carrier's operations, from
+    /// the loaded `provides <carrier> language cpp` blocks. Empty when none were
+    /// loaded, which is a real state — a project that supplies no cpp bindings —
+    /// and the unmapped-operation refusal says so.
+    pub host_ops: HostOpTable,
     /// WI-089(a): the active compilation profile (e.g. "cpp20-stl"), threaded
     /// from the CLI (a `Generated`/`Implementation` fact's `profile`). Selects
     /// profile-keyed `TypeMapping` / `EffectMapping` overlays ahead of the
@@ -377,6 +604,29 @@ pub struct CodegenContext {
     /// (`::anthill::geometry::Vec3`) references for cross-namespace
     /// entity types.
     pub emitting_namespace: std::cell::RefCell<Option<String>>,
+    /// WI-886 — did the lowering currently in flight refuse an operation for having
+    /// no C++ realization ([`unlowerable_operation`])? Read by the ONE degrading
+    /// caller of `lower_node` (`synthesise_body_for`), which must re-raise such a
+    /// refusal rather than turn it into a `// TODO:` comment plus `return {};` —
+    /// that COMPILES and answers zero, where the broken call it replaced at least
+    /// failed the C++ build.
+    ///
+    /// A flag BESIDE the error rather than inside it, and not because 73 literal
+    /// `CppCodegenError { message }` sites would have to name a `kind`. The typed
+    /// alternative — `lower_node` returning a two-variant error — is LOSSY: the
+    /// recursive helpers it calls (`lower_let_chain_node`, `lower_match_branches_node`,
+    /// `lower_stdlib_wrapper_node`, `lower_constructor_literal_node`) return
+    /// `CppCodegenError` and re-enter `lower_node` with `?`, so a refusal raised inside
+    /// a `let` or a `match` arm would be silently downgraded at that conversion unless
+    /// every one of them changed too. A `Cell` cannot lose it.
+    ///
+    /// Staleness is impossible because the reader clears it immediately before the
+    /// `lower_node` call it is asking about, and `lower_node` returns at its first
+    /// error — so a set flag means the error just received IS that refusal. Same shape
+    /// as `requested_includes`: a cell the lowering writes and the emitter reads at a
+    /// boundary it owns. THE CONTRACT IS THE CLEAR-THEN-READ, so a second degrading
+    /// caller must do the same; there is one today.
+    pub(crate) unrealized_refusal: std::cell::Cell<bool>,
 }
 
 impl CodegenContext {
@@ -398,11 +648,13 @@ impl CodegenContext {
         Ok(Self {
             carriers: CarrierTable::from_kb(kb)?,
             op_impls: OpImplTable::from_kb(kb)?,
+            host_ops: HostOpTable::from_kb(kb)?,
             profile,
             requested_includes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_params: std::cell::RefCell::new(Vec::new()),
             value_bindings: std::cell::RefCell::new(Vec::new()),
             emitting_namespace: std::cell::RefCell::new(None),
+            unrealized_refusal: std::cell::Cell::new(false),
         })
     }
 
@@ -1291,12 +1543,19 @@ fn synthesise_body_for(
     // (1) Expression body via OperationImpl — sourced from
     // `kb.op_body_node` as a NodeOccurrence tree after WI-249.
     if let Some(body_node) = ctx.op_impls.lookup(op_sym) {
+        // WI-886: clear before, read after — see `CodegenContext::unrealized_refusal`
+        // for why that ordering is what makes the flag exact.
+        ctx.unrealized_refusal.set(false);
         match lower_node(kb, ctx, &body_node) {
             Ok(expr) => return Ok(Some(if return_type == "void" {
                 format!("{expr};")
             } else {
                 format!("return {expr};")
             })),
+            // WI-886: a body that names an operation with no C++ realization is a
+            // BROKEN BINDING, not a cpp-gen capability gap — see
+            // `CodegenContext::unrealized_refusal`.
+            Err(e) if ctx.unrealized_refusal.take() => return Err(e),
             Err(e) => {
                 // Surface the failure as a TODO comment in the body
                 // rather than silently falling through. The user sees
@@ -2291,15 +2550,28 @@ impl Includes {
 
     /// Render the include block with a leading newline (so the slot in
     /// the header template doesn't introduce a blank line when empty).
+    ///
+    /// DEDUPED BY DIRECTIVE, across both groups. The probe table is keyed by host
+    /// SPELLING and several spellings legitimately share one header — WI-886 added
+    /// twenty-three `<cmath>` probes at a stroke, and a body using `sqrt`, `fmax` and
+    /// `isnan` emitted `#include <cmath>` three times. Harmless to the compiler,
+    /// which is why it went unnoticed while `std::numeric_limits` was the only
+    /// possible collision; still noise in a generated artifact people read.
     fn render(&self) -> String {
+        // `needed` holds indexes into `probes`, which is sorted by directive, so
+        // ascending index order is directive order; `extras` follows, as its own group.
+        let directives = self
+            .needed
+            .iter()
+            .map(|&i| self.probes[i].1.as_str())
+            .chain(self.extras.iter().map(String::as_str));
         let mut out = String::new();
-        for &i in &self.needed {
-            out.push('\n');
-            out.push_str(&self.probes[i].1);
-        }
-        for inc in &self.extras {
-            out.push('\n');
-            out.push_str(inc);
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for d in directives {
+            if seen.insert(d) {
+                out.push('\n');
+                out.push_str(d);
+            }
         }
         out.push('\n');
         out
@@ -2347,51 +2619,12 @@ fn lower_node(
     };
     match expr {
         Expr::Const(lit) => Ok(lower_literal(lit)),
-        Expr::Ref(sym) | Expr::Ident(sym) => {
-            let qn = kb.qualified_name_of(*sym);
-            // Stdlib wrapper constants used as values (`none` on its
-            // own line) — lower the qualified name through the same
-            // table that handles `none()` / `some(...)`. Math
-            // constants used as bare values: `pi`, `e`, `tau`.
-            if let Some(rendered) = lower_stdlib_constant(qn) {
-                return Ok(rendered);
-            }
-            if let Some(rendered) = render_as_math_constant(qn) {
-                return Ok(rendered);
-            }
-            if let Some(rendered) = render_as_float_special(qn) {
-                return Ok(rendered);
-            }
-            // WI-536: a reference to a term-level const resolves to its named
-            // constant (struct member or namespace companion), not the bare
-            // short name (which would not be in scope at the C++ use site).
-            if kb.kind_of(*sym) == Some(SymbolKind::Const) {
-                return Ok(const_ref_cpp(kb, ctx, *sym));
-            }
-            Ok(short_name_of(qn).to_string())
-        }
-        Expr::VarRef { name } => {
-            let qn = kb.qualified_name_of(*name);
-            if let Some(rendered) = lower_stdlib_constant(qn) {
-                return Ok(rendered);
-            }
-            if let Some(rendered) = render_as_math_constant(qn) {
-                return Ok(rendered);
-            }
-            if let Some(rendered) = render_as_float_special(qn) {
-                return Ok(rendered);
-            }
-            let short = short_name_of(qn);
-            // A let-local / pattern binding shadows a same-named const.
-            if let Some(access) = ctx.lookup_value_binding(short) {
-                return Ok(access);
-            }
-            // WI-536: otherwise a const reference resolves to its named constant.
-            if kb.kind_of(*name) == Some(SymbolKind::Const) {
-                return Ok(const_ref_cpp(kb, ctx, *name));
-            }
-            Ok(short.to_string())
-        }
+        // WI-886: one ladder, two entries. A `VarRef` differs from a `Ref`/`Ident` by
+        // exactly one rung — it consults the lexical value bindings — and the two arms
+        // had drifted into six-of-seven identical steps, so this ticket's two new rungs
+        // would otherwise have been added twice.
+        Expr::Ref(sym) | Expr::Ident(sym) => lower_symbol_ref(kb, ctx, *sym, false),
+        Expr::VarRef { name } => lower_symbol_ref(kb, ctx, *name, true),
         Expr::Apply { functor, pos_args, named_args, .. } => {
             let fn_qn = kb.qualified_name_of(*functor).to_string();
             let fn_short = short_name_of(&fn_qn).to_string();
@@ -2450,19 +2683,23 @@ fn lower_node(
             for a in combined_args(pos_args, named_args) {
                 args.push(lower_node(kb, ctx, a)?);
             }
-            if let Some(rendered) = render_as_operator(&fn_qn, &args) {
-                return Ok(rendered);
+            // WI-886: the CARRIER's own cpp implementation is asked FIRST, ahead of
+            // the spec-op operator table below. That is the precedence the rust
+            // runtime already settled (`register_operation_mappings` registers after
+            // the hardcoded list, so a mapping wins), and both entries can match:
+            // `Float.div` is a carrier operation AND `Numeric`-shaped. A carrier that
+            // went to the trouble of naming its own realization means it.
+            if let Some(tmpl) = ctx.host_ops.lookup(*functor) {
+                return render_host_template(tmpl, &fn_qn, &args);
             }
-            if let Some(rendered) = render_as_math_call(ctx, &fn_qn, &args) {
+            if let Some(rendered) = render_as_operator(&fn_qn, &args) {
                 return Ok(rendered);
             }
             if let Some(rendered) = render_as_indexed_seq(&fn_qn, &args) {
                 return Ok(rendered);
             }
-            if args.is_empty() {
-                if let Some(rendered) = render_as_math_constant(&fn_qn) {
-                    return Ok(rendered);
-                }
+            if let Some(err) = unlowerable_operation(kb, ctx, *functor) {
+                return Err(err);
             }
             Ok(format!("{fn_short}({})", args.join(", ")))
         }
@@ -3062,69 +3299,158 @@ fn functor_or_ref_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     }
 }
 
-/// Rewrite a call to a prelude math function to its `std::` C++ name
-/// and register the relevant header. Returns `Some(rendered)` on a
-/// match, `None` for unrelated calls. Both fully-qualified
-/// (`anthill.prelude.Float.atan2`) and short (`Float.atan2`) names
-/// are accepted because the loader sometimes leaves imported names
-/// unqualified.
-fn render_as_math_call(
+/// WI-886 — lower a bare symbol reference, the shared body of `lower_node`'s
+/// `Ref`/`Ident` and `VarRef` arms.
+///
+/// `consult_value_bindings` is the ONE difference between them: a `VarRef` may name a
+/// let-local or a match binding, which shadows a same-named const. It sits where it
+/// does in the ladder because the earlier rungs are all keyed on a QUALIFIED name that
+/// a binder cannot have.
+fn lower_symbol_ref(
+    kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
-    fn_qn: &str,
-    args: &[String],
-) -> Option<String> {
-    // (suffix-after-`anthill.prelude.`, cpp_name).
-    let table: &[(&str, &str)] = &[
-        ("Float.abs",   "std::fabs"),
-        ("Float.sqrt",  "std::sqrt"),
-        ("Float.hypot", "std::hypot"),
-        ("Float.fmod",  "std::fmod"),
-        ("Float.pow",   "std::pow"),
-        ("Float.sin",   "std::sin"),
-        ("Float.cos",   "std::cos"),
-        ("Float.tan",   "std::tan"),
-        ("Float.asin",  "std::asin"),
-        ("Float.acos",  "std::acos"),
-        ("Float.atan",  "std::atan"),
-        ("Float.atan2", "std::atan2"),
-        ("Float.exp",   "std::exp"),
-        ("Float.log",   "std::log"),
-        ("Float.log10", "std::log10"),
-        ("Float.log2",  "std::log2"),
-        ("Float.floor", "std::floor"),
-        ("Float.ceil",  "std::ceil"),
-        ("Float.round", "std::round"),
-        // WI-881 — `std::fmax`/`std::fmin`, NOT `std::max`/`std::min`: the `f`
-        // versions are IEEE-754 `maxNum`/`minNum` and ABSORB NaN, which is what
-        // `Float.max`/`min` mean and what the interpreter's `f64::max`/`min` do. The
-        // comparison-based `std::max` would answer differently on a NaN operand.
-        ("Float.max",   "std::fmax"),
-        ("Float.min",   "std::fmin"),
-    ];
-    let cpp = lookup_prelude_qn(fn_qn, table)?;
-    ctx.requested_includes.borrow_mut()
-        .insert("#include <cmath>".to_string());
-    Some(format!("{cpp}({})", args.join(", ")))
+    sym: Symbol,
+    consult_value_bindings: bool,
+) -> Result<String, CppCodegenError> {
+    let qn = kb.qualified_name_of(sym);
+    // Stdlib wrapper constants used as values (`none` on its own line) — lower the
+    // qualified name through the same table that handles `none()` / `some(...)`.
+    if let Some(rendered) = lower_stdlib_constant(qn) {
+        return Ok(rendered);
+    }
+    // WI-886: a bare nullary operation (`pi`, `tau`, `Int64.minValue`) — its cpp
+    // binding's template, which for a constant is the literal.
+    if let Some(rendered) = render_host_mapped_bare(kb, ctx, sym)? {
+        return Ok(rendered);
+    }
+    if let Some(rendered) = render_as_float_special(qn) {
+        return Ok(rendered);
+    }
+    let short = short_name_of(qn);
+    if consult_value_bindings {
+        if let Some(access) = ctx.lookup_value_binding(short) {
+            return Ok(access);
+        }
+    }
+    // WI-536: a reference to a term-level const resolves to its named constant (struct
+    // member or namespace companion), not the bare short name (which would not be in
+    // scope at the C++ use site).
+    if kb.kind_of(sym) == Some(SymbolKind::Const) {
+        return Ok(const_ref_cpp(kb, ctx, sym));
+    }
+    if let Some(err) = unlowerable_operation(kb, ctx, sym) {
+        return Err(err);
+    }
+    Ok(short.to_string())
 }
 
-/// Lower a math constant (`pi`, `e`, `tau`) — used in both the
-/// `var_ref` (bare `pi`) and `apply` (zero-arg `pi()`) paths.
-/// Inline literals; works in every C++ standard, no `<cmath>` or
-/// `<numbers>` dependency.
-fn render_as_math_constant(fn_qn: &str) -> Option<String> {
-    let table: &[(&str, &str)] = &[
-        ("Float.pi",  "3.141592653589793"),
-        ("Float.e",   "2.718281828459045"),
-        ("Float.tau", "6.283185307179586"),
-    ];
-    lookup_prelude_qn(fn_qn, table).map(str::to_string)
+/// WI-886 — lower a BARE reference to a mapped operation: `pi`, `tau`,
+/// `Int64.minValue` written without parentheses, which reach `lower_node` as a
+/// `Ref`/`VarRef` rather than an `Apply`. A nullary operation's template has no
+/// placeholders, so this is the template verbatim.
+///
+/// `Ok(None)` when the symbol names no cpp-mapped operation — every ordinary
+/// parameter, local binding and const reference takes that path. A mapped operation
+/// that TAKES arguments is refused instead: the binding says how to spell the
+/// operation APPLIED, which is not a C++ function value, and emitting the short name
+/// would be the silent broken call this ticket removes.
+fn render_host_mapped_bare(
+    kb: &KnowledgeBase,
+    ctx: &CodegenContext,
+    sym: Symbol,
+) -> Result<Option<String>, CppCodegenError> {
+    let Some(tmpl) = ctx.host_ops.lookup(sym) else { return Ok(None) };
+    let qn = kb.qualified_name_of(sym);
+    if tmpl.arity > 0 {
+        return Err(CppCodegenError {
+            message: format!(
+                "`{qn}` is referenced as a value, but its C++ realization is the \
+                 expression template {:?} — a template stands for the operation APPLIED \
+                 to its {} argument(s) and cannot be passed as a function value",
+                tmpl.source, tmpl.arity
+            ),
+        });
+    }
+    render_host_template(tmpl, qn, &[]).map(Some)
+}
+
+/// WI-886 — the refusal that replaced cpp-gen's silent fall-through. An `Apply` /
+/// bare reference that no earlier arm lowered used to become `{short_name}(...)`:
+/// for a user's own bodied operation that is the emitted C++ function and correct,
+/// but for a BODY-LESS one it is a call to a function that does not exist, emitted
+/// into a header with nothing reported at the anthill layer. MEASURED before the fix
+/// on a program that codegen'd "successfully": `isNaN(a)`, `compare(a, b)`,
+/// `max(a, b)`, `minValue()`, `gt(a, b)`.
+///
+/// BODY-LESS AND UNMAPPED is the line, and the first half is the same one the
+/// load-time backing check draws (`op_backed`, WI-876): an operation with a body has
+/// an anthill definition cpp-gen can in principle emit, while one without gets its
+/// meaning from the host — so if no `provides <carrier> language cpp` block named a
+/// realization, there is nothing to lower and saying so is the only honest move.
+/// Returns `None` (fall through) for everything that is not an operation at all: a
+/// lambda binder, a local, an entity.
+///
+/// BOTH halves are asked HERE, though every caller has already tried `ctx.host_ops`
+/// and would fall through on a hit anyway: a predicate whose answer depends on where
+/// it is called from silently refuses a mapped operation the day someone adds a fourth
+/// call site or reorders an arm.
+///
+/// "Has a body" reads `kb.op_body_node`, NOT `ctx.op_impls` — the two differ, and this
+/// is the wider one. `OpImplTable` additionally requires an `anthill.realization.
+/// OperationImpl` fact, which the loader emits only when the realization vocabulary is
+/// loaded, so `op_impls ⊆ op_body_node`. The message says "has no body", and that must
+/// be true of every operation it names.
+///
+/// NOT CLOSED BY THIS: an operation with a DEFAULT body declared on a spec cpp-gen is
+/// not emitting still falls through to a bare call. That is a wider question — which
+/// definitions a run emits — and the ticket's line is the silent HOST gap.
+fn unlowerable_operation(
+    kb: &KnowledgeBase,
+    ctx: &CodegenContext,
+    op: Symbol,
+) -> Option<CppCodegenError> {
+    if kb.kind_of(op) != Some(SymbolKind::Operation)
+        || ctx.host_ops.lookup(op).is_some()
+        || kb.op_body_node(op).is_some()
+    {
+        return None;
+    }
+    let qn = kb.qualified_name_of(op).to_string();
+    let carrier = parent_qualified_name(kb, op).unwrap_or_else(|| "<unknown>".to_string());
+    // "No cpp mappings at all" is a different fault from "this one is missing", and
+    // by far the likelier one to hit a new project: the `provides … language cpp`
+    // blocks live in `rustland/anthill-cpp-gen/anthill/` and a KB built without them
+    // has no cpp realizations for ANY primitive.
+    let hint = if ctx.host_ops.is_empty() {
+        " No cpp `operation_map` entries were loaded at all — if this is a primitive \
+          carrier, the C++ binding files (rustland/anthill-cpp-gen/anthill/) are \
+          missing from the load."
+    } else {
+        ""
+    };
+    // Mark the refusal so `synthesise_body_for` re-raises instead of degrading it into
+    // a `// TODO:` comment; see `CodegenContext::unrealized_refusal`.
+    ctx.unrealized_refusal.set(true);
+    Some(CppCodegenError {
+        message: format!(
+            "`{qn}` has no body and no C++ realization, so cpp-gen cannot lower a call \
+             to it. Name the host expression in an `operation_map` clause of a \
+             `provides {carrier} language cpp` block.{hint}"
+        ),
+    })
 }
 
 /// Lower the bodyless host-supplied Float constants (WI-532): IEEE special
 /// values that have no C++ literal spelling. Emitting `std::numeric_limits`
 /// pulls in `<limits>` via the `"std::numeric_limits"` `IncludeMapping` fact
-/// when the surrounding block is scanned. Kept separate from
-/// `render_as_math_constant` (whose payloads are bare literals, no header).
+/// when the surrounding block is scanned.
+///
+/// WI-886 — the LAST of the four hand-written per-carrier tables, and it survives
+/// because `infinity` / `negativeInfinity` / `nan` are `const`s, not operations:
+/// `operation_map` refuses a non-operation by design (WI-876 MEASURED that admitting
+/// one made an entity constructor run a comparison), so a host-supplied CONST has no
+/// declarative channel in ANY language — the rust runtime keys these three by
+/// hardcoded qualified name too (`eval/builtins.rs`). Closing that is WI-889.
 fn render_as_float_special(fn_qn: &str) -> Option<String> {
     let table: &[(&str, &str)] = &[
         ("Float.infinity",         "std::numeric_limits<double>::infinity()"),
@@ -3176,15 +3502,30 @@ fn render_as_indexed_seq(fn_qn: &str, args: &[String]) -> Option<String> {
 /// operator if they want to participate, or they keep using the named
 /// function form (which would round-trip through this table since the
 /// QN wouldn't match — but the QN of a user's own `add` differs).
+///
+/// WI-886 — SPEC OPS ONLY now, and that is a boundary rather than a gap list. The
+/// EIGHT per-CARRIER entries that used to sit here moved to their carriers'
+/// `operation_map`, where the rest of that surface already lives: `Int64.div`,
+/// `Int64.mod`, `Int64.neg`, `Float.div`, `Float.neg` — and `Bool.and`/`or`/`not`,
+/// which are `Bool`'s OWN declared operations and were the counterexample to this
+/// table's first claim to hold only spec ops. Keeping half a carrier's operations in a
+/// Rust table and half in its binding was the divergence this ticket exists to end.
+///
+/// What is left is genuinely NOT per-carrier: one lowering of `Numeric.add` serves
+/// every carrier whose values are a C++ arithmetic type, and no carrier declares an
+/// `add` of its own to hang a mapping on. When WI-880 moves the spec-op families per
+/// carrier, these follow — and a carrier that maps its own already WINS, since
+/// `lower_node` asks `host_ops` first.
+///
+/// `Int64.mod` did not merely move, its lowering was CORRECTED: C++ `%` follows the
+/// DIVIDEND's sign while anthill's `mod` is documented always non-negative, so the old
+/// entry was a silent wrong answer for a negative left operand. `%` realizes `rem`.
 fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
     // (qualified_name, arity, infix_or_prefix_op)
     let infix: &[(&str, &str)] = &[
         ("anthill.prelude.Numeric.add", "+"),
         ("anthill.prelude.Numeric.sub", "-"),
         ("anthill.prelude.Numeric.mul", "*"),
-        ("anthill.prelude.Int64.div",     "/"),
-        ("anthill.prelude.Float.div",   "/"),
-        ("anthill.prelude.Int64.mod",     "%"),
         // WI-644 / proposal 004: the partial comparison ops live on PartialEq /
         // PartialOrd. Mapping them to C++ `==`/`>`/… (IEEE) is now CORRECT — these
         // are the partial specs, so the compiler and the interpreter's IEEE-for-Float
@@ -3197,22 +3538,10 @@ fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
         ("anthill.prelude.PartialOrd.lte", "<="),
         ("anthill.prelude.PartialEq.eq",   "=="),
         ("anthill.prelude.PartialEq.neq",  "!="),
-        ("anthill.prelude.Bool.and",    "&&"),
-        ("anthill.prelude.Bool.or",     "||"),
     ];
     for (qn, op) in infix {
         if fn_qn == *qn && args.len() == 2 {
             return Some(format!("({} {} {})", args[0], op, args[1]));
-        }
-    }
-    let prefix: &[(&str, &str)] = &[
-        ("anthill.prelude.Bool.not",    "!"),
-        ("anthill.prelude.Int64.neg",     "-"),
-        ("anthill.prelude.Float.neg",   "-"),
-    ];
-    for (qn, op) in prefix {
-        if fn_qn == *qn && args.len() == 1 {
-            return Some(format!("({}{})", op, args[0]));
         }
     }
     None

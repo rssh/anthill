@@ -209,6 +209,23 @@ All operations of a sort live as static methods on its traits-class struct. Ther
   // call:  Int64::max(x, y)
   ```
 
+**Calls to a primitive carrier's operations (WI-886).** `Float.sqrt`, `Int64.max`, `Float.isNaN` and the rest of the primitives' surface are body-less in anthill — the implementation is the host's — so lowering a call to one needs the C++ spelling, and that spelling is **data**, in the `operation_map` clause of a `provides <carrier> language cpp` block (`rustland/anthill-cpp-gen/anthill/{float,int64}.anthill`). Under `language cpp`, `host_fn` is an **expression template** whose `$1`, `$2`, … are the operation's already-lowered arguments:
+
+| anthill | `host_fn` | emitted |
+|---|---|---|
+| `Float.sqrt(x)` | `"std::sqrt($1)"` | `std::sqrt(x)` |
+| `Float.isNaN(x)` | `"std::isnan($1)"` | `std::isnan(x)` |
+| `Float.neg(x)` | `"(-$1)"` | `(-x)` |
+| `Float.pi` / `Float.pi()` | `"3.141592653589793"` | `3.141592653589793` |
+| `Float.floor(x)` | `"static_cast<int64_t>(std::floor($1))"` | (the signature returns `Int64`) |
+| `Int64.compare(a, b)` | a non-capturing lambda | operands bound once, not repeated |
+
+Kernel spec §10.2 has why this is a template rather than a bare function name. The cpp-specific part: an operation whose C++ reads an argument twice must **bind** it in a non-capturing lambda, because the arguments arrive as already-lowered expressions that may themselves be calls. Each template's slots are checked against the operation's declared arity — exactly `$1`..`$n`, each once — when the table is built, once per codegen run.
+
+The `#include` a spelling needs is not part of the mapping: it rides the `IncludeMapping` probe table in `stdlib/anthill/realization/cpp_std.anthill`, which is where "host spelling → header" already lives for this language. A mapping whose spelling is not probed there emits a header that does not compile.
+
+Spec operations that are *not* per-carrier — `Numeric.add`, `PartialOrd.gt`, `PartialEq.eq`, `Bool.and` — still lower through a table in the backend, because one C++ operator serves every carrier whose values are an arithmetic type and no carrier declares an `add` of its own to hang a mapping on. Where both could match, the carrier's mapping wins.
+
 ### 3.6 Effects
 
 | Anthill effect | C++ encoding |
@@ -398,7 +415,13 @@ Codegen detects this case (the lambda body references the let-binder name) and r
 
 **Workaround:** lift the body to a named `operation`. Named operations lower to ordinary C++ functions and recurse by name with no closure machinery — the bytes-on-disk equivalent of a `let rec` group, but without paying for a heap closure or a verbose fixpoint encoding.
 
-### 7.3 What is *not* refused
+### 7.3 An operation with no body and no C++ realization (WI-886)
+
+A call to a body-less operation that no `provides <carrier> language cpp` block realizes cannot be lowered, and is refused with a message naming the operation, the carrier, and the clause that would fix it. It used to fall through to `{short_name}(args)` — a call to a C++ function that does not exist, emitted into a header codegen reported no problem with (measured: `isNaN(a)`, `compare(a, b)`, `max(a, b)`, `minValue()`).
+
+Body-LESS is the line, and it is the same one the load-time backing check draws: an operation with a body has an anthill definition the backend can in principle emit; one without gets its meaning from the host. Unlike the two refusals above, this one is not a capability gap in the generator — the fix is in a `.anthill` file — so it is *not* degraded into a `// TODO:` comment in the emitted body. `String` and `BigInt` have no cpp binding block at all today, so their operations land here.
+
+### 7.4 What is *not* refused
 
 - **Recursion via named operations** is fully supported — the emitted C++ function is a regular `static` member (or free function) that calls itself by name. RAII-clean.
 - **Non-self-referential lambdas** (`let g = lambda(?x) -> add(x, 1); g(n)`) lower normally; the detector keys on the binder name appearing inside the lambda body.

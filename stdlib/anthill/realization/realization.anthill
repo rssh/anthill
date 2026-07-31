@@ -229,6 +229,16 @@ namespace anthill.realization
   -- willing to expose, and a mapping naming one it does not know is a LOAD-time
   -- refusal rather than a silently unregistered operation.
   --
+  -- WI-886: that is what it means for a language whose runtime INTERPRETS the program.
+  -- A language the toolchain GENERATES has no registry — the backend writes the host
+  -- code — so `lang: "cpp"` reads `host_fn` as an EXPRESSION TEMPLATE instead
+  -- (`"std::sqrt($1)"`). docs/kernel-language.md §10.2 has the reading and its reason.
+  --
+  -- THE RULE THAT FOLLOWS, and it binds every reader: the COLUMN is one thing (which
+  -- host artifact realizes this operation) and its GRAMMAR is the reading host's, so a
+  -- reader MUST filter on `lang`. `anthill.prelude.Float.sqrt` carries both a rust entry
+  -- and a cpp one, and neither runtime can use the other's.
+  --
   -- `operation` is the SHORT name as declared on the carrier sort — the carrier
   -- must DECLARE the operation (`operation compare(a: Int64, b: Int64) -> Int64`,
   -- body-less, the `LogicalStream.splitFirst` shape); this clause says what backs

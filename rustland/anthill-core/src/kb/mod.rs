@@ -998,9 +998,11 @@ pub struct KnowledgeBase {
     // `sort_ops_lookup`.
     pub(crate) sort_ops: SortOpsTable,
     // WI-876 — operations a binding block gave a host implementation
-    // (`operation_map`). The cache and the membership index derived from it; both
-    // written by `load::build_host_op_mappings`. See `is_host_mapped_op`.
+    // (`operation_map`). The cache and the two membership indexes derived from it;
+    // all three written by `load::build_host_op_mappings`. See `is_host_mapped_op`
+    // and `is_interpreter_mapped_op` for why the indexes differ.
     host_mapped_ops: std::collections::HashSet<Symbol>,
+    interpreter_mapped_ops: std::collections::HashSet<Symbol>,
     host_op_mappings: Vec<load::HostOperationMapping>,
 }
 
@@ -1123,6 +1125,7 @@ impl KnowledgeBase {
             resolve_cache: RefCell::new(HashMap::new()),
             sort_ops: SortOpsTable::default(),
             host_mapped_ops: std::collections::HashSet::new(),
+            interpreter_mapped_ops: std::collections::HashSet::new(),
             host_op_mappings: Vec::new(),
         }
     }
@@ -6288,21 +6291,50 @@ impl KnowledgeBase {
     }
 
     /// WI-876 — does `sym` name an operation a binding block gave a HOST
-    /// implementation (an `operation_map` entry)? Such a member is deliberately
-    /// body-LESS in anthill — its body is the host artifact's — so every reader
-    /// asking "can this be run?" must count it, or it reads as unimplemented.
-    /// Populated by `load::build_host_op_mappings`.
+    /// implementation (an `operation_map` entry), IN ANY LANGUAGE? Such a member is
+    /// deliberately body-LESS in anthill — its body is the host artifact's — so a
+    /// reader asking "does an implementation exist?" must count it, or it reads as
+    /// unimplemented. Populated by `load::build_host_op_mappings`.
     ///
-    /// Sits on the dispatch path (`typing::op_is_executable`), so the two cheap
-    /// answers come first: no mappings at all — every KB that loads no binding
-    /// block — and then the RAW symbol, which is the common case because
-    /// [`Self::set_host_op_mappings`] canonicalizes on insert. Canonicalizing here
-    /// hashes the operation's whole qualified name, so it is left to the miss.
+    /// Language-AGNOSTIC, matching the cache it is built from: the question is about
+    /// the PROGRAM, and a cpp-only mapping still means the author supplied an
+    /// implementation. The LOAD CHECK (`typing::op_is_executable`) is the reader that
+    /// wants this. Eval must not — see [`Self::is_interpreter_mapped_op`].
+    ///
+    /// Sits on the dispatch path, so the two cheap answers come first: no mappings at
+    /// all — every KB that loads no binding block — and then the RAW symbol, which is
+    /// the common case because [`Self::set_host_op_mappings`] canonicalizes on insert.
+    /// Canonicalizing here hashes the operation's whole qualified name, so it is left
+    /// to the miss.
     pub fn is_host_mapped_op(&self, sym: Symbol) -> bool {
         if self.host_mapped_ops.is_empty() {
             return false;
         }
         self.host_mapped_ops.contains(&sym)
+    }
+
+    /// WI-886 — [`Self::is_host_mapped_op`] NARROWED TO `lang == "rust"`: does this
+    /// process's interpreter have a host implementation registered for `sym`?
+    ///
+    /// The two questions were one index while every `operation_map` in the tree named
+    /// rust functions, and WI-876's own doc on `set_host_op_mappings` states the
+    /// invariant the merged index broke as soon as a second language appeared:
+    /// "this predicate promises the INTERPRETER has an implementation, and the
+    /// interpreter's builtin map is a RAW `Symbol` lookup". `register_operation_mappings`
+    /// registers `lang == "rust"` entries and skips the rest, so a cpp-only mapping
+    /// made the promise for an operation eval has nothing for — `carrier_override_op`
+    /// would select it as a carrier's own implementation and skip the spec default
+    /// that would have worked. WI-886 gives cpp-gen real `operation_map` data, which
+    /// is what makes that live.
+    ///
+    /// The language is [`load::INTERPRETER_LANG`], which is also what
+    /// `builtins::register_operation_mappings` filters by — one owner, because the two
+    /// agreeing IS this predicate's promise.
+    pub fn is_interpreter_mapped_op(&self, sym: Symbol) -> bool {
+        if self.interpreter_mapped_ops.is_empty() {
+            return false;
+        }
+        self.interpreter_mapped_ops.contains(&sym)
     }
 
     /// WI-876 — the cached `operation_map` entries, in load order. Read by the host
@@ -6312,7 +6344,7 @@ impl KnowledgeBase {
         &self.host_op_mappings
     }
 
-    /// Replace the host-mapping cache and the membership index derived from it.
+    /// Replace the host-mapping cache and the TWO membership indexes derived from it.
     /// Sole caller: `load::build_host_op_mappings`.
     /// BOTH SPELLINGS of each mapped operation are indexed — the symbol
     /// `try_resolve_symbol` returned and its canonical twin — because one qualified
@@ -6320,19 +6352,31 @@ impl KnowledgeBase {
     /// (`typing::op_is_interpretable`, on the dispatch path) may be handed either. The
     /// eq-dispatch index keys under both spellings for the same reason.
     ///
-    /// A LOOKUP-ONLY fallback would be wrong here: this predicate promises the
-    /// INTERPRETER has an implementation, and the interpreter's builtin map is a RAW
-    /// `Symbol` lookup. Answering `true` for a spelling that map does not hold would
-    /// select a carrier override the evaluator then cannot find, skipping a spec
-    /// default that would have worked. So the two are populated in step —
+    /// A LOOKUP-ONLY fallback would be wrong here: the interpreter-side predicate
+    /// promises the INTERPRETER has an implementation, and the interpreter's builtin
+    /// map is a RAW `Symbol` lookup. Answering `true` for a spelling that map does not
+    /// hold would select a carrier override the evaluator then cannot find, skipping a
+    /// spec default that would have worked. So the two are populated in step —
     /// `register_operation_mappings` registers under both spellings too.
+    ///
+    /// WI-886 — and for the same reason the LANGUAGE must split them: the interpreter
+    /// registers `lang == "rust"` entries only, so a cpp mapping belongs in the
+    /// program-wide index and NOT in the interpreter's.
     pub(crate) fn set_host_op_mappings(&mut self, mappings: Vec<load::HostOperationMapping>) {
         let mut index = std::collections::HashSet::new();
-        for sym in mappings.iter().filter_map(|m| m.op) {
+        let mut interp_index = std::collections::HashSet::new();
+        for m in &mappings {
+            let Some(sym) = m.op else { continue };
+            let canon = self.canonical_sym(sym);
             index.insert(sym);
-            index.insert(self.canonical_sym(sym));
+            index.insert(canon);
+            if m.lang == load::INTERPRETER_LANG {
+                interp_index.insert(sym);
+                interp_index.insert(canon);
+            }
         }
         self.host_mapped_ops = index;
+        self.interpreter_mapped_ops = interp_index;
         self.host_op_mappings = mappings;
     }
 

@@ -133,23 +133,35 @@ const _: () = assert!(!SOURCES.is_empty());
 /// parse errors). A non-empty errors vec means the embedded sources are
 /// malformed at compile time — a build regression, not a user-facing condition.
 pub fn parse_embedded() -> (Vec<ParsedFile>, Vec<String>) {
+    parse_embedded_sources(SOURCES, "stdlib")
+}
+
+/// WI-886 — [`parse_embedded`] over an ARBITRARY embedded `(label, source)` set, so a
+/// second one does not become a third copy of this loop. `origin` prefixes each error
+/// ("stdlib", "bundle", "cpp binding"), which is the only thing the copies varied and
+/// the thing the newest of them had dropped.
+///
+/// Callers today: this module's own `SOURCES`; the CLI's cpp binding set
+/// (`anthill_cpp_gen::BINDING_SOURCES`); `anthill-todo`'s `BUNDLE_SOURCES`.
+///
+/// The label is a logical entry name, not a file on disk — but it names the source
+/// exactly, which is what WI-852's located rendering (`line:col`, not a byte offset)
+/// asks of it.
+pub fn parse_embedded_sources(
+    sources: &[(&str, &str)],
+    origin: &str,
+) -> (Vec<ParsedFile>, Vec<String>) {
     let mut files = Vec::new();
     let mut errors = Vec::new();
 
-    for &(path, source) in SOURCES {
+    for &(path, source) in sources {
         match parse::parse(source) {
             Ok(parsed) => files.push(parsed),
-            Err(errs) => {
-                // WI-852: `line:col` in the embedded source, not a byte offset.
-                // `path` is the logical entry name, not a file on disk — but it
-                // names the source exactly, which is what the located rendering
-                // asks of it.
-                errors.extend(
-                    ParseError::all_located(&errs, std::path::Path::new(path), source)
-                        .into_iter()
-                        .map(|located| format!("stdlib {located}")),
-                );
-            }
+            Err(errs) => errors.extend(
+                ParseError::all_located(&errs, std::path::Path::new(path), source)
+                    .into_iter()
+                    .map(|located| format!("{origin} {located}")),
+            ),
         }
     }
 

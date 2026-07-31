@@ -4,6 +4,59 @@
 namespace anthill.prelude
   provides Int64 language cpp
     carrier { Int64: "int64_t" }
+
+    -- WI-886: which C++ expression realizes each of `Int64`'s own operations. See
+    -- `float.anthill` in this directory for what `host_fn` means under `language cpp`
+    -- (an expression template, `$1`/`$2` for the arguments) and for why the
+    -- `#include` a spelling needs lives in `cpp_std.anthill`'s `IncludeMapping`
+    -- probes rather than here.
+    --
+    -- ALL EIGHTEEN of the sort's declared operations are mapped, which is what
+    -- `wi886_host_operation_mapping_test`'s anti-drift check pins: every operation the
+    -- RUST binding realizes must be realized here too, or the two hosts have silently
+    -- parted company again.
+    --
+    -- FOUR need a non-capturing lambda rather than an expression, because the C++ is
+    -- not a single application of the arguments and a template that repeats `$1` would
+    -- EVALUATE IT TWICE (the arguments arrive as already-lowered expressions, which may
+    -- themselves be calls). The lambda binds them as parameters instead; it is
+    -- non-capturing, so it can see nothing but what it is passed.
+    --   * `mod` — anthill's is documented ALWAYS NON-NEGATIVE, and C++ `%` follows the
+    --     DIVIDEND's sign, so `%` is `rem`, not `mod`. cpp-gen used to map `mod` to `%`
+    --     in its operator table: a silent wrong answer for a negative left operand,
+    --     found by writing this file.
+    --   * `compare` — C++20's `<=>` yields a `strong_ordering`, not the `Int64` the
+    --     signature promises, so the sign is computed from two comparisons.
+    --   * `sign` — same shape as `compare` against zero.
+    --   * `abs` — `std::llabs` (`<cstdlib>`) is single-evaluation and needs no lambda.
+    --     UNDEFINED at `Int64.minValue`, where negation overflows; the rust host answers
+    --     `EvalError::Overflow` there. The two hosts differ, and that is a signature
+    --     question (a guarded `Error` row) of exactly the shape WI-882 opens for
+    --     `Float.floor`.
+    operation_map {
+      compare: "[](int64_t l, int64_t r) { return static_cast<int64_t>((l > r) - (l < r)); }($1, $2)",
+      gt: "($1 > $2)",
+      gte: "($1 >= $2)",
+      lt: "($1 < $2)",
+      lte: "($1 <= $2)",
+      max: "std::max($1, $2)",
+      min: "std::min($1, $2)",
+
+      minValue: "std::numeric_limits<int64_t>::min()",
+      maxValue: "std::numeric_limits<int64_t>::max()",
+
+      abs: "static_cast<int64_t>(std::llabs($1))",
+      neg: "(-$1)",
+      sign: "[](int64_t v) { return static_cast<int64_t>((v > 0) - (v < 0)); }($1)",
+      div: "($1 / $2)",
+      divExact: "($1 / $2)",
+      rem: "($1 % $2)",
+      mod: "[](int64_t l, int64_t r) { return ((l % r) + r) % r; }($1, $2)",
+
+      to_float: "static_cast<double>($1)",
+      to_string: "std::to_string($1)"
+    }
+
     -- WI-644 / proposal 004: Int64 is lawful — partial bases + total markers.
     fact PartialEq[T = Int64]
     fact Eq[T = Int64]
