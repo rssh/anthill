@@ -176,10 +176,11 @@ fn a_template_may_state_the_conversion_its_signature_needs() {
 /// block, so `String.length` has no body and no C++ realization — and cpp-gen must say
 /// so instead of emitting `length(s)`.
 ///
-/// Asserted on `Err`, not on a `// TODO:` comment in the body: `synthesise_body_for`
-/// degrades an unlowerable body into a TODO plus `return {};`, which for THIS class
-/// would be less loud than the defect it replaced — `length(s)` at least failed the C++
-/// build, while `return {};` compiles and answers zero.
+/// Asserted on `Err`, not on a degraded body: a broken host binding is a FAULT, not a
+/// capability gap, so it stays FATAL by default (WI-891) and aborts the whole emit —
+/// `synthesise_body_for` never sees the `capability_gap` flag for it. Degrading it
+/// would be less loud than the defect it replaced: `length(s)` at least failed the C++
+/// build, while the old `return {};` compiled and answered zero.
 #[test]
 fn an_operation_with_no_body_and_no_cpp_realization_is_a_codegen_error() {
     let err = emit_ops("test.wi886_gap", &[

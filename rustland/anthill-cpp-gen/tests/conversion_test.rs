@@ -138,9 +138,9 @@ fn marshalled_lower_wraps_carrier_argument() {
 fn marshalled_argument_without_lower_is_loud() {
     // A type that is marshalled (host wants the foreign rep) but whose
     // TypeMapping declares only `lift`, no `lower`, cannot be bridged on
-    // the input direction. Passing such a value as an argument must
-    // surface a loud TODO rather than silently emitting an un-lowered
-    // argument that won't compile.
+    // the input direction. WI-891: passing such a value as an argument
+    // degrades to a build-breaking `static_assert` carrying the diagnostic —
+    // NOT the old `// TODO … return {};`, which COMPILED and answered zero.
     let source = r#"
         namespace test.nolower
           import anthill.prelude.{Float, Unit, Modify}
@@ -179,11 +179,21 @@ fn marshalled_argument_without_lower_is_loud() {
     let traits = emit_traits_struct(&mut kb, "test.nolower.Actuator")
         .expect("emit Actuator traits");
 
-    // The body must carry the loud TODO naming the offending parameter,
-    // and must NOT pass the bare `e` argument into the call.
+    // The body must be a build-breaking static_assert naming the offending
+    // parameter, must NOT pass the bare `e` argument into the call, and must NOT
+    // carry the old compiling `return {};`. `Actuator` is non-generic, so the
+    // method is not a template and the assert is a plain `static_assert(false, …)`.
     assert!(
-        traits.contains("// TODO: WI-088: parameter 'e' has a marshalled type with no `lower` adapter"),
-        "set_orient should surface a loud TODO for the unlowerable argument:\n{traits}"
+        traits.contains("static_assert(false,"),
+        "set_orient degrade must be a non-compiling static_assert:\n{traits}"
+    );
+    assert!(
+        traits.contains("WI-088: parameter 'e' has a marshalled type with no `lower` adapter"),
+        "the static_assert must name the offending parameter:\n{traits}"
+    );
+    assert!(
+        !traits.contains("return {};"),
+        "the compiling zero-init degrade must be gone:\n{traits}"
     );
     assert!(
         !traits.contains("self->setOrient(e)"),

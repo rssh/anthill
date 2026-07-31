@@ -591,7 +591,7 @@ pub struct CodegenContext {
     /// top to bottom so an inner sort still sees an outer sort's
     /// params, while an inner declaration of the same name shadows
     /// the outer for the duration of inner emission.
-    pub type_params: std::cell::RefCell<Vec<std::collections::HashMap<String, String>>>,
+    pub type_params: std::cell::RefCell<Vec<std::collections::HashMap<String, TypeParamBinding>>>,
     /// Lexical stack of in-scope value bindings introduced by match
     /// patterns. Each frame maps a source-level binding name to the
     /// C++ access expression that retrieves the bound value (e.g.
@@ -604,29 +604,36 @@ pub struct CodegenContext {
     /// (`::anthill::geometry::Vec3`) references for cross-namespace
     /// entity types.
     pub emitting_namespace: std::cell::RefCell<Option<String>>,
-    /// WI-886 — did the lowering currently in flight refuse an operation for having
-    /// no C++ realization ([`unlowerable_operation`])? Read by the ONE degrading
-    /// caller of `lower_node` (`synthesise_body_for`), which must re-raise such a
-    /// refusal rather than turn it into a `// TODO:` comment plus `return {};` —
-    /// that COMPILES and answers zero, where the broken call it replaced at least
-    /// failed the C++ build.
+    /// WI-891 — is the `CppCodegenError` currently propagating up the `lower_node`
+    /// call tree a CAPABILITY GAP (a lowering the cpp profile does not implement yet:
+    /// a self-referential lambda, a spliced recipe, `⊥`, a higher-order residual)
+    /// rather than a program- or invariant-fault (a DeBruijn var reaching cpp-gen, an
+    /// unresolved dot, an unknown constructor, a broken host binding)? The default is
+    /// FATAL: an unmarked error aborts codegen. Only a capability gap is DEGRADED — by
+    /// the one degrading reader (`synthesise_body_for`) into a build-breaking
+    /// `static_assert` for the single method, keeping the rest of the header. Set ONLY
+    /// through [`CodegenContext::capability_gap`], which builds the error and marks the
+    /// cell in one step, so the two cannot drift.
     ///
-    /// A flag BESIDE the error rather than inside it, and not because 73 literal
-    /// `CppCodegenError { message }` sites would have to name a `kind`. The typed
-    /// alternative — `lower_node` returning a two-variant error — is LOSSY: the
-    /// recursive helpers it calls (`lower_let_chain_node`, `lower_match_branches_node`,
-    /// `lower_stdlib_wrapper_node`, `lower_constructor_literal_node`) return
-    /// `CppCodegenError` and re-enter `lower_node` with `?`, so a refusal raised inside
-    /// a `let` or a `match` arm would be silently downgraded at that conversion unless
-    /// every one of them changed too. A `Cell` cannot lose it.
+    /// This SUBSUMES WI-886's `unrealized_refusal` flag by inverting it: that flag
+    /// force-fatal-ed the one error the old degrade-by-default would have swallowed;
+    /// now fatal IS the default and the flag marks the FEW that opt into degrading.
+    ///
+    /// A flag BESIDE the error rather than a field inside it, because the typed
+    /// alternative — `lower_node` returning a two-variant error while its recursive
+    /// helpers (`lower_let_chain_node`, `lower_match_branches_node`,
+    /// `lower_stdlib_wrapper_node`, `lower_constructor_literal_node`) keep returning
+    /// `CppCodegenError` and re-enter `lower_node` with `?` — silently downgrades a
+    /// classification raised inside a `let` or `match` arm at that conversion, unless
+    /// every helper changes too. A `Cell` on the single shared type cannot lose it.
     ///
     /// Staleness is impossible because the reader clears it immediately before the
     /// `lower_node` call it is asking about, and `lower_node` returns at its first
-    /// error — so a set flag means the error just received IS that refusal. Same shape
-    /// as `requested_includes`: a cell the lowering writes and the emitter reads at a
-    /// boundary it owns. THE CONTRACT IS THE CLEAR-THEN-READ, so a second degrading
-    /// caller must do the same; there is one today.
-    pub(crate) unrealized_refusal: std::cell::Cell<bool>,
+    /// error — so a set flag means the error just received IS a capability gap. Same
+    /// shape as `requested_includes`: a cell the lowering writes and the emitter reads
+    /// at a boundary it owns. THE CONTRACT IS THE CLEAR-THEN-READ, so any second
+    /// degrading caller must do the same; there is one today.
+    pub(crate) capability_gap: std::cell::Cell<bool>,
 }
 
 impl CodegenContext {
@@ -654,7 +661,7 @@ impl CodegenContext {
             type_params: std::cell::RefCell::new(Vec::new()),
             value_bindings: std::cell::RefCell::new(Vec::new()),
             emitting_namespace: std::cell::RefCell::new(None),
-            unrealized_refusal: std::cell::Cell::new(false),
+            capability_gap: std::cell::Cell::new(false),
         })
     }
 
@@ -686,6 +693,18 @@ fn active_key_ladder(binding: Option<&str>, profile: Option<&str>) -> Vec<Option
     keys
 }
 
+/// One in-scope type parameter's C++ realization: the emitted parameter name plus
+/// its kind. `higher_kinded` marks a template-template parameter — declared
+/// `template<typename...> class F`, not `typename F` (WI-575) — which is NOT a type
+/// and so cannot stand in a type-argument slot like `dependent_false_v<F>`
+/// (WI-891); `innermost_type_param` skips those when keying an unlowerable-body
+/// static_assert.
+#[derive(Clone)]
+pub struct TypeParamBinding {
+    pub cpp: String,
+    pub higher_kinded: bool,
+}
+
 impl CodegenContext {
     /// Look up a type-parameter binding by source-level name. Walks
     /// the lexical stack top-down so inner declarations shadow outer
@@ -693,17 +712,59 @@ impl CodegenContext {
     pub fn lookup_type_param(&self, name: &str) -> Option<String> {
         let stack = self.type_params.borrow();
         for frame in stack.iter().rev() {
-            if let Some(v) = frame.get(name) {
+            if let Some(v) = frame.get(name).map(|b| &b.cpp) {
                 return Some(v.clone());
             }
         }
         None
     }
 
+    /// WI-891: build a CAPABILITY-GAP error — a lowering the cpp profile does not
+    /// implement yet — and mark [`CodegenContext::capability_gap`] in one step so the
+    /// mark cannot drift from the error it describes. Use ONLY as the argument of an
+    /// immediately-returned `Err(...)`; the mark rides that error up to the degrading
+    /// reader (`synthesise_body_for`), which turns it into a build-breaking
+    /// `static_assert` for the one method instead of aborting codegen. Every OTHER
+    /// error stays a bare `CppCodegenError { message }`, which is FATAL by default.
+    fn capability_gap(&self, message: impl Into<String>) -> CppCodegenError {
+        self.capability_gap.set(true);
+        CppCodegenError { message: message.into() }
+    }
+
+    /// WI-891: a FIRST-ORDER C++ template parameter in scope at the current emission
+    /// point, or `None` when none is — either the enclosing method is not a template, or
+    /// every in-scope param is higher-kinded. Keys the dependent-false idiom for an
+    /// unlowerable-body `static_assert`: inside a template member a bare
+    /// `static_assert(false, …)` is ill-formed, no diagnostic required, so the assert
+    /// must depend on a template parameter to fire (with a required diagnostic) exactly
+    /// when the member is instantiated. Picks the lexicographically-smallest such name in
+    /// the innermost frame that has one, so a degrade payload is deterministic. Both a
+    /// sort's class-template params and a generic op's member-template params qualify —
+    /// either makes the method a template — so walking the whole stack top-down is right.
+    ///
+    /// HIGHER-KINDED params are SKIPPED: a template-template parameter is declared
+    /// `template<typename...> class F`, so `dependent_false_v<F>` is ill-formed (F is not
+    /// a type) and would replace the codegen diagnostic with a cryptic kind error while
+    /// hard-failing the whole header — the very failure WI-891 exists to prevent. When
+    /// only higher-kinded params are in scope, `unlowerable_body` falls back to
+    /// `static_assert(false, …)`, which still carries the message.
+    ///
+    /// SAFE even against a member-template's effect-only param that `member_template_prefix`
+    /// would otherwise ERASE (it keeps only params appearing in the signature or body):
+    /// `unlowerable_body` emits the picked name INTO the body's `static_assert`, and
+    /// `member_template_prefix` runs after body synthesis — so the reference resurrects the
+    /// param, and the name it depends on is always declared in the emitted `template<…>`.
+    fn innermost_type_param(&self) -> Option<String> {
+        let stack = self.type_params.borrow();
+        stack.iter().rev().find_map(|frame| {
+            frame.values().filter(|b| !b.higher_kinded).map(|b| &b.cpp).min().cloned()
+        })
+    }
+
     /// Push a fresh frame of type-param bindings onto the lexical
     /// stack. Returns a guard that pops the frame on drop, so the
     /// caller doesn't have to remember to restore by hand.
-    pub fn push_type_params(&self, frame: std::collections::HashMap<String, String>) -> TypeParamGuard<'_> {
+    pub fn push_type_params(&self, frame: std::collections::HashMap<String, TypeParamBinding>) -> TypeParamGuard<'_> {
         self.type_params.borrow_mut().push(frame);
         TypeParamGuard { ctx: self }
     }
@@ -1312,7 +1373,7 @@ pub fn emit_traits_struct_by_symbol(
     // The sort's chosen C++ param names seed each op's canonicaliser so a
     // per-operation type param can't collide with a class template param.
     let sort_param_cpp: std::collections::HashSet<String> =
-        type_params.values().cloned().collect();
+        type_params.values().map(|b| b.cpp.clone()).collect();
     let _guard = ctx.push_type_params(type_params);
 
     let ops = operations_in_sort(kb, ctx, sort_sym, &sort_param_cpp)?;
@@ -1519,6 +1580,35 @@ fn marshal_for_type(
     Ok(Some(Marshal { lift: hit.lift, lower: hit.lower }))
 }
 
+/// WI-891: the body cpp-gen emits for an operation it cannot lower yet (a
+/// CAPABILITY GAP — see [`CodegenContext::capability_gap`]). A build-breaking
+/// `static_assert` carrying the codegen-time `message`, so the diagnosed gap FAILS
+/// the C++ build at the exact method rather than degrading to `return {};`, which
+/// compiled and answered a zero-initialized value. The rest of the header still
+/// emits, since this is a returned body, not a codegen abort.
+///
+/// With a first-order template parameter in scope (`innermost_type_param`), the
+/// method is a template member and the assert is keyed on that parameter through
+/// `anthill::runtime::dependent_false_v` (pulling in the runtime header): being a
+/// dependent expression it fires with a required diagnostic exactly when the member
+/// is instantiated, and never eagerly — where a bare `static_assert(false, …)` would
+/// be ill-formed-no-diagnostic-required before C++23. Otherwise — a non-template
+/// method, or the rare template member whose only params are higher-kinded (not
+/// usable as a `dependent_false_v<…>` type) — it uses `static_assert(false, …)`,
+/// which still carries the message (a compiler may diagnose it eagerly there, losing
+/// the per-method locality but never the diagnosis).
+fn unlowerable_body(ctx: &CodegenContext, message: &str) -> String {
+    let msg = escape_cpp_str(message);
+    match ctx.innermost_type_param() {
+        Some(param) => {
+            ctx.requested_includes.borrow_mut()
+                .insert("#include \"anthill_runtime.hpp\"".to_string());
+            format!("static_assert(::anthill::runtime::dependent_false_v<{param}>, \"{msg}\");")
+        }
+        None => format!("static_assert(false, \"{msg}\");"),
+    }
+}
+
 /// Synthesise a method body for an operation. Lookup order:
 ///   1. **OperationImpl** (anthill expression body) — lower the body
 ///      via `lower_expr` and wrap with `return`. Highest precedence:
@@ -1543,30 +1633,25 @@ fn synthesise_body_for(
     // (1) Expression body via OperationImpl — sourced from
     // `kb.op_body_node` as a NodeOccurrence tree after WI-249.
     if let Some(body_node) = ctx.op_impls.lookup(op_sym) {
-        // WI-886: clear before, read after — see `CodegenContext::unrealized_refusal`
+        // WI-891: clear before, read after — see `CodegenContext::capability_gap`
         // for why that ordering is what makes the flag exact.
-        ctx.unrealized_refusal.set(false);
+        ctx.capability_gap.set(false);
         match lower_node(kb, ctx, &body_node) {
             Ok(expr) => return Ok(Some(if return_type == "void" {
                 format!("{expr};")
             } else {
                 format!("return {expr};")
             })),
-            // WI-886: a body that names an operation with no C++ realization is a
-            // BROKEN BINDING, not a cpp-gen capability gap — see
-            // `CodegenContext::unrealized_refusal`.
-            Err(e) if ctx.unrealized_refusal.take() => return Err(e),
-            Err(e) => {
-                // Surface the failure as a TODO comment in the body
-                // rather than silently falling through. The user sees
-                // "this op has a body but cpp-gen can't lower it yet"
-                // immediately at codegen time, not as a compile error
-                // about a missing body later.
-                return Ok(Some(format!(
-                    "// TODO: cannot lower expression body — {}\n        \
-                     return {{}};", e.message,
-                )));
+            // WI-891: a CAPABILITY GAP (a lowering the profile does not implement yet)
+            // degrades to a build-breaking `static_assert` for THIS method, keeping the
+            // rest of the header. Every other error — a DeBruijn var reaching cpp-gen,
+            // an unresolved dot, an unknown constructor, a broken host binding (WI-886)
+            // — is a program- or invariant-fault and is FATAL: it aborts codegen, so a
+            // silently-wrong header is never written.
+            Err(e) if ctx.capability_gap.take() => {
+                return Ok(Some(unlowerable_body(ctx, &e.message)));
             }
+            Err(e) => return Err(e),
         }
     }
 
@@ -1588,22 +1673,19 @@ fn synthesise_body_for(
         .and_then(|qn| ctx.carriers.binding(&qn).map(str::to_string));
     let binding = binding.as_deref();
 
-    // A non-self argument whose anthill type IS marshalled but declares
-    // no `lower` adapter cannot be bridged into the host call — surface
-    // it loudly (matching the void+lift guard below) rather than emitting
-    // the un-lowered value, which would silently fail to compile (WI-088).
-    // A type with no marshalled entry at all is a normal value and passes
-    // through bare; only the "marshalled, but no anthill->foreign adapter"
-    // case is the unhandleable one.
+    // A non-self argument whose anthill type IS marshalled but declares no
+    // `lower` adapter cannot be bridged into the host call — a capability gap
+    // (WI-088), degraded via `unlowerable_body`. A type with no marshalled entry
+    // at all is a normal value and passes through bare; only the "marshalled, but
+    // no anthill->foreign adapter" case is unhandleable.
     for p in params.iter().skip(1) {
         if matches!(marshal_for_type(kb, ctx, p.type_term, binding)?, Some(m) if m.lower.is_none()) {
-            let tail = if return_type == "void" { "" } else { "\n        return {};" };
-            return Ok(Some(format!(
-                "// TODO: WI-088: parameter '{}' has a marshalled type with no `lower` adapter — \
+            return Ok(Some(unlowerable_body(ctx, &format!(
+                "WI-088: parameter '{}' has a marshalled type with no `lower` adapter — \
                  add a `lower` to its TypeMapping fact so the anthill value converts to the \
-                 host's foreign representation{tail}",
+                 host's foreign representation",
                 p.name
-            )));
+            ))));
         }
     }
 
@@ -1632,14 +1714,14 @@ fn synthesise_body_for(
     // the return would otherwise have been body-emittable.
     if let Some(lift) = marshal_for_type(kb, ctx, return_term, binding)?.and_then(|m| m.lift) {
         if return_type == "void" {
-            // Nothing to lift from a void return — a `lift` here is a
-            // spec error. Surface it loudly rather than emitting
-            // `lift(call);`, which would discard the lifted value.
-            return Ok(Some(format!(
-                "// TODO: WI-088: `lift` adapter '{lift}' declared for the return type of \
+            // Nothing to lift from a void return — a `lift` here is a spec error,
+            // degraded via `unlowerable_body` (WI-891) rather than emitting
+            // `{call};`, which compiled and silently discarded the declared lift.
+            return Ok(Some(unlowerable_body(ctx, &format!(
+                "WI-088: `lift` adapter '{lift}' declared for the return type of \
                  void-returning operation '{name}' — a lift converts a returned value; \
-                 drop the lift or give the operation a non-void return\n        {call};"
-            )));
+                 drop the lift or give the operation a non-void return"
+            ))));
         }
         return Ok(Some(format!("return {lift}({call});")));
     }
@@ -1725,7 +1807,7 @@ fn operations_in_sort(
             // (cpp_name, decl) pairs in declaration order, captured before the
             // frame is moved into the type-param stack.
             op_param_decls = op_type_params.iter()
-                .map(|src| frame[src].clone())
+                .map(|src| frame[src].cpp.clone())
                 .zip(decls)
                 .collect();
             _op_guard = Some(ctx.push_type_params(frame));
@@ -2186,7 +2268,7 @@ fn emit_sum_in(
         String::new()
     } else {
         param_names.iter()
-            .map(|p| mapping.get(p).cloned().unwrap_or_else(|| p.clone()))
+            .map(|p| mapping.get(p).map(|b| b.cpp.clone()).unwrap_or_else(|| p.clone()))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -2788,16 +2870,20 @@ fn lower_node(
         | Expr::ConstructorWithin { .. }
         | Expr::LambdaWithin { .. }
         | Expr::RequirementAtSort { .. }
-        | Expr::ConstructRequirement { .. } => Err(CppCodegenError {
-            message: "post-elaboration / higher-order Expr variant not \
-                      supported by cpp-gen profile yet".into(),
-        }),
+        // WI-891: a CAPABILITY GAP, not a fault — the profile has not implemented this
+        // shape yet. Marked degradable, so an op body reaching it becomes a
+        // build-breaking `static_assert` at the one method, not a codegen abort.
+        | Expr::ConstructRequirement { .. } => Err(ctx.capability_gap(
+            "post-elaboration / higher-order Expr variant not \
+             supported by cpp-gen profile yet",
+        )),
         // WI-714: a macro-spliced value (a relational-algebra goal recipe) — the
         // design end-state is to emit the recipe as plain data, not yet built.
-        Expr::Spliced(_) => Err(CppCodegenError {
-            message: "WI-714: macro-spliced relational recipe not yet emitted by \
-                      cpp-gen (splice-as-data is the codegen end-state)".into(),
-        }),
+        // WI-891: capability gap, degradable.
+        Expr::Spliced(_) => Err(ctx.capability_gap(
+            "WI-714: macro-spliced relational recipe not yet emitted by \
+             cpp-gen (splice-as-data is the codegen end-state)",
+        )),
         Expr::Var(v) => {
             let name_sym = match v {
                 anthill_core::kb::term::Var::Global(vid) => vid.name(),
@@ -2821,9 +2907,10 @@ fn lower_node(
                 ),
             })
         }
-        Expr::Bottom => Err(CppCodegenError {
-            message: "cannot lower Bottom (⊥) to a C++ expression".into(),
-        }),
+        // WI-891: capability gap, degradable — ⊥ has no C++ value yet.
+        Expr::Bottom => Err(ctx.capability_gap(
+            "cannot lower Bottom (⊥) to a C++ expression",
+        )),
         // WI-278: a pre-dispatch `dot_apply` is rewritten to an `Apply` /
         // field access by the `[simp]` dot rules before codegen; one reaching
         // cpp-gen is an unresolved method call.
@@ -2879,7 +2966,7 @@ fn lower_let_chain_node(
                 let is_wildcard = matches!(pattern.as_pattern(), Some(Pattern::Wildcard));
                 if !is_wildcard {
                     let bind_name = pattern_var_name_occ(kb, pattern)?;
-                    check_recursive_lambda_node(kb, value, &bind_name)?;
+                    check_recursive_lambda_node(kb, ctx, value, &bind_name)?;
                     let val_s = lower_node(kb, ctx, value)?;
                     slots.push(Slot::Bind(bind_name, val_s));
                 } else {
@@ -2947,6 +3034,7 @@ fn field_name_from_node(
 /// cleanly by name.
 fn check_recursive_lambda_node(
     kb: &KnowledgeBase,
+    ctx: &CodegenContext,
     val: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
     bind_name: &str,
 ) -> Result<(), CppCodegenError> {
@@ -2958,15 +3046,15 @@ fn check_recursive_lambda_node(
     if !node_references_name(kb, body, bind_name) {
         return Ok(());
     }
-    Err(CppCodegenError {
-        message: format!(
-            "recursive anonymous lambda not supported in cpp17-stl \
-             profile (binder '{bind_name}' referenced inside its own \
-             lambda body) — lift the body to a named operation, \
-             which lowers to a regular C++ function and recurses \
-             cleanly by name"
-        ),
-    })
+    // WI-891: a capability gap (the RAII-only profile has no shape for this), not a
+    // fault — degradable, so the op degrades to a build-breaking `static_assert`.
+    Err(ctx.capability_gap(format!(
+        "recursive anonymous lambda not supported in cpp17-stl \
+         profile (binder '{bind_name}' referenced inside its own \
+         lambda body) — lift the body to a named operation, \
+         which lowers to a regular C++ function and recurses \
+         cleanly by name"
+    )))
 }
 
 /// Recursive name-reference scan on a NodeOccurrence Expr tree —
@@ -3096,7 +3184,7 @@ fn template_param_decls(
     owner_sym: Symbol,
     params: &[String],
     taken: &mut std::collections::HashSet<String>,
-) -> (Vec<String>, std::collections::HashMap<String, String>) {
+) -> (Vec<String>, std::collections::HashMap<String, TypeParamBinding>) {
     let mut mapping = std::collections::HashMap::new();
     let mut decls = Vec::with_capacity(params.len());
     for p in params {
@@ -3105,24 +3193,27 @@ fn template_param_decls(
         // type params (`sort Spec[F[T]]`, or `operation op[G[T]](…)`) — becomes
         // a C++ template-template parameter `template<typename...> class F`, so
         // a use `F[T = A]` can lower to `F<A>`. A first-order param stays the
-        // plain `typename F`.
-        let decl = if is_higher_kinded_param(kb, owner_sym, p) {
+        // plain `typename F`. The kind rides into the binding (WI-891) so the
+        // unlowerable-body static_assert never keys `dependent_false_v<…>` on a
+        // template-template name, which is not a type.
+        let higher_kinded = is_higher_kinded_param(kb, owner_sym, p);
+        let decl = if higher_kinded {
             format!("template<typename...> class {cpp}")
         } else {
             format!("typename {cpp}")
         };
-        mapping.insert(p.clone(), cpp.clone());
+        mapping.insert(p.clone(), TypeParamBinding { cpp, higher_kinded });
         decls.push(decl);
     }
     (decls, mapping)
 }
 
-/// Build the `(template prefix, name → cpp_param)` pair for a sort.
+/// Build the `(template prefix, name → binding)` pair for a sort.
 /// Empty prefix and empty map when the sort has no type parameters.
 fn template_prefix_for_sort(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
-) -> (String, std::collections::HashMap<String, String>) {
+) -> (String, std::collections::HashMap<String, TypeParamBinding>) {
     let params = type_params_of(kb, sort_sym);
     if params.is_empty() {
         return (String::new(), std::collections::HashMap::new());
@@ -3428,9 +3519,11 @@ fn unlowerable_operation(
     } else {
         ""
     };
-    // Mark the refusal so `synthesise_body_for` re-raises instead of degrading it into
-    // a `// TODO:` comment; see `CodegenContext::unrealized_refusal`.
-    ctx.unrealized_refusal.set(true);
+    // WI-891: a broken host binding is a FAULT, not a capability gap, so it stays a
+    // bare `CppCodegenError` — fatal by default. `synthesise_body_for` never sees the
+    // `capability_gap` flag set for it, so it aborts codegen (the whole header) rather
+    // than degrading, exactly as WI-886 intended: the broken call this replaced at
+    // least failed the C++ build.
     Some(CppCodegenError {
         message: format!(
             "`{qn}` has no body and no C++ realization, so cpp-gen cannot lower a call \
@@ -3864,6 +3957,25 @@ fn pattern_var_name_occ(
     }
 }
 
+/// Escape the CONTENTS of a C++ narrow string literal (no surrounding quotes):
+/// the `\"` / `\\` / `\n` / `\r` / `\t` set the printer uses. Shared by
+/// `lower_literal` and the WI-891 `static_assert` degrade payload, whose message
+/// is arbitrary error text that may carry a quote or newline.
+fn escape_cpp_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"'  => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Lower a `Literal` to its C++ source spelling. String literals get
 /// the same `\"` / `\\` / `\n` / `\r` / `\t` escaping the printer uses.
 fn lower_literal(lit: &Literal) -> String {
@@ -3874,22 +3986,7 @@ fn lower_literal(lit: &Literal) -> String {
             if s.contains('.') { s } else { format!("{s}.0") }
         }
         Literal::Bool(b) => if *b { "true" } else { "false" }.to_string(),
-        Literal::String(s) => {
-            let mut out = String::with_capacity(s.len() + 2);
-            out.push('"');
-            for c in s.chars() {
-                match c {
-                    '"'  => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
-                    '\n' => out.push_str("\\n"),
-                    '\r' => out.push_str("\\r"),
-                    '\t' => out.push_str("\\t"),
-                    _ => out.push(c),
-                }
-            }
-            out.push('"');
-            out
-        }
+        Literal::String(s) => format!("\"{}\"", escape_cpp_str(s)),
         // BigInt has no native C++17 stdlib mapping — caller would
         // need a custom carrier. Emitted as a comment so the failure
         // is loud.
