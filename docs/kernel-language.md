@@ -2003,11 +2003,15 @@ that outranks the generic unresolved-name error it replaces.
 **The ladder is position-independent.** The same two rungs, in the same order,
 resolve a dotted name wherever one is written — a term functor, a type or sort
 reference, a rule citation, a proof target, and a query pattern all consult one
-definition (WI-752). A name that denotes something in one position denotes the
-same thing in every other; before this was unified, `util.f()` resolved by
-head-qualification while `util.T` in the same scope reported an unresolved type
-name, and `anthill query` could bind a dotted text to a different symbol than the
-program it queried.
+definition (WI-752). A name supplied by the **host** rather than by source text
+reads the same way, at the top-level scope (WI-908): the functor an extent mount
+owns is the one that spelling would name in a program written outside any
+namespace, so a short host name must be *in scope* (or in the implicit tier), and
+an `internal` member is no more mountable than it is citable. A name that denotes
+something in one position denotes the same thing in every other; before this was
+unified, `util.f()` resolved by head-qualification while `util.T` in the same
+scope reported an unresolved type name, and `anthill query` could bind a dotted
+text to a different symbol than the program it queried.
 
 There is **one deliberate exception**, and it is a different question rather than
 a different answer. The dot-call re-route asks *"does this path have an

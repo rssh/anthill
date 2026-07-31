@@ -907,3 +907,6 @@ mod wi896_labeled_predicate_head_test;
 
 #[path = "include/wi900_implicit_tier_agreement_test.rs"]
 mod wi900_implicit_tier_agreement_test;
+
+#[path = "include/wi908_global_name_ladder_test.rs"]
+mod wi908_global_name_ladder_test;

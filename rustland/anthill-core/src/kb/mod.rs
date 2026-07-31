@@ -5137,22 +5137,18 @@ impl KnowledgeBase {
         self.symbols.by_qualified_name.get(name).copied()
     }
 
-    /// Resolve a name using scope-aware resolution from _global scope.
-    /// Tries qualified name first, then scope-aware parent chain.
+    /// THE NAME LADDER AT `_global` — what a HOST-supplied name (an extent owner's
+    /// functor, a [`FactRef`](crate::kb::extent::FactRef)'s owner) denotes. The same
+    /// question every other position asks, so the same function
+    /// (`load::resolve_name_in_kb_opt`) with `_global` as the scope; spelling it
+    /// separately is how a mount comes to take a functor its author never named (WI-908).
+    ///
+    /// A SHORT name therefore resolves only if it is IN SCOPE or in the IMPLICIT TIER
+    /// (`load::resolve_implicit` — `SortInfo`, `cons`, …, which is short-name keyed and
+    /// still answers here). The absolute rung is dotted-only, per WI-476.
     pub fn resolve_name_in_global(&mut self, name: &str) -> Option<Symbol> {
-        if let Some(&sym) = self.symbols.by_qualified_name.get(name) {
-            return Some(sym);
-        }
         let global = self.make_name_term("_global");
-        match self.symbols.resolve_in_scope(name, global.raw()) {
-            crate::intern::ResolveResult::Found(s) => Some(s),
-            // WI-040 / WI-521: the reserved kernel vocab and the implicit prelude
-            // resolve via the same lowest-precedence fallback the loader uses, so a
-            // bare reflection name (`OperationInfo`, …) or prelude name still
-            // resolves here (e.g. the reflect bridge's `SortQuery`) after the
-            // `_global` imports were removed.
-            _ => crate::kb::load::resolve_implicit(self, name),
-        }
+        crate::kb::load::resolve_name_in_kb_opt(self, name, global.raw())
     }
 
     /// Check if a qualified name has a defined symbol in the symbol table.

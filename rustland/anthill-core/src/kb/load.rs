@@ -2075,10 +2075,9 @@ fn implicit_qualified(name: &str) -> Option<&'static str> {
 /// were neither captured nor bound and collapsed onto one bare global. The gate lived
 /// as four hand-written copies and a comment saying they agreed; it is one function so
 /// that they cannot not agree. Consumers: [`Loader::remap_name_str_inner`]
-/// (references), [`resolve_name_in_kb_opt`] (query patterns),
-/// `KnowledgeBase::resolve_name_in_global` (the reflect bridge), and
+/// (references), [`resolve_name_in_kb_opt`] (query patterns and host names), and
 /// [`name_denotes_for_rule_head`] (the mint guard).
-pub(crate) fn resolve_implicit(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
+fn resolve_implicit(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
     implicit_qualified(name).and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied())
 }
 
@@ -6909,7 +6908,9 @@ fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
 /// as a bare symbol (a data name in a query pattern), surfacing a genuine
 /// missing-import as a non-matching query rather than silently rescuing it.
 ///
-/// WI-752: this is the QUERY-PATTERN position, and it now spells the dotted question
+/// WI-752: this is the QUERY-PATTERN position — and, since WI-908, the HOST-name one
+/// (`KnowledgeBase::resolve_name_in_global` is this function at `_global`). It now spells
+/// the dotted question
 /// exactly the way the loader positions do — via [`resolve_dotted_in_kb`]. It used to
 /// rank the ABSOLUTE reading FIRST (ahead of scope resolution), carry no
 /// head-qualification rung at all, and resolve SHORT names absolutely; the last of
@@ -6917,7 +6918,7 @@ fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
 /// query` could bind the same dotted text to a DIFFERENT symbol than the program it
 /// queries. Queries run at `_global`, where the two readings almost always coincide —
 /// which is exactly why the divergence survived four fixes unnoticed.
-fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
+pub(crate) fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
     match kb.symbols.resolve_in_scope(name, scope_raw) {
         ResolveResult::Found(sym) => Some(sym),
         _ => resolve_dotted_in_kb(kb, name, scope_raw, DottedVisibility::VisibleOnly)

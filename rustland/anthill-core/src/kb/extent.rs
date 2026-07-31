@@ -1732,7 +1732,9 @@ mod tests {
     }
 
     /// Define `qname` so `resolve_name_in_global` finds it (registration resolves
-    /// owned names to symbols).
+    /// owned names to symbols). `qname` must be DOTTED: a qualified-only definition has
+    /// no scope presence, so only the ladder's absolute rung can reach it, and that rung
+    /// is dotted-only (WI-908).
     fn define(kb: &mut KnowledgeBase, qname: &str) -> Symbol {
         let short = qname.rsplit('.').next().unwrap();
         kb.symbols.define_qualified_only(short, qname, SymbolKind::Sort, 0)
