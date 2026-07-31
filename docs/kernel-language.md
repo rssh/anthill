@@ -2385,6 +2385,21 @@ A bare function name would not do: a host language's primitive operations are no
 
 The mapping is also what a generating backend must have: an operation with no body and no host realization for the target language cannot be lowered at all, and is a codegen error naming the operation and the carrier rather than a call emitted into the output for a function that does not exist.
 
+**Host-supplied constants use `const_map`, the const-level peer (WI-889).** A carrier may declare a body-less `const` whose value comes from the host — the `Float` IEEE specials `infinity` / `negativeInfinity` / `nan` have no anthill surface literal. A `const` is not an operation, so it cannot ride `operation_map`, whose reader refuses a non-operation by design (the kind check that stops an `operation_map` over an entity from registering a comparison as the constructor). `const_map` is its channel, and it draws the **mirror** kind check — the target must resolve and be a `const` — so together the two clauses keep the guarantee that a host implementation attaches only to an operation or a const, never to an entity constructor or a sort.
+
+```
+namespace anthill.prelude
+  provides Float language rust
+    const_map { infinity: "float_infinity", nan: "float_nan" }        -- runtime value-source keys
+  end
+  provides Float language cpp
+    const_map { infinity: "std::numeric_limits<double>::infinity()" } -- verbatim C++ expression
+  end
+end
+```
+
+Each entry reaches the KB as an `anthill.realization.ConstMapping` fact (`carrier`, `const_name`, `host_fn`, `lang`). `host_fn` is read exactly as it is for an operation, per host: a key into the interpreting runtime's registry (an unknown key is a load-time refusal; the value source must be nullary), and a verbatim expression for a generating backend (a const takes no arguments, so there are no `$1` slots). Like `operation_map`, the clause says what *backs* a const — the carrier must still declare it — and writing one in a `language anthill` block is a refusal, since an anthill implementation is a body, not a host binding.
+
 **Profile compatibility:** When assembling a build, all selected implementations must share a compatible profile. For example, in Rust `no_std` targets, every component must use `no_std`-compatible implementations — mixing `std` and `no_std` profiles is an error. This is a build-time constraint analogous to feature unification in Cargo.
 
 ### 10.3 Namespace with Nested Sub-namespaces

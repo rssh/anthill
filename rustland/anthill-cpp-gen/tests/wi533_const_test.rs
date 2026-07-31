@@ -111,6 +111,42 @@ fn const_referencing_infinity_lowers_to_numeric_limits_and_compiles() {
     compile_header(&header, "wi533inf", "test::wi533inf::Dummy d{0.0};\n    (void)d;");
 }
 
+/// WI-889 — all THREE Float IEEE specials lower from the cpp `const_map` (the
+/// `HostConstTable` that replaced the hand-written `render_as_float_special`), not just
+/// `infinity`. Each is a bodyless host const with no C++ literal spelling; the binding's
+/// `const_map` names the `std::numeric_limits` expression, and `<limits>` rides the
+/// include probe. Compiling the header proves the emitted expressions are real C++.
+#[test]
+fn all_three_float_ieee_specials_lower_from_const_map_and_compile() {
+    let source = r#"
+        namespace test.wi889cpp
+          import anthill.prelude.{Float}
+          import anthill.prelude.Float.{infinity, negativeInfinity, nan}
+          const POS_INF: Float = infinity
+          const NEG_INF: Float = negativeInfinity
+          const NOT_A_NUM: Float = nan
+          entity Dummy(x: Float)
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi889cpp").expect("emit ns header");
+    for (name, expr) in [
+        ("POS_INF", "std::numeric_limits<double>::infinity()"),
+        ("NEG_INF", "-std::numeric_limits<double>::infinity()"),
+        ("NOT_A_NUM", "std::numeric_limits<double>::quiet_NaN()"),
+    ] {
+        assert!(
+            header.contains(&format!("inline constexpr double {name} = {expr};")),
+            "{name} must lower to its const_map expression `{expr}`:\n{header}"
+        );
+    }
+    assert!(
+        header.contains("#include <limits>"),
+        "the numeric_limits expressions must pull in <limits>:\n{header}"
+    );
+    compile_header(&header, "wi889cpp", "test::wi889cpp::Dummy d{0.0};\n    (void)d;");
+}
+
 #[test]
 fn string_const_emits_string_view_and_compiles() {
     // A String const cannot be `constexpr std::string` (not a literal type in

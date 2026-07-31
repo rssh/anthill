@@ -1004,6 +1004,11 @@ pub struct KnowledgeBase {
     host_mapped_ops: std::collections::HashSet<Symbol>,
     interpreter_mapped_ops: std::collections::HashSet<Symbol>,
     host_op_mappings: Vec<load::HostOperationMapping>,
+    // WI-889 — bodyless `const`s a binding block gave a host value source
+    // (`const_map`). Written by `load::build_host_const_mappings`. No membership
+    // index alongside it, unlike `host_op_mappings`: a const is a value source read
+    // by `force_const`, not a dispatch target the typer routes on.
+    host_const_mappings: Vec<load::HostConstMapping>,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -1127,6 +1132,7 @@ impl KnowledgeBase {
             host_mapped_ops: std::collections::HashSet::new(),
             interpreter_mapped_ops: std::collections::HashSet::new(),
             host_op_mappings: Vec::new(),
+            host_const_mappings: Vec::new(),
         }
     }
 
@@ -6364,6 +6370,21 @@ impl KnowledgeBase {
     /// as the operation. See `load::build_host_op_mappings` for why it is cached.
     pub fn host_op_mappings(&self) -> &[load::HostOperationMapping] {
         &self.host_op_mappings
+    }
+
+    /// WI-889 — the cached `const_map` entries, in load order. Read by the rust
+    /// runtime's `register_const_mappings` (which registers the `lang == "rust"`
+    /// value sources) and by cpp-gen's `HostConstTable` (which keeps the `lang ==
+    /// "cpp"` expressions). See `load::build_host_const_mappings` for why it is cached.
+    pub fn host_const_mappings(&self) -> &[load::HostConstMapping] {
+        &self.host_const_mappings
+    }
+
+    /// Replace the const-mapping cache. Sole caller: `load::build_host_const_mappings`.
+    /// No membership index to rebuild — a const is a `force_const` value source, not a
+    /// dispatch target — so this is a plain store, unlike `set_host_op_mappings`.
+    pub(crate) fn set_host_const_mappings(&mut self, mappings: Vec<load::HostConstMapping>) {
+        self.host_const_mappings = mappings;
     }
 
     /// Replace the host-mapping cache and the TWO membership indexes derived from it.

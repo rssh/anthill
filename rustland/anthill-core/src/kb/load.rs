@@ -4400,6 +4400,10 @@ fn load_phase_inner(
     // so the mapped operation's own declaration is resolvable.
     all_errors.extend(build_host_op_mappings(kb));
     mark!("build_host_op_mappings");
+    // WI-889 — the const-level peer, read for the same reason and at the same point:
+    // the mapped const's own declaration must be resolvable.
+    all_errors.extend(build_host_const_mappings(kb));
+    mark!("build_host_const_mappings");
     // WI-616 — the semantic-eq dispatch index, off the table just built. WI-837:
     // it refuses two distinct `eq` impls for one carrier, because it has no later
     // site to complain from — equality dispatches from unification (058 §4.9).
@@ -5667,6 +5671,100 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         out.push(HostOperationMapping { op: sym, op_qn, host_fn, lang });
     }
     kb.set_host_op_mappings(out);
+    errors
+}
+
+/// WI-889 — one `const_map` entry as the KB records it: the `const` being realized
+/// (`<carrier>.<const>`, resolved and by name), the host runtime's key for its value
+/// source, and the host language. The const-level peer of [`HostOperationMapping`].
+///
+/// `const_sym` is `None` when the qualified name resolves to nothing — the carrier
+/// named a const it does not DECLARE. Kept rather than dropped, for the same reason
+/// the operation peer keeps its `None`: it is a broken binding the host runtime's
+/// registration pass must hear about.
+#[derive(Debug, Clone)]
+pub struct HostConstMapping {
+    pub const_sym: Option<Symbol>,
+    pub const_qn: String,
+    pub host_fn: String,
+    pub lang: String,
+}
+
+/// WI-889 — read every `anthill.realization.ConstMapping` fact and cache the result on
+/// the KB, resolving each mapped const's symbol once. The exact peer of
+/// [`build_host_op_mappings`], and it exists for the same reasons: ONE reader of these
+/// facts' shape and one resolution of their names, CACHED because the evaluator's
+/// registration pass runs once per fresh interpreter.
+///
+/// THE KIND CHECK IS THE WHOLE POINT, and it is the MIRROR of the one
+/// `build_host_op_mappings` draws: there the name must resolve AND be an OPERATION;
+/// here it must resolve AND be a `const`. Together the two clauses keep WI-876's
+/// guarantee intact under the widened vocabulary — a host implementation can attach
+/// ONLY to an operation (via `operation_map`) or a const (via `const_map`), never to
+/// an entity constructor or a sort, whichever clause is written. Without the check
+/// here, `const_map { pt: "…" }` over `entity pt(…)` would register a value source
+/// against the CONSTRUCTOR, the exact failure WI-876 MEASURED for the operation side.
+///
+/// A MALFORMED fact is REFUSED, not skipped, exactly as its operation peer is: the
+/// loader's own producer cannot emit one, so the only way to reach the malformed arm
+/// is a hand-asserted `fact ConstMapping(…)`, and dropping it silently would be the
+/// shape WI-889 exists to remove.
+#[must_use = "the undeclared-const refusals are load-blocking and must be merged"]
+pub fn build_host_const_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    use super::typing::get_named_string_arg as field;
+    let Some(cm_sym) = kb.try_resolve_symbol("anthill.realization.ConstMapping") else {
+        kb.set_host_const_mappings(Vec::new());
+        return Vec::new();
+    };
+    let mut out: Vec<HostConstMapping> = Vec::new();
+    let mut errors: Vec<LoadError> = Vec::new();
+    for rid in kb.rules_by_functor_iter(cm_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let (Some(carrier), Some(const_name), Some(host_fn), Some(lang)) = (
+            field(kb, &named, "carrier"),
+            field(kb, &named, "const_name"),
+            field(kb, &named, "host_fn"),
+            field(kb, &named, "lang"),
+        ) else {
+            errors.push(LoadError::Other {
+                message: "an `anthill.realization.ConstMapping` fact needs \
+                          `carrier`, `const_name`, `host_fn` and `lang`, each a STRING. \
+                          (A binding block's `const_map` clause always writes all four, \
+                          so this is a hand-written fact.)"
+                    .to_string(),
+            });
+            continue;
+        };
+        let const_qn = format!("{carrier}.{const_name}");
+        // The name must resolve AND be a `const`. The MIRROR of the operation peer's
+        // kind check (WI-876): an entity constructor and a const are both qualified
+        // `<ns>.<Sort>.<member>` names, so a bare resolve is too weak — `const_map`
+        // over an entity would register a value source against the CONSTRUCTOR.
+        let const_sym = match kb.try_resolve_symbol(&const_qn) {
+            Some(s) if kb.kind_of(s) == Some(SymbolKind::Const) => Some(s),
+            found => {
+                errors.push(LoadError::Other {
+                    message: match found {
+                        Some(_) => format!(
+                            "const_map maps `{const_qn}` to host value {host_fn:?}, but \
+                             `{const_name}` is not a `const` of `{carrier}` — a host value \
+                             source may only realize a const (an operation uses \
+                             `operation_map`)"
+                        ),
+                        None => format!(
+                            "const_map maps `{const_qn}` to host value {host_fn:?}, but \
+                             `{carrier}` declares no const `{const_name}` — the clause says \
+                             what BACKS a const, it does not declare one"
+                        ),
+                    },
+                });
+                None
+            }
+        };
+        out.push(HostConstMapping { const_sym, const_qn, host_fn, lang });
+    }
+    kb.set_host_const_mappings(out);
     errors
 }
 
@@ -15814,7 +15912,8 @@ impl<'a> Loader<'a> {
                 ProvidesItem::Artifact(_)
                 | ProvidesItem::Carrier(_)
                 | ProvidesItem::NamespaceMap(_)
-                | ProvidesItem::OperationMap(_) => {}
+                | ProvidesItem::OperationMap(_)
+                | ProvidesItem::ConstMap(_) => {}
             }
         }
 
@@ -15823,13 +15922,19 @@ impl<'a> Loader<'a> {
         if self.parsed.symbols.name(pb.language) != "anthill" {
             self.emit_implementation_fact(pb, spec_term, spec_domain);
             self.emit_operation_mapping_facts(pb, spec_term, spec_domain);
-        } else if pb.items.iter().any(|i| matches!(i, ProvidesItem::OperationMap(_))) {
-            // WI-876: `language anthill` means "the implementation is in anthill", so
-            // there is no host function for `operation_map` to name. The grammar
-            // admits the clause in every binding block, so an author can write one
-            // here — and REFUSING is the point: silently ignoring it reproduces
-            // exactly the failure mode this ticket exists to remove (loads clean,
-            // runs clean, registers nothing, no layer ever mentions it).
+            self.emit_const_mapping_facts(pb, spec_term, spec_domain);
+        } else if let Some(clause) = pb.items.iter().find_map(|i| match i {
+            // WI-876 / WI-889: `language anthill` means "the implementation is in
+            // anthill", so there is no host function/expression for `operation_map` /
+            // `const_map` to name. The grammar admits both clauses in every binding
+            // block, so an author can write one here — and REFUSING is the point:
+            // silently ignoring it reproduces exactly the failure mode these tickets
+            // exist to remove (loads clean, runs clean, registers nothing, no layer
+            // ever mentions it).
+            ProvidesItem::OperationMap(_) => Some("operation_map"),
+            ProvidesItem::ConstMap(_) => Some("const_map"),
+            _ => None,
+        }) {
             // Names the spec, which is what identifies the block: like its two
             // siblings this is an unspanned `LoadError::Other` (as are the 25 others
             // in this file), so the message has to carry the locating information.
@@ -15839,9 +15944,10 @@ impl<'a> Loader<'a> {
                 .unwrap_or_else(|| "?".to_string());
             self.errors.push(LoadError::Other {
                 message: format!(
-                    "`operation_map` is not meaningful in `provides {which} language \
-                     anthill` — an anthill implementation is an operation BODY, not a \
-                     host function. Remove the clause, or give the block a host language."
+                    "`{clause}` is not meaningful in `provides {which} language \
+                     anthill` — an anthill implementation is an operation BODY / const \
+                     body, not a host binding. Remove the clause, or give the block a \
+                     host language."
                 ),
             });
         }
@@ -15945,6 +16051,79 @@ impl<'a> Loader<'a> {
                     ]),
                 });
                 self.kb.assert_metadata_fact(fact, om_sort, spec_domain, None);
+            }
+        }
+    }
+
+    /// WI-889 — assert one `anthill.realization.ConstMapping` fact per
+    /// `const_map { infinity: "…" }` entry. The exact peer of
+    /// [`emit_operation_mapping_facts`]; FLAT and TOP-LEVEL for the same reason (a
+    /// keyed fact is read by an ordinary discrimination-tree query).
+    fn emit_const_mapping_facts(
+        &mut self,
+        pb: &ProvidesBlock,
+        spec_term: TermId,
+        spec_domain: Symbol,
+    ) {
+        // Nothing to emit for a block with no `const_map` — which is every binding
+        // block but the two Float bindings.
+        if !pb.items.iter().any(|i| matches!(i, ProvidesItem::ConstMap(_))) {
+            return;
+        }
+        // The block's spec sort IS the carrier being realized — read through the SAME
+        // helper the operation and implementation emitters read, so the three facts
+        // cannot disagree about who the block is about.
+        let Some((carrier_qn, language_str)) = self.provides_block_identity(pb, spec_term)
+        else { return };
+        let carrier_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(carrier_qn.clone())));
+        let language_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(language_str.clone())));
+
+        let cm_sym = self.kb.resolve_symbol("anthill.realization.ConstMapping");
+        let cm_sort = self.kb.intern("anthill.realization.ConstMapping");
+        let carrier_arg = self.kb.intern("carrier");
+        let const_name_arg = self.kb.intern("const_name");
+        let host_fn_arg = self.kb.intern("host_fn");
+        let lang_arg = self.kb.intern("lang");
+
+        for item in &pb.items {
+            let ProvidesItem::ConstMap(entries) = item else { continue };
+            for e in entries {
+                let const_name = self.parsed.symbols.name(e.const_name).to_string();
+                // The host value source must be a STRING LITERAL, refused HERE at the
+                // producer — the same guard the operation emitter draws, for the same
+                // reason: an unquoted key produces a non-string `host_fn` the shape
+                // reader would drop, and the mapping would VANISH silently.
+                let host_fn_tid = self.host_type_to_string_term(e.host_fn);
+                let host_fn_str = match self.kb.get_term(host_fn_tid) {
+                    Term::Const(super::term::Literal::String(s)) => s.clone(),
+                    _ => {
+                        self.errors.push(LoadError::Other {
+                            message: format!(
+                                "const_map entry `{const_name}` in `provides {carrier_qn} \
+                                 language {language_str}` must name its host value as a \
+                                 STRING (`{const_name}: \"host_fn\"`)"
+                            ),
+                        });
+                        continue;
+                    }
+                };
+                let const_term = self.kb.alloc(Term::Const(
+                    super::term::Literal::String(const_name)));
+                let host_fn_term = self.kb.alloc(Term::Const(
+                    super::term::Literal::String(host_fn_str)));
+                let fact = self.kb.alloc(Term::Fn {
+                    functor: cm_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (carrier_arg, carrier_term),
+                        (const_name_arg, const_term),
+                        (host_fn_arg, host_fn_term),
+                        (lang_arg, language_term),
+                    ]),
+                });
+                self.kb.assert_metadata_fact(fact, cm_sort, spec_domain, None);
             }
         }
     }

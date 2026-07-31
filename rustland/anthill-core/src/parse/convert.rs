@@ -4192,6 +4192,11 @@ impl<'a> Converter<'a> {
                         self.convert_provides_bindings(child, "`operation_map` entry", "each operation is realized by ONE host function")
                         .into_iter().map(|(s, t)| OperationMapEntry { operation: s, host_fn: t }).collect()));
                 }
+                "const_map_clause" => {
+                    items.push(ProvidesItem::ConstMap(
+                        self.convert_provides_bindings(child, "`const_map` entry", "each const is realized by ONE host expression")
+                        .into_iter().map(|(s, t)| ConstMapEntry { const_name: s, host_fn: t }).collect()));
+                }
                 _ => {}
             }
         }

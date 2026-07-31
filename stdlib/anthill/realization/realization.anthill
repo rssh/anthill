@@ -250,6 +250,22 @@ namespace anthill.realization
     lang      : String                              -- host language ("rust")
   )
 
+  -- WI-889 — the CONST-level peer of `OperationMapping`. Emitted from a binding
+  -- block's `const_map { infinity: "…" }` clause. A carrier's bodyless `const`
+  -- (the Float IEEE specials `infinity`/`negativeInfinity`/`nan`) is not an
+  -- operation, so it cannot ride `OperationMapping`, whose reader refuses a
+  -- non-operation by design (WI-876). `const_name` is the SHORT name as declared on
+  -- the carrier sort (`const infinity: Float`); this clause says what BACKS it, it
+  -- does not declare it. `host_fn` is the host runtime's key for the rust value
+  -- source ("float_infinity") and a verbatim C++ expression for cpp
+  -- ("std::numeric_limits<double>::infinity()").
+  entity ConstMapping(
+    carrier    : String,                            -- carrier sort QN ("anthill.prelude.Float")
+    const_name : String,                            -- const short name ("infinity")
+    host_fn    : String,                            -- host key / expression ("float_infinity")
+    lang       : String                             -- host language ("rust")
+  )
+
   -- Operation implementation: marks an operation that has an expression body.
   -- The body occurrence lives in the loader's op_body_node side-table and is
   -- reached via anthill.reflect.operation_body (WI-305), not a fact field.

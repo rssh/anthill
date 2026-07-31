@@ -1719,10 +1719,22 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
 
 // ── Utility functions ────────────────────────────────────────────
 
-/// Rust expression for a bodyless host-supplied Float const (WI-532). Mirrors
-/// cpp-gen's `render_as_float_special`. Matched by short name (rust.rs runs on
-/// the raw ParsedFile, before name resolution), gated by the caller on an `f64`
-/// declared type so a non-Float same-named const can't collide.
+/// Rust SOURCE expression for a bodyless host-supplied Float const (WI-532):
+/// `infinity`/`negativeInfinity`/`nan`. Matched by short name (rust.rs runs on the
+/// raw ParsedFile, before name resolution), gated by the caller on an `f64` declared
+/// type so a non-Float same-named const can't collide.
+///
+/// WI-889 — this table STAYS hardcoded while the rust RUNTIME (`register_const_mappings`)
+/// and cpp-gen (`HostConstTable`) went data-driven off `const_map` / `ConstMapping`
+/// facts, for two reasons that are specific to the rust source-GENERATOR: it lowers
+/// the raw `ParsedFile` before the KB exists, so there are no resolved facts to read;
+/// and even if there were, the value it needs is a Rust SOURCE spelling (`f64::INFINITY`),
+/// NOT the runtime registry key (`float_infinity`) the `lang == "rust"` `const_map`
+/// carries — the interpreter and the source generator are two different "rust" consumers
+/// that need different host spellings for the same const, which `lang` alone cannot
+/// distinguish. Making this path data-driven is a wider question (a source-spelling
+/// channel, e.g. a distinct `lang`) than WI-889's, whose line was the two hardcoded
+/// lists the ticket named. `operation_map` has the same untaken step for rust codegen.
 fn host_float_const_rust(name: &str) -> Option<&'static str> {
     match name {
         "infinity" => Some("f64::INFINITY"),

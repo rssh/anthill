@@ -354,6 +354,35 @@ end
           (string_literal))))))
 
 =====================================
+Provides block (cpp language) with const_map
+=====================================
+
+namespace test
+  provides Float
+    language cpp
+    const_map { infinity: "inf_expr", nan: "nan_expr" }
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (provides_block
+      spec: (simple_type
+        (name
+          (identifier)))
+      language: (identifier)
+      (const_map_clause
+        bindings: (bindings
+          (identifier)
+          (string_literal)
+          (identifier)
+          (string_literal))))))
+
+=====================================
 Proof with using clause (cited lemmas)
 =====================================
 

@@ -50,6 +50,18 @@ namespace anthill.prelude
       e: "float_e",
       tau: "float_tau"
     }
+    -- WI-889: the three IEEE specials are `const`s, not operations, so they cannot ride
+    -- `operation_map` (whose reader refuses a non-operation, WI-876). `const_map` is
+    -- their channel — `host_fn` is the same `HOST_FNS` key the runtime resolves to the
+    -- nullary value source. Before WI-889 these three were keyed by hardcoded qualified
+    -- name in `eval/builtins.rs`; this clause is what deleted the RUNTIME's hardcoded
+    -- list. (The rust source GENERATOR keeps its own `host_float_const_rust` table — it
+    -- needs a Rust source spelling `f64::INFINITY`, not this registry key; see its note.)
+    const_map {
+      infinity: "float_infinity",
+      negativeInfinity: "float_negative_infinity",
+      nan: "float_nan"
+    }
     -- WI-644 / proposal 004: IEEE Float provides only the PARTIAL specs — its `==`
     -- is not reflexive (nan) and not a congruence (-0.0/+0.0), so it is NOT a
     -- lawful Eq/Ordered. `TotalFloat` (prelude) provides the total instances for

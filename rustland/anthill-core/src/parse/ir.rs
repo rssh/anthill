@@ -915,6 +915,7 @@ pub enum ProvidesItem {
     Carrier(Vec<CarrierBinding>),
     NamespaceMap(Vec<NamespaceMapEntry>),
     OperationMap(Vec<OperationMapEntry>),
+    ConstMap(Vec<ConstMapEntry>),
 }
 
 #[derive(Debug)]
@@ -935,6 +936,16 @@ pub struct NamespaceMapEntry {
 #[derive(Debug)]
 pub struct OperationMapEntry {
     pub operation: Symbol,
+    pub host_fn: TermId,
+}
+
+/// WI-889 — one `const_map { infinity: "…" }` entry: the SHORT name of a bodyless
+/// `const` the block's carrier declares, and the host expression that realizes it.
+/// The const-level peer of [`OperationMapEntry`] — a `const` is not an operation, so
+/// it cannot ride `operation_map`, whose reader refuses a non-operation (WI-876).
+#[derive(Debug)]
+pub struct ConstMapEntry {
+    pub const_name: Symbol,
     pub host_fn: TermId,
 }
 

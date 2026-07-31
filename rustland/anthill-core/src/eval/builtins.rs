@@ -119,13 +119,14 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Float.isInfinite", float_is_infinite)?;
     register_if_present(interp, "anthill.prelude.Float.isFinite", float_is_finite)?;
 
-    // WI-532 / proposal 039: special IEEE values exposed as host-supplied
-    // term-level constants. These are `SymbolKind::Const` (not operations), but
-    // a const's value source is this same builtin map (eval's `force_const`
-    // reads `self.builtins.get(&sym)`), so they register here like any builtin.
-    register_if_present(interp, "anthill.prelude.Float.infinity", float_infinity)?;
-    register_if_present(interp, "anthill.prelude.Float.negativeInfinity", float_negative_infinity)?;
-    register_if_present(interp, "anthill.prelude.Float.nan", float_nan)?;
+    // WI-532 / proposal 039: special IEEE values exposed as host-supplied term-level
+    // constants (`SymbolKind::Const`). WI-889 — these are NO LONGER keyed here by
+    // hardcoded qualified name. They reach eval as DATA now: the `const_map` clause of
+    // `provides Float language rust` emits `ConstMapping` facts, and
+    // `register_const_mappings` (below, via `register_operation_mappings`' sibling
+    // call) registers each against its const symbol from `HOST_FNS`. A const's value
+    // source is still this same builtin map — `force_const` reads `self.builtins.get`
+    // and invokes with no args — the registration channel is what changed.
 
     register_if_present(interp, "anthill.prelude.Map.empty", map_empty)?;
     register_if_present(interp, "anthill.prelude.Map.put", map_put)?;
@@ -230,6 +231,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // operation resolve to the mapping (nothing does today; the ordering family
     // moved out of the list above entirely).
     register_operation_mappings(interp)?;
+    // WI-889 — the const-level peer: register the `const_map` value sources (the Float
+    // IEEE specials) against their const symbols, from the same `HOST_FNS` registry.
+    register_const_mappings(interp)?;
 
     Ok(())
 }
@@ -298,6 +302,13 @@ const HOST_FNS: &[(&str, usize, fn(&mut Interpreter, &[Value]) -> Result<Value, 
     ("float_pi", 0, float_pi),
     ("float_e", 0, float_e),
     ("float_tau", 0, float_tau),
+    // WI-889 — the three IEEE specials, now reaching eval through `const_map` /
+    // `register_const_mappings` like `pi`/`e`/`tau` reach it through `operation_map`.
+    // They are `const`s, not operations, but the value function is the same nullary
+    // shape (`nullary_const!`), and `force_const` invokes it with no args.
+    ("float_infinity", 0, float_infinity),
+    ("float_negative_infinity", 0, float_negative_infinity),
+    ("float_nan", 0, float_nan),
     // WI-884 — the sibling audit: `Int64`'s BOUNDS and `String`'s search / edit
     // surface, dead in exactly the shape WI-881 found on `Float`. See the two
     // section headers above their definitions for the semantics each one commits
@@ -411,6 +422,69 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         // name can be interned under several `Symbol`s, and eval's builtin lookup is a
         // RAW map hit, so whichever spelling reaches dispatch must find the same
         // implementation the predicate promised.
+        let canon = interp.kb().canonical_sym(sym);
+        interp.register_builtin_sym(sym, host.f);
+        if canon != sym {
+            interp.register_builtin_sym(canon, host.f);
+        }
+    }
+    Ok(())
+}
+
+/// WI-889 — register the per-carrier host VALUE SOURCES named by every loaded
+/// `const_map` clause, read from the `anthill.realization.ConstMapping` facts the
+/// loader emits. The const-level peer of [`register_operation_mappings`], and it
+/// replaces the three hardcoded `register_if_present("anthill.prelude.Float.infinity",
+/// …)` lines: the Float IEEE specials now reach eval as DATA, like `pi`/`e`/`tau`.
+///
+/// LOUD ON BOTH FAILURE MODES, per the repo's no-silent-skip rule, exactly as its
+/// operation peer is: an unknown `host_fn` key is an [`EvalError::Internal`] naming the
+/// key; a `<carrier>.<const>` the loader already refused (undeclared, or not a const)
+/// arrives with `const_sym == None` and registers nothing.
+///
+/// The function is stored against the const's symbol in the SAME builtin map
+/// `force_const` reads (`self.builtins.get(&sym)`), so first demand of the const
+/// fetches the host value and caches it — the behavior WI-532 gave these three, now
+/// reached by data instead of a hardcoded qualified name.
+fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
+    // Snapshot the cache before registering — `register_builtin_sym` mutates the
+    // interpreter — matching `register_operation_mappings`.
+    let mappings: Vec<crate::kb::load::HostConstMapping> = interp
+        .kb()
+        .host_const_mappings()
+        .iter()
+        // Only this runtime's language: a cpp `const_map` names a C++ expression, which
+        // this runtime is right not to know. Same split as the operation peer.
+        .filter(|m| m.lang == crate::kb::load::INTERPRETER_LANG)
+        .cloned()
+        .collect();
+    for crate::kb::load::HostConstMapping { const_sym, const_qn, host_fn, .. } in mappings {
+        let Some(host) = host_fn_by_key(&host_fn) else {
+            return Err(EvalError::Internal(format!(
+                "broken binding block: const_map names host value {host_fn:?} for \
+                 {const_qn}, which the rust runtime does not provide. No interpreter can \
+                 be built for this program until the binding is fixed."
+            )));
+        };
+        // `const_sym` is `None` only when the loader already refused this mapping (the
+        // const is undeclared, or is not a const at all), so the load errored and
+        // nothing should be registered against it.
+        let Some(sym) = const_sym else { continue };
+        // A const's value source is NULLARY — `force_const` invokes it with no args. A
+        // host_fn that takes arguments cannot be one; caught here, the earliest point
+        // that knows the host function's arity. (The peer check for operations lives in
+        // `register_operation_mappings`; here the operation-side "declared arity" is
+        // fixed at zero because a const takes none.)
+        if host.arity != 0 {
+            return Err(EvalError::Internal(format!(
+                "const_map maps {const_qn} to {host_fn:?}, but a const's value source \
+                 must be NULLARY and {host_fn:?} takes {} argument(s)",
+                host.arity
+            )));
+        }
+        // Under BOTH spellings, for the same reason the operation peer does it: eval's
+        // const lookup is a RAW `Symbol` map hit, so whichever spelling `force_const`
+        // reaches must find the registration.
         let canon = interp.kb().canonical_sym(sym);
         interp.register_builtin_sym(sym, host.f);
         if canon != sym {

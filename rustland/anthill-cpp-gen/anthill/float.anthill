@@ -94,6 +94,18 @@ namespace anthill.prelude
       e: "2.718281828459045",
       tau: "6.283185307179586"
     }
+    -- WI-889: the three IEEE specials are `const`s, not operations — they have no C++
+    -- literal spelling and cannot ride `operation_map` (whose reader refuses a
+    -- non-operation, WI-876). `const_map` is their channel; `host_fn` is a VERBATIM C++
+    -- expression (no `$1` slots — a const takes no arguments). This clause is what
+    -- deleted cpp-gen's last hand-written per-carrier table, `render_as_float_special`.
+    -- The `<limits>` header rides the `std::numeric_limits` `IncludeMapping` probe when
+    -- the emitted text is scanned, exactly as it did before WI-889.
+    const_map {
+      infinity: "std::numeric_limits<double>::infinity()",
+      negativeInfinity: "-std::numeric_limits<double>::infinity()",
+      nan: "std::numeric_limits<double>::quiet_NaN()"
+    }
   end
 end
 

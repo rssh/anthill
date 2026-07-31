@@ -967,12 +967,19 @@ module.exports = grammar({
       $.carrier_clause,
       $.namespace_map_clause,
       $.operation_map_clause,
+      $.const_map_clause,
     ),
 
     artifact_clause: $ => seq('artifact', field('path', $.string_literal)),
     carrier_clause: $ => seq('carrier', field('bindings', $.bindings)),
     namespace_map_clause: $ => seq('namespace_map', field('bindings', $.bindings)),
     operation_map_clause: $ => seq('operation_map', field('bindings', $.bindings)),
+    // WI-889: the CONST-level peer of `operation_map` — `operation_map` says which
+    // host FUNCTION realizes a carrier's operation, `const_map` says which host
+    // expression realizes a carrier's bodyless `const` (the Float IEEE specials
+    // `infinity`/`negativeInfinity`/`nan`). A `const` is not an operation, so it has
+    // no place in `operation_map`, whose reader refuses a non-operation by design.
+    const_map_clause: $ => seq('const_map', field('bindings', $.bindings)),
 
     // =========================================================
     // Sugar: operation block, rule block

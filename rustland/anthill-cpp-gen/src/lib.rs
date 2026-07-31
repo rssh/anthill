@@ -480,6 +480,43 @@ impl HostOpTable {
     }
 }
 
+/// WI-889 — the per-carrier C++ VALUE SOURCES named by every loaded `provides
+/// <carrier> language cpp` block's `const_map` clause, read from the KB's
+/// `anthill.realization.ConstMapping` cache (`kb.host_const_mappings()`). The
+/// const-level peer of [`HostOpTable`], and it replaces the last of WI-886's four
+/// hand-written per-carrier tables, `render_as_float_special`.
+///
+/// A const's `host_fn` under `lang = "cpp"` is a VERBATIM C++ expression — the Float
+/// IEEE specials have no C++ literal spelling (`std::numeric_limits<double>::
+/// infinity()`), so unlike an operation template it has no `$1` slots to parse or
+/// arity to check: a const takes no arguments. The `<limits>` header it needs rides the
+/// `IncludeMapping` probe scan of the emitted text (`Includes::scan` finds
+/// `std::numeric_limits`), exactly as it did when this was a hand-written table.
+struct HostConstTable {
+    by_const: HashMap<Symbol, String>,
+}
+
+impl HostConstTable {
+    /// Build the table from the KB's cpp `const_map` entries.
+    fn from_kb(kb: &KnowledgeBase) -> Self {
+        let mut by_const = HashMap::new();
+        for m in kb.host_const_mappings().iter().filter(|m| m.lang == CPP_LANG) {
+            // `const_sym` is `None` only when the loader already refused this mapping
+            // (the carrier declares no such const, or the name is not a const), so the
+            // load errored and there is nothing to key. Same reasoning as `HostOpTable`.
+            let Some(sym) = m.const_sym else { continue };
+            by_const.insert(sym, m.host_fn.clone());
+        }
+        Self { by_const }
+    }
+
+    /// The C++ expression realizing `const_sym`. `None` when no cpp binding block named
+    /// this const.
+    fn lookup(&self, const_sym: Symbol) -> Option<&str> {
+        self.by_const.get(&const_sym).map(String::as_str)
+    }
+}
+
 /// WI-886 — parse a cpp `host_fn` into literal spans and argument slots. `Err` carries
 /// a phrase describing the malformation, for the caller to fold into a message that
 /// also names the operation.
@@ -577,6 +614,10 @@ pub struct CodegenContext {
     /// loaded, which is a real state — a project that supplies no cpp bindings —
     /// and the unmapped-operation refusal says so.
     pub host_ops: HostOpTable,
+    /// WI-889: which C++ expression realizes each of a carrier's bodyless `const`s
+    /// (`const_map`) — the Float IEEE specials. The const-level peer of `host_ops`,
+    /// and what replaced the hand-written `render_as_float_special` table.
+    host_consts: HostConstTable,
     /// WI-089(a): the active compilation profile (e.g. "cpp20-stl"), threaded
     /// from the CLI (a `Generated`/`Implementation` fact's `profile`). Selects
     /// profile-keyed `TypeMapping` / `EffectMapping` overlays ahead of the
@@ -656,6 +697,7 @@ impl CodegenContext {
             carriers: CarrierTable::from_kb(kb)?,
             op_impls: OpImplTable::from_kb(kb)?,
             host_ops: HostOpTable::from_kb(kb)?,
+            host_consts: HostConstTable::from_kb(kb),
             profile,
             requested_includes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_params: std::cell::RefCell::new(Vec::new()),
@@ -1156,17 +1198,20 @@ fn lower_one_const(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) ->
         }
     };
 
-    // Value: lower the anthill body when present; a bodyless host-supplied
-    // const (WI-532) maps to its target expression (the Float IEEE specials).
+    // Value: lower the anthill body when present; a bodyless host-supplied const
+    // (WI-532) maps to its C++ expression from the `const_map` clause (WI-889 — the
+    // Float IEEE specials, formerly a hand-written table).
     // WI-760: bind before matching — the scrutinee's borrow would otherwise
     // span the arms, and lowering the body needs `&mut` on the KB.
     let body_node = kb.const_body_node(sym).cloned();
     let cpp_value = match &body_node {
         Some(body) => lower_node(kb, ctx, body)?,
-        None => render_as_float_special(&qn).ok_or_else(|| CppCodegenError {
+        None => ctx.host_consts.lookup(sym).map(str::to_string).ok_or_else(|| CppCodegenError {
             message: format!(
-                "const '{qn}': bodyless host-supplied const has no C++ value mapping \
-                 (only the Float IEEE specials infinity/negativeInfinity/nan are mapped)"
+                "const '{qn}': bodyless host-supplied const has no C++ value mapping. \
+                 Name the host expression in a `const_map` clause of a `provides \
+                 {} language cpp` block.",
+                parent_qualified_name(kb, sym).unwrap_or_else(|| "<carrier>".to_string())
             ),
         })?,
     };
@@ -3414,8 +3459,11 @@ fn lower_symbol_ref(
     if let Some(rendered) = render_host_mapped_bare(kb, ctx, sym)? {
         return Ok(rendered);
     }
-    if let Some(rendered) = render_as_float_special(qn) {
-        return Ok(rendered);
+    // WI-889: a bare reference to a host-supplied `const` (the Float IEEE specials) —
+    // its `const_map` C++ expression. The const-level peer of the arm above; formerly
+    // the hand-written `render_as_float_special` table.
+    if let Some(rendered) = ctx.host_consts.lookup(sym) {
+        return Ok(rendered.to_string());
     }
     let short = short_name_of(qn);
     if consult_value_bindings {
@@ -3533,25 +3581,12 @@ fn unlowerable_operation(
     })
 }
 
-/// Lower the bodyless host-supplied Float constants (WI-532): IEEE special
-/// values that have no C++ literal spelling. Emitting `std::numeric_limits`
-/// pulls in `<limits>` via the `"std::numeric_limits"` `IncludeMapping` fact
-/// when the surrounding block is scanned.
-///
-/// WI-886 — the LAST of the four hand-written per-carrier tables, and it survives
-/// because `infinity` / `negativeInfinity` / `nan` are `const`s, not operations:
-/// `operation_map` refuses a non-operation by design (WI-876 MEASURED that admitting
-/// one made an entity constructor run a comparison), so a host-supplied CONST has no
-/// declarative channel in ANY language — the rust runtime keys these three by
-/// hardcoded qualified name too (`eval/builtins.rs`). Closing that is WI-889.
-fn render_as_float_special(fn_qn: &str) -> Option<String> {
-    let table: &[(&str, &str)] = &[
-        ("Float.infinity",         "std::numeric_limits<double>::infinity()"),
-        ("Float.negativeInfinity", "-std::numeric_limits<double>::infinity()"),
-        ("Float.nan",              "std::numeric_limits<double>::quiet_NaN()"),
-    ];
-    lookup_prelude_qn(fn_qn, table).map(str::to_string)
-}
+// WI-889 — `render_as_float_special` DELETED. The Float IEEE specials
+// (`infinity`/`negativeInfinity`/`nan`) were the last of WI-886's four hand-written
+// per-carrier cpp tables; they now reach cpp-gen as DATA through the `const_map`
+// clause of `provides Float language cpp` → `HostConstTable` (this file) → the two
+// `ctx.host_consts.lookup(sym)` call sites, symmetric with `operation_map` /
+// `HostOpTable` for `pi`/`e`/`tau`. See the WI-889 note in `HostConstTable`.
 
 /// Match a fully-qualified or short prelude name against a (suffix,
 /// payload) table. `suffix` is the qn after `anthill.prelude.`.
