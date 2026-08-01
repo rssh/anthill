@@ -11,10 +11,14 @@ edge. Concretely: one `pub(crate) fn implicit_qualified(name)` =
 fully-qualified `&[&str]` lists, consulted *after* scope resolution fails. Every
 consumer reaches it through one function, `resolve_implicit(kb, name)`, which applies
 the `by_qualified_name` gate that makes a table hit an answer (WI-900: one consumer
-that read the table without the gate collapsed rule heads onto a bare global) —
-`remap_name_str` (loader), `resolve_name_in_kb_opt` (query patterns),
-`KnowledgeBase::resolve_name_in_global` (the reflect bridge), and
-`name_denotes_for_rule_head` (the rule-head mint guard). A user
+that read the table without the gate collapsed rule heads onto a bare global). The
+positions that ask are deliberately NOT listed here: the list that stood here rotted
+on both counts — it named `resolve_name_in_kb_opt`, renamed by WI-907, and attributed
+`resolve_name_in_global` to the reflect bridge, which WI-908 measured had not called
+it since WI-632 — and two of its four entries (`resolve_name_in_global`,
+`name_denotes_for_rule_head`) had come to reach `resolve_implicit` through the ladder
+rather than directly, leaving `remap_name_str_inner` and the ladder itself as the only
+direct callers. Grep the one function; that it is one is the whole claim. A user
 name in scope always wins, so a name can never go `Ambiguous` against a user name —
 which dissolved the WI-476 collision blocklist. The boolean-`!` / NAF-`not` split
 was deferred to **WI-529**; its decided shape is **§C.1**. The rest of this doc is the

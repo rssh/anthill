@@ -1,6 +1,6 @@
 # 057: Extent Seam
 
-## Status: Draft (2026-07-23). The implementable slice of the [extent-sources vision](future/extent-sources.md), extracted under its "complete interface, not a partial one" rule. **One seam, both directions:** a functor's extent — its ground facts — is owned by one source, read *and* written through it. It is one `ExtentSource` trait, one `ExtentProfile`, one identity model — read and write are two halves of one thing, so one proposal. The **value-facing read half is delivered** (WI-796/797/773/771/806/810/811/774/812 — the trait read half, mounts, the `read_facts` accessor, cpp-gen migration); lifting its Rust cursor from `Value` to `StoredRow` belongs with the **write design** (WI-780 — the write seam + store-native identity + the declared-API cutover; WI-779 — the one early resident slice, the fact-shape refusal). Written for the **end state**: the boundary reference is source-neutral `FactRef`, never `RuleId` or the resident-only `FactId`.
+## Status: Draft (2026-07-23). The implementable slice of the [extent-sources vision](future/extent-sources.md), extracted under its "complete interface, not a partial one" rule. **One seam, both directions:** a functor's extent — its ground facts — is owned by one source, read *and* written through it. It is one `ExtentSource` trait, one `ExtentProfile`, one identity model — read and write are two halves of one thing, so one proposal. The **value-facing read half is delivered** (WI-796/797/773/771/806/810/811/774/812 — the trait read half, mounts, the `read_facts` accessor, cpp-gen migration); lifting its Rust cursor from `Value` to `SourceRow` belongs with the **write design** (WI-780 — the write seam + store-native identity + the declared-API cutover; WI-779 — the one early resident slice, the fact-shape refusal). Written for the **end state**: the boundary reference is source-neutral `FactRef`, never `RuleId` or the resident-only `FactId`.
 
 ## Tracks: (read, delivered at the `Value` boundary) WI-773 accessor, WI-771 cpp-gen migration; (write, design) WI-780 the `StoredRow` / `FactRef` lift, seam + cutover, WI-779 the resident fact-shape refusal. Carries `RuleId`/`FactId` retirement and `FactRef` introduction: **R1** (readers off the raw walk — done), **R2** (one home), **R3** (declared-API cutover), **R4** (visibility ratchet).
 
@@ -29,10 +29,13 @@ So the **boundary identity is store-native** — content (the canonical ground r
 
 One `ExtentSource` trait; the read half is delivered, the write half designed. The Rust extent seam carries a `StoredRow`: visible `Value` content paired with an opaque, source-neutral `FactRef` (whose private payload contains the store-native `RowKey`). The resolver and value-facing accessors project the `Value`; `RowKey` never crosses into an `.anthill` signature, while `FactRef` is exposed through `StoredRef[T]`. No `RuleId`/`FactId`/`TermId` appears anywhere.
 
+**A source hands back a `SourceRow` (content + its own `RowKey`) and never a `FactRef`; the KB mints the reference, stamping the owner `Symbol` it routed the call through.** So `owned()` is the one place a source's names are read: registration resolves each to a `Symbol` and everything after — mounts, profiles, every external `FactRef` — is `Symbol`-keyed. A reference re-deriving its owner from a name would be a second reading of a question the mount already answered, and a load between the two can make the two answers differ (WI-916).
+
 ```rust
 pub trait ExtentSource {
     /// Registration authority: the (fully-qualified functor name, profile) pairs
-    /// this source owns. Names resolve to Symbols once, at registration.
+    /// this source owns. THE one place a source's names are read — registration
+    /// resolves each to a Symbol, and nothing downstream re-reads them.
     fn owned(&self) -> Vec<(String, ExtentProfile)>;
 
     // ── read half (delivered) ──
@@ -44,23 +47,28 @@ pub trait ExtentSource {
     // ── write half (design; capability-gated — the profile is the plan-time
     //    authority, these defaults the loud NotWritable backstop) ──
     fn persist(&mut self, kb: &KnowledgeBase, row: &Value, meta: Option<&Value>)
-        -> Result<StoredRow, ExtentError> { Err(ExtentError::NotWritable) }
+        -> Result<SourceRow, ExtentError> { Err(ExtentError::NotWritable) }
     fn retract(&mut self, kb: &KnowledgeBase, key: &RowKey)
         -> Result<bool, ExtentError> { Err(ExtentError::NotWritable) }
     /// Atomically replace the row identified by `key`. On failure the old row
     /// remains observable; there is no retract-then-persist default.
     fn update(&mut self, kb: &KnowledgeBase, key: &RowKey, new: &Value, meta: Option<&Value>)
-        -> Result<Option<StoredRow>, ExtentError> { Err(ExtentError::NotWritable) }
+        -> Result<Option<SourceRow>, ExtentError> { Err(ExtentError::NotWritable) }
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), ExtentError> { Ok(()) }
 }
 
-pub struct StoredRow {
+pub struct SourceRow {    // what a SOURCE hands back: content + its own locator, no owner
+    pub row: Value,
+    pub key: RowKey,
+}
+
+pub struct StoredRow {    // what the KB hands out: the same row, owner attached
     pub row: Value,       // ground content: resolver / read_facts project this
-    pub reference: FactRef, // source-neutral public reference; wraps private source + RowKey
+    pub reference: FactRef, // source-neutral public reference; wraps the owner Symbol + RowKey
 }
 
 pub trait ExtentCursor {   // lazy, carrier-neutral, ground rows; per-row errors fail loud
-    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<StoredRow, ExtentError>>;
+    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<SourceRow, ExtentError>>;
 }
 
 /// `QueryPattern` is a digested read bound: the engine walks the goal, the store
@@ -160,7 +168,7 @@ This can only happen where facts and bodied rules coexist under one functor — 
 
 ## `InMemoryExtentSource` — the reference owner
 
-The shipped reference `ExtentSource`: an enumerable + complete + stable table, seeded at construction. Its value-facing read half is delivered (drives the read conformance suite — declared mode answers, undeclared pattern delays, under-return fails / over-return passes); its cursor gains `StoredRow` and its write half + a `by_id`-style opaque key land with the write seam (exercising the write overlay + content↔key mapping without a filesystem/SQL engine). It is the owner-swap fixture and the proof "complete interface" is a fact, not a claim. The **resident** default source stays the discrim path (not a `dyn ExtentSource` — the discrim tree already *is* its query structure), unified with mounted extents only at the accessor/seam.
+The shipped reference `ExtentSource`: an enumerable + complete + stable table, seeded at construction. Its value-facing read half is delivered (drives the read conformance suite — declared mode answers, undeclared pattern delays, under-return fails / over-return passes); its cursor gains `SourceRow` and its write half + a `by_id`-style opaque key land with the write seam (exercising the write overlay + content↔key mapping without a filesystem/SQL engine). It is the owner-swap fixture and the proof "complete interface" is a fact, not a claim. The **resident** default source stays the discrim path (not a `dyn ExtentSource` — the discrim tree already *is* its query structure), unified with mounted extents only at the accessor/seam.
 
 ## `RuleId` / resident `FactId` retirement and `FactRef` introduction — R1–R4
 

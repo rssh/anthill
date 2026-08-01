@@ -59,14 +59,22 @@ impl RowKey {
 }
 
 /// Opaque session reference to a stored row. A resident row keeps its RuleId
-/// private to the KB; external rows carry only their owner's name and native key.
+/// private to the KB; an external row carries its owner's **`Symbol`** — the one
+/// [`KnowledgeBase::register_extent_owner`] resolved when it mounted the source — plus
+/// the source's native key.
+///
+/// The owner is a resolved symbol and NOT the owner's name because a name is a
+/// question, and asking it twice permits two answers: an external ref used to carry the
+/// mount's name string and re-run the `_global` ladder on every retract/update, so a
+/// load between the mount and the mutation could make the two readings disagree —
+/// measured, `wi916_external_ref_symbol_test` (WI-916).
 #[derive(Clone, Debug)]
 pub struct FactRef(FactRefInner);
 
 #[derive(Clone, Debug)]
 enum FactRefInner {
     Resident { rule: RuleId, mirror: Option<String> },
-    External { functor: String, key: RowKey },
+    External { owner: Symbol, key: RowKey },
 }
 
 impl FactRef {
@@ -76,8 +84,11 @@ impl FactRef {
     pub(crate) fn resident_mirrored(rule: RuleId, mirror: String) -> Self {
         Self(FactRefInner::Resident { rule, mirror: Some(mirror) })
     }
-    pub(crate) fn external(functor: impl Into<String>, key: RowKey) -> Self {
-        Self(FactRefInner::External { functor: functor.into(), key })
+    /// Private, and reached only through [`SourceRow::attach`]: minting an external
+    /// reference is the KB's act, taking the owner it ROUTED the row through. A source
+    /// never names its own rows' owner — see [`SourceRow`].
+    fn external(owner: Symbol, key: RowKey) -> Self {
+        Self(FactRefInner::External { owner, key })
     }
     pub(crate) fn resident_rule(&self) -> Option<RuleId> {
         match self.0 {
@@ -91,9 +102,9 @@ impl FactRef {
             FactRefInner::External { .. } => None,
         }
     }
-    pub(crate) fn external_parts(&self) -> Option<(&str, &RowKey)> {
+    pub(crate) fn external_parts(&self) -> Option<(Symbol, &RowKey)> {
         match &self.0 {
-            FactRefInner::External { functor, key } => Some((functor, key)),
+            FactRefInner::External { owner, key } => Some((*owner, key)),
             FactRefInner::Resident { .. } => None,
         }
     }
@@ -106,15 +117,38 @@ pub struct StoredRow {
     pub reference: FactRef,
 }
 
+/// A row as its SOURCE sees it: content plus the source-private locator, and NO owner.
+///
+/// Naming the owner is not the source's job — the KB pairs a `SourceRow` with the
+/// `Symbol` it routed the call through ([`SourceRow::attach`]), which is the symbol the
+/// MOUNT resolved. That is what keeps one mounted name to exactly one resolution
+/// (WI-916), and it also puts a source that owns several functors out of reach of
+/// attributing a row to the wrong one: the type gives it nowhere to say so.
+#[derive(Clone, Debug)]
+pub struct SourceRow {
+    pub row: Value,
+    pub key: RowKey,
+}
+
+impl SourceRow {
+    /// The ONE place an external [`FactRef`] is minted.
+    fn attach(self, owner: Symbol) -> StoredRow {
+        StoredRow { row: self.row, reference: FactRef::external(owner, self.key) }
+    }
+}
+
 /// One owner per functor. `owned` + `query` provide the read half; mutation
 /// defaults are the loud capability backstop for the write seam.
 pub trait ExtentSource {
     /// Registration authority: the `(fully-qualified functor name, profile)`
-    /// pairs this source owns. Names resolve to `Symbol`s once, at registration
-    /// (an unresolvable name is a loud [`ExtentRegError::UnresolvableName`]) —
-    /// every engine structure downstream is `Symbol`-keyed, but a backend can
-    /// only speak names, so the boundary is String here and `Symbol` past
-    /// registration.
+    /// pairs this source owns. **This is the ONLY place a source's names are read**:
+    /// [`KnowledgeBase::register_extent_owner`] resolves each to a `Symbol` (a name that
+    /// denotes nothing is a loud [`ExtentRegError::UnresolvableName`], one that denotes
+    /// several a loud [`ExtentRegError::AmbiguousName`]), and everything downstream —
+    /// mounts, profiles, and every external [`FactRef`] — is `Symbol`-keyed from there.
+    /// A backend can only speak names, so the boundary is String HERE and `Symbol` past
+    /// registration; a second reading is a second chance to disagree with the first
+    /// (WI-916).
     fn owned(&self) -> Vec<(String, ExtentProfile)>;
 
     /// The discrimination contract of the mounted subtree: a lazy cursor over the
@@ -128,14 +162,14 @@ pub trait ExtentSource {
         pattern: &QueryPattern,
     ) -> Result<Box<dyn ExtentCursor>, ExtentError>;
 
-    fn persist(&mut self, _row: &Value, _meta: Option<&Value>) -> Result<StoredRow, ExtentError> {
+    fn persist(&mut self, _row: &Value, _meta: Option<&Value>) -> Result<SourceRow, ExtentError> {
         Err(ExtentError::NotWritable)
     }
     fn retract(&mut self, _key: &RowKey) -> Result<bool, ExtentError> {
         Err(ExtentError::NotWritable)
     }
     fn update(&mut self, _key: &RowKey, _new: &Value, _meta: Option<&Value>)
-        -> Result<Option<StoredRow>, ExtentError>
+        -> Result<Option<SourceRow>, ExtentError>
     {
         Err(ExtentError::NotWritable)
     }
@@ -144,7 +178,7 @@ pub trait ExtentSource {
 /// Lazy, carrier-neutral, ground rows. Errors are per-row so a fallible backend
 /// fails loud, never truncates silent. In-memory sources never error per row.
 pub trait ExtentCursor {
-    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<StoredRow, ExtentError>>;
+    fn next(&mut self, kb: &KnowledgeBase) -> Option<Result<SourceRow, ExtentError>>;
 }
 
 // ── The query-contract types ───────────────────────────────────
@@ -232,6 +266,18 @@ pub enum ExtentError {
     /// No declared query mode applies to the requested pattern.
     NoSupportedMode,
     NotWritable,
+    /// An external [`FactRef`]'s owner has no mounted source HERE. `op` labels the
+    /// mutation. Within one KB this cannot arise — the reference is stamped with the
+    /// symbol the mutation was routed through (WI-916), and a mount is never removed —
+    /// so it reports the one thing that can: a reference carried into a DIFFERENT KB,
+    /// where its `Symbol` denotes something else or nothing. Loud, never a silent
+    /// `Ok(false)`.
+    ///
+    /// The owner rides as its `Symbol` and is rendered as such, NOT as a name: this KB's
+    /// symbol table is the wrong book to look a foreign symbol up in — an in-range index
+    /// names a DIFFERENT functor, and an out-of-range one makes `resolve_sym` panic
+    /// outright (it indexes `defs`). A caller holding the producing KB can name it.
+    UnmountedOwner { op: String, owner: Symbol },
     /// A backend-specific failure (I/O, a remote error), carrying its message.
     Backend(String),
 }
@@ -243,6 +289,11 @@ impl std::fmt::Display for ExtentError {
                 write!(f, "extent source: no declared query mode applies to this pattern")
             }
             ExtentError::NotWritable => write!(f, "extent source is not writable"),
+            ExtentError::UnmountedOwner { op, owner } => write!(
+                f,
+                "{op}: this FactRef's owner ({owner:?}) has no mounted extent source in \
+                 this knowledge base — a FactRef is only valid in the KB that produced it"
+            ),
             ExtentError::Backend(msg) => write!(f, "extent source backend error: {msg}"),
         }
     }
@@ -469,9 +520,12 @@ impl KnowledgeBase {
         let functor = row.head(self).functor_sym().ok_or_else(|| {
             ExtentError::Backend("persistent assert requires a functor-headed row".into())
         })?;
-        if self.extents.owner(functor).is_some() {
-            return self.extents.owner_mut(functor).expect("mounted owner disappeared")
-                .persist(&row, meta.as_ref());
+        if let Some(source) = self.extents.owner_mut(functor) {
+            let written = source.persist(&row, meta.as_ref())?;
+            // The reference records the functor the call was ROUTED through, which is
+            // the symbol its mount resolved — so the retract below finds this same
+            // owner without asking a name question again (WI-916).
+            return Ok(written.attach(functor));
         }
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
@@ -529,11 +583,8 @@ impl KnowledgeBase {
             self.retract(rule);
             return Ok(true);
         }
-        let (name, key) = reference.external_parts().expect("known FactRef form");
-        let functor = self.external_owner_functor("persistent retract", name)?;
-        self.extents.owner_mut(functor).ok_or_else(|| {
-            ExtentError::Backend(format!("persistent retract: `{name}` is not mounted"))
-        })?.retract(key)
+        let (owner, key) = reference.external_parts().expect("known FactRef form");
+        self.external_owner_mut("persistent retract", owner)?.retract(key)
     }
 
     pub fn update_persistent(&mut self, reference: &FactRef, new: Value, meta: Option<Value>)
@@ -565,31 +616,35 @@ impl KnowledgeBase {
             };
             return Ok(Some(StoredRow { row: new, reference }));
         }
-        let (name, key) = reference.external_parts().expect("known FactRef form");
-        let functor = self.external_owner_functor("persistent update", name)?;
-        self.extents.owner_mut(functor).ok_or_else(|| {
-            ExtentError::Backend(format!("persistent update: `{name}` is not mounted"))
-        })?.update(key, &new, meta.as_ref())
+        let (owner, key) = reference.external_parts().expect("known FactRef form");
+        let updated = self
+            .external_owner_mut("persistent update", owner)?
+            .update(key, &new, meta.as_ref())?;
+        // The replacement row stays under the SAME owner the update was routed to.
+        Ok(updated.map(|replacement| replacement.attach(owner)))
     }
 
-    /// The functor an EXTERNAL [`FactRef`]'s owner name denotes, or why it denotes no
-    /// single one; `op` labels the operation, so retract and update share ONE reading of
-    /// the name rather than two. The two faults are kept apart for the reason stated on
-    /// [`ExtentRegError::AmbiguousName`] — but as strings, matching the `unknown owner`
-    /// message that was already here: this path classifies a name-resolution failure as a
-    /// backend one, which is WI-916's subject, and typing only the newer half would split
-    /// a pair that reads as one.
-    fn external_owner_functor(&mut self, op: &str, name: &str) -> Result<Symbol, ExtentError> {
-        match self.resolve_name_in_global(name) {
-            ResolveResult::Found(sym) => Ok(sym),
-            ResolveResult::Ambiguous(cands) => Err(ExtentError::Backend(format!(
-                "{op}: ambiguous owner `{name}`: candidates {:?}",
-                self.candidate_names(&cands),
-            ))),
-            ResolveResult::NotFound => {
-                Err(ExtentError::Backend(format!("{op}: unknown owner `{name}`")))
-            }
-        }
+    /// The mounted source that owns an external [`FactRef`]'s row; `op` labels the
+    /// operation, so retract and update share ONE lookup.
+    ///
+    /// This asks NO name question. The reference carries the `Symbol`
+    /// `register_extent_owner` resolved, so there is no second reading here to disagree
+    /// with the mount's — which is why the two name-resolution failures this used to
+    /// report (`unknown owner`, `ambiguous owner`, both as untyped
+    /// [`ExtentError::Backend`] strings beside the mount's typed
+    /// [`ExtentRegError::UnresolvableName`] / [`ExtentRegError::AmbiguousName`]) are gone
+    /// rather than unified: a question asked once has one place to fail. WI-916.
+    fn external_owner_mut(
+        &mut self,
+        op: &str,
+        owner: Symbol,
+    ) -> Result<&mut dyn ExtentSource, ExtentError> {
+        // The error path touches no `self`, which is what lets the lookup happen ONCE:
+        // it names the owner as the `Symbol` it already has.
+        let Some(source) = self.extents.owner_mut(owner) else {
+            return Err(ExtentError::UnmountedOwner { op: op.to_owned(), owner });
+        };
+        Ok(source)
     }
 
     /// Register `source` as the exclusive read owner of every functor its
@@ -1216,7 +1271,9 @@ impl KnowledgeBase {
         let mut cursor = owner.query(self, pattern)?;
         let mut out = Vec::new();
         while let Some(next) = cursor.next(self) {
-            out.push(next?);
+            // The read is the third place a row leaves a source, so it stamps the same
+            // owner the two write seams do: `functor`, the mount this drain went to.
+            out.push(next?.attach(functor));
         }
         Ok(out)
     }
@@ -1355,28 +1412,22 @@ impl ExtentSource for InMemoryExtentSource {
         // This returns EXACTLY the matching rows (a complete table can afford the
         // strong end of the superset contract); a slower backend could ignore
         // `bound` and stream its whole extent, still sound.
-        let matched: Vec<StoredRow> = self
+        let matched: Vec<SourceRow> = self
             .rows
             .iter()
             .filter(|(_, row)| bound_matches(kb, row, &pattern.bound))
-            .map(|(id, row)| StoredRow {
-                row: row.clone(),
-                reference: FactRef::external(self.functor_name.clone(), RowKey::in_memory(*id)),
-            })
+            .map(|(id, row)| SourceRow { row: row.clone(), key: RowKey::in_memory(*id) })
             .collect();
         Ok(Box::new(VecCursor { iter: matched.into_iter() }))
     }
 
-    fn persist(&mut self, row: &Value, _meta: Option<&Value>) -> Result<StoredRow, ExtentError> {
+    fn persist(&mut self, row: &Value, _meta: Option<&Value>) -> Result<SourceRow, ExtentError> {
         let id = self.next_row_id;
         self.next_row_id = self.next_row_id.checked_add(1).ok_or_else(|| {
             ExtentError::Backend("InMemoryExtentSource row id exhausted".into())
         })?;
         self.rows.push((id, row.clone()));
-        Ok(StoredRow {
-            row: row.clone(),
-            reference: FactRef::external(self.functor_name.clone(), RowKey::in_memory(id)),
-        })
+        Ok(SourceRow { row: row.clone(), key: RowKey::in_memory(id) })
     }
 
     fn retract(&mut self, key: &RowKey) -> Result<bool, ExtentError> {
@@ -1391,7 +1442,7 @@ impl ExtentSource for InMemoryExtentSource {
     }
 
     fn update(&mut self, key: &RowKey, new: &Value, _meta: Option<&Value>)
-        -> Result<Option<StoredRow>, ExtentError>
+        -> Result<Option<SourceRow>, ExtentError>
     {
         let id = key.in_memory_id().ok_or_else(|| {
             ExtentError::Backend("InMemoryExtentSource received a foreign row key".into())
@@ -1400,28 +1451,25 @@ impl ExtentSource for InMemoryExtentSource {
             return Ok(None);
         };
         *slot = new.clone();
-        Ok(Some(StoredRow {
-            row: new.clone(),
-            reference: FactRef::external(self.functor_name.clone(), RowKey::in_memory(id)),
-        }))
+        Ok(Some(SourceRow { row: new.clone(), key: RowKey::in_memory(id) }))
     }
 }
 
-/// A cursor over a materialized `Vec<StoredRow>`. In-memory rows never error.
+/// A cursor over a materialized `Vec<SourceRow>`. In-memory rows never error.
 struct VecCursor {
-    iter: std::vec::IntoIter<StoredRow>,
+    iter: std::vec::IntoIter<SourceRow>,
 }
 
 #[cfg(test)]
-fn test_cursor_rows(rows: Vec<Value>) -> std::vec::IntoIter<StoredRow> {
-    rows.into_iter().enumerate().map(|(index, row)| StoredRow {
+fn test_cursor_rows(rows: Vec<Value>) -> std::vec::IntoIter<SourceRow> {
+    rows.into_iter().enumerate().map(|(index, row)| SourceRow {
         row,
-        reference: FactRef::external("test.cursor", RowKey::in_memory(index)),
+        key: RowKey::in_memory(index),
     }).collect::<Vec<_>>().into_iter()
 }
 
 impl ExtentCursor for VecCursor {
-    fn next(&mut self, _kb: &KnowledgeBase) -> Option<Result<StoredRow, ExtentError>> {
+    fn next(&mut self, _kb: &KnowledgeBase) -> Option<Result<SourceRow, ExtentError>> {
         self.iter.next().map(Ok)
     }
 }
