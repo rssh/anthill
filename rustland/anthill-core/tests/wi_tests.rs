@@ -922,3 +922,6 @@ mod wi917_ambiguous_dotted_head_test;
 
 #[path = "include/wi919_mirror_policy_keying_test.rs"]
 mod wi919_mirror_policy_keying_test;
+
+#[path = "include/wi920_resident_write_domain_test.rs"]
+mod wi920_resident_write_domain_test;

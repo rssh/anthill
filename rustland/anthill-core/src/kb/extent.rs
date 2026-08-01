@@ -584,10 +584,39 @@ impl KnowledgeBase {
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
         let term = self.alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
-        let sort = self.intern("Fact");
-        let domain = self.intern("anthill.todo");
+        let (sort, domain) = self.resident_fact_keys(functor);
         let rule = self.assert_fact(term, sort, domain, None);
         Ok(StoredRow { row, reference: FactRef::resident(rule) })
+    }
+
+    /// The `(sort, domain)` a RESIDENT persisted fact is stored under — the one place
+    /// the two resident writers decide it, so they cannot drift apart.
+    ///
+    /// SORT is `Fact`, which is not a placeholder: it is the loader's own default for a
+    /// `fact` carrying no `sort:` annotation (`load_fact`), so a runtime write and a
+    /// source write agree on it.
+    ///
+    /// DOMAIN is the scope that DECLARES `functor`. A runtime write has no source
+    /// position, so there is no scope it was "written in" to copy — a source `fact` takes
+    /// the scope it is WRITTEN in, which for one functor may be any scope that can see
+    /// it, so no derivation reproduces that. This is therefore a DECISION: of the scopes
+    /// available, the declaring one is the only one that is about this functor at all.
+    ///
+    /// What it replaces was not a rival derivation but the constant `anthill.todo` — one
+    /// tool's namespace stamped on every embedder's writes, through a seam (proposal 057)
+    /// any `Store.persist` reaches. What that cost is measured in
+    /// `wi920_resident_write_domain_test`.
+    ///
+    /// A head that declares NO scope — a bare-interned name, which `Store.persist`
+    /// accepts and existing callers use — takes `_global`. Not a fallback standing in for
+    /// a missing answer: `_global` is where such a name lives, and it is the domain the
+    /// loader gives a TOP-LEVEL source `fact` (measured). So the rule reads the same
+    /// either way — a fact is filed under the scope its head belongs to.
+    fn resident_fact_keys(&mut self, functor: Symbol) -> (Symbol, Symbol) {
+        let domain = self
+            .declaring_scope_symbol(functor)
+            .unwrap_or_else(|| self.intern("_global"));
+        (self.intern("Fact"), domain)
     }
 
     /// Persist through a registered resident-extent mirror, then assert the
@@ -599,12 +628,16 @@ impl KnowledgeBase {
         row: Value,
         _meta: Option<Value>,
     ) -> Result<StoredRow, ExtentError> {
+        let functor = row.head(self).functor_sym().ok_or_else(|| {
+            ExtentError::Backend("persistent persist requires a functor-headed row".into())
+        })?;
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
         let term = self.alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent persist: lower row: {e:?}")))?;
-        let sort = self.intern("Fact");
-        let domain = self.intern("anthill.todo");
+        // The SAME pair the mirror is handed and the resident shadow is asserted under,
+        // so the durable write and the in-memory one agree by construction.
+        let (sort, domain) = self.resident_fact_keys(functor);
         let mut mirror = self.take_mirror(mirror_key).ok_or_else(|| {
             ExtentError::Backend(format!("persistent persist: no mirror registered for key `{mirror_key}`"))
         })?;
