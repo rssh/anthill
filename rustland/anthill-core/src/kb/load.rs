@@ -6933,23 +6933,24 @@ fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
 /// queries. Queries run at `_global`, where the two readings almost always coincide —
 /// which is exactly why the divergence survived four fixes unnoticed.
 pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> ResolveResult {
-    match kb.symbols.resolve_in_scope(name, scope_raw) {
-        answered @ (ResolveResult::Found(_) | ResolveResult::Ambiguous(_)) => answered,
-        ResolveResult::NotFound => {
-            resolve_dotted_in_kb(kb, name, scope_raw, DottedVisibility::VisibleOnly)
-                // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit
-                // prelude resolve directly to their qualified home in query patterns too
-                // — parity with `remap_name_str`, so a reflection query naming
-                // `field_access` / `ListLiteral` or a prelude name like `eq` / `cons` bare
-                // still matches after the `_global` imports were removed. Fallback only:
-                // scope resolution already failed, so a user-defined same-spelling name
-                // has won. (Distinct from WI-476's deliberate no-rescue for arbitrary user
-                // short-names — these are RESERVED / PRELUDE names that always denote
-                // their target.)
-                .or_else(|| resolve_implicit(kb, name))
-                .map_or(ResolveResult::NotFound, ResolveResult::Found)
-        }
-    }
+    kb.symbols
+        .resolve_in_scope(name, scope_raw)
+        // WI-917: the dotted rung answers in this same vocabulary, so `or_else` carries
+        // the stop to it too — a contested HEAD SEGMENT is returned rather than folded
+        // into "unresolved". Not for the tier's sake, which is keyed on a name's LAST
+        // SEGMENT (`kernel_vocab_qualified`) and can never answer a dotted one, but
+        // because `NotFound` is what sends every caller to its ABSENCE handling: the
+        // false "no rule, fact, or declaration is in scope for it".
+        .or_else(|| resolve_dotted_in_kb(kb, name, scope_raw, DottedVisibility::VisibleOnly))
+        // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit prelude
+        // resolve directly to their qualified home in query patterns too — parity with
+        // `remap_name_str`, so a reflection query naming `field_access` / `ListLiteral`
+        // or a prelude name like `eq` / `cons` bare still matches after the `_global`
+        // imports were removed. Fallback only: scope resolution already failed, so a
+        // user-defined same-spelling name has won. (Distinct from WI-476's deliberate
+        // no-rescue for arbitrary user short-names — these are RESERVED / PRELUDE names
+        // that always denote their target.)
+        .or_else(|| resolve_implicit(kb, name).map_or(ResolveResult::NotFound, ResolveResult::Found))
 }
 
 /// WI-900: does `name` ALREADY DENOTE something at `scope_raw` — the question the MINT
@@ -6973,7 +6974,7 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Res
 /// in their favour. Pinned by
 /// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
 fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> bool {
-    !matches!(resolve_name_in_kb(kb, name, scope_raw), ResolveResult::NotFound)
+    resolve_name_in_kb(kb, name, scope_raw).denotes()
 }
 
 // ---------------------------------------------------------------------------
@@ -7041,26 +7042,48 @@ enum DottedVisibility {
 /// later segment absent) it re-rooted the whole path at a namespace the author never
 /// named. [`head_owns_path`] is the guard that keeps such a path loud; the guard and
 /// this ordering are two halves of one rule, and neither alone suffices.
+///
+/// # An AMBIGUOUS HEAD ends the ladder (WI-917)
+///
+/// Answering in `resolve_in_scope`'s three-way vocabulary is what lets it: BOTH rungs
+/// stand down under a contested head (rung 1 needs a single head symbol; rung 2 must not
+/// re-root a name the loader cannot read), and while they were the only two answers that
+/// was indistinguishable from a plain miss — so the path fell to the WI-476 bare intern
+/// and the conflict was reported NOWHERE at a reference and FALSELY ("no rule, fact, or
+/// declaration is in scope for it") at a query pattern.
+///
+/// The candidates are the HEAD's, because the head is the only segment resolved here: the
+/// tail is appended to whatever the head denotes and is never looked up on its own.
 fn resolve_dotted_in_kb(
     kb: &KnowledgeBase,
     name: &str,
     scope: u32,
     vis: DottedVisibility,
-) -> Option<Symbol> {
+) -> ResolveResult {
     // DOTTED-ONLY, decided ONCE for both rungs: a spelled-out PATH identifies itself,
     // whereas admitting short names would reinstate the WI-476 global short-name scan.
-    let (head, tail) = name.split_once('.')?;
+    let Some((head, tail)) = name.split_once('.') else {
+        return ResolveResult::NotFound;
+    };
     // The head is resolved ONCE and shared. Both rungs need it — rung 1 to qualify
     // against, rung 2 (via `head_owns_path`) to decide whether to stand down — and
     // resolving it twice also built the `Ambiguous` candidate list twice.
-    let head_res = kb.symbols.resolve_in_scope(head, scope);
+    let head_sym = match kb.symbols.resolve_in_scope(head, scope) {
+        ResolveResult::Found(sym) => Some(sym),
+        // Returned rather than passed down, so no rung can be reached under a contested
+        // head — the state the rungs used to have to guard against is now unrepresentable
+        // (`head_owns_path` lost its `Ambiguous` arm to this line).
+        ResolveResult::Ambiguous(candidates) => return ResolveResult::Ambiguous(candidates),
+        ResolveResult::NotFound => None,
+    };
     let admits = |sym: &Symbol| match vis {
         DottedVisibility::VisibleOnly => kb.symbols.internal_visible_from(*sym, scope),
         DottedVisibility::Any => true,
     };
-    dotted_by_head(kb, &head_res, tail)
+    dotted_by_head(kb, head_sym, tail)
         .filter(admits)
-        .or_else(|| dotted_absolute(kb, name, &head_res).filter(admits))
+        .or_else(|| dotted_absolute(kb, name, head_sym).filter(admits))
+        .map_or(ResolveResult::NotFound, ResolveResult::Found)
 }
 
 /// Ladder rung 1 — HEAD-SEGMENT qualification: append the trailing segments to the
@@ -7070,13 +7093,11 @@ fn resolve_dotted_in_kb(
 /// is what makes `Map.empty` work for an imported `Map`.
 fn dotted_by_head(
     kb: &KnowledgeBase,
-    head_res: &ResolveResult,
+    head_sym: Option<Symbol>,
     tail: &str,
 ) -> Option<Symbol> {
-    let ResolveResult::Found(head_sym) = head_res else {
-        return None;
-    };
-    let head_qualified = match kb.symbols.get(*head_sym) {
+    let head_sym = head_sym?;
+    let head_qualified = match kb.symbols.get(head_sym) {
         SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
         SymbolDef::Unresolved { name } => name.clone(),
     };
@@ -7102,16 +7123,16 @@ fn dotted_by_head(
 fn dotted_absolute(
     kb: &KnowledgeBase,
     name: &str,
-    head_res: &ResolveResult,
+    head_sym: Option<Symbol>,
 ) -> Option<Symbol> {
-    if head_owns_path(kb, head_res) {
+    if head_owns_path(kb, head_sym) {
         return None;
     }
     kb.symbols.by_qualified_name.get(name).copied()
 }
 
-/// WI-751: does `head_res` — how the path's HEAD segment resolved in the citing scope —
-/// name something that OWNS every path beneath it, in which case [`dotted_absolute`]
+/// WI-751: does `head_sym` — what the path's HEAD segment resolved to in the citing scope
+/// — name something that OWNS every path beneath it, in which case [`dotted_absolute`]
 /// must STAY OUT, because a missing member under an owning root is a genuine member miss
 /// and not a licence to re-root the name somewhere else?
 ///
@@ -7123,20 +7144,17 @@ fn dotted_absolute(
 /// the author never named. Verified both ways by
 /// `wi751_partial_miss_under_an_owning_root_stays_loud`.
 ///
-/// An AMBIGUOUS head owns the path for the same reason [`Loader::qualified_name_resolves`]
-/// counts `Ambiguous` as resolving: an ambiguity is a real finding with a real error to
-/// emit, and resolving past it silently picks one reading of a name the loader is on
-/// record as unable to choose.
-///
 /// A head that resolves to a NON-namespace (the `sort` / `operation` / labelled `rule`
 /// that merely SHARES a namespace root's spelling) owns nothing here — that is precisely
-/// the WI-751 collision, and the rung exists for it.
-fn head_owns_path(kb: &KnowledgeBase, head_res: &ResolveResult) -> bool {
-    match head_res {
-        ResolveResult::Found(sym) => matches!(kb.kind_of(*sym), Some(SymbolKind::Namespace)),
-        ResolveResult::Ambiguous(_) => true,
-        ResolveResult::NotFound => false,
-    }
+/// the WI-751 collision, and the rung exists for it. Neither does a head that resolves to
+/// NOTHING: `None` is the miss the absolute rung is for.
+///
+/// An AMBIGUOUS head is not a case here at all any more (WI-917). It used to be — "owns
+/// the path" was how the rung was stood down under one — but standing down SILENTLY is
+/// exactly the defect: [`resolve_dotted_in_kb`] now returns the ambiguity before either
+/// rung is consulted, so this guard never sees one.
+fn head_owns_path(kb: &KnowledgeBase, head_sym: Option<Symbol>) -> bool {
+    matches!(head_sym.and_then(|sym| kb.kind_of(sym)), Some(SymbolKind::Namespace))
 }
 
 // WI-233: per-item-kind aggregator (count, total time). Gated by
@@ -8139,28 +8157,18 @@ impl<'a> Loader<'a> {
             // An ambiguity ENDS the ladder (kernel-language.md §8.6). This is the
             // position that HAS a channel, so it is where the conflict is named.
             ResolveResult::Ambiguous(candidates) => {
-                self.errors.push(LoadError::AmbiguousSymbol {
-                    name: name.to_owned(),
-                    candidates: self.kb.candidate_names(&candidates),
-                    span,
-                    scope_name: self.scope_display_name(),
-                });
-                self.kb.symbols.intern(name)
+                self.push_ambiguous_symbol(name, &candidates, span)
             }
             ResolveResult::NotFound => {
                 // WI-752: THE dotted ladder — head-qualification, then the absolute
                 // qualified name. Both rungs, their order and the rationale for it live
                 // in `resolve_dotted_in_kb`; this position is the ladder's REFERENCE
                 // consumer (term functors and identifiers), and every other position now
-                // reads the same function rather than re-deriving the answer.
-                if let Some(q_sym) = self.resolve_dotted(name, DottedVisibility::VisibleOnly) {
+                // reads the same function rather than re-deriving the answer. Its two
+                // channel-only reports (a contested head, a hidden `internal` hit) come
+                // with it, in `resolve_dotted_reported`.
+                if let Some(q_sym) = self.resolve_dotted_reported(name, span) {
                     return q_sym;
-                }
-                // No rung had a VISIBLE answer. If one had a hidden-`internal` answer,
-                // that is the precise diagnostic — reported here, ahead of the fallbacks,
-                // exactly where the per-rung gate used to report it.
-                if let Some(sym) = self.forbid_if_dotted_internal(name, span) {
-                    return sym;
                 }
                 // WI-040 / WI-521: reserved kernel desugaring vocab (synthesized
                 // `match_expr` / `field_access` / `ListLiteral` / …) and the
@@ -8194,24 +8202,64 @@ impl<'a> Loader<'a> {
     /// loader is currently reading. That free function carries the rungs, their order
     /// and the rationale for both; this is only the binding of `kb` and `scope`, so no
     /// loader position can express the ladder differently by accident.
-    fn resolve_dotted(&self, name: &str, vis: DottedVisibility) -> Option<Symbol> {
+    fn resolve_dotted(&self, name: &str, vis: DottedVisibility) -> ResolveResult {
         resolve_dotted_in_kb(self.kb, name, self.current_scope.raw(), vis)
     }
 
-    /// WI-752: the DIAGNOSTIC half of the dotted ladder, for the positions that have
-    /// an error channel. Run only after [`Self::resolve_dotted`] with `VisibleOnly` has
-    /// come up empty: if some rung DID have an answer and it was hidden by `internal`,
-    /// that forbidden reference is the precise (load-blocking) finding, and reporting it
-    /// beats the misleading unknown-name error the caller would otherwise reach.
+    /// THE DOTTED STEP for a position that HAS an error channel: the ladder, plus the two
+    /// reports only such a position can make. `None` means the ladder had nothing to say
+    /// and the caller's own fallbacks (implicit vocab, scope-`internal` probe, bare
+    /// intern) take over.
     ///
-    /// Split from the resolving half — rather than gating each rung in place, as
-    /// WI-369's `accept_qualified_hit` did — because a hidden hit must not TERMINATE the
-    /// descent (see [`DottedVisibility::VisibleOnly`]). The report is emitted HERE, still
-    /// ahead of the implicit-vocab and scope-internal fallbacks, so a name with no
-    /// visible reading keeps exactly the diagnostic it had before WI-752.
-    fn forbid_if_dotted_internal(&mut self, name: &str, span: Span) -> Option<Symbol> {
-        let hidden = self.resolve_dotted(name, DottedVisibility::Any)?;
-        Some(self.push_forbidden_internal(hidden, name, span))
+    /// The three reference positions ([`Self::remap_name_str_inner`],
+    /// [`Self::remap_symbol_strict`], [`Self::remap_name`]) all reach this after
+    /// `resolve_in_scope` returned `NotFound`, and each used to spell the sequence out.
+    /// It lives here once (WI-917) because the ORDER is the policy — an ambiguity is
+    /// reported ahead of the `internal` probe, which is reported ahead of every fallback
+    /// — and three copies of an order is how the WI-729/749/750/751 divergence began.
+    ///
+    /// WI-917: the AMBIGUITY arm is the new half. A contested head used to leave the
+    /// ladder indistinguishable from a plain miss, so `Widget.member` with two `Widget`s
+    /// in scope loaded CLEAN — no diagnostic, on a position that has a channel for one.
+    /// It is reported exactly as a contested whole name is, one arm up in each caller:
+    /// same `AmbiguousSymbol`, same bare intern for the symbol the caller still needs.
+    fn resolve_dotted_reported(&mut self, name: &str, span: Span) -> Option<Symbol> {
+        match self.resolve_dotted(name, DottedVisibility::VisibleOnly) {
+            ResolveResult::Found(sym) => Some(sym),
+            ResolveResult::Ambiguous(candidates) => {
+                Some(self.push_ambiguous_symbol(name, &candidates, span))
+            }
+            // No rung had a VISIBLE answer. If one had a hidden-`internal` answer, that
+            // is the precise diagnostic — reported here, ahead of the fallbacks, exactly
+            // where the per-rung gate used to report it.
+            //
+            // Split from the resolving read — rather than gating each rung in place, as
+            // WI-369's `accept_qualified_hit` did — because a hidden hit must not
+            // TERMINATE the descent (see [`DottedVisibility::VisibleOnly`]).
+            ResolveResult::NotFound => match self.resolve_dotted(name, DottedVisibility::Any) {
+                ResolveResult::Found(hidden) => {
+                    Some(self.push_forbidden_internal(hidden, name, span))
+                }
+                // `vis` filters a HIT, never the head, so the `Any` read answers
+                // `Ambiguous` exactly when the `VisibleOnly` read above did — and that
+                // arm already returned.
+                ResolveResult::Ambiguous(_) | ResolveResult::NotFound => None,
+            },
+        }
+    }
+
+    /// Report `name` as resolving to several symbols at the current scope and hand back
+    /// the WI-476 bare intern the caller still owes its caller. One spelling for every
+    /// position that can report an ambiguity, so the message, the candidate rendering and
+    /// the returned symbol cannot drift apart between them.
+    fn push_ambiguous_symbol(&mut self, name: &str, candidates: &[Symbol], span: Span) -> Symbol {
+        self.errors.push(LoadError::AmbiguousSymbol {
+            name: name.to_owned(),
+            candidates: self.kb.candidate_names(candidates),
+            span,
+            scope_name: self.scope_display_name(),
+        });
+        self.kb.symbols.intern(name)
     }
 
     /// Strict scope-aware symbol resolution: errors on unresolved names.
@@ -8226,13 +8274,7 @@ impl<'a> Loader<'a> {
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
             ResolveResult::Ambiguous(candidates) => {
-                self.errors.push(LoadError::AmbiguousSymbol {
-                    name: name.to_owned(),
-                    candidates: self.kb.candidate_names(&candidates),
-                    span,
-                    scope_name: self.scope_display_name(),
-                });
-                self.kb.symbols.intern(name)
+                self.push_ambiguous_symbol(name, &candidates, span)
             }
             ResolveResult::NotFound => {
                 // WI-752: THE dotted ladder. A `Term::Ref` reaching here can carry a
@@ -8240,10 +8282,7 @@ impl<'a> Loader<'a> {
                 // to have NEITHER dotted rung — so a path the term and rule positions
                 // both resolved was reported `UnresolvedName` here. Strictly a gain in
                 // reach: only names that resolve to nothing today are affected.
-                if let Some(sym) = self.resolve_dotted(name, DottedVisibility::VisibleOnly) {
-                    return sym;
-                }
-                if let Some(sym) = self.forbid_if_dotted_internal(name, span) {
+                if let Some(sym) = self.resolve_dotted_reported(name, span) {
                     return sym;
                 }
                 // WI-369: a forbidden cross-scope `internal` reference gets a
@@ -8273,13 +8312,7 @@ impl<'a> Loader<'a> {
         match self.kb.symbols.resolve_in_scope(&lookup_name, scope) {
             ResolveResult::Found(resolved) => resolved,
             ResolveResult::Ambiguous(candidates) => {
-                self.errors.push(LoadError::AmbiguousSymbol {
-                    name: lookup_name.clone(),
-                    candidates: self.kb.candidate_names(&candidates),
-                    span: name.span,
-                    scope_name: self.scope_display_name(),
-                });
-                self.kb.symbols.intern(&lookup_name)
+                self.push_ambiguous_symbol(&lookup_name, &candidates, name.span)
             }
             ResolveResult::NotFound => {
                 // WI-752: THE dotted ladder — the SAME one the term positions read.
@@ -8298,11 +8331,7 @@ impl<'a> Loader<'a> {
                 // resolves to a NAMESPACE now reports a member miss under that namespace
                 // instead of silently re-rooting at a same-spelled top-level twin. That
                 // is the WI-751 rule, and it was already how the term positions behaved.
-                if let Some(sym) = self.resolve_dotted(&lookup_name, DottedVisibility::VisibleOnly) {
-                    return sym;
-                }
-                // A rung had an answer, hidden by `internal` — the precise diagnostic.
-                if let Some(sym) = self.forbid_if_dotted_internal(&lookup_name, name.span) {
+                if let Some(sym) = self.resolve_dotted_reported(&lookup_name, name.span) {
                     return sym;
                 }
                 // WI-369: precise diagnostic for a forbidden cross-scope
@@ -9727,9 +9756,15 @@ impl<'a> Loader<'a> {
     /// — a member miss invented by decomposing it is not. `Ambiguous` counts as
     /// resolving for the same reason: an ambiguity is a real finding with a real error
     /// to emit, and peeling the name apart would bury it.
+    /// WI-917: `denotes` and `or_else` carry that "same reason" rather than restating
+    /// it — a contested HEAD now reaches this gate as the ladder's own `Ambiguous`, and
+    /// the arm that used to read it through `Option::is_some()` answered a silent
+    /// `false`, peeling `Widget.member` into a `member` call on a `Widget` receiver and
+    /// burying the conflict under an invented member miss.
     fn qualified_name_resolves(&self, name: &str) -> bool {
-        match self.kb.symbols.resolve_in_scope(name, self.current_scope.raw()) {
-            ResolveResult::Found(_) | ResolveResult::Ambiguous(_) => true,
+        self.kb
+            .symbols
+            .resolve_in_scope(name, self.current_scope.raw())
             // WI-752: THE dotted ladder, read in the SAME order as every resolving
             // position. This gate used to rank the absolute rung FIRST while the
             // resolver it gates ranks it LAST — harmless for the boolean itself, but a
@@ -9742,10 +9777,8 @@ impl<'a> Loader<'a> {
             // the old absolute rung here was already visibility-blind while the
             // head-qualified rung beside it was gated, so a hit hidden by `internal`
             // counted as resolving or not depending purely on which rung found it.
-            ResolveResult::NotFound => {
-                self.resolve_dotted(name, DottedVisibility::Any).is_some()
-            }
-        }
+            .or_else(|| self.resolve_dotted(name, DottedVisibility::Any))
+            .denotes()
     }
 
     /// The LONGEST prefix of a dotted name that resolves to a RULE, paired with the
@@ -10007,29 +10040,28 @@ impl<'a> Loader<'a> {
     /// [`resolve_dotted_in_kb`] ladder — so the two citation forms cannot drift, but
     /// WITHOUT its mutation: no unresolved-name interning, no error push, so a non-rule
     /// name leaves loader state untouched for the ordinary `field_access` projection
-    /// path. The three `resolve_in_scope` outcomes are handled explicitly:
-    ///  - `Found`: direct scope resolution already applied the `internal` filter.
-    ///  - `NotFound`: the dotted case — the shared ladder, under `VisibleOnly` (the
-    ///    qualified path bypasses `resolve_in_scope`'s `internal` filter, WI-369), so a
-    ///    hidden cross-scope rule does NOT silently collapse to a value here. (Rules are
-    ///    never marked `internal` today, so this is defensive — but it keeps parity
-    ///    with the applied form rather than diverging.)
-    ///  - `Ambiguous`: not a clean rule reference — don't collapse; the applied form
-    ///    reports the ambiguity loudly, and the ordinary path preserves that here.
+    /// path. The dotted rung runs under `VisibleOnly` (the qualified path bypasses
+    /// `resolve_in_scope`'s `internal` filter, WI-369), so a hidden cross-scope rule does
+    /// NOT silently collapse to a value here — rules are never marked `internal` today,
+    /// so that is defensive, but it keeps parity with the applied form.
+    ///
+    /// ONLY `Found` collapses. An `Ambiguous` from either rung — the whole name's, or a
+    /// contested HEAD SEGMENT's (WI-917) — is not a clean rule reference: the applied
+    /// form reports the ambiguity loudly, and taking one reading here would bury it.
     fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
         let scope = self.current_scope.raw();
-        let sym = match self.kb.symbols.resolve_in_scope(name, scope) {
-            ResolveResult::Found(s) => s,
-            ResolveResult::NotFound => {
-                // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand
-                // here; they now come from `resolve_dotted_in_kb` like everywhere else).
-                // Without the absolute rung a root-shadowing declaration suppressed the
-                // RULE-REFERENCE citation forms (`myroot.inner.rel.isEmpty`,
-                // `myroot.inner.rel.takeN(1)`) even after the applied-call path was
-                // fixed — the same defect one resolver over.
-                self.resolve_dotted(name, DottedVisibility::VisibleOnly)?
-            }
-            ResolveResult::Ambiguous(_) => return None,
+        // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
+        // now come from `resolve_dotted_in_kb` like everywhere else). Without the
+        // absolute rung a root-shadowing declaration suppressed the RULE-REFERENCE
+        // citation forms (`myroot.inner.rel.isEmpty`, `myroot.inner.rel.takeN(1)`) even
+        // after the applied-call path was fixed — the same defect one resolver over.
+        let resolved = self
+            .kb
+            .symbols
+            .resolve_in_scope(name, scope)
+            .or_else(|| self.resolve_dotted(name, DottedVisibility::VisibleOnly));
+        let ResolveResult::Found(sym) = resolved else {
+            return None;
         };
         matches!(self.kb.kind_of(sym), Some(SymbolKind::Goal | SymbolKind::Rule)).then_some(sym)
     }

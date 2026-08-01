@@ -2620,6 +2620,25 @@ impl KnowledgeBase {
     /// the one goal context where an undefined functor NECESSARILY falsifies its
     /// negand, so it is the one whose branches are always followed.
     ///
+    /// # That tolerance is ABOUT ABSENCE, and does not transfer to an AMBIGUITY
+    ///
+    /// WI-917 asked whether an AMBIGUOUS name in one of the tolerated positions is
+    /// tolerated for the same reason. It is not, and the reason above is what rules
+    /// it out: it turns on the branch having no answers to lose. An absent name
+    /// genuinely has none, so leaving it to resolution costs nothing. A CONTESTED
+    /// name has answers under EITHER reading, and the bare intern the pattern binds
+    /// it to (WI-476) has none — so tolerating one silently DROPS solutions, which
+    /// is exactly the corruption this paragraph promises does not happen. Measured
+    /// on the `wi917` CLI fixture, where `contested917` is a rule in two imported
+    /// namespaces and each reading answers one row: `push_choice(never917(),
+    /// contested917(?v))` printed that row under either import ALONE, and `no
+    /// solutions`, exit 0, no diagnostic, under both.
+    ///
+    /// So an ambiguity is refused wherever it is written, by the separate
+    /// [`Self::ambiguous_query_names`] walk. The two questions stay separate
+    /// functions because they have opposite descent rules for one reason: this walk
+    /// asks what the SEARCH commits to, and an ambiguity is a defect of the TEXT.
+    ///
     /// A DATA slot — a constructor argument, `Widget(id: absent(42))` — is never a
     /// goal and is never walked. Each candidate keeps the head-only exemptions
     /// (scoping marker skipped, defined functor skipped) plus the per-node
@@ -2665,6 +2684,62 @@ impl KnowledgeBase {
             for child in self.goal_arg_termids(tid) {
                 self.collect_undefined_goal_functors(child, true, out);
             }
+        }
+    }
+
+    /// WI-917: every functor in query pattern `tid` whose name the citing scope
+    /// `scope_raw` resolves to TWO OR MORE symbols — the pattern position's half of
+    /// the load error a reference gets, and the answer to the tolerance question
+    /// stated at [`Self::undefined_query_goal_functors`].
+    ///
+    /// A contested name arrives here as the WI-476 bare intern: the pattern position
+    /// has no error channel, so `load::resolve_query_name` gives an ambiguity and an
+    /// absence the SAME term (a symbol that heads no clause) and leaves the DIAGNOSIS
+    /// to the caller. Re-reading the ladder at `scope_raw` is what tells them apart —
+    /// the same re-read the CLI's head reporter does, here extended to every node.
+    ///
+    /// EVERY node: a bare disjunction branch, a quantifier body, a data slot — the
+    /// positions WI-863 leaves to resolution. Where a name sits decides what an
+    /// ABSENT one costs, and nothing about what a contested one costs. The data slot
+    /// is where the two diverge most sharply: an absent data name's bare intern is
+    /// what the FACT's loader produced too, so pattern and fact match; a contested
+    /// one's matches neither reading.
+    pub fn ambiguous_query_names(&self, tid: TermId, scope_raw: u32) -> SmallVec<[Symbol; 4]> {
+        let mut out = SmallVec::new();
+        self.collect_ambiguous_query_names(tid, scope_raw, &mut out);
+        out
+    }
+
+    /// Recursive worker for [`Self::ambiguous_query_names`]. Descent is
+    /// unconditional (`Term::subterms` — positional and named args alike), so unlike
+    /// [`Self::collect_undefined_goal_functors`] there is no gate to thread. `out`
+    /// dedups. Terminates because terms are acyclic.
+    fn collect_ambiguous_query_names(
+        &self,
+        tid: TermId,
+        scope_raw: u32,
+        out: &mut SmallVec<[Symbol; 4]>,
+    ) {
+        // The SAME candidate test as the undefined walk — a scoping marker and a
+        // defined functor are dropped by `undefined_query_functor`, and the
+        // discrimination-tree backstop clears an arity-0 proposition that is declared
+        // but sits in no functor table — so the two refusals cannot disagree about
+        // which symbols are even askable. Ordered ladder-read first: an ambiguity is
+        // rare and the tree walk is the expensive half.
+        if let Some(sym) = self.undefined_query_functor(tid) {
+            let ambiguous = matches!(
+                load::resolve_name_in_kb(self, self.resolve_sym(sym), scope_raw),
+                ResolveResult::Ambiguous(_)
+            );
+            if ambiguous
+                && !out.contains(&sym)
+                && self.browse_program_clauses_matching(&tid).is_empty()
+            {
+                out.push(sym);
+            }
+        }
+        for child in self.get_term(tid).subterms() {
+            self.collect_ambiguous_query_names(child, scope_raw, out);
         }
     }
 

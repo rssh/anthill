@@ -1,0 +1,38 @@
+-- WI-917 — two namespaces declaring the SAME short names, so a scope importing both
+-- resolves each one AMBIGUOUSLY. Nothing here references a contested name, so the file
+-- loads clean and the conflict is live but unreported until a query names it.
+--
+-- Unlike WI-907's fixture, every contested name here ANSWERS under EITHER reading. That
+-- is the whole point of this ticket's second half: WI-863 tolerates an unresolvable name
+-- in a bare disjunction branch / a data slot because an ABSENT one has no solutions to
+-- lose, and the way to show that reasoning does not transfer is a contested name whose
+-- branch does.
+namespace wi917.alpha
+  sort Widget917
+    entity w917a(v: anthill.prelude.Int64)
+  end
+  sort Payload917
+    entity load917(n: anthill.prelude.Int64)
+  end
+  sort Box917
+    entity box917(inner: Payload917)
+  end
+
+  fact w917a(v: 1)
+  fact box917(inner: load917(n: 7))
+
+  rule contested917(?v) :- w917a(v: ?v)
+end
+
+namespace wi917.beta
+  sort Widget917
+    entity w917b(v: anthill.prelude.Int64)
+  end
+  sort Payload917
+    entity load917(n: anthill.prelude.Int64)
+  end
+
+  fact w917b(v: 2)
+
+  rule contested917(?v) :- w917b(v: ?v)
+end

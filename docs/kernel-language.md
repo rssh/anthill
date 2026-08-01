@@ -1980,8 +1980,10 @@ order (Rust; `scaland` does not yet implement either):
 2. **absolute** — the name *is* some symbol's own `qualified_name`. Skipped
    entirely when the path's head resolves in scope to a **namespace** (it owns
    every path beneath it, so a missing member is a member miss, not a licence to
-   re-root the path elsewhere) or resolves **ambiguously** (a reportable
-   finding).
+   re-root the path elsewhere).
+
+Neither rung is reached when the head resolves **ambiguously**: the ladder answers
+with that ambiguity instead (below).
 
 Rung 1 outranks rung 2: a scope-relative reading beats a bare global path, so a
 nearer same-rooted namespace is never displaced by a top-level one. Rung 2
@@ -2000,15 +2002,22 @@ in the author's favour a conflict the author has to see. A position that only
 asks *whether* a name denotes, such as the rule-head mint guard, counts an
 ambiguity as denoting for the same reason.
 
-An ambiguous **whole name** is then reported: as a load error at a reference, and
-as a refused query naming the candidates at a pattern's head or a
-negation-committed goal. What is *not* yet reported is an ambiguous **head
-segment of a dotted path** — both rungs stand down under one (above), and the
-path falls through to the unresolved-name fallback, so `Sort.member` with two
-`Sort`s in scope loads clean at a reference and is refused as *unknown* at a
-pattern. Nor is an ambiguity in a query position that tolerates unresolvable
-names (a bare disjunction branch, a quantifier body, a data slot), which follows
-that tolerance rather than a decision of its own.
+A **dotted path** ends the ladder the same way, on its **head segment** (WI-917):
+the head is the only part resolved in scope — the tail is appended to whatever it
+denotes and is never looked up on its own — so a contested head is a contested
+path, and the candidates reported are the head's. Both rungs would stand down
+under one anyway; what the ambiguity adds is that standing down is no longer
+silent.
+
+The ambiguity is then **reported wherever the name is written**: as a load error
+at a reference, as a refused mount for a host-supplied name, and as a refused
+query naming the candidates at a pattern. A query pattern is refused *anywhere* in
+the pattern, including the positions that tolerate an **unresolvable** name (a
+bare disjunction branch, a quantifier body, a data slot). That tolerance does not
+transfer, and its own reason is why: it holds because an absent name's branch has
+no solutions to lose, whereas a contested name's branch answers under either
+reading — so tolerating one silently *drops* solutions, the corruption the
+tolerance exists to avoid.
 
 **The `internal` gate applies to the ladder, not to a rung.** The qualified index
 bypasses step 3's filter, so visibility is checked explicitly on each hit — but a

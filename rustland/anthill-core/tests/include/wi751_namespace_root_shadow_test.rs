@@ -209,9 +209,12 @@ end
     }
 }
 
-/// An AMBIGUOUS head must not be resolved past. `resolve_dotted_by_head` returns None
-/// on `Ambiguous`, so without the guard the absolute rung answered instead and silently
-/// picked one reading of a name the loader is on record as unable to choose.
+/// An AMBIGUOUS head must not be resolved past. Head-qualification declines a contested
+/// head, so without something stopping the ABSOLUTE rung too it answered instead and
+/// silently picked one reading of a name the loader is on record as unable to choose.
+/// WI-751 stopped it with a `head_owns_path` arm; WI-917 replaced that arm with an
+/// earlier return of the ambiguity itself, so this now also REPORTS — which is what the
+/// `try_load_kb_with` error below has become.
 #[test]
 fn wi751_ambiguous_head_is_not_resolved_past() {
     const SRC: &str = r#"

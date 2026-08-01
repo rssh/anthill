@@ -1408,6 +1408,15 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 }
 
                 for &qt in query_terms {
+                    // WI-917: a CONTESTED name refuses the pattern in either mode and
+                    // wherever it is written. Ahead of the run, not after it: unlike an
+                    // undefined functor (WI-754 — resolution can still succeed, so the
+                    // refusal must wait), a name the loader could not read has no single
+                    // reading for the run to be an answer TO.
+                    if report_contested_query_names(&kb, global_raw, qt) {
+                        any_unknown = true;
+                        continue;
+                    }
                     if args.match_heads {
                         // Structural browse: which facts / rule heads unify
                         // with the pattern, no body evaluation.
@@ -1421,6 +1430,9 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // resolve path's `undefined_query_goal_functors` guards
                         // (WI-863) cannot arise — an unknown nested functor just
                         // fails to match and reports `0 result(s)`, not a false answer.
+                        // Head-only for an UNKNOWN name, that is: a contested one was
+                        // refused above, in both modes, because it is a defect of the
+                        // pattern rather than of what the pattern finds (WI-917).
                         if results.is_empty() && report_if_unknown_functor(&kb, global_raw, qt) {
                             any_unknown = true;
                             continue;
@@ -1704,6 +1716,27 @@ fn report_if_unknown_functor(
     true
 }
 
+/// WI-917: report every AMBIGUOUS name in query pattern `qt`, and say whether there
+/// was one. `ambiguous_query_names` walks the WHOLE pattern — including the positions
+/// that tolerate an unresolvable name (a bare disjunction branch, a quantifier body, a
+/// data slot), because WI-863's tolerance is an argument about ABSENCE and does not
+/// transfer; the reason is stated at `undefined_query_goal_functors`.
+///
+/// The per-name message is [`report_unknown_functor_name`]'s ambiguity arm, so a
+/// contested head — which reaches that function the OTHER way, through the
+/// undefined-functor walk — and a contested nested name are refused identically.
+fn report_contested_query_names(
+    kb: &KnowledgeBase,
+    global_raw: u32,
+    qt: anthill_core::kb::term::TermId,
+) -> bool {
+    let contested = kb.ambiguous_query_names(qt, global_raw);
+    for &sym in &contested {
+        report_unknown_functor_name(kb, global_raw, sym);
+    }
+    !contested.is_empty()
+}
+
 /// The WI-754 unknown-functor diagnostic for one `sym`. Shared by the head-only
 /// [`report_if_unknown_functor`] (--match browse) and the goal-position walk
 /// `undefined_query_goal_functors` (resolve path, WI-863), so both spell the
@@ -1716,11 +1749,12 @@ fn report_if_unknown_functor(
 /// without it an author with two same-named imports is told that nothing declares the
 /// name, when two things do.
 ///
-/// The ambiguity is therefore reported exactly WHERE THIS FUNCTION IS REACHED, no wider:
-/// the callers tolerate an unresolvable name in a bare disjunction branch, a quantifier
-/// body and a data slot (WI-863's reasoning, inherited rather than re-decided), and the
-/// ladder does not report an ambiguous HEAD SEGMENT of a dotted path anywhere. Both gaps
-/// are WI-917.
+/// WI-917 widened WHERE this is reached, in the two ways WI-907 left it narrow. A dotted
+/// path whose HEAD SEGMENT is contested now reaches the ambiguity arm rather than the
+/// absence one below it (the ladder answers `Ambiguous` for it, instead of standing both
+/// rungs down indistinguishably from a miss). And [`report_contested_query_names`] brings
+/// every name in the pattern here, not just the ones in a position committed to its
+/// truth — WI-863's tolerance is about an ABSENT name, and does not transfer.
 fn report_unknown_functor_name(
     kb: &KnowledgeBase,
     global_raw: u32,

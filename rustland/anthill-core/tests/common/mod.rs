@@ -490,6 +490,22 @@ pub fn head_short(
 #[allow(dead_code)]
 pub fn query_pattern_functor(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::intern::Symbol {
     use anthill_core::kb::term::Term;
+    let t = query_pattern_term(kb, pattern);
+    match kb.get_term(t) {
+        Term::Fn { functor, .. } => *functor,
+        other => panic!("query pattern `{pattern}` is not an application: {other:?}"),
+    }
+}
+
+/// The WHOLE term a query pattern converts to, by the same shipped path
+/// [`query_pattern_functor`] reads its head off (WI-917 lifted this out of it): a test
+/// asking about a NESTED position — a disjunction branch, a data slot — cannot ask it of
+/// the head symbol alone.
+#[allow(dead_code)]
+pub fn query_pattern_term(
+    kb: &mut KnowledgeBase,
+    pattern: &str,
+) -> anthill_core::kb::term::TermId {
     let src = format!("fact {pattern}");
     let parsed = parse::parse(&src).expect("parse query pattern");
     let _ = load::scan_definitions(kb, &[&parsed]);
@@ -497,15 +513,12 @@ pub fn query_pattern_functor(kb: &mut KnowledgeBase, pattern: &str) -> anthill_c
     let mut var_map = std::collections::HashMap::new();
     for item in &parsed.items {
         if let anthill_core::parse::ir::Item::Fact(f) = item {
-            let t = load::convert_query_term(
+            return load::convert_query_term(
                 kb, &parsed.terms, &parsed.symbols, f.term, global_raw, &mut var_map,
             );
-            if let Term::Fn { functor, .. } = kb.get_term(t) {
-                return *functor;
-            }
         }
     }
-    panic!("query pattern `{pattern}` produced no Fn term");
+    panic!("query pattern `{pattern}` produced no fact item");
 }
 
 /// [`query_pattern_functor`]'s answer as a qualified name — what a suite asserting

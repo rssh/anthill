@@ -136,6 +136,29 @@ pub enum ResolveResult {
     NotFound,
 }
 
+impl ResolveResult {
+    /// Does the name DENOTE something here — one symbol or several? The negation of
+    /// `NotFound`, named, because that is the question the name ladder is built on:
+    /// `Found` and `Ambiguous` are both ANSWERS, and only `NotFound` licenses trying a
+    /// lower rung (kernel-language.md §8.6, WI-907).
+    ///
+    /// Asked directly by the positions that need the verdict and not the symbol — the
+    /// rule-head mint guard (`load::name_denotes_for_rule_head`) and the dot-call
+    /// re-route gate (`Loader::qualified_name_resolves`).
+    pub fn denotes(&self) -> bool {
+        !matches!(self, ResolveResult::NotFound)
+    }
+
+    /// THE LADDER STEP: this answer if it [`denotes`](Self::denotes) anything, else the
+    /// next rung's. One spelling of "an ambiguity ends the ladder" for every ladder in
+    /// the tree — before WI-917 gave the dotted rung this vocabulary the rule was
+    /// re-derived per site, and the site that re-derived it WRONG (silently standing an
+    /// ambiguity down as if it were a miss) is what that ticket was.
+    pub fn or_else(self, next: impl FnOnce() -> ResolveResult) -> ResolveResult {
+        if self.denotes() { self } else { next() }
+    }
+}
+
 // ── Scope ───────────────────────────────────────────────────────
 
 /// All per-scope data consolidated into one struct.

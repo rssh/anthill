@@ -107,8 +107,11 @@ fn a_name_qualified_by_an_imported_head_mounts() {
 ///
 /// The refusal is loud but NOT yet precise: the mount takes only the ladder's
 /// `VisibleOnly` half, so a name that exists-and-is-hidden reports as one that does not
-/// exist. The diagnostic half (`forbid_if_dotted_internal`) is a `Loader` method this
-/// seam cannot reach — WI-911.
+/// exist. The diagnostic half (the `Any` re-read in `Loader::resolve_dotted_reported`) is
+/// a `Loader` method this seam cannot reach — WI-911. (Its AMBIGUITY half needs no such
+/// lift and no longer has one: WI-917 moved that answer into the ladder itself, which is
+/// why `an_ambiguous_host_name_is_refused_as_ambiguous_not_absent` can assert precision
+/// here while this test cannot.)
 #[test]
 fn an_internal_member_is_not_mountable_from_global() {
     let mut kb = fixture();
