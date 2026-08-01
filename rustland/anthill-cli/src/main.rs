@@ -317,11 +317,13 @@ const DEFAULT_QUERY_DEPTH: usize = 100;
 enum QueryMode {
     /// Resolve a goal pattern via SLD (or head-match it under --match)
     Pattern,
-    /// List facts of a given sort
+    /// List clauses by the kernel's CLAUSE-KIND tag (`Sort`, `Fact`, `Rule`,
+    /// `Operation`, `Namespace`, `Constraint`, …) — raw text, not a resolved
+    /// name, and NOT a declared sort's facts (WI-914)
     Sort,
-    /// List facts by functor name
+    /// List clauses by functor name, resolved at `_global` (`-i` applies)
     Functor,
-    /// List facts in a domain
+    /// List clauses in a domain, resolved at `_global` (`-i` applies)
     Domain,
 }
 
@@ -1337,39 +1339,69 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         eprintln!("error: --max-depth applies only to resolution (--mode pattern, without --match)");
         return Err(1);
     }
-    // WI-853: `-i` under the same rule. A listing mode resolves its argument by
-    // qualified name (or interns it raw), never through the query scope the flag
-    // imports into, so the flag is INERT there — and a flag that silently does
-    // nothing is the defect this ticket exists to remove.
-    if listing_mode && !args.imports.is_empty() {
+    // WI-853 / WI-914: `-i` under the same rule, but now for `--mode sort` ALONE.
+    // `--mode functor` / `--mode domain` read their argument through the `_global`
+    // ladder (see `resolve_listing_name`), which is the very scope the flag imports
+    // into, so there it is live rather than inert. `--mode sort`'s argument is not a
+    // name at all (see its arm below), so no import can bear on it — and a flag that
+    // silently does nothing is the defect WI-853 exists to remove.
+    if matches!(args.mode, QueryMode::Sort) && !args.imports.is_empty() {
         eprintln!(
-            "error: --import applies only to --mode pattern; a listing mode looks its \
-             argument up by name, not in the query scope"
+            "error: --import does not apply to --mode sort; its argument is a clause-kind \
+             tag matched as raw text, not a name resolved in the query scope"
         );
         return Err(1);
     }
 
     let mut kb = load_kb(&args.paths, false)?;
+    // WI-914: the `-i` flags before the mode dispatch, not inside `collect_queries` —
+    // the listing modes resolve their argument at `_global` too, so they must see the
+    // same imports the pattern modes do. WI-853's ordering is otherwise unchanged: the
+    // KB is loaded first, then each flag is scanned as a source of its own.
+    supply_import_flags(&mut kb, &args.imports)?;
 
     // Dispatch on mode
     match args.mode {
         QueryMode::Sort => {
             let name = args.pattern.as_deref().ok_or_else(|| {
-                eprintln!("error: --mode sort requires a pattern argument (sort name)");
+                eprintln!("error: --mode sort requires a clause-kind tag argument");
                 1
             })?;
-            // Two lookups because the two NAME RESOLUTIONS can differ — not
-            // because the sort has two term spellings (it no longer does).
-            // `resolve_qualified_name_sym` returns the by-qualified-name entry if
-            // there is one, else interns exactly as `intern` does; so for a kernel
-            // meta-sort like `Sort`/`Fact` (no qualified entry) the two AGREE and
-            // the fallback is a harmless no-op. It earns its keep only for a name
-            // that IS a registered qualified name, where the raw intern differs.
-            let sort_sym = kb.intern(name);
-            let mut results = kb.program_clauses_by_sort(sort_sym);
+            // THE §8.6 DEVIATION (WI-914) — the rule and its reason are in the spec's
+            // deviation list; what is local is why the CODE looks like this.
+            //
+            // Two lookups, raw text FIRST, because ONE loader site files under a
+            // DECLARED symbol instead of a tag (`load::emit_effects_runtime_bridge_fact`,
+            // sort `anthill.prelude.EffectsRuntime`) — and a dotted tag like
+            // `anthill.prelude.PartialEq` (`load::emit_operation_equation`'s raw intern)
+            // is ALSO a declared sort name whose declared symbol indexes nothing, so the
+            // other order would lose it. WI-922 is that one site.
+            //
+            // AN EMPTY LISTING IS THE REFUSAL HERE — the one place in `query` where it
+            // is, and the reason does not transfer to the other two modes: there the
+            // ladder vouches for the NAME independently, so a resolved name with no
+            // clauses (`--mode functor cons`) is a true `0 result(s)` about a real
+            // functor. Nothing vouches for a tag — the tag set is declared nowhere to
+            // check a spelling against — so emptiness is the ONLY signal available, and
+            // spending it on `0 result(s)` is what let `--mode sort <a declared sort>`
+            // answer "that sort has no facts" about a sort that has some (WI-921). The
+            // message claims only what is true either way, and says what the mode lists.
+            let mut results =
+                kb.lookup_symbol(name).map(|s| kb.program_clauses_by_sort(s)).unwrap_or_default();
             if results.is_empty() {
-                let alt = kb.resolve_qualified_name_sym(name);
-                results = kb.program_clauses_by_sort(alt);
+                if let Some(alt) = kb.try_resolve_symbol(name) {
+                    results = kb.program_clauses_by_sort(alt);
+                }
+            }
+            if results.is_empty() {
+                eprintln!(
+                    "error: '{name}' names no clause in this knowledge base. \
+                     `--mode sort` lists by the kernel's CLAUSE KIND (`Sort`, `Fact`, \
+                     `Rule`, `Operation`, `Namespace`, `Constraint`, …) — it is not a \
+                     way to list a declared sort's facts; for those, query the sort's \
+                     constructors with --mode pattern."
+                );
+                return Err(1);
             }
             print_program_clause_results(&kb, &results, args.max_results);
         }
@@ -1378,7 +1410,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 eprintln!("error: --mode functor requires a pattern argument (functor name)");
                 1
             })?;
-            let sym = kb.try_resolve_symbol(name).unwrap_or_else(|| kb.intern(name));
+            let sym = resolve_listing_name(&mut kb, name, "functor")?;
             let results = kb.program_clauses_by_functor(sym);
             print_program_clause_results(&kb, &results, args.max_results);
         }
@@ -1387,7 +1419,23 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 eprintln!("error: --mode domain requires a pattern argument (domain name)");
                 1
             })?;
-            let domain = kb.resolve_qualified_name_sym(name);
+            // A domain is a declared Symbol — the namespace or sort a clause was
+            // loaded under — so the ladder reads it (WI-914). With ONE reserved
+            // spelling: `_global`, the loader's tag for the TOP-LEVEL domain, which
+            // like a clause-kind tag is a raw intern (`make_name_term("_global")`)
+            // that no declaration owns and the ladder can therefore never return.
+            // Matched here explicitly rather than left to a lookup fallback: a
+            // fallback would silently re-admit every unresolvable name, and every
+            // clause loaded outside a namespace (242 of them on the stdlib alone)
+            // would otherwise become unlistable. A SECOND SPELLING of a scope
+            // identity the loader already owns is still a second spelling — whether
+            // `_global` can instead simply BE declared, so the ladder answers it and
+            // this arm deletes, is WI-923.
+            let domain = if name == "_global" {
+                kb.intern(name)
+            } else {
+                resolve_listing_name(&mut kb, name, "domain")?
+            };
             let results = kb.program_clauses_by_domain(domain);
             print_program_clause_results(&kb, &results, args.max_results);
         }
@@ -1591,10 +1639,11 @@ fn collect_queries(
     args: &QueryArgs,
     kb: &mut KnowledgeBase,
 ) -> Result<(u32, Vec<(String, Vec<anthill_core::kb::term::TermId>)>), i32> {
-    // WI-853: the `-i` flags first, and on their OWN sources — the pattern / file
-    // below is parsed with nothing prepended to it. Imports enter `_global`
-    // before the query text is scanned, so its names resolve against them.
-    supply_import_flags(kb, &args.imports)?;
+    // WI-853: the `-i` flags are supplied on their OWN sources — the pattern / file
+    // below is parsed with nothing prepended to it — and they entered `_global` in
+    // `run_query` before this, so the query text scanned here resolves against them.
+    // (WI-914 hoisted the supply out of here: the listing modes name into `_global`
+    // too, so the imports cannot belong to the pattern path alone.)
     let global_raw = kb.make_name_term("_global").raw();
 
     if let Some(ref pattern) = args.pattern {
@@ -1770,19 +1819,72 @@ fn report_unknown_functor_name(
         kb.resolve_sym(sym),
     );
     let name = kb.resolve_sym(sym);
-    if let ResolveResult::Ambiguous(cands) = load::resolve_name_in_kb(kb, name, global_raw) {
+    let read = load::resolve_name_in_kb(kb, name, global_raw);
+    report_unresolved_name(kb, name, &read, "query pattern", "functor");
+}
+
+/// THE refusal vocabulary for a name the `_global` ladder could not bind to ONE symbol,
+/// in whichever position the CLI read it. Two messages, one spelling each: an AMBIGUITY
+/// names its candidates, an ABSENCE says nothing declares the name. `position` is where
+/// the text was written (`query pattern`, `--mode functor`) and `noun` is what that
+/// position was naming — a listing mode's `--mode domain` argument is not a functor, and
+/// telling its author it "does not resolve to a known functor" sends them looking for the
+/// wrong kind of declaration.
+///
+/// Shared rather than re-spelled per position for the WI-908 reason one rung up: the
+/// pattern and the listing modes now run the SAME ladder (WI-914), so a name they both
+/// refuse must be refused in the same words — a second spelling is how the two drift back
+/// apart, this time in the diagnostic rather than in the lookup.
+fn report_unresolved_name(
+    kb: &KnowledgeBase,
+    name: &str,
+    read: &ResolveResult,
+    position: &str,
+    noun: &str,
+) {
+    if let ResolveResult::Ambiguous(cands) = read {
         eprintln!(
-            "error: '{name}' in query pattern is ambiguous — candidates {:?}. Qualify \
+            "error: '{name}' in {position} is ambiguous — candidates {:?}. Qualify \
              the name, or drop one of the imports that brought them into scope.",
-            kb.candidate_names(&cands),
+            kb.candidate_names(cands),
         );
         return;
     }
     eprintln!(
-        "error: '{name}' in query pattern does not resolve to a known functor — no \
+        "error: '{name}' in {position} does not resolve to a known {noun} — no \
          rule, fact, or declaration is in scope for it. Qualify the name, or \
          bring its namespace into scope with -i."
     );
+}
+
+/// WI-914 — read a LISTING MODE's user-supplied argument (`--mode functor` /
+/// `--mode domain`) as the name it is: through [`KnowledgeBase::resolve_name_in_global`],
+/// the one ladder every other position runs (WI-908, kernel-language.md §8.6 "the ladder
+/// is position-independent").
+///
+/// A CLI argument is the most KB-external text there is, and it names into the same
+/// `_global` scope `-i` imports into and `--mode pattern` resolves in — so
+/// `--mode functor <short>` denotes exactly what `--mode pattern '<short>(…)'` denotes.
+/// Before this it was looked up by ABSOLUTE name only, and a name the ladder would have
+/// bound instead fell to a bare intern that indexes nothing — reported as `0 result(s)`,
+/// an EMPTY LISTING, rather than as the unreadable name it was.
+///
+/// `kind` is both halves of the diagnostic: the mode is `--mode {kind}` and what it names
+/// IS a `kind` (a functor, a domain). One parameter because they cannot disagree.
+///
+/// `--mode sort` does NOT come through here — its argument is not a name. See the
+/// deviation stated at its dispatch arm.
+fn resolve_listing_name(
+    kb: &mut KnowledgeBase,
+    name: &str,
+    kind: &str,
+) -> Result<anthill_core::intern::Symbol, i32> {
+    let read = kb.resolve_name_in_global(name);
+    if let ResolveResult::Found(sym) = read {
+        return Ok(sym);
+    }
+    report_unresolved_name(kb, name, &read, &format!("--mode {kind}"), kind);
+    Err(1)
 }
 
 // ── Check command ───────────────────────────────────────────────────

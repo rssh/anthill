@@ -141,24 +141,40 @@ fn every_malformed_flag_is_reported() {
     );
 }
 
-/// A listing mode (`--mode sort` / `functor` / `domain`) looks its argument up
-/// by name — never through the query scope — so `-i` is inert there. Inert is
-/// what this whole ticket is about, so it is refused rather than accepted and
-/// ignored, following the same rule `--match` / `--resolve` / `--max-depth`
-/// already take in that dispatch.
+/// `-i` is refused where it is INERT — the rule `--match` / `--resolve` / `--max-depth`
+/// already take in that dispatch — and inert is what this whole ticket is about.
+///
+/// WI-914 narrowed WHERE that is, and this test's original reading of it was the ticket's
+/// own evidence. It read "a listing mode looks its argument up by name, not in the query
+/// scope", which was two claims: that all three listing modes agree, and that a
+/// by-name lookup is not a scope lookup. Neither held. `--mode functor` / `--mode domain`
+/// now resolve their argument at `_global` — the very scope `-i` imports into — so the
+/// flag is live there and is accepted (`wi914_listing_mode_name_test`). Only `--mode
+/// sort` keeps the refusal, because its argument is a clause-kind TAG rather than a name,
+/// which no import can bear on.
+///
+/// The old CONTROL was the other half of the evidence: it ran `--mode sort wi853.kb.S`
+/// and asserted only exit 0, which it got by printing `0 result(s)` about a sort with a
+/// fact in it. That is now a refusal, so the control moves to a name the mode can
+/// actually list.
 #[test]
 fn an_import_flag_is_refused_where_it_cannot_apply() {
-    let out = query(&["--mode", "sort", "-i", "wi853.kb", "wi853.kb.S"]);
+    let out = query(&["--mode", "sort", "-i", "wi853.kb", "Fact"]);
     assert_eq!(out.code, 1, "an inert flag must be refused; stdout:\n{}", out.stdout);
     assert!(
-        out.has_diagnostic("error:", "--import applies only to --mode pattern"),
+        out.has_diagnostic("error:", "--import does not apply to --mode sort"),
         "stderr:\n{}",
         out.stderr
     );
 
-    // The control: the same listing runs without the flag.
-    let ok = query(&["--mode", "sort", "wi853.kb.S"]);
+    // The control: the same listing runs without the flag, and lists something.
+    let ok = query(&["--mode", "sort", "Fact"]);
     assert_eq!(ok.code, 0, "the listing itself must work; stderr:\n{}", ok.stderr);
+    assert!(
+        ok.stdout.lines().any(|l| l.trim() == "mk(x: 7)"),
+        "and must actually list the clause; stdout:\n{}",
+        ok.stdout
+    );
 }
 
 /// WI-853's first fallout. The query file's `ParsedFile` is now stamped with the
