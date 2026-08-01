@@ -313,14 +313,21 @@ struct QueryArgs {
 /// Default SLD depth budget for `query` (the pre-WI-767 `--max-depth` default).
 const DEFAULT_QUERY_DEPTH: usize = 100;
 
+/// A listing mode selects by a NAME, read through the `_global` ladder — with
+/// ONE argument that is not, `--mode domain _global` (see that arm; WI-923).
+///
+/// There is deliberately no mode selecting by a clause's `sort` key (WI-921).
+/// Two reasons, and each alone is sufficient. The key is not a classification
+/// fit to publish: it spans clause-kind tags (`Fact`, `Rule`, …) and user sorts
+/// at once, so a selector over it answered "no clauses" about declared sorts
+/// that had some — WI-922 owns unpicking it. And "a declared sort's clauses" is
+/// not a dimension at all but `head functor ∈ constructors(S)`, a family inside
+/// the FUNCTOR one: get the constructors (`--mode domain <sort>`, or the pattern
+/// `SortInfo(name: ?s, constructors: ?c)`), then `--mode functor` each.
 #[derive(Clone, ValueEnum)]
 enum QueryMode {
     /// Resolve a goal pattern via SLD (or head-match it under --match)
     Pattern,
-    /// List clauses by the kernel's CLAUSE-KIND tag (`Sort`, `Fact`, `Rule`,
-    /// `Operation`, `Namespace`, `Constraint`, …) — raw text, not a resolved
-    /// name, and NOT a declared sort's facts (WI-914)
-    Sort,
     /// List clauses by functor name, resolved at `_global` (`-i` applies)
     Functor,
     /// List clauses in a domain, resolved at `_global` (`-i` applies)
@@ -1339,19 +1346,6 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         eprintln!("error: --max-depth applies only to resolution (--mode pattern, without --match)");
         return Err(1);
     }
-    // WI-853 / WI-914: `-i` under the same rule, but now for `--mode sort` ALONE.
-    // `--mode functor` / `--mode domain` read their argument through the `_global`
-    // ladder (see `resolve_listing_name`), which is the very scope the flag imports
-    // into, so there it is live rather than inert. `--mode sort`'s argument is not a
-    // name at all (see its arm below), so no import can bear on it — and a flag that
-    // silently does nothing is the defect WI-853 exists to remove.
-    if matches!(args.mode, QueryMode::Sort) && !args.imports.is_empty() {
-        eprintln!(
-            "error: --import does not apply to --mode sort; its argument is a clause-kind \
-             tag matched as raw text, not a name resolved in the query scope"
-        );
-        return Err(1);
-    }
 
     let mut kb = load_kb(&args.paths, false)?;
     // WI-914: the `-i` flags before the mode dispatch, not inside `collect_queries` —
@@ -1362,49 +1356,6 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
 
     // Dispatch on mode
     match args.mode {
-        QueryMode::Sort => {
-            let name = args.pattern.as_deref().ok_or_else(|| {
-                eprintln!("error: --mode sort requires a clause-kind tag argument");
-                1
-            })?;
-            // THE §8.6 DEVIATION (WI-914) — the rule and its reason are in the spec's
-            // deviation list; what is local is why the CODE looks like this.
-            //
-            // Two lookups, raw text FIRST, because ONE loader site files under a
-            // DECLARED symbol instead of a tag (`load::emit_effects_runtime_bridge_fact`,
-            // sort `anthill.prelude.EffectsRuntime`) — and a dotted tag like
-            // `anthill.prelude.PartialEq` (`load::emit_operation_equation`'s raw intern)
-            // is ALSO a declared sort name whose declared symbol indexes nothing, so the
-            // other order would lose it. WI-922 is that one site.
-            //
-            // AN EMPTY LISTING IS THE REFUSAL HERE — the one place in `query` where it
-            // is, and the reason does not transfer to the other two modes: there the
-            // ladder vouches for the NAME independently, so a resolved name with no
-            // clauses (`--mode functor cons`) is a true `0 result(s)` about a real
-            // functor. Nothing vouches for a tag — the tag set is declared nowhere to
-            // check a spelling against — so emptiness is the ONLY signal available, and
-            // spending it on `0 result(s)` is what let `--mode sort <a declared sort>`
-            // answer "that sort has no facts" about a sort that has some (WI-921). The
-            // message claims only what is true either way, and says what the mode lists.
-            let mut results =
-                kb.lookup_symbol(name).map(|s| kb.program_clauses_by_sort(s)).unwrap_or_default();
-            if results.is_empty() {
-                if let Some(alt) = kb.try_resolve_symbol(name) {
-                    results = kb.program_clauses_by_sort(alt);
-                }
-            }
-            if results.is_empty() {
-                eprintln!(
-                    "error: '{name}' names no clause in this knowledge base. \
-                     `--mode sort` lists by the kernel's CLAUSE KIND (`Sort`, `Fact`, \
-                     `Rule`, `Operation`, `Namespace`, `Constraint`, …) — it is not a \
-                     way to list a declared sort's facts; for those, query the sort's \
-                     constructors with --mode pattern."
-                );
-                return Err(1);
-            }
-            print_program_clause_results(&kb, &results, args.max_results);
-        }
         QueryMode::Functor => {
             let name = args.pattern.as_deref().ok_or_else(|| {
                 eprintln!("error: --mode functor requires a pattern argument (functor name)");
@@ -1872,8 +1823,10 @@ fn report_unresolved_name(
 /// `kind` is both halves of the diagnostic: the mode is `--mode {kind}` and what it names
 /// IS a `kind` (a functor, a domain). One parameter because they cannot disagree.
 ///
-/// `--mode sort` does NOT come through here — its argument is not a name. See the
-/// deviation stated at its dispatch arm.
+/// Since WI-921 deleted `--mode sort` — the one MODE whose argument was a raw
+/// clause-kind tag rather than a name — this is the only reading of a listing
+/// argument. Not of every listing ARGUMENT, though: `--mode domain`'s reserved
+/// `_global` spelling still bypasses it by hand, and WI-923 owns that.
 fn resolve_listing_name(
     kb: &mut KnowledgeBase,
     name: &str,

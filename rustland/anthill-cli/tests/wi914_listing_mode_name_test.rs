@@ -7,11 +7,11 @@
 //! truth was an unreadable name. `-i` was refused outright for every listing mode
 //! (WI-853), so the two readings could not even be compared on the same name.
 //!
-//! `--mode sort` is the DEVIATION, and it is measured here rather than asserted: its
-//! argument is the kernel's CLAUSE-KIND TAG (`Sort`/`Fact`/`Rule`/…), interned as raw
-//! text by the loader site that files each clause. The ladder answers `NotFound` for
-//! every tag, so routing it would not unify the modes — it would break the mode. Pinned
-//! from BOTH sides: the tag still lists, and a declared sort name does NOT.
+//! `--mode sort` was the DEVIATION — its argument was the kernel's CLAUSE-KIND TAG
+//! (`Fact`/`Rule`/`Sort`/…), raw-interned by the loader site that files each clause, so
+//! the ladder answered `NotFound` for every one. WI-921 DELETED the mode rather than
+//! exempt or rename it, so every MODE `query` still has reads its argument through the
+//! ladder. Not every ARGUMENT: `--mode domain _global` is still a raw intern (WI-923).
 //!
 //! The fixture is `wi907`'s: two namespaces declaring the same short names, so one name
 //! is unambiguous under one `-i` and contested under two — the only shape that can tell
@@ -151,64 +151,69 @@ fn a_contested_listing_name_is_refused_with_its_candidates() {
     }
 }
 
-// ── `--mode sort`: the deviation, pinned from both sides ────────────────────────
+// ── `--mode sort` is gone (WI-921) ──────────────────────────────────────────────
 
-/// The tag still lists. This is the half that a ladder would have broken: `Fact` is
-/// declared by nothing and lives in no scope, so `resolve_name_in_global` answers
-/// `NotFound` for it.
+/// The deletion, pinned where the deviation used to be pinned. `sort` is refused by
+/// ARGUMENT PARSING — exit 2, not the 1 a command that ran and failed returns — so a
+/// script still passing it stops instead of silently listing something else. The
+/// refusal must also enumerate what remains: a user who wanted the mode's tag listing
+/// has no replacement, and one who wanted a declared sort's clauses never had the mode
+/// they thought they had.
 #[test]
-fn a_clause_kind_tag_still_lists() {
+fn the_sort_mode_no_longer_exists() {
     let out = query(&["--mode", "sort", "Fact"]);
-    assert_lists(&out, "w907a(v: 1)");
-}
-
-/// The other half — and the reason the deviation is stated rather than assumed. A
-/// DECLARED SORT is not a clause-kind tag, and asking for one printed `0 result(s)`: the
-/// tool answering "this sort has no facts" about a sort that has one. Both spellings,
-/// because the pre-fix mode reached them by two different lookups and only a rule that
-/// covers both is a rule.
-#[test]
-fn a_declared_sort_name_is_not_a_clause_kind_tag() {
-    for name in ["Widget907", "wi907.alpha.Widget907"] {
-        let out = query(&["--mode", "sort", name]);
-        assert_eq!(out.code, 1, "{name}; stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
-        assert!(
-            out.has_diagnostic("error:", &format!("'{name}' names no clause")),
-            "{name}; stderr:\n{}",
-            out.stderr
-        );
-        assert!(
-            out.has_diagnostic("error:", "not a way to list a declared sort's facts"),
-            "the refusal must say what the mode DOES list; stderr:\n{}",
-            out.stderr
-        );
-        assert!(
-            !out.stdout.contains("0 result(s)"),
-            "the old silent empty is exactly what must not survive; stdout:\n{}",
-            out.stdout
-        );
-    }
-
-    // The control the refusal exists for: `--mode pattern` DOES reach that sort's facts.
-    let pattern = query_alpha(&["w907a(v: ?x)"]);
-    assert!(pattern.has_stdout_line("?x = 1"), "stdout:\n{}", pattern.stdout);
-}
-
-/// `-i` stays refused for `--mode sort` alone — its argument is not resolved in any
-/// scope, so an import cannot bear on it, and WI-853's rule is that an inert flag is
-/// refused rather than ignored. The refusal now says WHY, and no longer claims the rule
-/// for the two modes where the flag is live.
-#[test]
-fn an_import_flag_is_refused_for_the_tag_mode_only() {
-    let refused = query_alpha(&["--mode", "sort", "Fact"]);
-    assert_eq!(refused.code, 1, "stdout:\n{}", refused.stdout);
+    assert_eq!(out.code, 2, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
     assert!(
-        refused.has_diagnostic("error:", "--import does not apply to --mode sort"),
-        "stderr:\n{}",
-        refused.stderr
+        out.has_diagnostic("error:", "invalid value 'sort'"),
+        "the refusal must name the rejected value; stderr:\n{}",
+        out.stderr
+    );
+    // Not `has_diagnostic`: clap prints `[possible values: …]` on its own
+    // continuation line, which carries no `error:` prefix to key on.
+    assert!(
+        out.stderr.contains("pattern") && out.stderr.contains("functor")
+            && out.stderr.contains("domain"),
+        "and enumerate the modes that survive; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains("result(s)"),
+        "a refused mode must not print a listing; stdout:\n{}",
+        out.stdout
+    );
+}
+
+/// What the deleted mode was reached for is still reachable, by the dimensions that do
+/// exist — the control that the deletion removed a NAME, not a capability. "A declared
+/// sort's clauses" is `head functor ∈ constructors(S)`, a family in the FUNCTOR
+/// dimension, so it is two steps: discover the constructors, then list off one.
+///
+/// The discovery step runs WITHOUT `-i` deliberately. This fixture declares its own
+/// `SortInfo` in both namespaces — that is what it is for (WI-907's implicit-tier
+/// collision) — so an import would shadow `anthill.reflect.SortInfo` with a user sort
+/// and the reflection query would answer about the wrong functor. Unimported, the head
+/// resolves to the implicit tier's.
+#[test]
+fn a_declared_sorts_clauses_are_reachable_without_the_mode() {
+    let sorts = query(&["--match", "SortInfo(name: ?s, constructors: ?c)"]);
+    assert_eq!(sorts.code, 0, "stderr:\n{}", sorts.stderr);
+    assert!(
+        sorts.stdout.contains("[w907a]"),
+        "the reflection listing must expose `Widget907`'s constructor list; stdout:\n{}",
+        sorts.stdout
     );
 
-    // The control: the same flag on the two modes that DO name into `_global`.
+    // And then the clauses, off that constructor.
+    let listing = query_alpha(&["--mode", "functor", "w907a"]);
+    assert_lists(&listing, "w907a(v: 1)");
+}
+
+/// `-i` is accepted by EVERY listing mode — previously this asserted the refusal for
+/// `--mode sort` and kept these as its control; the control is now the whole claim.
+/// Pattern mode's half is pinned harder by the headline test above (`?x = 1`, not just
+/// exit 0), so it is not re-run here.
+#[test]
+fn an_import_flag_applies_to_every_mode() {
     for mode in ["functor", "domain"] {
         let ok = query_alpha(&["--mode", mode, "Widget907"]);
         assert_eq!(

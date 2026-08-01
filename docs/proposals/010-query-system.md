@@ -41,6 +41,14 @@ Unification against the KB binds `?id`, `?owner`, `?bal` to concrete values for 
 
 Syntax TBD — possibly `? : Color` or a dedicated `by_sort(Color)` form.
 
+**Amended (WI-921): the capability stands, `by_sort` as its spelling does not.** What
+this describes *is* `head functor ∈ constructors(Color)` — a family inside the **functor**
+dimension, not a selector of its own — so a typed variable (`? : Color`) is the coherent
+form and a `by_sort` built-in is not. Naming it `by_sort` additionally collides with the
+KB's `sort` key, which is a loader-internal clause-kind tag (`Fact`/`Rule`/…), not the
+declared sort; `anthill query --mode sort` shipped that collision and was deleted. WI-922 owns the key
+space. This answers OQ4.1 against the `by_sort(Color)` option.
+
 ### R2. Result cardinality control
 
 **Decision: Yes.** The caller should be able to specify how many results they want:
@@ -153,6 +161,11 @@ A `Query` sort with constructors for the query algebra:
 sort Query {
   entity pattern(term: Term)                       -- single pattern
   entity by_sort(sort_name: String)                -- all facts of a sort
+  -- ^ SUPERSEDED (WI-921): not a query-algebra primitive. "All facts of a sort"
+  --   is `head functor ∈ constructors(S)` — a family inside the FUNCTOR
+  --   dimension — and the KB's `sort` key it would read is a loader-internal
+  --   clause-kind tag, not the declared sort (WI-922). `anthill query --mode
+  --   sort` shipped this reading and was deleted; see R1 above.
   entity conjunction(left: Query, right: Query)    -- AND (shared vars = join)
   entity disjunction(left: Query, right: Query)    -- OR
   entity negation(query: Query)                    -- NOT (negation-as-failure)

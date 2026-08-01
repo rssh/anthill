@@ -147,7 +147,7 @@ rule route(Feedback(?))  = FileStore("anthill", stage0)
 rule route(?)            = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
 ```
 
-Because routing rules are facts in the KB, they are queryable (`query by_sort Rule` filtered by `route`) and self-documenting.
+Because routing rules are facts in the KB, they are queryable (the `route` rules are ordinary clauses) and self-documenting.
 
 ### 4. Core Operations
 
@@ -504,7 +504,7 @@ Proposal 033 §Open questions §5 records the same gap from the disjunction-subs
 ### Why persistence configuration in anthill syntax?
 
 The persistence conventions are themselves knowledge about the project. Expressing them as anthill facts means they are:
-- **Queryable** — `query by_sort Binding` shows where facts live
+- **Queryable** — querying the `Binding` facts shows where facts live
 - **Self-documenting** — the project configuration describes its own storage topology
 - **Versionable** — routing rules evolve with the project (committed to git)
 - **Composable** — different namespaces can declare different storage strategies

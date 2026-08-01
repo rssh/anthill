@@ -17,8 +17,7 @@ When run inside a directory with `.anthill/project.anthill`, the CLI operates in
 
 ```
 anthill check                              -- load project, run constraints, report violations
-anthill query "by_sort Operation"          -- load project, query, print results
-anthill query "by_functor deposit"         -- queries reach both in-memory and queryable stores
+anthill query "by_functor deposit"         -- query; reaches in-memory and queryable stores
 anthill flush                              -- write pending KB changes back to stores
 anthill codegen rust                       -- generate Rust skeletons for unimplemented namespaces
 anthill codegen rust banking               -- generate for a specific namespace
@@ -79,7 +78,7 @@ Examples:
 ```
 -- Project mode (inside a project directory):
 anthill check
-anthill query "by_sort WorkItem"
+anthill query "by_functor WorkItem"
 anthill query "AuditEntry(account: \"alice\", ?action, ?amount, ?at)"
 
 -- Code generation:
@@ -90,7 +89,7 @@ anthill codegen rust --dry-run
 -- Explicit file mode:
 anthill load banking.anthill prelude.anthill
 anthill check banking.anthill
-anthill query "by_sort Operation" banking.anthill
+anthill query "by_domain Account" banking.anthill
 ```
 
 ## 2. Interactive Console
@@ -191,14 +190,6 @@ Typing an expression evaluates it. Typing a declaration (`fact`, `sort`, `rule`,
 Queries work across all stores transparently. For facts in bulk stores, the query runs against the in-memory KB. For facts in queryable stores, the query is translated to a native query (e.g., SQL) and executed on demand:
 
 ```
-anthill> query by_sort Operation
-deposit(a: Account, m: Money) -> Account  [domain: Account]
-withdraw(a: Account, m: Money) -> Account [domain: Account]
-balance(a: Account) -> Money              [domain: Account]
-
-anthill> query by_sort Requirement
-Requires(Numeric[T = Money])  [domain: banking]
-
 anthill> query by_functor parent
 parent("alice", "bob")    [#42, sort: Fact, domain: _global]
 parent("bob", "charlie")  [#43, sort: Fact, domain: _global]
@@ -329,7 +320,6 @@ The CLI is a thin layer over `anthill-core` and the persistence layer:
 | `eval` / expression | `parse::parse()` + `kb::resolve()` / `Runtime.evaluate()` |
 | `assert` | `parse::parse()` + `kb::load::load()` + `persistence::route()` |
 | `retract` | `kb.retract(fact_id)` + mark pending in store |
-| `query by_sort` | `kb.by_sort(sort_term)` — may trigger queryable store |
 | `query by_functor` | `kb.by_functor(sym)` — may trigger queryable store |
 | `query <pattern>` | backward chaining — delegates to queryable stores |
 | `query by_domain` | `kb.by_domain(domain_term)` |

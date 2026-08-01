@@ -2038,27 +2038,23 @@ namespace, so a short host name must be *in scope* (or in the implicit tier), an
 an `internal` member is no more mountable than it is citable. A **command-line**
 name reads the same way, at the same scope (WI-914): `anthill query --mode functor`
 and `--mode domain` name what the same text names in `--mode pattern`, and `-i`
-therefore bears on all three. A name that denotes
+therefore bears on all three — every mode `query` has, since WI-921 removed the
+one whose argument was not a name. (One reserved ARGUMENT still is not: `--mode
+domain _global`, the loader's raw-interned tag for the top-level domain, which no
+declaration owns and the ladder can never return. WI-923.) A name that denotes
 something in one position denotes the same thing in every other; before this was
 unified, `util.f()` resolved by head-qualification while `util.T` in the same
 scope reported an unresolved type name, and `anthill query` could bind a dotted
 text to a different symbol than the program it queried.
 
-The deviations are **deliberate and few**, and each is a different *question*
-rather than a different *answer*:
+There is one deviation, and it is a different *question* rather than a different
+*answer*:
 
 - The **dot-call re-route** asks *"does this path have an answer?"* — not *"which
   symbol does it denote?"* — before deciding whether to peel a name apart into a
   member chain. It therefore counts a hidden-`internal` hit, and an ambiguity, as
   resolving: both are real findings with precise diagnostics, and decomposing the
   name would bury them under an invented member miss.
-- **`anthill query --mode sort`** takes no name at all. A clause's *sort* is the
-  kernel's **clause-kind tag** — `Sort`, `Fact`, `Rule`, `Operation`, `Namespace`,
-  `Constraint`, … — interned as raw text by the loader site that files the clause;
-  nothing declares a tag and no scope holds one, so the ladder answers *not found*
-  for every one. Running it here would not make the modes agree, it would make
-  `--mode sort Fact` stop working. (It is consequently *not* a way to list a
-  declared sort's facts.)
 
 Any future deviation belongs in this list, with its reason stated at the
 deviating site.

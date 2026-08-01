@@ -184,10 +184,13 @@ fn max_depth_under_match_is_refused() {
 #[test]
 fn match_under_a_listing_mode_is_refused() {
     let fx = fixture();
-    let out = anthill(&["query", "--match", "--mode", "sort", "-p", fx.to_str().unwrap(),
+    // WI-921 deleted `--mode sort`, which this drove; `--mode functor` carries the
+    // claim unchanged — the refusal is about the FLAG's position, not about which
+    // listing mode is under it, and it lands before the KB is even loaded.
+    let out = anthill(&["query", "--match", "--mode", "functor", "-p", fx.to_str().unwrap(),
                         "probe.wi767.LocalSort"]);
     assert_eq!(out.code, 1,
-               "--match under --mode sort must be refused, not ignored; stdout:\n{}", out.stdout);
+               "--match under a listing mode must be refused, not ignored; stdout:\n{}", out.stdout);
     assert!(out.stderr.contains("--mode pattern"),
             "the refusal must say which mode accepts the flag; got stderr:\n{}", out.stderr);
 }
