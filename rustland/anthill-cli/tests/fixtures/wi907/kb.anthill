@@ -1,0 +1,25 @@
+-- WI-907 — two namespaces declaring the SAME short names, so a scope that imports
+-- both resolves each one AMBIGUOUSLY. Nothing here references the contested names, so
+-- the file loads clean and the conflict is live but unreported until a query names it.
+--
+-- `SortInfo` deliberately collides with the IMPLICIT TIER (`anthill.reflect.SortInfo`);
+-- `Widget907` has no tier twin, so the pair covers both halves of the same refusal.
+namespace wi907.alpha
+  sort SortInfo
+    entity si907a(v: anthill.prelude.Int64)
+  end
+  sort Widget907
+    entity w907a(v: anthill.prelude.Int64)
+  end
+  fact w907a(v: 1)
+end
+
+namespace wi907.beta
+  sort SortInfo
+    entity si907b(v: anthill.prelude.Int64)
+  end
+  sort Widget907
+    entity w907b(v: anthill.prelude.Int64)
+  end
+  fact w907b(v: 2)
+end

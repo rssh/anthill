@@ -10,8 +10,10 @@
 //! three turn on `_global`'s own inhabitants — top-level imports and the loader's
 //! qualified-only kernel registrations — which `register_prelude` alone supplies.
 
-use anthill_core::kb::extent::{ArgKey, ExtentRegError, InMemoryExtentSource};
+use anthill_core::kb::extent::ExtentRegError;
 use anthill_core::kb::KnowledgeBase;
+
+use crate::common::mount_extent as mount;
 
 /// `Member` deliberately collides with a KERNEL META SORT (`load::KERNEL_META_SORTS`),
 /// which is registered QUALIFIED-ONLY — reachable as `by_qualified_name["Member"]` and in
@@ -42,14 +44,6 @@ end
 
 fn fixture() -> KnowledgeBase {
     crate::common::load_kb_bare(&[LIB, IMPORT_LIB, HIDDEN])
-}
-
-/// Mount an empty in-memory extent under `name` — the live `resolve_name_in_global`
-/// caller (`register_extent_owner` resolves every `owned()` name to a `Symbol`).
-fn mount(kb: &mut KnowledgeBase, name: &str) -> Result<(), ExtentRegError> {
-    let key = ArgKey::Named(kb.intern("id"));
-    let src = InMemoryExtentSource::new(kb, name, key, vec![]).expect("no rows to key");
-    kb.register_extent_owner(Box::new(src)).map(|_| ())
 }
 
 /// `name` must not denote at `_global`, so the mount is refused BY NAME RESOLUTION —

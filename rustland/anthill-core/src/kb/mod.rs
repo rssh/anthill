@@ -38,7 +38,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
+use crate::intern::{ResolveResult, SymbolTable, SymbolDef, SymbolKind, Symbol};
 use crate::span::{SourceRegistry, SourceSpan};
 use term::{Term, TermId, TermStore, TermSource, Var, VarId};
 use node_occurrence::NodeOccurrence;
@@ -1452,6 +1452,12 @@ impl KnowledgeBase {
             SymbolDef::Resolved { qualified_name, .. } => qualified_name,
             SymbolDef::Unresolved { name } => name,
         }
+    }
+
+    /// The qualified names behind a [`ResolveResult::Ambiguous`], for a diagnostic that
+    /// names what it could not choose between.
+    pub fn candidate_names(&self, candidates: &[Symbol]) -> Vec<String> {
+        candidates.iter().map(|&sym| self.qualified_name_of(sym).to_string()).collect()
     }
 
     /// Kind of a resolved symbol (Sort, Entity, Operation, …).
@@ -5140,15 +5146,15 @@ impl KnowledgeBase {
     /// THE NAME LADDER AT `_global` — what a HOST-supplied name (an extent owner's
     /// functor, a [`FactRef`](crate::kb::extent::FactRef)'s owner) denotes. The same
     /// question every other position asks, so the same function
-    /// (`load::resolve_name_in_kb_opt`) with `_global` as the scope; spelling it
+    /// (`load::resolve_name_in_kb`) with `_global` as the scope; spelling it
     /// separately is how a mount comes to take a functor its author never named (WI-908).
     ///
     /// A SHORT name therefore resolves only if it is IN SCOPE or in the IMPLICIT TIER
     /// (`load::resolve_implicit` — `SortInfo`, `cons`, …, which is short-name keyed and
     /// still answers here). The absolute rung is dotted-only, per WI-476.
-    pub fn resolve_name_in_global(&mut self, name: &str) -> Option<Symbol> {
+    pub fn resolve_name_in_global(&mut self, name: &str) -> ResolveResult {
         let global = self.make_name_term("_global");
-        crate::kb::load::resolve_name_in_kb_opt(self, name, global.raw())
+        crate::kb::load::resolve_name_in_kb(self, name, global.raw())
     }
 
     /// Check if a qualified name has a defined symbol in the symbol table.

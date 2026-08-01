@@ -1991,6 +1991,25 @@ that root (WI-751). Neither rung admits a name without a dot — a short name is
 not a path, and resolving one that way would reinstate the global short-name
 scan removed in WI-476.
 
+**An ambiguity ends the ladder.** The rungs below `resolve_in_scope` — the dotted
+readings, then the implicit prelude / reserved kernel vocab — are for a name that
+means *nothing* at this scope. A name that means *several* things has an answer
+already, so no lower rung may be consulted: descending past a conflict picks a
+symbol that is not even among the candidates, and picking one candidate decides
+in the author's favour a conflict the author has to see. A position that only
+asks *whether* a name denotes, such as the rule-head mint guard, counts an
+ambiguity as denoting for the same reason.
+
+An ambiguous **whole name** is then reported: as a load error at a reference, and
+as a refused query naming the candidates at a pattern's head or a
+negation-committed goal. What is *not* yet reported is an ambiguous **head
+segment of a dotted path** — both rungs stand down under one (above), and the
+path falls through to the unresolved-name fallback, so `Sort.member` with two
+`Sort`s in scope loads clean at a reference and is refused as *unknown* at a
+pattern. Nor is an ambiguity in a query position that tolerates unresolvable
+names (a bare disjunction branch, a quantifier body, a data slot), which follows
+that tolerance rather than a decision of its own.
+
 **The `internal` gate applies to the ladder, not to a rung.** The qualified index
 bypasses step 3's filter, so visibility is checked explicitly on each hit — but a
 hit hidden by `internal` **skips to the next rung** rather than ending the

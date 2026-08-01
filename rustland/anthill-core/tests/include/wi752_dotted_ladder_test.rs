@@ -20,42 +20,10 @@
 //! rungs' own semantics (precedence, the partial-miss guard, the `Field` refusal) stay
 //! pinned by `wi751_namespace_root_shadow_test`; this file pins their UNIFORMITY.
 
-use std::collections::HashMap;
-
 use anthill_core::eval::Value;
-use anthill_core::kb::term::Term;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::{kb::load, parse};
 
 use crate::common::{interp_for, load_kb_with, try_load_kb_with};
-
-/// The qualified name the QUERY-pattern position (`resolve_name_in_kb_opt`, reached via
-/// `anthill query --pattern`) binds a dotted functor to. Mirrors the CLI's own path —
-/// `fact <pattern>`, `scan_definitions`, `convert_query_term` at `_global` — so this
-/// measures the shipped entry point rather than a private helper.
-fn query_pattern_functor_qn(kb: &mut KnowledgeBase, pattern: &str) -> String {
-    let src = format!("fact {pattern}");
-    let parsed = parse::parse(&src).expect("parse query pattern");
-    let _ = load::scan_definitions(kb, &[&parsed]);
-    let global_raw = kb.make_name_term("_global").raw();
-    let mut var_map = HashMap::new();
-    for item in &parsed.items {
-        if let anthill_core::parse::ir::Item::Fact(f) = item {
-            let t = load::convert_query_term(
-                kb,
-                &parsed.terms,
-                &parsed.symbols,
-                f.term,
-                global_raw,
-                &mut var_map,
-            );
-            if let Term::Fn { functor, .. } = kb.get_term(t) {
-                return kb.qualified_name_of(*functor).to_string();
-            }
-        }
-    }
-    panic!("query pattern `{pattern}` produced no Fn term");
-}
 
 /// THE HEADLINE. One namespace, one scope, one spelling family — `util.<member>`,
 /// reachable ONLY by head-qualification (there is no top-level `util`). Term functor,
@@ -236,7 +204,7 @@ end
     }
 }
 
-/// The QUERY resolver (`resolve_name_in_kb_opt`) binds the same dotted text to the same
+/// The QUERY resolver (`resolve_name_in_kb`) binds the same dotted text to the same
 /// symbol the loader does.
 ///
 /// It used to rank the ABSOLUTE reading FIRST and carry no head-qualification rung at

@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 
 use crate::eval::value::Value;
-use crate::intern::Symbol;
+use crate::intern::{ResolveResult, Symbol};
 use crate::kb::term::{Var, VarId};
 use crate::kb::term_view::{views_structurally_equal, TermView};
 use crate::persistence::{Monotonicity, Store};
@@ -264,6 +264,10 @@ pub struct SourceId(u32);
 pub enum ExtentRegError {
     /// An `owned()` name did not resolve to a defined symbol.
     UnresolvableName(String),
+    /// An `owned()` name resolved to SEVERAL symbols — the opposite fault of
+    /// `UnresolvableName`, and one that declaring the name cannot fix: the repair is to
+    /// qualify the mount, or to stop importing both candidates (WI-907).
+    AmbiguousName { functor: String, candidates: Vec<String> },
     /// The functor already has a registered extent owner (single-owner rule).
     AlreadyOwned { functor: String },
     /// The functor already has resident facts/rules in `kb.rules` — mounting an
@@ -291,6 +295,11 @@ impl std::fmt::Display for ExtentRegError {
             ExtentRegError::UnresolvableName(name) => {
                 write!(f, "register_extent_owner: unresolvable functor name '{name}'")
             }
+            ExtentRegError::AmbiguousName { functor, candidates } => write!(
+                f,
+                "register_extent_owner: ambiguous functor name '{functor}': candidates \
+                 {candidates:?}; mount it by qualified name"
+            ),
             ExtentRegError::AlreadyOwned { functor } => write!(
                 f,
                 "register_extent_owner: functor '{functor}' already has an extent owner"
@@ -521,9 +530,7 @@ impl KnowledgeBase {
             return Ok(true);
         }
         let (name, key) = reference.external_parts().expect("known FactRef form");
-        let functor = self.resolve_name_in_global(name).ok_or_else(|| {
-            ExtentError::Backend(format!("persistent retract: unknown owner `{name}`"))
-        })?;
+        let functor = self.external_owner_functor("persistent retract", name)?;
         self.extents.owner_mut(functor).ok_or_else(|| {
             ExtentError::Backend(format!("persistent retract: `{name}` is not mounted"))
         })?.retract(key)
@@ -559,21 +566,40 @@ impl KnowledgeBase {
             return Ok(Some(StoredRow { row: new, reference }));
         }
         let (name, key) = reference.external_parts().expect("known FactRef form");
-        let functor = self.resolve_name_in_global(name).ok_or_else(|| {
-            ExtentError::Backend(format!("persistent update: unknown owner `{name}`"))
-        })?;
+        let functor = self.external_owner_functor("persistent update", name)?;
         self.extents.owner_mut(functor).ok_or_else(|| {
             ExtentError::Backend(format!("persistent update: `{name}` is not mounted"))
         })?.update(key, &new, meta.as_ref())
     }
 
+    /// The functor an EXTERNAL [`FactRef`]'s owner name denotes, or why it denotes no
+    /// single one; `op` labels the operation, so retract and update share ONE reading of
+    /// the name rather than two. The two faults are kept apart for the reason stated on
+    /// [`ExtentRegError::AmbiguousName`] — but as strings, matching the `unknown owner`
+    /// message that was already here: this path classifies a name-resolution failure as a
+    /// backend one, which is WI-916's subject, and typing only the newer half would split
+    /// a pair that reads as one.
+    fn external_owner_functor(&mut self, op: &str, name: &str) -> Result<Symbol, ExtentError> {
+        match self.resolve_name_in_global(name) {
+            ResolveResult::Found(sym) => Ok(sym),
+            ResolveResult::Ambiguous(cands) => Err(ExtentError::Backend(format!(
+                "{op}: ambiguous owner `{name}`: candidates {:?}",
+                self.candidate_names(&cands),
+            ))),
+            ResolveResult::NotFound => {
+                Err(ExtentError::Backend(format!("{op}: unknown owner `{name}`")))
+            }
+        }
+    }
+
     /// Register `source` as the exclusive read owner of every functor its
-    /// `owned()` names. Resolves each name to a `Symbol` ONCE, here (loud on an
-    /// unresolvable name), and enforces the read-side registration rules. All or
-    /// nothing: if any owned functor fails a check, nothing is committed.
+    /// `owned()` names. Resolves each name to a `Symbol` ONCE, here (loud unless it names
+    /// exactly one), and enforces the read-side registration rules. All or nothing: if
+    /// any owned functor fails a check, nothing is committed.
     ///
     /// Rules, per owned `(name, profile)`, in order:
-    /// 1. `name` must resolve → else [`ExtentRegError::UnresolvableName`].
+    /// 1. `name` must resolve to exactly ONE symbol → else
+    ///    [`ExtentRegError::UnresolvableName`] / [`ExtentRegError::AmbiguousName`].
     /// 2. the functor must be unowned → else [`ExtentRegError::AlreadyOwned`]
     ///    (single-owner), AND have no resident facts/rules → else
     ///    [`ExtentRegError::ResidentCollision`] (WI-797, the load-then-mount
@@ -591,9 +617,18 @@ impl KnowledgeBase {
         let owned = source.owned();
         let mut resolved: Vec<(Symbol, ExtentProfile)> = Vec::with_capacity(owned.len());
         for (name, profile) in owned {
-            let sym = self
-                .resolve_name_in_global(&name)
-                .ok_or_else(|| ExtentRegError::UnresolvableName(name.clone()))?;
+            let sym = match self.resolve_name_in_global(&name) {
+                ResolveResult::Found(sym) => sym,
+                ResolveResult::Ambiguous(cands) => {
+                    return Err(ExtentRegError::AmbiguousName {
+                        functor: name.clone(),
+                        candidates: self.candidate_names(&cands),
+                    })
+                }
+                ResolveResult::NotFound => {
+                    return Err(ExtentRegError::UnresolvableName(name.clone()))
+                }
+            };
 
             if self.extents.mounts.contains_key(&sym)
                 || resolved.iter().any(|(s, _)| *s == sym)

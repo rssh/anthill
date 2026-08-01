@@ -473,3 +473,60 @@ pub fn head_short(
         other => panic!("expected a functor application, got {other:?}"),
     }
 }
+
+/// The functor SYMBOL a query pattern binds, through the shipped entry point: `fact
+/// <pattern>`, `scan_definitions`, then `load::convert_query_term` at `_global` — the
+/// exact path `anthill query --pattern` takes, rather than a private resolver helper.
+///
+/// WI-907: lifted here at the second LIVE copy (`wi040_reserved_vocab_test` and this
+/// ticket's; `wi752_dotted_ladder_test` carried a third that nothing called — the
+/// dotted-ladder suite reaches this resolver through a proof target instead — and the
+/// lift is what surfaced it). `head_short` and `load_kb_bare` were lifted on the same
+/// trigger. The SYMBOL is the primitive: a test asking "which of these symbols?" cannot
+/// ask it of a string.
+///
+/// Panics on a pattern that produces no `Term::Fn`: a caller reaching for this is
+/// asserting about a functor, so a var/literal pattern is a test-authoring bug.
+#[allow(dead_code)]
+pub fn query_pattern_functor(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::intern::Symbol {
+    use anthill_core::kb::term::Term;
+    let src = format!("fact {pattern}");
+    let parsed = parse::parse(&src).expect("parse query pattern");
+    let _ = load::scan_definitions(kb, &[&parsed]);
+    let global_raw = kb.make_name_term("_global").raw();
+    let mut var_map = std::collections::HashMap::new();
+    for item in &parsed.items {
+        if let anthill_core::parse::ir::Item::Fact(f) = item {
+            let t = load::convert_query_term(
+                kb, &parsed.terms, &parsed.symbols, f.term, global_raw, &mut var_map,
+            );
+            if let Term::Fn { functor, .. } = kb.get_term(t) {
+                return *functor;
+            }
+        }
+    }
+    panic!("query pattern `{pattern}` produced no Fn term");
+}
+
+/// [`query_pattern_functor`]'s answer as a qualified name — what a suite asserting
+/// WHERE a spelling lands wants (`wi040`, `wi752`).
+#[allow(dead_code)]
+pub fn query_pattern_functor_qn(kb: &mut KnowledgeBase, pattern: &str) -> String {
+    let sym = query_pattern_functor(kb, pattern);
+    kb.qualified_name_of(sym).to_string()
+}
+
+/// Mount an empty in-memory extent under `name` — the live `resolve_name_in_global`
+/// caller, since `register_extent_owner` resolves every `owned()` name to a `Symbol`.
+/// WI-907: lifted at the second copy (`wi908_global_name_ladder_test` was the first);
+/// the mount seam has already moved once under it (WI-797's `ResidentCollision`).
+#[allow(dead_code)]
+pub fn mount_extent(
+    kb: &mut KnowledgeBase,
+    name: &str,
+) -> Result<(), anthill_core::kb::extent::ExtentRegError> {
+    use anthill_core::kb::extent::{ArgKey, InMemoryExtentSource};
+    let key = ArgKey::Named(kb.intern("id"));
+    let src = InMemoryExtentSource::new(kb, name, key, vec![]).expect("no rows to key");
+    kb.register_extent_owner(Box::new(src)).map(|_| ())
+}

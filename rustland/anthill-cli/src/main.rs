@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use anthill_core::codegen::generate_rust;
 use anthill_core::fs_util;
+use anthill_core::intern::ResolveResult;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
@@ -1391,7 +1392,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
             print_program_clause_results(&kb, &results, args.max_results);
         }
         QueryMode::Pattern => {
-            let queries = collect_queries(args, &mut kb)?;
+            let (global_raw, queries) = collect_queries(args, &mut kb)?;
             let multi = queries.len() > 1;
 
             // WI-754: an unknown-functor query is reported as it is met but does
@@ -1420,7 +1421,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // resolve path's `undefined_query_goal_functors` guards
                         // (WI-863) cannot arise — an unknown nested functor just
                         // fails to match and reports `0 result(s)`, not a false answer.
-                        if results.is_empty() && report_if_unknown_functor(&kb, qt) {
+                        if results.is_empty() && report_if_unknown_functor(&kb, global_raw, qt) {
                             any_unknown = true;
                             continue;
                         }
@@ -1468,7 +1469,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         let unknown = kb.undefined_query_goal_functors(qt);
                         if !unknown.is_empty() {
                             for &sym in &unknown {
-                                report_unknown_functor_name(&kb, sym);
+                                report_unknown_functor_name(&kb, global_raw, sym);
                             }
                             any_unknown = true;
                             continue;
@@ -1570,15 +1571,19 @@ fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(),
 }
 
 /// Collect query terms from either an inline pattern or a query file.
-/// Returns (label, vec-of-term-ids) pairs.
+/// Returns the SCOPE the patterns were converted in — `_global` — and (label,
+/// vec-of-term-ids) pairs. The scope is returned rather than re-derived by the caller so
+/// a later reading of a pattern's name (the unknown-name reporter) cannot read it in a
+/// different one.
 fn collect_queries(
     args: &QueryArgs,
     kb: &mut KnowledgeBase,
-) -> Result<Vec<(String, Vec<anthill_core::kb::term::TermId>)>, i32> {
+) -> Result<(u32, Vec<(String, Vec<anthill_core::kb::term::TermId>)>), i32> {
     // WI-853: the `-i` flags first, and on their OWN sources — the pattern / file
     // below is parsed with nothing prepended to it. Imports enter `_global`
     // before the query text is scanned, so its names resolve against them.
     supply_import_flags(kb, &args.imports)?;
+    let global_raw = kb.make_name_term("_global").raw();
 
     if let Some(ref pattern) = args.pattern {
         // The query IR reaches a pattern term through a `fact`.
@@ -1586,7 +1591,6 @@ fn collect_queries(
         scan_query_source(kb, &parsed, Some("--pattern"))?;
 
         // Extract the fact term and reintern into KB
-        let global_raw = kb.make_name_term("_global").raw();
         let mut var_map = HashMap::new();
         let mut terms = Vec::new();
         for item in &parsed.items {
@@ -1606,7 +1610,7 @@ fn collect_queries(
             eprintln!("error: no valid query pattern found");
             return Err(1);
         }
-        Ok(vec![(pattern.clone(), terms)])
+        Ok((global_raw, vec![(pattern.clone(), terms)]))
     } else if let Some(ref query_file) = args.query_file {
         let file_source = match fs::read_to_string(query_file) {
             Ok(s) => s,
@@ -1635,7 +1639,6 @@ fn collect_queries(
         scan_query_source(kb, &parsed, None)?;
 
         // Extract all fact items as queries
-        let global_raw = kb.make_name_term("_global").raw();
         let mut queries = Vec::new();
         let mut var_map = HashMap::new();
         for item in &parsed.items {
@@ -1656,7 +1659,7 @@ fn collect_queries(
             eprintln!("error: no fact declarations found in {}", query_file.display());
             return Err(1);
         }
-        Ok(queries)
+        Ok((global_raw, queries))
     } else {
         unreachable!()
     }
@@ -1686,14 +1689,18 @@ fn collect_queries(
 /// (`no solutions`), while a genuinely absent name (and a namespaced name queried
 /// out of scope, whose qualified head the bare query does not match) still heads
 /// no clause and is reported.
-fn report_if_unknown_functor(kb: &KnowledgeBase, qt: anthill_core::kb::term::TermId) -> bool {
+fn report_if_unknown_functor(
+    kb: &KnowledgeBase,
+    global_raw: u32,
+    qt: anthill_core::kb::term::TermId,
+) -> bool {
     let Some(sym) = kb.undefined_query_functor(qt) else {
         return false;
     };
     if !kb.browse_program_clauses_matching(&qt).is_empty() {
         return false;
     }
-    report_unknown_functor_name(kb, sym);
+    report_unknown_functor_name(kb, global_raw, sym);
     true
 }
 
@@ -1701,12 +1708,46 @@ fn report_if_unknown_functor(kb: &KnowledgeBase, qt: anthill_core::kb::term::Ter
 /// [`report_if_unknown_functor`] (--match browse) and the goal-position walk
 /// `undefined_query_goal_functors` (resolve path, WI-863), so both spell the
 /// refusal identically.
-fn report_unknown_functor_name(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) {
+///
+/// WI-907: a name the pattern could not bind is not always an ABSENT one — it is also
+/// how an AMBIGUOUS one arrives here, since the ladder stops at an ambiguity rather than
+/// guessing past it and the conversion then interns the bare name. Re-reading the ladder
+/// (`global_raw` is the scope the pattern was converted in) is what tells the two apart;
+/// without it an author with two same-named imports is told that nothing declares the
+/// name, when two things do.
+///
+/// The ambiguity is therefore reported exactly WHERE THIS FUNCTION IS REACHED, no wider:
+/// the callers tolerate an unresolvable name in a bare disjunction branch, a quantifier
+/// body and a data slot (WI-863's reasoning, inherited rather than re-decided), and the
+/// ladder does not report an ambiguous HEAD SEGMENT of a dotted path anywhere. Both gaps
+/// are WI-917.
+fn report_unknown_functor_name(
+    kb: &KnowledgeBase,
+    global_raw: u32,
+    sym: anthill_core::intern::Symbol,
+) {
+    // What makes re-reading the ladder faithful: the name asked about is the text the
+    // author wrote, because an undefined symbol is a bare intern of it.
+    debug_assert!(
+        kb.kind_of(sym).is_none(),
+        "the unknown-functor reporters must only pass an undefined (bare-interned) \
+         functor; `{}` is declared, and `resolve_sym` would hand its SHORT name to the \
+         ladder — reporting a qualified pattern as an ambiguity it never had",
+        kb.resolve_sym(sym),
+    );
+    let name = kb.resolve_sym(sym);
+    if let ResolveResult::Ambiguous(cands) = load::resolve_name_in_kb(kb, name, global_raw) {
+        eprintln!(
+            "error: '{name}' in query pattern is ambiguous — candidates {:?}. Qualify \
+             the name, or drop one of the imports that brought them into scope.",
+            kb.candidate_names(&cands),
+        );
+        return;
+    }
     eprintln!(
-        "error: '{}' in query pattern does not resolve to a known functor — no \
+        "error: '{name}' in query pattern does not resolve to a known functor — no \
          rule, fact, or declaration is in scope for it. Qualify the name, or \
-         bring its namespace into scope with -i.",
-        kb.resolve_sym(sym)
+         bring its namespace into scope with -i."
     );
 }
 

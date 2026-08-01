@@ -2074,9 +2074,7 @@ fn implicit_qualified(name: &str) -> Option<&'static str> {
 /// rule-head mint guard skipped names the resolvers could not resolve, so those names
 /// were neither captured nor bound and collapsed onto one bare global. The gate lived
 /// as four hand-written copies and a comment saying they agreed; it is one function so
-/// that they cannot not agree. Consumers: [`Loader::remap_name_str_inner`]
-/// (references), [`resolve_name_in_kb_opt`] (query patterns and host names), and
-/// [`name_denotes_for_rule_head`] (the mint guard).
+/// that they cannot not agree.
 fn resolve_implicit(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
     implicit_qualified(name).and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied())
 }
@@ -2557,8 +2555,9 @@ fn rule_introduced_functor_name<'a>(
     // `String.isEmpty` and the caller's check cannot see the reference. MEASURED: `rule
     // String.isEmpty(?s) <=> true` defined a symbol whose SHORT name was literally
     // `String.isEmpty`, which the loader's ladder then ranks ahead of the real target
-    // for the whole scope. `name_denotes_for_rule_head` DEPENDS on this refusal (it
-    // omits the dotted rung on the strength of it) and asserts it.
+    // for the whole scope. This refusal is the ONLY thing that keeps a dotted head out
+    // of the mint guard; the guard itself no longer depends on it (WI-907 — it reads the
+    // whole ladder, whose dotted rung would answer such a name correctly).
     if name.contains('.') {
         return None;
     }
@@ -3973,7 +3972,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // and comparison operator targets eq / neq / gt / lt / gte / lte / add / sub /
     // mul / to_bigint / to_int, and the logic operators not / or) is NOT
     // `_global`-imported. It resolves via the lowest-precedence `prelude_qualified`
-    // fallback in `remap_name_str` / `resolve_name_in_kb_opt`: a user's local
+    // fallback in `remap_name_str` / `resolve_name_in_kb`: a user's local
     // definition or explicit import always wins, and the prelude name can never go
     // AMBIGUOUS against a user name (the failure mode the old flat `_global`
     // injection had — see the WI-476 collision blocklist that WI-040 removed).
@@ -6778,7 +6777,7 @@ pub fn convert_query_term(
         }
         Term::Fn { functor, pos_args, named_args } => {
             let functor_name = parse_symbols.name(functor);
-            let kb_functor = resolve_name_in_kb(kb, functor_name, scope_raw);
+            let kb_functor = resolve_query_name(kb, functor_name, scope_raw);
             let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                 .iter()
                 .map(|&id| convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
@@ -6851,16 +6850,17 @@ pub fn convert_query_term(
         }
         Term::Ident(sym) => {
             let name = parse_symbols.name(sym);
-            if let Some(resolved) = resolve_name_in_kb_opt(kb, name, scope_raw) {
-                kb.alloc(Term::Ref(resolved))
-            } else {
-                let kb_sym = kb.intern(name);
-                kb.alloc(Term::Ident(kb_sym))
+            match resolve_name_in_kb(kb, name, scope_raw) {
+                ResolveResult::Found(resolved) => kb.alloc(Term::Ref(resolved)),
+                ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
+                    let kb_sym = kb.intern(name);
+                    kb.alloc(Term::Ident(kb_sym))
+                }
             }
         }
         Term::Ref(sym) => {
             let name = parse_symbols.name(sym);
-            let kb_sym = resolve_name_in_kb(kb, name, scope_raw);
+            let kb_sym = resolve_query_name(kb, name, scope_raw);
             kb.alloc(Term::Ref(kb_sym))
         }
         Term::Bottom => kb.alloc(Term::Bottom),
@@ -6894,44 +6894,61 @@ pub fn convert_query_term(
     }
 }
 
-/// Resolve a name in the KB: try qualified name first, then scope-aware resolution,
-/// then fall back to intern.
-fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Symbol {
-    resolve_name_in_kb_opt(kb, name, scope_raw)
-        .unwrap_or_else(|| kb.intern(name))
+/// The QUERY-PATTERN position's symbol for `name`: [`resolve_name_in_kb`], with the
+/// WI-476 bare intern for the two answers that name no single symbol.
+///
+/// An AMBIGUITY and an ABSENCE produce the same TERM — a bare symbol that heads no
+/// clause, so the query matches nothing — because this position has no error channel to
+/// tell them apart in. What differs is the DIAGNOSIS, and that is the CLI's
+/// (`report_unknown_functor_name`).
+fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Symbol {
+    match resolve_name_in_kb(kb, name, scope_raw) {
+        ResolveResult::Found(sym) => sym,
+        ResolveResult::Ambiguous(_) | ResolveResult::NotFound => kb.intern(name),
+    }
 }
 
-/// Try to resolve a name in the KB: scope-aware resolution, then the shared dotted
-/// ladder, then the implicit vocab. WI-476: there is NO global short-name fallback — a
-/// name resolves only within its local environment (qualified path / enclosing scope /
-/// imports / `requires`). An unresolved name returns `None`, and the caller interns it
-/// as a bare symbol (a data name in a query pattern), surfacing a genuine
-/// missing-import as a non-matching query rather than silently rescuing it.
+/// **THE NAME LADDER** for a position with NO load-error channel — scope resolution,
+/// then the shared dotted ladder, then the implicit vocab — answering in
+/// `resolve_in_scope`'s own three-way vocabulary because it extends exactly that
+/// question. Read-only; the caller supplies the fallback and the diagnostic.
+///
+/// WI-476: there is NO global short-name fallback — a name resolves only within its
+/// local environment (qualified path / enclosing scope / imports / `requires`), so a
+/// genuine missing-import surfaces as a non-matching query rather than being silently
+/// rescued.
+///
+/// AN AMBIGUITY ENDS THE LADDER (kernel-language.md §8.6, WI-907): the rungs below are
+/// for a name that means NOTHING here, and descending past a conflict picks a symbol that
+/// is not even among the candidates. Hence `Ambiguous` is returned, not folded into
+/// "unresolved" — each caller has a different way to say it.
 ///
 /// WI-752: this is the QUERY-PATTERN position — and, since WI-908, the HOST-name one
-/// (`KnowledgeBase::resolve_name_in_global` is this function at `_global`). It now spells
-/// the dotted question
-/// exactly the way the loader positions do — via [`resolve_dotted_in_kb`]. It used to
-/// rank the ABSOLUTE reading FIRST (ahead of scope resolution), carry no
+/// (`KnowledgeBase::resolve_name_in_global` is this function at `_global`). It spells the
+/// dotted question exactly the way the loader positions do — via `resolve_dotted_in_kb`.
+/// It used to rank the ABSOLUTE reading FIRST (ahead of scope resolution), carry no
 /// head-qualification rung at all, and resolve SHORT names absolutely; the last of
 /// those was a residue of the WI-476 global scan, and the first two meant `anthill
 /// query` could bind the same dotted text to a DIFFERENT symbol than the program it
 /// queries. Queries run at `_global`, where the two readings almost always coincide —
 /// which is exactly why the divergence survived four fixes unnoticed.
-pub(crate) fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
+pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> ResolveResult {
     match kb.symbols.resolve_in_scope(name, scope_raw) {
-        ResolveResult::Found(sym) => Some(sym),
-        _ => resolve_dotted_in_kb(kb, name, scope_raw, DottedVisibility::VisibleOnly)
-            // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit
-            // prelude resolve directly to their qualified home in query patterns too
-            // — parity with `remap_name_str`, so a reflection query naming
-            // `field_access` / `ListLiteral` or a prelude name like `eq` / `cons` bare
-            // still matches after the `_global` imports were removed. Fallback only:
-            // scope resolution already failed, so a user-defined same-spelling name
-            // has won. (Distinct from WI-476's deliberate no-rescue for arbitrary user
-            // short-names — these are RESERVED / PRELUDE names that always denote
-            // their target.)
-            .or_else(|| resolve_implicit(kb, name)),
+        answered @ (ResolveResult::Found(_) | ResolveResult::Ambiguous(_)) => answered,
+        ResolveResult::NotFound => {
+            resolve_dotted_in_kb(kb, name, scope_raw, DottedVisibility::VisibleOnly)
+                // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit
+                // prelude resolve directly to their qualified home in query patterns too
+                // — parity with `remap_name_str`, so a reflection query naming
+                // `field_access` / `ListLiteral` or a prelude name like `eq` / `cons` bare
+                // still matches after the `_global` imports were removed. Fallback only:
+                // scope resolution already failed, so a user-defined same-spelling name
+                // has won. (Distinct from WI-476's deliberate no-rescue for arbitrary user
+                // short-names — these are RESERVED / PRELUDE names that always denote
+                // their target.)
+                .or_else(|| resolve_implicit(kb, name))
+                .map_or(ResolveResult::NotFound, ResolveResult::Found)
+        }
     }
 }
 
@@ -6939,43 +6956,24 @@ pub(crate) fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: 
 /// GUARD ([`scan_rule_goal`]) asks before letting a rule head introduce a name? A head
 /// that names something introduces nothing; it is a CLAUSE ABOUT that thing.
 ///
-/// IT MUST ANSWER FOR THE SAME NAMES [`Loader::remap_name_str_inner`] RESOLVES. A name
+/// IT MUST ANSWER FOR THE SAME NAMES A REFERENCE RESOLVES, so it IS the ladder
+/// ([`resolve_name_in_kb`]), read for its verdict rather than its symbol (WI-907). A name
 /// the guard skips but the ladder cannot resolve is neither captured nor bound, so it
-/// falls to the ladder's bare `intern(name)`: ONE GLOBAL NAME that two scopes'
-/// same-spelled heads then share, WI-894's defect class. That is WI-900 — the guard read
-/// the implicit tier as a STATIC const while every resolver gated it on the target being
-/// loaded, so in a stdlib-less KB two sorts' `rule and(?x) :- …` shared one bare `and` on
-/// a program that loaded clean. Both rungs below are now the shared functions, so the
-/// two can only agree; DO NOT re-inline either, and in particular do not restore the
-/// static const — WI-530 chose it because the loaded gate was reported flaky in the full
-/// test binary, which WI-900 re-measured over repeated full-workspace runs and did not
-/// reproduce. Sub-pass 1 defines every file's declarations before any sub-pass 3 runs, so
-/// within a load phase this rung reads the same table the reference path will.
+/// falls to `intern(name)`: ONE GLOBAL NAME that two scopes' same-spelled heads then
+/// share, WI-894's defect class — and WI-900 is that hole, opened by spelling one rung
+/// here by hand. DO NOT re-inline any rung.
 ///
-/// TWO RUNGS OF THE LADDER ARE ABSENT, both because they cannot apply here rather than
-/// by choice. The DOTTED rung is `split_once('.')`-guarded and the caller refuses any
-/// dotted subject, which the `debug_assert` below pins rather than narrates. The
-/// `internal` rungs REPORT, and a guard is not a diagnostic site — a name a scope cannot
-/// see denotes nothing there, which is exactly what `NotFound` already says.
+/// The ladder's `internal` DIAGNOSTIC pass is deliberately not part of it: that pass
+/// REPORTS, and a guard is not a diagnostic site — a name a scope cannot see denotes
+/// nothing there, which is what `NotFound` already says.
 ///
-/// `Ambiguous` COUNTS AS DENOTING, for [`Loader::qualified_name_resolves`]'s stated
-/// reason: an ambiguity is a real finding with a real error to emit, and the reference
-/// emits it. Minting instead would bury it — a fresh scope-local `Goal` is a LOCAL,
-/// which outranks the ambiguous candidates, so the conflict the author has to see would
-/// be silently decided in their favour. Pinned by
+/// `Ambiguous` COUNTS AS DENOTING: the reference position emits the error, and minting
+/// instead would bury it — a fresh scope-local `Goal` is a LOCAL, which outranks the
+/// ambiguous candidates, so the conflict the author has to see would be silently decided
+/// in their favour. Pinned by
 /// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
 fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> bool {
-    debug_assert!(
-        !name.contains('.'),
-        "`{name}`: the mint guard is SHORT-NAME-ONLY, which is why it omits the dotted \
-         rung — `rule_introduced_functor_name` refuses a dotted subject upstream. If that \
-         refusal is relaxed, this function needs `resolve_dotted_in_kb` before it can \
-         answer.",
-    );
-    match kb.symbols.resolve_in_scope(name, scope_raw) {
-        ResolveResult::Found(_) | ResolveResult::Ambiguous(_) => true,
-        ResolveResult::NotFound => resolve_implicit(kb, name).is_some(),
-    }
+    !matches!(resolve_name_in_kb(kb, name, scope_raw), ResolveResult::NotFound)
 }
 
 // ---------------------------------------------------------------------------
@@ -8002,16 +8000,6 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Extract qualified names from a list of candidate symbols (for error messages).
-    fn candidate_names(&self, candidates: &[Symbol]) -> Vec<String> {
-        candidates.iter().map(|&sym| {
-            match self.kb.symbols.get(sym) {
-                SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-                SymbolDef::Unresolved { name } => name.clone(),
-            }
-        }).collect()
-    }
-
     /// WI-369: if `name` (resolved while IGNORING the `internal` filter) names an
     /// `internal` symbol not visible from the current scope, return it. Lets the
     /// resolvers tell a forbidden cross-scope reference to an internal name apart
@@ -8148,10 +8136,12 @@ impl<'a> Loader<'a> {
         let scope = self.current_scope.raw();
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
+            // An ambiguity ENDS the ladder (kernel-language.md §8.6). This is the
+            // position that HAS a channel, so it is where the conflict is named.
             ResolveResult::Ambiguous(candidates) => {
                 self.errors.push(LoadError::AmbiguousSymbol {
                     name: name.to_owned(),
-                    candidates: self.candidate_names(&candidates),
+                    candidates: self.kb.candidate_names(&candidates),
                     span,
                     scope_name: self.scope_display_name(),
                 });
@@ -8238,7 +8228,7 @@ impl<'a> Loader<'a> {
             ResolveResult::Ambiguous(candidates) => {
                 self.errors.push(LoadError::AmbiguousSymbol {
                     name: name.to_owned(),
-                    candidates: self.candidate_names(&candidates),
+                    candidates: self.kb.candidate_names(&candidates),
                     span,
                     scope_name: self.scope_display_name(),
                 });
@@ -8285,7 +8275,7 @@ impl<'a> Loader<'a> {
             ResolveResult::Ambiguous(candidates) => {
                 self.errors.push(LoadError::AmbiguousSymbol {
                     name: lookup_name.clone(),
-                    candidates: self.candidate_names(&candidates),
+                    candidates: self.kb.candidate_names(&candidates),
                     span: name.span,
                     scope_name: self.scope_display_name(),
                 });
@@ -15634,7 +15624,18 @@ impl<'a> Loader<'a> {
         }
         let prefix = &target.segments[..target.segments.len() - 1];
         let prefix_name = join_segments(&self.parsed.symbols, prefix);
-        let op_sym = resolve_name_in_kb_opt(&self.kb, &prefix_name, self.current_scope.raw())?;
+        // WI-907: this position asks "is the prefix ONE operation?", so only `Found` can
+        // say yes — an AMBIGUOUS prefix names no single operation and is therefore not a
+        // contract target. `None` sends the whole target to `remap_name`, which REFUSES
+        // the load (measured: `unresolved name 'f.requires'`) — but as an unresolved
+        // name, not as the ambiguity it is: `remap_name` re-asks about the whole dotted
+        // string, which is nobody's scope name, and the dotted ladder stands down under
+        // an ambiguous head. Loud, imprecise, and the same shape as WI-911's.
+        let ResolveResult::Found(op_sym) =
+            resolve_name_in_kb(&self.kb, &prefix_name, self.current_scope.raw())
+        else {
+            return None;
+        };
         if self.kb.kind_of(op_sym) != Some(SymbolKind::Operation) {
             return None;
         }

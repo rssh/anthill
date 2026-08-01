@@ -4,17 +4,17 @@
 //! reference resolves DIRECTLY to its qualified home, with no `_global` import.
 //!
 //! This guards the QUERY-pattern path specifically (`convert_query_term` ->
-//! `resolve_name_in_kb_opt`). Removing the `_global` imports regressed it — a
+//! `resolve_name_in_kb`). Removing the `_global` imports regressed it — a
 //! bare reserved name in a query silently bare-interned and matched nothing —
 //! and the `kernel_vocab_qualified` fallback restores it. The loader / op-body
 //! paths are covered by the rest of the suite (they resolve the vocab directly
 //! via `remap_name_str` and `ExprBuilderSyms` respectively).
 
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::term::Term;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
-use std::collections::HashMap;
+
+use crate::common::query_pattern_functor_qn;
 
 fn load_stdlib_kb() -> KnowledgeBase {
     let dir = crate::common::stdlib_dir();
@@ -33,25 +33,6 @@ fn load_stdlib_kb() -> KnowledgeBase {
     kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib loads clean");
     kb
-}
-
-/// The functor of `fact <pattern>` after the query-term conversion path.
-fn query_pattern_functor_qn(kb: &mut KnowledgeBase, pattern: &str) -> String {
-    let src = format!("fact {pattern}");
-    let parsed = parse::parse(&src).expect("parse query pattern");
-    let _ = load::scan_definitions(kb, &[&parsed]);
-    let global_raw = kb.make_name_term("_global").raw();
-    let mut var_map = HashMap::new();
-    for item in &parsed.items {
-        if let anthill_core::parse::ir::Item::Fact(f) = item {
-            let t =
-                load::convert_query_term(kb, &parsed.terms, &parsed.symbols, f.term, global_raw, &mut var_map);
-            if let Term::Fn { functor, .. } = kb.get_term(t) {
-                return kb.qualified_name_of(*functor).to_string();
-            }
-        }
-    }
-    panic!("query pattern `{pattern}` produced no Fn term");
 }
 
 /// A bare reflection primitive (`field_access`) in a query pattern — with no
@@ -83,7 +64,7 @@ fn query_pattern_bare_list_literal_resolves_qualified() {
 
 // Precedence note: the reserved resolution is a FALLBACK — `kernel_vocab_qualified`
 // is called only in the `_ => None` arm of `resolve_in_scope`'s match in
-// `resolve_name_in_kb_opt` / `remap_name_str`, so it physically cannot fire when a
+// `resolve_name_in_kb` / `remap_name_str`, so it physically cannot fire when a
 // name resolves in scope. A user-defined same-spelling name therefore always wins;
 // the reserved set only catches the synthesized reference no scope defines. This is
 // guaranteed by code structure (not asserted here — exercising a namespace's exact
