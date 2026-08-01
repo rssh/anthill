@@ -4173,8 +4173,8 @@ impl Interpreter {
     ///   1. an in-memory `fact_monotonicity` reflect rule ("by reflect rule in
     ///      memory"), then
     ///   2. the owning external store's materialized policy ("by its API
-    ///      externally"; materialized in `kb.extents` at `register_mirror`),
-    ///      then
+    ///      externally"; resolved and materialized in `kb.extents` at
+    ///      `register_mirror`), then
     ///   3. the `monotone` append-only default.
     fn resolve_fact_monotonicity(
         &mut self,
@@ -4183,10 +4183,12 @@ impl Interpreter {
         if let Some(m) = reflect_fact_monotonicity(&mut self.kb, functor)? {
             return Ok(m);
         }
-        // No in-memory rule: fall back to the owning mirror's policy, keyed by
-        // its qualified functor name and materialized in the KB at registration.
-        let qname = self.kb.qualified_name_of(functor).to_string();
-        Ok(self.kb.mirror_monotonicity(&qname).unwrap_or(Monotonicity::Monotone))
+        // No in-memory rule: the owning mirror's policy, looked up by the SYMBOL
+        // registration resolved its declared name to. Asking by name here — rendering
+        // this resolved functor back to text — is what made rung 3 ambiguous: a store
+        // whose spelling did not match read exactly like a store that declared nothing
+        // (WI-919). A miss now means only what rung 3 says it means.
+        Ok(self.kb.mirror_monotonicity(functor).unwrap_or(Monotonicity::Monotone))
     }
 }
 

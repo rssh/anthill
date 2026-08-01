@@ -30,7 +30,8 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         ].into(),
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
+    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)))
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
     store_val
 }
 

@@ -83,7 +83,8 @@ fn register_policy_store(interp: &mut Interpreter, mock: PolicyStore) -> Value {
         named: vec![].into(),
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(mock));
+    interp.register_mirror(key, Box::new(mock))
+        .expect("the mock declares its functor by the qualified name the KB has");
     store_val
 }
 
@@ -105,7 +106,8 @@ fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Valu
         ].into(),
     };
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)));
+    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)))
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
     store_val
 }
 
@@ -263,7 +265,8 @@ fn append_only_default_store_cannot_retract() {
     let functor = interp.kb_mut().intern("AppendOnly");
     let store = Value::Entity { functor, pos: vec![].into(), named: vec![].into() };
     let key = interp.store_canonical_key(&store).expect("key");
-    interp.register_mirror(key, Box::new(AppendOnly));
+    interp.register_mirror(key, Box::new(AppendOnly))
+        .expect("declares `test.syn.Ghost`, which this program has");
 
     let fact = functor_value(&mut interp, "test.syn.Ghost");
     let id = persist(&mut interp, &store, fact).expect("persist ok");

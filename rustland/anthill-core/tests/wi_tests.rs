@@ -919,3 +919,6 @@ mod wi916_external_ref_symbol_test;
 
 #[path = "include/wi917_ambiguous_dotted_head_test.rs"]
 mod wi917_ambiguous_dotted_head_test;
+
+#[path = "include/wi919_mirror_policy_keying_test.rs"]
+mod wi919_mirror_policy_keying_test;

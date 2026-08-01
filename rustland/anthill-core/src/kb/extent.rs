@@ -400,10 +400,13 @@ pub(crate) struct ExtentRegistry {
     /// extent owner. Keeping them here makes that role KB-owned rather than an
     /// evaluator side table.
     mirrors: HashMap<String, Box<dyn Store>>,
-    /// Intrinsic policies declared by mirrors, materialized at registration.
-    /// Names remain strings because a backend may name a functor that is only
-    /// interned after bootstrap.
-    mirror_monotonicity: HashMap<String, Monotonicity>,
+    /// Intrinsic policies declared by mirrors, RESOLVED and materialized at
+    /// registration — the same rule as `mounts` above, and for the same reason: a
+    /// backend can only speak names, so the boundary is String at `owned_monotonicity`
+    /// and `Symbol` from registration on. Keying this on the name instead meant the
+    /// reader had to render a resolved `Symbol` BACK to text to ask, and any spelling
+    /// the two sides did not share read as "no policy declared" (WI-919).
+    mirror_monotonicity: HashMap<Symbol, Monotonicity>,
 }
 
 impl ExtentRegistry {
@@ -423,8 +426,15 @@ impl ExtentRegistry {
         Some(self.sources[id.0 as usize].as_mut())
     }
 
-    fn register_mirror(&mut self, key: String, mirror: Box<dyn Store>) {
-        for (functor, policy) in mirror.owned_monotonicity() {
+    /// `policies` is already resolved — see [`KnowledgeBase::register_mirror`], which
+    /// owns the name question because only it can ask one.
+    fn register_mirror(
+        &mut self,
+        key: String,
+        mirror: Box<dyn Store>,
+        policies: Vec<(Symbol, Monotonicity)>,
+    ) {
+        for (functor, policy) in policies {
             self.mirror_monotonicity.insert(functor, policy);
         }
         self.mirrors.insert(key, mirror);
@@ -443,8 +453,8 @@ impl ExtentRegistry {
         Some(self.mirrors.get(key)?.as_ref())
     }
 
-    pub(crate) fn mirror_monotonicity(&self, functor: &str) -> Option<Monotonicity> {
-        self.mirror_monotonicity.get(functor).copied()
+    pub(crate) fn mirror_monotonicity(&self, functor: Symbol) -> Option<Monotonicity> {
+        self.mirror_monotonicity.get(&functor).copied()
     }
 
     /// Until declarative owner bindings name a mirror per functor, a resident
@@ -494,8 +504,51 @@ impl KnowledgeBase {
 
     /// Register a durability mirror for resident facts. A mirror receives
     /// write-through persistence traffic but never becomes a read owner.
-    pub fn register_mirror(&mut self, key: String, mirror: Box<dyn Store>) {
-        self.extents.register_mirror(key, mirror);
+    ///
+    /// Its [`Store::owned_monotonicity`] names are resolved to `Symbol`s HERE, once, and
+    /// the registry is keyed on them — the same rule, in the same vocabulary
+    /// ([`ExtentRegError`]), as [`Self::register_extent_owner`]. All or nothing: if any
+    /// declared name fails, no policy and no mirror is committed.
+    ///
+    /// A name that denotes NOTHING is refused rather than dropped, and that is the whole
+    /// point of the refusal: the policy table's reader cannot tell a dropped entry from a
+    /// functor no store spoke for, so a silent drop resurfaces as the `monotone` default
+    /// — which the proposal-053 guard then reports as "not non_monotone", a policy
+    /// verdict for a policy that WAS declared, one spelling away (WI-919, driven).
+    /// Declaring a policy for a functor this KB does not have is therefore not
+    /// expressible; no in-tree backend does it (the filesystem stores declare none at
+    /// all), and if a schema-reading backend ever needs to, that is a decision to take
+    /// deliberately, not by tolerating this silence.
+    pub fn register_mirror(
+        &mut self,
+        key: String,
+        mirror: Box<dyn Store>,
+    ) -> Result<(), ExtentRegError> {
+        let declared = mirror.owned_monotonicity();
+        let mut resolved = Vec::with_capacity(declared.len());
+        for (name, policy) in declared {
+            resolved.push((self.registration_symbol(&name)?, policy));
+        }
+        self.extents.register_mirror(key, mirror, resolved);
+        Ok(())
+    }
+
+    /// The functor a HOST-supplied REGISTRATION name denotes, or the typed refusal
+    /// saying why it denotes no single one.
+    ///
+    /// One spelling for both registration paths — a source's `owned()` functor and a
+    /// mirror's `owned_monotonicity()` functor are the same question asked by the same
+    /// kind of author, so they get the same answer and the same two refusals. They were
+    /// briefly two copies of this match; the second one is what WI-919 was.
+    fn registration_symbol(&mut self, name: &str) -> Result<Symbol, ExtentRegError> {
+        match self.resolve_name_in_global(name) {
+            ResolveResult::Found(sym) => Ok(sym),
+            ResolveResult::Ambiguous(cands) => Err(ExtentRegError::AmbiguousName {
+                functor: name.to_owned(),
+                candidates: self.candidate_names(&cands),
+            }),
+            ResolveResult::NotFound => Err(ExtentRegError::UnresolvableName(name.to_owned())),
+        }
     }
 
     pub(crate) fn take_mirror(&mut self, key: &str) -> Option<Box<dyn Store>> {
@@ -510,7 +563,7 @@ impl KnowledgeBase {
         self.extents.mirror(key)
     }
 
-    pub(crate) fn mirror_monotonicity(&self, functor: &str) -> Option<Monotonicity> {
+    pub(crate) fn mirror_monotonicity(&self, functor: Symbol) -> Option<Monotonicity> {
         self.extents.mirror_monotonicity(functor)
     }
 
@@ -672,18 +725,7 @@ impl KnowledgeBase {
         let owned = source.owned();
         let mut resolved: Vec<(Symbol, ExtentProfile)> = Vec::with_capacity(owned.len());
         for (name, profile) in owned {
-            let sym = match self.resolve_name_in_global(&name) {
-                ResolveResult::Found(sym) => sym,
-                ResolveResult::Ambiguous(cands) => {
-                    return Err(ExtentRegError::AmbiguousName {
-                        functor: name.clone(),
-                        candidates: self.candidate_names(&cands),
-                    })
-                }
-                ResolveResult::NotFound => {
-                    return Err(ExtentRegError::UnresolvableName(name.clone()))
-                }
-            };
+            let sym = self.registration_symbol(&name)?;
 
             if self.extents.mounts.contains_key(&sym)
                 || resolved.iter().any(|(s, _)| *s == sym)

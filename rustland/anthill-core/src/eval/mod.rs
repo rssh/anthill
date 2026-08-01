@@ -435,9 +435,15 @@ impl Interpreter {
     /// store's value representation.
     ///
     /// Its intrinsic per-functor write policy is held by `kb.extents`, alongside
-    /// the mirror itself; the evaluator owns neither persistence registry.
-    pub fn register_mirror(&mut self, key: String, mirror: Box<dyn crate::persistence::Store>) {
-        self.kb.register_mirror(key, mirror);
+    /// the mirror itself; the evaluator owns neither persistence registry. Registration
+    /// resolves that policy's declared functor names and REFUSES one that denotes
+    /// nothing — see [`KnowledgeBase::register_mirror`] for why a drop cannot be silent.
+    pub fn register_mirror(
+        &mut self,
+        key: String,
+        mirror: Box<dyn crate::persistence::Store>,
+    ) -> Result<(), crate::kb::extent::ExtentRegError> {
+        self.kb.register_mirror(key, mirror)
     }
 
     /// Compute the canonical-key string for a store value (`Value::Entity`).

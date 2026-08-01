@@ -166,6 +166,12 @@ pub trait Store {
     /// in-memory reflect rule, the guard falls back to the owning store's
     /// answer here rather than the in-memory `monotone` default.
     ///
+    /// Each name is resolved THERE, once, and a name that denotes nothing in the KB is a
+    /// loud registration refusal, not a dropped entry — a store's declaration only
+    /// reaches the guard if the two sides agree on the spelling, so the disagreement is
+    /// reported where it can still be fixed instead of resurfacing as a `monotone`
+    /// verdict at a retract (WI-919).
+    ///
     /// The filesystem backends return `[]`: their per-functor policy is the
     /// project's own reflect rules (`rule fact_monotonicity(WorkItem) =
     /// non_monotone()`), not intrinsic to the file store. A policy-bearing

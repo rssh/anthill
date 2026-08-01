@@ -67,7 +67,7 @@ fn persist_then_flush_writes_fact_to_disk() {
     interp.register_mirror(
         key.clone(),
         Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
-    );
+    ).expect("a file store declares no intrinsic policy, so nothing is resolved");
 
     // Build a Foo(value: 7) entity.
     let foo_sym = interp.kb_mut().intern("Foo");
@@ -139,7 +139,8 @@ fn failed_mirror_persist_does_not_assert_a_resident_fact() {
     let mut interp = interp_for("namespace test.persist_failure\n  entity Foo\nend\n");
     let store_val = filestore_value(&mut interp, "unused");
     let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(FailingStore));
+    interp.register_mirror(key, Box::new(FailingStore))
+        .expect("FailingStore declares no intrinsic policy");
     let foo = interp.kb_mut().try_resolve_symbol("test.persist_failure.Foo")
         .expect("declared Foo resolves");
     let fact = Value::Entity { functor: foo, pos: Vec::new().into(), named: Vec::new().into() };
@@ -174,7 +175,7 @@ fn retract_via_builtin_removes_fact_from_disk() {
     interp.register_mirror(
         key.clone(),
         Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
-    );
+    ).expect("a file store declares no intrinsic policy, so nothing is resolved");
 
     let foo_sym = interp.kb_mut().intern("Foo");
     let bar_sym = interp.kb_mut().try_resolve_symbol("test.retract.Bar")
@@ -219,7 +220,7 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     interp.register_mirror(
         key,
         Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
-    );
+    ).expect("a file store declares no intrinsic policy, so nothing is resolved");
 
     let bar = interp.kb_mut().try_resolve_symbol("test.update.Bar")
         .expect("declared Bar resolves");

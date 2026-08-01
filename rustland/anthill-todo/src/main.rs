@@ -765,7 +765,13 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             }
         }
 
-        interp.register_mirror(key, Box::new(store));
+        // The store declares no intrinsic per-functor policy (its policy IS the
+        // project's own `fact_monotonicity` rules), so this refusal is reachable only
+        // if that changes — and then it names the spelling nobody resolved (WI-919).
+        if let Err(e) = interp.register_mirror(key, Box::new(store)) {
+            eprintln!("error: registering the work-item store: {e}");
+            return runner::EXIT_RUNTIME;
+        }
         v
     };
 
