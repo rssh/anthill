@@ -31,6 +31,16 @@ namespace anthill.realization.cpp_std
   fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "String", host_type: "std::string", lift: none, lower: none)
   fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Unit",   host_type: "void",        lift: none, lower: none)
 
+  -- NO `BigInt` MAPPING, and that is a DECISION, not an omission (WI-890). C++17's
+  -- standard library has no arbitrary-precision integer, so the base `cpp` profile
+  -- cannot realize `BigInt`'s VALUES, let alone its operations — and without a
+  -- host_type here even a `BigInt` field fails to lower, which is louder and earlier
+  -- than an operation gap (a `String`-shaped binding block over a type that does not
+  -- map would refuse call-by-call instead). `BigInt` is therefore OUT OF SCOPE for
+  -- `cpp-std`; a future profile that vendors a big-integer type (e.g. Boost.Multiprecision
+  -- through a `carrier` clause + `artifact`) is where its mapping belongs. The rust
+  -- binding realizes it (`num_bigint`), so the two hosts differ here by design.
+
   -- Parameterized stdlib containers: host_type is the template name; the
   -- codegen wraps the type arguments (List[T = X] -> std::vector<X>).
   fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "List",   host_type: "std::vector",   lift: none, lower: none)
@@ -107,4 +117,13 @@ namespace anthill.realization.cpp_std
   fact IncludeMapping(lang: "cpp", host_type: "std::min",            include: "#include <algorithm>")
   fact IncludeMapping(lang: "cpp", host_type: "std::llabs",          include: "#include <cstdlib>")
   fact IncludeMapping(lang: "cpp", host_type: "std::to_string",      include: "#include <string>")
+
+  -- WI-890: `String`'s scalar-indexed / structure-building operations lower to
+  -- `anthill::runtime::str_*` helpers in `rustland/anthill-cpp-gen/src/anthill_runtime.hpp`
+  -- (see `rustland/anthill-cpp-gen/anthill/string.anthill`). Any emitted body naming one
+  -- pulls the runtime header, found by this probe's `anthill::runtime::` prefix — the same
+  -- scan-over-emitted-text mechanism the `std::` spellings use, so the header ships with
+  -- the generated ones rather than being wired in Rust. (The runtime header is
+  -- self-contained: its own `<string>`/`<vector>`/… are not probed here.)
+  fact IncludeMapping(lang: "cpp", host_type: "anthill::runtime::",  include: "#include \"anthill_runtime.hpp\"")
 end

@@ -1,0 +1,86 @@
+-- C++ binding for anthill.prelude.String. Proposal 038 — host-specific spec
+-- satisfaction lives separately from the language-agnostic spec in
+-- stdlib/anthill/prelude/string.anthill.
+--
+-- WI-890: the C++ peer of `rustland/anthill-stl/anthill/string.anthill`. Before this
+-- file, `String` had a `TypeMapping` (its VALUES lower to `std::string`, in
+-- cpp_std.anthill) but NO cpp binding block, so every one of its OPERATIONS was a loud
+-- `unlowerable_operation` refusal (WI-886). This is the fill.
+--
+-- `host_fn` here is a C++ EXPRESSION TEMPLATE — `$1`, `$2`, … stand for the operation's
+-- arguments (`docs/kernel-language.md` §10.2; `float.anthill` beside this file for the
+-- fuller note). Each slot must appear EXACTLY ONCE, so an operation whose C++ reads an
+-- operand twice binds it in a non-capturing lambda (`compare`) rather than a template
+-- that would evaluate an already-lowered argument twice.
+--
+-- THE INDEX UNIT IS THE UNICODE SCALAR, not the byte (WI-884). `std::string` is BYTES
+-- throughout, and the naive `s.find` / `s.substr` mapping answers in bytes — which
+-- `substring(s, indexOf(s, sub), …)` then uses to cut the WRONG span on any string with
+-- a multi-byte prefix, the exact defect WI-884 refused. `length`, `substring` and
+-- `indexOf` are therefore realized by scalar-indexed helpers in
+-- `rustland/anthill-cpp-gen/src/anthill_runtime.hpp` (`anthill::runtime::str_*`), which
+-- is more than an expression template can carry; `replace`, `split`, `trim` and
+-- `repeat` (which build a structured result) and `endsWith` (no `std::string::ends_with`
+-- before C++20) join them. The `#include "anthill_runtime.hpp"` those spellings need
+-- rides an `IncludeMapping` probe on `anthill::runtime::` in cpp_std.anthill, exactly as
+-- the `std::` spellings' headers do; the header is copied beside every generated one.
+--
+-- NO `carrier` CLAUSE, load-bearing exactly as in `float.anthill`: `String`'s C++
+-- spelling is `TypeMapping(anthill_type: "String", host_type: "std::string")` in
+-- cpp_std.anthill, the PROFILE-OVERLAYABLE channel a `cpp20-stl` overlay can remap. A
+-- `carrier { String: … }` clause is consulted ahead of that query and would silently
+-- shadow the overlay.
+--
+-- toUpper / toLower ARE DELIBERATELY ABSENT, and stay a loud codegen refusal. Full
+-- Unicode case mapping (rust's `to_uppercase`/`to_lowercase` — locale-independent,
+-- with multi-scalar expansions such as `ß` -> `SS`) has no C++17 standard-library
+-- realization; `std::toupper` is ASCII-and-locale, and an ASCII-only mapping would be
+-- exactly the silent non-ASCII divergence WI-884 refused. So the two operations refuse
+-- at codegen naming themselves (`an_operation_with_no_body_and_no_cpp_realization…`),
+-- which is the loudest available signal, until a profile that vendors an ICU-like
+-- library adds them. This is the ticket's "the restriction is stated in the binding
+-- block and the operations it cannot realize stay a loud refusal."
+namespace anthill.prelude
+  provides String language cpp
+    operation_map {
+      -- Ordered (WI-876). `std::string`'s relational operators compare byte-by-byte as
+      -- UNSIGNED char (`std::char_traits<char>::lt`), which for valid UTF-8 is code-point
+      -- order — the same total order rust's `str: Ord` gives, so the two hosts agree.
+      -- `compare` reads its operands twice, hence the lambda.
+      compare: "[](const std::string& l, const std::string& r) { return static_cast<int64_t>((l > r) - (l < r)); }($1, $2)",
+      gt: "($1 > $2)",
+      gte: "($1 >= $2)",
+      lt: "($1 < $2)",
+      lte: "($1 <= $2)",
+      max: "std::max($1, $2)",
+      min: "std::min($1, $2)",
+
+      -- Byte-safe as plain expressions: concatenation and the boolean queries answer the
+      -- same for bytes and scalars because a match lands on a scalar boundary in valid
+      -- UTF-8. `contains`/`startsWith` treat the empty pattern as present at position 0
+      -- (`find("")` / `rfind("", 0)` both answer 0), matching the sort's laws.
+      concat: "($1 + $2)",
+      isEmpty: "$1.empty()",
+      contains: "($1.find($2) != std::string::npos)",
+      startsWith: "($1.rfind($2, 0) == 0)",
+
+      -- Scalar-indexed or structure-building or double-reading — realized by the runtime
+      -- helpers (see the header note above).
+      length: "anthill::runtime::str_length($1)",
+      indexOf: "anthill::runtime::str_index_of($1, $2)",
+      substring: "anthill::runtime::str_substring($1, $2, $3)",
+      endsWith: "anthill::runtime::str_ends_with($1, $2)",
+      replace: "anthill::runtime::str_replace($1, $2, $3)",
+      trim: "anthill::runtime::str_trim($1)",
+      split: "anthill::runtime::str_split($1, $2)",
+      repeat: "anthill::runtime::str_repeat($1, $2)"
+    }
+  end
+end
+
+-- NO SPEC-SATISFACTION FACTS (`fact Eq[T = String]`, `fact Ordered[T = String]`, …),
+-- like `float.anthill` beside this file and unlike the rust binding: a `provides` fact
+-- enters coherence and dispatch, and the cpp-gen suite needs none of them (String's own
+-- operations dispatch by carrier, not through a typeclass). This file asserts only what
+-- it is for — the C++ spellings. The rust binding keeps its set because the rust
+-- runtime's typer does dispatch `Ordered`/`Eq` on `String`.

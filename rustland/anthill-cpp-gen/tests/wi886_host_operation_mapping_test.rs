@@ -31,7 +31,7 @@ use super::common;
 
 use std::process::Command;
 
-use anthill_cpp_gen::{emit_namespace_header, emit_traits_struct, CodegenContext};
+use anthill_cpp_gen::{emit_namespace_header, emit_runtime_header, emit_traits_struct, CodegenContext};
 use common::{
     collect_anthill_files, cpp_bindings_dir, find_cxx, load_kb_with, load_kb_with_extras,
     rustland_root, scratch_dir,
@@ -172,23 +172,26 @@ fn a_template_may_state_the_conversion_its_signature_needs() {
 
 // ── The silent fall-through, now loud ────────────────────────────────
 
-/// THE ACCEPTANCE's second clause. `String` has no `provides String language cpp`
-/// block, so `String.length` has no body and no C++ realization — and cpp-gen must say
-/// so instead of emitting `length(s)`.
+/// THE ACCEPTANCE's second clause. WI-890 filled `String`'s binding block, but LEFT
+/// `toUpper`/`toLower` out on purpose: full Unicode case mapping has no C++17
+/// standard-library realization and an ASCII-only one would silently diverge on
+/// non-ASCII input (the WI-884 defect). So they have no body and no C++ realization —
+/// and cpp-gen must say so, naming the operation and the block that would fix it,
+/// instead of emitting `toUpper(s)`.
 ///
 /// Asserted on `Err`, not on a degraded body: a broken host binding is a FAULT, not a
 /// capability gap, so it stays FATAL by default (WI-891) and aborts the whole emit —
 /// `synthesise_body_for` never sees the `capability_gap` flag for it. Degrading it
-/// would be less loud than the defect it replaced: `length(s)` at least failed the C++
+/// would be less loud than the defect it replaced: `toUpper(s)` at least failed the C++
 /// build, while the old `return {};` compiled and answered zero.
 #[test]
 fn an_operation_with_no_body_and_no_cpp_realization_is_a_codegen_error() {
     let err = emit_ops("test.wi886_gap", &[
-        ("n", "s: String", "Int64", "String.length(s)"),
+        ("up", "s: String", "String", "String.toUpper(s)"),
     ])
     .expect_err("an unrealized operation must refuse the whole emit");
     assert!(
-        err.contains("anthill.prelude.String.length"),
+        err.contains("anthill.prelude.String.toUpper"),
         "the message must name the operation: {err}"
     );
     assert!(
@@ -424,9 +427,12 @@ fn every_rust_realized_primitive_operation_is_realized_in_cpp() {
 ///
 /// Matching is by SUBSTRING because that is what `Includes::scan` does, so this test
 /// agrees with the mechanism rather than with an idealization of it: `std::log` covers
-/// `std::log10` and `std::log2`, and `std::isgreater` covers `std::isgreaterequal`.
+/// `std::log10` and `std::log2`, and `std::isgreater` covers `std::isgreaterequal`. The
+/// same reconciliation covers WI-890's `anthill::runtime::str_*` helpers, whose header
+/// rides the single `anthill::runtime::` prefix probe — so deleting that fact fails HERE,
+/// not only in the skippable compile test.
 #[test]
-fn every_std_spelling_a_cpp_mapping_emits_has_an_include_probe() {
+fn every_host_spelling_a_cpp_mapping_emits_has_an_include_probe() {
     let mut kb = load_kb_with("\nnamespace test.wi886_probes\n  sort S\n  end\nend\n");
 
     let probes = include_mapping_host_types(&mut kb);
@@ -434,7 +440,7 @@ fn every_std_spelling_a_cpp_mapping_emits_has_an_include_probe() {
 
     let mut unprobed: Vec<String> = Vec::new();
     for m in kb.host_op_mappings().iter().filter(|m| m.lang == "cpp") {
-        for spelling in std_identifiers(&m.host_fn) {
+        for spelling in probed_spellings(&m.host_fn) {
             if !probes.iter().any(|p| spelling.contains(p.as_str())) {
                 unprobed.push(format!("{} -> {spelling}", m.op_qn));
             }
@@ -444,9 +450,9 @@ fn every_std_spelling_a_cpp_mapping_emits_has_an_include_probe() {
     unprobed.dedup();
     assert!(
         unprobed.is_empty(),
-        "these `std::` spellings appear in a cpp operation_map and no `IncludeMapping` \
-         probe in stdlib/anthill/realization/cpp_std.anthill matches them, so a header \
-         using them is emitted without its `#include`: {unprobed:?}"
+        "these `std::` / `anthill::runtime::` spellings appear in a cpp operation_map and \
+         no `IncludeMapping` probe in stdlib/anthill/realization/cpp_std.anthill matches \
+         them, so a header using them is emitted without its `#include`: {unprobed:?}"
     );
 }
 
@@ -475,25 +481,32 @@ fn include_mapping_host_types(kb: &mut anthill_core::kb::KnowledgeBase) -> Vec<S
         .collect()
 }
 
-/// The `std::`-prefixed identifiers a C++ expression template names — what
-/// `Includes::scan` will be looking for in the emitted text.
-fn std_identifiers(template: &str) -> Vec<String> {
+/// The header-bearing identifiers a C++ expression template names — what
+/// `Includes::scan` will be looking for in the emitted text. Both prefixes a cpp
+/// `operation_map` uses are scanned: `std::` (whose header is a `<…>` probe) and
+/// `anthill::runtime::` (WI-890's `str_*` helpers, whose header is the runtime-header
+/// probe), so the reconciliation below covers the runtime helpers as well as the std
+/// spellings — the runtime family would otherwise be pinned only by the SKIPPABLE
+/// compile test.
+fn probed_spellings(template: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = template.as_bytes();
-    let mut i = 0;
-    while let Some(off) = template[i..].find("std::") {
-        let start = i + off;
-        let mut end = start + "std::".len();
-        while end < bytes.len()
-            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b':')
-        {
-            end += 1;
+    for prefix in ["std::", "anthill::runtime::"] {
+        let mut i = 0;
+        while let Some(off) = template[i..].find(prefix) {
+            let start = i + off;
+            let mut end = start + prefix.len();
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b':')
+            {
+                end += 1;
+            }
+            // Trim a trailing `::` so `std::numeric_limits<int64_t>::min` contributes the
+            // spelling `std::numeric_limits`, which is what the probe table carries.
+            let spelling = template[start..end].trim_end_matches(':');
+            out.push(spelling.split('<').next().unwrap_or(spelling).to_string());
+            i = end;
         }
-        // Trim a trailing `::` so `std::numeric_limits<int64_t>::min` contributes the
-        // spelling `std::numeric_limits`, which is what the probe table carries.
-        let spelling = template[start..end].trim_end_matches(':');
-        out.push(spelling.split('<').next().unwrap_or(spelling).to_string());
-        i = end;
     }
     out
 }
@@ -535,6 +548,38 @@ fn binding_sources_match_on_disk() {
 }
 
 // ── End to end ───────────────────────────────────────────────────────
+
+/// Compile `driver` at C++17 `-Wall -Wextra -Werror` and run it, panicking with the
+/// `header` text on a compile failure or a nonzero exit (a wrong computed answer). The
+/// caller writes the header(s) `driver` includes into `dir` first — the generated
+/// namespace header always, and `anthill_runtime.hpp` when the ops lower to runtime
+/// helpers — then removes `dir` on success. Shared by the two end-to-end tests, whose
+/// only differences are the driver body and which headers they drop in.
+fn compile_and_run(dir: &std::path::Path, cxx: &str, header: &str, driver: &str) {
+    let driver_path = dir.join("driver.cpp");
+    std::fs::write(&driver_path, driver).expect("write driver");
+    let bin_path = dir.join("driver");
+    let build = Command::new(cxx)
+        .args(["-std=c++17", "-Wall", "-Wextra", "-Werror"])
+        .arg(&driver_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("invoke compiler");
+    assert!(
+        build.status.success(),
+        "C++ compile failed (compiler: {cxx})\n\
+         ── header ───────────────\n{header}\n\
+         ── stderr ───────────────\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&bin_path).output().expect("run driver");
+    assert!(
+        run.status.success(),
+        "generated C++ compiled but computed the wrong answers:\n{}\n── header ──\n{header}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
 
 /// THE ACCEPTANCE's third clause: a program using `Float.isNaN` and `Float.max`
 /// generates C++ that COMPILES — and, since compiling proves only that the names
@@ -583,31 +628,114 @@ int main() {{
 "#,
         header_path.display()
     );
-    let driver_path = dir.join("driver.cpp");
-    std::fs::write(&driver_path, &driver).expect("write driver");
-    let bin_path = dir.join("driver");
+    compile_and_run(&dir, cxx, &header, &driver);
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    let build = Command::new(cxx)
-        .args(["-std=c++17", "-Wall", "-Wextra", "-Werror"])
-        .arg(&driver_path)
-        .arg("-o")
-        .arg(&bin_path)
-        .output()
-        .expect("invoke compiler");
-    assert!(
-        build.status.success(),
-        "C++ compile failed (compiler: {cxx})\n\
-         ── header ───────────────\n{header}\n\
-         ── stderr ───────────────\n{}",
-        String::from_utf8_lossy(&build.stderr)
+/// THE WI-890 ACCEPTANCE: `String`'s operations lower to C++ that COMPILES and computes
+/// THE SAME ANSWERS AS THE RUST HOST on a non-ASCII input — driven by the WI-884 round
+/// trip `substring(s, indexOf(s, sub), indexOf(s, sub) + length(sub)) = sub`, which pins
+/// the scalar (not byte) index unit that a naive `std::string::find`/`substr` mapping
+/// would get wrong on a multi-byte prefix. The rest of the surface rides along: the
+/// build-and-run is the only place the scalar-indexed helpers, the `split` vector, and
+/// the Ordered comparators are exercised end to end.
+///
+/// `String.toUpper`/`toLower` are DELIBERATELY not exercised — they stay a loud codegen
+/// refusal (no C++17 Unicode case mapping), covered by
+/// `an_operation_with_no_body_and_no_cpp_realization_is_a_codegen_error`.
+#[test]
+fn string_operations_compile_and_run_on_non_ascii() {
+    let source = r#"
+        namespace test.wi890_string
+          import anthill.prelude.{String, Int64, Bool, List}
+          import anthill.prelude.Numeric.{add}
+          sort S
+            operation rt(s: String, sub: String) -> String =
+              let i = String.indexOf(s, sub)
+              String.substring(s, i, add(i, String.length(sub)))
+            operation len(s: String) -> Int64 = String.length(s)
+            operation cat(a: String, b: String) -> String = String.concat(a, b)
+            operation has(s: String, sub: String) -> Bool = String.contains(s, sub)
+            operation pre(s: String, p: String) -> Bool = String.startsWith(s, p)
+            operation suf(s: String, p: String) -> Bool = String.endsWith(s, p)
+            operation rep(s: String, o: String, n: String) -> String = String.replace(s, o, n)
+            operation strip(s: String) -> String = String.trim(s)
+            operation parts(s: String, sep: String) -> List[T = String] = String.split(s, sep)
+            operation rpt(s: String, n: Int64) -> String = String.repeat(s, n)
+            operation cmp(a: String, b: String) -> Int64 = String.compare(a, b)
+            operation larger(a: String, b: String) -> String = String.max(a, b)
+            operation smaller(a: String, b: String) -> String = String.min(a, b)
+            operation empt(s: String) -> Bool = String.isEmpty(s)
+          end
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi890_string").expect("emit header");
+
+    let Some(cxx) = find_cxx() else {
+        eprintln!("no C++ compiler available — skipping compile check");
+        return;
+    };
+    let dir = scratch_dir("wi890_string");
+    std::fs::write(dir.join("anthill_runtime.hpp"), emit_runtime_header())
+        .expect("write runtime header");
+    let header_path = dir.join("wi890_string.hpp");
+    std::fs::write(&header_path, &header).expect("write header");
+
+    // `s` = "héllo wörld": é and ö are each two UTF-8 bytes, so a byte-indexed mapping
+    // would answer wrong for every operation that counts or addresses positions.
+    let driver = format!(
+        r#"#include "{}"
+#include <cstdio>
+#include <string>
+int main() {{
+    using S = test::wi890_string::S;
+    const std::string s = "h\xC3\xA9llo w\xC3\xB6rld";  // héllo wörld, 11 scalars
+    int bad = 0;
+    auto eq = [&](const std::string& got, const std::string& exp, const char* w) {{
+        if (got != exp) {{ printf("%s: [%s] != [%s]\n", w, got.c_str(), exp.c_str()); bad = 1; }}
+    }};
+    auto true_ = [&](bool c, const char* w) {{ if (!c) {{ printf("%s\n", w); bad = 1; }} }};
+
+    // WI-884 round trip on a non-ASCII subject and non-ASCII / boundary-spanning needles.
+    eq(S::rt(s, "w\xC3\xB6r"), "w\xC3\xB6r", "round trip wör");
+    eq(S::rt(s, "h\xC3\xA9"),  "h\xC3\xA9",  "round trip hé (leading multibyte)");
+    eq(S::rt(s, "d"),          "d",          "round trip d (tail)");
+
+    // length / substring / indexOf are the scalar unit, not bytes.
+    true_(S::len(s) == 11, "len scalars");
+    eq(S::rt(s, "\xC3\xB6r"), "\xC3\xB6r", "round trip ör");
+
+    // The rest of the surface.
+    eq(S::cat("a\xC3\xA9", "b"), "a\xC3\xA9""b", "concat");
+    true_(S::has(s, "w\xC3\xB6r"), "contains present");
+    true_(!S::has(s, "zzz"),       "contains absent");
+    true_(S::has(s, ""),           "contains empty");
+    true_(S::pre(s, "h\xC3\xA9"),  "startsWith");
+    true_(!S::pre(s, "\xC3\xA9l"), "startsWith no");
+    true_(S::suf(s, "rld"),        "endsWith");
+    true_(!S::suf(s, "x"),         "endsWith no");
+    eq(S::rep("banana", "a", "o"), "bonono", "replace all");
+    eq(S::rep("abc", "", "-"),     "-a-b-c-", "replace empty old");
+    eq(S::strip("  h\xC3\xA9  "),  "h\xC3\xA9", "trim ascii ws");
+    eq(S::strip("\xC2\xA0hi\xC2\xA0"), "hi", "trim NBSP");
+    {{
+        auto v = S::parts("a,b,c", ",");
+        true_(v.size() == 3 && v[0] == "a" && v[2] == "c", "split");
+        auto e = S::parts(",a,", ",");
+        true_(e.size() == 3 && e[0] == "" && e[1] == "a" && e[2] == "", "split empties");
+    }}
+    eq(S::rpt("a\xC3\xA9", 3), "a\xC3\xA9""a\xC3\xA9""a\xC3\xA9", "repeat");
+    eq(S::rpt("x", 0), "", "repeat zero");
+    true_(S::cmp("a", "b") == -1 && S::cmp("b", "a") == 1 && S::cmp("a", "a") == 0, "compare");
+    eq(S::larger("a", "b"), "b", "max");
+    eq(S::smaller("a", "b"), "a", "min");
+    true_(S::empt("") && !S::empt("x"), "isEmpty");
+    return bad;
+}}
+"#,
+        header_path.display()
     );
-
-    let run = Command::new(&bin_path).output().expect("run driver");
-    assert!(
-        run.status.success(),
-        "generated C++ compiled but computed the wrong answers:\n{}\n── header ──\n{header}",
-        String::from_utf8_lossy(&run.stdout)
-    );
-
+    compile_and_run(&dir, cxx, &header, &driver);
     let _ = std::fs::remove_dir_all(&dir);
 }

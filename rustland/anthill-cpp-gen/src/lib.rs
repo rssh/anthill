@@ -28,6 +28,7 @@ pub static BINDING_SOURCES: &[(&str, &str)] = &[
     ("rustland/anthill-cpp-gen/bool", include_str!("../anthill/bool.anthill")),
     ("rustland/anthill-cpp-gen/float", include_str!("../anthill/float.anthill")),
     ("rustland/anthill-cpp-gen/int64", include_str!("../anthill/int64.anthill")),
+    ("rustland/anthill-cpp-gen/string", include_str!("../anthill/string.anthill")),
 ];
 
 /// The `language` keyword this backend answers to — the value of the `lang` column on
@@ -1646,6 +1647,11 @@ fn unlowerable_body(ctx: &CodegenContext, message: &str) -> String {
     let msg = escape_cpp_str(message);
     match ctx.innermost_type_param() {
         Some(param) => {
+            // The emitted `::anthill::runtime::dependent_false_v` would ALSO be caught
+            // by the `anthill::runtime::` IncludeMapping probe (WI-890) when cpp_std is
+            // loaded, but this insert stays: the degrade must work in a KB that supplies
+            // its own bindings WITHOUT the cpp profile (no probe fact), so it is the
+            // load-independent floor. `Includes::render` dedups the overlap by directive.
             ctx.requested_includes.borrow_mut()
                 .insert("#include \"anthill_runtime.hpp\"".to_string());
             format!("static_assert(::anthill::runtime::dependent_false_v<{param}>, \"{msg}\");")
@@ -2067,15 +2073,16 @@ fn extract_optional_string(kb: &KnowledgeBase, term: TermId) -> Option<String> {
 
 /// Static runtime support header for anthill-emitted C++.
 ///
-/// Provides SFINAE detection traits for the prelude typeclasses we
-/// know how to generate against — so user code (and our own
-/// generated traits-classes) can `static_assert` that a host carrier
-/// satisfies the expected interface, instead of getting a deep
-/// template-instantiation error mid-codegen.
+/// Provides two things (see the header's own banner): SFINAE detection traits
+/// for the prelude typeclasses we generate against — so generated code can
+/// `static_assert` a host carrier satisfies the expected interface instead of
+/// failing deep in a template instantiation — and hand-authored operation
+/// REALIZATIONS (`anthill::runtime::str_*`, WI-890) for primitives whose lowering
+/// is an algorithm no expression template can carry.
 ///
-/// Stable, hand-authored, C++17. New entries land here when a new
-/// typeclass becomes a codegen target. Keep alphabetical within the
-/// section to ease review.
+/// Stable, hand-authored, C++17. New entries land here when a new typeclass
+/// becomes a codegen target, or a new host operation needs more than a `host_fn`
+/// template.
 pub const ANTHILL_RUNTIME_HEADER: &str = include_str!("anthill_runtime.hpp");
 
 /// Return the runtime support header verbatim. Convenience wrapper —
