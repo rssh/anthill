@@ -6157,8 +6157,9 @@ pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)
 /// WI-928: §6.3's free-standing entities are IN this set now — `entity Vec3(x:
 /// Float, …)` is as instantiable as the `sort` spelling of the same declaration,
 /// and it emits the same record. Before, it emitted none and was silently read
-/// here as abstract. [`free_standing_entity_sorts`] names the newly-included part
-/// for the one check whose coverage is staged behind it.
+/// here as abstract. WI-931 closed the four carriers that widening exposed and
+/// deleted the staging set that named them, so this answer is now uniform over
+/// both spellings with nothing keyed on which one was written.
 pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
     let mut out = std::collections::HashSet::new();
     let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
@@ -6179,55 +6180,6 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
             .map(|(_, v)| !super::typing::list_to_vec(kb, *v).is_empty())
             .unwrap_or(false);
         if has_ctors {
-            out.insert(sort_sym);
-        }
-    }
-    out
-}
-
-/// WI-928 — the sorts whose declaration was written with the `entity` keyword:
-/// §6.3's free-standing spelling, recorded as `SortInfo.kind = entity`. Read off
-/// the SAME facts as [`sorts_with_constructors`], so the two answer about one set
-/// of records rather than two derivations that could disagree.
-///
-/// PURPOSE, and the only sanctioned one: STAGING. These carriers emitted no
-/// `SortInfo` at all before WI-928, so every SortInfo-driven load-time pass read
-/// them as absent. Where extending a pass to them surfaces genuine violations that
-/// are their own body of work, the pass names this set, skips it, and cites the
-/// ticket that closes it — see `check_provider_operations` / WI-931. It is NOT a
-/// semantic distinction: §6.3 makes the two spellings one declaration, and any
-/// pass keyed on this permanently would be re-introducing the divergence this
-/// ticket removed.
-///
-/// The `SortInfo` walk is spelled out here rather than shared with its neighbour
-/// deliberately: this function is scheduled for DELETION with WI-931, and a shared
-/// helper extracted for a temporary caller would outlive it as a shape nothing
-/// justifies. The two read the same facts and are checked together by the same
-/// tests.
-pub(crate) fn free_standing_entity_sorts(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
-    let mut out = std::collections::HashSet::new();
-    let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
-        return out;
-    };
-    for rid in kb.rules_by_functor(sort_info_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let sort_sym = match named.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
-            .map(|(_, v)| kb.get_term(*v))
-        {
-            Some(Term::Ref(s) | Term::Ident(s) | Term::Fn { functor: s, .. }) => *s,
-            _ => continue,
-        };
-        let is_entity_kind = named.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "kind")
-            .map(|(_, v)| match kb.get_term(*v) {
-                Term::Ident(s) | Term::Ref(s) => kb.resolve_sym(*s) == "entity",
-                Term::Const(Literal::String(s)) => s == "entity",
-                _ => false,
-            })
-            .unwrap_or(false);
-        if is_entity_kind {
             out.insert(sort_sym);
         }
     }

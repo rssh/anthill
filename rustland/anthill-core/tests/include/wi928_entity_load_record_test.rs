@@ -192,7 +192,8 @@ fn neither_spelling_makes_the_name_a_member_of_itself() {
 /// entities surfaced 685 reports over the loader's own DECLARATION RECORDS
 /// (`check_entity_facts` skips those — their slots hold reflect handles, and
 /// reaching a handle is a conversion, not subsumption) and 12 unbacked-provider
-/// findings on four free-standing carriers (staged, WI-931).
+/// findings on four free-standing carriers (staged at the time; WI-931 closed all
+/// twelve and deleted the staging, so this control now covers them too).
 #[test]
 fn control_the_stdlib_loads_clean() {
     let errs = match try_load_kb_with("\nnamespace test.wi928c\n  fact marker(x: 1)\nend\n") {

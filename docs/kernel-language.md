@@ -1453,6 +1453,33 @@ Consequences worth stating, because they are what the rule buys:
   difference in meaning: `name`, `definition` and `constructors` agree, and no
   reader may branch on it to decide what a declaration *is*.
 
+- **A free-standing entity is a CONCRETE carrier, so its provisions are checked**
+  (WI-931). `entity Vec3(x: Float, y: Float, z: Float)` is as instantiable as the
+  `sort` spelling, so `fact Spec[Vec3]` carries the same obligation any other
+  concrete carrier's does: every operation `Spec` declares must be backed for it by
+  something the evaluator can dispatch to (§5.3 / WI-818 — a rule is *not* backing).
+  Before the records agreed, such a carrier emitted none and read as abstract, so
+  the obligation was skipped by omission.
+
+  It follows that **a satisfaction fact belongs in the closure where its backing
+  exists** (proposal 038): if a spec's operations are host primitives, `fact
+  Spec[Carrier]` is declared in that host's binding layer, not beside the carrier
+  in the language-agnostic library, where nothing backs them. A host implementation
+  named for a **spec** op says that operation has an implementation; it never says
+  a given **carrier** is realized — that is a separate declaration, and conflating
+  the two lets any carrier claim the spec (WI-876, WI-931).
+
+- **Operations move a free-standing entity to the long form.** The sugar has no body
+  in which to write one, so `sort Box { entity Box(v: Int64); operation unwrap(…) = … }`
+  is how a free-standing entity gains members — still one symbol, per the rule above,
+  and the fields and operations therefore belong to one type in every backend
+  (a C++ backend emits one `struct`, not a data struct beside a traits struct).
+
+  Mind the **short name** when doing this in a namespace that already has a
+  rule or operation of that name: the new member is a second binding for it, and an
+  `import ns.{f}` elsewhere may bind to the member rather than to the namespace-level
+  `f` — silently, since both are legal (measured; WI-935).
+
 **Distinct field names** (WI-808): an entity's field names must be distinct —
 `entity mk(a: Int64, a: Int64)` is a located error naming the repeated field. A field
 name is how the field is *addressed* — `x.f`, a named argument, a rule pattern — and

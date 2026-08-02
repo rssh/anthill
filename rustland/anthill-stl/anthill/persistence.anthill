@@ -1,0 +1,91 @@
+-- Rust binding for anthill.persistence (proposal 007 / 038).
+--
+-- THREE THINGS LIVE HERE, and they answer three different questions:
+--   * `provides <Spec> language rust` + `operation_map` — WHICH HOST FUNCTION
+--     realizes each storage operation. Asked once per OPERATION.
+--   * `provides <Backend> language rust`               — WHICH BACKENDS this host
+--     realizes at all. Asked once per CARRIER.
+--   * `fact <Spec>[<Backend>]`                          — which store traits each
+--     backend supplies.
+--
+-- ── the operations are COMMON, so they are declared and mapped ONCE ──────────
+--
+-- Every storage operation is one rust function over the store's STATE: it takes
+-- the store as its first argument, resolves that VALUE to the mirror registered
+-- for it (`Interpreter::register_mirror`) and drives the KB's persistence seam.
+-- There is no per-backend variant to name — `FileStore` and `IndexedFileStore`
+-- reach the same six — so mapping them per carrier would be six signatures copied
+-- per backend to say the same thing twice.
+--
+-- This is NOT the spec-op registration WI-876 removed, and the difference is now
+-- enforced rather than argued. That one was a MONOMORPHIC implementation (`i64`
+-- comparison) on a polymorphic spec op, answering wrongly for carriers it could
+-- not handle. These are genuinely polymorphic. But WI-876 had a SECOND finding
+-- that polymorphism does not answer — a spec-level mapping used to make
+-- `check_provider_operations` certify EVERY carrier of the spec, so an arbitrary
+-- `entity ZzNotAStore(v: Int64)` could claim `fact NonMonotonicStore[ZzNotAStore]`
+-- and load clean (MEASURED, on the first cut of this file). `op_backed` no longer
+-- accepts a host mapping on the SPEC op as backing for a CARRIER (kb/typing.rs):
+-- a mapping says the operation has an implementation, never that a given carrier
+-- is realized. That is the question the blocks below answer.
+--
+-- ── which backends this host realizes, one line each ────────────────────────
+--
+-- `provides FileStore language rust` emits the `anthill.realization.Implementation`
+-- fact that marks the carrier host-realized. `SqlStore` has no such block because
+-- rustland implements no SQL backend in any form, so its provisions are REFUSED
+-- rather than merely absent — and a backend added later must say so here to be
+-- believed.
+--
+-- ── why the satisfaction facts live here and not in the stdlib (WI-931) ─────
+--
+-- Same rule as `geometry.anthill` one file over: a `fact Spec[Carrier]` may only
+-- be declared in a closure where the spec's operations are BACKED (proposal 038).
+-- `anthill.persistence` is language-agnostic and its operations are host
+-- primitives, so in a stdlib-only load NOTHING backs `retract` — the claim was
+-- unsound standing in the stdlib, and went unnoticed only because §6.3's
+-- free-standing carriers were invisible to the check (WI-928).
+namespace anthill.persistence
+  provides Store language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      persist: "store_persist",
+      flush: "store_flush",
+      monotonicity: "store_monotonicity"
+    }
+  end
+
+  provides NonMonotonicStore language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      retract: "store_retract",
+      update: "store_update"
+    }
+  end
+
+  provides QueryableStore language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      retrieve: "store_retrieve"
+    }
+  end
+end
+
+namespace anthill.persistence.filesystem
+  import anthill.persistence.{QueryableStore, NonMonotonicStore}
+
+  provides FileStore language rust
+    artifact "rustland/anthill-core/src/persistence/file_store.rs"
+  end
+
+  provides IndexedFileStore language rust
+    artifact "rustland/anthill-core/src/persistence/indexed_file_store.rs"
+  end
+
+  -- The traits each backend supplies. NO `BulkStore` on either: its sole member
+  -- `pull` has no anthill-callable implementation at all (WI-932).
+  fact NonMonotonicStore[FileStore]           -- filesystem can retract (053 / 007 §2)
+
+  fact QueryableStore[IndexedFileStore]
+  fact NonMonotonicStore[IndexedFileStore]    -- span-based retract in place
+end

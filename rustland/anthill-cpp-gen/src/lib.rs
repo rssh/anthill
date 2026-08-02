@@ -1057,8 +1057,38 @@ pub fn emit_entity_struct_by_symbol(
     ctx: &CodegenContext,
     functor: Symbol,
 ) -> Result<String, CppCodegenError> {
+    let (template, fields_text) = entity_struct_members(kb, ctx, functor)?;
+    // WI-931 — ONE SYMBOL, ONE STRUCT. An EPONYMOUS sort both carries fields and
+    // owns operations (`sort Vec3 { entity Vec3(x: Float, …); operation vec_add(…)
+    // = … }`), and §6.3 / WI-926 make that one symbol and one declaration — so it
+    // must reach C++ as one type, whichever entry point asks. The rule lives HERE,
+    // in the by-symbol emitter every path funnels through, rather than in the
+    // namespace walk: the walk is only one of three callers, and the other two are
+    // this crate's public by-name API, which would otherwise keep handing out half
+    // a type under the type's own name (`emit_entity_struct` the fields,
+    // `emit_traits_struct` the methods — two `struct Vec3` definitions, which is
+    // the redefinition error this rule exists to prevent).
+    //
+    // A non-eponymous entity — including a sum constructor, which `emit_sum_in`
+    // routes here — owns no operations, so `methods_text` is empty and the output
+    // is byte-for-byte what it always was.
+    let (_, methods_text) = traits_struct_members(kb, ctx, functor)?;
     let qualified = kb.qualified_name_of(functor).to_string();
-    let display_name = short_name_of(&qualified);
+    Ok(TEMPLATE_ENTITY_STRUCT
+        .replace("{template}", &template)
+        .replace("{name}", short_name_of(&qualified))
+        .replace("{fields}", &format!("{fields_text}{methods_text}")))
+}
+
+/// The template prefix and rendered FIELD lines of an entity struct, without the
+/// `struct … { … };` wrapper — so [`emit_entity_struct_by_symbol`] can put an
+/// eponymous sort's operations inside the same braces.
+fn entity_struct_members(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+    functor: Symbol,
+) -> Result<(String, String), CppCodegenError> {
+    let qualified = kb.qualified_name_of(functor).to_string();
 
     // WI-760: own the field list. Lowering a field type now threads
     // `&mut KnowledgeBase` (it may resolve a realization rule), so the loop
@@ -1118,10 +1148,7 @@ pub fn emit_entity_struct_by_symbol(
         );
     }
 
-    Ok(TEMPLATE_ENTITY_STRUCT
-        .replace("{template}", &template)
-        .replace("{name}", display_name)
-        .replace("{fields}", &fields_text))
+    Ok((template, fields_text))
 }
 
 // ── Traits-class (sort-with-operations) emission ────────────────────
@@ -1420,7 +1447,47 @@ pub fn emit_traits_struct_by_symbol(
     sort_sym: Symbol,
 ) -> Result<String, CppCodegenError> {
     let qualified = kb.qualified_name_of(sort_sym).to_string();
-    let display_name = short_name_of(&qualified);
+    let (template, methods_text) = traits_struct_members(kb, ctx, sort_sym)?;
+    // Unchanged: asking for the traits class of something that declares no members
+    // is a mistake, whether or not it has fields. Checked BEFORE the merge below so
+    // a plain data entity keeps this error rather than quietly getting its own
+    // struct back from an entry point that was asked for something else.
+    if methods_text.is_empty() {
+        return Err(CppCodegenError {
+            message: format!(
+                "sort '{qualified}' has no operations or constants — \
+                 a traits struct would be empty"
+            ),
+        });
+    }
+    // WI-931 — ONE SYMBOL, ONE STRUCT, from this side too. An eponymous sort that
+    // carries FIELDS *and* members is one type, and
+    // [`emit_entity_struct_by_symbol`] emits the whole of it; answering here with a
+    // methods-only `struct` of the same name would be the second definition of it.
+    // Delegating rather than refusing keeps the two public by-name entry points
+    // agreeing on what the type IS, which is the property §6.3 promises.
+    if kb.entity_field_types(sort_sym).is_some() {
+        return emit_entity_struct_by_symbol(kb, ctx, sort_sym);
+    }
+    Ok(TEMPLATE_TRAITS_STRUCT
+        .replace("{template}", &template)
+        .replace("{name}", short_name_of(&qualified))
+        .replace("{methods}", &methods_text))
+}
+
+/// The template prefix and rendered CONSTANT + METHOD lines of a traits struct,
+/// without the `struct … { … };` wrapper. EMPTY (rather than an error) when the
+/// sort declares neither: [`emit_entity_struct_by_symbol`] asks this of every
+/// entity to find an eponymous sort's operations, and "this entity owns no
+/// operations" is its ordinary answer, not a failure. The caller that wants the
+/// error — [`emit_traits_struct_by_symbol`], where an empty traits class IS the
+/// mistake — raises it from the empty result.
+fn traits_struct_members(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+    sort_sym: Symbol,
+) -> Result<(String, String), CppCodegenError> {
+    let qualified = kb.qualified_name_of(sort_sym).to_string();
 
     // Push the sort's type params onto the lexical scope stack for
     // the duration of operation signature lowering — `lower_type`
@@ -1435,15 +1502,6 @@ pub fn emit_traits_struct_by_symbol(
 
     let ops = operations_in_sort(kb, ctx, sort_sym, &sort_param_cpp)?;
     let consts = consts_in_scope(kb, ctx, &qualified)?;
-    if ops.is_empty() && consts.is_empty() {
-        return Err(CppCodegenError {
-            message: format!(
-                "sort '{qualified}' has no operations or constants — \
-                 a traits struct would be empty"
-            ),
-        });
-    }
-
     let mut methods_text = String::new();
     // Term-level constants (WI-533) first: they read as the class's named
     // sentinels and match source order where the const precedes the operations
@@ -1476,10 +1534,7 @@ pub fn emit_traits_struct_by_symbol(
         methods_text.push_str(&rendered);
     }
 
-    Ok(TEMPLATE_TRAITS_STRUCT
-        .replace("{template}", &template)
-        .replace("{name}", display_name)
-        .replace("{methods}", &methods_text))
+    Ok((template, methods_text))
 }
 
 /// One operation's signature, as needed for traits-class emission.
@@ -2228,6 +2283,9 @@ pub fn emit_namespace_header_in(
     }
     let data_order = topo_sort_data_items(kb, &data_items);
 
+    // `classify_namespace` returns the three bands DISJOINT (WI-931), so an
+    // eponymous sort is in `entities` only and the data band emits its fields and
+    // its operations in one `struct`.
     let mut traits_band: Vec<Symbol> = traits;
     traits_band.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
 
@@ -2501,6 +2559,21 @@ fn classify_namespace(
     let mut traits: Vec<Symbol> = traits_qns.into_iter()
         .filter_map(|qn| kb.try_resolve_symbol(&qn))
         .filter(|s| matches!(kb.kind_of(*s), Some(SymbolKind::Sort)))
+        // WI-931 — THE THREE BANDS ARE DISJOINT, and that is this function's
+        // contract rather than each consumer's chore. An EPONYMOUS sort
+        // (`sort Vec3 { entity Vec3(x: Float, …); operation vec_add(…) = … }`) is
+        // found TWICE — the entity-field registry puts it in `flat`, an
+        // `OperationInfo` under the same symbol puts it here — but §6.3 / WI-926
+        // make it ONE symbol and one declaration, so it is ONE band's item. The
+        // data band keeps it, because that is where its fields are and where
+        // `emit_entity_struct_by_symbol` emits the whole type.
+        //
+        // Subtracting here rather than in the emitter is what makes the answer
+        // uniform: the OTHER consumer is the public `traits_classes_in_namespace`,
+        // which the CLI's `codegen cpp-project` uses to scaffold "one controller
+        // per traits class". Left overlapping, it offered `Vec3` — a data type —
+        // as a controller target (MEASURED).
+        .filter(|s| !flat.contains(s))
         .collect();
 
     flat.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));

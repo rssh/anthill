@@ -120,6 +120,10 @@ pub static SOURCES: &[(&str, &str)] = &[
     ("rustland/anthill-stl/float", include_str!("../anthill/float.anthill")),
     ("rustland/anthill-stl/string", include_str!("../anthill/string.anthill")),
     ("rustland/anthill-stl/geometry", include_str!("../anthill/geometry.anthill")),
+    // WI-931: this one also carries `operation_map`, which is what registers the
+    // six storage operations with the interpreter — a bundle without it has no
+    // `persist` / `retract` at all.
+    ("rustland/anthill-stl/persistence", include_str!("../anthill/persistence.anthill")),
 ];
 
 // Build-time tripwire: a fully-empty embedded set means the layout moved or the

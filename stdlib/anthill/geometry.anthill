@@ -12,17 +12,33 @@
 -- anthill-side struct outlives the next step / sensor read.
 namespace anthill.geometry
   import anthill.prelude.{Float}
-  -- Vec3 over Float satisfies the VectorSpace spec (its abstract
-  -- vec_add / vec_sub / vec_scale / vec_zero resolve to the per-component
-  -- implementations below). That satisfaction — `fact VectorSpace[Vec3,
-  -- Float]` — depends on `Float` being a `Ring`, which lives in the
-  -- per-language binding layer (proposal 038); so the fact is declared
-  -- there (rustland/anthill-stl/anthill/geometry.anthill), not here:
-  -- a stdlib-only load has no `Ring[Float]` to satisfy the requirement.
+  -- Vec3 does NOT currently provide the VectorSpace spec. It is one
+  -- mathematically — the relational rules below are exactly a vector
+  -- space's operations — but the spec's members are FUNCTIONAL
+  -- (`vec_add(a, b) -> V`) and nothing here backs them, so the claim
+  -- was withdrawn rather than certified (WI-931). WI-935 restores it.
+  -- See the note above `entity Vec3` for the collision that blocks the
+  -- obvious fix.
 
   -- 3-vector for spatial quantities (position, velocity, direction,
   -- angular velocity in body frame). Field names are world / body
   -- axes.
+  --
+  -- NO `vec_add` / `vec_sub` / `vec_scale` / `vec_zero` OPERATIONS ON `Vec3`,
+  -- and the reason is a MEASURED name collision, not a missing implementation
+  -- (WI-931 → WI-935).
+  --
+  -- Giving `Vec3` those four members is what would back `fact VectorSpace[Vec3,
+  -- Float]` — a rule is not backing (WI-818), so the relational clauses below
+  -- cannot. They were written, and they worked; what they also did was SILENTLY
+  -- re-target the imported short name. MEASURED, on a rule body doing
+  -- `import anthill.geometry.{vec_add}` and calling `vec_add(a, b, ?c)`: ONE
+  -- solution before, ZERO after — the bare name binds to the new `Vec3.vec_add/2`
+  -- instead of the relational `anthill.geometry.vec_add/3`, and nothing reports
+  -- it. (The fully qualified `anthill.geometry.vec_add` still resolves, so the
+  -- rules themselves are intact; it is the short name that moves.) Trading a
+  -- working relational surface for an unused provision is the wrong way round,
+  -- so the provision is withdrawn instead — see the host-closure file.
   entity Vec3(x: Float, y: Float, z: Float)
 
   -- Orientation as Euler angles, radians. Field order matches the
@@ -35,15 +51,22 @@ namespace anthill.geometry
   -- Vec3 vector operations
   -- ================================================================
   --
-  -- Concrete per-component definitions on Vec3 with Float scalars.
-  -- Result var is last positional arg per smt-gen convention.
-  -- Bodies are fully ground arithmetic on Float components — Z3 LRA
-  -- evaluates them when the consumer supplies Vec3 destructure.
+  -- The RELATIONAL spelling, for Z3. Result var is last positional arg
+  -- per smt-gen convention; bodies are fully ground arithmetic on Float
+  -- components — Z3 LRA evaluates them when the consumer supplies Vec3
+  -- destructure. The algebraic laws below are written against THIS arity,
+  -- which is why it stays.
   --
-  -- Future (separate WI): lift these to a generic VectorSpace[V, S]
-  -- spec in anthill.algebra and have Vec3 satisfy it; would let
-  -- proof-side reasoning work on abstract V instead of pinning to
-  -- the per-component shape.
+  -- It is NOT what satisfies `fact VectorSpace[Vec3, Float]`: a rule is not
+  -- backing (WI-818), and these are `vec_add/3` where the spec declares
+  -- `vec_add(a, b) -> V`. The runnable half is the operation bodies on
+  -- `sort Vec3` above (WI-931), and the two must agree — they are the same
+  -- per-component arithmetic written twice, once for each consumer.
+  --
+  -- The lift to a generic VectorSpace[V, S] spec happened (WI-138,
+  -- anthill.prelude.algebra); what has not is rewriting these laws against
+  -- the abstract V so proof-side reasoning stops pinning the per-component
+  -- shape.
 
   -- Vector addition: c = a + b (componentwise).
   rule vec_add(?a, ?b, ?c)

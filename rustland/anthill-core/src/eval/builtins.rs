@@ -187,19 +187,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
     register_if_present(interp, "anthill.prelude.Int64.to_string", int_to_string)?;
 
-    // Persistence (proposal 007). The operations are declared inside
-    // `sort Store { operation persist … }` so their qualified names are
-    // `anthill.persistence.Store.<op>`. Stores must be registered via
-    // `Interpreter::register_mirror` before these dispatch.
-    register_if_present(interp, "anthill.persistence.Store.persist", persistence_persist)?;
-    register_if_present(interp, "anthill.persistence.Store.flush",   persistence_flush)?;
-    register_if_present(interp, "anthill.persistence.Store.monotonicity", persistence_monotonicity)?;
-    // `retract` is a NonMonotonicStore-trait op (proposal 053 / 007 §2): only a
-    // backend that declares `fact NonMonotonicStore[X]` provides it.
-    register_if_present(interp, "anthill.persistence.NonMonotonicStore.retract", persistence_retract)?;
-    register_if_present(interp, "anthill.persistence.NonMonotonicStore.update", persistence_update)?;
-    register_if_present(interp, "anthill.persistence.QueryableStore.retrieve",
-                        persistence_retrieve)?;
+    // Persistence (proposal 007) is NOT here — WI-931 moved its six operations to
+    // `HOST_FNS` + the `operation_map` clauses in
+    // `rustland/anthill-stl/anthill/persistence.anthill`, so the backing they
+    // always had is DECLARED and the load-time provision check can see it. See
+    // the `store_*` entries below.
 
     register_if_present(interp, "anthill.prelude.Console.print", console_print)?;
     register_if_present(interp, "anthill.prelude.Console.println", console_println)?;
@@ -321,6 +313,20 @@ const HOST_FNS: &[(&str, usize, fn(&mut Interpreter, &[Value]) -> Result<Value, 
     ("string_replace", 3, string_replace),
     ("string_trim", 1, string_trim),
     ("string_split", 2, string_split),
+    // WI-931 — PERSISTENCE (proposal 007), the first entries here that are keyed
+    // to a SPEC rather than to a scalar carrier. Each takes the store as its
+    // first argument and resolves THAT VALUE to its registered mirror, so one
+    // host function serves every backend and there is no per-carrier function to
+    // name; `rustland/anthill-stl/anthill/persistence.anthill` says why that is
+    // not the spec-op registration WI-876 removed. Before WI-931 these six were
+    // registered by hardcoded qualified name above, invisible to every load-time
+    // reader of "is this operation backed".
+    ("store_persist", 3, persistence_persist),
+    ("store_flush", 2, persistence_flush),
+    ("store_monotonicity", 2, persistence_monotonicity),
+    ("store_retract", 2, persistence_retract),
+    ("store_update", 3, persistence_update),
+    ("store_retrieve", 2, persistence_retrieve),
 ];
 
 fn host_fn_by_key(key: &str) -> Option<HostFn> {

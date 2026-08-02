@@ -52,6 +52,7 @@ mod wi846_absent_naming_convention_test;
 mod wi847_cross_spelling_test;
 mod wi848_underdetermined_row_test;
 mod wi886_host_operation_mapping_test;
+mod wi931_eponymous_struct_test;
 
 // Diagnostics — `#[ignore]`-gated dev-time helpers, kept in the
 // same binary so they stay buildable.

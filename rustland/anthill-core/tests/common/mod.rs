@@ -270,6 +270,57 @@ pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core:
 /// relation drains to `Value::Tuple` rows, WI-762).
 ///
 /// Same walk and the same limitation: within a `cons` the TAIL is the `Entity`
+/// Every `SortProvidesInfo` fact as `(carrier qualified name, spec qualified
+/// name)` — "who provides what", the question several suites ask of a loaded KB.
+///
+/// Lifted here (WI-931) rather than copied a fourth time: the same walk —
+/// `rules_by_functor` → `is_fact` → `fact_head_named_args` → the `sort_ref` /
+/// `spec` fields → unwrap `SortView(Spec, …bindings)` to its first positional —
+/// is already hand-written in `wi858_pair_orderings_test`, `eval_test`'s
+/// `wi362_stream_provides_iterable`, and `wi391_binding_extractability_test`.
+/// Those predate this and are left as found; new readers should call this so the
+/// count stops growing.
+///
+/// The loader's own `sort_ref_functor` / `provides_spec_base_sym` are
+/// `pub(crate)`, which is why this reads the fields structurally rather than
+/// calling them.
+///
+/// A field that is present but not name-like PANICS rather than being skipped: a
+/// silent skip here would read as "no such provision" and quietly weaken whatever
+/// the caller is asserting.
+#[allow(dead_code)]
+pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
+    use anthill_core::kb::term::{Term, TermId};
+    let Some(sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    fn name_of(kb: &KnowledgeBase, t: TermId, field: &str) -> String {
+        match kb.get_term(t) {
+            Term::Fn { functor: s, .. } | Term::Ref(s) | Term::Ident(s) => {
+                kb.qualified_name_of(*s).to_string()
+            }
+            other => panic!("SortProvidesInfo.{field} is not a name-like term: {other:?}"),
+        }
+    }
+    let mut out = Vec::new();
+    for rid in kb.rules_by_functor(sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let get = |f: &str| named.iter().find(|(s, _)| kb.resolve_sym(*s) == f).map(|(_, v)| *v);
+        let (Some(sr), Some(spec_view)) = (get("sort_ref"), get("spec")) else { continue };
+        // `SortView(Spec, …)` carries the spec as its first positional; a bare
+        // reference is already the spec.
+        let spec_term = match kb.get_term(spec_view) {
+            Term::Fn { pos_args, .. } if !pos_args.is_empty() => pos_args[0],
+            _ => spec_view,
+        };
+        out.push((name_of(kb, sr, "sort_ref"), name_of(kb, spec_term, "spec")));
+    }
+    out
+}
+
 /// field and the head is the other one, so a list whose elements are themselves
 /// entities is out of scope for both helpers.
 #[allow(dead_code)]

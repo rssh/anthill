@@ -18110,8 +18110,17 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
 /// `entity Vec3(x: Float, y: Float, z: Float)` is a §6.3 free-standing entity,
 /// every bit as instantiable as the `sort` spelling. It read as abstract only
 /// because a free-standing entity emitted no `SortInfo`, so the concreteness
-/// question was answered by an omission. That is fixed; see the STAGED COVERAGE
-/// note in the body for what this check does with them meanwhile.
+/// question was answered by an omission.
+///
+/// WI-931 spent that correction: §6.3's free-standing carriers are checked here
+/// like any other, with no staging left. The 12 reports the widening produced
+/// were all TRUE and are all closed at their source — `Vec3` gained runnable
+/// bodies for the four `VectorSpace` members its relational rules only specified
+/// (a rule is not backing, WI-818), the six persistence operations moved from a
+/// hardcoded eval registration no load-time reader could see to `operation_map`
+/// clauses that every reader can (`rustland/anthill-stl/anthill/persistence.anthill`),
+/// and `BulkStore`, whose sole member has no anthill-callable implementation at
+/// all, is provided by neither file backend until WI-932 gives it one.
 pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -18142,24 +18151,6 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     // sub-interface whose ops may stay primitives — only concrete carriers must
     // back every op (they are the runtime witnesses).
     let concrete = super::load::sorts_with_constructors(kb);
-    // STAGED COVERAGE (WI-928 → WI-931), and it is a schedule, not a rule. §6.3's
-    // free-standing entities became visible to `concrete` above, which brought four
-    // carriers into this check for the first time — `Vec3` (VectorSpace) and the
-    // three persistence stores (FileStore, IndexedFileStore, SqlStore). All 12 of
-    // the resulting reports are TRUE by this check's own criterion, and MEASURED:
-    // `Vec3.vec_add/vec_sub/vec_scale/vec_zero` are backed by RULES, which WI-818
-    // settled do not back an operation, and the stores' `retract`/`update`/`pull`/
-    // `retrieve` are implemented by the Rust host with no
-    // `anthill.realization.Implementation` fact recording it — so the host-carrier
-    // skip above cannot see them either. Closing them means writing runnable bodies
-    // or declaring host bindings, which is the WI-876/WI-886 host-mapping family's
-    // work and not a desugaring's; WI-931 owns it, with this inventory.
-    //
-    // Deliberately keyed on the DECLARATION SURFACE, which is the one thing that
-    // separates "checked before this ticket" from "not", and deliberately NOT on
-    // anything semantic — an eponymous LONG-form `sort P { entity P }` is checked,
-    // as it always was. When WI-931 lands, this skip and its set go away together.
-    let staged_for_wi931 = super::load::free_standing_entity_sorts(kb);
 
     // Snapshot the provisions before the per-op walk (which interns short names,
     // mutating `kb` — can't overlap the `rules_by_functor` borrow). See
@@ -18181,8 +18172,6 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         // Abstract carrier (no constructors) → sub-interface, ops may stay
         // primitives. Only concrete carriers are checked.
         if !concrete.contains(&p.carrier) { continue; }
-        // WI-931, staged — see the note above the set's construction.
-        if staged_for_wi931.contains(&p.carrier) { continue; }
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
         if host_targets.contains(&carrier_qn) { continue; }
         let Some(spec_ops) = own_ops.get(&p.spec) else { continue };
@@ -19088,8 +19077,40 @@ fn op_backed(
     // (`op(args, r) :- body`) — is not something the evaluator can dispatch to, so
     // it no longer reads as backing. WI-876 added the `operation_map` leg to the
     // shared [`op_is_executable`], so a member realized by the host counts here for
-    // the SAME reason a builtin does, and counts only for the carrier that mapped it.
-    cands.iter().any(|&c| op_is_executable(kb, c))
+    // the SAME reason a builtin does — for a candidate that IS the carrier's.
+    //
+    // THE SPEC OP IS A WEAKER CANDIDATE, and deliberately so (WI-931). A default
+    // BODY or a resolver BUILTIN on it is code every provider genuinely runs, so
+    // either backs the carrier. A HOST MAPPING on it does not:
+    // [`KnowledgeBase::is_host_mapped_op`] is a flat set with no carrier dimension,
+    // so counting it would certify EVERY carrier of the spec the moment ONE
+    // `operation_map` named the spec's own member. That is WI-876's defect A — the
+    // half that being genuinely polymorphic does NOT answer, since it is about a
+    // load-time claim rather than a wrong answer at run time.
+    //
+    // MEASURED on the first cut of `rustland/anthill-stl/anthill/persistence.anthill`:
+    // with the spec-level `operation_map` counted here, an arbitrary
+    // `entity ZzNotAStore(v: Int64)` claiming `fact NonMonotonicStore[ZzNotAStore]`
+    // LOADED CLEAN, as did a reinstated `SqlStore` that no host implements.
+    //
+    // Keyed on the SYMBOL, not on which slot it arrived in: `sort_ops_lookup`'s
+    // inherited-default leg returns the spec's own member for a carrier that
+    // overrides nothing, so the spec op reaches the carrier slot too and a
+    // position-based test would be bypassed by the very case it exists to catch
+    // (measured — the first fix was position-based and changed nothing).
+    //
+    // A mapping says the OPERATION has an implementation; it never says a given
+    // CARRIER is realized. That second question has its own declaration — an
+    // `anthill.realization.Implementation` fact, which
+    // [`check_provider_operations`] consults before it ever reaches this function.
+    let spec_op_canon = kb.canonical_sym(spec_op);
+    cands.iter().any(|&c| {
+        if kb.canonical_sym(c) == spec_op_canon {
+            kb.is_builtin(c) || op_has_runnable_body(kb, c)
+        } else {
+            op_is_executable(kb, c)
+        }
+    })
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.

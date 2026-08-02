@@ -70,11 +70,21 @@ fn vector_space_spec_loads_and_resolves() {
 }
 
 #[test]
-fn float_provides_ring_and_vec3_provides_vector_space() {
-    // Verify the satisfaction declarations (`fact Ring[T = Float]`
-    // in float.anthill, `fact VectorSpace[V = Vec3, F = Float]` in
-    // geometry.anthill) land as facts under the spec's functor in
-    // the rules_by_functor index.
+fn float_provides_ring_but_nothing_provides_vector_space_yet() {
+    // Verify the satisfaction declaration `fact Ring[T = Float]` (float.anthill)
+    // lands as a fact under the spec's functor in the rules_by_functor index.
+    //
+    // WI-931 — `Vec3` NO LONGER provides `VectorSpace`, and this test asserted
+    // that it did. The provision was never BACKED: `VectorSpace`'s members are
+    // functional (`vec_add(a, b) -> V`) while `anthill.geometry` implements the
+    // vector operations RELATIONALLY (`vec_add(?a, ?b, ?c)`), and a rule is not
+    // backing (WI-818). It read as satisfied only because `Vec3` is a §6.3
+    // free-standing entity, which emitted no `SortInfo` and so was skipped by
+    // `check_provider_operations` as if it were abstract (WI-928).
+    //
+    // The negative half is asserted rather than deleted, because "nothing
+    // provides VectorSpace" is a state WI-935 is meant to END: when it lands,
+    // this flips back and the assertion says which way.
     let kb = load_with(r#"
         namespace test.algebra.satisfaction
           rule Marker(?x) :- ?x = 1
@@ -87,7 +97,7 @@ fn float_provides_ring_and_vec3_provides_vector_space() {
         "expected at least one Ring satisfaction fact (Float should provide Ring)");
     let vs_sym = kb.try_resolve_symbol("anthill.prelude.algebra.VectorSpace")
         .expect("VectorSpace spec must resolve");
-    let vs_facts = kb.rules_by_functor(vs_sym);
-    assert!(!vs_facts.is_empty(),
-        "expected at least one VectorSpace satisfaction fact (Vec3 should provide VectorSpace)");
+    assert!(kb.rules_by_functor(vs_sym).is_empty(),
+        "no carrier backs VectorSpace's functional members today (WI-935); a \
+         satisfaction fact here would certify operations that die at the call");
 }

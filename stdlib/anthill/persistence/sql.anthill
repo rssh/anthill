@@ -5,8 +5,33 @@
 namespace anthill.persistence.sql
   import anthill.reflect.{Term}
   import anthill.prelude.{List}
-  import anthill.persistence.{QueryableStore, NonMonotonicStore}
 
+  -- ── NO STORE PROVISIONS, BECAUSE NO REALIZATION SUPPLIES ONE (WI-931) ─────
+  --
+  -- This file declared `fact NonMonotonicStore[SqlStore]` and a carrier-less
+  -- `fact QueryableStore` (which the loader records as no provision at all —
+  -- WI-933). Both are gone: NO host implements a SQL backend. rustland's
+  -- `persistence/` has `FileStore` and `IndexedFileStore` and nothing else, so
+  -- `retract` / `update` / `retrieve` on a `SqlStore` value reach no mirror, and
+  -- a satisfaction fact standing here certified operations that die at the call
+  -- — the unsoundness `check_provider_operations` exists to refuse (WI-363 /
+  -- WI-818). What survives is what is actually true: the SHAPE of a SQL store
+  -- and of its query bindings, which is what a backend would be written against.
+  --
+  -- This is ENFORCED, not merely observed: re-adding the provision is refused at
+  -- load, because a host mapping on a SPEC op backs the operation and never a
+  -- carrier (`op_backed`, WI-876 defect A). Pinned by
+  -- `reinstating_the_sql_store_provision_is_refused`.
+  --
+  -- Whichever host closure grows a SQL backend declares the provisions there,
+  -- the way `rustland/anthill-stl/anthill/persistence.anthill` does for the two
+  -- file backends. That is proposal 038's rule and it is not a rust-specific one.
+  --
+  -- A SHAPE WITH NO REALIZATION IS AN EXAMPLE, NOT A STANDARD LIBRARY, and this
+  -- file is slated to leave `stdlib/` for `examples/` — WI-934, which owns the
+  -- three consumers that point at this path (the `anthill-stl` build script's
+  -- codegen entry, `anthill-core/examples/gen_store.rs`, and
+  -- `docs/rust-forward-mapping.md`, where `SqlStore` is the worked example).
   enum SqlDialect {
     entity Postgresql
     entity Mysql
@@ -19,8 +44,6 @@ namespace anthill.persistence.sql
     schema     : String,
     dialect    : SqlDialect
   )
-  fact QueryableStore
-  fact NonMonotonicStore[SqlStore]            -- SQL DELETE (053 / 007 §2)
 
   -- ================================================================
   -- Query bindings: how to translate patterns to SQL

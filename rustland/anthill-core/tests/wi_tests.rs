@@ -937,3 +937,7 @@ mod wi925_entity_desugaring_test;
 
 #[path = "include/wi928_entity_load_record_test.rs"]
 mod wi928_entity_load_record_test;
+
+#[path = "include/wi931_free_standing_provider_backing_test.rs"]
+mod wi931_free_standing_provider_backing_test;
+

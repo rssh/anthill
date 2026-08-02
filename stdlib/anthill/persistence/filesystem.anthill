@@ -2,21 +2,46 @@
 namespace anthill.persistence.filesystem
   import anthill.reflect.{Term}
   import anthill.prelude.Meta.{Meta}
-  import anthill.persistence.{BulkStore, QueryableStore, NonMonotonicStore}
   import anthill.prelude.{Modifiable}
 
+  -- ── NO STORE PROVISIONS IN THIS FILE (WI-931) ─────────────────────────────
+  --
+  -- `fact NonMonotonicStore[FileStore]` and its two `IndexedFileStore` peers
+  -- moved to `rustland/anthill-stl/anthill/persistence.anthill`, the host closure
+  -- where the operations they promise are backed. The rule is `geometry.anthill`'s
+  -- and it is proposal 038's: a satisfaction fact may only be declared where the
+  -- spec's operations have an implementation. `anthill.persistence`'s are host
+  -- primitives, so in a stdlib-only load NOTHING backs `retract` — the claim was
+  -- unsound standing here, which is what `check_provider_operations` reports the
+  -- moment §6.3's free-standing carriers become visible to it (WI-928).
+  --
+  -- `Modifiable` stays: it is a marker with no operations to back.
+  --
+  -- NEITHER BACKEND PROVIDES `BulkStore`, anywhere, and the reason is a MISSING
+  -- OPERATION rather than a missing capability. `BulkStore` declares exactly one
+  -- member, `pull(store) -> List[Term]`, and no anthill-callable implementation
+  -- of it exists: the Rust `BulkStore::pull` trait method both file backends
+  -- implement returns parsed FILES and is driven from Rust (the CLI's cold
+  -- start), never reached from an anthill call. Restoring the provision is
+  -- WI-932, which exposes `pull` to the evaluator. What stood here before said
+  -- less than it looked like it did: `FileStore`'s line was a namespace-level
+  -- `fact BulkStore` with NO carrier, which the loader records as no provision at
+  -- all (WI-933), so only `IndexedFileStore` ever claimed to be bulk-loadable.
+  --
+  -- THE BACKENDS RE-DECLARE NOTHING. The storage operations are COMMON
+  -- operations over a store's state — one host function each, taking the store as
+  -- its first argument and resolving THAT VALUE to its registered mirror — so
+  -- they are declared once, on the specs in `store.anthill`, and realized once,
+  -- in `rustland/anthill-stl/anthill/persistence.anthill`. What is genuinely
+  -- per-backend is only WHICH BACKENDS A HOST REALIZES, and that is a one-line
+  -- binding block in the host closure, not six copied signatures here.
   entity FileStore(root: String, convention: FileConvention)
-  fact BulkStore
-  fact NonMonotonicStore[FileStore]           -- filesystem can retract (053 / 007 §2)
   fact Modifiable[T = FileStore]
 
   -- IndexedFileStore: FileStore plus a per-rule source map (for
   -- span-based retract) and a primary-key `id` index (for fast
   -- retrieve). Indexes are populated by the host at pull time.
   entity IndexedFileStore(root: String, convention: FileConvention)
-  fact BulkStore[IndexedFileStore]
-  fact QueryableStore[IndexedFileStore]
-  fact NonMonotonicStore[IndexedFileStore]    -- span-based retract in place
   fact Modifiable[T = IndexedFileStore]
 
   -- ================================================================

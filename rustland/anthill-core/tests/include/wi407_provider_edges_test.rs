@@ -4,7 +4,7 @@
 //!
 //! The Store hierarchy is entirely non-parametric:
 //!   `sort QueryableStore { fact Store }`  / `sort BulkStore { fact Store }`
-//!   `fact BulkStore[IndexedFileStore]` / `fact QueryableStore[IndexedFileStore]`
+//!   `fact QueryableStore[IndexedFileStore]`
 //! Pre-WI-407, `maybe_emit_fact_provides_info` early-returned on
 //! `spec_params.is_empty()`, so NONE of these became provider edges and
 //! `IndexedFileStore <: Store` was invisible (the gap WI-385's arg/field
@@ -14,33 +14,23 @@
 //! These are checked through RETURN-type conformance (`check_operation_bodies`),
 //! which is enforced regardless of WI-385's not-yet-landed argument validation:
 //! `operation f(x: A) -> B = x` loads clean iff `A <: B`.
+//!
+//! WI-931 moved the carrier-side half of the fixture. `fact
+//! QueryableStore[IndexedFileStore]` now lives in the RUST host closure
+//! (`rustland/anthill-stl/anthill/persistence.anthill`), because a satisfaction
+//! fact may only stand where the spec's operations are backed and
+//! `anthill.persistence`'s are host primitives — so this file loads the host
+//! bindings too. The `BulkStore` leg is gone entirely: neither file backend
+//! provides it while `pull` has no anthill-callable implementation (WI-932), so
+//! the 1-hop case is now spelled on `QueryableStore`, which is the same edge
+//! shape (a top-level `fact <Spec>[X]` over a non-parametric spec).
 
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::parse;
-
+/// Stdlib + host bindings + `extras`, returning the load errors. The local copy of
+/// this sequence was kept only because it loaded the stdlib ALONE; once WI-931
+/// moved the fixture into the host closure it became `try_load_kb_with_files`
+/// exactly, so it calls that.
 fn load_errors(extras: &[&str]) -> Vec<String> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
+    crate::common::try_load_kb_with_files(extras).err().unwrap_or_default()
 }
 
 /// 1-hop, sort-body form: `sort QueryableStore { fact Store }` ⟹
@@ -60,27 +50,27 @@ end
     );
 }
 
-/// 1-hop, top-level form: `fact BulkStore[IndexedFileStore]` ⟹
-/// `IndexedFileStore <: BulkStore` (carrier = the leading positional).
+/// 1-hop, top-level form: `fact QueryableStore[IndexedFileStore]` ⟹
+/// `IndexedFileStore <: QueryableStore` (carrier = the leading positional).
 #[test]
-fn indexed_file_store_widens_to_bulk_store() {
+fn indexed_file_store_widens_to_queryable_store() {
     let src = r#"
-namespace test.wi407.ifs_bulk
-  import anthill.persistence.{BulkStore}
+namespace test.wi407.ifs_queryable
+  import anthill.persistence.{QueryableStore}
   import anthill.persistence.filesystem.{IndexedFileStore}
-  operation widen(ifs: IndexedFileStore) -> BulkStore = ifs
+  operation widen(ifs: IndexedFileStore) -> QueryableStore = ifs
 end
 "#;
     let errs = load_errors(&[src]);
     assert!(
         errs.is_empty(),
-        "IndexedFileStore is-a BulkStore via `fact BulkStore[IndexedFileStore]`: {errs:?}",
+        "IndexedFileStore is-a QueryableStore via `fact QueryableStore[IndexedFileStore]`: {errs:?}",
     );
 }
 
-/// 2-hop, the headline case: `IndexedFileStore → BulkStore/QueryableStore →
-/// Store`. Recognized only because BOTH the top-level and sort-body
-/// non-parametric edges are emitted AND `sort_provides` is transitive.
+/// 2-hop, the headline case: `IndexedFileStore → QueryableStore → Store`.
+/// Recognized only because BOTH the top-level and sort-body non-parametric
+/// edges are emitted AND `sort_provides` is transitive.
 #[test]
 fn indexed_file_store_widens_to_store_transitively() {
     let src = r#"
