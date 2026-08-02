@@ -1127,6 +1127,15 @@ Future effect kinds (not yet implemented in codegen):
 - **Control flow** — `Suspend` and `Branch` change how computation proceeds — suspension, nondeterminism.
 - **Ambient resources** — operations that access state not in the parameter list, e.g. writing to stdout.
 
+**Effect targets that name a binder are alpha-equivalent.** A `Modify[x]` target naming a **callback's own arrow parameter** is a binder reference, and its identity is its **position** among that callback's parameters, not its spelling. So
+
+```
+(a) -> R @ Modify[a]
+(c) -> R @ Modify[c]
+```
+
+are the same type: unifying the two arrows aligns the *i*-th parameter of each, so the binders compare equal by position. A target naming anything else — an operation parameter, the result — is a **free** reference and compares by symbol identity; it is never alpha-equated.
+
 **Effect parameters on sorts.** A sort may declare an abstract effect parameter (`sort E = ?`) to express effect polymorphism. Concrete sorts bind `E` to specific effects. For example, `Stream[T, E]` declares that iterating the stream may have effect `E`; a file-backed stream would bind `E = Error`, while a pure in-memory stream leaves `E` unbound (no effects).
 
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.

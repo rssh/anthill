@@ -27304,26 +27304,22 @@ fn unify_denoted_view<A: TermView, B: TermView>(kb: &mut KnowledgeBase, a: &A, b
             if sa == sb {
                 return true;
             }
-            // WI-341 ALPHA-EQUIVALENCE. A callback's own arrow param (a
-            // `CallbackParam` place, `f.a`) is a binder: its alpha-canonical
-            // identity is its POSITION among the callback's params (the doc's De
-            // Bruijn view, computed from the place). So `(a) -> R @ Modify[a]`
-            // and `(c) -> R @ Modify[c]` are the same type up to renaming — their
-            // binders compare equal because the arrow being unified aligns the
-            // i-th param of each. (A free reference — an op param `Modify[s]`,
-            // the result — is not a CallbackParam, so it falls back to symbol
-            // identity above, never alpha-equated.)
+            // ALPHA-EQUIVALENCE of a binder-naming effect target — §5.5. The
+            // binder is a `CallbackParam` place (`f.a`) and its alpha-canonical
+            // identity is its POSITION among the callback's params, which is the
+            // spec's rule expressed as this function's De Bruijn view of the place.
             //
-            // SOUNDNESS INVARIANT (position-only comparison): a raw
-            // `Modify[CallbackParam]` label exists ONLY inside its own callback
-            // arrow's `effects` child — the binder is meaningless outside its
-            // arrow's scope, and `region::op_boundary_effects` re-keys any
-            // callback Modify to a concrete op place (input / result) before it
-            // reaches a top-level op effect row. So two `CallbackParam` denoteds
-            // only ever meet here through `arrow_compatible_view`, which has
-            // ALREADY aligned the two arrows (param children unified first) — i.e.
-            // they are corresponding binders, so equal position ⇒ same binder.
-            // A future caller comparing two binders NOT through aligned-arrow
+            // SOUNDNESS INVARIANT (position-only comparison), which is local to
+            // this site and NOT in the spec: a raw `Modify[CallbackParam]`
+            // label exists ONLY inside its own callback arrow's `effects` child —
+            // the binder is meaningless outside its arrow's scope, and
+            // `region::op_boundary_effects` re-keys any callback Modify to a
+            // concrete op place (input / result), or drops it, before it reaches
+            // a top-level op effect row. So two `CallbackParam` denoteds only
+            // ever meet here through `arrow_compatible_view`, which has ALREADY
+            // aligned the two arrows (param children unified first) — i.e. they
+            // are corresponding binders, so equal position ⇒ same binder. A
+            // future caller comparing two binders NOT through aligned-arrow
             // unify would break this — keep callback-Modify labels arrow-local.
             match (callback_binder_position(kb, sa), callback_binder_position(kb, sb)) {
                 (Some(pa), Some(pb)) => pa == pb,
