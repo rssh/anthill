@@ -941,3 +941,5 @@ mod wi928_entity_load_record_test;
 #[path = "include/wi931_free_standing_provider_backing_test.rs"]
 mod wi931_free_standing_provider_backing_test;
 
+#[path = "include/wi936_field_type_load_order_test.rs"]
+mod wi936_field_type_load_order_test;

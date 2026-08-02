@@ -4082,7 +4082,11 @@ pub fn load(
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
     let mut all_fact_ids = Vec::new();
-    match load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
+    // WI-936 — declarations before conversion, for the one file this entry point loads.
+    let (source_id, decl_errors) =
+        declare_file_field_types(kb, parsed, resolver, &mut loaded_paths);
+    all_errors.extend(decl_errors);
+    match load_with_visited(kb, parsed, resolver, &mut loaded_paths, source_id) {
         Ok(result) => {
             all_sorts.extend(result.defined_sorts);
             all_fact_ids.extend(result.fact_rule_ids);
@@ -4449,8 +4453,21 @@ fn load_phase_inner(
     let mut all_sorts = Vec::new();
     let mut all_fact_ids = Vec::new();
     let mut per_file: Vec<LoadResult> = Vec::with_capacity(files.len());
+    // WI-936 — the DECLARATION pass, over EVERY file, before any file's terms are
+    // converted. This is what makes the conversion's expected-type hint (and so the
+    // list-literal desugaring, the `Option` wrap and the absent-optional fill)
+    // independent of the order the files were handed to the loader; see
+    // `Loader::declare_field_types`.
+    let mut source_ids: Vec<SourceId> = Vec::with_capacity(files.len());
     for parsed in files {
-        match load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
+        let (source_id, decl_errors) =
+            declare_file_field_types(kb, parsed, resolver, &mut loaded_paths);
+        source_ids.push(source_id);
+        all_errors.extend(decl_errors);
+    }
+    mark!("declare_field_types");
+    for (parsed, &source_id) in files.iter().zip(&source_ids) {
+        match load_with_visited(kb, parsed, resolver, &mut loaded_paths, source_id) {
             Ok(result) => {
                 all_sorts.extend(result.defined_sorts.clone());
                 all_fact_ids.extend(result.fact_rule_ids.clone());
@@ -4653,15 +4670,39 @@ fn load_phase_inner(
     }
 }
 
+/// WI-936 — run the DECLARATION pass over one file: lower and register every entity's
+/// field types ([`Loader::declare_field_types`], which carries the why). Returns the
+/// file's `SourceId` so its load pass reuses the same source entry, plus this pass's
+/// load errors, stamped with the file they came from (WI-745) and deduped exactly as
+/// the load pass's are.
+///
+/// Every caller of [`load_with_visited`] must run this over ALL files first: the load
+/// pass READS the registry this writes and refuses to lower a second time, so a file
+/// that skipped it would trip that invariant rather than fail quietly.
+fn declare_file_field_types(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    resolver: &dyn SourceResolver,
+    loaded_paths: &mut HashSet<String>,
+) -> (SourceId, Vec<LoadError>) {
+    let global = kb.make_name_term("_global");
+    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, None);
+    loader.declare_field_types(&parsed.items);
+    let source_id = loader.source_id;
+    let errors = stamped_file_errors(loader.errors, parsed);
+    (source_id, errors)
+}
+
 /// Internal: load with cycle detection via `loaded_paths`.
 fn load_with_visited(
     kb: &mut KnowledgeBase,
     parsed: &ParsedFile,
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
+    source_id: SourceId,
 ) -> Result<LoadResult, Vec<LoadError>> {
     let global = kb.make_name_term("_global");
-    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global);
+    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
     loader.load_items(&parsed.items, None);
     // WI-839: every honouring reader of the call-site bracket channel has now run,
     // so anything still unread was written and dropped — report it.
@@ -4675,14 +4716,17 @@ fn load_with_visited(
     if loader.errors.is_empty() {
         Ok(result)
     } else {
-        // WI-745: every error from this loader belongs to THIS file, so stamp
-        // its provenance in one place (the loader itself resolves names deep in
-        // recursion with no `&ParsedFile` to hand). Then dedup — a name resolved
-        // on two passes reports the same defect twice (defect 3).
-        Err(dedup_load_errors(
-            loader.errors.into_iter().map(|e| e.located_in(parsed)).collect(),
-        ))
+        Err(stamped_file_errors(loader.errors, parsed))
     }
+}
+
+/// WI-745 — every error from one file's loader belongs to THAT file: stamp its
+/// provenance in one place (the loader resolves names deep in recursion with no
+/// `&ParsedFile` to hand), then dedup — a name resolved on two passes reports the same
+/// defect twice (defect 3). Both per-file passes end here, so the WI-936 declaration
+/// pass and the load pass report a defect identically.
+fn stamped_file_errors(errors: Vec<LoadError>, parsed: &ParsedFile) -> Vec<LoadError> {
+    dedup_load_errors(errors.into_iter().map(|e| e.located_in(parsed)).collect())
 }
 
 /// WI-745: drop duplicate load errors, preserving source order and the first
@@ -7720,22 +7764,29 @@ impl ExprBuilderSyms {
 }
 
 impl<'a> Loader<'a> {
+    /// `source_id`: `Some` REUSES an already-registered source entry — the WI-936
+    /// declaration pass builds a loader over the same file first, and registering it
+    /// twice would bank a duplicate entry (and give one file two ids, so two spans
+    /// into the same text would render as different sources).
     fn new(
         kb: &'a mut KnowledgeBase,
         parsed: &'a ParsedFile,
         resolver: &'a dyn SourceResolver,
         loaded_paths: &'a mut HashSet<String>,
         global_scope: TermId,
+        source_id: Option<SourceId>,
     ) -> Self {
         // WI-745: register this file's real path + text so a whole-KB-pass error
         // (typer TypeMismatch etc.) whose span carries this `source_id` can be
         // rendered `path:line:col`. The display name is the path if known.
-        let name = parsed
-            .path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<unknown>".to_string());
-        let source_id = kb.sources.register_file(name, parsed.source.clone(), parsed.path.clone());
+        let source_id = source_id.unwrap_or_else(|| {
+            let name = parsed
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            kb.sources.register_file(name, parsed.source.clone(), parsed.path.clone())
+        });
         let expr_syms = ExprBuilderSyms::new(kb);
         Self {
             kb,
@@ -12928,6 +12979,186 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-936 — the DECLARATION pass: lower and register every entity's field TYPES,
+    /// for every file, BEFORE any file's terms are converted.
+    ///
+    /// [`KnowledgeBase::entity_field_types`] is the expected-type hint the term
+    /// conversion reads to decide three things: the WI-007 `ListLiteral → cons/nil`
+    /// desugaring, the WI-408 bare-value-in-an-`Option`-field `some(…)` wrap, and the
+    /// WI-716 absent-optional `none()` fill. Writing that registry from `load_entity`,
+    /// during the source-order load pass, made all three LOAD-ORDER SENSITIVE and
+    /// SILENT: a fact whose entity is declared in a later-loaded file (or textually
+    /// later in the same file) converted against `expected = None` — the SAME state a
+    /// genuinely untyped position gives — so it took the "leave it alone" branch WI-007
+    /// installed deliberately for `Set`/`Vec` contexts, and nothing could tell the two
+    /// apart. Measured on two files, same helper, only the order swapped: a list
+    /// literal stayed a flat `ListLiteral` so a `cons` rule answered 0 instead of 1; a
+    /// bare value in an `Option` field stayed unwrapped; and an OMITTED optional field
+    /// was var-filled instead of `none()`-filled, so `note: some(?)` matched a fact
+    /// that never mentioned `note` — an answer that is not missing but WRONG. Neither
+    /// order raised a diagnostic.
+    ///
+    /// This is WI-499's move, one registry over. Field NAMES went to
+    /// `scan_definitions` pass-1 for exactly this reason and left the TYPES behind,
+    /// because they need the type-aware `type_expr_to_value` lowering — which needs a
+    /// `Loader` (scope, source, error channel) and so cannot run inside the scan. It
+    /// runs here instead: one walk per file, all files before any load.
+    ///
+    /// THE LOWERING NOW HAPPENS EXACTLY ONCE per entity, here.  `load_entity` and
+    /// `load_sort_with_body`'s `EntityInfo` loop both READ it back
+    /// ([`Self::declared_field_values`]), which also retires the pre-existing
+    /// sort-body double-lower — and with it any chance of the emitted `FieldInfo`
+    /// fact and the registry disagreeing about one written type.
+    ///
+    /// Mirrors the SCOPE discipline of the load walk — a namespace / sort body scopes
+    /// its children — off the same `name_to_sort_term(&item.name)` its two sites use
+    /// (`load_namespace`, `load_sort_with_body`), so the entity functor this registers
+    /// under is the one `load_entity` looks up. It runs
+    /// [`Self::preload_type_param_aliases`] for the same reason `load_sort_with_body`
+    /// does: a field type naming a type param must find the same backing var in either
+    /// pass.
+    /// It does NOT mirror the WI-201 carrier bindings: that narrowing is gated on
+    /// `bare_spec_sugar`, which only an operation signature sets, so no entity field
+    /// type can reach it (and `scan_sort_carrier_bindings` CONVERTS terms, which is
+    /// precisely what this pass must run before).
+    ///
+    /// Exhaustive over `Item` on purpose: a future item kind that can contain an
+    /// `entity` has to decide here, rather than defaulting into the silence above.
+    fn declare_field_types(&mut self, items: &[Item]) {
+        // Aliases first, at every level: a field type naming `sort T = ?` must find
+        // the alias's backing var, and in source order the alias may be written after
+        // the entity that uses it. Both emitters dedup on the asserted `SortAlias`, so
+        // the load pass re-encountering them no-ops (`load_abstract_sort`'s own note).
+        let domain = self.current_domain();
+        self.preload_type_param_aliases(items, domain);
+        for item in items {
+            match item {
+                Item::Namespace(n) => {
+                    let ns_term = self.name_to_sort_term(&n.name);
+                    let prev_scope = self.current_scope;
+                    self.current_scope = ns_term;
+                    self.declare_field_types(&n.items);
+                    self.current_scope = prev_scope;
+                }
+                Item::SortWithBody(s) => {
+                    let sort_term = self.name_to_sort_term(&s.name);
+                    let prev_scope = self.current_scope;
+                    self.current_scope = sort_term;
+                    self.declare_field_types(&s.items);
+                    self.current_scope = prev_scope;
+                }
+                Item::Entity(e) => self.register_declared_field_types(e),
+                // `AbstractSort` is handled by the alias pre-load above; the rest
+                // declare no entity fields.
+                Item::AbstractSort(_)
+                | Item::Rule(_)
+                | Item::Operation(_)
+                | Item::Const(_)
+                | Item::RequiresDecl(_)
+                | Item::Fact(_)
+                | Item::Constraint(_)
+                | Item::OperationBlock(_)
+                | Item::RuleBlock(_)
+                | Item::Describe(_)
+                | Item::Proof(_)
+                | Item::ProvidesClause(_)
+                | Item::ProvidesBlock(_) => {}
+            }
+        }
+    }
+
+    /// WI-936 — lower `e`'s field types and register them, the one place that happens.
+    /// Keyed by `remap_name(&e.name)`, the same symbol every reader looks the schema up
+    /// under (`load_entity`, and the convert path's `remap_symbol` of a written
+    /// constructor).
+    fn register_declared_field_types(&mut self, e: &Entity) {
+        let functor = self.remap_name(&e.name);
+        // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-type
+        // field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried as
+        // `Value::Node`, a ground field type as `Value::Term`. Lowering once is also
+        // what keeps per-field side effects (`emit_desc_fact` on a described field
+        // type, the WI-835 parameterized-site record) firing once.
+        let field_types: Vec<(Symbol, crate::eval::value::Value)> = e
+            .fields
+            .iter()
+            .map(|f| {
+                let ty = self.type_expr_to_value(&f.ty);
+                (self.reintern(f.name), ty)
+            })
+            .collect();
+        // WI-515: this registry (plus the `EntityInfo` fact) is the ONLY
+        // declaration-side representation. The loader used to also assert a
+        // same-functor "schema fact" (`edge(from: <Node type>, to: <Node type>)`
+        // under sort `Entity`), but a fact whose DATA slots carry TYPE terms
+        // unifies with any fully-var query over the constructor — e.g. the
+        // self-referential constraint `no ?p -: edge(from: ?p, to: ?p)` matched
+        // it (`?p = Node` in both slots) and was spuriously violated on
+        // self-loop-free data, and every `KB.execute` pattern query saw a
+        // phantom row. The reflect readers (`KB.fields`, `sort_query`) resolve
+        // the entity BY REFERENCE (WI-632) and read this registry by functor.
+        self.kb.register_entity_field_types(functor, field_types);
+    }
+
+    /// WI-936 — `e`'s field types in declared order, as the declaration pass
+    /// ([`Self::declare_field_types`]) lowered them. The load-time entity sites read
+    /// their `lowered` vector from here instead of lowering a second time, so the
+    /// `FieldInfo` fact, the `EntityInfo` fact and the field-type registry are three
+    /// views of ONE lowering.
+    ///
+    /// A missing (or differently-shaped) entry means the declaration walk did not
+    /// visit this entity although the load walk reached it — the two walk the same
+    /// item tree, so that is a broken invariant, not a case to lower away. Lowering
+    /// here as a fallback would silently reinstate exactly what this ticket removes:
+    /// a second lowering, in whichever order the load happened to reach the entity.
+    fn declared_field_values(&self, e: &Entity, functor: Symbol) -> Vec<crate::eval::value::Value> {
+        let declared = self.kb.entity_field_types(functor).unwrap_or_else(|| {
+            unreachable!(
+                "entity `{}` reached the load pass with no declared field types — the \
+                 WI-936 declaration pass must visit every `Item::Entity` the load pass does",
+                self.kb.qualified_name_of(functor),
+            )
+        });
+        assert_eq!(
+            declared.len(),
+            e.fields.len(),
+            "entity `{}`: the declaration pass registered {} field type(s) for {} \
+             declared field(s)",
+            self.kb.qualified_name_of(functor),
+            declared.len(),
+            e.fields.len(),
+        );
+        declared.iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    /// WI-936 — the type-param SortAlias pre-load, lifted out of
+    /// [`Self::load_sort_with_body`] so the declaration pass runs the SAME one.
+    ///
+    /// Nested type-param `SortAlias`es must be in place before any field type that
+    /// names them is lowered. Without this, `entity foo(x: T)` written before
+    /// `sort T = ?` hits `type_expr_to_child`'s fallback (no SortAlias yet) and
+    /// allocates a fresh `Var(name="T")` — a different Var than the SortAlias's
+    /// `Var(name="_")` registered later. The two never unify, so pattern substitution
+    /// misses and the typer sees `head: Var(...)` where it should see `head: String`.
+    /// Both emitters dedup on an already-asserted SortAlias, so a second encounter
+    /// (the load pass, or `load_items` below it) no-ops.
+    ///
+    /// WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the HK carrier of
+    /// `sort Spec[F[T]]`) needs its `SortAlias → Var` here too — same ordering reason:
+    /// a bare or applied `F` in a field/op resolved during the entity build must find
+    /// F's canonical backing var, not a fresh divergent one.
+    fn preload_type_param_aliases(&mut self, items: &[Item], domain: Symbol) {
+        for item in items {
+            match item {
+                Item::AbstractSort(abs) => self.load_abstract_sort(abs, domain),
+                Item::SortWithBody(inner) if inner.is_type_param => {
+                    let f_term = self.name_to_sort_term(&inner.name);
+                    self.emit_type_param_backing_var(f_term, domain);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Load items (top-level or within a domain), tracking scope.
     fn load_items(&mut self, items: &[Item], domain: Option<TermId>) {
         let prev_scope = self.current_scope;
@@ -13147,42 +13378,23 @@ impl<'a> Loader<'a> {
         self.current_scope = sort_term;
 
         // Pre-load nested type-param SortAliases so they are in place before the
-        // entity FieldInfo build calls `type_expr_to_value` on field types that
-        // reference them. Without this, `entity foo(x: T)` runs before `sort T = ?`
-        // in source order, hits `type_expr_to_child`'s fallback (no SortAlias yet),
-        // and allocates a fresh `Var(name="T")` — a different Var than the
-        // SortAlias's `Var(name="_")` registered later. The two Vars never unify, so
-        // pattern substitution misses and the typer sees `head: Var(...)` where it
-        // should see `head: String`. Both `load_abstract_sort` and
-        // `emit_type_param_backing_var` dedupe on an already-asserted SortAlias, so
-        // `load_items` below safely re-encounters these and no-ops. Pass `sort_term`
-        // (the enclosing sort's own domain) so the SortAlias fact lives in the same
-        // domain the second pass would have used.
-        //
-        // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the HK carrier
-        // of `sort Spec[F[T]]`) needs its `SortAlias → Var` here too — same ordering
-        // reason: a bare or applied `F` in a field/op resolved during the entity
-        // build below must find F's canonical backing var, not a fresh divergent
-        // one. (`load_items` later loads F's own body / members.)
+        // entity FieldInfo build reads field types that reference them — see
+        // [`Self::preload_type_param_aliases`] for why, and WI-936 for the other
+        // caller (the declaration pass, which lowers those field types and hits the
+        // same ordering requirement one phase earlier). Pass `sort_term` (the
+        // enclosing sort's own domain) so the SortAlias fact lives in the same domain
+        // the second pass would have used.
         let sort_domain = self.kb.name_term_sym(sort_term);
-        for item in &s.items {
-            match item {
-                Item::AbstractSort(abs) => self.load_abstract_sort(abs, sort_domain),
-                Item::SortWithBody(inner) if inner.is_type_param => {
-                    let f_term = self.name_to_sort_term(&inner.name);
-                    self.emit_type_param_backing_var(f_term, sort_domain);
-                }
-                _ => {}
-            }
-        }
+        self.preload_type_param_aliases(&s.items, sort_domain);
 
         // Register direct entity children (entity → parent sort) and emit each
         // one's `EntityInfo`/`FieldInfo` metadata fact. The sort-parent link is
         // `register_entity_of`; the fact itself is built by the shared
         // [`Self::emit_entity_info`] (WI-630 also emits it for namespace-level
-        // entities, from `load_entity`). Field types are lowered once here (the
-        // fact side; `load_entity` lowers again for the field-type registry — the
-        // pre-existing sort-body double-lower, out of scope for WI-630).
+        // entities, from `load_entity`). WI-936: the field types are READ from the
+        // declaration pass's lowering — this loop and `load_entity` used to lower the
+        // same fields separately (the sort-body double-lower), so the fact and the
+        // registry were two lowerings of one written type.
         let ei_syms = self.entity_info_syms();
         for item in &s.items {
             if let Item::Entity(e) = item {
@@ -13207,8 +13419,7 @@ impl<'a> Loader<'a> {
                 } else {
                     self.kb.register_entity_of(ctor_term, sort_term);
                 }
-                let lowered: Vec<crate::eval::value::Value> =
-                    e.fields.iter().map(|f| self.type_expr_to_value(&f.ty)).collect();
+                let lowered = self.declared_field_values(e, self.kb.name_term_sym(ctor_term));
                 self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, parent_domain);
             }
         }
@@ -13690,41 +13901,15 @@ impl<'a> Loader<'a> {
     fn load_entity(&mut self, e: &Entity, domain: Symbol) {
         let functor = self.remap_name(&e.name);
 
-        // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
-        // type field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried
-        // as `Value::Node`, a ground field type as `Value::Term`. Lowering once
-        // avoids double-firing per-field side effects like `emit_desc_fact` (a
-        // described type-var field type) — so `lowered` is reused below for BOTH
-        // the field-type registry and (WI-630) the namespace-level `EntityInfo`
-        // emission, rather than re-lowering in `emit_entity_info`.
-        let lowered: Vec<crate::eval::value::Value> = e.fields
-            .iter()
-            .map(|f| self.type_expr_to_value(&f.ty))
-            .collect();
-        let field_types: Vec<(Symbol, crate::eval::value::Value)> = e.fields
-            .iter()
-            .zip(&lowered)
-            .map(|(f, v)| (self.reintern(f.name), v.clone()))
-            .collect();
-
-        // Register entity field TYPES (the carrier-agnostic literal-typing
-        // hints) under the resolved entity symbol. WI-499: field NAMES are now
-        // registered earlier, in `scan_definitions` pass-1
-        // (`register_entity_field_names_scan`), so the positional→named desugar
-        // and partial-expansion are load-order-independent; only the type-aware
-        // lowering stays here.
-        //
-        // WI-515: this registry (plus the `EntityInfo` fact) is the ONLY
-        // declaration-side representation. The loader used to also assert a
-        // same-functor "schema fact" (`edge(from: <Node type>, to: <Node type>)`
-        // under sort `Entity`), but a fact whose DATA slots carry TYPE terms
-        // unifies with any fully-var query over the constructor — e.g. the
-        // self-referential constraint `no ?p -: edge(from: ?p, to: ?p)` matched
-        // it (`?p = Node` in both slots) and was spuriously violated on
-        // self-loop-free data, and every `KB.execute` pattern query saw a
-        // phantom row. The reflect readers (`KB.fields`, `sort_query`) resolve
-        // the entity BY REFERENCE (WI-632) and read this registry by functor.
-        self.kb.register_entity_field_types(functor, field_types);
+        // The field TYPES (the carrier-agnostic literal-typing hints) are lowered and
+        // registered by the WI-936 declaration pass, before ANY file's terms are
+        // converted; read back here for the `EntityInfo` emission below. WI-499 moved
+        // the field NAMES to `scan_definitions` pass-1 for the same reason — so the
+        // positional→named desugar, the partial-expansion and the over-arity check are
+        // load-order-independent — and the types followed, one ticket later, because
+        // the three decisions keyed on THEM (list-literal desugaring, `Option` wrap,
+        // absent-optional fill) were order-dependent in exactly the same way.
+        let lowered = self.declared_field_values(e, functor);
 
         // WI-630 (everything-is-facts gap): a sort-body entity's `EntityInfo`
         // fact is emitted by `load_sort_with_body`'s loop (which also links it to

@@ -29,10 +29,17 @@
 //!     (WI-931's suite) carry the other half: that the moved file still declares no
 //!     provision, and still cannot be given one.
 //!
+//!   * `both_load_orders_of_the_example_answer_the_same` (WI-936) — the two files load
+//!     in EITHER order and answer the same. WI-934 had to pin the dependency order
+//!     here, because the losing order cost the `columns` destructuring silently; the
+//!     loader now settles every entity's field types before converting any file's
+//!     terms, so [`load_example`] walks the directory (a file added later cannot be
+//!     silently skipped) and that walk is itself the order that used to lose.
+//!
 //! CONTROL, MEASURED by backing the move out rather than asserted. Copying
 //! `sql.anthill` back to `stdlib/anthill/persistence/` fails
 //! `the_sql_store_shape_left_the_stdlib` and the two `stdlib_drift_test` tests
-//! (anthill-stl), and nothing else — the five other tests here pass either way BY
+//! (anthill-stl), and nothing else — the six other tests here pass either way BY
 //! DESIGN, since they read the example at its own path and say nothing about the
 //! stdlib. That first run is also what caught the test being weaker than it read:
 //! with only `anthill.persistence.sql.SqlStore` asserted absent it PASSED with the
@@ -53,43 +60,30 @@ use anthill_core::kb::term_view::{TermView, ViewHead};
 use common::{collect_anthill_files, example_source, examples_dir, query_unary,
              try_load_kb_with, try_load_kb_with_files};
 
-/// The example's files, in DEPENDENCY ORDER — the shape before the demo that
-/// instantiates it. Listed rather than walked, and reconciled against the directory
-/// in [`load_example`]: the same explicit-list-plus-drift-check shape
-/// `anthill::stdlib::SOURCES` and `stdlib_drift_test` use, and for the same reason.
+/// The stdlib + host bindings + every `.anthill` under `examples/sql-store/`, in
+/// DIRECTORY WALK order — so a file added to the example later is loaded rather than
+/// silently skipped.
 ///
-/// LOAD ORDER IS SIGNIFICANT HERE, MEASURED. An alphabetical directory walk yields
-/// `demo.anthill` first, and that order LOADS CLEAN while silently costing the
-/// `columns` destructuring: `QueryBinding.columns`'s declared `List[T = ColumnDef]`
-/// is what desugars the demo's list literal to a `cons` spine, and with the demo
-/// scanned first `account_column_type` answers NOTHING instead of `"text"`. Measured
-/// both ways — `sql, demo` → 1 solution, `demo, sql` → 0, no diagnostic either way.
-/// The rules that read `columns` as a bare variable are unaffected, which is what
-/// makes the loss quiet. (WI-934 filed the loader half of this as a follow-up; this
-/// list is the local fix.)
-const EXAMPLE_FILES: &[&str] = &["sql.anthill", "demo.anthill"];
-
-/// The stdlib + host bindings + `examples/sql-store/`, in [`EXAMPLE_FILES`] order.
+/// THE WALK ORDER IS THE ORDER THAT USED TO LOSE, and that is why it stays. It is
+/// alphabetical, so `demo.anthill` (the facts) precedes `sql.anthill` (the schema
+/// they are written against), and until WI-936 that order LOADED CLEAN while silently
+/// costing the `columns` destructuring: `QueryBinding.columns`'s declared
+/// `List[T = ColumnDef]` is what desugars the demo's list literal to a `cons` spine,
+/// and with the demo converted first `account_column_type` answered NOTHING instead
+/// of `"text"`. Measured both ways then — `sql, demo` → 1 solution, `demo, sql` → 0,
+/// no diagnostic either way. WI-934 pinned the dependency order here as a local
+/// workaround; WI-936 fixed the loader (entity field types are registered for every
+/// file before any file's terms are converted), so the pin is gone and this suite
+/// drives the fix on real files.
+/// [`both_load_orders_of_the_example_answer_the_same`] holds the explicit both-ways
+/// measurement.
 fn load_example() -> KnowledgeBase {
     let dir = examples_dir().join("sql-store");
-    let mut on_disk: Vec<String> = collect_anthill_files(&dir)
+    let sources: Vec<String> = collect_anthill_files(&dir)
         .iter()
-        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
         .collect();
-    on_disk.sort();
-    let mut listed: Vec<String> = EXAMPLE_FILES.iter().map(|s| s.to_string()).collect();
-    listed.sort();
-    assert_eq!(
-        on_disk, listed,
-        "examples/sql-store/ drifted from EXAMPLE_FILES — add the new file at its \
-         DEPENDENCY position (see that constant: an alphabetical order loads clean and \
-         silently breaks the demo)",
-    );
-
-    let sources: Vec<String> = EXAMPLE_FILES
-        .iter()
-        .map(|f| example_source(&format!("sql-store/{f}")))
-        .collect();
+    assert!(!sources.is_empty(), "examples/sql-store/ must hold at least one .anthill file");
     let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
 
     try_load_kb_with_files(&refs).unwrap_or_else(|errs| {
@@ -267,6 +261,49 @@ fn the_demo_column_list_destructures_through_its_declared_type() {
         "`action` is the SECOND column; matching it at the spine's head must answer \
          nothing, else the pattern matches anywhere in the list: {sols:?}",
     );
+}
+
+/// SUBJECT (WI-936) — the example answers the SAME in either file order, driven both
+/// ways in one test so the two cannot silently diverge again.
+///
+/// This is the ticket's acceptance on real files: `sql, demo` is the dependency order
+/// and `demo, sql` is what an alphabetical walk produces. Until WI-936 they disagreed
+/// — 1 solution vs 0 — with no parse error, no load error and no diagnostic either
+/// way, because `QueryBinding.columns`'s declared `List[T = ColumnDef]` was registered
+/// only when `sql.anthill` LOADED, not when it was scanned. The sibling rule reading
+/// `columns` as a bare variable answered in both orders, which is what made the loss
+/// quiet; it is asserted here too, so a regression that broke BOTH orders could not
+/// pass this test by making the two agree on nothing.
+#[test]
+fn both_load_orders_of_the_example_answer_the_same() {
+    let sql = example_source("sql-store/sql.anthill");
+    let demo = example_source("sql-store/demo.anthill");
+
+    let mut answers = Vec::new();
+    for order in [[sql.as_str(), demo.as_str()], [demo.as_str(), sql.as_str()]] {
+        let mut kb = try_load_kb_with_files(&order).unwrap_or_else(|errs| {
+            for e in &errs {
+                eprintln!("load error: {e}");
+            }
+            panic!("both orders must load; got {} error(s)", errs.len());
+        });
+        let spine = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.account_column_type")
+            .iter()
+            .map(|(v, _)| text_of(&kb, v))
+            .collect::<Vec<_>>();
+        // The quiet sibling: `columns` read as a WHOLE, which answered in both orders
+        // even when the spine did not.
+        let whole = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.audit_column_defs").len();
+        answers.push((spine, whole));
+    }
+
+    assert_eq!(
+        answers[0], answers[1],
+        "the two load orders disagree — `sql, demo` gave {:?} and `demo, sql` gave {:?}",
+        answers[0], answers[1],
+    );
+    assert_eq!(answers[0].0, ["text"], "the spine's head is the `account` column, in either order");
+    assert_eq!(answers[0].1, 1, "…and `columns` read as a whole answers once, in either order");
 }
 
 // ── local helper ────────────────────────────────────────────────────

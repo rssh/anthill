@@ -80,11 +80,13 @@ loads both files against the stdlib and **drives** the demo rules through the
 resolver, so the shape cannot rot into something that no longer loads or no longer
 reads back.
 
-**Load `sql.anthill` before `demo.anthill`.** The order is significant and its loss is
-silent: `QueryBinding.columns`'s declared `List[T = ColumnDef]` is what desugars the
-demo's list literal into a `cons` spine, so with `demo.anthill` scanned first the file
-still loads clean but `account_column_type` answers nothing. Measured both ways in
-`sql_store_example_test`, which pins the order.
+**The two files load in either order** (WI-936), and `sql_store_example_test` drives
+both to check it. Until that fix the order was significant and its loss was silent:
+`QueryBinding.columns`'s declared `List[T = ColumnDef]` is what desugars the demo's
+list literal into a `cons` spine, and with `demo.anthill` converted first the file
+still loaded clean while `account_column_type` answered nothing. A declared type is
+now in force for the whole load whichever file it is written in (kernel spec §4.6,
+"Collection literals").
 
 ## Reading further
 
