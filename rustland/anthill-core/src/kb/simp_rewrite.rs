@@ -140,6 +140,59 @@ pub(super) fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
     kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp")
 }
 
+/// WI-898 — how many equations define `functor`, and how many of them can EVER
+/// fire. The census a diagnostic needs when a call to an equation-introduced
+/// functor ([`crate::intern::SymbolKind::EquationFunctor`]) reaches the typer
+/// unreduced, because the two counts are two different bugs with two different
+/// repairs: `simp == 0` means the equations are INERT and want the tag (`[simp]`
+/// is the enablement, §5.3); `simp > 0` means they fire but none MATCHED these
+/// arguments, and the author has to look at the patterns.
+///
+/// DELIBERATELY NOT SELECTED OVER [`KnowledgeBase::simp_equation_rids`], which is what
+/// every FIRING site uses. That bucket cannot answer this question: WI-139
+/// (`unindex_functor`) removes a non-directional — i.e. untagged — equation from
+/// `rules_by_functor(eq)` precisely so it never drives automatic rewriting, so the
+/// clauses whose absence of a tag IS the diagnosis are the ones the bucket hides.
+/// MEASURED: an untagged `f(?x) = ?x` censused as ZERO defining equations and the
+/// message blamed a retraction. The scan is over `live_rule_ids` instead, with the
+/// firing sites' per-rule predicates ([`is_simp_equation`], [`stored_lhs_functor`])
+/// applied unchanged so `simp_tagged` still means exactly "would fire".
+///
+/// An ERROR-PATH cost only (one pass over live rules), never on the firing path — and
+/// `&KnowledgeBase`, though every other entry point in this module takes `&mut`: nothing
+/// here mutates, and the census is consumed by a DIAGNOSTIC, which is exactly the place
+/// a caller is apt to hold a shared borrow. A `&mut` here would push such a caller into
+/// re-deriving the counts, the duplication this function exists to prevent.
+pub(super) fn equation_clause_census(kb: &KnowledgeBase, functor: Symbol) -> ClauseCensus {
+    let mut census = ClauseCensus { defining: 0, simp_tagged: 0 };
+    // Streamed, not `live_rule_ids()`: that would materialize a Vec of EVERY
+    // non-retracted rule (thousands, on a stdlib-sized KB) to then keep a handful.
+    // `is_simp_equation` re-asks `is_equation` — left alone deliberately, because it is
+    // the firing sites' own predicate and this module's doc is explicit that a reader
+    // must not re-derive it to save a walk.
+    for rid in kb.live_rule_ids_iter() {
+        if !kb.is_equation(rid) || stored_lhs_functor(kb, rid) != Some(functor) {
+            continue;
+        }
+        census.defining += 1;
+        if is_simp_equation(kb, rid) {
+            census.simp_tagged += 1;
+        }
+    }
+    census
+}
+
+/// [`equation_clause_census`]'s answer. `pub` because `TypeError` — public API —
+/// carries one on its WI-898 variant; the *taking* of a census stays `pub(super)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClauseCensus {
+    /// LIVE bodyless equations whose LHS functor is the subject — tagged or not,
+    /// indexed or not (see the census's own note on why the tagless ones must count).
+    pub defining: usize,
+    /// …of which, those tagged `[simp]` — the ones the typer can fire.
+    pub simp_tagged: usize,
+}
+
 /// The `PassId` tagging `[simp]`-synthesized occurrences. Idempotent
 /// (`register_pass` interns the name), so the typer firing site can fetch
 /// it per fire without threading it through the work-stack.

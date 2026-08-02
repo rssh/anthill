@@ -49,7 +49,28 @@ pub enum SymbolKind {
     /// name: an op param IS its input.
     Param,
     Field,
+    /// A RELATION: the head functor of a predicate rule (`adult(?x) :- …`), and
+    /// the `<Sort>.induction` schema. Its clauses are indexed UNDER THIS NAME, so
+    /// `rule_ids_by_qn` finds them — which is what makes it a first-class
+    /// `Relation[T]` value at the WI-714 citation positions (bare, applied, and
+    /// as an argument).
+    ///
+    /// SEE [`SymbolKind::EquationFunctor`] BEFORE ADDING A READER: the two are
+    /// both "a name a rule introduced" and were one kind until WI-898, but only
+    /// this one owns clauses.
     Goal,
+    /// WI-898 — the subject of a bodyless EQUATION (`ite(true, ?t, ?_) = ?t`):
+    /// a function DEFINED BY REWRITING, whose call sites reduce (`[simp]`) rather
+    /// than dispatch. Minted by `load::scan_rule_goal` alongside [`SymbolKind::Goal`],
+    /// from the same head walk, because both are names a rule introduces.
+    ///
+    /// IT IS NOT A RELATION, and that is the whole reason it is a separate kind.
+    /// An equation's clauses are indexed under the `eq`/`unify` CONNECTIVE, not
+    /// under this functor — so every WI-714 reader (`relation_columns_across_clauses`
+    /// and friends) finds ZERO clauses for it and reports "unresolved name" about a
+    /// name that resolved perfectly well. Borrowing `Goal` for it made that
+    /// misdiagnosis reachable from the spelling WI-894 recommends.
+    EquationFunctor,
     // ── Operation-frame places (WI-352) ─────────────────────────────
     // The reserved result and callback-derived binders introduced by an
     // operation signature. WI-351 mis-tagged these as `Param` (a result is
@@ -92,6 +113,37 @@ impl SymbolKind {
                 | SymbolKind::CallbackParam
                 | SymbolKind::CallbackResult
         )
+    }
+
+    /// The kind's REFLECT NAME — the string `kind(?sym, ?k)` binds, in the
+    /// resolver's builtin and in the `anthill-stl` eval bridge alike. One table
+    /// (WI-898): the two readers each carried their own exhaustive copy, so adding
+    /// a kind meant editing both and a program could see `"Goal"` from one and a
+    /// compile error from the other.
+    ///
+    /// RESOLVED kinds only. The two readers still part ways on an UNRESOLVED symbol —
+    /// the resolver builtin FAILS the goal, the eval bridge answers `"Unresolved"` —
+    /// and that difference is theirs to own (a builtin failing a goal is not a string
+    /// it could have returned), so do not read this table as unifying it.
+    pub fn reflect_name(self) -> &'static str {
+        match self {
+            SymbolKind::Sort => "Sort",
+            SymbolKind::Entity => "Entity",
+            SymbolKind::Operation => "Operation",
+            SymbolKind::Const => "Const",
+            SymbolKind::Namespace => "Namespace",
+            SymbolKind::Fact => "Fact",
+            SymbolKind::Rule => "Rule",
+            SymbolKind::Constraint => "Constraint",
+            SymbolKind::Param => "Param",
+            SymbolKind::Field => "Field",
+            SymbolKind::Goal => "Goal",
+            SymbolKind::EquationFunctor => "EquationFunctor",
+            SymbolKind::OpResult => "OpResult",
+            SymbolKind::CallbackParam => "CallbackParam",
+            SymbolKind::CallbackResult => "CallbackResult",
+            SymbolKind::LocalLet => "LocalLet",
+        }
     }
 }
 

@@ -2476,12 +2476,14 @@ fn compile_condition(
     // silently EMPTY. Reject it here instead: 052's "cannot translate to SQL".
     // Checked BEFORE the operands so the diagnostic names the untranslatable head
     // rather than whatever it was applied to.
-    if interp.kb.builtin_of(*functor).is_none()
-        && !matches!(
-            interp.kb.kind_of(*functor),
-            Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
-        )
-    {
+    //
+    // WI-898 — `ite(…)` IS THE EXAMPLE ABOVE, and this set is what decides it. While
+    // an equation-introduced functor shared `SymbolKind::Goal` (WI-894), `ite` passed
+    // this gate: it named no clauses under itself, so the compiled atom was
+    // unprovable and the `where` came back silently empty — precisely the failure the
+    // rejection is written to prevent. `EquationFunctor` is deliberately excluded,
+    // which restores it.
+    if interp.kb.builtin_of(*functor).is_none() && !interp.kb.cites_a_relation(*functor) {
         return Err(macro_rejects(
             "a goal-expressible predicate (a builtin such as `eq`/`neq`/`lt`, \
              or a rule) as a row-lambda condition atom",

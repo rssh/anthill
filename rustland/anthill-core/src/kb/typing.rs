@@ -78,10 +78,37 @@ pub enum TypeError {
     /// better diagnostic that names the owning sort(s) and the qualified/dot
     /// remedy, instead of the terse "unknown functor". `owning_sorts` is deduped
     /// (by qualified name) and sorted for a deterministic message.
+    ///
+    /// WI-898 widened it past member OPERATIONS to member EQUATION FUNCTORS (`ite`
+    /// on `Bool`), which is why `dot_dispatchable` exists: only an operation answers
+    /// `receiver.member(…)`, so the remedy names that spelling only when one is
+    /// among the candidates.
     BareMemberCall {
         span: Option<Span>,
         member: Symbol,
         owning_sorts: SmallVec<[Symbol; 2]>,
+        dot_dispatchable: bool,
+    },
+    /// WI-898: a citation of an EQUATION-INTRODUCED functor
+    /// ([`crate::intern::SymbolKind::EquationFunctor`]) — `ite(gte(a, b), a, b)` —
+    /// that the `[simp]` rewriter left standing. Such a name denotes a function
+    /// DEFINED BY REWRITING; a citation of it is answered before dispatch or not at
+    /// all, so one that survives to the typer has nothing left to mean.
+    ///
+    /// IT IS THE DIAGNOSTIC WI-898 EXISTS FOR. The kind used to be `Goal`, which
+    /// routed the name into WI-714's relation machinery; that found zero clauses
+    /// (an equation's clauses are indexed under the `eq`/`unify` connective) and
+    /// reported [`Self::UnresolvedName`] — a name that resolved perfectly well,
+    /// described as unresolved, on exactly the spelling WI-894 recommends.
+    ///
+    /// `census` is [`super::simp_rewrite::equation_clause_census`]'s, taken at
+    /// construction (the message needs a `&mut KnowledgeBase` the renderers do not
+    /// have) — it decides WHICH of the two failures this is: inert clauses that want
+    /// a `[simp]` tag, or firing clauses none of which matched.
+    UnreducedEquationFunctor {
+        span: Option<Span>,
+        functor: Symbol,
+        census: super::simp_rewrite::ClauseCensus,
     },
     /// Spec-op dispatch found no impl whose per-call bindings match the
     /// inferred type arguments. `op` is the qualified spec-op symbol
@@ -561,10 +588,13 @@ impl TypeError {
             TypeError::UnknownApplyFunctor { name, .. } => {
                 format!("unknown apply functor: {}", kb.resolve_sym(*name))
             }
-            TypeError::BareMemberCall { member, owning_sorts, .. } => {
+            TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
                 let sort_names: Vec<String> =
                     owning_sorts.iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
-                bare_member_call_message(kb.resolve_sym(*member), &sort_names)
+                bare_member_call_message(kb.resolve_sym(*member), &sort_names, *dot_dispatchable)
+            }
+            TypeError::UnreducedEquationFunctor { functor, census, .. } => {
+                unreduced_equation_functor_message(kb.qualified_name_of(*functor), *census)
             }
             TypeError::DispatchNoMatch { op, .. } => {
                 format!(
@@ -798,6 +828,7 @@ impl TypeError {
             | TypeError::NoConstructor { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
             | TypeError::BareMemberCall { span, .. }
+            | TypeError::UnreducedEquationFunctor { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
@@ -898,14 +929,24 @@ impl TypeError {
                 actual_type: "unknown functor".to_string(),
                 span: self.span(kb),
             },
-            TypeError::BareMemberCall { member, owning_sorts, .. } => LoadError::BareMemberCall {
-                span: self.span(kb),
-                member: kb.resolve_sym(*member).to_string(),
-                owning_sorts: owning_sorts
-                    .iter()
-                    .map(|s| kb.resolve_sym(*s).to_string())
-                    .collect(),
-            },
+            TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
+                LoadError::BareMemberCall {
+                    span: self.span(kb),
+                    member: kb.resolve_sym(*member).to_string(),
+                    owning_sorts: owning_sorts
+                        .iter()
+                        .map(|s| kb.resolve_sym(*s).to_string())
+                        .collect(),
+                    dot_dispatchable: *dot_dispatchable,
+                }
+            }
+            TypeError::UnreducedEquationFunctor { functor, census, .. } => {
+                LoadError::UnreducedEquationFunctor {
+                    span: self.span(kb),
+                    functor: kb.qualified_name_of(*functor).to_string(),
+                    census: *census,
+                }
+            }
             TypeError::DispatchNoMatch { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -4472,12 +4513,17 @@ fn check_bare_ref(
     // `provides LogicalStream`. Eval's `reduce_var` twin builds the runtime value.
     // Sits before the `UnresolvedName` fall-through: a rule name is none of the
     // readings above, so it reached here as an unresolved name today.
-    if matches!(
-        kb.kind_of(sym),
-        Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
-    ) {
+    if kb.cites_a_relation(sym) {
         let ty = relation_reference_type(kb, sym, span, occ)?;
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
+    }
+    // WI-898: an EQUATION-introduced functor that owns no clauses is NOT a relation,
+    // so the arm above declined it rather than reporting it unresolved. It has no
+    // bare value reading either (a rewrite rule is not first-class), so this is where
+    // it ends, with a diagnostic that says what it actually is.
+    if kb.has_kind(sym, crate::intern::SymbolKind::EquationFunctor) {
+        let census = super::simp_rewrite::equation_clause_census(kb, sym);
+        return Err(TypeError::UnreducedEquationFunctor { span, functor: sym, census });
     }
     Err(TypeError::UnresolvedName { span, name: sym })
 }
@@ -5771,6 +5817,11 @@ fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Valu
 /// reference whose resolved symbol is a `Goal`/`Rule`; any other arg yields `None` (the
 /// env/stamp path already covers a receiver and ordinary values).
 ///
+/// WI-898: `EquationFunctor` is deliberately not in that set — it owns no clauses, so
+/// there is no schema to project. `None` here is correct and not a silent skip: the
+/// argument still gets typed on the ordinary path, where `check_bare_ref`'s own
+/// `EquationFunctor` arm reports it.
+///
 /// WI-734 asked whether this recompute could be retired in favour of the `inferred_type`
 /// stamp the RECEIVER path already uses, so a bare rule-ref argument and a bare rule-ref
 /// receiver share one mechanism. IT CANNOT — and the reason is ORDERING, not oversight.
@@ -5790,10 +5841,7 @@ fn relation_ref_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Op
         | NodeKind::Expr { expr: Expr::Ident(name), .. } => *name,
         _ => return None,
     };
-    if !matches!(
-        kb.kind_of(name),
-        Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
-    ) {
+    if !kb.cites_a_relation(name) {
         return None;
     }
     relation_reference_type(kb, name, Some(arg.span.span), arg).ok()
@@ -9678,12 +9726,7 @@ fn check_apply_iter(
     // `dispatch_dots_in_occ` for a dot-bearing atom), never a `Relation` VALUE — the
     // value reading belongs to functional/operation code. In rule-body context this
     // falls through, preserving the pre-WI-714 behavior there.
-    if !env.in_rule_body()
-        && matches!(
-            kb.kind_of(fn_sym),
-            Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
-        )
-    {
+    if !env.in_rule_body() && kb.cites_a_relation(fn_sym) {
         let ty = relation_reference_type_applied(
             kb, fn_sym, pos_args, named_args, pos_results, named_results, span, occ,
         )?;
@@ -9692,6 +9735,22 @@ fn check_apply_iter(
             merge_effects_into(kb, &mut effects, &r.effects);
         }
         return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
+    }
+
+    // WI-898 — an EQUATION-INTRODUCED functor applied, which the arm above declined
+    // because it owns no clauses (an equation's live under the `eq`/`unify`
+    // connective). Reaching here at all means the `[simp]` rewriter already declined
+    // the call, which IS the diagnosis — so this is a refusal that says so, rather
+    // than a fall-through to `UnknownApplyFunctor`'s much vaguer "unknown functor"
+    // about a name that resolved perfectly well.
+    //
+    // Sits AFTER the relation arm, so a name its scope also gave a predicate clause
+    // takes the relational reading it has really got. Shares the `!in_rule_body`
+    // gate for the reason it exists there: in a rule body the application is a term
+    // in a goal, not a citation in functional code.
+    if !env.in_rule_body() && kb.has_kind(fn_sym, crate::intern::SymbolKind::EquationFunctor) {
+        let census = super::simp_rewrite::equation_clause_census(kb, fn_sym);
+        return Err(TypeError::UnreducedEquationFunctor { span, functor: fn_sym, census });
     }
 
     // Path 1: known operation — unify args with params to instantiate type params
@@ -11710,11 +11769,16 @@ fn check_apply_iter(
             // within their defining sort, so name the owning sort(s) and the
             // qualified/dot remedy. A genuinely-unknown name (no owning sort)
             // keeps the plain `UnknownApplyFunctor`.
-            let owning_sorts = member_owning_sorts_for_bare(kb, fn_sym);
-            if owning_sorts.is_empty() {
+            let candidates = member_owning_sorts_for_bare(kb, fn_sym);
+            if candidates.sorts.is_empty() {
                 TypeError::UnknownApplyFunctor { span, name: fn_sym }
             } else {
-                TypeError::BareMemberCall { span, member: fn_sym, owning_sorts }
+                TypeError::BareMemberCall {
+                    span,
+                    member: fn_sym,
+                    owning_sorts: candidates.sorts,
+                    dot_dispatchable: candidates.dot_dispatchable,
+                }
             }
         })
 }
@@ -11784,17 +11848,29 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
 /// [`TypeError::BareMemberCall`]. A member's bare name is in scope only within its
 /// defining sort; from outside it must be qualified (`Sort.member(…)`) or
 /// dot-dispatched (`receiver.member(…)`). The scan walks every registered
-/// qualified name (an error-path cost only), keeping a member op whose parent
+/// qualified name (an error-path cost only), keeping a member whose parent
 /// resolves to a `Sort`. Deduped by the parent sort's qualified name and sorted by
 /// it, so the diagnostic is deterministic across the `by_qualified_name` HashMap's
 /// iteration order.
-fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> SmallVec<[Symbol; 2]> {
+///
+/// WI-898 widened "member" from an OPERATION to an operation OR an equation functor,
+/// and split off `dot_dispatchable` because the two do not answer the same remedies.
+fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> BareMemberCandidates {
     let short = kb.resolve_sym(fn_sym).to_string();
     // Keyed by the owning sort's qualified name: dedups interned copies and yields
     // the sorts in a deterministic (qualified-name) order via `into_values`.
     let mut by_qn: std::collections::BTreeMap<String, Symbol> = std::collections::BTreeMap::new();
+    let mut dot_dispatchable = true;
     for (qn, &sym) in kb.symbols.by_qualified_name.iter() {
-        if kb.kind_of(sym) != Some(crate::intern::SymbolKind::Operation) {
+        // WI-898: an EQUATION-INTRODUCED functor is a member too — `ite` is `Bool`'s,
+        // written as two `[simp]` clauses instead of an `operation` — and this hint
+        // exists for exactly the confusion it causes. It could not be seen while the
+        // kind was `Goal`, since a `Goal` is a relation and naming a relation's sort
+        // would be nonsense.
+        // `has_kind` per role, not `kind_of`: one name can play both (WI-925), and a
+        // member that is an operation AND an equation functor must be found as either.
+        let is_op = kb.has_kind(sym, crate::intern::SymbolKind::Operation);
+        if !is_op && !kb.has_kind(sym, crate::intern::SymbolKind::EquationFunctor) {
             continue;
         }
         let Some((parent_qn, last)) = qn.rsplit_once('.') else {
@@ -11809,17 +11885,41 @@ fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> SmallVec<
         if kb.kind_of(parent_sym) != Some(crate::intern::SymbolKind::Sort) {
             continue;
         }
+        // Only an OPERATION answers `receiver.member(…)`: dot dispatch selects a
+        // member operation by the receiver's carrier, and an equation functor is not
+        // one. Offering that half of the remedy for an equation-only member would
+        // send the author to a spelling that fails the same way.
+        //
+        // ALL, not ANY. The message names the owning sorts JOINTLY, so one remedy has
+        // to hold for every one of them: with `any`, a name that is an operation on
+        // `A` and an equation functor on `B` still advertised `receiver.foo(…)`, and
+        // an author holding a `B` followed it into the same failure — the outcome this
+        // flag exists to rule out, reintroduced at multi-sort granularity.
+        dot_dispatchable &= is_op;
         by_qn.entry(parent_qn.to_string()).or_insert(parent_sym);
     }
-    by_qn.into_values().collect()
+    BareMemberCandidates { sorts: by_qn.into_values().collect(), dot_dispatchable }
+}
+
+/// [`member_owning_sorts_for_bare`]'s answer: the owning sorts, plus whether the
+/// receiver spelling is one of the remedies (WI-898 — see the `dot_dispatchable`
+/// assignment for why an equation functor does not earn it).
+struct BareMemberCandidates {
+    sorts: SmallVec<[Symbol; 2]>,
+    dot_dispatchable: bool,
 }
 
 /// WI-565: the one message body for a bare out-of-scope member-op call, shared by
 /// [`TypeError::format`] and [`super::load::LoadError`]'s renderings so the wording
 /// cannot drift. `member` is the bare short name; `owning_sorts` are the owning
-/// sorts' short names (already deduped + sorted). Names the sort(s) and the two
-/// remedies — qualified `Sort.member(…)` and dot `receiver.member(…)`.
-pub(crate) fn bare_member_call_message(member: &str, owning_sorts: &[String]) -> String {
+/// sorts' short names (already deduped + sorted). Names the sort(s) and the qualified
+/// remedy `Sort.member(…)`, plus the dot remedy `receiver.member(…)` when
+/// `dot_dispatchable` (WI-898 — an equation functor answers only the first).
+pub(crate) fn bare_member_call_message(
+    member: &str,
+    owning_sorts: &[String],
+    dot_dispatchable: bool,
+) -> String {
     let (noun, sorts, exemplar) = match owning_sorts {
         [one] => ("sort".to_string(), one.clone(), one.clone()),
         many => (
@@ -11828,10 +11928,75 @@ pub(crate) fn bare_member_call_message(member: &str, owning_sorts: &[String]) ->
             "<Sort>".to_string(),
         ),
     };
+    // WI-898: the receiver spelling is offered only where a member OPERATION answers
+    // it. An equation functor (`Bool.ite`) is reached by its qualified name alone, so
+    // naming `receiver.ite(…)` would be a remedy that fails the same way.
+    let receiver = if dot_dispatchable {
+        format!(" or via a receiver `receiver.{member}(…)`")
+    } else {
+        String::new()
+    };
     format!(
         "`{member}` is a member of {noun} {sorts}, not in scope as a bare name here; \
-         call it qualified as `{exemplar}.{member}(…)` or via a receiver `receiver.{member}(…)`"
+         call it qualified as `{exemplar}.{member}(…)`{receiver}"
     )
+}
+
+/// WI-898: the one message body for a citation of an equation-introduced functor that
+/// did not rewrite, shared by [`TypeError::format`] and [`super::load::LoadError`]'s two
+/// renderings so the wording cannot drift (the discipline
+/// [`bare_member_call_message`] set).
+///
+/// THREE FAILURES, THREE REPAIRS, and the census tells them apart — which is the whole
+/// reason the counts are carried rather than the message being one sentence about all
+/// of them. Untagged clauses are INERT (`[simp]` is the enablement, spec §5.3), so the
+/// author has to tag them; tagged clauses that did not match are a PATTERN problem, so
+/// the author has to look at what the left-hand sides require; and no clause at all is
+/// neither. Telling the author every possibility would be the diagnostic asking them
+/// to do the diagnosis.
+pub(crate) fn unreduced_equation_functor_message(
+    functor: &str,
+    census: super::simp_rewrite::ClauseCensus,
+) -> String {
+    let head = format!(
+        "`{functor}` is defined by equations, not declared as an operation, so a citation \
+         of it is answered by REWRITING before dispatch — and this one did not rewrite"
+    );
+    if census.defining == 0 {
+        // Its own sentence rather than a "none of its 0 equations" nonsense — and
+        // deliberately WITHOUT a cause. A `retract` (WI-666) can leave the scoped
+        // symbol standing with no live clause, but so can an LHS whose stored shape
+        // the census cannot key on, and the census establishes neither. Say what was
+        // observed; guessing why would send the author looking in the wrong place.
+        format!(
+            "{head}: no defining equation for it can be found, so there is nothing to \
+             rewrite with and no operation to dispatch to"
+        )
+    } else if census.simp_tagged == 0 {
+        format!(
+            "{head}: none of its {} defining equation(s) is tagged `[simp]`, and an \
+             untagged equation never fires (spec §5.3 — `[simp]` is the enablement, not \
+             the direction). Tag the defining equation `[simp]`, or declare `{functor}` \
+             as an `operation`",
+            census.defining,
+        )
+    } else {
+        // NAMES THE CANDIDATES, ASSERTS NONE. The census knows the tag; it does NOT
+        // know why a tagged clause declined, and `try_fire` has three distinct
+        // declines — the left-hand pattern not matching, a typed pattern bound the
+        // typer refuses to fire unguarded (WI-582), and the type-directed guard
+        // (WI-655). An earlier cut asserted the first of the three, which would have
+        // sent an author whose clause was skipped for its bound to inspect patterns
+        // that were fine.
+        format!(
+            "{head}: none of its {} `[simp]` clause(s) fired here. A clause fires only \
+             where its left-hand pattern matches STRUCTURALLY (a COMPUTED argument never \
+             matches a pattern that writes a literal); the typer additionally declines \
+             one carrying a typed pattern bound (`?x: T`) and one its type-directed \
+             guard rejects. There is no operation to dispatch to",
+            census.simp_tagged,
+        )
+    }
 }
 
 /// WI-843 (058 §4.1 tier 3) — the tie a use site must resolve: which spec's

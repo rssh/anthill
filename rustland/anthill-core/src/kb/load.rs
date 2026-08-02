@@ -234,6 +234,24 @@ pub enum LoadError {
         span: Option<Span>,
         member: String,
         owning_sorts: Vec<String>,
+        /// WI-898: whether `receiver.member(…)` is among the remedies — see
+        /// [`super::typing::TypeError::BareMemberCall`].
+        dot_dispatchable: bool,
+    },
+    /// WI-898: a citation of an EQUATION-INTRODUCED functor that the `[simp]`
+    /// rewriter left standing — see [`super::typing::TypeError::UnreducedEquationFunctor`],
+    /// whose `census` this carries flattened. Its OWN variant rather than a
+    /// `TypeMismatch` for the same reason [`Self::BareMemberCall`] is: nothing here
+    /// is a type mismatch (the call has no type at all, because the name denotes no
+    /// callable), and the "expected X, got Y" frame has no room for the repair.
+    /// Load-blocking, as the `UnresolvedName`→`TypeMismatch` it replaces was.
+    UnreducedEquationFunctor {
+        span: Option<Span>,
+        /// The functor's QUALIFIED name — the spelling that locates the equations.
+        functor: String,
+        /// Which of the two failures this is. Two plain counts, KB-independent, so it
+        /// rides this layer unchanged rather than being flattened and rebuilt.
+        census: super::simp_rewrite::ClauseCensus,
     },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
@@ -1071,6 +1089,7 @@ impl LoadError {
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
+            | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
             | LoadError::UnselectedInstance { span, .. }
             | LoadError::TypedPatternNotEnforced { span, .. }
@@ -1185,8 +1204,17 @@ impl LoadError {
                     format!("type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
                 }
             }
-            LoadError::BareMemberCall { member, owning_sorts, span } => {
-                let msg = super::typing::bare_member_call_message(member, owning_sorts);
+            LoadError::BareMemberCall { member, owning_sorts, dot_dispatchable, span } => {
+                let msg =
+                    super::typing::bare_member_call_message(member, owning_sorts, *dot_dispatchable);
+                if let Some(sp) = span {
+                    format!("{}: {}", loc.format_start(*sp), msg)
+                } else {
+                    msg
+                }
+            }
+            LoadError::UnreducedEquationFunctor { functor, census, span } => {
+                let msg = super::typing::unreduced_equation_functor_message(functor, *census);
                 if let Some(sp) = span {
                     format!("{}: {}", loc.format_start(*sp), msg)
                 } else {
@@ -1555,8 +1583,17 @@ impl std::fmt::Display for LoadError {
                     write!(f, "type mismatch in {}.{}{}: expected {}, got {}{}", entity_name, field_name, tag, expected_type, actual_type, site)
                 }
             }
-            LoadError::BareMemberCall { member, owning_sorts, span } => {
-                let msg = super::typing::bare_member_call_message(member, owning_sorts);
+            LoadError::BareMemberCall { member, owning_sorts, dot_dispatchable, span } => {
+                let msg =
+                    super::typing::bare_member_call_message(member, owning_sorts, *dot_dispatchable);
+                if let Some(sp) = span {
+                    write!(f, "{} at {}..{}", msg, sp.start, sp.end)
+                } else {
+                    write!(f, "{}", msg)
+                }
+            }
+            LoadError::UnreducedEquationFunctor { functor, census, span } => {
+                let msg = super::typing::unreduced_equation_functor_message(functor, *census);
                 if let Some(sp) = span {
                     write!(f, "{} at {}..{}", msg, sp.start, sp.end)
                 } else {
@@ -2457,6 +2494,20 @@ fn scan_rule(
 /// binds to that ORIGIN symbol instead of minting a shadowing sort-local `Goal`.
 /// Only a genuinely-new name gets a fresh Goal, and WHICH names those are is
 /// [`name_denotes_for_rule_head`]'s question — the ladder, read-only.
+///
+/// WI-898 — WHICH KIND that fresh symbol gets is [`RuleIntroduction`]'s question,
+/// answered by the SAME head walk that picked the name. A predicate head keeps
+/// `SymbolKind::Goal`; an EQUATION's subject gets `SymbolKind::EquationFunctor`,
+/// because its clauses are indexed under the `eq`/`unify` connective and the WI-714
+/// relation readers would find none — reporting "unresolved name" about a name that
+/// resolved.
+///
+/// The kind records WHAT THE HEAD SHAPE INTRODUCED and nothing more. Whether the name
+/// goes on to denote a RELATION is a different question with a different answer, and
+/// it is derived from the clause index at the reader
+/// ([`KnowledgeBase::cites_a_relation`]) rather than patched onto the stamp here — a
+/// scope that writes one name in both shapes would otherwise be classified by
+/// whichever of its two rules this pass reached first.
 fn scan_rule_goal(
     kb: &mut KnowledgeBase,
     r: &Rule,
@@ -2465,14 +2516,40 @@ fn scan_rule_goal(
     scope: TermId,
     prefix: &str,
 ) {
-    let Some(functor_name) = rule_introduced_functor_name(r, parse_sym, parse_terms) else {
+    let Some((functor_name, introduced_by)) =
+        rule_introduced_functor_name(r, parse_sym, parse_terms)
+    else {
         return;
     };
     if name_denotes_for_rule_head(kb, functor_name, scope.raw()) {
         return;
     }
     let qualified = make_qualified(prefix, functor_name);
-    kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+    kb.symbols.define(functor_name, &qualified, introduced_by.symbol_kind(), scope.raw());
+}
+
+/// WI-898 — WHICH HEAD SHAPE introduced the name, and therefore WHICH KIND the
+/// symbol earns. Both shapes mint a scope-local symbol for a genuinely-new name
+/// (that is WI-894, one rule for both), but they differ in the one property every
+/// downstream reader cares about: WHERE THE CLAUSES ARE INDEXED.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RuleIntroduction {
+    /// A bodyless EQUATION's subject (`ite(true, ?t, ?_) = ?t`). The stored clause
+    /// is headed by the `eq`/`unify` CONNECTIVE, so this head indexes nothing under
+    /// the name — see [`SymbolKind::EquationFunctor`].
+    Equation,
+    /// A predicate head (`adult(?x) :- …`). The clauses ARE indexed under this
+    /// name; it is a relation.
+    Predicate,
+}
+
+impl RuleIntroduction {
+    fn symbol_kind(self) -> SymbolKind {
+        match self {
+            RuleIntroduction::Equation => SymbolKind::EquationFunctor,
+            RuleIntroduction::Predicate => SymbolKind::Goal,
+        }
+    }
 }
 
 /// The LHS operand of a parse-layer EQUATION head (`lhs = rhs` / `<=>` / `===`),
@@ -2540,7 +2617,7 @@ fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<&'a str> {
+) -> Option<(&'a str, RuleIntroduction)> {
     if r.heads.len() != 1 {
         return None;
     }
@@ -2556,7 +2633,14 @@ fn rule_introduced_functor_name<'a>(
     // equation that is the LHS; for a predicate head it is the head itself. This is
     // the ONLY place the two kinds part ways (WI-896): `r.label` is deliberately
     // never read.
-    let subject = equation_lhs.unwrap_or(*tid);
+    //
+    // WI-898: it is also the only place that KNOWS which of the two shapes this is,
+    // so the answer travels with the name rather than being re-derived by a second
+    // walk that could disagree — the [`RuleIntroduction`] the caller mints from.
+    let (subject, introduced_by) = match equation_lhs {
+        Some(lhs) => (lhs, RuleIntroduction::Equation),
+        None => (*tid, RuleIntroduction::Predicate),
+    };
     // A DESUGARED subject introduces nothing, on EITHER path: the converter's
     // accessor builds put their own functor there (`?x.m(?y)` → `dot_apply`,
     // `?x.f` → `field_access`, `?a + ?b` → `add`), and those names are the
@@ -2586,7 +2670,7 @@ fn rule_introduced_functor_name<'a>(
     if name.contains('.') {
         return None;
     }
-    Some(name)
+    Some((name, introduced_by))
 }
 
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
@@ -10171,6 +10255,15 @@ impl<'a> Loader<'a> {
     /// ONLY `Found` collapses. An `Ambiguous` from either rung — the whole name's, or a
     /// contested HEAD SEGMENT's (WI-917) — is not a clean rule reference: the applied
     /// form reports the ambiguity loudly, and taking one reading here would bury it.
+    ///
+    /// WI-898: `EquationFunctor` collapses here TOO, and deliberately — this rung asks
+    /// "is this dotted name a rule-ish CITATION the typer should see?", not "is it a
+    /// relation?" ([`KnowledgeBase::cites_a_relation`] is that question, asked at the
+    /// typer). MEASURED: excluding it sent a bare `Bool.ite` down the `field_access`
+    /// projection path instead, where it drew TWO "expected resolved name, got
+    /// unresolved" errors — the very message this ticket removes, doubled. Collapsed,
+    /// it reaches `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the
+    /// name actually is.
     fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
         let scope = self.current_scope.raw();
         // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
@@ -10186,7 +10279,12 @@ impl<'a> Loader<'a> {
         let ResolveResult::Found(sym) = resolved else {
             return None;
         };
-        matches!(self.kb.kind_of(sym), Some(SymbolKind::Goal | SymbolKind::Rule)).then_some(sym)
+        // Per-role `has_kind` (WI-925), not the declaration's opening keyword: whether
+        // a dotted name is a rule-ish citation is a membership question.
+        (self.kb.has_kind(sym, SymbolKind::Goal)
+            || self.kb.has_kind(sym, SymbolKind::Rule)
+            || self.kb.has_kind(sym, SymbolKind::EquationFunctor))
+        .then_some(sym)
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf
