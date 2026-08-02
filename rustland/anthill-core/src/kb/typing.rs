@@ -1223,18 +1223,39 @@ pub struct TypingEnv {
     /// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). Heads are stored already
     /// de-aliased (transitive `let y = z; let w = y` ⟹ `w → [z]`).
     receiver_aliases: HashMap<Symbol, Vec<Symbol>>,
-    /// WI-424 — the enclosing sort's type-param canonical vars, each mapped to
-    /// the per-body `Var::Rigid` term minted by `check_operation_bodies` (the
-    /// WI-392 skolemization extended to the ENCLOSING SORT's params).
-    /// `check_apply_iter` seeds a SAME-SORT sibling call's substitution with
-    /// these, so the callee's signature — which references the same canonical
-    /// vars — threads THIS instance's params: `iterator(c)` inside an
-    /// `Iterable` member body returns `Stream[Element, E]` at the enclosing
-    /// rigids instead of dangling fresh `?_`. Empty outside a parametric
-    /// sort's member-body check. `Rc`: the env is cloned on every Visit push
-    /// of the iterative typer and this is set once per body, so clones are a
+    /// WI-424/WI-942 — every type-param canonical var IN SCOPE for this body,
+    /// mapped to the per-body `Var::Rigid` term `check_operation_bodies` minted
+    /// for it (the WI-392 skolemization, extended to the enclosing SORT's params
+    /// and to the operation's OWN). Two scopes, ONE list, in the order §5.2's key
+    /// rule states them: the ENCLOSING SORT's params first — `sort_rigid_len` of
+    /// them — then the operation's. Empty outside a parametric sort's or a
+    /// type-parameterized op's body check. `Rc`: the env is cloned on every Visit
+    /// push of the iterative typer and this is set once per body, so clones are a
     /// refcount bump, not a Vec copy.
-    enclosing_sort_param_rigids: Rc<Vec<(VarId, TermId)>>,
+    ///
+    /// Read through the two NAMED views, never directly, because the halves are
+    /// not interchangeable:
+    ///  * [`Self::param_rigids`] — ALL of it, for every σ-class question ("are
+    ///    these two written type elements the same parameter?"). WI-942: with only
+    ///    the sort half recorded, an op-declared param's canonical `Global` had no
+    ///    bridge to the `Rigid` its own body was checked at, so
+    ///    [`op_requires_covers`] could not see that `cmp[T](a: T, …) requires
+    ///    Ordered[T]` covers its own `Ordered.compare(a, b)` — the call was refused
+    ///    `MissingRequiresForSpecOp` demanding a `requires` "on enclosing sort"
+    ///    that the author had already written on the operation.
+    ///  * [`Self::enclosing_instance_param_rigids`] — the SORT prefix alone, whose
+    ///    one consumer is `check_apply_iter`'s same-sort sibling-call seeding: it
+    ///    means "THIS instance's params" (`iterator(c)` inside an `Iterable` member
+    ///    body returns `Stream[Element, E]` at the enclosing rigids instead of
+    ///    dangling fresh `?_`), and a per-call op param is not one of them.
+    ///    `enforce_member_tie` and `carrier_provision_short_bindings` also take
+    ///    this view, but are indifferent to the choice: both look up only vids they
+    ///    got from `sort_type_params_as_pairs`, which an op param's vid never is.
+    param_rigids: Rc<Vec<(VarId, TermId)>>,
+    /// How many leading entries of [`Self::param_rigids`] are the enclosing SORT's
+    /// (see that field). The producer appends the op's own after them, so the
+    /// prefix relation is structural rather than a convention two lists must keep.
+    sort_rigid_len: usize,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection plus a
     /// cached `requires_chain` snapshot. The chain is consulted for every
@@ -1304,7 +1325,8 @@ impl TypingEnv {
         Self {
             var_bindings: HashMap::new(),
             receiver_aliases: HashMap::new(),
-            enclosing_sort_param_rigids: Rc::new(Vec::new()),
+            param_rigids: Rc::new(Vec::new()),
+            sort_rigid_len: 0,
             local_resources: Vec::new(),
             enclosing: None,
             op_requires: Rc::new(Vec::new()),
@@ -1351,14 +1373,26 @@ impl TypingEnv {
         self.debruijn_types.get(&idx).cloned()
     }
 
-    /// WI-424 — install the enclosing sort's param-var → rigid map for the
-    /// member body about to be checked (see the field doc).
-    pub fn set_enclosing_sort_param_rigids(&mut self, rigids: Rc<Vec<(VarId, TermId)>>) {
-        self.enclosing_sort_param_rigids = rigids;
+    /// WI-424/WI-942 — install the body's param-var → rigid map (see the
+    /// [`Self::param_rigids`] field doc). `sort_rigid_len` is how many leading
+    /// entries belong to the enclosing SORT; the rest are the operation's own.
+    pub fn set_param_rigids(&mut self, rigids: Rc<Vec<(VarId, TermId)>>, sort_rigid_len: usize) {
+        debug_assert!(sort_rigid_len <= rigids.len(), "sort prefix longer than the list");
+        self.param_rigids = rigids;
+        self.sort_rigid_len = sort_rigid_len;
     }
 
-    fn enclosing_sort_param_rigids(&self) -> &[(VarId, TermId)] {
-        &self.enclosing_sort_param_rigids
+    /// EVERY type param in scope for this body — the bridge every σ-class
+    /// comparison must use, since an op-declared param is as much a parameter as
+    /// a sort-declared one (§5.2: "both scopes, one list").
+    fn param_rigids(&self) -> &[(VarId, TermId)] {
+        &self.param_rigids
+    }
+
+    /// The ENCLOSING SORT's params alone — "this instance's parameters". The
+    /// same-sort sibling-call seeding wants exactly these; see the field doc.
+    fn enclosing_instance_param_rigids(&self) -> &[(VarId, TermId)] {
+        &self.param_rigids[..self.sort_rigid_len]
     }
 
     /// Set the sort whose body is currently being type-checked and
@@ -5676,7 +5710,7 @@ fn attach_eta_dispatch_dict(
     };
     match build_concrete_dispatch_dict(
         kb, &subst, parent, env.enclosing_sort(), &caller_requires,
-        env.enclosing_sort_param_rigids(), &selected,
+        env.param_rigids(), &selected,
     ) {
         Ok(Some(dict)) => {
             occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
@@ -9767,14 +9801,14 @@ fn check_apply_iter(
         // (type-parameter-scoping.md §3) — `C`/`Element`/`E` denote ONE instance
         // across all members; a different-instance argument is correctly
         // rejected against the rigid.
-        if !env.enclosing_sort_param_rigids().is_empty() {
+        if !env.enclosing_instance_param_rigids().is_empty() {
             let same_sort = impl_parent_of_op(kb, fn_sym)
                 .zip(env.enclosing_sort())
                 .is_some_and(|(callee_parent, enclosing)| {
                     kb.canonical_sort_sym(callee_parent) == kb.canonical_sort_sym(enclosing)
                 });
             if same_sort {
-                for (vid, rigid) in env.enclosing_sort_param_rigids().iter() {
+                for (vid, rigid) in env.enclosing_instance_param_rigids().iter() {
                     if subst.resolve_as_value(*vid).is_none() {
                         subst.bind_term(kb, *vid, *rigid);
                     }
@@ -10100,7 +10134,7 @@ fn check_apply_iter(
         if let Some(parent) = op_parent_sort {
             enforce_member_tie(
                 kb, &subst, parent, fn_sym, span,
-                env.enclosing_sort_param_rigids(),
+                env.enclosing_instance_param_rigids(),
             )?;
         }
         // WI-408: materialize the recorded some-coercions — wrap each flagged
@@ -10863,7 +10897,7 @@ fn check_apply_iter(
                 // identity, instead of blind first-match.
                 let sigma_ctx = SigmaCtx {
                     subst: &subst,
-                    sort_param_rigids: env.enclosing_sort_param_rigids(),
+                    param_rigids: env.param_rigids(),
                 };
                 if let Some(path) = enclosing_sort.and_then(|encl| {
                     find_requires_location(kb, &subst, spec_sort, encl, Some(&sigma_ctx))
@@ -10978,7 +11012,7 @@ fn check_apply_iter(
             // refused it — construction of the deeper dictionary runs instead.
             let dispatch_sigma = SigmaCtx {
                 subst: &subst,
-                sort_param_rigids: env.enclosing_sort_param_rigids(),
+                param_rigids: env.param_rigids(),
             };
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires, carrier_sym,
@@ -11297,7 +11331,7 @@ fn check_apply_iter(
                     // DIRECT slot, hence an empty `proj_path`.
                     let sigma_ctx = SigmaCtx {
                         subst: &subst,
-                        sort_param_rigids: env.enclosing_sort_param_rigids(),
+                        param_rigids: env.param_rigids(),
                     };
                     if let Some(slot) = find_requires_slot(
                         kb, &subst, spec_sort, enclosing_requires, Some(&sigma_ctx),
@@ -11346,7 +11380,7 @@ fn check_apply_iter(
                     // died at eval reading the unbound `__req_*`.
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb, &subst, parent_sym, enclosing_sort, &caller_requires,
-                        env.enclosing_sort_param_rigids(), &selections,
+                        env.param_rigids(), &selections,
                     )
                     .map_err(|refusal| TypeError::UnsatisfiableRequirement {
                         span,
@@ -12483,10 +12517,11 @@ fn build_concrete_dispatch_dict(
     callee_spec_sort: Symbol,
     caller_sort: Option<Symbol>,
     caller_requires: &[RequiresEntry],
-    // WI-419: the enclosing sort's param→rigid map (`env.enclosing_sort_param_
-    // rigids()`), needed to disambiguate a forward among two+ same-spec caller
-    // requires (a callee element unified with a rigidified caller param).
-    sort_param_rigids: &[(VarId, TermId)],
+    // WI-419: the body's param→rigid map (`env.param_rigids()`), needed to
+    // disambiguate a forward among two+ same-spec caller requires (a callee element
+    // unified with a rigidified caller param). WI-942: the FULL bridge — an
+    // operation's own type params as well as its sort's.
+    param_rigids: &[(VarId, TermId)],
     // WI-841 (058 §4.5): what the call's own bracket selected. This is the path a
     // Direct call's dictionary is BUILT on, so it is where a construction-site
     // selection (§5.3) actually decides which provider lands in the callee's frame.
@@ -12534,7 +12569,7 @@ fn build_concrete_dispatch_dict(
     // WI-419: pass the call-site context so Strategy 1 can disambiguate a caller
     // that declares two+ `requires` of the same spec over distinct element
     // params (forward the dict for the element this call actually uses).
-    let disambig = SigmaCtx { subst, sort_param_rigids };
+    let disambig = SigmaCtx { subst, param_rigids };
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &concrete_chain, caller_sort, caller_requires, &syms, true,
         Some(&disambig), selected,
@@ -12947,10 +12982,12 @@ fn supply_covers_demanded_keys(
 /// Why the rigids map is needed: an element is unified at a call against a
 /// RIGIDIFIED enclosing param (WI-392/424: `Wrap.W := Var(Rigid(B))`), while a
 /// `requires` entry is written over the canonical param symbol (`Tag[B]`, ↦
-/// `Var::Global`). The two live in different var spaces; `sort_param_rigids`
-/// (`(canonical-global-var, rigid-term)` per enclosing param, exactly as
-/// `TypingEnv::enclosing_sort_param_rigids` holds) bridges them so the same
-/// parameter lands on one id from either side.
+/// `Var::Global`). The two live in different var spaces; `param_rigids`
+/// (`(canonical-global-var, rigid-term)` per param in scope, exactly as
+/// `TypingEnv::param_rigids` holds — the enclosing sort's AND the operation's
+/// own, WI-942) bridges them so the same parameter lands on one id from either
+/// side. It must be the FULL list: keying it on the sort half alone is what made
+/// an op-declared param σ-invisible.
 ///
 /// Used by both requirement-attribution paths: same-spec forwarding
 /// (`build_dep_projection` → [`entries_cover`]'s σ mode, WI-419/821) and
@@ -12958,7 +12995,7 @@ fn supply_covers_demanded_keys(
 /// [`entry_sigma_verdict`], WI-613/829).
 pub struct SigmaCtx<'a> {
     subst: &'a Substitution,
-    sort_param_rigids: &'a [(VarId, TermId)],
+    param_rigids: &'a [(VarId, TermId)],
 }
 
 /// The σ-class of a type element under `ctx`: the canonical representative
@@ -13001,7 +13038,7 @@ fn sigma_class_terminal(
         match ctx.subst.resolve_as_value(vid) {
             Some(Value::Term { id: t, .. }) => cur = *t,
             _ => {
-                let canon = canonical_global_var(kb, vid, ctx.sort_param_rigids);
+                let canon = canonical_global_var(kb, vid, ctx.param_rigids);
                 // Canonicalized ⇒ the global aliases an enclosing-sort param's
                 // rigid (rigids are freshly minted, so the id changed exactly
                 // when a mapping existed).
@@ -13204,14 +13241,15 @@ fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, bool)> {
 }
 
 /// WI-419: canonicalize a `Global` param var to the per-body `Var::Rigid` id the
-/// enclosing-sort rigidification minted for it, or return it unchanged when it
-/// is not an enclosing-sort param (no rigid mapping).
+/// rigidification minted for it, or return it unchanged when it is not a param in
+/// scope (no rigid mapping). WI-942: "in scope" is the enclosing sort's params AND
+/// the operation's own — pass `TypingEnv::param_rigids`, never the sort prefix.
 fn canonical_global_var(
     kb: &KnowledgeBase,
     g: VarId,
-    sort_param_rigids: &[(VarId, TermId)],
+    param_rigids: &[(VarId, TermId)],
 ) -> VarId {
-    for (canonical, rigid_term) in sort_param_rigids {
+    for (canonical, rigid_term) in param_rigids {
         if *canonical == g {
             if let Term::Var(Var::Rigid(rv)) = kb.get_term(*rigid_term) {
                 return *rv;
@@ -16817,11 +16855,12 @@ fn match_candidate_against_goal(
                 // nothing determines is exactly what WI-828 calls genuinely
                 // unconstrained and refuses to guess at. Keying on σ-PRESENCE
                 // rather than on a σ-CLASS also drops a dependency on the
-                // classifier: it cannot see an OPERATION's own type param
-                // (`sort_param_rigids` is built from parent-sort params only),
-                // it returns `None` on chase-bound exhaustion, and it chases a
-                // KB-wide canonical global — three ways a spelling-sensitive
-                // rule could silently not fire.
+                // classifier: it returns `None` on chase-bound exhaustion, and it
+                // chases a KB-wide canonical global — two ways a spelling-sensitive
+                // rule could silently not fire. (A third was listed until WI-942:
+                // "it cannot see an OPERATION's own type param". It can now — the
+                // bridge carries both scopes — so that leg no longer argues for
+                // presence-keying, and the two above are what the choice rests on.)
                 //
                 // The neighbours this agrees with, neither a duplicate of it:
                 //  - step (3) refuses a rigid against a CONCRETE candidate
@@ -17493,7 +17532,7 @@ fn op_requires_covers_call(
 ) -> bool {
     let ctx = SigmaCtx {
         subst,
-        sort_param_rigids: env.enclosing_sort_param_rigids(),
+        param_rigids: env.param_rigids(),
     };
     let call_carriers = call_carriers_from_subst(kb, subst, spec_sort);
     op_requires_covers(kb, &ctx, env.op_requires(), spec_sort, &call_carriers)
@@ -23267,10 +23306,14 @@ fn is_effects_rows_term(kb: &KnowledgeBase, t: TermId) -> bool {
 /// references the body's rigid vars).
 ///
 /// (A free op licensing `c` through an ambient `requires FiniteCollection[C = C2,
-/// …]` is NOT handled: the `requires` entry references the op's own type params as
-/// `Ref`s that do not resolve to the body's rigid vars — a separate free-op
-/// type-param alias-resolution gap. Only the spec-method face — the shape the
-/// stdlib thin `FiniteCollection.map`/`filter` use — is threaded here.)
+/// …]` is NOT handled here: this function answers only for the spec-method face —
+/// the shape the stdlib thin `FiniteCollection.map`/`filter` use — and returns
+/// `None` at the `enclosing_sort() == field_base` gate for anything else. WI-942
+/// removed the reason this used to give, which was that the op's own type params
+/// are `Ref`s "that do not resolve to the body's rigid vars": they do resolve now,
+/// through `TypingEnv::param_rigids`. What is missing is the wiring, not the
+/// information — this site reads the sort prefix, which by construction holds no
+/// op param.)
 fn carrier_provision_short_bindings(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -23286,7 +23329,7 @@ fn carrier_provision_short_bindings(
     if short_name_of(kb.resolve_sym(*carrier_param)) != arg_carrier {
         return None;
     }
-    let rigids = env.enclosing_sort_param_rigids().to_vec();
+    let rigids = env.enclosing_instance_param_rigids().to_vec();
     Some(
         params
             .iter()
@@ -36123,10 +36166,12 @@ fn check_operation_bodies(
         body_node: Rc<NodeOccurrence>,
         params: Vec<(Symbol, Value)>,
         span: Option<Span>,
-        /// WI-424 — the enclosing sort's param canonical vars → their per-body
-        /// rigids; installed on the body env so same-sort sibling calls seed
-        /// their substitution with the enclosing instance's params.
-        sort_param_rigids: Rc<Vec<(VarId, TermId)>>,
+        /// WI-424/WI-942 — every type param in scope for this body → its per-body
+        /// rigid, enclosing-SORT params first (`sort_rigid_len` of them) then the
+        /// op's own. Installed on the body env; see `TypingEnv::param_rigids`.
+        param_rigids: Rc<Vec<(VarId, TermId)>>,
+        /// How many leading `param_rigids` entries are the enclosing sort's.
+        sort_rigid_len: usize,
         /// WI-441 — the full type-param rigidify substitution (op + enclosing
         /// sort params). The boundary effects check walks BOTH sides through
         /// it: `walk_type_deep_value` cannot rewrite inside a `Value::Node`
@@ -36197,7 +36242,10 @@ fn check_operation_bodies(
         let parent_sort_params: Rc<Vec<(Symbol, TermId)>> = parent_of_op
             .map(|p| sort_type_params_as_pairs(kb, p))
             .unwrap_or_default();
+        // The two halves of the body's rigid bridge, collected separately only so
+        // the sort half can be counted; they are concatenated into one list below.
         let mut sort_param_rigids: Vec<(VarId, TermId)> = Vec::new();
+        let mut op_param_rigids: Vec<(VarId, TermId)> = Vec::new();
         let mut rigidify_subst = Substitution::new();
         let (params, return_type, declared_effects) = if rec.type_params.is_empty()
             && parent_sort_params.is_empty()
@@ -36217,14 +36265,41 @@ fn check_operation_bodies(
                 ),
             }));
             let rigidify = rigidify_op_type_params(kb, &all_params);
-            for (_, var_tid) in parent_sort_params.iter() {
-                if let Term::Var(Var::Global(vid)) = kb.get_term(*var_tid) {
-                    let vid = *vid;
-                    // `rigidify` binds each sort param to its fresh `Rigid` term — always
-                    // a `Value::Term`; a non-`Term` binding would not be a rigid here.
-                    if let Some(Value::Term { id: rigid, .. }) = rigidify.resolve_as_value(vid) {
-                        sort_param_rigids.push((vid, *rigid));
-                    }
+            // ONE walk of `all_params`, which is `rec.type_params ++
+            // parent_sort_params` — so the SORT half lands in `param_rigids` first
+            // and `sort_rigid_len` is where the op's own begin. (WI-942: the sort
+            // half used to be collected alone, which is what left an op-declared
+            // param with no Global→Rigid bridge; walking the list the rigidifier
+            // was actually given is what keeps the two from coming apart again.)
+            for (i, (name, var)) in all_params.iter().enumerate() {
+                let Var::Global(vid) = var else { continue };
+                // `rigidify` binds each param to its fresh `Rigid` term — always a
+                // `Value::Term`; a non-`Term` binding would not be a rigid here.
+                let Some(Value::Term { id: rigid, .. }) = rigidify.resolve_as_value(*vid) else {
+                    continue;
+                };
+                let rigid = *rigid;
+                let is_sort_param = i >= rec.type_params.len();
+                let half =
+                    if is_sort_param { &mut sort_param_rigids } else { &mut op_param_rigids };
+                half.push((*vid, rigid));
+                // A param has a SECOND canonical var: the one its SYMBOL aliases to
+                // via `SortAlias`, which is what a WRITTEN occurrence resolves
+                // through and therefore what `sigma_class` sees when it reads the
+                // `Ref(T)` inside a `requires`. For a SORT param it is the SAME var
+                // (`sort_type_params_as_pairs` IS the alias table), so the push below
+                // is a no-op and the asymmetry stayed invisible; for an OP param the
+                // two differ. MEASURED on `cmp[T](a: T, b: T) requires Ordered[T]`:
+                // record var 1325, alias var 1 — so the written `Ordered[T]` and the
+                // call's rigidified carrier landed in different var spaces and
+                // [`op_requires_covers`] refused a requirement the author had
+                // written. That the two identities exist at all is a separate
+                // question (WI-943); bridging both is what makes σ answer once.
+                let owner = if is_sort_param { parent_of_op } else { Some(rec.op_sym) };
+                if let Some(alias_vid) =
+                    owner.and_then(|o| type_param_vid_in_sort(kb, o, *name)).filter(|a| a != vid)
+                {
+                    half.push((alias_vid, rigid));
                 }
             }
             let params = rec
@@ -36248,7 +36323,11 @@ fn check_operation_bodies(
             body_node,
             params,
             span,
-            sort_param_rigids: Rc::new(sort_param_rigids),
+            sort_rigid_len: sort_param_rigids.len(),
+            param_rigids: Rc::new({
+                sort_param_rigids.extend(op_param_rigids);
+                sort_param_rigids
+            }),
             rigidify: Rc::new(rigidify_subst),
             parent_sym: parent_of_op,
         });
@@ -36288,9 +36367,9 @@ fn check_operation_bodies(
         // `eq(head, x)` without the whole `List` sort having to `requires Eq[T]`
         // (which wrongly blocked `IndexedSeq.nth` on a `List[NonEq]`).
         env.set_op_requires(Rc::new(op_requires_entries(kb, op.op_sym)));
-        // WI-424: same-sort sibling calls seed their substitution with the
-        // enclosing sort's rigids (see the OpInfo field doc; Rc clone).
-        env.set_enclosing_sort_param_rigids(Rc::clone(&op.sort_param_rigids));
+        // WI-424/WI-942: the body's param → rigid bridge, both scopes in one list
+        // (see the `TypingEnv::param_rigids` field doc; Rc clone).
+        env.set_param_rigids(Rc::clone(&op.param_rigids), op.sort_rigid_len);
         // WI-400 (body-site): a projection param type (`k: s.cell.T`) must be discharged
         // against the OTHER params' DECLARED types before it is bound into the body env —
         // the body-check peer of the call-site elimination (`check_apply_iter` / WI-398,

@@ -2951,9 +2951,19 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     if let Some(qn) = qualified {
         return kb.try_resolve_symbol(qn);
     }
-    // Entity / Term: the carrier is the constructor's parent-sort base symbol.
+    // Entity / Term: the carrier is the sort the constructor BELONGS TO — the
+    // TOTAL [`KnowledgeBase::sort_of_constructor`], whose doc owns the strict-vs-
+    // total rule; the WI-937 twin at `eval/builtins.rs`'s entity materializer is
+    // the same correction for the same reason.
+    //
+    // WI-942 measured what the STRICT view cost here: a §6.3 eponymous /
+    // free-standing entity has `entity_parent[E] == E`, so it answered `None` and
+    // every `Vec3` value reached dispatch with NO carrier —
+    // `resolve_spec_op_target_by_value` returned before it ever looked for a
+    // supplier and `VectorSpace.vec_add(a, a)` over two `Vec3`s died
+    // `OperationBodyMissing`.
     let functor = value_functor(kb, value)?;
-    kb.constructor_parent_sort(functor)
+    kb.sort_of_constructor(functor)
 }
 
 /// Decide whether a constructor arg with optional auto-name goes into the

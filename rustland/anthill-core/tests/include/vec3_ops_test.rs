@@ -83,6 +83,20 @@ fn vec3(kb: &mut KnowledgeBase, x: f64, y: f64, z: f64) -> Value {
     Value::Entity { functor, pos: vec![].into(), named: named.into() }
 }
 
+/// WI-942 — `entry(Vec3(1,2,3))` must answer `Vec3(2,4,6)`, i.e. the vector added
+/// to itself. Every generic-consumer test below makes exactly this claim, so the
+/// assertion (including "a route that dispatched somewhere WRONG could still
+/// return some Vec3") is stated once here. A FRESH interpreter per call — a
+/// trapped call poisons a shared one.
+fn assert_doubles_123(src: &str, entry: &str, why: &str) {
+    let mut interp = crate::common::interp_for(src);
+    let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
+    let out = interp
+        .call(entry, &[a])
+        .unwrap_or_else(|e| panic!("{entry}: {why}; got {e}"));
+    assert_eq!(components(interp.kb(), &out), (2.0, 4.0, 6.0), "{entry}: {why}");
+}
+
 /// The (x, y, z) of a `Value::Entity` Vec3, by field label.
 fn components(kb: &KnowledgeBase, v: &Value) -> (f64, f64, f64) {
     let Value::Entity { named, .. } = v else {
@@ -359,93 +373,263 @@ end
     }
 }
 
-/// THE FIRST GENERIC CONSUMER OF THE LIFT CERTIFIES AT LOAD AND DIES AT THE CALL.
+/// THE FIRST GENERIC CONSUMER OF THE LIFT RUNS — AND THE TWO SPECS AGREE (WI-942).
 ///
 /// WI-138 lifted `Vec3`'s operations to an abstract `VectorSpace[V, F]` so code
-/// could be written against the SPEC rather than the carrier. WI-935 made the
-/// provision real. This test measures what a consumer actually gets, and the
-/// answer is: the abstract route does not work.
+/// could be written against the SPEC rather than the carrier; WI-935 made the
+/// provision real. This test measures what a consumer actually gets. Before
+/// WI-942 the answer was: nothing — the consumer loaded clean and died at the
+/// call — and, worse, the SAME construct over a one-parameter spec was REFUSED at
+/// load, so the two specs disagreed about identical source.
 ///
-/// `operation twice[V, F](a: V) -> V requires VectorSpace[V, F] =
-///  VectorSpace.vec_add(a, a)` LOADS CLEAN and then fails at the call with
-/// `OperationBodyMissing { anthill.prelude.algebra.VectorSpace.vec_add }` — the
-/// dictionary route does not reach `Vec3`'s member. That is exactly the class
-/// §8.7's WI-818 paragraph says the loader prevents ("rather than certify a
-/// program whose call fails only at run time"); the check guards the PROVIDER,
-/// and nothing guards the generic CONSUMER.
+/// WI-942 found two independent causes, and both are driven here:
 ///
-/// CONTROL A — the same call at a CONCRETE carrier works and returns the right
-/// vector, so the provision and the member are both fine; it is the abstract
-/// dispatch that fails.
+///  1. RUN TIME — `runtime_carrier_sort` asked `constructor_parent_sort`, the
+///     STRICT (irreflexive) view. Since WI-926 a `sort Vec3 { entity Vec3(…) }`
+///     is ONE symbol, so that view answered `None` and a `Vec3` value reached
+///     dispatch with NO carrier: `resolve_spec_op_target_by_value` returned
+///     before it ever looked for a supplier, and the call died
+///     `OperationBodyMissing { VectorSpace.vec_add }`. It now asks
+///     `sort_of_constructor`, the TOTAL "which sort does this belong to" view —
+///     the same correction WI-937 made at the field-access reader.
 ///
-/// CONTROL B — the same shape over the one-param `Ring` is REFUSED AT LOAD with
-/// a located diagnostic. So the two specs disagree about the identical
-/// construct: one is caught, the other is certified and dies. That disagreement,
-/// not the failure alone, is what makes this a defect rather than a limitation.
+///  2. LOAD TIME — an op-scoped `requires` (WI-448/WI-562) LICENSES an abstract
+///     spec-op call in the op's body; whether the license was granted ran through
+///     `op_requires_covers` → `sigma_pair_precise`, which needs a Global→Rigid
+///     bridge for the param. `check_operation_bodies` rigidifies the op's OWN
+///     type params together with its sort's, but recorded only the sort half, and
+///     an op param has TWO canonical vars besides (the `OperationInfo.type_params`
+///     one and the `SortAlias` one a WRITTEN occurrence resolves through). So the
+///     written `requires Ordered[T]` and the call's rigidified carrier landed in
+///     different var spaces and the license was refused.
 ///
-/// This test asserts CURRENT behaviour so it cannot be lost, and is expected to
-/// FLIP when the gap is closed — at which point `twice` must return
-/// `Vec3(2.0, 4.0, 6.0)` and this should assert that instead of being deleted.
-/// Tracked as WI-942. Pre-existing (a generic-dispatch gap, not created here);
-/// WI-935 is what makes it reachable against a stdlib type.
+/// WHY THE SUBJECT LOADED ANYWAY, BEFORE — and why `renamed_op_type_params_…`
+/// below is the test that matters: `twice[V, F] … requires VectorSpace[V, F]`
+/// names its op params EXACTLY as `VectorSpace` names its own, and under that
+/// coincidence the written param resolved to the SPEC's var, which the call had
+/// already bound — so σ agreed for free. Rename them and the same source was
+/// refused. That is the ticket's "`Eq[T]` only APPEARS to work because the names
+/// coincide" lead (WI-357), measured.
+///
+/// Backing each change out, MEASURED (not predicted — the first reading of this
+/// table was wrong about `renamed_…`, which needs BOTH):
+///  - revert (1) alone → THIS test and `renamed_op_type_params_…` fail at the
+///    call (`OperationBodyMissing`); the other three pass.
+///    `one_parameter_spec_…` is unmoved because `Int64` is a SCALAR value, whose
+///    carrier comes from the fixed prelude map and never from a constructor.
+///  - revert (2) alone → `one_parameter_spec_…`, `renamed_op_type_params_…` and
+///    `control_ring_…` fail AT LOAD (`MissingRequiresForSpecOp`); THIS test
+///    still PASSES, on the name coincidence described above. That asymmetry is
+///    the measurement: the subject alone cannot witness the load-side fix.
+///  - `control_the_concrete_carrier_route_is_unaffected` passes under BOTH
+///    reverts by design — it is what says the provision and the member were fine
+///    all along and only the abstract route was broken.
 #[test]
-fn a_generic_consumer_of_vector_space_loads_clean_and_fails_at_the_call() {
+fn a_generic_consumer_of_vector_space_loads_and_dispatches() {
     let src = r#"
 namespace test.vec3.generic
   import anthill.geometry.{Vec3}
+  import anthill.prelude.{Float}
   import anthill.prelude.algebra.{VectorSpace}
 
   sort G
     operation twice[V, F](a: V) -> V requires VectorSpace[V, F] =
       VectorSpace.vec_add(a, a)
 
+    -- The generic op consumed from a CONCRETE call site. `F` appears nowhere in
+    -- the argument types, so the call must pin it (§5.2: an element nothing at
+    -- the call determines is a load error, not a run-time surprise).
+    operation drive(a: Vec3) -> Vec3 = twice[F = Float](a)
+  end
+end
+"#;
+    // SUBJECT — the generic operation, called directly on a `Vec3`. This is the
+    // whole point of the WI-138 lift: code written against `VectorSpace`, run at
+    // `Vec3`. It answered `Err(OperationBodyMissing)` until WI-942.
+    assert_doubles_123(src, "test.vec3.generic.G.twice", "the generic route must dispatch to Vec3's member");
+    // …and through a concrete anthill call site, not only the host entry point,
+    // so the requirement is pinned by the call rather than by `Interpreter::call`.
+    assert_doubles_123(src, "test.vec3.generic.G.drive", "a concrete caller of the generic op must dispatch");
+}
+
+/// CONTROL — the same call at a CONCRETE carrier. It says the provision and the
+/// member were sound throughout and that what WI-942 fixed was the ABSTRACT
+/// route: no op type params, and the typer rewrites the call to `Vec3.vec_add`
+/// before eval ever asks for a runtime carrier. See the revert table on
+/// [`a_generic_consumer_of_vector_space_loads_and_dispatches`] for what each
+/// test here measures.
+#[test]
+fn control_the_concrete_carrier_route_is_unaffected() {
+    let src = r#"
+namespace test.vec3.concrete
+  import anthill.geometry.{Vec3}
+  import anthill.prelude.algebra.{VectorSpace}
+  sort C
     operation twice_vec3(a: Vec3) -> Vec3 = VectorSpace.vec_add(a, a)
   end
 end
 "#;
-    // SUBJECT — loads clean, then dies at the call.
-    crate::common::try_load_kb_with(src)
-        .map(|_| ())
-        .expect("the generic consumer LOADS CLEAN — that is half the defect");
+    assert_doubles_123(src, "test.vec3.concrete.C.twice_vec3", "the concrete route must work");
+}
 
-    let mut interp = crate::common::interp_for(src);
-    let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
-    let err = interp
-        .call("test.vec3.generic.G.twice", &[a])
-        .expect_err("the generic route must fail at the call (WI-942)");
-    let rendered = format!("{err:?}");
-    assert!(
-        rendered.contains("OperationBodyMissing")
-            && rendered.contains("anthill.prelude.algebra.VectorSpace.vec_add"),
-        "expected OperationBodyMissing naming the SPEC op, got: {rendered}",
+/// THE AGREEMENT WI-942 IS ABOUT: the same construct over a ONE-parameter spec.
+///
+/// `operation cmp[T](a: T, b: T) -> Int64 requires Ordered[T] = Ordered.compare(a, b)`
+/// was REFUSED AT LOAD — "expected `requires Ordered[…]` covering abstract type
+/// parameter, got missing `requires Ordered[T = …]` on enclosing sort" — while
+/// the VectorSpace shape above was certified. One spec caught, the other
+/// certified and dead: that DISAGREEMENT, not either failure alone, is what made
+/// this a defect rather than a limitation. The demand was also wrong on its face:
+/// it asked for a `requires` "on enclosing sort" when the author had written one
+/// on the OPERATION, which is exactly where WI-448/WI-562 put it.
+///
+/// Its sort-level twin (WI-857's `HolderOrd`, `sort T = ? / requires Ordered[T]`)
+/// ran the whole time — that pairing is what identified the op-scoped bridge, not
+/// the spec, as the broken side. Driven to a VALUE, and to both verdicts, so a
+/// dictionary that resolved somewhere wrong could not pass by returning some Int.
+#[test]
+fn one_parameter_spec_op_scoped_requires_now_agrees_and_dispatches() {
+    let src = r#"
+namespace test.wi942.oneparam
+  import anthill.prelude.{Int64, Ordered}
+
+  sort OpHolder
+    operation cmp[T](a: T, b: T) -> Int64 requires Ordered[T] = Ordered.compare(a, b)
+  end
+
+  -- The sort-level twin, which ran BEFORE WI-942 and must keep running.
+  sort SortHolder
+    sort T = ?
+    requires Ordered[T]
+    operation cmp(a: T, b: T) -> Int64 = Ordered.compare(a, b)
+  end
+
+  sort Driver
+    operation viaOp(n: Int64) -> Int64 = OpHolder.cmp(7, 3)
+    operation viaOpLess(n: Int64) -> Int64 = OpHolder.cmp(3, 7)
+    operation viaSort(n: Int64) -> Int64 = SortHolder.cmp(7, 3)
+  end
+end
+"#;
+    crate::common::try_load_kb_with(src).map(|_| ()).expect(
+        "an op-scoped `requires Ordered[T]` covering its own `Ordered.compare` must \
+         LOAD — it was refused `MissingRequiresForSpecOp` before WI-942",
     );
+    for (entry, want, why) in [
+        ("test.wi942.oneparam.Driver.viaOp", 1, "compare(7, 3) is 1"),
+        ("test.wi942.oneparam.Driver.viaOpLess", -1, "compare(3, 7) is -1"),
+        ("test.wi942.oneparam.Driver.viaSort", 1, "the sort-level twin, unchanged"),
+    ] {
+        let mut interp = crate::common::interp_for(src);
+        match interp.call(entry, &[Value::Int(0)]) {
+            Ok(Value::Int(n)) => assert_eq!(n, want, "{entry}: {why}"),
+            other => panic!("{entry} must dispatch ({why}); got {other:?}"),
+        }
+    }
+}
 
-    // CONTROL A — the concrete carrier route works, so the member is backed and
-    // the provision is sound; only the abstract dispatch fails.
-    let mut interp = crate::common::interp_for(src);
-    let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
-    let out = interp
-        .call("test.vec3.generic.G.twice_vec3", &[a])
-        .expect("the concrete route must work");
-    assert_eq!(components(interp.kb(), &out), (2.0, 4.0, 6.0));
+/// THE NAME COINCIDENCE, REMOVED. Same source as the subject with the operation's
+/// type parameters RENAMED off the spec's own names — positionally and by named
+/// binding. Both were refused at load before WI-942 while the coinciding spelling
+/// passed, which is what showed the license was granted by accident rather than by
+/// the requirement the author wrote — and it is why THIS test, not the subject,
+/// is the one that fails under either revert (see that test's revert table).
+#[test]
+fn renamed_op_type_params_are_covered_by_the_operations_own_requires() {
+    for (label, src, entry) in [
+        (
+            "positional",
+            r#"
+namespace test.wi942.renamed.pos
+  import anthill.geometry.{Vec3}
+  import anthill.prelude.algebra.{VectorSpace}
+  sort R
+    operation twice[A, B](a: A) -> A requires VectorSpace[A, B] =
+      VectorSpace.vec_add(a, a)
+  end
+end
+"#,
+            "test.wi942.renamed.pos.R.twice",
+        ),
+        (
+            "named bindings",
+            r#"
+namespace test.wi942.renamed.named
+  import anthill.geometry.{Vec3}
+  import anthill.prelude.algebra.{VectorSpace}
+  sort R
+    operation twice[A, B](a: A) -> A requires VectorSpace[V = A, F = B] =
+      VectorSpace.vec_add(a, a)
+  end
+end
+"#,
+            "test.wi942.renamed.named.R.twice",
+        ),
+    ] {
+        crate::common::try_load_kb_with(src).map(|_| ()).unwrap_or_else(|errs| {
+            panic!("{label}: renaming the op's type params must not change the \
+                    meaning of its own `requires`; got:\n{}", errs.join("\n"))
+        });
+        assert_doubles_123(src, entry, label);
+    }
+}
 
-    // CONTROL B — the SAME construct over the one-param `Ring` is REFUSED at
-    // load. The two specs disagree; that is the defect's shape.
-    let ring_src = r#"
-namespace test.ring.generic
-  import anthill.prelude.{Float}
+/// THE TICKET'S CONTROL B, RE-MEASURED — and it says something different now.
+///
+/// WI-942 filed `dbl[T](a: T) -> T requires Ring[T] = Ring.add(a, a)` as the
+/// construct that was refused where the `VectorSpace` twin passed. It now LOADS,
+/// which is the agreement the ticket asked for. Its CALL still fails — and the
+/// control below is what attributes that: the SAME call with no generics anywhere
+/// (`dbl(a: Float) = Ring.add(a, a)`) fails identically, so the cause is that
+/// `fact Ring[Float]` is an UNBACKED provision — `Float` declares no `add` of its
+/// own (its arithmetic comes from `Numeric`, a different spec) — and not anything
+/// about generic consumption. That is a WI-818-class stdlib gap, filed as WI-944.
+///
+/// Asserted rather than left implicit because the ticket's framing assumed the two
+/// constructs differed only in LOAD behaviour. They do not: the `VectorSpace`
+/// provision is backed and the `Ring[Float]` one is not, which is why only the
+/// former reaches a value.
+#[test]
+fn control_ring_now_loads_and_its_residual_failure_is_the_unbacked_provision() {
+    let generic = r#"
+namespace test.wi942.ring.generic
   import anthill.prelude.algebra.{Ring}
-  sort H
+  sort GR
     operation dbl[T](a: T) -> T requires Ring[T] = Ring.add(a, a)
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(ring_src)
-        .err()
-        .expect("the Ring-shaped generic is REFUSED at load, unlike the VectorSpace one");
-    assert!(
-        errs.iter().any(|e| e.contains("anthill.prelude.algebra.Ring.add.requires")),
-        "expected a located requires-coverage diagnostic, got:\n{}",
-        errs.join("\n"),
+    let concrete = r#"
+namespace test.wi942.ring.concrete
+  import anthill.prelude.{Float}
+  import anthill.prelude.algebra.{Ring}
+  sort CR
+    operation dbl(a: Float) -> Float = Ring.add(a, a)
+  end
+end
+"#;
+    // The AGREEMENT: the construct the ticket found refused now loads, exactly as
+    // its `VectorSpace` twin does.
+    crate::common::try_load_kb_with(generic).map(|_| ()).expect(
+        "the Ring-shaped generic must LOAD, agreeing with the VectorSpace one",
     );
+    crate::common::try_load_kb_with(concrete).map(|_| ()).expect("the concrete control loads");
+
+    // The ATTRIBUTION: both routes fail the same way, so the abstract one is not
+    // the cause. If `Ring[Float]` ever gains its backing (WI-944) both of these
+    // start answering 5.0 and this test is what says so.
+    for (label, src, entry) in [
+        ("generic", generic, "test.wi942.ring.generic.GR.dbl"),
+        ("concrete", concrete, "test.wi942.ring.concrete.CR.dbl"),
+    ] {
+        let mut interp = crate::common::interp_for(src);
+        let err = interp
+            .call(entry, &[Value::Float(2.5)])
+            .err()
+            .unwrap_or_else(|| panic!("{label}: `Ring[Float]` is unbacked — see WI-944"));
+        assert!(
+            format!("{err}").contains("anthill.prelude.algebra.Ring.add"),
+            "{label}: the failure must name the unbacked SPEC member, got: {err}",
+        );
+    }
 }
