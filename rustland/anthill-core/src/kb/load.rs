@@ -5961,10 +5961,14 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 /// * `sort_infos`, the `SortInfo`-derived sorts — every `sort … end`, including
 ///   the constructor-LESS carriers whose values are headed by their SELF-RETURNING
 ///   OPS (`Set.insert`) rather than by any entity constructor;
-/// * [`super::eq_derive::composite_sorts`] — every composite carrier, and the ONLY
-///   route to a NAMESPACE-LEVEL `entity binding(…)`: such an entity is its own
-///   carrier, and `emit_sort_info` has exactly one caller (`load_sort_with_body`), so
-///   no `SortInfo` fact is ever emitted for it.
+/// * [`super::eq_derive::composite_sorts`] — every composite carrier, and (until
+///   WI-928) the ONLY route to a NAMESPACE-LEVEL `entity binding(…)`: such an
+///   entity is its own carrier, and `emit_sort_info` used to have exactly one
+///   caller (`load_sort_with_body`), so no `SortInfo` fact was ever emitted for it.
+///   `load_entity` now emits one too (§6.3's free-standing spelling), so the first
+///   half reaches those carriers on its own — which is the ORDER this function
+///   already requires, since the dedup below keeps the `SortInfo` spelling and
+///   drops the composite copy.
 ///
 /// Sharing the second walk with WI-664's classifier — rather than re-deriving the
 /// entity registry here — is what gives the DOMAIN one owner, as [`EqDispatchIndex`]
@@ -6149,6 +6153,12 @@ pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)
 /// carrier declaring `fact Spec[Self]` (e.g. `LogicalStream`, whose `splitFirst`
 /// is a body-less primitive) is a sub-interface, not a runtime witness, so its
 /// ops needn't resolve — the obligation passes to its concrete sub-carriers.
+///
+/// WI-928: §6.3's free-standing entities are IN this set now — `entity Vec3(x:
+/// Float, …)` is as instantiable as the `sort` spelling of the same declaration,
+/// and it emits the same record. Before, it emitted none and was silently read
+/// here as abstract. [`free_standing_entity_sorts`] names the newly-included part
+/// for the one check whose coverage is staged behind it.
 pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
     let mut out = std::collections::HashSet::new();
     let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
@@ -6169,6 +6179,55 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
             .map(|(_, v)| !super::typing::list_to_vec(kb, *v).is_empty())
             .unwrap_or(false);
         if has_ctors {
+            out.insert(sort_sym);
+        }
+    }
+    out
+}
+
+/// WI-928 — the sorts whose declaration was written with the `entity` keyword:
+/// §6.3's free-standing spelling, recorded as `SortInfo.kind = entity`. Read off
+/// the SAME facts as [`sorts_with_constructors`], so the two answer about one set
+/// of records rather than two derivations that could disagree.
+///
+/// PURPOSE, and the only sanctioned one: STAGING. These carriers emitted no
+/// `SortInfo` at all before WI-928, so every SortInfo-driven load-time pass read
+/// them as absent. Where extending a pass to them surfaces genuine violations that
+/// are their own body of work, the pass names this set, skips it, and cites the
+/// ticket that closes it — see `check_provider_operations` / WI-931. It is NOT a
+/// semantic distinction: §6.3 makes the two spellings one declaration, and any
+/// pass keyed on this permanently would be re-introducing the divergence this
+/// ticket removed.
+///
+/// The `SortInfo` walk is spelled out here rather than shared with its neighbour
+/// deliberately: this function is scheduled for DELETION with WI-931, and a shared
+/// helper extracted for a temporary caller would outlive it as a shape nothing
+/// justifies. The two read the same facts and are checked together by the same
+/// tests.
+pub(crate) fn free_standing_entity_sorts(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
+    let mut out = std::collections::HashSet::new();
+    let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+        return out;
+    };
+    for rid in kb.rules_by_functor(sort_info_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let sort_sym = match named.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .map(|(_, v)| kb.get_term(*v))
+        {
+            Some(Term::Ref(s) | Term::Ident(s) | Term::Fn { functor: s, .. }) => *s,
+            _ => continue,
+        };
+        let is_entity_kind = named.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "kind")
+            .map(|(_, v)| match kb.get_term(*v) {
+                Term::Ident(s) | Term::Ref(s) => kb.resolve_sym(*s) == "entity",
+                Term::Const(Literal::String(s)) => s == "entity",
+                _ => false,
+            })
+            .unwrap_or(false);
+        if is_entity_kind {
             out.insert(sort_sym);
         }
     }
@@ -13291,7 +13350,10 @@ impl<'a> Loader<'a> {
         // Implementation, SortInfo, OperationInfo, etc. — and never
         // enumerates `<Sort>.induction` rules.)
         if has_entities {
-            self.emit_induction_rule(s, sort_term, sort_functor, parent_domain);
+            let entities: Vec<&Entity> = s.items.iter()
+                .filter_map(|i| if let Item::Entity(e) = i { Some(e) } else { None })
+                .collect();
+            self.emit_induction_rule(&entities, sort_term, sort_functor, parent_domain);
         }
 
         self.current_scope = prev_scope;
@@ -13305,16 +13367,19 @@ impl<'a> Loader<'a> {
     /// where `?fr` is each recursive-position binder. The IH form
     /// is consumed at proof time by the SLD nested-impl resolver
     /// (WI-108) and the Z3 induction tactic (WI-101).
+    ///
+    /// WI-928 — takes the CONSTRUCTOR LIST, not the sort body, so §6.3's two
+    /// spellings can both reach it: a free-standing `entity E` is `sort E { entity
+    /// E }`, a single-constructor sort whose induction principle is well-defined
+    /// (one case, no inductive hypothesis unless a field is self-typed). It has no
+    /// `SortWithBody` to pass.
     fn emit_induction_rule(
         &mut self,
-        s: &SortWithBody,
+        entities: &[&Entity],
         sort_term: TermId,
         sort_functor: Symbol,
         parent_domain: Symbol,
     ) {
-        let entities: Vec<&Entity> = s.items.iter()
-            .filter_map(|i| if let Item::Entity(e) = i { Some(e) } else { None })
-            .collect();
         if entities.is_empty() { return; }
 
         let p_sym = self.kb.intern("P");
@@ -13360,7 +13425,7 @@ impl<'a> Loader<'a> {
         let forall_impl_sym = self.kb.intern("forall_impl");
 
         let mut body: Vec<TermId> = Vec::new();
-        for e in entities {
+        for &e in entities {
             let ctor_sym = self.remap_name(&e.name);
             if e.fields.is_empty() {
                 let ctor_term = self.kb.alloc(Term::Ref(ctor_sym));
@@ -13740,6 +13805,42 @@ impl<'a> Loader<'a> {
             // `constructor_parent_sort` is the strict view that cuts the fixpoint
             // for chain-climbing walkers.
             self.kb.register_self_sort(functor);
+
+            // WI-928 — the LOAD-TIME half of the same equivalence. `SortInfo` is
+            // what makes a declaration REACHABLE to the load-time passes: the
+            // typer's per-sort loop walks `LoadResult.defined_sorts` and looks each
+            // one's `SortInfo` up to get its constructor list, so an entity that
+            // pushed neither was not merely unindexed — its facts were never
+            // type-checked at all. Measured before this: `entity Thing(count:
+            // Int64)` + `fact Thing(count: "hello")` loaded with ZERO errors, while
+            // the long form rejected the SAME fact. Two spellings of one
+            // declaration disagreeing on whether a write is accepted is the defect
+            // §6.3 exists to rule out.
+            //
+            // The record is the one the long form emits, field for field, with one
+            // deliberate difference: the constructor list is the entity ITSELF
+            // (WI-926 — one symbol, so the sole constructor of `sort E { entity E }`
+            // is `E`), `has_entities` is true, and `kind` is `"entity"` — the
+            // KEYWORD THE AUTHOR WROTE, which is what reflect's `kind` reports
+            // (WI-925, the same rule under which `kind_of` answers `Entity` here and
+            // `Sort` for the long form). It is the surface, not a different meaning:
+            // both records describe one single-constructor sort, and every field a
+            // reader dispatches on — `name`, `definition`, `constructors` — is the
+            // same. `SortInfo.kind`'s domain gains this fourth value alongside
+            // "sort"/"enum"/"abstract" (reflect.anthill, §6.3).
+            self.defined_sorts.push(functor);
+            let self_ctor = self.kb.alloc(Term::Ref(functor));
+            self.emit_sort_info(
+                functor, true, "entity", &[self_ctor], &[], &[], &[],
+                ClauseKind::Sort, domain,
+            );
+            // A single-constructor sort's induction principle is well-defined — one
+            // case, with an inductive hypothesis only where a field is self-typed
+            // (`entity Tree(l: Tree, r: Tree)` reaches `field_is_recursive` through
+            // the enclosing NAMESPACE scope, which is where a free-standing entity's
+            // own name resolves). The long form has emitted it since proposal 030;
+            // its omission here was a straight one.
+            self.emit_induction_rule(&[e], ctor_term, functor, domain);
         }
     }
 
@@ -16694,11 +16795,24 @@ impl<'a> Loader<'a> {
     }
 
     fn emit_member_facts_for_items(&mut self, items: &[Item], parent: TermId) {
+        let parent_sym = self.kb.name_term_sym(parent);
         for item in items {
             match item {
                 Item::Entity(e) => {
                     let sym = self.remap_name(&e.name);
-                    self.emit_member_fact(sym, "Constructor", parent);
+                    // WI-928 / §6.3 — an eponymous constructor IS its sort, so it is
+                    // not a MEMBER of itself. `sort Project { entity Project(…) }`
+                    // resolves both names to one symbol (WI-926), and a
+                    // `MemberInfo(name: P, kind: Constructor, parent: P)` self edge
+                    // asserts the same containment that `register_entity_of` refuses
+                    // two blocks earlier, in `load_sort_with_body` — one index
+                    // claiming a nesting the other denies. The declaration is still
+                    // listed, once, by the MemberInfo its ENCLOSING scope emits
+                    // (`kind: Sort`, parent: the namespace) and by its own
+                    // `SortInfo.constructors`.
+                    if sym != parent_sym {
+                        self.emit_member_fact(sym, "Constructor", parent);
+                    }
                 }
                 Item::AbstractSort(s) => {
                     let sym = self.remap_name(&s.name);

@@ -934,3 +934,6 @@ mod wi927_bracket_surface_test;
 
 #[path = "include/wi925_entity_desugaring_test.rs"]
 mod wi925_entity_desugaring_test;
+
+#[path = "include/wi928_entity_load_record_test.rs"]
+mod wi928_entity_load_record_test;

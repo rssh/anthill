@@ -76,7 +76,15 @@ namespace anthill.stage0
 
   entity WorkItem(
     id          : String,
-    description : Option[T = Term],
+    -- WI-928: `String`, not `Term`. A `String` literal is NOT a `Term` — the
+    -- value↔Term crossing is an explicit conversion (`as_term`, WI-406), not
+    -- subsumption — and every description in workitems.anthill is prose: the
+    -- first load that checked this field reported 921 mismatches over it (894
+    -- more over `Feedback.content` below) and not one row held anything else.
+    -- It went unchecked because a free-standing entity emitted no `SortInfo`, so
+    -- no load-time pass ever compared the declaration to the data; the
+    -- `sort WorkItem { entity WorkItem(…) }` spelling would have refused them all.
+    description : Option[T = String],
     context     : Option[T = List[T = ContextRef]],
     acceptance  : List[T = AcceptanceCriterion],
     depends_on  : Option[T = List[T = String]],
@@ -131,7 +139,7 @@ namespace anthill.stage0
   entity Feedback(
     workitem : String,
     author   : String,
-    content  : Term,
+    content  : String,       -- WI-928: prose, like WorkItem.description above
     at       : String
   )
 

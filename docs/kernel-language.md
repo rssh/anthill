@@ -1437,6 +1437,21 @@ Consequences worth stating, because they are what the rule buys:
   `Box(valu: 1)` reports `'Box' has no field 'valu'`, and neither is reported
   twice. This holds in every position — a rule body, a fact, an operation body, and
   a type annotation.
+- **The declaration record is one record** (WI-928), and this is what makes the
+  equivalence hold at LOAD time rather than only at run time. Both spellings emit
+  the same `SortInfo` — one constructor, itself — so both are reached by the
+  load-time passes that walk declared sorts. The consequence that matters:
+  **a fact of a free-standing entity is type-checked against its declared field
+  types**, exactly as one of a `sort`-written entity is. `entity Thing(count:
+  Int64)` followed by `fact Thing(count: "hello")` is a located type error, and was
+  silently accepted while the two spellings emitted different records. The
+  single-constructor **induction principle** is emitted for both, likewise.
+
+  The one field that differs is `SortInfo.kind`, which reports the keyword actually
+  written — `entity` here, `sort`/`enum` for the long form — the same rule the
+  category set's head follows above. It is a record of the surface, not of a
+  difference in meaning: `name`, `definition` and `constructors` agree, and no
+  reader may branch on it to decide what a declaration *is*.
 
 **Distinct field names** (WI-808): an entity's field names must be distinct —
 `entity mk(a: Int64, a: Int64)` is a located error naming the repeated field. A field

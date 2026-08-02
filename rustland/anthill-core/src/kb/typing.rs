@@ -18103,8 +18103,15 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
 ///
 /// SCOPE: only provisions whose carrier is CONCRETE (has constructors —
 /// `sorts_with_constructors`) are checked; an abstract/value-less carrier
-/// (`Set`, `Map`, namespace-level provision heads like geometry's `Vec3`) is
-/// skipped, since no runtime value can dispatch through it.
+/// (`Set`, `Map`) is skipped, since no runtime value can dispatch through it.
+///
+/// WI-928 corrects one example this doc used to give: `Vec3` was named here as a
+/// value-less "namespace-level provision head", and it is nothing of the kind —
+/// `entity Vec3(x: Float, y: Float, z: Float)` is a §6.3 free-standing entity,
+/// every bit as instantiable as the `sort` spelling. It read as abstract only
+/// because a free-standing entity emitted no `SortInfo`, so the concreteness
+/// question was answered by an omission. That is fixed; see the STAGED COVERAGE
+/// note in the body for what this check does with them meanwhile.
 pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -18135,6 +18142,24 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     // sub-interface whose ops may stay primitives — only concrete carriers must
     // back every op (they are the runtime witnesses).
     let concrete = super::load::sorts_with_constructors(kb);
+    // STAGED COVERAGE (WI-928 → WI-931), and it is a schedule, not a rule. §6.3's
+    // free-standing entities became visible to `concrete` above, which brought four
+    // carriers into this check for the first time — `Vec3` (VectorSpace) and the
+    // three persistence stores (FileStore, IndexedFileStore, SqlStore). All 12 of
+    // the resulting reports are TRUE by this check's own criterion, and MEASURED:
+    // `Vec3.vec_add/vec_sub/vec_scale/vec_zero` are backed by RULES, which WI-818
+    // settled do not back an operation, and the stores' `retract`/`update`/`pull`/
+    // `retrieve` are implemented by the Rust host with no
+    // `anthill.realization.Implementation` fact recording it — so the host-carrier
+    // skip above cannot see them either. Closing them means writing runnable bodies
+    // or declaring host bindings, which is the WI-876/WI-886 host-mapping family's
+    // work and not a desugaring's; WI-931 owns it, with this inventory.
+    //
+    // Deliberately keyed on the DECLARATION SURFACE, which is the one thing that
+    // separates "checked before this ticket" from "not", and deliberately NOT on
+    // anything semantic — an eponymous LONG-form `sort P { entity P }` is checked,
+    // as it always was. When WI-931 lands, this skip and its set go away together.
+    let staged_for_wi931 = super::load::free_standing_entity_sorts(kb);
 
     // Snapshot the provisions before the per-op walk (which interns short names,
     // mutating `kb` — can't overlap the `rules_by_functor` borrow). See
@@ -18156,6 +18181,8 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         // Abstract carrier (no constructors) → sub-interface, ops may stay
         // primitives. Only concrete carriers are checked.
         if !concrete.contains(&p.carrier) { continue; }
+        // WI-931, staged — see the note above the set's construction.
+        if staged_for_wi931.contains(&p.carrier) { continue; }
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
         if host_targets.contains(&carrier_qn) { continue; }
         let Some(spec_ops) = own_ops.get(&p.spec) else { continue };
@@ -34991,6 +35018,19 @@ fn type_check_sorts_collect(
             let sort_info = find_sort_info(kb, sort_sym);
             let (ctor_syms, op_syms) = match sort_info {
                 Some((ctors, ops)) => (ctors, ops),
+                // WI-928 — JUSTIFIED, and only since this ticket. `sort_names` is
+                // `LoadResult.defined_sorts`, and both of its producers now emit a
+                // `SortInfo` for every name they push: `load_sort_with_body` (always
+                // did) and `load_entity` (§6.3's free-standing spelling, added here).
+                // So a `None` is no longer "this declaration has no record" — the
+                // shape that made this arm a SILENT SKIP of 68 entities' facts, which
+                // is the defect this ticket fixes. What remains is a KB that has no
+                // `anthill.reflect.SortInfo` symbol to emit under at all, i.e. one
+                // loaded without reflect: the guard above already answers that case
+                // for the whole loop, so reaching here means a caller passed a name
+                // that no load defined. Nothing to report about it and nothing to
+                // check — there is no declaration. MEASURED rather than argued: two
+                // full-workspace runs with a `panic!` in this arm never reached it.
                 None => continue,
             };
 
@@ -35758,6 +35798,37 @@ fn check_entity_facts(
     // The file whose fact the current errors come from (lazily flushed).
     let mut cur_src: Option<crate::span::SourceId> = None;
     for &ctor_sym in ctor_syms {
+        // WI-928 — DECLARATION RECORDS are out of this check's domain, and the
+        // reason is what the check IS: `check_value_against_type` asks a SUBTYPE
+        // question, and a reflect record's slots do not hold values of their
+        // declared sorts — they hold reflect HANDLES. `EntityInfo.name: Symbol`
+        // holds the loader's name term for the entity, `ProofRecord.witness: Term`
+        // an axiom record, `OperationInfo.params: List[FieldInfo]` lowered field
+        // types. Reaching a handle from a value is a CONVERSION (`as_term` /
+        // `term_as_entity`, WI-406), deliberately NOT subsumption — `Term` is not a
+        // top type — so a subtype check over these slots reports a mismatch for
+        // every well-formed record the loader writes. MEASURED on stdlib + the Rust
+        // host bindings: 685 such reports, in 7 classes, ALL of them loader-emitted
+        // records and NONE a user fact.
+        //
+        // This is not a new exemption — it is the status quo, stated. These
+        // functors are declared as free-standing entities in reflect.anthill /
+        // realization.anthill, and until this ticket a free-standing entity emitted
+        // no `SortInfo`, so no constructor list ever named one and their facts were
+        // never reached here. What changed is that they are now reachable, so the
+        // boundary has to be written down instead of falling out of an omission.
+        // Whether the reflect schema and the loader's writes can be brought into
+        // agreement — declaring what these slots actually hold, or converting at the
+        // write — is WI-930, filed with this measurement.
+        //
+        // Keyed by [`KnowledgeBase::is_metadata_functor`], the same predicate the
+        // WI-630 write-side tripwire uses, so the set the loader may WRITE and the
+        // set this check SKIPS cannot drift apart. A user-written `fact
+        // Implementation(…)` (examples/webots-modelling) is skipped by the same
+        // rule and for the same reason: its slots hold the same handles.
+        if kb.is_metadata_functor(ctor_sym) {
+            continue;
+        }
         let field_types = match kb.entity_field_types(ctor_sym) {
             Some(ft) => ft.to_vec(),
             None => continue,

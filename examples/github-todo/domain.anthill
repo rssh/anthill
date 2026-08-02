@@ -76,7 +76,10 @@ namespace anthill.stage0
 
   entity WorkItem(
     id          : String,
-    description : Option[T = Term],
+    -- WI-928: `String`, not `Term` — a description is prose, and a `String`
+    -- literal is not a `Term` (the crossing is an explicit conversion, WI-406).
+    -- Mirrors rustland/anthill-todo/anthill/domain.anthill.
+    description : Option[T = String],
     context     : Option[T = List[T = ContextRef]],
     acceptance  : List[T = AcceptanceCriterion],
     depends_on  : Option[T = List[T = String]],
@@ -131,7 +134,7 @@ namespace anthill.stage0
   entity Feedback(
     workitem : String,
     author   : String,
-    content  : Term,
+    content  : String,       -- WI-928: prose, like WorkItem.description above
     at       : String
   )
 

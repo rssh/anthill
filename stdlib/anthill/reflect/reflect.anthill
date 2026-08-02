@@ -630,7 +630,11 @@ namespace anthill.reflect
 
   entity SortInfo(
     name         : Symbol,                          -- qualified name (symbol reference)
-    kind         : Symbol,                          -- "sort", "enum", or "abstract"
+    kind         : Symbol,                          -- the keyword that declared it:
+                                                    -- "sort", "enum", "abstract", or
+                                                    -- "entity" (§6.3's free-standing
+                                                    -- spelling of a one-constructor
+                                                    -- sort — same record otherwise)
     definition   : Term,                            -- Var for abstract sorts, sort term for defined
     constructors : List[Symbol],                    -- constructor names (empty if abstract)
     operations   : List[Symbol],                    -- operation names in this sort
