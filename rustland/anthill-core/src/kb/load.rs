@@ -8888,6 +8888,29 @@ impl<'a> Loader<'a> {
                     new_named.push((value_sym, new_pos.pop().expect("len checked")));
                 }
 
+                // WI-927: is this the BRACKETED surface (`Box[T = Int64]`)? Then its
+                // arguments are TYPE ARGUMENTS and none of the entity-field reading
+                // below applies — not the positional→named desugar, not the
+                // unknown-label check. Read once here and used by both, so the two
+                // cannot disagree about what the node is.
+                //
+                // Only the surface can tell them apart, which is why parse records it
+                // (`mark_type_application`) — `Box[T = Int64]` and `Box(value: 1)` lower
+                // to `Term::Fn` with the SAME functor symbol. Before §6.3 (WI-926) the
+                // functor's KIND stood in for the surface, because a sort and an entity
+                // were always different symbols; an eponymous `sort Box { entity Box(…) }`
+                // is one symbol that is both, so the stand-in stopped working and the
+                // bracket form was read as a construction. Measured then: the named form
+                // `Box[T = Int64]` was refused as `unknown field 'T'`, and the positional
+                // form `Box[Int64]` was silently desugared INTO the field, so the type-arg
+                // gate below then reported "no type parameter named 'value'" — naming a
+                // label the author never wrote.
+                //
+                // The sibling `check_sort_type_args` call below already gates on exactly
+                // this, and it is what still validates a bracket's arguments; skipping the
+                // field reading here removes the second, wrong reading, not the checking.
+                let is_type_app = self.parsed.terms.is_type_application(parse_id);
+
                 // WI-433: DESUGAR positional constructor args to NAMED. Positional
                 // and named constructor terms must share ONE in-KB shape — a stored
                 // fact's named args (sorted by field) never unify with a positional
@@ -8904,7 +8927,7 @@ impl<'a> Loader<'a> {
                 // declared fields), and the `anthill.reflect.*` Expr meta-ctors
                 // (`ho_apply` / `match_expr` / `if_expr` / …) whose positional shape
                 // is the reflect encoding, not user named-field application.
-                if !new_pos.is_empty() {
+                if !new_pos.is_empty() && !is_type_app {
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();
                     match self.kb.positional_to_named_plan(new_functor, &named_syms, new_pos.len()) {
@@ -8936,7 +8959,12 @@ impl<'a> Loader<'a> {
                 // "enumerate the producers" is the WI-805 / WI-839 mistake. Placed AFTER
                 // the positional block so a label the desugar just assigned (always a
                 // declared field) is included and any bug there is caught too.
-                let unknown: SmallVec<[Symbol; 2]> = {
+                let unknown: SmallVec<[Symbol; 2]> = if is_type_app {
+                    // WI-927: a bracket's labels are type-parameter names, checked by
+                    // `check_sort_type_args` below against the DECLARED params — not
+                    // field labels.
+                    SmallVec::new()
+                } else {
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();
                     self.kb.unknown_named_labels(new_functor, &named_syms)
@@ -9065,8 +9093,11 @@ impl<'a> Loader<'a> {
                 // Argument VALUES are never inspected, only their names and count, so a
                 // logic variable in an argument (`List[T = ?x]` — the rule-body type
                 // pattern reflect rules are written with) passes exactly as a ground one.
+                // WI-927: reads the `is_type_app` binding above rather than re-asking
+                // parse — this gate and the field reading it excludes must agree on what
+                // counts as a bracket, and one binding is what makes that structural.
                 if self.term_depth > 1
-                    && self.parsed.terms.is_type_application(parse_id)
+                    && is_type_app
                     && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
                 {
                     let declared = self.kb.type_params_of_sort(new_functor);
@@ -10469,10 +10500,19 @@ impl<'a> Loader<'a> {
                 // This is the PRODUCER of the distinction — fixing it here is what keeps
                 // the typer's `Expr::Constructor` arm and eval's from each needing their
                 // own copy of the rule.
-                let is_entity = matches!(
-                    self.kb.symbols.get(kb_functor),
-                    SymbolDef::Resolved { kind: SymbolKind::Entity, .. }
-                ) || self.kb.is_entity_constructor(kb_functor);
+                //
+                // WI-927: the BRACKETED surface is never a construction, whatever the
+                // functor is. `Box[T = Int64]` is a parameterized TYPE VALUE — eval's
+                // sort-headed `Apply` arm evaluates it via `start_sort_type` — and for an
+                // eponymous sort the schema test above would otherwise claim it, reading
+                // its type arguments as fields. Parse recorded the surface precisely
+                // because the two lower to the same `Term::Fn`; this is the occurrence
+                // peer of the `is_type_app` gate in `convert_term`.
+                let is_entity = !self.parsed.terms.is_type_application(outer_parse_id)
+                    && (matches!(
+                        self.kb.symbols.get(kb_functor),
+                        SymbolDef::Resolved { kind: SymbolKind::Entity, .. }
+                    ) || self.kb.is_entity_constructor(kb_functor));
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {

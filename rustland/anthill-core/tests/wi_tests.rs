@@ -928,3 +928,6 @@ mod wi920_resident_write_domain_test;
 
 #[path = "include/wi926_eponymous_entity_test.rs"]
 mod wi926_eponymous_entity_test;
+
+#[path = "include/wi927_bracket_surface_test.rs"]
+mod wi927_bracket_surface_test;

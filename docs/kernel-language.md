@@ -1412,13 +1412,17 @@ Two consequences worth stating, because they are what the rule buys:
   declared **field schema** — the same question for both spellings.
 - A **bare** `Project` still denotes the *type* (it is passable where a `Type` is
   expected); an **applied** `Project(name: …, language: …)` constructs. Position
-  decides, as it already did for a free-standing entity. One consequence, measured:
-  a sort that is *both* eponymous and parameterized cannot also be written
-  `Box[T = Int64]` in a **value** position (`is_modifiable(Box[T = Int64])`) — the
-  bracketed and parenthesized forms reach the loader as one node, and it reads the
-  arguments as fields, so the type argument is **refused by name**
-  (`unknown field 'T' on entity 'Box' — declared: value`). **Type** position
-  (`b: Box[T = Int64]`) is unaffected; it lowers through a different path.
+  decides, as it already did for a free-standing entity.
+- The **written surface** decides which reading an *applied* eponymous name gets
+  (WI-927): `Box[T = Int64]` is a type application whose arguments bind the sort's
+  declared **type parameters**, `Box(value: 1)` is a construction whose arguments
+  fill the entity's **fields**. Both lower to the same `Term::Fn`, so only the
+  brackets-vs-parens distinction separates them — the functor's *kind* cannot,
+  since an eponymous sort is one symbol that is both. Each surface keeps its own
+  error: a stray `Box[W = …]` reports `no type parameter named 'W'`, a misspelled
+  `Box(valu: 1)` reports `'Box' has no field 'valu'`, and neither is reported
+  twice. This holds in every position — a rule body, a fact, an operation body, and
+  a type annotation.
 
 **Distinct field names** (WI-808): an entity's field names must be distinct —
 `entity mk(a: Int64, a: Int64)` is a located error naming the repeated field. A field
