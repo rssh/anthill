@@ -358,3 +358,94 @@ end
         );
     }
 }
+
+/// THE FIRST GENERIC CONSUMER OF THE LIFT CERTIFIES AT LOAD AND DIES AT THE CALL.
+///
+/// WI-138 lifted `Vec3`'s operations to an abstract `VectorSpace[V, F]` so code
+/// could be written against the SPEC rather than the carrier. WI-935 made the
+/// provision real. This test measures what a consumer actually gets, and the
+/// answer is: the abstract route does not work.
+///
+/// `operation twice[V, F](a: V) -> V requires VectorSpace[V, F] =
+///  VectorSpace.vec_add(a, a)` LOADS CLEAN and then fails at the call with
+/// `OperationBodyMissing { anthill.prelude.algebra.VectorSpace.vec_add }` — the
+/// dictionary route does not reach `Vec3`'s member. That is exactly the class
+/// §8.7's WI-818 paragraph says the loader prevents ("rather than certify a
+/// program whose call fails only at run time"); the check guards the PROVIDER,
+/// and nothing guards the generic CONSUMER.
+///
+/// CONTROL A — the same call at a CONCRETE carrier works and returns the right
+/// vector, so the provision and the member are both fine; it is the abstract
+/// dispatch that fails.
+///
+/// CONTROL B — the same shape over the one-param `Ring` is REFUSED AT LOAD with
+/// a located diagnostic. So the two specs disagree about the identical
+/// construct: one is caught, the other is certified and dies. That disagreement,
+/// not the failure alone, is what makes this a defect rather than a limitation.
+///
+/// This test asserts CURRENT behaviour so it cannot be lost, and is expected to
+/// FLIP when the gap is closed — at which point `twice` must return
+/// `Vec3(2.0, 4.0, 6.0)` and this should assert that instead of being deleted.
+/// Tracked as WI-942. Pre-existing (a generic-dispatch gap, not created here);
+/// WI-935 is what makes it reachable against a stdlib type.
+#[test]
+fn a_generic_consumer_of_vector_space_loads_clean_and_fails_at_the_call() {
+    let src = r#"
+namespace test.vec3.generic
+  import anthill.geometry.{Vec3}
+  import anthill.prelude.algebra.{VectorSpace}
+
+  sort G
+    operation twice[V, F](a: V) -> V requires VectorSpace[V, F] =
+      VectorSpace.vec_add(a, a)
+
+    operation twice_vec3(a: Vec3) -> Vec3 = VectorSpace.vec_add(a, a)
+  end
+end
+"#;
+    // SUBJECT — loads clean, then dies at the call.
+    crate::common::try_load_kb_with(src)
+        .map(|_| ())
+        .expect("the generic consumer LOADS CLEAN — that is half the defect");
+
+    let mut interp = crate::common::interp_for(src);
+    let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
+    let err = interp
+        .call("test.vec3.generic.G.twice", &[a])
+        .expect_err("the generic route must fail at the call (WI-942)");
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("OperationBodyMissing")
+            && rendered.contains("anthill.prelude.algebra.VectorSpace.vec_add"),
+        "expected OperationBodyMissing naming the SPEC op, got: {rendered}",
+    );
+
+    // CONTROL A — the concrete carrier route works, so the member is backed and
+    // the provision is sound; only the abstract dispatch fails.
+    let mut interp = crate::common::interp_for(src);
+    let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
+    let out = interp
+        .call("test.vec3.generic.G.twice_vec3", &[a])
+        .expect("the concrete route must work");
+    assert_eq!(components(interp.kb(), &out), (2.0, 4.0, 6.0));
+
+    // CONTROL B — the SAME construct over the one-param `Ring` is REFUSED at
+    // load. The two specs disagree; that is the defect's shape.
+    let ring_src = r#"
+namespace test.ring.generic
+  import anthill.prelude.{Float}
+  import anthill.prelude.algebra.{Ring}
+  sort H
+    operation dbl[T](a: T) -> T requires Ring[T] = Ring.add(a, a)
+  end
+end
+"#;
+    let errs = crate::common::try_load_kb_with(ring_src)
+        .err()
+        .expect("the Ring-shaped generic is REFUSED at load, unlike the VectorSpace one");
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.algebra.Ring.add.requires")),
+        "expected a located requires-coverage diagnostic, got:\n{}",
+        errs.join("\n"),
+    );
+}
