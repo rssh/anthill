@@ -103,7 +103,46 @@ pub enum SymbolDef {
     Resolved {
         short_name: String,
         qualified_name: String,
-        kind: SymbolKind,
+        /// The categories this name PLAYS, in declaration order — a set, not a
+        /// single value, because one written name can genuinely be more than one
+        /// thing. §6.3's eponymous constructor IS its sort: `sort Project { entity
+        /// Project(…) }` writes one name that is both a `Sort` and an `Entity`,
+        /// and so does the sugar `entity Project(…)` it desugars from.
+        ///
+        /// It used to be one `SymbolKind`, so a name that plays two roles could
+        /// record only the one that got there first, and the same two declarations
+        /// in the opposite order produced a different `kind` (measured, WI-926).
+        /// That is not a category; it is an accident of source order.
+        ///
+        /// The loser was not always dropped in the same place, which is why the
+        /// categories are written from the DECLARATION rather than left to
+        /// whichever code path minted the symbol: `define` reuses an existing
+        /// symbol on a repeated short name, and the loader has two further arms
+        /// (an eponymous constructor reusing its sort's symbol, and a
+        /// by-qualified-name reuse) that never reach `define` at all. See
+        /// `scan_items_pass1`'s `Item::Entity` arm.
+        ///
+        /// Order is kept (not a bitset) because it is the one real piece of
+        /// information beyond membership: the head is the keyword the declaration
+        /// actually opened with, which is what [`Self::primary_kind`] — and hence
+        /// `kind_of` — reports, exactly as the single field did.
+        ///
+        /// Ask [`Self::has_kind`] for "does this name play role X" — that is the
+        /// question most readers mean, and it is order-free. [`Self::primary_kind`]
+        /// is right for exactly two things: DISPLAY (a diagnostic, reflect's `kind`
+        /// string), and a genuinely EXCLUSIVE discriminator, where "any role
+        /// qualifies" would be the wrong question — the loader's
+        /// `symbol_is_value_place` is one, since its caller branches on the false
+        /// case. Asking `primary_kind() == Sort` to decide whether a name is USABLE
+        /// as a sort is the misuse: it re-creates the source-order dependence this
+        /// field exists to remove.
+        ///
+        /// Not yet uniform: many `kind_of` call sites predate the set and still
+        /// compare it to a single kind. Each is only correct where the exclusive
+        /// reading is intended; they were left alone rather than swept, because the
+        /// two readings coincide for every symbol carrying ONE category and only a
+        /// site-by-site judgement can tell which was meant.
+        kinds: SmallVec<[SymbolKind; 2]>,
         scope_raw: u32,
         /// WI-352 — for a *callable* place (an operation, or a callback-typed
         /// parameter), the ordered argument-place symbols it binds: an op's
@@ -116,6 +155,47 @@ pub enum SymbolDef {
         /// place is `<F>.result`, found by name, so it is not stored here.
         arg_places: Vec<Symbol>,
     },
+}
+
+impl SymbolTable {
+    /// Record that `sym` also plays `kind`. Idempotent, order-preserving: the
+    /// first-declared category stays the head, so `primary_kind` (and `kind_of`)
+    /// keep reporting the keyword the declaration opened with.
+    ///
+    /// The explicit companion to `define`'s accumulation, for the case where a
+    /// second role is discovered WITHOUT a second `define` call — §6.3's eponymous
+    /// constructor, which reuses the enclosing sort's symbol rather than defining
+    /// a nested one, so nothing would otherwise record that the name also
+    /// constructs.
+    pub fn add_kind(&mut self, sym: Symbol, kind: SymbolKind) {
+        if let Some(SymbolDef::Resolved { kinds, .. }) = self.defs.get_mut(sym.0 as usize) {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+    }
+}
+
+impl SymbolDef {
+    /// The categories this name plays, declaration order. Empty for `Unresolved`.
+    pub fn kinds(&self) -> &[SymbolKind] {
+        match self {
+            SymbolDef::Resolved { kinds, .. } => kinds,
+            SymbolDef::Unresolved { .. } => &[],
+        }
+    }
+
+    /// Does this name play role `kind`? THE question almost every caller means.
+    pub fn has_kind(&self, kind: SymbolKind) -> bool {
+        self.kinds().contains(&kind)
+    }
+
+    /// The keyword the declaration opened with — for DISPLAY only (diagnostics,
+    /// reflect's `kind` string). Not a test for what the name can be used as:
+    /// see [`Self::has_kind`].
+    pub fn primary_kind(&self) -> Option<SymbolKind> {
+        self.kinds().first().copied()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -266,13 +346,19 @@ impl SymbolTable {
     ) -> Symbol {
         let scope = self.scopes.entry(scope_raw).or_default();
         if let Some(&existing) = scope.locals.get(short_name) {
+            // Re-declaring a name already bound in this scope RECORDS the added
+            // category instead of discarding it. The early return is unchanged —
+            // one name in one scope is still one symbol — but the second
+            // declaration's role is no longer lost, which is what made `kind`
+            // depend on which of two declarations came first (WI-926).
+            self.add_kind(existing, kind);
             return existing;
         }
         let sym = Symbol(self.defs.len() as u32);
         self.defs.push(SymbolDef::Resolved {
             short_name: short_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
-            kind,
+            kinds: SmallVec::from_elem(kind, 1),
             scope_raw,
             arg_places: Vec::new(),
         });
@@ -302,13 +388,16 @@ impl SymbolTable {
         scope_raw: u32,
     ) -> Symbol {
         if let Some(&existing) = self.by_qualified_name.get(qualified_name) {
+            // Same accumulation as `define`: a repeated declaration ADDS its role
+            // rather than losing it.
+            self.add_kind(existing, kind);
             return existing;
         }
         let sym = Symbol(self.defs.len() as u32);
         self.defs.push(SymbolDef::Resolved {
             short_name: short_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
-            kind,
+            kinds: SmallVec::from_elem(kind, 1),
             scope_raw,
             arg_places: Vec::new(),
         });
@@ -598,9 +687,14 @@ impl SymbolTable {
             SymbolDef::Unresolved { .. } => return None,
         };
         for (i, def) in self.defs.iter().enumerate() {
-            if let SymbolDef::Resolved { scope_raw: sraw, kind, .. } = def {
+            if let SymbolDef::Resolved { scope_raw: sraw, .. } = def {
                 if *sraw != scope_raw { continue; }
-                if matches!(kind, SymbolKind::Sort | SymbolKind::Namespace | SymbolKind::Operation) {
+                // Any of these roles qualifies — asked as membership, so a name
+                // that both IS a sort and constructs still answers as a sort.
+                if [SymbolKind::Sort, SymbolKind::Namespace, SymbolKind::Operation]
+                    .iter()
+                    .any(|k| def.has_kind(*k))
+                {
                     let candidate = Symbol::from_raw(i as u32);
                     if candidate != sym { return Some(candidate); }
                 }

@@ -14880,7 +14880,7 @@ fn check_unconstrained_type_params(
 /// OVERRIDE it (typeclass default-method semantics — defaults fill gaps, they
 /// do not shadow), so the override paths gate on this instead.
 pub(crate) fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
-    use crate::intern::{SymbolDef, SymbolKind};
+    use crate::intern::SymbolKind;
 
     // The parent sort's qualified name is the op's qualified name
     // with the last segment stripped off.
@@ -14888,10 +14888,7 @@ pub(crate) fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<
     let (parent_qn, _short) = op_qn.rsplit_once('.')?;
 
     let parent_sym = kb.try_resolve_symbol(parent_qn)?;
-    if !matches!(
-        kb.symbols.get(parent_sym),
-        SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
-    ) {
+    if !kb.symbols.get(parent_sym).has_kind(SymbolKind::Sort) {
         return None;
     }
     if kb.type_params_of_sort(parent_sym).is_empty() {
@@ -32232,8 +32229,8 @@ fn bare_provider_binding_precise<E: TermView>(
         if let Some(view) = provider_spec_view_bindings(kb, carrier, expected_base) {
             break view;
         }
-        // Entity → parent sort. The chain is acyclic (a parent is a sort, never a
-        // constructor), mirroring `sort_provides_admissibly`'s recursion.
+        // Entity → parent sort. The chain is acyclic: `constructor_parent_sort` is
+        // the STRICT parent, so §6.3's eponymous self-edge never appears here.
         let Some(parent_sym) = kb.constructor_parent_sort(carrier) else { return false };
         carrier = parent_sym;
     };

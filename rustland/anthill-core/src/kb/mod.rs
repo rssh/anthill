@@ -1559,13 +1559,24 @@ impl KnowledgeBase {
         candidates.iter().map(|&sym| self.qualified_name_of(sym).to_string()).collect()
     }
 
-    /// Kind of a resolved symbol (Sort, Entity, Operation, …).
-    /// `None` for unresolved symbols.
+    /// The keyword `sym`'s declaration opened with — for DISPLAY (a diagnostic,
+    /// reflect's `kind` string). `None` for unresolved symbols.
+    ///
+    /// NOT a test for what the name may be used as. One name can play several
+    /// roles (§6.3: an eponymous constructor IS its sort, so `Project` is both a
+    /// `Sort` and an `Entity`), and this reports only the first-declared one — so
+    /// `kind_of(s) == Some(Sort)` answers "was it written with `sort`", which for
+    /// the two spellings of one §6.3 declaration gives two different answers. Ask
+    /// [`Self::has_kind`] instead whenever the question is "can this name serve as
+    /// an X".
     pub fn kind_of(&self, sym: Symbol) -> Option<crate::intern::SymbolKind> {
-        match self.symbols.get(sym) {
-            SymbolDef::Resolved { kind, .. } => Some(*kind),
-            SymbolDef::Unresolved { .. } => None,
-        }
+        self.symbols.get(sym).primary_kind()
+    }
+
+    /// Does `sym` play role `kind`? The membership question — insensitive to
+    /// which keyword came first, and therefore to source order.
+    pub fn has_kind(&self, sym: Symbol, kind: crate::intern::SymbolKind) -> bool {
+        self.symbols.get(sym).has_kind(kind)
     }
 
     /// Scope symbol that owns `sym`. Delegates to the symbol table.
@@ -2069,12 +2080,32 @@ impl KnowledgeBase {
         }
     }
 
+    /// The sort a fact head is FILED UNDER.
+    ///
+    /// Two arms, because a head need not be a constructor at all:
+    /// [`Self::sort_of_constructor`] is total over constructors (a variant's
+    /// enclosing sort; for §6.3's wrapped entity, itself), and a plain sort name
+    /// heading a fact answers as itself. A constructor never reaches the second
+    /// arm.
+    ///
+    /// The second arm reads the name's own CATEGORIES rather than a separate
+    /// sort registration, so a free-standing entity needs nothing registered for
+    /// it beyond what its declaration already says. It asks `has_kind`, never
+    /// `kind_of`: the latter reports only the first-declared category, and the two
+    /// §6.3 spellings declare Sort and Entity in opposite order, so it would make
+    /// the answer depend on which keyword was written.
+    pub fn sort_of_head(&self, functor: Symbol) -> Option<Symbol> {
+        if let Some(sort) = self.sort_of_constructor(functor) {
+            return Some(sort);
+        }
+        // Not a constructor at all — a plain sort name heading a fact answers as
+        // itself. (A constructor never reaches here: the relation above is total.)
+        self.has_kind(functor, crate::intern::SymbolKind::Sort).then_some(functor)
+    }
+
     fn view_to_trigger_sort(&mut self, view: &crate::eval::value::Value) -> Option<Symbol> {
         let functor = term_view::TermView::head(view, self).functor_sym()?;
-        if let Some(parent) = self.constructor_parent_sort(functor) {
-            return Some(parent);
-        }
-        self.sort_kind(functor).map(|_| functor)
+        self.sort_of_head(functor)
     }
 
     /// The sort a fact with this head triggers guards on / is indexed by — its
@@ -3149,6 +3180,26 @@ impl KnowledgeBase {
         self.sort_info.insert(sort, kind);
     }
 
+    /// Record the REFLEXIVE case of belongs-to: `sym` IS its own sort (§6.3's
+    /// wrapped entity — `entity E` is `sort E { entity E }`, one symbol).
+    ///
+    /// Deliberately NOT [`Self::register_entity_of`], which additionally marks the
+    /// symbol in `constructor_symbols`. That flag is a different question — it
+    /// drives the WI-511 nullary alloc canon (`Fn{c,[],[]}` → `Ref(c)`) — and the
+    /// name's own nullary term is also its SCOPE KEY, which `is_sort_scope` matches
+    /// only in the `Fn` spelling. Measured: routing this through
+    /// `register_entity_of` re-spelled those terms and 24 tests failed with
+    /// `expected Type, got WorkItem` — a bare free-standing entity stopped reading
+    /// as a type, which is exactly the consequence WI-926 predicted when it
+    /// declined to mark the eponymous constructor.
+    pub fn register_self_sort(&mut self, sym: Symbol) {
+        let children = self.sort_entities.entry(sym).or_default();
+        if !children.contains(&sym) {
+            children.push(sym);
+        }
+        self.entity_parent.insert(sym, sym);
+    }
+
     /// Register an entity-of relationship: entity is a constructor of parent sort.
     /// Updates in-memory indexes (sort_entities, entity_parent).
     /// The loader separately asserts EntityOf(entity, parent) facts in the KB.
@@ -3251,10 +3302,36 @@ impl KnowledgeBase {
         }
     }
 
-    /// Get the parent sort of a constructor by its functor symbol. WI-697: an
-    /// O(1) lookup into the symbol-keyed index (was an O(n) scan).
-    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
+    /// The sort a constructor BELONGS TO — TOTAL over constructors (WI-925).
+    ///
+    /// This is what `entity`-wrapping is for: §6.3 wraps a free-standing `entity E`
+    /// into `sort E { entity E }` precisely so that every entity has a sort, so the
+    /// relation must actually be total or the wrapping buys nothing. For an
+    /// eponymous or free-standing entity the sort IS the entity (WI-926: one
+    /// symbol), so the edge is REFLEXIVE — `E`'s sort is `E`.
+    ///
+    /// Prefer this wherever the question is "which sort does this belong to".
+    /// [`Self::constructor_parent_sort`] is the STRICT (irreflexive) view, for
+    /// walkers that climb the chain.
+    pub fn sort_of_constructor(&self, functor: Symbol) -> Option<Symbol> {
         self.entity_parent.get(&functor).copied()
+    }
+
+    /// The STRICT parent sort of a constructor — [`Self::sort_of_constructor`]
+    /// minus the reflexive case, i.e. the parent that is a *different* symbol.
+    /// WI-697: an O(1) lookup into the symbol-keyed index (was an O(n) scan).
+    ///
+    /// This is the accessor a chain-CLIMBING walker wants, and the single place
+    /// the fixpoint is cut. Several walkers recurse `parent(parent(…))` and were
+    /// written when "a parent is a sort, never a constructor" made the chain
+    /// acyclic by construction; WI-926 made one name both, so that no longer holds
+    /// of the stored relation. Returning `None` at the fixpoint keeps every one of
+    /// them terminating without each having to re-check `parent == self` — the
+    /// alternative being the same guard copied into `sort_provides_admissibly`,
+    /// `sort_sym_compatible`, `bare_provider_binding_precise`, and any walker
+    /// written later that would simply forget it.
+    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
+        self.entity_parent.get(&functor).copied().filter(|&p| p != functor)
     }
 
     /// All entity-constructor functor symbols whose parent sort is `sort_sym`

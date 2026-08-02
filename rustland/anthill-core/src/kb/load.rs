@@ -2125,7 +2125,7 @@ fn eponymous_sort_symbol(kb: &KnowledgeBase, scope: TermId, name: &str, short: &
 fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
     if let Term::Fn { functor, pos_args, named_args } = kb.get_term(scope) {
         if pos_args.is_empty() && named_args.is_empty() {
-            if let crate::intern::SymbolDef::Resolved { kind: SymbolKind::Sort, .. } = kb.symbols.get(*functor) {
+            if kb.symbols.get(*functor).has_kind(SymbolKind::Sort) {
                 return true;
             }
         }
@@ -2163,8 +2163,9 @@ fn ensure_intermediate_namespaces(
         let existing = kb.symbols.by_qualified_name.get(&qualified_path).copied().filter(|&sym| {
             matches!(
                 kb.symbols.get(sym),
-                SymbolDef::Resolved { kind: SymbolKind::Namespace, scope_raw, .. }
+                SymbolDef::Resolved { scope_raw, .. }
                 if *scope_raw == current_scope.raw()
+                    && kb.symbols.get(sym).has_kind(SymbolKind::Namespace)
             )
         });
 
@@ -2696,8 +2697,9 @@ fn scan_items_pass1(
                 let existing = kb.symbols.by_qualified_name.get(&qualified).copied().filter(|&sym| {
                     matches!(
                         kb.symbols.get(sym),
-                        SymbolDef::Resolved { kind: SymbolKind::Namespace, scope_raw, .. }
+                        SymbolDef::Resolved { scope_raw, .. }
                         if *scope_raw == actual_scope.raw()
+                            && kb.symbols.get(sym).has_kind(SymbolKind::Namespace)
                     )
                 });
                 let (_sym, ns_term) = if let Some(sym) = existing {
@@ -2750,6 +2752,36 @@ fn scan_items_pass1(
                 } else {
                     kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw())
                 };
+                // §6.3 — record every role this ONE written name plays, so the two
+                // spellings of one declaration carry the same SET of categories.
+                //
+                //   sort E { entity E(a) }   Sort   declared first, then Entity
+                //   entity E(a)              Entity declared first, then Sort
+                //
+                // Same set, different head — and the head is the keyword actually
+                // written, which is all `kind_of` ever legitimately reported.
+                //
+                // An EPONYMOUS constructor reuses the sort's symbol rather than
+                // defining a nested one, so `define`'s own accumulation never sees
+                // it; without this the name would be a `Sort` that nothing records
+                // as constructing. A FREE-STANDING entity is a single-constructor
+                // sort by §6.3, so it plays `Sort` too — which is what lets
+                // `sort_of_head` answer for it without a second index (WI-925).
+                // Recorded from the DECLARATION, not from which arm above produced
+                // the symbol — two of the three (the eponymous reuse, and the
+                // by-qualified-name reuse) never call `define`, so relying on
+                // `define` to carry the category silently loses it. Measured: with
+                // `sort Colour { entity Red }` and `entity Colour(x)` in one
+                // namespace, `has_kind(Colour, Entity)` came out FALSE although the
+                // entity was written and its field schema registered — and TRUE if
+                // the two declarations were swapped. That source-order dependence is
+                // precisely what a category SET exists to remove, so it is recorded
+                // here where the `entity` keyword actually is.
+                kb.symbols.add_kind(entity_sym, SymbolKind::Entity);
+                // …and a free-standing one is its own single-constructor sort (§6.3).
+                if eponymous.is_none() && !is_sort_scope(kb, scope) {
+                    kb.symbols.add_kind(entity_sym, SymbolKind::Sort);
+                }
                 record_internal(kb, entity_sym, e.visibility);
                 // WI-499: register field NAMES now, before any term conversion, so the
                 // positional→named desugar / partial-expansion / over-arity check are
@@ -9897,10 +9929,8 @@ impl<'a> Loader<'a> {
     fn dot_receiver_binder(&self, head: &str) -> Option<Symbol> {
         self.lookup_local_name(head).or_else(|| {
             match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {
-                ResolveResult::Found(s) => match self.kb.symbols.get(s) {
-                    SymbolDef::Resolved { kind: SymbolKind::Param, .. } => Some(s),
-                    _ => None,
-                },
+                ResolveResult::Found(s)
+                    if self.kb.symbols.get(s).has_kind(SymbolKind::Param) => Some(s),
                 _ => None,
             }
         })
@@ -10509,10 +10539,8 @@ impl<'a> Loader<'a> {
                 // because the two lower to the same `Term::Fn`; this is the occurrence
                 // peer of the `is_type_app` gate in `convert_term`.
                 let is_entity = !self.parsed.terms.is_type_application(outer_parse_id)
-                    && (matches!(
-                        self.kb.symbols.get(kb_functor),
-                        SymbolDef::Resolved { kind: SymbolKind::Entity, .. }
-                    ) || self.kb.is_entity_constructor(kb_functor));
+                    && (self.kb.symbols.get(kb_functor).has_kind(SymbolKind::Entity)
+                        || self.kb.is_entity_constructor(kb_functor));
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -11239,10 +11267,7 @@ impl<'a> Loader<'a> {
         if let ResolveResult::Found(sym) =
             self.kb.symbols.resolve_in_scope(&name, self.current_scope.raw())
         {
-            if matches!(
-                self.kb.symbols.get(sym),
-                SymbolDef::Resolved { kind: SymbolKind::Param, .. }
-            ) {
+            if self.kb.symbols.get(sym).has_kind(SymbolKind::Param) {
                 let kb_vid = self.kb.fresh_var(sym);
                 let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
                 self.term_map.insert(parse_id.raw(), kb_id);
@@ -11654,11 +11679,15 @@ impl<'a> Loader<'a> {
     /// zero-arg `Operation` as a value (WI-313 ambient-KB accessor — `Modify[op]`); a
     /// field path projected off an operation NAME is not a value place, so the
     /// compound heads here deliberately omit `Operation`.
+    ///
+    /// Reads the DECLARED (first) category, not membership: this is an EXCLUSIVE
+    /// value-vs-type discriminator — its caller takes the type-projection branch
+    /// precisely when it answers false — and "any role is a value place" cannot
+    /// express exclusivity. A name that is both (`operation foo[T](T: Int64)`
+    /// declares `T` as a type param AND a value param, giving `{Sort, Param}`)
+    /// would otherwise flip this to true and silently reclassify the head.
     fn symbol_is_value_place(&self, sym: Symbol) -> bool {
-        matches!(
-            self.kb.symbols.get(sym),
-            SymbolDef::Resolved { kind, .. } if kind.is_value_place()
-        )
+        self.kb.symbols.get(sym).primary_kind().is_some_and(|k| k.is_value_place())
     }
 
     /// WI-302 (proposal 027.1 per-projection): classify a MULTI-segment dotted name
@@ -11876,10 +11905,7 @@ impl<'a> Loader<'a> {
         if let Some((outer, last)) = qn.rsplit_once('.') {
             if last == short && outer.rsplit('.').next() == Some(short) {
                 if let Some(outer_sym) = self.kb.symbols.by_qualified_name.get(outer) {
-                    if matches!(
-                        self.kb.symbols.get(*outer_sym),
-                        SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
-                    ) {
+                    if self.kb.symbols.get(*outer_sym).has_kind(SymbolKind::Sort) {
                         return outer;
                     }
                 }
@@ -11923,10 +11949,9 @@ impl<'a> Loader<'a> {
                 // OPERATION parent (an op type-param `getV.T`, WI-383) lends them through
                 // the operation's own `requires` clause — `resolve_rigid_projection`
                 // reads `OperationInfo.requires` for that case.
-                if matches!(
-                    self.kb.symbols.get(decl_sort),
-                    SymbolDef::Resolved { kind: SymbolKind::Sort | SymbolKind::Operation, .. }
-                ) && self.kb.type_params_of_sort(decl_sort).iter().any(|p| p == &head_short)
+                if (self.kb.symbols.get(decl_sort).has_kind(SymbolKind::Sort)
+                        || self.kb.symbols.get(decl_sort).has_kind(SymbolKind::Operation))
+                    && self.kb.type_params_of_sort(decl_sort).iter().any(|p| p == &head_short)
                 {
                     // Subject = the param's LOGICAL registration (`ns.W.P`), so every
                     // spelling of `P.Key` hash-conses to one term regardless of which
@@ -11946,10 +11971,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
-        if !matches!(
-            self.kb.symbols.get(head_resolved),
-            SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
-        ) {
+        if !self.kb.symbols.get(head_resolved).has_kind(SymbolKind::Sort) {
             return None;
         }
         // The canonical sort symbol for the (possibly inner self-named) head — the
@@ -12234,10 +12256,7 @@ impl<'a> Loader<'a> {
                 // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
                 // the compound-path heads omit (a field off an op name is not a place).
                 let is_value = self.symbol_is_value_place(sort_sym)
-                    || matches!(
-                        self.kb.symbols.get(sort_sym),
-                        SymbolDef::Resolved { kind: SymbolKind::Operation, .. }
-                    );
+                    || self.kb.symbols.get(sort_sym).has_kind(SymbolKind::Operation);
                 if is_value {
                     node_occurrence::TypeChild::Node(
                         self.kb.make_denoted_occ_ref(sort_sym, span, owner),
@@ -13165,7 +13184,16 @@ impl<'a> Loader<'a> {
                 // exist. `field_constructors_of_sort` already reaches this shape
                 // by its field schema (WI-490's free-standing-entity arm), which
                 // is the same answer §6.3 says it should give.
-                if ctor_term != sort_term {
+                // §6.3 — an eponymous constructor IS its sort, so the belongs-to
+                // edge is REFLEXIVE rather than absent (WI-925: the wrapping exists
+                // to give an entity a sort; a missing edge would defeat it). Routed
+                // through `register_self_sort`, which does NOT mark the symbol a
+                // constructor — that flag drives the WI-511 alloc canon and would
+                // re-spell the sort's own scope key (WI-926).
+                if ctor_term == sort_term {
+                    let sym = self.kb.name_term_sym(sort_term);
+                    self.kb.register_self_sort(sym);
+                } else {
                     self.kb.register_entity_of(ctor_term, sort_term);
                 }
                 let lowered: Vec<crate::eval::value::Value> =
@@ -13694,10 +13722,24 @@ impl<'a> Loader<'a> {
         // rule is guarded with a trailing `is_entity_of(?x, ?sort)` (the KB-index
         // builtin) to not bind the namespace scope as a bogus parent
         // (typing.anthill).
+        // That guard stays under WI-925, and nothing here obviates it: it rejects
+        // the enclosing NAMESPACE as a parent, which is not a sort at all. What a
+        // free-standing entity lacks is a DISTINCT parent — it IS its own sort
+        // (§6.3) — and "which sort is this filed under" is answered for both
+        // shapes by `KnowledgeBase::sort_of_head`, off the declared field schema
+        // this function already registers. Deliberately NO `register_sort` here
+        // (WI-925): a second index asserting the same thing is one more pair that
+        // can disagree, and `sort_of_head` needs none.
         if !is_sort_scope(&self.kb, self.current_scope) {
             let ei_syms = self.entity_info_syms();
             let ctor_term = self.name_to_sort_term(&e.name);
             self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, domain);
+            // WI-925 / §6.3: `entity E` IS `sort E { entity E }`, and the whole
+            // point of that wrapping is that an entity HAS a sort — so record it.
+            // The sort is E itself (WI-926: one symbol), so the edge is reflexive;
+            // `constructor_parent_sort` is the strict view that cuts the fixpoint
+            // for chain-climbing walkers.
+            self.kb.register_self_sort(functor);
         }
     }
 

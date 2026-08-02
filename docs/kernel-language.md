@@ -1404,12 +1404,26 @@ entity Open, entity Closed }` and `sort Person { entity mk(…) }` keep their ne
 on being a sole variant. Only a **sort** body collapses; `namespace Project {
 entity Project(…) }` does not, since a namespace is not a single-constructor sort.
 
-Two consequences worth stating, because they are what the rule buys:
+Consequences worth stating, because they are what the rule buys:
 
-- Such a sort **is its own constructor**, not the parent of one:
-  `constructor_parent_sort` is `none` and `constructors_of_sort` is empty, exactly
-  as for a free-standing `entity`. What answers "is this constructible" is the
-  declared **field schema** — the same question for both spellings.
+- Such a sort **is its own constructor**, not the parent of a separate one — one
+  name fills both places. What answers "is this constructible" is the declared
+  **field schema**, the same question for both spellings.
+- **Every entity belongs to a sort, and that is what the wrapping is for**
+  (WI-925). Since `entity E` *is* `sort E { entity E }`, the belongs-to relation
+  must answer for the wrapped case too, or the wrapping buys nothing. It does: the
+  sort of a wrapped entity is **itself**, so the relation is **total** and, for
+  this shape, reflexive. A fact whose head is a free-standing entity is therefore
+  filed under that entity. (Reading the relation as a chain to *climb* — a variant
+  to its enclosing sort — one takes the strict step, which is simply absent here;
+  a name that is its own sort has nowhere further to go.)
+- **A name carries a SET of categories, not one** (WI-925). Such a name plainly
+  *is* a sort and *does* construct, so it records both: `{Sort, Entity}`, from
+  either spelling. A single category could not say that — it kept whichever
+  keyword was declared first, which made the answer depend on source order rather
+  than on meaning. Ask whether a name **plays** a role. The set's *order* is the
+  one further fact it carries: the head is the keyword actually written, which is
+  what a diagnostic and reflect's `kind` report.
 - A **bare** `Project` still denotes the *type* (it is passable where a `Type` is
   expected); an **applied** `Project(name: …, language: …)` constructs. Position
   decides, as it already did for a free-standing entity.

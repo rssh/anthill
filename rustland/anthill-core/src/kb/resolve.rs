@@ -5480,9 +5480,11 @@ impl KnowledgeBase {
             return BuiltinResult::Failure;
         };
 
-        let kind_str = match self.symbols.get(sym) {
-            crate::intern::SymbolDef::Resolved { kind, .. } => {
-                match kind {
+        // DISPLAY: reports the keyword the declaration opened with. A name that
+        // plays several roles (§6.3) still shows the one it was written as.
+        let kind_str = match self.symbols.get(sym).primary_kind() {
+            Some(kind) => {
+                match &kind {
                     crate::intern::SymbolKind::Sort => "Sort",
                     crate::intern::SymbolKind::Entity => "Entity",
                     crate::intern::SymbolKind::Operation => "Operation",
@@ -5619,8 +5621,8 @@ impl KnowledgeBase {
         let resolved_sym = *self.symbols.by_qualified_name.get(&target_qname)?;
         // A sort/entity component is a nullary name term; anything else a Ref.
         Some(match self.symbols.get(resolved_sym) {
-            crate::intern::SymbolDef::Resolved { kind, .. }
-                if matches!(kind, crate::intern::SymbolKind::Sort | crate::intern::SymbolKind::Entity) =>
+            d if d.has_kind(crate::intern::SymbolKind::Sort)
+                || d.has_kind(crate::intern::SymbolKind::Entity) =>
             {
                 self.make_name_term_from_sym(resolved_sym)
             }

@@ -931,3 +931,6 @@ mod wi926_eponymous_entity_test;
 
 #[path = "include/wi927_bracket_surface_test.rs"]
 mod wi927_bracket_surface_test;
+
+#[path = "include/wi925_entity_desugaring_test.rs"]
+mod wi925_entity_desugaring_test;
