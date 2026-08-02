@@ -191,7 +191,7 @@ pub fn set_proof_result(kb: &mut KnowledgeBase, rid: RuleId, verdict: VerdictWri
     // reports a flip — surface it rather than quietly diverge.
     debug_assert!(wrote_result, "set_proof_result: ProofRecord {rid:?} has no `result` field");
 
-    let sort = kb.rule_sort(rid);
+    let sort = kb.rule_clause_kind(rid);
     let domain = kb.rule_domain(rid);
     // Build the new head BEFORE retracting so its shared subterms (rule,
     // strategy, body, …) are incref'd and survive the old fact's release.
@@ -272,7 +272,12 @@ fn make_proof_result_disproved(kb: &mut KnowledgeBase, counterexample: &str, sol
 
 /// `Duration(amount: 0, unit: "ms")`.
 fn make_zero_duration(kb: &mut KnowledgeBase) -> TermId {
-    let sym = kb.resolve_symbol("anthill.prelude.Duration.Duration");
+    // WI-926 (§6.3): `sort Duration { entity Duration(…) }` is ONE name, so the
+    // constructor is `anthill.prelude.Duration` — there is no nested
+    // `…Duration.Duration`. This also makes the term built here the same one a
+    // source-written `Duration(amount: …, unit: …)` builds; before the reform the
+    // two used different functors and never hash-cons-matched.
+    let sym = kb.resolve_symbol("anthill.prelude.Duration");
     let amount = kb.alloc(Term::Const(Literal::Int(0)));
     let unit = kb.alloc(Term::Const(Literal::String("ms".to_string())));
     let k_a = kb.intern("amount");

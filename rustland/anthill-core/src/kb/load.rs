@@ -20,7 +20,7 @@ use crate::intern::{positional_label, positional_label_index, Symbol, SymbolDef,
 use crate::parse::ir::*;
 use crate::parse::pratt;
 use crate::span::{LineIndex, Span, SourceId, SourceSpan};
-use super::{KnowledgeBase, SortKind};
+use super::{ClauseKind, KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::resolve::{BuiltinTag, PositionalPlan};
@@ -2096,6 +2096,30 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
         .collect()
 }
 
+/// §6.3 (WI-926) — a sort's constructor that carries THE SORT'S OWN NAME *is*
+/// the sort. `sort Project { entity Project(…) }` writes one name, so it defines
+/// one symbol: this returns the enclosing sort's symbol, and the entity's
+/// schema/metadata registers onto it instead of onto a nested `test.Project.Project`.
+///
+/// The name comparison IS the spec's own criterion ("same name"), not a
+/// short-name identity shortcut of the kind WI-672 eliminated: it resolves a
+/// WRITTEN name against the one enclosing scope, the `same_label` category.
+/// Requires an UNDOTTED entity name (`name == short`) so a dotted
+/// `entity Foo.Project` — which `ensure_intermediate_namespaces` places in a
+/// deeper scope — never collapses onto the sort. A differently-named variant
+/// (`sort Status { entity Open }`) keeps its nested child symbol as before.
+///
+/// Only a SORT body collapses. A namespace of the same name
+/// (`namespace Project { entity Project(…) }`) does not: §6.3's equivalence is
+/// between an entity and a single-constructor SORT, and a namespace is neither.
+fn eponymous_sort_symbol(kb: &KnowledgeBase, scope: TermId, name: &str, short: &str) -> Option<Symbol> {
+    if name != short || !is_sort_scope(kb, scope) {
+        return None;
+    }
+    let Term::Fn { functor, .. } = kb.get_term(scope) else { return None };
+    (kb.resolve_sym(*functor) == short).then_some(*functor)
+}
+
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
 /// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
 fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
@@ -2707,8 +2731,21 @@ fn scan_items_pass1(
                 let name = join_segments(parse_sym, &e.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                // Reuse existing entity symbol if already defined (e.g. by register_prelude)
-                let entity_sym = if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
+                // §6.3 (WI-926): an eponymous constructor IS its sort — reuse the
+                // sort's symbol rather than minting a nested `…Project.Project`.
+                // Checked BEFORE the by-qualified-name reuse below so the nested
+                // name is never defined for this shape at all: one written name,
+                // one symbol, so the field schema lands where every reader of a
+                // `Project(…)` head already looks.
+                // Decided ONCE: the two uses below (which symbol, and whether to mark
+                // it a constructor) must not be able to disagree — a divergence would
+                // mark the SORT's symbol, which is the failure the WI-926 note below
+                // describes.
+                let eponymous = eponymous_sort_symbol(kb, scope, &name, &short);
+                let entity_sym = if let Some(sym) = eponymous {
+                    sym
+                } else if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
+                    // Reuse existing entity symbol if already defined (e.g. by register_prelude)
                     existing
                 } else {
                     kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw())
@@ -2729,7 +2766,18 @@ fn scan_items_pass1(
                 // free-standing type, NOT a constructor, so it is left unmarked. The
                 // parent/field indexes are still filled by `register_entity_of` at
                 // sort-body load.
-                if is_sort_scope(kb, scope) {
+                //
+                // WI-926: an EPONYMOUS constructor is deliberately NOT marked. It
+                // is not a constructor OF something — it IS the sort, so there is
+                // no parent/child relation to record, and marking it would flip
+                // the sort's own nullary term through the WI-511
+                // `Fn{c,[],[]}`→`Ref(c)` canon — but that term is the sort's SCOPE
+                // KEY (`add_parent`/`current_scope` key on its `.raw()`) and
+                // `is_sort_scope` matches only the `Fn` spelling. The "is this a
+                // constructor application" question is answered for this shape the
+                // same way it already is for a free-standing `entity` (WI-490):
+                // by its registered field schema.
+                if is_sort_scope(kb, scope) && eponymous.is_none() {
                     kb.mark_constructor_symbol(entity_sym);
                 }
             }
@@ -3414,15 +3462,10 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// register a parameterized-sort-instantiation pattern as a satisfiable
 /// goal — but emitted in Rust because the surface grammar's `_type` rule
 /// does not admit entity-construction terms like `effects_rows(?)` in
-/// type-arg position. The bridge is also *indexed differently* from the
-/// stdlib precedent: a surface-syntax `fact F[…]` without a sort
-/// annotation lands in `by_sort[Fact]` and `by_domain[<enclosing-scope>]`
-/// (load_fact at load.rs ~5728, `f.sort.unwrap_or("Fact")`), whereas this
-/// Rust-emitted fact uses `sort = domain = EffectsRuntime` to keep its
-/// intent (a statement about EffectsRuntime) attached to its `by_sort` /
-/// `by_domain` keys. Resolution still works through the discrim tree;
-/// reflection consumers that enumerate `by_sort["Fact"]` won't see this
-/// fact, which is intentional (it isn't a user-written fact). See
+/// type-arg position. WI-922: it is indexed exactly like any other fact —
+/// `ClauseKind::Fact` plus `by_domain[EffectsRuntime]`, the domain carrying
+/// the intent (a statement about `EffectsRuntime`). It used to be filed under
+/// a *kind* of `EffectsRuntime`, which no other clause in the KB did. See
 /// proposal 045 §2.0.1.
 ///
 /// **Idempotency** — `register_prelude` is called more than once on the
@@ -3489,10 +3532,15 @@ fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
     });
 
     // Assert via the occurrence-native DeBruijn path to close the Global var to
-    // a DeBruijn — fact = rule with empty body (empty occurrence body). The
-    // fact's sort is `EffectsRuntime` itself — same convention as the stdlib's
-    // `fact Effect[T = Modify[?]]` (its fact sort is `Effect`).
-    kb.assert_rule_debruijn_with_nodes(head, vec![], er_sort_sym, er_sort_sym, None);
+    // a DeBruijn — fact = rule with empty body (empty occurrence body). WI-922:
+    // the clause KIND is `Fact`; `EffectsRuntime` is what the fact is ABOUT and
+    // stays as its domain and its head functor. (The comment here used to
+    // justify filing it under `EffectsRuntime` as "the same convention as the
+    // stdlib's `fact Effect[T = Modify[?]]`". There is no such convention: a
+    // source `fact` has always been filed under the `Fact` tag — `Fact.sort` is
+    // `None` at the only site that builds one — and no `fact Effect[…]` remains
+    // in the stdlib.)
+    kb.assert_rule_debruijn_with_nodes(head, vec![], ClauseKind::Fact, er_sort_sym, None);
 }
 
 /// WI-719: register one prelude constructor (`nil`/`cons`/`none`/`some`) as a
@@ -4914,7 +4962,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                 });
 
                 // Retract old, assert new
-                let sort = kb.rule_sort(rid);
+                let sort = kb.rule_clause_kind(rid);
                 let domain = kb.rule_domain(rid);
                 let meta = kb.rule_meta(rid);
                 kb.retract(rid);
@@ -5090,10 +5138,11 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
 
     if new_records.is_empty() { return; }
-    let record_sort_sym = kb.intern("anthill.realization.ProofRecord");
+    // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
+    let record_kind = ClauseKind::Fact;
     let global_domain = kb.intern("_global");
     for rec in new_records {
-        kb.assert_metadata_fact(rec, record_sort_sym, global_domain, None);
+        kb.assert_metadata_fact(rec, record_kind, global_domain, None);
     }
 }
 
@@ -5235,10 +5284,11 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
 
     if new_records.is_empty() { return; }
-    let record_sort_sym = kb.intern("anthill.realization.ProofRecord");
+    // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
+    let record_kind = ClauseKind::Fact;
     let global_domain = kb.intern("_global");
     for rec in new_records {
-        kb.assert_metadata_fact(rec, record_sort_sym, global_domain, None);
+        kb.assert_metadata_fact(rec, record_kind, global_domain, None);
     }
 }
 
@@ -5443,10 +5493,11 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     }
 
     if new_records.is_empty() { return; }
-    let record_sort_sym = kb.intern("anthill.realization.ProofRecord");
+    // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
+    let record_kind = ClauseKind::Fact;
     let global_domain = kb.intern("_global");
     for rec in new_records {
-        kb.assert_metadata_fact(rec, record_sort_sym, global_domain, None);
+        kb.assert_metadata_fact(rec, record_kind, global_domain, None);
     }
 }
 
@@ -5472,7 +5523,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
 /// This precomputes (once, at load time) the decision the dispatch
 /// fallback used to make per-call via
 /// `try_resolve_symbol("{impl_qn}.{op}").or_else(spec_qn)`. Consumers
-/// read it via `kb.sort_ops_lookup(impl_sort, op_short)` — a direct
+/// read it via `kb.sort_ops_lookup(impl_kind, op_short)` — a direct
 /// table lookup. Idempotent: re-running overwrites with equal values.
 ///
 /// The semantic-equality dispatch index is built by its own pass,
@@ -5502,7 +5553,7 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
         Some(s) => s,
         None => return,
     };
-    // Snapshot (impl_sort, spec_sort) pairs first — populating the
+    // Snapshot (impl_kind, spec_sort) pairs first — populating the
     // table interns short names (mutating `kb`), which can't overlap
     // the `rules_by_functor` borrow walk.
     let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
@@ -7544,7 +7595,7 @@ struct EntityInfoSyms {
     name: Symbol,
     type_name: Symbol,
     fields: Symbol,
-    sort_sort: Symbol,
+    sort_sort: ClauseKind,
 }
 
 struct ExprBuilderSyms {
@@ -10402,10 +10453,26 @@ impl<'a> Loader<'a> {
                 // is actually reported. The two must stay paired — see the
                 // no-silent-skip invariant on `resolve_owner_symbol`.
                 let kb_functor = self.remap_symbol(parse_functor, self.parsed.terms.span(outer_parse_id));
+                // Construction or call? WI-926 (§6.3): the symbol KIND alone can no
+                // longer answer. An eponymous `sort E { entity E(…) }` is ONE symbol,
+                // and it takes the kind of whichever declaration `define` saw first —
+                // `Sort` for the sort-body spelling — so a `TotalFloat(raw: nan)` built
+                // an `Apply` and died downstream as an unknown functor / a sort type
+                // application whose "type argument" was really a field. The declared
+                // FIELD SCHEMA is the question actually being asked, and
+                // [`is_entity_constructor`] is the one place it is asked.
+                //
+                // Strictly WIDENING: the kind test is kept as the first arm, so every
+                // symbol that built a `Constructor` before still does (a kernel entity
+                // registered by `define_qualified_only` with no field vector included).
+                //
+                // This is the PRODUCER of the distinction — fixing it here is what keeps
+                // the typer's `Expr::Constructor` arm and eval's from each needing their
+                // own copy of the rule.
                 let is_entity = matches!(
                     self.kb.symbols.get(kb_functor),
                     SymbolDef::Resolved { kind: SymbolKind::Entity, .. }
-                );
+                ) || self.kb.is_entity_constructor(kb_functor);
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -12864,7 +12931,7 @@ impl<'a> Loader<'a> {
 
     fn load_namespace(&mut self, n: &Namespace) {
         let ns_term = self.name_to_sort_term(&n.name);
-        let ns_sort = self.kb.intern("Namespace");
+        let ns_sort = ClauseKind::Namespace;
 
         // Assert namespace as a fact — a namespace is its own domain.
         let ns_domain = self.kb.name_term_sym(ns_term);
@@ -12914,7 +12981,7 @@ impl<'a> Loader<'a> {
     ) {
         use crate::eval::value::Value;
         let alias_sym = self.kb.resolve_symbol("SortAlias");
-        let sort_sort = self.kb.intern("Sort");
+        let sort_sort = ClauseKind::Sort;
         self.kb.assert_metadata_fact_carrier(
             alias_sym,
             vec![Value::term(sort_term), target],
@@ -12991,7 +13058,7 @@ impl<'a> Loader<'a> {
     fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: Symbol) {
         let sort_term = self.name_to_sort_term(&s.name);
         self.defined_sorts.push(self.kb.name_term_sym(sort_term));
-        let sort_sort = self.kb.intern("Sort");
+        let sort_sort = ClauseKind::Sort;
 
         let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
         let (sort_kind, kind_str) = match s.kind {
@@ -13050,7 +13117,17 @@ impl<'a> Loader<'a> {
         for item in &s.items {
             if let Item::Entity(e) = item {
                 let ctor_term = self.name_to_sort_term(&e.name);
-                self.kb.register_entity_of(ctor_term, sort_term);
+                // WI-926 (§6.3): an eponymous constructor resolves to the sort's
+                // OWN symbol, so there is no entity→parent edge to record — the
+                // two ends would be the same node. Registering it would make
+                // `constructor_parent_sort(P) == Some(P)` and put P in its own
+                // `constructors_of_sort`, asserting a containment that does not
+                // exist. `field_constructors_of_sort` already reaches this shape
+                // by its field schema (WI-490's free-standing-entity arm), which
+                // is the same answer §6.3 says it should give.
+                if ctor_term != sort_term {
+                    self.kb.register_entity_of(ctor_term, sort_term);
+                }
                 let lowered: Vec<crate::eval::value::Value> =
                     e.fields.iter().map(|f| self.type_expr_to_value(&f.ty)).collect();
                 self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, parent_domain);
@@ -13264,7 +13341,7 @@ impl<'a> Loader<'a> {
             ));
         }
 
-        let rule_sort = self.kb.intern("Rule");
+        let rule_sort = ClauseKind::Rule;
         let body_nodes = self.kb.term_body_to_nodes(&body);
         self.kb.assert_rule_debruijn_with_nodes(head, body_nodes, rule_sort, parent_domain, None);
     }
@@ -13325,7 +13402,7 @@ impl<'a> Loader<'a> {
         op_refs: &[TermId],
         param_refs: &[TermId],
         req_terms: &[TermId],
-        sort_sort: Symbol,
+        sort_sort: ClauseKind,
         parent_domain: Symbol,
     ) {
         let sort_info_sym = self.kb.resolve_symbol("anthill.reflect.SortInfo");
@@ -13521,7 +13598,7 @@ impl<'a> Loader<'a> {
         let type_name = self.kb.intern("type_name");
         let fields = self.kb.intern("fields");
         self.kb.register_entity_fields(entity_info, vec![name, fields]);
-        let sort_sort = self.kb.intern("Sort");
+        let sort_sort = ClauseKind::Sort;
         EntityInfoSyms { field_info, entity_info, name, type_name, fields, sort_sort }
     }
 
@@ -13606,8 +13683,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_fact(&mut self, f: &Fact, domain: Symbol) {
-        let sort_name = f.sort.as_deref().unwrap_or("Fact");
-        let fact_sort = self.kb.intern(sort_name);
+        let fact_kind = ClauseKind::Fact;
 
         // Set owner: use the fact's head functor symbol if available. WI-745:
         // resolve it QUIETLY — the term build below resolves the same functor and
@@ -13640,7 +13716,7 @@ impl<'a> Loader<'a> {
         self.create_occurrence(f.term, term);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        let rule_id = self.kb.assert_fact(term, fact_sort, domain, meta);
+        let rule_id = self.kb.assert_fact(term, fact_kind, domain, meta);
         // WI-458: record the head's span on the RULE, not (only) under the
         // hash-consed head TermId. Two facts whose heads intern to the SAME
         // TermId but differ in sort/domain are not deduped (they get distinct
@@ -13935,7 +14011,7 @@ impl<'a> Loader<'a> {
         let sort_ref_arg = self.kb.intern("sort_ref");
         let spec_arg = self.kb.intern("spec");
         self.kb.register_entity_fields(provides_sym, vec![sort_ref_arg, spec_arg]);
-        let provides_sort = self.kb.intern("Requirement");
+        let provides_sort = ClauseKind::Requirement;
         self.kb.assert_fact_carrier(
             provides_sym,
             Vec::new(),
@@ -14050,7 +14126,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_rule(&mut self, r: &Rule, domain: Symbol) {
-        let rule_sort = self.kb.intern("Rule");
+        let rule_sort = ClauseKind::Rule;
 
         // WI-582: desugar the `[T]` type-variable-introducer form into the inline
         // form. Collect the head's introduced type-vars (`[T]`) and map each to
@@ -14545,7 +14621,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_operation(&mut self, o: &Operation, domain: Symbol) {
-        let op_sort = self.kb.intern("Operation");
+        let op_sort = ClauseKind::Operation;
         let functor = self.remap_name(&o.name);
 
         // Set owner for expression occurrences
@@ -14936,7 +15012,7 @@ impl<'a> Loader<'a> {
         // NOT stored, so don't claim an impl exists for it.
         if has_body && !body_poisoned {
             if let Some(op_impl_sym) = self.kb.try_resolve_symbol("anthill.realization.OperationImpl") {
-                let impl_sort = self.kb.intern("OperationImpl");
+                let impl_kind = ClauseKind::OperationImpl;
                 let operation_key = self.kb.intern("operation");
                 let params_key = self.kb.intern("params");
 
@@ -14956,7 +15032,7 @@ impl<'a> Loader<'a> {
                         (params_key, params_list_impl),
                     ]),
                 });
-                self.kb.assert_metadata_fact(op_impl, impl_sort, domain, None);
+                self.kb.assert_metadata_fact(op_impl, impl_kind, domain, None);
             }
         }
 
@@ -15014,8 +15090,10 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
 
-        let eq_sort = self.kb.intern("anthill.prelude.PartialEq");
-        self.kb.assert_rule_debruijn_with_nodes(head, vec![], eq_sort, domain, None);
+        // WI-922: a derived defining equation is a RULE; `PartialEq` was the sort it
+        // is about, not a clause kind.
+        let eq_kind = ClauseKind::Rule;
+        self.kb.assert_rule_debruijn_with_nodes(head, vec![], eq_kind, domain, None);
     }
 
     /// Replace `Ident(s)`/`Ref(s)` matching a parameter symbol with the
@@ -15112,7 +15190,7 @@ impl<'a> Loader<'a> {
         guard: Option<&[TermId]>,
         domain: Symbol,
     ) {
-        let constraint_sort = self.kb.intern("Constraint");
+        let constraint_sort = ClauseKind::Constraint;
         let constraint_sym = self.kb.resolve_symbol("Constraint");
 
         let head_pos: SmallVec<[TermId; 4]> = head.iter().map(|&tid| self.convert_term(tid)).collect();
@@ -15147,7 +15225,7 @@ impl<'a> Loader<'a> {
     /// Store a queryable `Constraint(guard(<LogicalQuery>))` reflection fact for a
     /// guard-registered (quantified) constraint, for parity with the denial form.
     fn store_logical_query_constraint_fact(&mut self, lq: TermId, domain: Symbol) {
-        let constraint_sort = self.kb.intern("Constraint");
+        let constraint_sort = ClauseKind::Constraint;
         let constraint_sym = self.kb.resolve_symbol("Constraint");
         let guard_sym = self.kb.intern("guard");
         let guard_term = self.kb.alloc(Term::Fn {
@@ -15288,7 +15366,7 @@ impl<'a> Loader<'a> {
     /// declaration's `s.items` in source order). See `named_requirement_slots` for why
     /// that list, and not the `SortRequiresInfo` FACT order, is the referent.
     fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol, slot_index: usize) {
-        let requirement_sort = self.kb.intern("Requirement");
+        let requirement_sort = ClauseKind::Requirement;
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
         let spec_value = self.sort_inst_to_value(&r.type_expr);
 
@@ -15894,8 +15972,8 @@ impl<'a> Loader<'a> {
                 (parametric_context_arg, nil_term),
             ]),
         });
-        let record_sort = self.kb.intern("anthill.realization.ProofRecord");
-        self.kb.assert_metadata_fact(record_term, record_sort, domain, None);
+        let record_kind = ClauseKind::Fact;
+        self.kb.assert_metadata_fact(record_term, record_kind, domain, None);
     }
 
     /// `provides Spec[...]` inside a sort body. Emits a
@@ -15909,7 +15987,7 @@ impl<'a> Loader<'a> {
     /// `Specialization` ProofRecords pointing at the supporting
     /// proofs.
     fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: Symbol) {
-        let provides_sort = self.kb.intern("Requirement");
+        let provides_sort = ClauseKind::Requirement;
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
         let spec_value = self.sort_inst_to_value(&pc.spec);
 
@@ -16082,7 +16160,7 @@ impl<'a> Loader<'a> {
             super::term::Literal::String(language_str.clone())));
 
         let om_sym = self.kb.resolve_symbol("anthill.realization.OperationMapping");
-        let om_sort = self.kb.intern("anthill.realization.OperationMapping");
+        let om_kind = ClauseKind::Fact;
         let carrier_arg = self.kb.intern("carrier");
         let operation_arg = self.kb.intern("operation");
         let host_fn_arg = self.kb.intern("host_fn");
@@ -16130,7 +16208,7 @@ impl<'a> Loader<'a> {
                         (lang_arg, language_term),
                     ]),
                 });
-                self.kb.assert_metadata_fact(fact, om_sort, spec_domain, None);
+                self.kb.assert_metadata_fact(fact, om_kind, spec_domain, None);
             }
         }
     }
@@ -16161,7 +16239,7 @@ impl<'a> Loader<'a> {
             super::term::Literal::String(language_str.clone())));
 
         let cm_sym = self.kb.resolve_symbol("anthill.realization.ConstMapping");
-        let cm_sort = self.kb.intern("anthill.realization.ConstMapping");
+        let cm_kind = ClauseKind::Fact;
         let carrier_arg = self.kb.intern("carrier");
         let const_name_arg = self.kb.intern("const_name");
         let host_fn_arg = self.kb.intern("host_fn");
@@ -16203,7 +16281,7 @@ impl<'a> Loader<'a> {
                         (lang_arg, language_term),
                     ]),
                 });
-                self.kb.assert_metadata_fact(fact, cm_sort, spec_domain, None);
+                self.kb.assert_metadata_fact(fact, cm_kind, spec_domain, None);
             }
         }
     }
@@ -16308,8 +16386,8 @@ impl<'a> Loader<'a> {
                 (nm_field, nm_list),
             ]),
         });
-        let impl_sort = self.kb.intern("anthill.realization.Implementation");
-        self.kb.assert_metadata_fact(impl_term, impl_sort, spec_domain, None);
+        let impl_kind = ClauseKind::Fact;
+        self.kb.assert_metadata_fact(impl_term, impl_kind, spec_domain, None);
     }
 
     /// Convert a parsed host_type term (typically a `Term::Const(String)`
@@ -16324,7 +16402,7 @@ impl<'a> Loader<'a> {
     }
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: Symbol) {
-        let desc_sort = self.kb.intern("Description");
+        let desc_sort = ClauseKind::Description;
         let desc_sym = self.kb.resolve_symbol("anthill.reflect.DescriptionInfo");
         let target_field = self.kb.intern("target");
         let content_field = self.kb.intern("content");
@@ -16513,7 +16591,7 @@ impl<'a> Loader<'a> {
 
     fn emit_member_fact(&mut self, name_sym: Symbol, kind_name: &str, parent: TermId) {
         let member_sym = self.kb.resolve_symbol("anthill.reflect.MemberInfo");
-        let member_sort = self.kb.intern("Member");
+        let member_sort = ClauseKind::Member;
         let name_field = self.kb.intern("name");
         let kind_field = self.kb.intern("kind");
         let parent_field = self.kb.intern("parent");

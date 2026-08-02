@@ -24,6 +24,7 @@ use smallvec::SmallVec;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
+use super::ClauseKind;
 use super::node_occurrence::NodeOccurrence;
 use super::resolve::{PositionalPlan, ResolveConfig, SearchStream};
 use super::term::{Literal, Term, TermId, Var, VarId};
@@ -440,7 +441,7 @@ impl KnowledgeBase {
         });
 
         if fresh {
-            let rule_sort = self.intern("Rule");
+            let rule_sort = ClauseKind::Rule;
             let domain = self.intern("_global");
             // WI-678: the stored body is the goal carriers themselves — an
             // occurrence goal is used directly (its spans/types preserved, no

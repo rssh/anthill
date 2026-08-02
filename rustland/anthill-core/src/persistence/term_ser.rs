@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
+use crate::kb::ClauseKind;
 use crate::intern::{positional_label, Symbol};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::{KnowledgeBase, RuleId};
@@ -31,6 +32,10 @@ pub enum SerError {
     Format(String),
     MissingMeta(String),
     UnknownEntity(String),
+    /// WI-926: `meta.entity` resolved to a symbol that declares no fields. The
+    /// name is not an entity — typically a multi-constructor sort, which has no
+    /// single row shape to deserialize against.
+    NoFieldSchema { entity: String, constructors: Vec<String> },
     UnknownField { entity: String, field: String },
     MissingField { entity: String, field: String },
     InvalidValue(String),
@@ -42,6 +47,15 @@ impl std::fmt::Display for SerError {
             SerError::Format(msg) => write!(f, "format error: {msg}"),
             SerError::MissingMeta(msg) => write!(f, "missing meta: {msg}"),
             SerError::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
+            SerError::NoFieldSchema { entity, constructors } => {
+                write!(f, "'{entity}' declares no fields, so a persisted row has no \
+                           schema to reconstruct against")?;
+                if !constructors.is_empty() {
+                    write!(f, " (it is a sort with constructors {}; name one of them \
+                               in meta.entity)", constructors.join(", "))?;
+                }
+                Ok(())
+            }
             SerError::UnknownField { entity, field } => {
                 write!(f, "unknown field '{field}' on entity '{entity}'")
             }
@@ -242,18 +256,53 @@ fn load_section(
     let functor = resolve_entity_functor(kb, entity_name)
         .ok_or_else(|| vec![SerError::UnknownEntity(entity_name.into())])?;
 
-    // Get field schema
-    let fields = kb
-        .entity_field_names(functor)
-        .map(|f| f.to_vec())
-        .unwrap_or_default();
+    // Get field schema. A MISS IS FATAL (WI-926).
+    //
+    // This used to `unwrap_or_default()`, deserializing the whole section against
+    // an EMPTY schema, and it missed for the commonest shape: `sort S { entity
+    // S(…) }` gave the SORT the qualified name `…S` and the constructor the
+    // nested `…S.S`, so this landed on the sort, which carried no schema. An
+    // empty schema is not a degraded reconstruction, it is a different one —
+    // WI-501's whole point is that reload consults each field's DECLARED type, so
+    // a `status: Status` field arrived as the bare String `"Open"` where the
+    // source-loaded fact holds the entity `Open`, and the two never
+    // discrim-matched. §6.3 now gives that shape ONE symbol
+    // (`eponymous_sort_symbol`), so the name a data file writes is the name that
+    // carries the schema and this lookup hits. What is left is a genuine miss —
+    // a multi-constructor sort, which has no single row shape — and it is an
+    // error, not an empty list.
+    let fields = match kb.entity_field_names(functor) {
+        Some(f) => f.to_vec(),
+        None => {
+            let constructors = kb
+                .constructors_of_sort(functor)
+                .iter()
+                .map(|c| kb.qualified_name_of(*c).to_string())
+                .collect();
+            return Err(vec![SerError::NoFieldSchema {
+                entity: entity_name.into(),
+                constructors,
+            }]);
+        }
+    };
 
     let data = obj.get("data").ok_or_else(|| {
         vec![SerError::MissingMeta("section has no 'data' key".into())]
     })?;
 
-    // Determine the sort for this entity
-    let sort = entity_sort(kb, functor);
+    // WI-922: a persisted data row is a FACT, unconditionally. This used to
+    // call `entity_sort`, which answered a DIFFERENT question — the functor's
+    // declared parent SORT — and on a miss substituted the `Fact` clause-kind
+    // tag, so which classification the KB stored depended on whether the
+    // constructor happened to be registered yet.
+    //
+    // Dropping the fallback must not also drop the condition it absorbed — that
+    // check now lives on the field schema above, which is what this function
+    // actually needs. Note it is NOT "has a parent sort": a free-standing
+    // `entity` declared at namespace level has no parent and is perfectly
+    // deserializable, which is exactly why the old `unwrap_or(Fact)` had a
+    // legitimate case to hide behind.
+    let clause_kind = ClauseKind::Fact;
 
     let entries: Vec<&serde_json::Value> = match data {
         serde_json::Value::Array(arr) => arr.iter().collect(),
@@ -271,7 +320,7 @@ fn load_section(
     for entry in entries {
         match load_entry(kb, entry, functor, &fields, entity_name) {
             Ok(term) => {
-                kb.assert_fact(term, sort, domain, None);
+                kb.assert_fact(term, clause_kind, domain, None);
                 count += 1;
             }
             Err(e) => errors.push(e),
@@ -299,10 +348,7 @@ fn resolve_entity_functor(kb: &mut KnowledgeBase, name: &str) -> Option<Symbol> 
     None
 }
 
-/// Get the sort term for an entity functor (its parent sort, or "Fact" fallback).
-fn entity_sort(kb: &mut KnowledgeBase, functor: Symbol) -> Symbol {
-    kb.constructor_parent_sort(functor).unwrap_or_else(|| kb.intern("Fact"))
-}
+
 
 /// Load a single data entry into a KB term, reconstructing each field
 /// type-directedly (WI-501). The serializer is lossy without types — it strips
@@ -332,7 +378,12 @@ fn load_entry(
     for (key, value) in obj {
         let field_sym = find_field_sym(kb, fields, key);
 
-        if !fields.is_empty() && !fields.contains(&field_sym) {
+        // WI-926: no `fields.is_empty()` escape. `fields` is now always the
+        // DECLARED schema (the caller errors if there is none), so an empty one
+        // means a genuinely 0-field entity — for which every written key IS
+        // unknown. The guard existed only to keep the old schema-less path from
+        // rejecting every row.
+        if !fields.contains(&field_sym) {
             return Err(SerError::UnknownField {
                 entity: entity_name.into(),
                 field: key.clone(),

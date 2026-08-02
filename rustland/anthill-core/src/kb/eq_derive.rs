@@ -51,6 +51,7 @@ use smallvec::SmallVec;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
+use crate::kb::ClauseKind;
 use crate::kb::term::Term;
 use crate::kb::term_view::{TermView, ViewHead};
 use crate::kb::KnowledgeBase;
@@ -275,7 +276,7 @@ fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) {
     });
     let sort_ref_term = kb.make_name_term_from_sym(carrier);
     kb.register_entity_fields(provides_sym, vec![sort_ref_key, spec_key]);
-    let provides_sort = kb.intern("Requirement");
+    let provides_sort = ClauseKind::Requirement;
     kb.assert_fact_carrier(
         provides_sym,
         Vec::new(),

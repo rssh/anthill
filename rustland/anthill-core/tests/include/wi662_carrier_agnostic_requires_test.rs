@@ -23,6 +23,7 @@ use anthill_core::kb::typing::{requires_chain_flat, requires_tree};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
+use anthill_core::kb::ClauseKind;
 
 /// Stdlib + a two-sort source (`Foo` the required spec, `Carrier` the requiring
 /// sort) → the loaded KB.
@@ -91,7 +92,7 @@ fn assert_requires_fact(kb: &mut KnowledgeBase, denoted: bool) -> (Symbol, Symbo
         foo_base
     };
 
-    let req_sort = kb.intern("Requirement");
+    let req_sort = ClauseKind::Requirement;
     let domain = kb.intern("test.wi662");
     kb.assert_fact_carrier(
         requires_sym,
@@ -215,7 +216,7 @@ end
         pos: vec![foo_base].into(),
         named: vec![(x_sym, x_ref), (e_sym, Value::Node(node))].into(),
     };
-    let req_sort = kb.intern("Requirement");
+    let req_sort = ClauseKind::Requirement;
     let domain = kb.intern("test.wi662b");
     kb.assert_fact_carrier(
         requires_sym,

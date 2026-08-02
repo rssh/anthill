@@ -1388,6 +1388,38 @@ entity Marker
 →  sort Marker { entity Marker }
 ```
 
+**An eponymous constructor IS its sort** (WI-926). A constructor that carries its
+enclosing sort's own name declares no second name: `sort Project { entity
+Project(…) }` writes `Project` once and defines **one** symbol — there is no
+nested `Project.Project`. The field schema, the `EntityInfo`, and the head functor
+of a `Project(…)` fact are all that one name, so a reader that resolves `Project`
+finds the declaration a writer wrote. This is what makes the desugaring above an
+*equivalence* rather than a rename: the sugar and the long form denote the same
+thing, and a `.toml`/`.json` store, a codegen backend, or a reflect query naming
+`Project` gets the same answer either way.
+
+A constructor named *differently* from its sort is unaffected — `sort Status {
+entity Open, entity Closed }` and `sort Person { entity mk(…) }` keep their nested
+`Status.Open` / `Person.mk` symbols. The rule is keyed on the name matching, not
+on being a sole variant. Only a **sort** body collapses; `namespace Project {
+entity Project(…) }` does not, since a namespace is not a single-constructor sort.
+
+Two consequences worth stating, because they are what the rule buys:
+
+- Such a sort **is its own constructor**, not the parent of one:
+  `constructor_parent_sort` is `none` and `constructors_of_sort` is empty, exactly
+  as for a free-standing `entity`. What answers "is this constructible" is the
+  declared **field schema** — the same question for both spellings.
+- A **bare** `Project` still denotes the *type* (it is passable where a `Type` is
+  expected); an **applied** `Project(name: …, language: …)` constructs. Position
+  decides, as it already did for a free-standing entity. One consequence, measured:
+  a sort that is *both* eponymous and parameterized cannot also be written
+  `Box[T = Int64]` in a **value** position (`is_modifiable(Box[T = Int64])`) — the
+  bracketed and parenthesized forms reach the loader as one node, and it reads the
+  arguments as fields, so the type argument is **refused by name**
+  (`unknown field 'T' on entity 'Box' — declared: value`). **Type** position
+  (`b: Box[T = Int64]`) is unaffected; it lowers through a different path.
+
 **Distinct field names** (WI-808): an entity's field names must be distinct —
 `entity mk(a: Int64, a: Int64)` is a located error naming the repeated field. A field
 name is how the field is *addressed* — `x.f`, a named argument, a rule pattern — and

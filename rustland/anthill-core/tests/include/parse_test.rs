@@ -8,6 +8,7 @@ use anthill_core::kb::term::{Term, TermId, Literal, Var};
 use anthill_core::kb::load::{self, NullResolver};
 
 use crate::common::{collect_anthill_files, stdlib_dir};
+use anthill_core::kb::ClauseKind;
 
 fn first_operation(parsed: &ParsedFile) -> &Operation {
     match &parsed.items[0] {
@@ -731,8 +732,8 @@ fn load_fact_and_query_by_sort() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let fact_sort = kb.intern("Fact");
-    let facts = kb.by_sort(fact_sort);
+    let fact_sort = ClauseKind::Fact;
+    let facts = kb.clauses_of_kind(fact_sort);
     assert!(!facts.is_empty(), "should have at least one Fact");
 }
 
@@ -761,8 +762,8 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check we have facts of various sorts
-    let ns_sort = kb.intern("Namespace");
-    assert!(!kb.by_sort(ns_sort).is_empty(), "should have Namespace fact");
+    let ns_sort = ClauseKind::Namespace;
+    assert!(!kb.clauses_of_kind(ns_sort).is_empty(), "should have Namespace fact");
 
     // WI-515: entity declarations no longer assert a same-functor schema fact
     // under sort `Entity` (it polluted var-quantified queries); the
@@ -773,11 +774,11 @@ end
         "should have entity field types registered"
     );
 
-    let op_sort = kb.intern("Operation");
-    assert!(!kb.by_sort(op_sort).is_empty(), "should have Operation fact");
+    let op_sort = ClauseKind::Operation;
+    assert!(!kb.clauses_of_kind(op_sort).is_empty(), "should have Operation fact");
 
-    let fact_sort = kb.intern("Fact");
-    assert!(!kb.by_sort(fact_sort).is_empty(), "should have Fact fact");
+    let fact_sort = ClauseKind::Fact;
+    assert!(!kb.clauses_of_kind(fact_sort).is_empty(), "should have Fact fact");
 
     // Check sort relationship: dollars < Money
     let money_term = kb.resolve_qualified_name_term("banking.Money");
@@ -851,8 +852,8 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Operations should be registered as facts with sort "Operation"
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 2, "should have 2 Operation facts (deposit, withdraw)");
 
     // The operation facts should be scoped to the Account sort (not a separate domain)
@@ -915,8 +916,8 @@ sort Store {
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 3, "should have 3 operations");
 
     // Check each OperationInfo has effects stored as cons-list
@@ -971,8 +972,8 @@ fn load_operation_with_abstract_effect() {
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation");
 
     // Abstract effect E should still be stored in effects list
@@ -1001,12 +1002,19 @@ fn retract_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let fact_sort = kb.intern("Fact");
-    let facts = kb.by_sort(fact_sort);
+    // WI-922: this counted `by_sort[Fact]`. That bucket now also holds the
+    // loader's own `Fact`-kinded clauses (the `EffectsRuntime` bridge), which
+    // used to hide under a user-sort key — so a KB-wide kind census is not a
+    // count of this program's facts. The subject here is retracting the
+    // `parent` fact, which is a functor question.
+    // `intern`: a bare top-level `fact parent(...)` head functor is an
+    // interned symbol, not a defined one.
+    let parent_sym = kb.intern("parent");
+    let facts = kb.rules_by_functor(parent_sym);
     assert_eq!(facts.len(), 1);
 
     kb.retract(facts[0]);
-    assert_eq!(kb.by_sort(fact_sort).len(), 0);
+    assert_eq!(kb.rules_by_functor(parent_sym).len(), 0);
 }
 
 // ── MemberInfo fact tests ───────────────────────────────────────
@@ -1289,8 +1297,8 @@ sort Ordered {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check that a Requirement fact exists
-    let req_sort = kb.intern("Requirement");
-    let reqs = kb.by_sort(req_sort);
+    let req_sort = ClauseKind::Requirement;
+    let reqs = kb.clauses_of_kind(req_sort);
     assert_eq!(reqs.len(), 1, "should have 1 Requirement fact");
 
     // The requirement should be scoped to the Ordered sort
@@ -1400,8 +1408,8 @@ end
         .expect("load_all failed");
 
     // Both namespaces should be registered
-    let ns_sort = kb.intern("Namespace");
-    let namespaces = kb.by_sort(ns_sort);
+    let ns_sort = ClauseKind::Namespace;
+    let namespaces = kb.clauses_of_kind(ns_sort);
     assert_eq!(namespaces.len(), 2, "should have 2 namespaces");
 
     // Geometry's facts should reference Measure (from Units)
@@ -1415,8 +1423,8 @@ end
     assert!(!units_facts.is_empty(), "Units should have facts");
 
     // Both sorts should exist as type references in operations
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 2, "should have 2 operations (area, convert)");
 
     // Cross-namespace type references resolved via imports.
@@ -2042,8 +2050,8 @@ fn load_operation_with_variable_types() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 Operation fact");
 }
 
@@ -2236,8 +2244,8 @@ fn namespace_scoped_sorts_resolve() {
         .expect("load should succeed: B is visible from C via namespace A");
 
     // Verify requirement is registered
-    let req_sort = kb.intern("Requirement");
-    let reqs = kb.by_sort(req_sort);
+    let req_sort = ClauseKind::Requirement;
+    let reqs = kb.clauses_of_kind(req_sort);
     assert_eq!(reqs.len(), 1, "should have 1 Requirement (B) for C");
 }
 
@@ -2269,8 +2277,8 @@ sort B {
     assert_ne!(a_term, b_term, "A and B should be distinct sorts");
 
     // Both should have requirements
-    let req_sort = kb.intern("Requirement");
-    let reqs = kb.by_sort(req_sort);
+    let req_sort = ClauseKind::Requirement;
+    let reqs = kb.clauses_of_kind(req_sort);
     assert_eq!(reqs.len(), 2, "should have 2 requirements (A requires B, B requires A)");
 }
 
@@ -2299,13 +2307,13 @@ fn multi_file_same_namespace_resolution() {
         .expect("load should succeed: A is visible from B via shared namespace ns");
 
     // Both sorts should be registered
-    let sort_sort = kb.intern("Sort");
-    let sorts = kb.by_sort(sort_sort);
+    let sort_sort = ClauseKind::Sort;
+    let sorts = kb.clauses_of_kind(sort_sort);
     assert!(sorts.len() >= 2, "should have at least 2 sorts (A, B)");
 
     // The operation in B should reference A
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }
 
@@ -2321,8 +2329,8 @@ fn multi_file_same_namespace_no_duplicate_facts() {
     load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
         .expect("load failed");
 
-    let ns_sort = kb.intern("Namespace");
-    let ns_facts = kb.by_sort(ns_sort);
+    let ns_sort = ClauseKind::Namespace;
+    let ns_facts = kb.clauses_of_kind(ns_sort);
     // Two files both declare `namespace ns` — should produce 1 Namespace fact, not 2
     let ns_count = ns_facts.iter().filter(|&&fid| {
         if let Term::Fn { functor, .. } = kb.get_term(kb.fact_term(fid)) {
@@ -2389,13 +2397,13 @@ fn dotted_siblings_share_scope() {
         .expect("load should succeed: A and B are siblings in implicit 'ns' scope");
 
     // Both sorts should be registered
-    let sort_sort = kb.intern("Sort");
-    let sorts = kb.by_sort(sort_sort);
+    let sort_sort = ClauseKind::Sort;
+    let sorts = kb.clauses_of_kind(sort_sort);
     assert!(sorts.len() >= 2, "should have at least 2 sorts (A, B)");
 
     // The operation in B should reference A (resolved via shared ns scope)
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }
 
@@ -2446,8 +2454,8 @@ fn implicit_and_explicit_namespace_merge() {
     assert!(kb.has_qualified_name("ns.B"));
 
     // The operation in B should resolve A via the shared namespace scope
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }
 
@@ -2541,8 +2549,8 @@ fn load_abstract_sort_variable_emits_sort_alias() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let sort_sort = kb.intern("Sort");
-    let facts = kb.by_sort(sort_sort);
+    let sort_sort = ClauseKind::Sort;
+    let facts = kb.clauses_of_kind(sort_sort);
     // Find the SortAlias fact
     let alias_facts: Vec<_> = facts.iter().filter(|fid| {
         let tid = kb.fact_term(**fid);
@@ -2575,8 +2583,8 @@ fn load_abstract_sort_anonymous_variable_emits_sort_alias() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let sort_sort = kb.intern("Sort");
-    let facts = kb.by_sort(sort_sort);
+    let sort_sort = ClauseKind::Sort;
+    let facts = kb.clauses_of_kind(sort_sort);
     let alias_facts: Vec<_> = facts.iter().filter(|fid| {
         let tid = kb.fact_term(**fid);
         matches!(kb.get_term(tid), Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "SortAlias")
@@ -2601,8 +2609,8 @@ fn load_abstract_sort_shared_variables() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let sort_sort = kb.intern("Sort");
-    let facts = kb.by_sort(sort_sort);
+    let sort_sort = ClauseKind::Sort;
+    let facts = kb.clauses_of_kind(sort_sort);
     let alias_facts: Vec<_> = facts.iter().filter(|fid| {
         let tid = kb.fact_term(**fid);
         matches!(kb.get_term(tid), Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "SortAlias")
@@ -4337,8 +4345,8 @@ fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Opt
 /// Helper: find an OperationInfo by qualified name substring from op facts.
 /// Uses `contains` to match qualified names like "test.expr.max".
 fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
-    let op_sort = kb.intern("Operation");
-    let ops = kb.by_sort(op_sort);
+    let op_sort = ClauseKind::Operation;
+    let ops = kb.clauses_of_kind(op_sort);
     for &fid in &ops {
         // WI-348: an OperationInfo for an op with a `denoted` effect is a value
         // fact (Node-carrying head); this term-only helper skips those.
@@ -4551,8 +4559,8 @@ end
 "#);
 
     // Check OperationImpl fact was emitted
-    let impl_sort = kb.intern("OperationImpl");
-    let impls = kb.by_sort(impl_sort);
+    let impl_sort = ClauseKind::OperationImpl;
+    let impls = kb.clauses_of_kind(impl_sort);
     // Find the one for "incr"
     let mut found = false;
     for &fid in &impls {
@@ -4898,8 +4906,8 @@ fn parse_sort_companion_call_no_op_type_args() {
 /// Find the loaded OperationInfo fact whose `name` field references the
 /// given short name. Returns the OperationInfo's term id.
 fn find_operation_info(kb: &mut KnowledgeBase, short_name: &str) -> TermId {
-    let op_sort = kb.intern("Operation");
-    let fid = kb.by_sort(op_sort).into_iter().find(|&fid| {
+    let op_sort = ClauseKind::Operation;
+    let fid = kb.clauses_of_kind(op_sort).into_iter().find(|&fid| {
         match kb.get_term(kb.fact_term(fid)) {
             Term::Fn { named_args, .. } => named_args.iter().any(|(s, t)| {
                 kb.resolve_sym(*s) == "name"

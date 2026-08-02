@@ -27,8 +27,11 @@ fn load_with(extra: &str) -> KnowledgeBase {
 }
 
 fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
-    let sort_sym = kb.intern("anthill.realization.ProofRecord");
-    let rules = kb.by_sort(sort_sym);
+    // WI-922: found by HEAD FUNCTOR, which is the RESOLVED symbol —
+    // `kb.intern(qn)` mints a different one in a disjoint space.
+    let sort_sym = kb.try_resolve_symbol("anthill.realization.ProofRecord")
+        .expect("resolve anthill.realization.ProofRecord");
+    let rules = kb.rules_by_functor(sort_sym);
     let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = TermPrinter::new(kb);
     let mut out: Vec<String> = heads.into_iter()

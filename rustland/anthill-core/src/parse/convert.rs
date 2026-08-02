@@ -3630,7 +3630,7 @@ impl<'a> Converter<'a> {
         }
         let term = self.convert_term(term_node);
         let meta = self.convert_meta_block(node);
-        Some(Fact { term, sort: None, meta, span })
+        Some(Fact { term, meta, span })
     }
 
     fn convert_constraint(&mut self, node: Node) -> Option<Constraint> {

@@ -9,6 +9,7 @@ use anthill_core::persistence::indexed_file_store::IndexedFileStore;
 use anthill_core::persistence::Store;
 
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// Allocate `WorkItem(id: "...", status: ...)` in the KB. Returns the
 /// term id and the rule id (the asserted fact's RuleId).
@@ -29,7 +30,7 @@ fn make_wi(kb: &mut KnowledgeBase, id_str: &str, status_name: &str) -> (TermId, 
         pos_args: SmallVec::new(),
         named_args: named,
     });
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let rid = kb.assert_fact(head, sort, domain, None);
     (head, rid)

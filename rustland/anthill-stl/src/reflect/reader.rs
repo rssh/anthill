@@ -39,6 +39,7 @@ use anthill_core::kb::op_info;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
 use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::ClauseKind;
 
 // ── Leaf helpers ────────────────────────────────────────────────
 
@@ -343,16 +344,18 @@ pub(crate) fn read_descriptions(
 /// The head `Value`s of every `Rule` fact whose domain is the resolved sort
 /// `sort_sym` (WI-632: matched by functor symbol, not by display-name string).
 /// Each realization reifies these to its own term-repr form.
+///
+/// WI-922 — selects on `by_domain`, the index that actually discriminates here,
+/// and applies the clause KIND as a filter. This used to enumerate every
+/// `Rule`-keyed clause KB-wide through the retired `by_sort` index and then
+/// discard all but one domain's. The set is unchanged: that index's entity-child
+/// union could never contribute here, `Rule` being a kind, not a sort.
 pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Value> {
-    let rule_sort = kb.intern("Rule");
-    let mut out = Vec::new();
-    for clause in kb.program_clauses_by_sort(rule_sort) {
-        if clause.domain != sort_sym {
-            continue;
-        }
-        out.push(clause.head);
-    }
-    out
+    kb.program_clauses_by_domain(sort_sym)
+        .into_iter()
+        .filter(|clause| clause.clause_kind == ClauseKind::Rule)
+        .map(|clause| clause.head)
+        .collect()
 }
 
 // ── Shared term reify / reflect walk (WI-555) ───────────────────

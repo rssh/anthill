@@ -20,6 +20,7 @@ use anthill_core::kb::typing::{sort_functor_of_view, type_check_node, TypingEnv}
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// A KB with the prelude registered — the typer needs the
 /// `anthill.prelude.Type.*` / `Int64` / `Bool` symbols to build leaf types.
@@ -68,7 +69,7 @@ fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
     });
-    let sort = kb.intern("Eq");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     kb.assert_fact(eq_head, sort, domain, Some(meta));
     add
@@ -109,7 +110,7 @@ fn assert_add_comm(kb: &mut KnowledgeBase) -> Symbol {
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
     });
-    let sort = kb.intern("Eq");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     kb.assert_fact(eq_head, sort, domain, Some(meta));
     add

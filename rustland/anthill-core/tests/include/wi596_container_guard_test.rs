@@ -24,6 +24,7 @@ use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// A self-representing container spec `Bag` (carrier = `Bag`, element `T`,
 /// `requires Eq[T]`), a concrete carrier `IntBag` that `provides Bag[T = Int64]`,
@@ -272,8 +273,8 @@ fn nested_container_law_does_not_fire_when_carrier_lacks_spec() {
 /// Does some equational rule whose LHS outer functor is `op_qn` carry `[simp]`?
 fn simp_law_present(kb: &mut KnowledgeBase, op_qn: &str) -> bool {
     let op_sym = sym(kb, op_qn);
-    let rule_sort = kb.intern("Rule");
-    let rules = kb.by_sort(rule_sort);
+    let rule_sort = ClauseKind::Rule;
+    let rules = kb.clauses_of_kind(rule_sort);
     for rid in rules {
         let head = kb.rule_head(rid);
         if !is_equational_head(kb, head) {

@@ -11,6 +11,7 @@
 /// canonical printed form of its head term (`TermPrinter::print_term`).
 /// Inter-fact text — comments, blank lines, anything outside a
 /// `fact …(…)` block — is preserved across rewrites. Comments inside a
+use crate::kb::ClauseKind;
 /// fact block are not preserved (the block is treated as a single unit).
 
 use std::collections::HashMap;
@@ -80,7 +81,7 @@ impl FileStore {
     }
 
     /// Determine the file path for a fact based on convention.
-    fn fact_path(&self, kb: &KnowledgeBase, _sort: Symbol, domain: Symbol) -> PathBuf {
+    fn fact_path(&self, kb: &KnowledgeBase, _clause_kind: ClauseKind, domain: Symbol) -> PathBuf {
         match &self.convention {
             FileConvention::Flat => self.root.join("facts.anthill"),
             FileConvention::SingleFile(name) => self.root.join(name),
@@ -118,11 +119,11 @@ impl Store for FileStore {
         &mut self,
         kb: &KnowledgeBase,
         fact: TermId,
-        sort: Symbol,
+        clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
-        let path = self.fact_path(kb, sort, domain);
+        let path = self.fact_path(kb, clause_kind, domain);
         let text = print::print_fact(kb, fact, meta);
         self.pending_writes.push(PendingWrite { path, text });
         Ok(())
@@ -133,9 +134,9 @@ impl Store for FileStore {
             return Ok(false);
         }
         let head = kb.rule_head(id);
-        let sort = kb.rule_sort(id);
+        let clause_kind = kb.rule_clause_kind(id);
         let domain = kb.rule_domain(id);
-        let path = self.fact_path(kb, sort, domain);
+        let path = self.fact_path(kb, clause_kind, domain);
         let head_canonical = print::TermPrinter::new(kb).print_term(head);
         self.pending_retracts.push(PendingRetract { path, head_canonical });
         Ok(true)
@@ -146,7 +147,7 @@ impl Store for FileStore {
         kb: &KnowledgeBase,
         id: RuleId,
         new: TermId,
-        sort: Symbol,
+        clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {
@@ -155,7 +156,7 @@ impl Store for FileStore {
         }
         // Both mutations are still buffered; the next flush rewrites each
         // affected file once, so no on-disk observer sees an intermediate row.
-        self.persist(kb, new, sort, domain, meta)?;
+        self.persist(kb, new, clause_kind, domain, meta)?;
         Ok(true)
     }
 

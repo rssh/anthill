@@ -925,3 +925,6 @@ mod wi919_mirror_policy_keying_test;
 
 #[path = "include/wi920_resident_write_domain_test.rs"]
 mod wi920_resident_write_domain_test;
+
+#[path = "include/wi926_eponymous_entity_test.rs"]
+mod wi926_eponymous_entity_test;

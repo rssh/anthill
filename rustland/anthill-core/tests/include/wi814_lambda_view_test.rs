@@ -31,6 +31,7 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// A KB with the full stdlib loaded — every reflect / prelude symbol the
 /// lambda_expr and Pattern encodings use is resolved, as in any loader-built KB.
@@ -242,7 +243,7 @@ fn one_source_lambda_equal_two_distinct_sources_not() {
 #[test]
 fn lambda_cross_carrier_discrim_match() {
     let mut kb = stdlib_kb();
-    let fact_sort = kb.intern("Fact");
+    let fact_sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let b = kb.intern("b#1");
     let term = lambda_term(&mut kb, b);

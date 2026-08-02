@@ -11,7 +11,7 @@ pub mod indexed_file_store;
 pub mod term_ser;
 
 use crate::intern::Symbol;
-use crate::kb::{RuleId, KnowledgeBase};
+use crate::kb::{ClauseKind, RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse::ir::ParsedFile;
 
@@ -115,7 +115,7 @@ pub trait Store {
         &mut self,
         kb: &KnowledgeBase,
         fact: TermId,
-        sort: Symbol,
+        clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError>;
@@ -147,7 +147,7 @@ pub trait Store {
         _kb: &KnowledgeBase,
         _id: RuleId,
         _new: TermId,
-        _sort: Symbol,
+        _clause_kind: ClauseKind,
         _domain: Symbol,
         _meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {

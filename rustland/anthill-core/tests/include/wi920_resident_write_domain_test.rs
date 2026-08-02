@@ -102,7 +102,7 @@ fn keys_of(interp: &mut Interpreter, qname: &str) -> Vec<(String, String)> {
         .unwrap_or_else(|| panic!("resolve `{qname}`"));
     let kb = interp.kb();
     kb.rules_by_functor(sym).iter().map(|&rid| (
-        kb.qualified_name_of(kb.rule_sort(rid)).to_string(),
+        kb.rule_clause_kind(rid).to_string(),
         kb.qualified_name_of(kb.rule_domain(rid)).to_string(),
     )).collect()
 }

@@ -26,8 +26,15 @@ fn load_with(extra: &str) -> KnowledgeBase {
 }
 
 fn render_facts_for(kb: &mut KnowledgeBase, sort_qn: &str) -> Vec<String> {
-    let sort_sym = kb.intern(sort_qn);
-    let rules = kb.by_sort(sort_sym);
+    // WI-922: these clauses are found by their HEAD FUNCTOR, which is the
+    // RESOLVED `ProofRecord` symbol — `kb.intern(qn)` mints a different symbol
+    // in a disjoint space (`define*` never touches `intern_map`), so resolving
+    // is load-bearing here, not stylistic. They used to be reachable by their
+    // clause key instead, because four loader sites filed them under a raw
+    // intern of this sort's name where every other clause carries a kind.
+    let sort_sym = kb.try_resolve_symbol(sort_qn)
+        .unwrap_or_else(|| panic!("resolve `{sort_qn}`"));
+    let rules = kb.rules_by_functor(sort_sym);
     let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = TermPrinter::new(kb);
     let mut out: Vec<String> = heads.into_iter()

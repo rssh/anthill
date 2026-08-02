@@ -38903,6 +38903,7 @@ mod wi394_surface_node_binding_tests {
 #[cfg(test)]
 mod p3_tests {
     //! WI-342 P3 — carrier-agnostic `unify_types` over `TermView`.
+    use crate::kb::ClauseKind;
     use super::unify_types;
     use crate::eval::value::Value;
     use crate::kb::load::register_prelude;
@@ -38990,6 +38991,7 @@ mod wi361_reader_tests {
     //! form today, so the test manually constructs the term backing to exercise
     //! the migrated path. (The deep-form path stays covered by the wider suite;
     //! the carrier-agnostic classifier itself by `type_extract_test`.)
+    use crate::kb::ClauseKind;
     use super::{extract_sort_ref_sym, sort_functor_of};
     use crate::kb::term_view::TermIdView;
     use crate::intern::Symbol;
@@ -39159,6 +39161,7 @@ mod p4_tests {
     //! WI-342 P4-A — carrier-agnostic structural unification of a
     //! `Value`-carried `parameterized` (the denoted-bearing effect label),
     //! standalone (not yet inside a row — that's P4-B).
+    use crate::kb::ClauseKind;
     use super::unify_types;
     use crate::kb::load::register_prelude;
     use crate::kb::node_occurrence::{NodeOccurrence, TypeChild};
@@ -39326,7 +39329,7 @@ mod p4_tests {
         let var_term = kb.alloc(Term::Var(Var::Global(vid_seed)));
         let alias_sym = kb.resolve_symbol("SortAlias");
         let box_t_head = kb.make_name_term_from_sym(box_t);
-        let sort_sort = kb.intern("Sort");
+        let sort_sort = ClauseKind::Sort;
         kb.assert_fact_carrier(
             alias_sym,
             vec![Value::term(box_t_head), Value::term(var_term)],
@@ -40010,6 +40013,7 @@ mod wi617_canonical_provider_match_tests {
     //! The load pipeline canonicalizes at the producer (WI-581), so this divergent
     //! interning is not reproducible through a source-level load — the test injects
     //! it directly, which is the level at which the gap is observable.
+    use crate::kb::ClauseKind;
     use super::{carrier_is_abstract_spec, spec_has_any_providers};
     use crate::intern::SymbolKind;
     use crate::kb::term::Term;
@@ -40061,7 +40065,7 @@ mod wi617_canonical_provider_match_tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(spec_key, spec_ref)]),
         });
-        let sort = kb.intern("anthill.reflect.SortProvidesInfo");
+        let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         kb.assert_fact(head, sort, domain, None);
 

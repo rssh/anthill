@@ -20,6 +20,7 @@
 use anthill_core::kb::KnowledgeBase;
 
 use crate::common::try_load_kb_with;
+use anthill_core::kb::ClauseKind;
 
 /// Load `source` over the full stdlib, returning the load errors as strings.
 /// The stdlib is REQUIRED, not incidental: the `Implementation` fact this block
@@ -86,10 +87,17 @@ fn unparameterized_provides_block_loads() {
 fn both_spec_shapes_file_the_implementation_fact_under_the_base_sort() {
     let domain_of = |source: &str| -> Vec<String> {
         let mut kb: KnowledgeBase = crate::common::load_kb_with(source);
-        let impl_sort = kb.intern("anthill.realization.Implementation");
+        // WI-922: found by HEAD FUNCTOR. These clauses used to be filed under a
+        // raw intern of `anthill.realization.Implementation` as their clause
+        // KEY, so the key doubled as the functor question; they now carry the
+        // `Fact` kind like every other metadata fact, and the functor index is
+        // what selects them. Note `try_resolve_symbol`, not `intern` — the head
+        // functor is the RESOLVED symbol, a different one.
+        let impl_sym = kb.try_resolve_symbol("anthill.realization.Implementation")
+            .expect("resolve anthill.realization.Implementation");
         // Filtered to this file's namespace: the Rust host bindings loaded
         // alongside emit their own `Implementation` facts (Int64, String, …).
-        kb.by_sort(impl_sort)
+        kb.rules_by_functor(impl_sym)
             .iter()
             .map(|&rid| kb.qualified_name_of(kb.rule_domain(rid)).to_string())
             .filter(|d| d.starts_with("test.pb"))

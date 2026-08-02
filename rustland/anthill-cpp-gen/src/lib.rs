@@ -1088,8 +1088,19 @@ pub fn emit_entity_struct_by_symbol(
     // prefix and push a frame onto the lexical scope stack for the
     // duration of field-type lowering — outer params (if any) stay
     // visible underneath.
-    let parent_sym = parent_qualified_name(kb, functor)
-        .and_then(|qn| kb.try_resolve_symbol(&qn));
+    //
+    // WI-926 (§6.3): ask the KB for the parent, not `parent_qualified_name`'s
+    // chop of the last dotted segment. An EPONYMOUS `sort Box { sort T = ?;
+    // entity Box(value: ?T) }` is ONE symbol, so the chop walks past the sort to
+    // the enclosing NAMESPACE and `?T` lowered as unbound. The declaration
+    // carrying the params IS this symbol — an entity that is its own type, the
+    // same reading `field_constructors_of_sort` gives from the other direction.
+    // (`parent_qualified_name` itself must NOT change: its other callers ask the
+    // different question "which scope declares this name", for which the chop is
+    // right — an eponymous entity is still declared in its namespace.)
+    let parent_sym = kb.constructor_parent_sort(functor).or_else(|| {
+        kb.is_entity_constructor(functor).then_some(functor)
+    });
     let (template, type_params) = match parent_sym {
         Some(p) => template_prefix_for_sort(kb, p),
         None => (String::new(), std::collections::HashMap::new()),

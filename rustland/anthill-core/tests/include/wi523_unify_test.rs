@@ -17,6 +17,7 @@ use anthill_core::kb::term_view::views_structurally_equal;
 use anthill_core::eval::value::Value;
 use anthill_core::parse;
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// Mint a fresh global logic variable and return its `Term::Var` carrier — the
 /// query-side var whose binding the assertions inspect via `kb.reify`.
@@ -198,7 +199,7 @@ fn unify_headed_fact_is_recognized_as_equation() {
     // its long-standing `eq` recognition — and the rule must index under
     // `unify_functor()`, where `apply_eq_rules` / the typer's `try_fire` select it.
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Thing");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let unify_sym = kb.unify_functor();
     let a = int_term(&mut kb, 1);
@@ -226,7 +227,7 @@ fn unify_headed_equation_fires_in_apply_eq_rules() {
     // tagged `[simp]`: WI-292 fires only directional `[simp]`/`[unfold]` rewrites
     // (a bare `<=>` law is not a rewrite).
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Thing");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let unify_sym = kb.unify_functor();
     let one = int_term(&mut kb, 1);

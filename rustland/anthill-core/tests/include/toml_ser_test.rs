@@ -9,6 +9,7 @@ use anthill_core::persistence::term_ser;
 use anthill_core::persistence::print::TermPrinter;
 
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -377,7 +378,7 @@ fn assert_project_fact(kb: &mut KnowledgeBase, domain: Symbol) -> anthill_core::
         named_args,
     });
 
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     kb.assert_fact(term, sort, domain, None)
 }
 
@@ -693,7 +694,7 @@ end
         pos_args: SmallVec::new(),
         named_args: box_named,
     });
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("d");
     let rid = kb.assert_fact(box_term, sort, domain, None);
 
@@ -747,7 +748,7 @@ end
         pos_args: SmallVec::new(),
         named_args: holder_named,
     });
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("d");
     let rid = kb.assert_fact(holder_term, sort, domain, None);
 

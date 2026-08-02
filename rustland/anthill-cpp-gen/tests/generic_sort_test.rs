@@ -29,7 +29,7 @@ fn generic_entity_emits_template_prefix() {
         end
     "#;
     let mut kb = load_kb_with_lenient(source);
-    let cpp = emit_entity_struct(&mut kb, "test.gen_box.Box.Box")
+    let cpp = emit_entity_struct(&mut kb, "test.gen_box.Box")
         .expect("emit Box");
 
     assert!(
@@ -50,7 +50,7 @@ fn multi_param_entity_emits_template_with_two_args() {
         end
     "#;
     let mut kb = load_kb_with_lenient(source);
-    let cpp = emit_entity_struct(&mut kb, "test.gen_pair.Pair.Pair")
+    let cpp = emit_entity_struct(&mut kb, "test.gen_pair.Pair")
         .expect("emit Pair");
 
     assert!(
@@ -123,7 +123,7 @@ fn keyword_clash_gets_suffixed() {
         end
     "#;
     let mut kb = load_kb_with_lenient(source);
-    let cpp = emit_entity_struct(&mut kb, "test.gen_kw.Holder.Holder")
+    let cpp = emit_entity_struct(&mut kb, "test.gen_kw.Holder")
         .expect("emit Holder");
 
     assert!(

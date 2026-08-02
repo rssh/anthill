@@ -25,6 +25,7 @@ use anthill_core::parse;
 use anthill_core::span::SourceSpan;
 use anthill_core::intern::Symbol;
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// A KB with the full stdlib loaded — every reflect / prelude symbol the
 /// dot_apply encoding uses is resolved, exactly as in any loader-built KB.
@@ -147,7 +148,7 @@ fn dotapply_view_is_isomorphic_to_term_twin() {
 #[test]
 fn dotapply_cross_carrier_discrim_match() {
     let mut kb = stdlib_kb();
-    let fact_sort = kb.intern("Fact");
+    let fact_sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let term = dot_term(&mut kb, one);
@@ -179,7 +180,7 @@ fn dotapply_occurrence_goal_var_binds_through_args_list() {
     // arg's value) binds against the term fact's subterm — the deferred
     // VarPath extraction (WI-373) descends both carriers along the same keys.
     let mut kb = stdlib_kb();
-    let fact_sort = kb.intern("Fact");
+    let fact_sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let term = dot_term(&mut kb, one);

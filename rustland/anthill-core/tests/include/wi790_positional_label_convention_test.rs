@@ -17,6 +17,7 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::term_ser;
 
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// `Triple` declares its first two fields under the synthetic names themselves,
 /// which is what lets a mixed positional/named term reload through the ordinary
@@ -50,7 +51,7 @@ fn assert_mixed_fact(kb: &mut KnowledgeBase) -> anthill_core::kb::RuleId {
     named_args.push((c_sym, named));
 
     let term = kb.alloc(Term::Fn { functor, pos_args, named_args });
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("wi790_domain");
     kb.assert_fact(term, sort, domain, None)
 }

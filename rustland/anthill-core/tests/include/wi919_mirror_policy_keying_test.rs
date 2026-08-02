@@ -51,6 +51,7 @@ use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::persistence::{Monotonicity, PersistenceError, Store};
 
 use crate::common::interp_for;
+use anthill_core::kb::ClauseKind;
 
 /// A store that is the authority for its own functor, declaring the policy intrinsically
 /// rather than through the project's reflect rules — the WI-667 `PolicyStore` shape,
@@ -63,7 +64,7 @@ struct PolicyStore {
 }
 
 impl Store for PolicyStore {
-    fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: Symbol, _d: Symbol, _m: Option<TermId>)
+    fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: ClauseKind, _d: Symbol, _m: Option<TermId>)
         -> Result<(), PersistenceError> { Ok(()) }
     fn retract(&mut self, _kb: &KnowledgeBase, _id: RuleId) -> Result<bool, PersistenceError> {
         Ok(true)

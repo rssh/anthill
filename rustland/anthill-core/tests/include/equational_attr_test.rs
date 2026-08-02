@@ -9,6 +9,7 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, is_equational_head, NullResolver};
 use anthill_core::parse;
 use anthill_core::kb::term::Term;
+use anthill_core::kb::ClauseKind;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
@@ -35,8 +36,8 @@ fn load_with(extra: &str) -> KnowledgeBase {
 /// by checking the head shape directly.
 fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
     let mut count = 0usize;
-    let rule_sort_term = kb.intern("Rule");
-    let all_rules = kb.by_sort(rule_sort_term);
+    let rule_sort_term = ClauseKind::Rule;
+    let all_rules = kb.clauses_of_kind(rule_sort_term);
     for &rid in &all_rules {
         let head = kb.rule_head(rid);
         if !is_equational_head(&kb, head) { continue; }

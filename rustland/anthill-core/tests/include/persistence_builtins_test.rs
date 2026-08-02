@@ -15,6 +15,7 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::term::TermId;
 
 use crate::common::interp_for;
+use anthill_core::kb::ClauseKind;
 
 fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
     let reference = interp.kb_mut().intern("reference");
@@ -104,9 +105,9 @@ fn persist_then_flush_writes_fact_to_disk() {
     // Find the Foo fact by walking facts under the default Fact sort.
     // After pull+load, "Foo" gets a fresh symbol in kb2's namespace; we
     // don't know its qname, so we identify by the printed head shape.
-    let fact_sort = kb2.intern("Fact");
+    let fact_sort = ClauseKind::Fact;
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb2);
-    let foo_count = kb2.by_sort(fact_sort)
+    let foo_count = kb2.clauses_of_kind(fact_sort)
         .into_iter()
         .filter(|&rid| printer.print_term(kb2.rule_head(rid)).contains("Foo(value: 7)"))
         .count();
@@ -124,7 +125,7 @@ fn failed_mirror_persist_does_not_assert_a_resident_fact() {
             &mut self,
             _kb: &KnowledgeBase,
             _fact: TermId,
-            _sort: Symbol,
+            _clause_kind: ClauseKind,
             _domain: Symbol,
             _meta: Option<TermId>,
         ) -> Result<(), PersistenceError> {

@@ -26,6 +26,7 @@ use anthill_smt_gen::outcome::parse_z3_output;
 use crate::{ProveArgs, load_kb_with_stdlib};
 use crate::check::rand_suffix;
 use crate::witness::{ProofWitness, SmtVerdict};
+use anthill_core::kb::ClauseKind;
 
 pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
     if args.show_cache {
@@ -949,7 +950,7 @@ fn synthesize_step_rule(
     if kb.rule_id_by_qn(step_qn).is_some() {
         return;
     }
-    let rule_sort = kb.intern("Rule");
+    let rule_sort = ClauseKind::Rule;
 
     let parent_globals: Vec<_> = kb.rule_id_by_qn(parent_qn)
         .map(|rid| kb.rule_globals(rid).to_vec())
@@ -1555,9 +1556,15 @@ fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
     // Walk all rules in the KB. For each with `hint` meta, determine
     // its head-functor QN and check whether the QN is prefixed by
     // any of `rule_qn`'s parent scope segments.
-    let rule_sort = kb.intern("Rule");
+    //
+    // WI-922: `clauses_of_kind` is a WALK, not an index read — this was the
+    // retired `by_sort` index's only production reader. The index WAS a
+    // narrowing (~229 `Rule` clauses out of ~2481 on a stdlib load), but this
+    // runs once per Z3 dispatch (`dispatch_z3`, the sole caller), where the walk
+    // is dwarfed by spawning the solver. If it ever does need narrowing, the
+    // discriminating field is the `hint` meta flag tested below, not the kind.
     let mut out: Vec<String> = Vec::new();
-    for rid in kb.by_sort(rule_sort) {
+    for rid in kb.clauses_of_kind(ClauseKind::Rule) {
         let meta = kb.rule_meta(rid);
         if !anthill_core::kb::load::meta_has_flag(kb, meta, "hint") {
             continue;

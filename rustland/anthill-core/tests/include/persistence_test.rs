@@ -14,6 +14,7 @@ use anthill_core::parse;
 
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 // ── Term printer tests ─────────────────────────────────────────
 
@@ -263,7 +264,7 @@ fn persist_and_flush_flat() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
 
     // Create a simple fact term: Foo
@@ -299,7 +300,7 @@ fn persist_flush_appends() {
 
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let new_term = kb.make_name_term("NewFact");
 
@@ -317,7 +318,7 @@ fn persist_by_domain() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::ByDomain);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain_a = kb.intern("banking");
     let domain_b = kb.intern("trading");
 
@@ -341,7 +342,7 @@ fn full_round_trip() {
 
     // Step 1: Build a KB with some facts
     let mut kb1 = KnowledgeBase::new();
-    let fact_sort = kb1.intern("Fact");
+    let fact_sort = ClauseKind::Fact;
     let domain = kb1.intern("test");
 
     // fact Eq(T: Int64)
@@ -372,7 +373,7 @@ fn full_round_trip() {
         .persist(
             &kb1,
             kb1.fact_term(fid1),
-            kb1.fact_sort(fid1),
+            kb1.fact_clause_kind(fid1),
             kb1.fact_domain(fid1),
             kb1.fact_meta(fid1),
         )
@@ -381,7 +382,7 @@ fn full_round_trip() {
         .persist(
             &kb1,
             kb1.fact_term(fid2),
-            kb1.fact_sort(fid2),
+            kb1.fact_clause_kind(fid2),
             kb1.fact_domain(fid2),
             kb1.fact_meta(fid2),
         )
@@ -398,9 +399,19 @@ fn full_round_trip() {
         load::load(&mut kb2, pf, &NullResolver).expect("load should succeed");
     }
 
-    // Step 4: Verify facts in the new KB
-    let fact_sort2 = kb2.intern("Fact");
-    let facts = kb2.by_sort(fact_sort2);
+    // Step 4: Verify facts in the new KB.
+    //
+    // WI-922: counted `by_sort[Fact]` before. That bucket is now honest — the
+    // loader-emitted clauses that used to be filed under a USER SORT (the
+    // `EffectsRuntime` bridge and the `ProofRecord`/mapping metadata facts) are
+    // `Fact`-kinded like every other fact, so a KB-wide kind census is no longer
+    // a count of THIS program's facts. Count the two functors this test wrote.
+    // `intern`, not `try_resolve_symbol`: these heads were hand-built under BARE
+    // symbols and stay bare on reload (see the note below), so the interned
+    // spelling IS the head functor here — the mirror of the `ProofRecord` reads,
+    // where the resolved spelling is.
+    let syms: Vec<_> = ["Eq", "parent"].iter().map(|n| kb2.intern(n)).collect();
+    let facts: Vec<_> = syms.iter().flat_map(|&s| kb2.rules_by_functor(s)).collect();
     assert_eq!(facts.len(), 2, "should have 2 facts after round-trip");
 
     // Verify we can find the Eq fact by functor. The fact was hand-built under
@@ -442,7 +453,7 @@ fn retract_drops_fact_block_from_disk() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
 
     // Persist three facts: Foo, Bar, Baz.
@@ -484,7 +495,7 @@ fn retract_then_persist_replaces_in_place() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
 
     let wi_sym = kb.intern("WorkItem");
@@ -558,10 +569,9 @@ fn retract_preserves_inter_fact_text() {
         load::load(&mut kb, pf, &NullResolver).unwrap();
     }
 
-    // Find the rule for B by walking by_sort and matching the printed head.
-    let fact_sort = kb.intern("Fact");
+    // Find the rule for B by walking live clauses and matching the printed head.
     let mut b_id_opt = None;
-    for rid in kb.by_sort(fact_sort) {
+    for rid in kb.live_rule_ids() {
         let head = kb.rule_head(rid);
         if anthill_core::persistence::print::TermPrinter::new(&kb).print_term(head) == "B" {
             b_id_opt = Some(rid);
@@ -589,7 +599,7 @@ fn flush_is_idempotent_after_retract() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     let mut kb = KnowledgeBase::new();
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let foo = kb.make_name_term("Foo");
     let bar = kb.make_name_term("Bar");

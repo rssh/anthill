@@ -29,7 +29,7 @@ use std::path::PathBuf;
 
 use crate::intern::Symbol;
 use crate::kb::typing::get_named_arg;
-use crate::kb::{KnowledgeBase, RuleId};
+use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
 use crate::kb::term::{Literal, Term, TermId};
 use crate::span::Span;
 
@@ -109,14 +109,14 @@ impl Store for IndexedFileStore {
         &mut self,
         kb: &KnowledgeBase,
         fact: TermId,
-        sort: Symbol,
+        clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
         // by_id population for runtime-persisted facts happens in the
         // persist builtin, which has the freshly-allocated RuleId
         // (eval/builtins.rs persistence_persist calls index_by_id).
-        self.inner.persist(kb, fact, sort, domain, meta)
+        self.inner.persist(kb, fact, clause_kind, domain, meta)
     }
 
     fn retract(&mut self, kb: &KnowledgeBase, id: RuleId) -> Result<bool, PersistenceError> {
@@ -142,14 +142,14 @@ impl Store for IndexedFileStore {
         kb: &KnowledgeBase,
         id: RuleId,
         new: TermId,
-        sort: Symbol,
+        clause_kind: ClauseKind,
         domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {
         if !self.retract(kb, id)? {
             return Ok(false);
         }
-        self.persist(kb, new, sort, domain, meta)?;
+        self.persist(kb, new, clause_kind, domain, meta)?;
         Ok(true)
     }
 

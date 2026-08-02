@@ -28,6 +28,7 @@ use anthill_core::persistence::file_store::{FileConvention, FileStore};
 use anthill_core::persistence::{Monotonicity, PersistenceError, Store};
 
 use crate::common::interp_for;
+use anthill_core::kb::ClauseKind;
 
 // ── A synthetic policy-bearing store ────────────────────────────
 //
@@ -50,7 +51,7 @@ impl Store for PolicyStore {
         &mut self,
         _kb: &KnowledgeBase,
         _fact: TermId,
-        _sort: Symbol,
+        _clause_kind: ClauseKind,
         _domain: Symbol,
         _meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
@@ -252,7 +253,7 @@ fn append_only_default_store_cannot_retract() {
     // non_monotone so the *guard* passes, isolating the trait-default gate.
     struct AppendOnly;
     impl Store for AppendOnly {
-        fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: Symbol, _d: Symbol, _m: Option<TermId>)
+        fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: ClauseKind, _d: Symbol, _m: Option<TermId>)
             -> Result<(), PersistenceError> { Ok(()) }
         fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> { Ok(()) }
         fn owned_monotonicity(&self) -> Vec<(String, Monotonicity)> {

@@ -632,10 +632,6 @@ pub struct Entity {
 #[derive(Debug)]
 pub struct Fact {
     pub term: TermId,
-    /// Optional sort hint for the KB. Stage0 sugar (workitem, tool, etc.)
-    /// desugars to facts with a specific sort (e.g. "WorkItem") rather than
-    /// the generic "Fact" sort. `None` means sort "Fact".
-    pub sort: Option<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }

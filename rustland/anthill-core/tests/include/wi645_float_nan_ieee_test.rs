@@ -37,7 +37,6 @@ fn call_bool(i: &mut anthill_core::eval::Interpreter, op: &str) -> bool {
 const SRC: &str = r#"
 namespace test.wi645
   import anthill.prelude.{Bool, Float, TotalFloat}
-  import anthill.prelude.TotalFloat.{TotalFloat}
   import anthill.prelude.Float.{nan}
   import anthill.prelude.PartialEq.{eq, neq}
   import anthill.prelude.PartialOrd.{gt, lt, gte, lte}

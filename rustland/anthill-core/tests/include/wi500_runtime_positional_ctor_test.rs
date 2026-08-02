@@ -22,6 +22,7 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::resolve::ResolveConfig;
 use smallvec::SmallVec;
 use std::rc::Rc;
+use anthill_core::kb::ClauseKind;
 
 fn config() -> ResolveConfig {
     ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
@@ -93,7 +94,7 @@ fn persisted_positional_entity_matches_named_pattern() {
     let v = positional_verified(&kb, "now");
     // Exactly the persist builtin's lowering: value → term → assert_fact.
     let t = kb.alloc_from_value(&v).expect("lower positional entity");
-    let sort = kb.intern("Fact");
+    let sort = ClauseKind::Fact;
     let domain = kb.intern("test.wi500");
     kb.assert_fact(t, sort, domain, None);
     assert_eq!(
@@ -113,7 +114,7 @@ fn op_body_positional_ctor_persisted_matches() {
     let t = interp.kb_mut().alloc_from_value(&v).expect("lower op result");
     let sort = interp.kb_mut().intern("Fact");
     let domain = interp.kb_mut().intern("test.wi500");
-    interp.kb_mut().assert_fact(t, sort, domain, None);
+    interp.kb_mut().assert_fact(t, ClauseKind::Fact, domain, None);
     assert_eq!(
         resolve_verified_at(interp.kb_mut(), "now"),
         1,

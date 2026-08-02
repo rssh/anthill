@@ -32,6 +32,7 @@ use crate::eval::pattern::functor_matches;
 use crate::intern::{Symbol, SymbolKind};
 use crate::span::SourceSpan;
 
+use super::ClauseKind;
 use super::node_occurrence::{Expr, MatchBranch, NodeOccurrence, Pattern};
 use super::occurrence::PassId;
 use super::op_info::lookup_operation_info;
@@ -1147,7 +1148,7 @@ impl KnowledgeBase {
             named_args: SmallVec::new(),
         });
 
-        let rule_sort = self.intern("Rule");
+        let rule_sort = ClauseKind::Rule;
         let global_scope = self.make_name_term("_global");
         let global_domain = self.name_term_sym(global_scope);
         let rid = self.assert_rule_debruijn_with_nodes(

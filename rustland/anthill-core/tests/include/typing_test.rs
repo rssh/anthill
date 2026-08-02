@@ -13,6 +13,7 @@ use anthill_core::kb::load::{self, NullResolver, LoadResult};
 use anthill_core::kb::resolve::ResolveConfig;
 
 use smallvec::SmallVec;
+use anthill_core::kb::ClauseKind;
 
 /// Load stdlib + typing rules into a fresh KB with builtins registered.
 fn load_stdlib_kb() -> KnowledgeBase {
@@ -1059,7 +1060,7 @@ fn wi630_metadata_fact_headed_by_user_functor_is_rejected() {
     });
     let entity_sort = kb.intern("Entity");
     let global = kb.intern("_global");
-    kb.assert_metadata_fact(bad_head, entity_sort, global, None);
+    kb.assert_metadata_fact(bad_head, ClauseKind::Fact, global, None);
 }
 
 // ── Universal type variable tests ────────────────────────────────

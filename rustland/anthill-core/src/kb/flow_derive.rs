@@ -22,6 +22,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{Symbol, SymbolKind};
+use crate::kb::ClauseKind;
 use crate::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence, Pattern};
 use crate::kb::term::{Term, TermId};
 use crate::kb::KnowledgeBase;
@@ -78,7 +79,7 @@ pub fn run(kb: &mut KnowledgeBase) {
     let kind_f = kb.intern("kind");
     let from_f = kb.intern("from");
     let to_f = kb.intern("to");
-    let sort = kb.intern("Flow");
+    let sort = ClauseKind::Flow;
     let domain = kb.intern("_global");
 
     for e in edges {
