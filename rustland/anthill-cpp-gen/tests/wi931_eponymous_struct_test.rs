@@ -17,10 +17,13 @@
 //! scaffold one controller per traits class) would offer a DATA TYPE as a
 //! controller target.
 //!
-//! The fixture is local rather than the stdlib's `Vec3`: WI-931 withdrew the
-//! `VectorSpace` provision that motivated giving `Vec3` operations (see WI-935),
-//! so the tree currently ships no sort of this shape — and a rule with no example
-//! is exactly the one that rots.
+//! The fixture is local rather than the stdlib's `Vec3`. When WI-931 wrote it that
+//! was a necessity — the tree shipped no sort of this shape, because WI-931 had
+//! just withdrawn the `VectorSpace` provision that motivated giving `Vec3`
+//! operations. WI-935 restored it, so `anthill.geometry.Vec3` IS now an eponymous
+//! sort with fields and operations. The local fixture stays anyway: it pins the
+//! rule at a shape this suite controls, so a future edit to stdlib geometry cannot
+//! quietly remove the only example the rule is measured against.
 
 use super::common;
 

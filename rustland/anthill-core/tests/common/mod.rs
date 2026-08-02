@@ -300,8 +300,7 @@ pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core:
 /// rule and drive that, so the plumbing stays fixed however complex the goal is —
 ///
 /// ```ignore
-/// rule add_x(?x) :- vec_add(Vec3(x: 1.0, …), Vec3(x: 10.0, …), ?c),
-///                   ?c = Vec3(x: ?x, y: ?, z: ?)
+/// rule add_x(?x) :- ancestor(alice, ?p), parent(?p, ?x)
 /// ```
 ///
 /// Raw `Value`s, not rendered strings: a caller that wants a number should assert

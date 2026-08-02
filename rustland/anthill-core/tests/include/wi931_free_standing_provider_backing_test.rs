@@ -14,9 +14,13 @@
 //!   * `Vec3` / `VectorSpace` — the four members were "implemented" by RELATIONAL
 //!     RULES at namespace level (`rule vec_add(?a, ?b, ?c) :- …`), which WI-818
 //!     settled do not back an operation, and which are not even the same arity as
-//!     the spec's functional `vec_add(a, b) -> V`. Giving `Vec3` real bodies works
-//!     but MOVES THE SHORT NAME off the relational rules (measured, silently), so
-//!     the provision is withdrawn instead and WI-935 owns restoring it.
+//!     the spec's functional `vec_add(a, b) -> V`. WI-931 WITHDREW the provision
+//!     because adding the bodies beside those rules moved the imported short name
+//!     off them, silently. WI-935 removed the dilemma rather than resolving it:
+//!     the relational clauses were a hand-written stand-in for the `op(args…,
+//!     ?result)` reading WI-669 DERIVES from a body, so deleting them leaves one
+//!     definition and one name. The provision is restored and backed —
+//!     `vec3_provides_vector_space_and_backs_its_members` below.
 //!
 //!   * the persistence stores — the backing WAS real (six registered eval
 //!     builtins) but lived in a registry no load-time reader can see, since
@@ -49,10 +53,9 @@
 //! took it to 8, the persistence binding file to 1, and withdrawing the
 //! `BulkStore` provision to 0.
 
-use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
 
-use crate::common::{example_source, interp_for, try_load_kb_with, try_load_kb_with_files};
+use crate::common::{example_source, try_load_kb_with, try_load_kb_with_files};
 
 /// The SQL store SHAPE. WI-934 moved it out of `stdlib/` — a shape no host realizes
 /// is an example (`docs/proposals/038-builtin-sorts.md`) — so the two `SqlStore`
@@ -74,67 +77,53 @@ fn provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
         .collect()
 }
 
-// ── Vec3 / VectorSpace: the provision is WITHDRAWN ──────────────────
+// ── Vec3 / VectorSpace: the provision is RESTORED and BACKED (WI-935) ──
 
-/// SUBJECT — nothing provides `VectorSpace`, and the RELATIONAL vector rules are
-/// intact and still reachable BY THEIR SHORT NAME.
+/// SUBJECT — `Vec3` provides `VectorSpace`, and the four members are BACKED.
 ///
-/// Those two halves are one claim. `Vec3` genuinely is a vector space, so the
-/// obvious close was to give it the four functional members `VectorSpace`
-/// declares — and that was written and it worked. What it also did was move the
-/// short name: with a second `vec_add` in `anthill.geometry`, a rule body doing
-/// `import anthill.geometry.{vec_add}` and calling the relational form went from
-/// ONE solution to ZERO, silently (the fully qualified name kept resolving, so the
-/// rules were intact and only the import moved). Trading a working relational
-/// surface — the one the algebraic laws in that file and every SMT consumer are
-/// written against — for a provision nothing calls is the wrong way round, so the
-/// provision was withdrawn instead and WI-935 owns restoring it.
+/// WI-931 left this the other way round, asserting the ABSENCE of the provision
+/// plus one solution for the namespace-level relational `vec_add/3`. Both halves
+/// were true then and both are gone now: WI-935 finished the WI-138 lift, so the
+/// four members are `Vec3`'s own bodied operations and the relational clauses —
+/// which were a hand-written stand-in for a reading WI-669 DERIVES from a body —
+/// are deleted. `vec3_ops_test` owns what replaced them.
 ///
-/// The import is driven, not just declared, because "it loads" is exactly what
-/// stayed true through the regression: `vec3_ops_test::vec_ops_callable_from_user_rule`
-/// imports this same name and asserts only that the rule LOADS, so it passed
-/// while the goal it documents matched nothing.
+/// What stays here is the claim this suite is about: the provision is only
+/// legitimate while `check_provider_operations` accepts it, and that check reports
+/// as a LOAD ERROR — so a load that raises is half the assertion.
+///
+/// NOTE for a reader of the header above: `Vec3` is no longer an example of §6.3's
+/// free-standing shape (it is written long now, because members need somewhere to
+/// live). The free-standing coverage this suite exists for is carried entirely by
+/// `control_an_unbacked_free_standing_carrier_is_still_refused` and
+/// `control_a_backed_free_standing_carrier_loads`, which use local fixtures.
 #[test]
-fn the_relational_vec_rules_keep_their_short_name() {
-    let mut kb = try_load_kb_with(
+fn vec3_provides_vector_space_and_backs_its_members() {
+    let kb = try_load_kb_with(
         "
 namespace wi931.rel
-  import anthill.geometry.{Vec3, vec_add}
-
-  rule add_x(?x) :- vec_add(Vec3(x: 1.0, y: 2.0, z: 3.0),
-                            Vec3(x: 10.0, y: 20.0, z: 30.0), ?c),
-                    ?c = Vec3(x: ?x, y: ?, z: ?)
+  rule marker(?x) :- ?x = 1
 end
 ",
     )
-    .expect("stdlib + probe loads");
+    .expect("stdlib + probe loads — `check_provider_operations` reports as a load error");
 
-    // Nothing provides VectorSpace — the withdrawn claim.
-    let vs = kb
-        .try_resolve_symbol("anthill.prelude.algebra.VectorSpace")
-        .expect("the VectorSpace spec still exists");
     assert!(
-        kb.rules_by_functor(vs).is_empty(),
-        "VectorSpace must have no satisfaction fact while its members are unbacked",
+        provisions(&kb).contains(&("Vec3".to_string(), "VectorSpace".to_string())),
+        "Vec3 must provide VectorSpace (WI-935); provisions: {:?}",
+        provisions(&kb),
     );
 
-    // And the relational surface still answers through the SHORT name.
-    //
-    // ONE SOLUTION is the whole assertion, and it is the exact signal the
-    // regression gave: this goal answered 1 before the operations were added and 0
-    // after, with no diagnostic in between.
-    //
-    // The BOUND VALUE is deliberately not asserted to be 11.0. These clauses build
-    // `Vec3(x: ?ax + ?bx, …)` and SLD leaves that sum SYMBOLIC — the per-component
-    // arithmetic is for Z3 to discharge, which is the whole reason the relational
-    // spelling exists. Asserting a number here would assert that this surface is
-    // something it is not.
-    let sols = crate::common::query_unary(&mut kb, "wi931.rel.add_x");
-    assert_eq!(
-        sols.len(),
-        1,
-        "the imported short name `vec_add` must still reach the relational rule",
-    );
+    // Backing is per-member and per-carrier: each one is `Vec3`'s OWN operation.
+    // A namespace-level operation of the same name does not count — measured in
+    // `vec3_ops_test::control_a_namespace_level_operation_does_not_back_a_provision`.
+    for member in ["vec_add", "vec_sub", "vec_scale", "vec_zero"] {
+        let qn = format!("anthill.geometry.Vec3.{member}");
+        assert!(
+            kb.try_resolve_symbol(&qn).is_some(),
+            "`{qn}` must exist — it is what backs the provision",
+        );
+    }
 }
 
 // ── the persistence stores: declared host backing ───────────────────

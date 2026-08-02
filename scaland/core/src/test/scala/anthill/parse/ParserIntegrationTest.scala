@@ -361,20 +361,31 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(rule.body.isEmpty, "Bare-head fact has no body")
   }
 
-  test("proposal 032: stdlib geometry.anthill parses (post-032 multi-line `-:` form)") {
+  // WI-935 moved geometry's multi-line `-:` law rules OUT of this file: the four
+  // vec_* relational rules and their eight per-component laws are gone (the
+  // members are now `sort Vec3`'s bodied operations, and the laws live on
+  // `anthill.prelude.algebra.VectorSpace` over the abstract `V`).
+  //
+  // So this no longer covers the post-032 `-:` form, and it does not pretend to:
+  // MEASURED, the whole stdlib now has exactly TWO `-:` rules left
+  // (prelude/int64.anthill, prelude/bigint.anthill — forall-quantifier bodies, a
+  // different construct), so there is no stdlib fixture of the multi-line law
+  // shape to re-point at. What survives here is the narrower claim its assertion
+  // actually makes: geometry declares no namespace-level rules at all.
+  // Re-establishing `-:` coverage needs a fixture, not a file swap.
+  test("WI-935: stdlib geometry.anthill declares no namespace-level rules") {
     val src = readFile(s"$stdlibDir/anthill/geometry.anthill")
     val result = Parser.parse(src, "geometry.anthill")
     assert(result.isRight,
       s"geometry.anthill parse failed: ${result.left.getOrElse(IndexedSeq.empty).map(_.message).mkString(", ")}")
     val pf = result.toOption.get
     val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }.get
-    val rules = ns.items.collect { case Item.RuleItem(r) => r }
-    // 12 rules total: 4 vec_* operations + 8 algebraic-law rules.
-    assertEquals(rules.length, 12, s"expected 12 rules, got ${rules.length}")
-    // Algebraic-law rules use the `body -: heads` form and have multi-term bodies.
-    val lawRules = rules.filter(r => r.label.exists(l => pf.symbols.name(l.last).startsWith("vec_")))
-      .filter(_.body.exists(_.length > 1))
-    assert(lawRules.nonEmpty, "expected at least one law rule with `body -: heads` shape")
+    // Geometry now declares NO namespace-level rules at all — the four vec_*
+    // relational clauses were a hand-written stand-in for a reading the prover
+    // derives from the body (WI-669), and were deleted with the WI-138 lift.
+    assertEquals(ns.items.collect { case Item.RuleItem(r) => r }.length, 0,
+      "WI-935: geometry declares no namespace-level rules")
+
   }
 
   // ── Proposals 025 + 031: proof / provides / enum (WI-152) ─────
@@ -638,14 +649,17 @@ class ParserIntegrationTest extends munit.FunSuite:
     }
     assertEquals(ringRules, 7, "Ring should declare 7 algebraic-law rules")
 
-    // VectorSpace: 2 abstract sorts (V, F), 1 requires (Ring[F]), 4 ops, 7 laws.
+    // VectorSpace: 2 abstract sorts (V, F), 1 requires (Ring[F]), 4 ops, 8 laws
+    // (WI-935 added `vec_sub_def`).
     val vs = sorts.find(s => pf.symbols.name(s.name.last) == "VectorSpace").get
     assertEquals(countItems(vs.items) { case Item.AbstractSortItem(_) => }, 2)
     assertEquals(countItems(vs.items) { case Item.RequiresDeclItem(_) => }, 1)
     val vsOps = sumItems(vs.items) { case Item.OperationBlockItem(b) => b.entries.length }
     assertEquals(vsOps, 4, "VectorSpace should expose 4 operations (vec_add/sub/scale/zero)")
     val vsRules = sumItems(vs.items) { case Item.RuleBlockItem(b) => b.entries.length }
-    assertEquals(vsRules, 7, "VectorSpace should declare 7 algebraic-law rules")
+    // 8, not 7: WI-935 added `vec_sub_def` — the one WI-137 geometry law with no
+    // abstract counterpart — when it retired the per-component copies.
+    assertEquals(vsRules, 8, "VectorSpace should declare 8 algebraic-law rules")
 
     // Loads cleanly into a KB primed with Prelude (algebra is self-contained
     // except for `?` placeholders for abstract T/V/F).
@@ -709,17 +723,24 @@ class ParserIntegrationTest extends munit.FunSuite:
       .getOrElse(fail("expected namespace"))
     assertEquals(ns.name.segments.map(geomPf.symbols.name).mkString("."), "anthill.geometry")
 
-    // 2 entities (Vec3, EulerAngles), 12 rules (4 vec_* implementations +
-    // 8 algebraic laws). No satisfaction fact in stdlib: `VectorSpace[Vec3,
-    // Float]` moved to the per-language binding layer (rust-side WI-343),
-    // because it depends on `Ring[Float]` — a binding fact — so the claim is
-    // unsound in a stdlib-only load. (Same pattern as Float's facts above.)
-    assertEquals(countItems(ns.items) { case Item.EntityItem(_) => }, 2,
-      "geometry should expose 2 entities (Vec3, EulerAngles)")
+    // WI-935 reshaped this file. `Vec3` is now a SORT with an eponymous
+    // constructor and four bodied `VectorSpace` members, so only `EulerAngles`
+    // remains a namespace-level entity; the four vec_* relational rules and
+    // their eight per-component laws are GONE (the relational reading is derived
+    // from the body — WI-669 — and the laws moved to the spec, over abstract V).
+    //
+    // Still no satisfaction fact in stdlib: `VectorSpace[Vec3, Float]` lives in
+    // the per-language binding layer (rust-side WI-343), because it depends on
+    // `Ring[Float]` — a binding fact — so the claim is unsound in a stdlib-only
+    // load. (Same pattern as Float's facts above.)
+    assertEquals(countItems(ns.items) { case Item.EntityItem(_) => }, 1,
+      "geometry exposes 1 namespace-level entity (EulerAngles); Vec3 is a sort")
+    assertEquals(countItems(ns.items) { case Item.SortWithBodyItem(_) => }, 1,
+      "geometry exposes 1 sort (Vec3, eponymous constructor + 4 members)")
     assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 0,
       "geometry's VectorSpace[Vec3, Float] satisfaction moved to the binding layer")
-    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 12,
-      "geometry should declare 12 rules (4 impls + 8 laws)")
+    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 0,
+      "WI-935: geometry declares no namespace-level rules")
 
     val kb = kbWithStdlib()
     assert(kb.hasQualifiedName("anthill.geometry.Vec3"))

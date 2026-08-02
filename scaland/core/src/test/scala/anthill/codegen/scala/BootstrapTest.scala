@@ -99,16 +99,29 @@ class BootstrapTest extends munit.FunSuite:
   }
 
   test("WI-170: standalone entity → case class") {
-    // geometry.anthill has standalone `entity Vec3(x: Float, y: Float, z: Float)`
-    // and `entity EulerAngles(roll, pitch, yaw)`.
+    // `EulerAngles(roll, pitch, yaw)` is geometry's standalone entity.
+    //
+    // This used to read `Vec3`, which WI-935 turned into a SORT with an
+    // eponymous constructor and four members — so it is no longer an example of
+    // what this test is named for. It is re-pointed rather than deleted: the
+    // claim ("a standalone entity becomes a case class, Float→Double") is still
+    // worth pinning, and `EulerAngles` still is one.
+    //
+    // Vec3 is NOT asserted here, and deliberately not with its current output:
+    // Bootstrap emits `enum Vec3: case Vec3(…)` plus a separate `Vec3Ops` trait
+    // for it — a nested `Vec3.Vec3` that §6.3 / WI-926 say must not exist (an
+    // eponymous constructor IS its sort, one symbol). That is the same defect
+    // WI-931 fixed on the Rust side for cpp-gen, unexercised until now only
+    // because stdlib shipped no sort of this shape. Tracked separately; encoding
+    // the current output here would pin the bug as the contract.
     val pf = parseStdlib("anthill/geometry.anthill")
     val files = Bootstrap.generate(pf)
-    val vec3File = files.find(_.relPath.endsWith("/Vec3.scala"))
-      .getOrElse(fail(s"expected Vec3.scala in: ${files.map(_.relPath)}"))
-    val src = vec3File.contents
+    val eulerFile = files.find(_.relPath.endsWith("/EulerAngles.scala"))
+      .getOrElse(fail(s"expected EulerAngles.scala in: ${files.map(_.relPath)}"))
+    val src = eulerFile.contents
     assert(src.contains("package anthill.geometry"))
-    assert(src.contains("case class Vec3(x: Double, y: Double, z: Double)"),
-      s"expected `case class Vec3(...)` with Float→Double mapping in:\n$src")
+    assert(src.contains("case class EulerAngles(roll: Double, pitch: Double, yaw: Double)"),
+      s"expected `case class EulerAngles(...)` with Float→Double mapping in:\n$src")
   }
 
   test("scala-forward-mapping §1: ??? must never appear in generated output") {

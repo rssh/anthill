@@ -380,7 +380,7 @@ Anthill stdlib is mixed: most operations use snake_case (`to_bigint`, `read_line
 
 | Anthill identifier kind | Convention | Scala output |
 |---|---|---|
-| Sort / entity (PascalCase: `ProofRecord`, `Vec3`) | matches Scala class/trait | unchanged → `class ProofRecord`, `case class Vec3` |
+| Sort / entity (PascalCase: `ProofRecord`, `EulerAngles`) | matches Scala class/trait | unchanged → `class ProofRecord`, `case class EulerAngles` |
 | Operation (snake_case: `to_bigint`, `parse_argv`) | snake_case dominant in stdlib | converted → `def toBigint`, `def parseArgv` |
 | Operation (already camelCase: `isEmpty`, `splitFirst`) | rare in stdlib but present | unchanged → `def isEmpty`, `def splitFirst` |
 | Field name (snake_case: `state_hash`, `qualified_name`) | snake_case dominant | converted → `stateHash`, `qualifiedName` (in case-class fields and named-arg keys) |

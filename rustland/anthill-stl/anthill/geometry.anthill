@@ -1,27 +1,16 @@
 -- Binding-layer satisfaction for anthill.geometry (proposal 038).
 --
--- ── `fact VectorSpace[Vec3, Float]` IS WITHDRAWN (WI-931) ───────────────────
+-- `VectorSpace requires Ring[F]`, and `fact Ring[Float]` is a per-language
+-- binding fact (`float.anthill`) — so a stdlib-only load cannot satisfy this
+-- provision, and it stands here rather than beside the carrier.
 --
--- It stood here for the right reason — `VectorSpace requires Ring[F]`, and
--- `Float` being a `Ring` is a per-language binding fact, so a stdlib-only load
--- could not satisfy it — but it was never BACKED. `VectorSpace` declares four
--- functional members (`vec_add(a, b) -> V`, …) and `anthill.geometry` implements
--- the vector operations RELATIONALLY (`vec_add(?a, ?b, ?c)`), which WI-818
--- settled is specification the SLD world resolves against, not something the
--- evaluator can dispatch to. So the provision certified four operations that die
--- at the call.
---
--- It went unreported until now only because `Vec3` is a §6.3 free-standing
--- entity, and those emitted no `SortInfo` — so `check_provider_operations` read
--- the carrier as abstract and skipped it (WI-928).
---
--- WHY NOT SIMPLY ADD THE BODIES, which is what the ticket first tried: writing
--- `sort Vec3 { entity Vec3(…); operation vec_add(a, b) -> Vec3 = … }` introduces
--- a SECOND `vec_add` in `anthill.geometry`, and the short name silently moves to
--- it. MEASURED on a rule body doing `import anthill.geometry.{vec_add}` and
--- calling the relational form: ONE solution before, ZERO after, with no
--- diagnostic. Restoring the provision therefore needs the naming settled first —
--- WI-935, which owns both halves.
+-- The four members are BACKED: `anthill.geometry.Vec3` declares
+-- `vec_add` / `vec_sub` / `vec_scale` / `vec_zero` as bodied operations.
+-- A rule is not backing (WI-818), which is why the pre-WI-935 relational
+-- `vec_add(?a, ?b, ?c)` clauses could not stand in for them.
 namespace anthill.geometry
   import anthill.prelude.{Float}
+  import anthill.prelude.algebra.{VectorSpace}
+
+  fact VectorSpace[Vec3, Float]
 end

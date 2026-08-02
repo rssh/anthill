@@ -76,7 +76,7 @@ object EmbeddedStdlib:
     "anthill.kernel.kernel",
     // ── parametric algebra (WI-138)
     "anthill.prelude.algebra",
-    // ── geometry (WI-137: Vec3 / EulerAngles / vec_* rules + laws)
+    // ── geometry (WI-935: sort Vec3 + its VectorSpace members; EulerAngles)
     "anthill.geometry",
     // ── logic specs
     "anthill.logic.minimal",

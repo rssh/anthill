@@ -1201,6 +1201,81 @@ impl SearchStream {
             }
         }
 
+        // WI-938 — the value-returning sibling of the Bool view above: a goal
+        // `f(a₁…aₙ, ?r)` whose functor is a rule-less bodied operation of arity n
+        // is that operation's FUNCTIONAL-RELATION view, with the result as the
+        // last column. Route it to `unify(f(a₁…aₙ), ?r)` so the call reduces
+        // through the body (`reduce_op_value` → the eval bridge) and BINDS `?r`.
+        //
+        // `unify`, not `eq`: `eq` is a test that never binds (§8.3), so an unbound
+        // `?r` could only delay — measured, before this hook the goal residualized
+        // with `?r` free, which is what made `anthill.geometry`'s deleted
+        // `vec_add/3` clauses look necessary. A non-ground call still delays, via
+        // `unify`'s own Delay path, so this is a generator only where the body can
+        // actually reduce.
+        //
+        // Same rewrite discipline as the Bool hook: goal[0] in place, same goal
+        // count, `delay_mode` threaded through unchanged.
+        if let ViewHead::Functor { functor: Some(f), pos_arity, named_arity } = goal_val.head(kb) {
+            // Named args are not a functional-relation call shape — the result
+            // column is POSITIONAL and last. A named-arg goal falls through to
+            // ordinary candidate selection rather than being silently re-read.
+            if named_arity == 0 && pos_arity > 0
+                && kb.functional_relation_arity(f) == Some(pos_arity - 1)
+            {
+                let n = pos_arity - 1;
+                // Rebuild the call in the OCCURRENCE carrier: `reduce_op_value`
+                // folds a `Value::Node` and returns anything else untouched, so an
+                // `Entity`-carried call would silently never reduce. The args are
+                // reused from the goal's own occurrence rather than round-tripped
+                // through `Value`, which keeps their occurrence identity (WI-621).
+                let goal_occ: Option<Rc<NodeOccurrence>> = match &goal_val {
+                    Value::Node(o) => Some(Rc::clone(o)),
+                    Value::Term { id, .. } => {
+                        Some(node_occurrence::materialize_from_handle(kb, *id))
+                    }
+                    _ => None,
+                };
+                if let Some(goal_occ) = goal_occ {
+                    if let Some(Expr::Apply { pos_args, type_args, .. }) = goal_occ.as_expr() {
+                        if pos_args.len() == pos_arity {
+                            let call_occ = NodeOccurrence::new_expr(
+                                Expr::Apply {
+                                    functor: f,
+                                    pos_args: pos_args[..n].to_vec(),
+                                    named_args: Vec::new(),
+                                    type_args: type_args.clone(),
+                                },
+                                goal_occ.span,
+                                None,
+                            );
+                            let result = Value::Node(Rc::clone(&pos_args[n]));
+                            let subst = self.stack.last().unwrap().subst.clone();
+                            let reduced = kb.reduce_operand(Value::Node(call_occ), &subst);
+                            // ONLY route once the body actually reduced. `unify` is
+                            // structural and never dispatches (proposal 049's
+                            // invariant), so handing it an unreduced call would bind
+                            // the result var to the CALL TERM — measured, and a
+                            // definite-looking wrong answer. An unreduced call falls
+                            // through to ordinary candidate selection instead, which
+                            // is the pre-WI-938 behaviour (no answer) rather than a
+                            // wrong one. Making that case DELAY instead of answering
+                            // nothing is the open half — see WI-938's feedback.
+                            if !kb.is_unreduced_op_call(&reduced) {
+                                let unify_sym = kb.unify_functor();
+                                let unify_goal =
+                                    kb.make_goal_value(unify_sym, vec![result, reduced]);
+                                let fr = self.stack.last_mut().unwrap();
+                                fr.goals[0] = unify_goal;
+                                fr.state = FrameState::Init { delay_mode };
+                                return Some(StepResult::Continue);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 5. (WI-251) Expression-typed query path: the legacy
         // the legacy occurrence by-functor index lookup is gone. Reflection queries
         // that materialized expression occurrences now read from
@@ -5724,7 +5799,23 @@ impl KnowledgeBase {
         // symbol rather than rescanning every `OperationInfo` fact per fold.
         let params: Vec<Symbol> = self.symbols.arg_places(op).to_vec();
         if params.is_empty() {
-            return v; // nullary / unscanned op — nothing to fold
+            // WI-941 — an empty arg-place list is TWO different situations, and the
+            // early return was right for only one of them:
+            //  * UNSCANNED (the signature declares parameters but no arg places were
+            //    stamped): folding with an empty substitution would leave the body's
+            //    param vars unbound and reduce to garbage. Bail, as before.
+            //  * GENUINELY NULLARY (`vec_zero() -> Vec3 = Vec3(0,0,0)`): there is
+            //    nothing to bind, but there is still a BODY to reduce. Bailing made
+            //    the call answer an unbound residual that reads as a definite
+            //    success to a caller counting solutions — measured, silent in debug
+            //    AND release. Fall through with an empty fold.
+            let declared = self
+                .op_record(op)
+                .and_then(|r| r.signature.as_ref())
+                .map(|s| s.params.len());
+            if declared != Some(0) {
+                return v; // unscanned (or no signature) — nothing safe to fold
+            }
         }
         // σ-walk each call arg to a Value, keyed by param place. WI-279/WI-282
         // method dispatch puts the receiver + positional args positionally, but
@@ -6174,6 +6265,51 @@ impl KnowledgeBase {
         // the first rule with no `Vec` alloc — this leg is reached only for a pure
         // bodied Bool op, which is rare.
         returns_bool && self.rules_by_functor_iter(f).next().is_none()
+    }
+
+    /// WI-938 — the FUNCTIONAL-RELATION view of a bodied operation: the number of
+    /// parameters `f` declares, when a goal `f(a₁…aₙ, ?r)` at arity **n + 1** is
+    /// that operation's relation with the result as its last column. `None` when
+    /// `f` is not eligible.
+    ///
+    /// The arity+0 sibling is [`Self::bare_bodied_bool_relation`], which routes a
+    /// `Bool` op's bare goal to `eq(f(args), true)`. This is the value-returning
+    /// case, and it routes to **`unify`**, not `eq`: `eq` is a semantic equality
+    /// TEST that never binds (§8.3), so with an unbound `?r` it can only delay —
+    /// measured, the goal residualized with `?r` free. `unify` binds, so the
+    /// relation GENERATES its result. That is a deliberate departure from the
+    /// spec's former `f(args, result) ≡ eq(f(args), result)` wording, which
+    /// described a form that could never answer; the spec now says `unify`.
+    ///
+    /// Eligibility mirrors the Bool gate, and each clause is load-bearing:
+    /// - **not a builtin** — a builtin has its own goal semantics and no body.
+    /// - **has a runnable body** — the relation is DERIVED from it; there is
+    ///   nothing to derive from a body-less spec op (it dispatches via WI-573).
+    /// - **effect-free** — an effectful body is not a logical relation, and the
+    ///   eval bridge's empty effect registry would suspend on one anyway.
+    /// - **rule-LESS** — precedence (design §3.3): a hand-written clause of the
+    ///   same functor WINS while both exist, exactly as for the Bool view and for
+    ///   the WI-669 prover seam. This is the one clause a reader is most likely to
+    ///   drop; without it a hand-written relation would be shadowed by its own
+    ///   op's derived view.
+    ///
+    /// Cheap-gated for the per-goal hot path in the same order as the Bool gate:
+    /// a builtin or a body-less predicate (the overwhelmingly common case) bails
+    /// before any allocation, and `rules_by_functor_iter` short-circuits at the
+    /// first rule.
+    pub(crate) fn functional_relation_arity(&self, f: Symbol) -> Option<usize> {
+        if self.builtins.get(&f).is_some() || self.op_body_node(f).is_none() {
+            return None;
+        }
+        let sig = self.op_record(f).and_then(|r| r.signature.as_ref())?;
+        if !sig.effects.is_empty() {
+            return None;
+        }
+        let params = sig.params.len();
+        if self.rules_by_functor_iter(f).next().is_some() {
+            return None;
+        }
+        Some(params)
     }
 
     /// WI-580 (design §3.3): abstract-interpretation fallback for a suspended

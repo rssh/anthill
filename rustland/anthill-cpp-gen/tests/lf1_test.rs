@@ -17,12 +17,34 @@ fn lf1_vec3_and_euler_emit_correctly() {
     // Empty user source — lf1 binding files come in via extras.
     let mut kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
 
+    // FIELDS THEN OPERATIONS, in ONE struct. WI-935 gave `anthill.geometry.Vec3`
+    // the four `VectorSpace` members, which makes it the first STDLIB type of the
+    // §6.3 eponymous-with-operations shape — the shape WI-931 fixed cpp-gen for
+    // (before that fix this emitted `struct Vec3` twice: a C++ redefinition error).
+    // Members are sorted by METHOD NAME, lexicographically (`out.sort_by(|a, b|
+    // a.name.cmp(&b.name))`, anthill-cpp-gen/src/lib.rs) — hence add/scale/sub/zero
+    // below, not the declared add/sub/scale/zero.
+    //
+    // `lf1_types_namespace_emits_compilable_header` below is what says this text is
+    // valid C++ and not merely the text we expected — it compiles the header.
     let cpp = emit_entity_struct(&mut kb, "anthill.geometry.Vec3").expect("emit Vec3");
     let expected = "\
 struct Vec3 {
     double x;
     double y;
     double z;
+    static Vec3 vec_add(Vec3 a, Vec3 b) {
+        return Vec3{(a.x + b.x), (a.y + b.y), (a.z + b.z)};
+    }
+    static Vec3 vec_scale(double c, Vec3 v) {
+        return Vec3{(c * v.x), (c * v.y), (c * v.z)};
+    }
+    static Vec3 vec_sub(Vec3 a, Vec3 b) {
+        return Vec3{(a.x - b.x), (a.y - b.y), (a.z - b.z)};
+    }
+    static Vec3 vec_zero() {
+        return Vec3{0.0, 0.0, 0.0};
+    }
 };
 ";
     assert_eq!(cpp, expected, "lf1 Vec3 mismatch:\n{cpp}");

@@ -3180,15 +3180,25 @@ pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::Term
         Decision::Literal(Literal::Float(f)) => Value::Float(f.into_inner()),
         Decision::Literal(Literal::Bool(b)) => Value::Bool(b),
         Decision::Literal(Literal::String(s)) => Value::Str(s),
+        // `sort_of_constructor`, NOT `constructor_parent_sort` (WI-937). The
+        // question here is "is this an entity constructor", and the strict view
+        // answers `None` for an EPONYMOUS one — `entity_parent[Vec3] == Vec3`, so
+        // its `.filter(|&p| p != functor)` drops it. That is right for a walker
+        // climbing to a parent and wrong here: it made every §6.3 free-standing /
+        // eponymous entity fail to materialize, so a bodied op reading `a.x` off
+        // one got `Value::Term` and died `field_access: receiver is not an entity`
+        // — a debug_assert abort in `bridge_op_to_eval`, a silent residual in
+        // release. The accessor's own doc says to prefer the total view when the
+        // question is "which sort does this belong to"; this is that question.
         Decision::TryFn(functor) => {
-            if interp.kb.constructor_parent_sort(functor).is_some() {
+            if interp.kb.sort_of_constructor(functor).is_some() {
                 materialize_entity(interp, tid).unwrap_or(Value::term(tid))
             } else {
                 Value::term(tid)
             }
         }
         Decision::TryRef(sym) => {
-            if interp.kb.constructor_parent_sort(sym).is_some() {
+            if interp.kb.sort_of_constructor(sym).is_some() {
                 Value::Entity { functor: sym, pos: Vec::new().into(), named: Vec::new().into() }
             } else {
                 Value::term(tid)
