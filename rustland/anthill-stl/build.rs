@@ -85,7 +85,13 @@ fn main() {
         ..config.clone()
     };
 
-    // Source → generated output mapping
+    // Source → generated output mapping. Only files under `stdlib/` belong here.
+    //
+    // WI-934 dropped `persistence/sql.anthill` (and `src/persistence/sql.rs`)
+    // rather than re-pointing them at the file's new home in `examples/sql-store/`:
+    // the four structs it generated — `SqlStore` / `SqlDialect` / `QueryBinding` /
+    // `ColumnDef` — had NO Rust consumer, MEASURED by grepping the workspace for
+    // `persistence::sql`, which matched nothing outside the include itself.
     let files = [
         ("prelude/stream.anthill", "stream.rs"),
         ("prelude/logical_stream.anthill", "logical_stream.rs"),
@@ -93,7 +99,6 @@ fn main() {
         ("reflect/reflect.anthill", "reflect.rs"),
         ("persistence/store.anthill", "store.rs"),
         ("persistence/filesystem.anthill", "filesystem.rs"),
-        ("persistence/sql.anthill", "sql.rs"),
     ];
 
     // Parse all files

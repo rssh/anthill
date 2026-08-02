@@ -4398,7 +4398,7 @@ fn sort_to_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> Res
         return Ok(hit.host_type);
     }
     // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
-    // and `anthill.persistence.*` (Store, FileStore, SqlStore, …) is
+    // and `anthill.persistence.*` (Store, FileStore, IndexedFileStore, …) is
     // refused: cpp17-stl has no term-store / hash-cons infrastructure
     // on the host side, so these can't be lowered to value-typed C++.
     // A future `cpp-meta` profile (or an explicit CarrierBinding) can

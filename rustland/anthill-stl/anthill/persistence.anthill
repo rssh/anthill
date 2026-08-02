@@ -35,7 +35,8 @@
 -- fact that marks the carrier host-realized. `SqlStore` has no such block because
 -- rustland implements no SQL backend in any form, so its provisions are REFUSED
 -- rather than merely absent — and a backend added later must say so here to be
--- believed.
+-- believed. That is also why the SQL store is no longer a standard-library sort
+-- at all: it is a SHAPE, and it lives at `examples/sql-store/sql.anthill` (WI-934).
 --
 -- ── why the satisfaction facts live here and not in the stdlib (WI-931) ─────
 --

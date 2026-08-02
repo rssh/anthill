@@ -2341,10 +2341,14 @@ The KB is not purely in-memory. Facts can be backed by **persistent stores** —
 **Routing** maps fact sorts to stores via ordinary rules:
 
 ```
-rule route(WorkItem(?))  <=> FileStore(".anthill", stage0)
-rule route(AuditEntry(?)) <=> SqlStore("postgresql://...", "anthill", Postgresql)
+rule route(WorkItem(?))   <=> IndexedFileStore(".anthill", stage0)
+rule route(AuditEntry(?)) <=> FileStore(".anthill/audit", by_namespace)
 rule route(?)             <=> FileStore(".anthill", stage0)   -- default
 ```
+
+The stores named here are the ones the stdlib actually ships. A queryable SQL store
+would be routed the same way; its shape is sketched at `examples/sql-store/`, which is
+where it lives because no host realizes it (proposal 038, "What the stdlib carries").
 
 **Bootstrap.** Store configuration is itself expressed as KB facts, creating a chicken-and-egg problem. The solution: `project.anthill` at a well-known filesystem path is always loaded first (the bootstrap store). It declares other stores and routing rules. Those stores are then pulled or registered as oracles.
 

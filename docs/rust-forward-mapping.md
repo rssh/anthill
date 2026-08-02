@@ -292,13 +292,15 @@ sort Stream {                              trait Stream<T, E>: Streamable {
 **In an entity's namespace** — becomes a trait implementation:
 
 ```
--- In namespace anthill.persistence.sql:
+-- In namespace anthill.examples.persistence.sql:
 entity SqlStore(                           pub struct SqlStore { ... }
   connection: String, ...)        →
 fact QueryableStore                        impl QueryableStore for SqlStore { ... }
 ```
 
 `fact QueryableStore` in the namespace where `SqlStore` is defined means "SqlStore is-a QueryableStore", which maps to implementing the trait.
+
+> `SqlStore` is a SKETCH — it lives at `examples/sql-store/sql.anthill`, not the stdlib (proposal 038, "What the stdlib carries"), and declares no satisfaction fact of its own, so the `fact QueryableStore` line above illustrates the mapping rather than transcribing the file. The carrier-less spelling is WI-933's subject.
 
 ### 2.14 Path-Dependent Projections (`s.K`) → Associated Types
 
@@ -770,7 +772,7 @@ namespace anthill.persistence
 
 end
 
--- In namespace anthill.persistence.sql:
+-- In namespace anthill.examples.persistence.sql:
 entity SqlStore(connection: String, schema: String, dialect: SqlDialect)
 fact QueryableStore                           -- SqlStore is-a QueryableStore
 
@@ -827,6 +829,8 @@ pub mod filesystem {
 ```
 
 Note: `fact Store` inside `sort QueryableStore` becomes supertrait `QueryableStore: Store`. `fact QueryableStore` in the SqlStore namespace becomes `impl QueryableStore for SqlStore` (which implies `impl Store for SqlStore` since `QueryableStore: Store`).
+
+The `sql` half of this example is a SKETCH (§2.13) and is NOT run through the bootstrap mapper — `anthill-stl`'s build script generates only stdlib files, of which `store` and `filesystem` are the persistence ones. `FileStore` is the realized backend; its satisfaction facts stand in the host closure, `rustland/anthill-stl/anthill/persistence.anthill`, beside the `operation_map` that backs them.
 
 ### 6.2 Prelude List
 

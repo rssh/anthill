@@ -1,5 +1,5 @@
+// No `pub mod sql` — see the file map in `build.rs` (WI-934).
 pub mod filesystem;
-pub mod sql;
 
 use crate::reflect::Error;
 

@@ -98,7 +98,7 @@ pub static SOURCES: &[(&str, &str)] = &[
     // ── persistence ──
     ("anthill/persistence/store", include_str!("../../../stdlib/anthill/persistence/store.anthill")),
     ("anthill/persistence/filesystem", include_str!("../../../stdlib/anthill/persistence/filesystem.anthill")),
-    ("anthill/persistence/sql", include_str!("../../../stdlib/anthill/persistence/sql.anthill")),
+    // No `anthill/persistence/sql`: it moved to `examples/sql-store/` (WI-934).
     // ── cli ──
     ("anthill/cli/main", include_str!("../../../stdlib/anthill/cli/main.anthill")),
     ("anthill/cli/spec", include_str!("../../../stdlib/anthill/cli/spec.anthill")),

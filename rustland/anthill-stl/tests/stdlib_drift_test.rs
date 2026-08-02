@@ -61,3 +61,56 @@ fn embedded_sources_match_on_disk_trees() {
          in SOURCES but NOT on disk (remove from src/stdlib.rs): {extra:?}",
     );
 }
+
+/// WI-934 — `stdlib/anthill/persistence/` carries the store algebra and the backends
+/// that realize it, and nothing else.
+///
+/// A shape no host realizes is an example, not a standard library
+/// (`docs/proposals/038-builtin-sorts.md`, "What the stdlib carries"), which is why the
+/// SQL sketch now lives in `examples/sql-store/`. That is a CURATION decision: such a
+/// file loads perfectly, declares nothing and provides nothing, so no load-time check
+/// can refuse it and an explicit assertion is the only available form.
+///
+/// Stated over the DIRECTORY rather than as "no label containing `sql`", because the
+/// name is the weakest thing to key on: re-adding the same sketch as
+/// `persistence/database.anthill` would walk straight past a name filter. An exact set
+/// also fails on the addition of an unrealized `persistence/redis.anthill`, which the
+/// rule equally forbids — a new REALIZED backend is expected to update this list, and
+/// that edit is where the rule gets read.
+///
+/// `embedded_sources_match_on_disk_trees` cannot carry this: it reconciles two sets, so
+/// it is satisfied by any consistent pair — restoring the file AND re-listing it in
+/// `SOURCES` passes it. `sql_store_example_test::the_sql_store_shape_left_the_stdlib`
+/// (anthill-core) makes the complementary claim against a loaded KB; this one is
+/// crate-local, so `cargo test -p anthill-stl` alone catches the drift.
+#[test]
+fn the_stdlib_persistence_dir_carries_only_the_algebra_and_its_realized_backends() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../stdlib/anthill/persistence")
+        .canonicalize()
+        .expect("stdlib persistence dir");
+
+    let mut found: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read persistence dir") {
+        let p = entry.expect("dir entry").path();
+        if p.extension().is_some_and(|e| e == "anthill") {
+            found.push(p.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    found.sort();
+
+    assert_eq!(
+        found,
+        ["filesystem.anthill", "store.anthill"],
+        "stdlib/anthill/persistence/ carries the abstract store algebra and the backends \
+         a host realizes — nothing else. A shape no host realizes is an example \
+         (examples/sql-store/, WI-934); see docs/proposals/038-builtin-sorts.md.",
+    );
+
+    // …and the bundle every anthill binary carries agrees with the tree.
+    let labels: Vec<&str> = anthill::stdlib::SOURCES.iter().map(|(l, _)| *l).collect();
+    assert!(
+        labels.contains(&"anthill/persistence/store"),
+        "the store algebra must ship in the embedded bundle; labels were {labels:?}",
+    );
+}

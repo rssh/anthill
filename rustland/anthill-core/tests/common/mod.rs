@@ -64,6 +64,21 @@ pub fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
+/// The text of one `examples/` source, by path relative to that root
+/// (`example_source("sql-store/sql.anthill")`).
+///
+/// WI-934 lifted this at the second live copy — the same read appeared in
+/// `sql_store_example_test` and in `wi931_free_standing_provider_backing_test`,
+/// which asserts about the SQL shape now that it no longer ships in the stdlib.
+/// Reach for [`collect_anthill_files`] instead when the caller wants a whole
+/// example DIRECTORY: naming files literally means a file added later is silently
+/// never loaded.
+#[allow(dead_code)]
+pub fn example_source(rel: &str) -> String {
+    let p = examples_dir().join(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
+
 /// Load the stdlib + the given user source into a fresh KB. Panics with a
 /// readable diagnostic on parse or load errors. Used across every eval
 /// integration test; previously hand-copied in each file.

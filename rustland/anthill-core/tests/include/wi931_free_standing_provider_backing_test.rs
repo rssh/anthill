@@ -52,7 +52,16 @@
 use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
 
-use crate::common::{interp_for, try_load_kb_with};
+use crate::common::{example_source, interp_for, try_load_kb_with, try_load_kb_with_files};
+
+/// The SQL store SHAPE. WI-934 moved it out of `stdlib/` — a shape no host realizes
+/// is an example (`docs/proposals/038-builtin-sorts.md`) — so the two `SqlStore`
+/// claims below load the example explicitly instead of finding the carrier in a bare
+/// stdlib load. That the file LEFT the stdlib is `sql_store_example_test`'s claim,
+/// not this suite's; what stays here is what WI-931 measured about the carrier.
+fn sql_store_shape() -> String {
+    example_source("sql-store/sql.anthill")
+}
 
 /// Every provision as `(carrier, spec)` SHORT names — the shared
 /// `common::sort_provisions` walk, shortened because every claim here is about a
@@ -221,16 +230,22 @@ fn no_backend_provides_bulk_store() {
 /// two file stores and nothing else), so there is no closure the provisions could
 /// honestly move to. Separate from the `BulkStore` case on purpose — that one is a
 /// missing operation, this one is a missing BACKEND.
+///
+/// WI-934: the shape is loaded from `examples/sql-store/` rather than found in the
+/// stdlib. The claim is UNCHANGED by the move — a carrier that provides nothing
+/// provides nothing wherever it is declared — and loading it explicitly is what
+/// keeps this a measurement of the CARRIER rather than of the file's absence.
 #[test]
 fn sql_store_provides_nothing() {
-    let kb = try_load_kb_with("namespace wi931.sql\nend\n").expect("stdlib loads");
+    let shape = sql_store_shape();
+    let kb = try_load_kb_with_files(&[&shape]).expect("stdlib + the SQL shape load");
     let provs = provisions(&kb);
     assert!(
         !provs.iter().any(|(c, _)| c == "SqlStore"),
         "SqlStore has no realization, so it may provide nothing; provisions were {provs:?}",
     );
     assert!(
-        kb.try_resolve_symbol("anthill.persistence.sql.SqlStore").is_some(),
+        kb.try_resolve_symbol("anthill.examples.persistence.sql.SqlStore").is_some(),
         "the SqlStore SHAPE stays — a backend would be written against it",
     );
 }
@@ -268,16 +283,22 @@ end
 /// SUBJECT — and the same refusal is what makes `sql_store_provides_nothing` a
 /// consequence rather than a promise. Re-adding the provision this ticket withdrew
 /// is REFUSED, so the withdrawal is enforced by the check and not only by prose.
+///
+/// WI-934: the reinstatement is written against the shape at its new home. Note
+/// what that buys — this is the only test that loads `examples/sql-store/sql.anthill`
+/// AND asserts about its provisions, so a future edit adding a satisfaction fact
+/// back into the example file fails here rather than shipping quietly.
 #[test]
 fn reinstating_the_sql_store_provision_is_refused() {
+    let shape = sql_store_shape();
     let src = "
 namespace wi931.sqlback
   import anthill.persistence.{NonMonotonicStore}
-  import anthill.persistence.sql.{SqlStore}
+  import anthill.examples.persistence.sql.{SqlStore}
   fact NonMonotonicStore[SqlStore]
 end
 ";
-    let errs = match try_load_kb_with(src) {
+    let errs = match try_load_kb_with_files(&[&shape, src]) {
         Ok(_) => Vec::new(),
         Err(e) => e,
     };

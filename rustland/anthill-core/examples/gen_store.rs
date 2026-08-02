@@ -12,7 +12,8 @@ fn main() {
         ("reflect", "../../stdlib/anthill/reflect/reflect.anthill"),
         ("store", "../../stdlib/anthill/persistence/store.anthill"),
         ("filesystem", "../../stdlib/anthill/persistence/filesystem.anthill"),
-        ("sql", "../../stdlib/anthill/persistence/sql.anthill"),
+        // WI-934: `sql` is gone from this list with its source — the SQL store
+        // was a shape no host realizes and moved to `examples/sql-store/`.
         ("stream", "../../stdlib/anthill/prelude/stream.anthill"),
         ("logical_stream", "../../stdlib/anthill/prelude/logical_stream.anthill"),
     ];

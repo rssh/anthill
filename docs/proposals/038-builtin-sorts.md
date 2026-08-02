@@ -102,6 +102,16 @@ This separation is **not optional** — anthill has multiple languages with thei
 
 Co-locating Rust's `i64` binding inside `stdlib/anthill/prelude/int.anthill` would force every implementation to take a stdlib dependency on Rust-specific bindings (and vice-versa for Scala). The natural boundary is: **stdlib owns the spec, each implementation owns its binding file.** The build system (cargo/sbt) loads stdlib + the implementation's binding files; the interpreter sees one consistent picture per host.
 
+### What the stdlib carries — and what it does not
+
+The stdlib carries **specs** (an abstract algebra every host is expected to realize) and the **carriers those specs are realized for**. It does not carry a carrier that nothing realizes.
+
+> **A shape no host realizes is an example, not a standard library.** It ships under `examples/`.
+
+This follows from the backing rule above rather than adding to it: a `fact Spec[Carrier]` may stand only where the spec's operations are backed, so an unrealized carrier can declare no satisfaction fact anywhere, and what remains in the stdlib is a declaration that promises nothing. The spec it would be written against still belongs in the stdlib — that is the language-agnostic part, and it is what a future backend author reads.
+
+Applied at WI-934: `anthill.persistence.sql` (`SqlStore` / `SqlDialect` / `QueryBinding` / `ColumnDef`) moved to `examples/sql-store/`, because no implementation supplies a SQL backend; `anthill.persistence`'s `Store` / `NonMonotonicStore` / `QueryableStore` / `BulkStore` stayed, because the filesystem backends realize them.
+
 ### Semantics
 
 - **Pure-anthill spec** (`stdlib/`): `sort Int64 = ?` is an abstract sort. The KB knows the name, the type parameters (none for primitives), and any abstract operation declarations. No bodies, no carrier.

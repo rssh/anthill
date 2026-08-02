@@ -96,7 +96,7 @@ end
 
 - **Provision — a trait.** `retract`, `retrieve`, `pull` are not on every store,
   so "can mutate / query / bulk-load" is *having the operation* = providing the
-  trait (`fact NonMonotonicStore[SqlStore]`, `fact QueryableStore[SqlStore]`,
+  trait (`fact NonMonotonicStore[FileStore]`, `fact QueryableStore[FileStore]`,
   `fact BulkStore[FileStore]`). An append-only backend simply does not provide
   `NonMonotonicStore`, and so cannot be asked to `retract` at all.
 - **Policy — a predicate.** `persist` is on *every* `Store`, but whether it (and
@@ -240,10 +240,10 @@ The filesystem backend is the **bootstrap store** — it is always available and
 
 The SQL backend stores facts as table rows. It is `queryable` — backward chaining translates KB patterns to SQL queries. PostgreSQL, MySQL, SQLite, DuckDB etc. are **dialects** of a single `SqlStore`, not separate store types.
 
-> **Canonical source:** `stdlib/anthill/persistence/sql.anthill`
+> **Source:** `examples/sql-store/sql.anthill` — not the stdlib (proposal 038, "What the stdlib carries"). The block below is the design AS PROPOSED and no longer transcribes that file: the two satisfaction facts are gone (WI-931 — one may stand only where the spec's operations are backed), `SqlDialect` is spelled `enum`, and the `anthill.persistence` import is not there. Read the file for the current text.
 
 ```
-namespace anthill.persistence.sql
+namespace anthill.examples.persistence.sql
   import anthill.persistence.{Store, QueryableStore, NonMonotonicStore}
 
   sort SqlDialect {
@@ -365,7 +365,7 @@ If storage configuration is in the KB, and you need storage to load the KB, ther
 namespace my-project
   import anthill.persistence
   import anthill.persistence.filesystem
-  import anthill.persistence.sql.*
+  import anthill.examples.persistence.sql.*
 
   -- Bootstrap store: always filesystem, always loaded first
   fact bootstrap(FileStore(root: "anthill", convention: stage0))

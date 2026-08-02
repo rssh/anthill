@@ -6,7 +6,7 @@ import java.nio.file.Path
 
 /** Loads standard-library `.anthill` files via a [[SourceResolver]].
   *
-  * Mirrors `rustland/anthill-cli/src/stdlib_embedded.rs`: the canonical list
+  * Mirrors `rustland/anthill-stl/src/stdlib.rs`: the canonical list
   * of stdlib modules that should be available to every KB. Unlike rustland,
   * we don't bundle the source into the JAR — we read it from disk through a
   * [[SourceResolver]] so that the same machinery serves user-supplied files.
@@ -92,10 +92,10 @@ object EmbeddedStdlib:
     "anthill.realization.rust_anthill",
     "anthill.realization.scala_std",
     "anthill.realization.scala_caps",
-    // ── persistence
+    // ── persistence (no `anthill.persistence.sql`: it moved to
+    //    `examples/sql-store/` — WI-934)
     "anthill.persistence.store",
     "anthill.persistence.filesystem",
-    "anthill.persistence.sql",
     // ── CLI argparse (WI-159 / WI-164)
     "anthill.cli.spec",
     "anthill.cli.parse",

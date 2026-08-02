@@ -390,7 +390,7 @@ The profile uses **value semantics + RAII only**. There is no host-side hash-con
 
 ### 7.1 Runtime use of `anthill.reflect.*` and `anthill.persistence.*`
 
-Sorts under these namespaces (`TermRepr`, `SortInfo`, `OperationInfo`, `KB`, `Store`, `FileStore`, `SqlStore`, …) model live anthill terms as runtime values. They presuppose a hash-consed term store on the host — exactly the infrastructure `anthill-core`'s `TermStore` provides on the Rust side. The `cpp17-stl` profile ships nothing equivalent.
+Sorts under these namespaces (`TermRepr`, `SortInfo`, `OperationInfo`, `KB`, `Store`, `FileStore`, `IndexedFileStore`, …) model live anthill terms as runtime values. They presuppose a hash-consed term store on the host — exactly the infrastructure `anthill-core`'s `TermStore` provides on the Rust side. The `cpp17-stl` profile ships nothing equivalent.
 
 Codegen refuses any operation signature or type position that resolves to such a sort with:
 

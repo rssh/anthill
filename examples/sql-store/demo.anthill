@@ -1,0 +1,74 @@
+-- A worked instance of the SQL store shape, so `sql.anthill` cannot rot.
+--
+-- Nothing here executes a query — no host realizes a SQL backend, which is why
+-- the shape is an example (see README.md). What this file does exercise is the
+-- part that IS live today: the declarations are real sorts, so a store and its
+-- query binding can be built, asserted as facts, and read back field by field.
+--
+-- The rules are the query surface on purpose. A bare `fact f(…)` head is not a
+-- resolvable qualified name — `anthill.examples.persistence.sql.demo.audit_db`
+-- resolves to nothing, while the rules below resolve — so a reader (here,
+-- `sql_store_example_test`) reaches the facts through a rule, not directly.
+namespace anthill.examples.persistence.sql.demo
+  import anthill.examples.persistence.sql.{SqlStore, QueryBinding, ColumnDef}
+  import anthill.examples.persistence.sql.SqlDialect.{Postgresql}
+  import anthill.prelude.List.{cons}
+
+  -- The store a project's audit trail would be routed to.
+  fact audit_db(SqlStore(
+    connection: "postgresql://localhost/anthill",
+    schema:     "public",
+    dialect:    Postgresql))
+
+  -- How `AuditEntry` facts would be marshalled to and from a table. The SQL
+  -- rides as `Quoted` terms (kernel spec §4.2) — formal in SQL, opaque to the
+  -- kernel, meaningful to whatever executes them. That is the use case `Quoted`
+  -- was designed for, and it is what makes this binding writable with no SQL
+  -- backend in sight.
+  fact audit_binding(QueryBinding(
+    sort_pattern: Quoted("anthill", "AuditEntry(?)"),
+    table:        "audit_entries",
+    columns:      [
+      ColumnDef(name: "account", field: "account", sql_type: "text"),
+      ColumnDef(name: "action",  field: "action",  sql_type: "text"),
+      ColumnDef(name: "amount",  field: "amount",  sql_type: "numeric")
+    ],
+    retrieve_sql: Quoted("sql", "SELECT account, action, amount FROM audit_entries WHERE account = $1"),
+    persist_sql:  Quoted("sql", "INSERT INTO audit_entries (account, action, amount) VALUES ($1, $2, $3)"),
+    retract_sql:  Quoted("sql", "DELETE FROM audit_entries WHERE id = $1")))
+
+  rule audit_connection(?conn)
+    :- audit_db(SqlStore(connection: ?conn, schema: ?, dialect: ?))
+
+  rule audit_dialect(?d)
+    :- audit_db(SqlStore(connection: ?, schema: ?, dialect: ?d))
+
+  rule audit_table(?t)
+    :- audit_binding(QueryBinding(sort_pattern: ?, table: ?t, columns: ?,
+                                  retrieve_sql: ?, persist_sql: ?, retract_sql: ?))
+
+  rule audit_column_defs(?cols)
+    :- audit_binding(QueryBinding(sort_pattern: ?, table: ?, columns: ?cols,
+                                  retrieve_sql: ?, persist_sql: ?, retract_sql: ?))
+
+  -- `columns` is declared `List[T = ColumnDef]`, so the literal above desugars to a
+  -- `cons` spine and a rule can walk it. (A list literal in an UNTYPED fact argument
+  -- does not — it stays a flat n-ary node — so this destructuring is the declared
+  -- field type doing work.) Matching `name` and `field` as LITERALS pins WHICH
+  -- element answered, so the returned `sql_type` says the spine was walked and this
+  -- element's own fields came back.
+  rule account_column_type(?ty)
+    :- audit_column_defs(cons(head: ColumnDef(name: "account", field: "account", sql_type: ?ty),
+                              tail: ?))
+
+  -- CONTROL for the rule above: `action` is the SECOND column, so matching it at the
+  -- spine's HEAD must answer nothing. If it answered, the pattern would be matching
+  -- anywhere in the list and `account_column_type` would prove much less than it looks.
+  rule action_column_at_head(?ty)
+    :- audit_column_defs(cons(head: ColumnDef(name: "action", field: ?, sql_type: ?ty),
+                              tail: ?))
+
+  rule audit_retrieve_sql(?sql)
+    :- audit_binding(QueryBinding(sort_pattern: ?, table: ?, columns: ?,
+                                  retrieve_sql: ?sql, persist_sql: ?, retract_sql: ?))
+end
