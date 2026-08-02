@@ -515,34 +515,23 @@ fn entity_functor_is(
         if interp.kb().qualified_name_of(*functor) == qn)
 }
 
-/// Solutions of the unary rule `qn(?r)`: (`?r` reified and rendered readably,
-/// solution is definite — i.e. no floundered residual).
+/// Solutions of the unary rule `qn(?r)`: (`?r` rendered readably, solution is
+/// definite — i.e. no floundered residual). The RENDERING is what is local here;
+/// the goal-building and resolving is `common::query_unary`.
 fn query_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<(String, bool)> {
-    let sym = kb
-        .try_resolve_symbol(qn)
-        .unwrap_or_else(|| panic!("resolve {qn}"));
-    let r_sym = kb.intern("r");
-    let r_vid = kb.fresh_var(r_sym);
-    let r_var = kb.alloc(Term::Var(Var::Global(r_vid)));
-    let goal = kb.alloc(Term::Fn {
-        functor: sym,
-        pos_args: SmallVec::from_elem(r_var, 1),
-        named_args: SmallVec::new(),
-    });
-    let sols = kb.resolve(&[goal], &ResolveConfig::default());
-    let mut out = Vec::with_capacity(sols.len());
-    for sol in &sols {
-        let v = kb.reify(r_var, &sol.subst);
-        let rendered = match v {
-            Value::Int(n) => n.to_string(),
-            Value::Entity { functor, .. } => kb.qualified_name_of(functor).to_string(),
-            Value::Term { id, .. } => match kb.get_term(id) {
-                Term::Const(Literal::Int(n)) => n.to_string(),
-                _ => anthill_core::persistence::print::TermPrinter::new(kb).print_term(id),
-            },
-            other => format!("{other:?}"),
-        };
-        out.push((rendered, sol.is_definite()));
-    }
-    out
+    crate::common::query_unary(kb, qn)
+        .into_iter()
+        .map(|(v, definite)| {
+            let rendered = match v {
+                Value::Int(n) => n.to_string(),
+                Value::Entity { functor, .. } => kb.qualified_name_of(functor).to_string(),
+                Value::Term { id, .. } => match kb.get_term(id) {
+                    Term::Const(Literal::Int(n)) => n.to_string(),
+                    _ => anthill_core::persistence::print::TermPrinter::new(kb).print_term(id),
+                },
+                other => format!("{other:?}"),
+            };
+            (rendered, definite)
+        })
+        .collect()
 }

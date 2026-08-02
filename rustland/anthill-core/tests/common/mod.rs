@@ -270,6 +270,50 @@ pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core:
 /// relation drains to `Value::Tuple` rows, WI-762).
 ///
 /// Same walk and the same limitation: within a `cons` the TAIL is the `Entity`
+/// Solutions of the unary goal `qn(?r)`, as `(the reified `?r`, the solution is
+/// definite)`.
+///
+/// THE POINT IS THAT DRIVING A RULE COSTS ONE LINE. A test speaks to the resolver
+/// by BUILDING TERMS — intern a name, allocate a fresh var, wrap it, hand-assemble
+/// the goal `Term::Fn`, resolve, reify out of the substitution — six steps to ask
+/// one question, where `try_resolve_symbol(name).is_some()` is one and proves only
+/// that the NAME exists. That asymmetry is why the cheap form spread, and the cheap
+/// form is what keeps passing when the name resolves to something that answers
+/// nothing (CLAUDE.md: a test for a capability must DRIVE the capability).
+///
+/// UNARY is not a limitation: write the hard part in anthill source as a wrapper
+/// rule and drive that, so the plumbing stays fixed however complex the goal is —
+///
+/// ```ignore
+/// rule add_x(?x) :- vec_add(Vec3(x: 1.0, …), Vec3(x: 10.0, …), ?c),
+///                   ?c = Vec3(x: ?x, y: ?, z: ?)
+/// ```
+///
+/// Raw `Value`s, not rendered strings: a caller that wants a number should assert
+/// on one, and rendering is the caller's business.
+#[allow(dead_code)]
+pub fn query_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<(eval::Value, bool)> {
+    use anthill_core::kb::term::{Term, Var};
+    use anthill_core::kb::resolve::ResolveConfig;
+    use smallvec::SmallVec;
+
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("query_unary: `{qn}` does not resolve"));
+    let r_sym = kb.intern("r");
+    let r_vid = kb.fresh_var(r_sym);
+    let r_var = kb.alloc(Term::Var(Var::Global(r_vid)));
+    let goal = kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::from_elem(r_var, 1),
+        named_args: SmallVec::new(),
+    });
+    kb.resolve(&[goal], &ResolveConfig::default())
+        .iter()
+        .map(|sol| (kb.reify(r_var, &sol.subst), sol.is_definite()))
+        .collect()
+}
+
 /// Every `SortProvidesInfo` fact as `(carrier qualified name, spec qualified
 /// name)` — "who provides what", the question several suites ask of a loaded KB.
 ///

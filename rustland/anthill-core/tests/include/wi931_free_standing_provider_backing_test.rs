@@ -87,10 +87,6 @@ fn provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
 /// while the goal it documents matched nothing.
 #[test]
 fn the_relational_vec_rules_keep_their_short_name() {
-    use anthill_core::kb::term::{Term, Var};
-    use anthill_core::kb::resolve::ResolveConfig;
-    use smallvec::SmallVec;
-
     let mut kb = try_load_kb_with(
         "
 namespace wi931.rel
@@ -114,16 +110,7 @@ end
     );
 
     // And the relational surface still answers through the SHORT name.
-    let sym = kb.try_resolve_symbol("wi931.rel.add_x").expect("probe rule");
-    let r_sym = kb.intern("r");
-    let r_vid = kb.fresh_var(r_sym);
-    let r_var = kb.alloc(Term::Var(Var::Global(r_vid)));
-    let goal = kb.alloc(Term::Fn {
-        functor: sym,
-        pos_args: SmallVec::from_elem(r_var, 1),
-        named_args: SmallVec::new(),
-    });
-    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    //
     // ONE SOLUTION is the whole assertion, and it is the exact signal the
     // regression gave: this goal answered 1 before the operations were added and 0
     // after, with no diagnostic in between.
@@ -131,9 +118,9 @@ end
     // The BOUND VALUE is deliberately not asserted to be 11.0. These clauses build
     // `Vec3(x: ?ax + ?bx, …)` and SLD leaves that sum SYMBOLIC — the per-component
     // arithmetic is for Z3 to discharge, which is the whole reason the relational
-    // spelling exists (`?x` reifies to the unevaluated term, on this build and on
-    // the pre-change one alike). Asserting a number here would be asserting that
-    // this surface is something it is not.
+    // spelling exists. Asserting a number here would assert that this surface is
+    // something it is not.
+    let sols = crate::common::query_unary(&mut kb, "wi931.rel.add_x");
     assert_eq!(
         sols.len(),
         1,

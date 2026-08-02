@@ -7,9 +7,13 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 
+/// WI-931 — stdlib AND the rust host bindings. The vec rules do per-component
+/// `Float` ARITHMETIC, and `fact Numeric[T = Float]` lives in the binding layer
+/// (proposal 038), so a stdlib-only KB loads these rules but cannot answer them:
+/// MEASURED, the driven goal below yields 0 solutions without the bindings and 1
+/// with. That gap was invisible while the tests only asserted that names resolved.
 fn load_with(extra: &str) -> KnowledgeBase {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files.iter().map(|p| {
         let src = std::fs::read_to_string(p)
             .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
@@ -21,7 +25,11 @@ fn load_with(extra: &str) -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
     kb.register_standard_builtins();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    // Errors are RAISED, not discarded: a swallowed load error is how a test ends
+    // up asserting things about a KB that never finished loading.
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .unwrap_or_else(|errs| panic!("load failed: {:#?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()));
     kb
 }
 
@@ -45,15 +53,24 @@ fn vec_ops_symbols_resolve() {
     }
 }
 
+/// A user-source rule that calls `vec_add` through its IMPORTED SHORT NAME both
+/// loads AND answers.
+///
+/// The `answers` half was added by WI-931 and it is the point of the test. This
+/// asserted only that the rule LOADED, and a load says nothing about what the name
+/// inside it reaches: when `anthill.geometry` briefly gained a `Vec3.vec_add/2`
+/// operation, the imported short name bound to THAT instead of the relational
+/// `vec_add/3`, this goal went from one solution to zero, and this test — the one
+/// test in the tree that names the situation — kept passing. Driving it is what
+/// makes it evidence (CLAUDE.md: a test for a capability must drive the
+/// capability).
+///
+/// The solution's BOUND VALUE is deliberately not asserted: these clauses build
+/// `Vec3(x: ?ax + ?bx, …)` and SLD leaves the sums SYMBOLIC for Z3 to discharge,
+/// which is why the relational spelling exists at all.
 #[test]
 fn vec_ops_callable_from_user_rule() {
-    // Verifies a user-source rule that calls vec_add loads cleanly
-    // (parse + scope-resolution + body remap all succeed). The
-    // rule's body is not executed; this is the registration check
-    // — running SLD against vec_add's per-component body is in a
-    // separate test once the resolver is wired in for the
-    // composition chain.
-    let kb = load_with(r#"
+    let mut kb = load_with(r#"
         namespace test.vec3.use
           import anthill.geometry.{Vec3, vec_add}
 
@@ -66,6 +83,11 @@ fn vec_ops_callable_from_user_rule() {
     assert!(
         kb.try_resolve_symbol("test.vec3.use.try_add").is_some(),
         "user rule referencing vec_add did not load"
+    );
+    assert_eq!(
+        crate::common::query_unary(&mut kb, "test.vec3.use.try_add").len(),
+        1,
+        "the imported short name `vec_add` must reach the relational rule and answer",
     );
 }
 
