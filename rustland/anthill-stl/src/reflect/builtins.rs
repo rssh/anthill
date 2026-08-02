@@ -781,24 +781,9 @@ fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
     use anthill_core::intern::SymbolKind;
     let [s] = expect_args::<1>("kind", args)?;
     let sym = expect_symbol(interp.kb(), s, "kind")?;
-    let kind_str = match interp.kb().kind_of(sym) {
-        Some(SymbolKind::Sort) => "Sort",
-        Some(SymbolKind::Entity) => "Entity",
-        Some(SymbolKind::Operation) => "Operation",
-        Some(SymbolKind::Const) => "Const",
-        Some(SymbolKind::Namespace) => "Namespace",
-        Some(SymbolKind::Fact) => "Fact",
-        Some(SymbolKind::Rule) => "Rule",
-        Some(SymbolKind::Constraint) => "Constraint",
-        Some(SymbolKind::Param) => "Param",
-        Some(SymbolKind::Field) => "Field",
-        Some(SymbolKind::Goal) => "Goal",
-        Some(SymbolKind::OpResult) => "OpResult",
-        Some(SymbolKind::CallbackParam) => "CallbackParam",
-        Some(SymbolKind::CallbackResult) => "CallbackResult",
-        Some(SymbolKind::LocalLet) => "LocalLet",
-        None => "Unresolved",
-    };
+    // WI-898: the kind→string table lives on `SymbolKind` itself, shared with the
+    // resolver's `kind` builtin, so the two cannot answer differently.
+    let kind_str = interp.kb().kind_of(sym).map_or("Unresolved", SymbolKind::reflect_name);
     Ok(Value::Str(kind_str.into()))
 }
 

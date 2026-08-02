@@ -202,10 +202,13 @@ impl Interpreter {
                 // typer has settled the reading (a rule name applied to args), and a
                 // rule names no operation, so this could only ever have died in
                 // dispatch as `UnknownOperation`.
-                if matches!(
-                    self.kb.kind_of(*functor),
-                    Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
-                ) {
+                //
+                // WI-898: `EquationFunctor` is NOT in the set — it owns no clauses, so
+                // `start_relation_apply` would build a relation over nothing. The typer
+                // refuses such a call outright (`UnreducedEquationFunctor`), so nothing
+                // reaches here; falling through to `dispatch_call`'s `UnknownOperation`
+                // is the correct backstop for a KB built without the typer.
+                if self.kb.cites_a_relation(*functor) {
                     return self.start_relation_apply(*functor, pos_args, named_args);
                 }
                 // WI-218: the typer may have classified this apply for
@@ -413,10 +416,11 @@ impl Interpreter {
         // above). A rule head functor is neither an entity, sort, constructor, nor
         // operation, so it reaches here; without this it fell to `dispatch_call` →
         // `UnknownOperation`.
-        if matches!(
-            self.kb.kind_of(sym),
-            Some(crate::intern::SymbolKind::Goal | crate::intern::SymbolKind::Rule)
-        ) {
+        //
+        // WI-898: `EquationFunctor` is NOT in the set — same reason as the applied
+        // twin, and same backstop (the typer refuses it; `UnknownOperation` catches a
+        // typer-less KB).
+        if self.kb.cites_a_relation(sym) {
             return Ok(StepOutcome::Deliver(self.build_relation_value(sym, &[], &[])?));
         }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())

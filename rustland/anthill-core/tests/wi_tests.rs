@@ -903,6 +903,9 @@ mod wi894_rule_functor_scope_test;
 #[path = "include/wi896_labeled_predicate_head_test.rs"]
 mod wi896_labeled_predicate_head_test;
 
+#[path = "include/wi898_equation_functor_kind_test.rs"]
+mod wi898_equation_functor_kind_test;
+
 
 
 #[path = "include/wi900_implicit_tier_agreement_test.rs"]

@@ -5557,26 +5557,12 @@ impl KnowledgeBase {
 
         // DISPLAY: reports the keyword the declaration opened with. A name that
         // plays several roles (§6.3) still shows the one it was written as.
+        //
+        // WI-898: through the shared `reflect_name` table, so this reader and the
+        // `anthill-stl` eval bridge cannot answer differently — they each carried
+        // their own exhaustive copy, and a new kind meant editing both.
         let kind_str = match self.symbols.get(sym).primary_kind() {
-            Some(kind) => {
-                match &kind {
-                    crate::intern::SymbolKind::Sort => "Sort",
-                    crate::intern::SymbolKind::Entity => "Entity",
-                    crate::intern::SymbolKind::Operation => "Operation",
-                    crate::intern::SymbolKind::Const => "Const",
-                    crate::intern::SymbolKind::Namespace => "Namespace",
-                    crate::intern::SymbolKind::Fact => "Fact",
-                    crate::intern::SymbolKind::Rule => "Rule",
-                    crate::intern::SymbolKind::Constraint => "Constraint",
-                    crate::intern::SymbolKind::Param => "Param",
-                    crate::intern::SymbolKind::Field => "Field",
-                    crate::intern::SymbolKind::Goal => "Goal",
-                    crate::intern::SymbolKind::OpResult => "OpResult",
-                    crate::intern::SymbolKind::CallbackParam => "CallbackParam",
-                    crate::intern::SymbolKind::CallbackResult => "CallbackResult",
-                    crate::intern::SymbolKind::LocalLet => "LocalLet",
-                }
-            }
+            Some(kind) => kind.reflect_name(),
             _ => return BuiltinResult::Failure,
         };
 

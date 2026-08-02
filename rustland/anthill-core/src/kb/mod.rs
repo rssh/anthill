@@ -3958,10 +3958,16 @@ impl KnowledgeBase {
     /// walk would miss it. Returns an owned `Vec` so callers can mutate the KB
     /// (intern, resolve) while iterating.
     pub fn live_rule_ids(&self) -> Vec<RuleId> {
+        self.live_rule_ids_iter().collect()
+    }
+
+    /// The streaming form of [`Self::live_rule_ids`] — same ids, same order, no Vec.
+    /// For a caller that filters down to a handful (WI-898's clause census) and would
+    /// otherwise allocate one entry per rule in the KB to discard nearly all of them.
+    pub fn live_rule_ids_iter(&self) -> impl Iterator<Item = RuleId> + '_ {
         (0..self.rules.len())
             .map(RuleId::from_index)
-            .filter(|&r| !self.rules[r.index()].retracted)
-            .collect()
+            .filter(move |&r| !self.rules[r.index()].retracted)
     }
 
     /// Live term count in the hash-consed `TermStore`. Diagnostic — used by
@@ -4756,13 +4762,60 @@ impl KnowledgeBase {
     /// unlabeled `qn` the returned ids are the rules whose head's
     /// functor symbol resolves to `qn` (SLD lookup semantics).
     pub fn rule_ids_by_qn(&self, qn: &str) -> Vec<RuleId> {
-        let Some(sym) = self.try_resolve_symbol(qn) else { return Vec::new() };
+        self.try_resolve_symbol(qn).map(|sym| self.clause_ids_of(sym)).unwrap_or_default()
+    }
+
+    /// The SYMBOL-keyed body of [`Self::rule_ids_by_qn`] — label-first, then the
+    /// head-functor fallback. Split out (WI-898) so the "which clauses does this
+    /// name have?" question has ONE owner: [`Self::has_clauses_under`] asks it as a
+    /// predicate, and a caller holding a `Symbol` no longer has to round-trip
+    /// through the qualified-name string to reach the same answer.
+    pub fn clause_ids_of(&self, sym: Symbol) -> Vec<RuleId> {
         if let Some(ids) = self.rules_by_label.get(&sym) {
             if !ids.is_empty() {
                 return ids.clone();
             }
         }
         self.rules_by_functor(sym)
+    }
+
+    /// WI-898 — does `sym` OWN CLAUSES? The allocation-free predicate form of
+    /// [`Self::clause_ids_of`], asked where only existence matters.
+    pub fn has_clauses_under(&self, sym: Symbol) -> bool {
+        self.rules_by_label.get(&sym).is_some_and(|ids| !ids.is_empty())
+            || self.rules_by_functor_iter(sym).next().is_some()
+    }
+
+    /// WI-898 — DOES `sym` DENOTE A RELATION? The single question behind every
+    /// WI-714 citation position (bare, applied, as an argument, and eval's two
+    /// twins), replacing the `matches!(kind, Goal | Rule)` each of them used to
+    /// spell for itself.
+    ///
+    /// IT IS DERIVED, NOT STAMPED, and that is the point. A relation is a name with
+    /// CLAUSES INDEXED UNDER IT — that is what makes `relation_columns_across_clauses`
+    /// able to answer. `Goal`/`Rule` are the kinds a clause-owning head earns, so
+    /// they pass directly. An `EquationFunctor` normally owns none (its clauses sit
+    /// under the `eq`/`unify` connective) and so does NOT pass — the WI-898 fix. But a
+    /// scope may write one name in BOTH head shapes, and then a predicate clause IS
+    /// indexed under it and the relational reading is real; asking the index says so
+    /// whatever the mint stamped.
+    ///
+    /// Deriving replaced a stamp-then-patch first cut, which classified such a name by
+    /// which of its two rules pass 3 reached first — MEASURED: the same two rules
+    /// swapped answered `EquationFunctor` and `Goal`. Patching that needed a mutable
+    /// kind, and a mutable kind is a fact two writers can disagree about; there is no
+    /// stamp here to disagree with. The extra index read costs nothing on the common
+    /// paths: only an `EquationFunctor` reaches it.
+    pub fn cites_a_relation(&self, sym: Symbol) -> bool {
+        use crate::intern::SymbolKind;
+        // `has_kind`, not `kind_of`: this is the MEMBERSHIP question WI-925 split the
+        // two readings for. `kind_of` reports the keyword the declaration opened with,
+        // so asking it "is this a relation" would re-create the source-order dependence
+        // — the same defect, one level up, that made this function derived rather than
+        // stamped in the first place.
+        self.has_kind(sym, SymbolKind::Goal)
+            || self.has_kind(sym, SymbolKind::Rule)
+            || (self.has_kind(sym, SymbolKind::EquationFunctor) && self.has_clauses_under(sym))
     }
 
     /// Snapshot every active source clause resolved by `qn`: labeled clauses
