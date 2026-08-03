@@ -427,14 +427,19 @@ private class AnthillParserImpl(
     * has no typer, so these lower to plain functor terms that round-trip
     * through `typeExprToRef`; the lacks-semantics live only in the rust typer. */
   private def effectPresence[$: P]: P[TypeExpr] =
-    P("+" ~/ simpleEffect).map(wrapEffectOp("present"))
+    P(Index ~ "+" ~~ Index ~/ simpleEffect).map { case (s, e, te) =>
+      wrapEffectOp("present", mkSpan(s, e))(te) }
 
   private def effectAbsence[$: P]: P[TypeExpr] =
-    P("-" ~/ simpleEffect).map(wrapEffectOp("absent"))
+    P(Index ~ "-" ~~ Index ~/ simpleEffect).map { case (s, e, te) =>
+      wrapEffectOp("absent", mkSpan(s, e))(te) }
 
-  private def wrapEffectOp(op: String)(e: TypeExpr): TypeExpr =
+  /** WI-961: located at the `+` / `-`, the token that chose the wrapper — the
+    * `present`/`absent` functor is written nowhere, exactly as `add` is not. */
+  private def wrapEffectOp(op: String, span: Span)(e: TypeExpr): TypeExpr =
     val inner = typeExprToRef(e)
-    TypeExpr.Variable(terms.alloc(Term.Fn(intern(op), IArray(inner), IArray.empty)), IndexedSeq.empty)
+    TypeExpr.Variable(
+      terms.allocAt(Term.Fn(intern(op), IArray(inner), IArray.empty), span), IndexedSeq.empty)
 
   private def arrowParams[$: P]: P[IndexedSeq[TypeExpr]] =
     P("(" ~ arrowParam.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
@@ -725,7 +730,7 @@ private class AnthillParserImpl(
       (m.label, buildFieldAccess(obj, m.member, m.span, valueRecv, None))
     }
     if accessors.length == 1 then accessors.head._2
-    else terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)))
+    else terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)), span)
 
   /** Reject the two ill-formed key shapes a multi-member projection could emit
     * into its result tuple, each a silent-corruption footgun (WI-639 review):
@@ -772,11 +777,13 @@ private class AnthillParserImpl(
     * ordinary paren exprs still parse. Mirrors rustland's
     * `convert_bounded_quantification`. */
   private def boundedQuantification[$: P]: P[TermId] =
-    P("(" ~ (keyword("forall").map(_ => "forall_in") | keyword("some").map(_ => "some_in"))
+    P("(" ~ Index ~ (keyword("forall").map(_ => "forall_in") | keyword("some").map(_ => "some_in")) ~~ Index
       ~ boundedBinderVar ~ keyword("in") ~/ term ~ ":" ~ goalTerm.rep(1, sep = ",") ~ ")").map {
-      case (functor, binder, collection, body) =>
-        val bodyTuple = terms.alloc(Term.Fn(intern("tuple"), IArray.from(body), IArray.empty))
-        terms.alloc(Term.Fn(intern(functor), IArray(binder, collection, bodyTuple), IArray.empty))
+      case (s, functor, e, binder, collection, body) =>
+        val span = mkSpan(s, e)
+        val bodyTuple = terms.allocAt(Term.Fn(intern("tuple"), IArray.from(body), IArray.empty), span)
+        terms.allocAt(
+          Term.Fn(intern(functor), IArray(binder, collection, bodyTuple), IArray.empty), span)
     }
 
   /** The binder of a bounded quantifier MUST be a named variable (`?x`), not the
@@ -854,7 +861,8 @@ private class AnthillParserImpl(
                 case Some(p) => bNamed += ((p.last, bt))
                 case None => bPos += bt
             }
-            val aux = terms.alloc(Term.Fn(intern("type_args"), IArray.from(bPos), IArray.from(bNamed)))
+            val aux = terms.allocAt(
+              Term.Fn(intern("type_args"), IArray.from(bPos), IArray.from(bNamed)), n.span)
             namedArgs += ((intern("type_args"), aux))
           terms.allocAt(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)), n.span)
 
@@ -919,16 +927,38 @@ private class AnthillParserImpl(
     * leaving `: T` dangling). The cut is AFTER `:`, so a plain `?x` argument
     * (no colon) fails this alt cleanly and falls through to `exprBody`. */
   private def typedVarArg[$: P]: P[TermId] =
-    P(Tokens.variableToken ~ ":" ~/ typeExpr).map { case (varName, ty) =>
+    P(Index ~ Tokens.variableToken ~~ Index ~ ":" ~/ typeExpr).map { case (s, varName, e, ty) =>
       val varTid =
         if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
         else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
-      terms.alloc(Term.Fn(intern("typed_var"), IArray(varTid),
-        IArray((intern("type"), typeExprToRef(ty)))))
+      terms.allocAt(Term.Fn(intern("typed_var"), IArray(varTid),
+        IArray((intern("type"), typeExprToRef(ty)))), mkSpan(s, e))
     }
 
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
     P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
+
+  /** The span to give a node LOWERED from `te` (WI-961). A structural lowering —
+    * `TypeExtractor.Arrow`, `NamedTuple`, an `EffectExpression` chain — has no token
+    * of its own: it stands for the whole written type, so it takes the first position
+    * that type can offer. Recursive rather than "the outermost name", because an
+    * arrow's leftmost leaf is what a reader looks at first.
+    *
+    * DERIVED, and that is honest: the node covers text the reader can see. What it
+    * must never be is [[Span.empty]] while the term carries a resolvable name — see
+    * `SimpleTermStore.alloc`. */
+  private def typeExprSpan(te: TypeExpr): Span = te match
+    case TypeExpr.Simple(n)           => n.span
+    case TypeExpr.Parameterized(n, _) => n.span
+    case TypeExpr.Variable(tid, _)    => terms.spanOf(tid)
+    case TypeExpr.Denoted(v)          => terms.spanOf(v)
+    case TypeExpr.TupleType(fields)   => firstLocated(fields.map((_, t) => typeExprSpan(t)))
+    case TypeExpr.Arrow(ps, ret, eff) => firstLocated(((ps :+ ret) ++ eff).map(typeExprSpan))
+    case TypeExpr.EffectRow(eff)      => firstLocated(eff.map(typeExprSpan))
+    case TypeExpr.EffectGuarded(l, _) => typeExprSpan(l)
+
+  private def firstLocated(spans: Iterable[Span]): Span =
+    spans.find(_.hasLocation).getOrElse(Span.empty)
 
   private def typeExprToRef(te: TypeExpr): TermId = te match
     // WI-957: a WRITTEN type name locates at the name it was written as; the
@@ -950,25 +980,26 @@ private class AnthillParserImpl(
     // `TypeExtractor` entities (`anthill.prelude.TypeExtractor.Arrow` /
     // `NamedTuple`), mirroring rustland's `type_expr_to_term`. Previously both
     // fell through to a `Ref("_")` sentinel, silently discarding the structure.
-    case TypeExpr.Arrow(params, ret, effects) =>
+    case arrow @ TypeExpr.Arrow(params, ret, effects) =>
+      val span = typeExprSpan(arrow)
       // Single param stays bare; a multi-param list collapses to a
       // positional named-tuple `_0, _1, …`, exactly as rustland does.
       val paramTerm =
         if params.length == 1 then typeExprToRef(params.head)
-        else namedTupleTypeTerm(params.zipWithIndex.map((p, i) => (intern(s"_$i"), p)))
+        else namedTupleTypeTerm(params.zipWithIndex.map((p, i) => (intern(s"_$i"), p)), span)
       val resultTerm = typeExprToRef(ret)
       // WI-340: the arrow's `effects` field is the canonical
       // `effects_rows(EffectExpression)` row — a right-folded `merge` chain —
       // NOT a prelude cons-list (the pre-WI-340 shape). This matches rustland's
       // post-WI-307/WI-331 loader (`KnowledgeBase::build_canonical_effects_rows`)
       // and the stdlib schema. See `buildCanonicalEffectsRows`.
-      val effectsRows = buildCanonicalEffectsRows(effects.map(typeExprToRef))
+      val effectsRows = buildCanonicalEffectsRows(effects.map(typeExprToRef), span)
       // Named args in canonical (alphabetical) order: effects, param, result.
-      terms.alloc(Term.Fn(intern("anthill.prelude.TypeExtractor.Arrow"), IArray.empty,
+      terms.allocAt(Term.Fn(intern("anthill.prelude.TypeExtractor.Arrow"), IArray.empty,
         IArray((intern("effects"), effectsRows), (intern("param"), paramTerm),
-               (intern("result"), resultTerm))))
-    case TypeExpr.TupleType(fields) =>
-      namedTupleTypeTerm(fields)
+               (intern("result"), resultTerm))), span)
+    case tup @ TypeExpr.TupleType(fields) =>
+      namedTupleTypeTerm(fields, typeExprSpan(tup))
     // WI-302: a denoted value-in-type rides as the raw literal term (rustland
     // retired the `make_denoted` wrapper in WI-366 — the value rides as a Node).
     case TypeExpr.Denoted(value) => value
@@ -976,37 +1007,42 @@ private class AnthillParserImpl(
     // term (rustland builds an EffectExpression; scaland has no effect
     // machinery, so the row rides as a plain functor term — this also subsumes
     // the retired `setType`'s `SetLiteral` lowering for binding-value `{}`).
-    case TypeExpr.EffectRow(effects) =>
-      terms.alloc(Term.Fn(intern("effects_rows"),
-        IArray.from(effects.map(typeExprToRef)), IArray.empty))
+    case row @ TypeExpr.EffectRow(effects) =>
+      terms.allocAt(Term.Fn(intern("effects_rows"),
+        IArray.from(effects.map(typeExprToRef)), IArray.empty), typeExprSpan(row))
     // WI-478: a guarded effect `E :- guard` lowers to an opaque
     // `guarded(label, guardList)` term — rustland builds an
     // `EffectExpression.guarded(label, guard: List[reflect.Term])`; scaland has
     // no effect machinery, so the element rides as a plain functor with the
     // guard goals as a prelude cons-list (carrier-faithful round-trip only).
-    case TypeExpr.EffectGuarded(label, guard) =>
-      terms.alloc(Term.Fn(intern("guarded"),
-        IArray(typeExprToRef(label), typeListTerm(guard)), IArray.empty))
+    case g @ TypeExpr.EffectGuarded(label, guard) =>
+      val span = typeExprSpan(g)
+      terms.allocAt(Term.Fn(intern("guarded"),
+        IArray(typeExprToRef(label), typeListTerm(guard, span)), IArray.empty), span)
 
   /** Build `anthill.prelude.TypeExtractor.NamedTuple(fields: List[NamedTupleElement])`
     * from `(name, type)` field pairs. Shared by tuple types and multi-parameter
     * arrow parameter lists. Mirrors rustland's `make_named_tuple_type`. */
-  private def namedTupleTypeTerm(fields: IndexedSeq[(TermSymbol, TypeExpr)]): TermId =
+  private def namedTupleTypeTerm(fields: IndexedSeq[(TermSymbol, TypeExpr)], span: Span): TermId =
     val fieldTerms = fields.map { (nameSym, ty) =>
-      val nameRef = terms.alloc(Term.Ref(nameSym))
+      // The label rides at its own field's position where the field has one.
+      val fieldSpan = firstLocated(Seq(typeExprSpan(ty), span))
+      val nameRef = terms.allocAt(Term.Ref(nameSym), fieldSpan)
       val typeTerm = typeExprToRef(ty)
-      terms.alloc(Term.Fn(intern("anthill.prelude.NamedTupleElement"), IArray.empty,
-        IArray((intern("name"), nameRef), (intern("type"), typeTerm))))
+      terms.allocAt(Term.Fn(intern("anthill.prelude.NamedTupleElement"), IArray.empty,
+        IArray((intern("name"), nameRef), (intern("type"), typeTerm))), fieldSpan)
     }
-    terms.alloc(Term.Fn(intern("anthill.prelude.TypeExtractor.NamedTuple"), IArray.empty,
-      IArray((intern("fields"), typeListTerm(fieldTerms)))))
+    terms.allocAt(Term.Fn(intern("anthill.prelude.TypeExtractor.NamedTuple"), IArray.empty,
+      IArray((intern("fields"), typeListTerm(fieldTerms, span)))), span)
 
   /** Build a prelude cons-list term (`anthill.prelude.List.cons`/`nil`) from
     * element TermIds, in order. */
-  private def typeListTerm(elems: IndexedSeq[TermId]): TermId =
-    val nilTerm = terms.alloc(Term.Fn(intern("anthill.prelude.List.nil"), IArray.empty, IArray.empty))
+  private def typeListTerm(elems: IndexedSeq[TermId], span: Span): TermId =
+    val nilTerm = terms.allocAt(
+      Term.Fn(intern("anthill.prelude.List.nil"), IArray.empty, IArray.empty), span)
     elems.foldRight(nilTerm)((h, t) =>
-      terms.alloc(Term.Fn(intern("anthill.prelude.List.cons"), IArray(h, t), IArray.empty)))
+      terms.allocAt(Term.Fn(intern("anthill.prelude.List.cons"), IArray(h, t), IArray.empty),
+        firstLocated(Seq(terms.spanOf(h), span))))
 
   // ── EffectExpression / EffectsRows builders (WI-340) ──────────────
   // The Scala port of rustland's `make_effect_expression_*` /
@@ -1015,30 +1051,31 @@ private class AnthillParserImpl(
   // naturally alongside the sibling `TypeExtractor.Arrow` / `.NamedTuple`.
 
   /** `EffectExpression.empty_row` — the closed empty row `{}` (pure). */
-  private def effectExpressionEmptyRow(): TermId =
-    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.empty_row"),
-      IArray.empty, IArray.empty))
+  private def effectExpressionEmptyRow(span: Span): TermId =
+    terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.empty_row"),
+      IArray.empty, IArray.empty), span)
 
   /** `EffectExpression.present(label: Type)` — a single present effect. */
-  private def effectExpressionPresent(label: TermId): TermId =
-    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.present"),
-      IArray.empty, IArray((intern("label"), label))))
+  private def effectExpressionPresent(label: TermId, span: Span): TermId =
+    terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.present"),
+      IArray.empty, IArray((intern("label"), label))), firstLocated(Seq(terms.spanOf(label), span)))
 
   /** `EffectExpression.open(tail: Type)` — a row-variable tail. */
-  private def effectExpressionOpen(tail: TermId): TermId =
-    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.open"),
-      IArray.empty, IArray((intern("tail"), tail))))
+  private def effectExpressionOpen(tail: TermId, span: Span): TermId =
+    terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.open"),
+      IArray.empty, IArray((intern("tail"), tail))), firstLocated(Seq(terms.spanOf(tail), span)))
 
   /** `EffectExpression.merge(left, right)` — union of two expressions. */
-  private def effectExpressionMerge(left: TermId, right: TermId): TermId =
-    terms.alloc(Term.Fn(intern("anthill.prelude.EffectExpression.merge"),
-      IArray.empty, IArray((intern("left"), left), (intern("right"), right))))
+  private def effectExpressionMerge(left: TermId, right: TermId, span: Span): TermId =
+    terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.merge"),
+      IArray.empty, IArray((intern("left"), left), (intern("right"), right))),
+      firstLocated(Seq(terms.spanOf(left), span)))
 
   /** Wrap an EffectExpression in the `TypeExtractor.EffectsRows(effects_expr: …)`
     * Type entity — the bridge from EffectExpression to Type position. */
-  private def effectsRowsType(expr: TermId): TermId =
-    terms.alloc(Term.Fn(intern("anthill.prelude.TypeExtractor.EffectsRows"),
-      IArray.empty, IArray((intern("effects_expr"), expr))))
+  private def effectsRowsType(expr: TermId, span: Span): TermId =
+    terms.allocAt(Term.Fn(intern("anthill.prelude.TypeExtractor.EffectsRows"),
+      IArray.empty, IArray((intern("effects_expr"), expr))), span)
 
   /** Scala port of rustland's `KnowledgeBase::build_canonical_effects_rows`
     * (kb/mod.rs). Builds the canonical `effects_rows(EffectExpression)` Type an
@@ -1052,7 +1089,7 @@ private class AnthillParserImpl(
     * scaland has no typer, so — unlike rustland's `row_tail_var_of`, which also
     * resolves a `Ref(S.E)` sort-alias tail — only a bare `Term.Var` is treated
     * as a row tail (there is no SortAlias table here). */
-  private def buildCanonicalEffectsRows(effects: IndexedSeq[TermId]): TermId =
+  private def buildCanonicalEffectsRows(effects: IndexedSeq[TermId], span: Span): TermId =
     val atoms = ArrayBuffer.empty[TermId]
     val tailVars = ArrayBuffer.empty[TermId]
     effects.foreach { e =>
@@ -1062,7 +1099,7 @@ private class AnthillParserImpl(
         case fn: Term.Fn if isEffectAtom(fn.functor) =>
           atoms += e   // pre-built present/absent/guarded — keep as-is
         case _ =>
-          atoms += effectExpressionPresent(e)   // bare label → present(label)
+          atoms += effectExpressionPresent(e, span)   // bare label → present(label)
     }
     // Canonical ordering: sort by structural key, then drop true duplicates.
     // The key is fully structural (see `canonicalAtomKey`) so this drops only
@@ -1076,10 +1113,12 @@ private class AnthillParserImpl(
     // Seed: innermost tail — `open(?ρ)` when a row var was present, else the
     // closed `empty_row`; any extra tails fold in as `open(…)` merges. Then
     // right-fold `merge(atom, …)` back through the sorted atoms.
-    var acc = tailVars.headOption.map(effectExpressionOpen).getOrElse(effectExpressionEmptyRow())
-    tailVars.drop(1).foreach(extra => acc = effectExpressionMerge(effectExpressionOpen(extra), acc))
-    deduped.reverseIterator.foreach(atom => acc = effectExpressionMerge(atom, acc))
-    effectsRowsType(acc)
+    var acc = tailVars.headOption
+      .map(effectExpressionOpen(_, span)).getOrElse(effectExpressionEmptyRow(span))
+    tailVars.drop(1).foreach(extra =>
+      acc = effectExpressionMerge(effectExpressionOpen(extra, span), acc, span))
+    deduped.reverseIterator.foreach(atom => acc = effectExpressionMerge(atom, acc, span))
+    effectsRowsType(acc, span)
 
   /** Recognizes an already-built EffectExpression atom in the effects input — a
     * `present`/`absent`/`guarded` produced by the `+E` / `-E` / `E :- g` surface
@@ -1269,34 +1308,38 @@ private class AnthillParserImpl(
     * continuation; mirrors rustland's `proof_statement` shape (which rides the
     * proof metadata as a `ParseAux::ProofStmt`). */
   private def proofStatement[$: P]: P[TermId] =
-    P(keyword("proof") ~/ name ~ (keyword("using") ~/ proofUsingList).? ~
+    P(Index ~ keyword("proof") ~~ Index ~/ name ~ (keyword("using") ~/ proofUsingList).? ~
       (keyword("by") ~/ proofStrategy).? ~ (keyword("conclude") ~/ term).? ~
       keyword("end") ~ exprBody).map {
-      case (target, _using, _strategy, conclude, body) =>
+      case (kws, kwe, target, _using, _strategy, conclude, body) =>
         val targetStr = terms.alloc(Term.Const(
           Literal.StringLit(target.segments.map(symbols.name).mkString("."))))
         val named = ArrayBuffer((intern("target"), targetStr))
         conclude.foreach(c => named += ((intern("conclude"), c)))
-        terms.alloc(Term.Fn(intern("proof_stmt"), IArray(body), IArray.from(named)))
+        terms.allocAt(Term.Fn(intern("proof_stmt"), IArray(body), IArray.from(named)),
+          mkSpan(kws, kwe))
     }
 
   private def matchExpr[$: P]: P[TermId] =
     // Mirrors rustland's tree-sitter grammar: `match scrut repeat1(branch)`,
     // no `end`. `matchBranch.rep(1)` self-terminates at the first non-`case`.
-    P(keyword("match") ~/ term ~ matchBranch.rep(1)).map { case (scrutinee, branches) =>
-      terms.alloc(Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty))
+    P(Index ~ keyword("match") ~~ Index ~/ term ~ matchBranch.rep(1)).map {
+      case (s, e, scrutinee, branches) =>
+        terms.allocAt(
+          Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty),
+          mkSpan(s, e))
     }
 
   private def matchBranch[$: P]: P[TermId] =
-    P(keyword("case") ~/ pattern ~ "->" ~ exprBody).map { case (pat, body) =>
+    P(Index ~ keyword("case") ~~ Index ~/ pattern ~ "->" ~ exprBody).map { case (s, e, pat, body) =>
       // WI-618: binder-form provenance, as for the accessor builds.
-      terms.allocMinted(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty))
+      terms.allocMintedAt(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty), mkSpan(s, e))
     }
 
   private def ifExpr[$: P]: P[TermId] =
-    P(keyword("if") ~/ term ~ keyword("then") ~ exprBody ~ keyword("else") ~ exprBody).map {
-      case (cond, thenB, elseB) =>
-        terms.alloc(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty))
+    P(Index ~ keyword("if") ~~ Index ~/ term ~ keyword("then") ~ exprBody ~ keyword("else") ~ exprBody).map {
+      case (s, e, cond, thenB, elseB) =>
+        terms.allocAt(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty), mkSpan(s, e))
     }
 
   /** `let pat [: T] = value [in] body`. The `in` keyword is OPTIONAL:
@@ -1307,19 +1350,20 @@ private class AnthillParserImpl(
     * rustland: encoded as a `type_name` named-arg child holding the type
     * lowered to a term; positional args stay `(pattern, value, body)`. */
   private def letExpr[$: P]: P[TermId] =
-    P(keyword("let") ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~ keyword("in").? ~ exprBody).map {
-      case (pat, tyAnno, value, body) =>
+    P(Index ~ keyword("let") ~~ Index ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~
+      keyword("in").? ~ exprBody).map {
+      case (s, e, pat, tyAnno, value, body) =>
         val named = tyAnno match
           case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty)))
           case None     => IArray.empty[(TermSymbol, TermId)]
         // WI-618: binder-form provenance.
-        terms.allocMinted(Term.Fn(intern("let_expr"), IArray(pat, value, body), named))
+        terms.allocMintedAt(Term.Fn(intern("let_expr"), IArray(pat, value, body), named), mkSpan(s, e))
     }
 
   private def lambdaExpr[$: P]: P[TermId] =
-    P(keyword("lambda") ~/ pattern ~ "->" ~ exprBody).map { case (param, body) =>
+    P(Index ~ keyword("lambda") ~~ Index ~/ pattern ~ "->" ~ exprBody).map { case (s, e, param, body) =>
       // WI-618: binder-form provenance.
-      terms.allocMinted(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty))
+      terms.allocMintedAt(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty), mkSpan(s, e))
     }
 
   // ── Patterns ─────────────────────────────────────────────────
@@ -1345,10 +1389,11 @@ private class AnthillParserImpl(
     * lowers the type to a term via `typeExprToRef`). Cut-free so a non-typed
     * tuple element backtracks cleanly. */
   private def typedBinder[$: P]: P[TermId] =
-    P(ident ~ ":" ~ typeExpr).map { case (nameSym, ty) =>
-      val idTerm = terms.alloc(Term.Ident(nameSym))
-      terms.alloc(Term.Fn(intern("pattern_var"), IArray(idTerm),
-        IArray((intern("type"), typeExprToRef(ty)))))
+    P(Index ~ ident ~~ Index ~ ":" ~ typeExpr).map { case (s, nameSym, e, ty) =>
+      val span = mkSpan(s, e)
+      val idTerm = terms.allocAt(Term.Ident(nameSym), span)
+      terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm),
+        IArray((intern("type"), typeExprToRef(ty)))), span)
     }
 
   /** WI-517: a parenthesized single typed binder `(x: T)` (e.g.
@@ -1363,17 +1408,20 @@ private class AnthillParserImpl(
     P(typedBinder | pattern)
 
   private def patternWildcard[$: P]: P[TermId] =
-    P("_").map(_ => terms.alloc(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty)))
+    P(Index ~ "_" ~~ Index).map { case (s, e) =>
+      terms.allocAt(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty), mkSpan(s, e))
+    }
 
   private def patternVar[$: P]: P[TermId] =
-    P(ident).map { sym =>
-      val idTerm = terms.alloc(Term.Ident(sym))
-      terms.alloc(Term.Fn(intern("pattern_var"), IArray(idTerm), IArray.empty))
+    P(Index ~ ident ~~ Index).map { case (s, sym, e) =>
+      val span = mkSpan(s, e)
+      val idTerm = terms.allocAt(Term.Ident(sym), span)
+      terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm), IArray.empty), span)
     }
 
   private def patternLiteral[$: P]: P[TermId] =
-    P(literal).map { tid =>
-      terms.alloc(Term.Fn(intern("pattern_literal"), IArray(tid), IArray.empty))
+    P(Index ~ literal ~~ Index).map { case (s, tid, e) =>
+      terms.allocAt(Term.Fn(intern("pattern_literal"), IArray(tid), IArray.empty), mkSpan(s, e))
     }
 
   private def patternConstructor[$: P]: P[TermId] =
@@ -1381,14 +1429,18 @@ private class AnthillParserImpl(
       // WI-957: the constructor name is resolved by `loadPatternConstructor`, so it
       // carries the span a `case nosuchctor(…)` diagnostic points at.
       val nameTerm = terms.allocAt(Term.Ident(n.last), n.span)
-      terms.alloc(Term.Fn(intern("pattern_constructor"), IArray(nameTerm) ++ IArray.from(pats), IArray.empty))
+      terms.allocAt(Term.Fn(intern("pattern_constructor"),
+        IArray(nameTerm) ++ IArray.from(pats), IArray.empty), n.span)
     }
 
   private def patternTuple[$: P]: P[TermId] =
     P(
-      ("(" ~ ")").map(_ => terms.alloc(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty))) |
-      ("(" ~ patternTupleElem ~ "," ~ patternTupleElem.rep(1, sep = ",") ~ ")").map { case (first, rest) =>
-        terms.alloc(Term.Fn(intern("pattern_tuple"), IArray.from(first +: rest), IArray.empty))
+      (Index ~ "(" ~~ Index ~ ")").map { case (s, e) =>
+        terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty), mkSpan(s, e)) } |
+      (Index ~ "(" ~~ Index ~ patternTupleElem ~ "," ~ patternTupleElem.rep(1, sep = ",") ~ ")").map {
+        case (s, e, first, rest) =>
+          terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.from(first +: rest), IArray.empty),
+            mkSpan(s, e))
       }
     )
 
@@ -2028,8 +2080,10 @@ private class AnthillParserImpl(
     * raw values (mirrors rustland's `convert_named_arg`). */
   private def allocNamedArg(k: TermSymbol, v: TermId): TermId =
     val keyStr = terms.alloc(Term.Const(Literal.StringLit(symbols.name(k))))
-    terms.alloc(Term.Fn(namedArgFunctorSym, IArray.empty,
-      IArray((namedArgNameSym, keyStr), (namedArgValueSym, v))))
+    // WI-961: the marker stands for the `key: value` pair, so it rides at the value's
+    // position — the key is a bare `TermSymbol` here and carries none of its own.
+    terms.allocAt(Term.Fn(namedArgFunctorSym, IArray.empty,
+      IArray((namedArgNameSym, keyStr), (namedArgValueSym, v))), terms.spanOf(v))
 
   /** `proof TARGET ... end`. Two body shapes (proposal 031):
     *

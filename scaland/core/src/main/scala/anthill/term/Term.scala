@@ -124,11 +124,25 @@ sealed trait Term:
     case _ => 0
 
 object Term:
-  case class Const(lit: Literal) extends Term
+
+  /** The carriers with NO NAME for a loader to resolve (WI-961).
+    *
+    * A mixin, not a new case: `Term` stays sealed over the same six subtypes, so every
+    * existing `match` is unaffected. Its one job is to let an API demand "a term that
+    * cannot carry a resolvable name" IN ITS SIGNATURE — see
+    * [[anthill.parse.SimpleTermStore.alloc]], where the alternative was a runtime
+    * refusal that a new parser production would only discover by failing a test.
+    *
+    * `Fn`/`Ref`/`Ident` are deliberately NOT `Nameless`: each carries a `TermSymbol`
+    * that `Loader.reallocTerm` resolves, so each needs the span of the text it came
+    * from. */
+  sealed trait Nameless extends Term
+
+  case class Const(lit: Literal) extends Term.Nameless
   // Param type fully-qualified: inside `object Term`, a bare `Var` would bind to
   // this nested case class, not the top-level `anthill.term.Var` enum.
-  case class Var(v: anthill.term.Var) extends Term
-  case object Bottom extends Term
+  case class Var(v: anthill.term.Var) extends Term.Nameless
+  case object Bottom extends Term.Nameless
   case class Ref(sym: TermSymbol) extends Term
   case class Ident(sym: TermSymbol) extends Term
 

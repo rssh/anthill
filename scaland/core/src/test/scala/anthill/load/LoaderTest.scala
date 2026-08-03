@@ -32,8 +32,8 @@ class LoaderTest extends munit.FunSuite:
     val bob = terms.alloc(Term.Const(Literal.StringLit("bob")))
     val charlie = terms.alloc(Term.Const(Literal.StringLit("charlie")))
 
-    val fact1Term = terms.alloc(Term.Fn(parentSym, IArray(alice, bob), IArray.empty))
-    val fact2Term = terms.alloc(Term.Fn(parentSym, IArray(bob, charlie), IArray.empty))
+    val fact1Term = terms.allocAt(Term.Fn(parentSym, IArray(alice, bob), IArray.empty), Span.empty)
+    val fact2Term = terms.allocAt(Term.Fn(parentSym, IArray(bob, charlie), IArray.empty), Span.empty)
 
     // Build rule: grandparent(?x, ?z) :- parent(?x, ?y), parent(?y, ?z)
     val grandparentSym = symbols.intern("grandparent")
@@ -41,9 +41,9 @@ class LoaderTest extends munit.FunSuite:
     val vx = VarId(0, xSym); val vy = VarId(1, ySym); val vz = VarId(2, zSym)
     val varX = terms.alloc(Term.Var(Var.Global(vx))); val varY = terms.alloc(Term.Var(Var.Global(vy))); val varZ = terms.alloc(Term.Var(Var.Global(vz)))
 
-    val ruleHead = terms.alloc(Term.Fn(grandparentSym, IArray(varX, varZ), IArray.empty))
-    val ruleBody1 = terms.alloc(Term.Fn(parentSym, IArray(varX, varY), IArray.empty))
-    val ruleBody2 = terms.alloc(Term.Fn(parentSym, IArray(varY, varZ), IArray.empty))
+    val ruleHead = terms.allocAt(Term.Fn(grandparentSym, IArray(varX, varZ), IArray.empty), Span.empty)
+    val ruleBody1 = terms.allocAt(Term.Fn(parentSym, IArray(varX, varY), IArray.empty), Span.empty)
+    val ruleBody2 = terms.allocAt(Term.Fn(parentSym, IArray(varY, varZ), IArray.empty), Span.empty)
 
     val items = ArrayBuffer[Item](
       Item.FactItem(Fact(fact1Term, None, emptySpan)),
@@ -68,7 +68,7 @@ class LoaderTest extends munit.FunSuite:
     val terms = SimpleTermStore()
     val colorSym = symbols.intern("color")
     val red = terms.alloc(Term.Const(Literal.StringLit("red")))
-    val factTerm = terms.alloc(Term.Fn(colorSym, IArray(red), IArray.empty))
+    val factTerm = terms.allocAt(Term.Fn(colorSym, IArray(red), IArray.empty), Span.empty)
     val ns = Namespace(
       name = Name.simple(symbols.intern("Colors"), emptySpan),
       imports = IndexedSeq.empty,
@@ -235,15 +235,15 @@ class LoaderTest extends munit.FunSuite:
     val listLitSym = symbols.intern("ListLiteral")
     val rust = terms.alloc(Term.Const(Literal.StringLit("rust")))
     val core = terms.alloc(Term.Const(Literal.StringLit("core")))
-    val listTerm = terms.alloc(Term.Fn(listLitSym, IArray(rust, core), IArray.empty))
+    val listTerm = terms.allocAt(Term.Fn(listLitSym, IArray(rust, core), IArray.empty), Span.empty)
 
     // Build fact: Task("T-001", tags: ListLiteral("rust", "core"))
     val taskSym = symbols.intern("Task")
     val idSym = symbols.intern("id")
     val tagsSym = symbols.intern("tags")
     val idVal = terms.alloc(Term.Const(Literal.StringLit("T-001")))
-    val factTerm = terms.alloc(Term.Fn(taskSym, IArray.empty,
-      IArray((idSym, idVal), (tagsSym, listTerm))))
+    val factTerm = terms.allocAt(Term.Fn(taskSym, IArray.empty,
+      IArray((idSym, idVal), (tagsSym, listTerm))), Span.empty)
     val fact = Fact(factTerm, None, emptySpan)
 
     val items = ArrayBuffer[Item](

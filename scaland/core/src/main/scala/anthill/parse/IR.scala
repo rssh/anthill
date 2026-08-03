@@ -35,42 +35,54 @@ class SimpleTermStore:
     * [[Span.empty]] is the CLAIM the allocation site makes: "no source text stands
     * behind this node". It is NOT a placeholder for a position nobody captured.
     *
-    * WHICH NODES MAY HONESTLY CLAIM IT is narrower than "everything the desugars
-    * mint", and the distinction is NOT that a functor looks synthetic: the loader's
-    * `reallocTerm` resolves the functor of EVERY `Term.Fn` it walks, marker or not, so
-    * a marker whose name a user can also declare reaches the same ambiguity report as
-    * a written call. Measured, not assumed — `unify`, `ho_apply`, `ListLiteral`,
-    * `SetLiteral` and `TupleLiteral` all reach it. Those markers are therefore
-    * allocated at the token that produced them (the `let`, the `[`, …), and what is
-    * left locationless is only what NO resolution path reaches: the `Expr`/`Pattern`
-    * markers (`if_expr`, `pattern_var`, …) that `convertExprTerm` dispatches on by
-    * name before any resolution, and the `TypeExtractor.*` type lowerings. */
+    * A name-bearing term cannot make that claim by accident — [[alloc]] does not
+    * accept one, and its doc carries the argument for why the exception set is empty.
+    * A structural lowering with no token of its own (a `TypeExtractor.*` chain) takes
+    * a DERIVED span — see `AnthillParser.typeExprSpan`. Derived is honest; empty is
+    * what is forbidden, and [[nameBearingWithoutSpan]] is the audit for it. */
   private val spans = ArrayBuffer.empty[Span]
   val descriptions: HashMap[TermId, ArrayBuffer[String]] = HashMap.empty
 
-  /** Allocate a SYNTHESIZED term — one with no source text of its own. See the
-    * `spans` comment for which nodes may honestly make that claim. */
-  def alloc(term: Term): TermId = allocAt(term, Span.empty)
+  /** Allocate a term with NO NAME to resolve — a `Const`, a `Var`, `Bottom`.
+    *
+    * THE SIGNATURE IS THE ENFORCEMENT (WI-961). `Loader.reallocTerm` resolves the
+    * functor / symbol of every `Fn` / `Ref` / `Ident` it walks, so one of those
+    * arriving without a span is precisely the WI-947/957 defect: a diagnostic about
+    * that name renders with no position. Before this, `alloc` and [[allocAt]] were
+    * equally reachable and equally neutral-looking, so the next production to mint a
+    * resolvable functor would compile clean, pass every test, and silently reopen the
+    * bug. [[anthill.term.Term.Nameless]] makes that a TYPE error instead — the repo
+    * prefers an unrepresentable illegal state over a check, and a check here would
+    * only have fired in whatever test happened to exercise the new production.
+    *
+    * THERE IS NO EXEMPTION LIST, and there cannot be a useful one. An earlier attempt
+    * enumerated the "synthesized markers that never resolve" and was wrong on its own
+    * examples — `unify`, `ho_apply`, `ListLiteral`, `SetLiteral` and `TupleLiteral`
+    * all DO reach `resolveName` (measured, WI-957) — and could never have been
+    * complete anyway, because a pattern binder puts an arbitrary user identifier in
+    * the same position. Locating everything leaves nothing to keep in sync.
+    *
+    * A name-bearing term genuinely built from no source — a hand-assembled test
+    * fixture — says so at the site: `allocAt(term, Span.empty)`. */
+  def alloc(term: Term.Nameless): TermId = allocAt(term, Span.empty)
 
-  /** Allocate a term built from the source text at `span` (WI-957). Use this
-    * wherever the term's own functor / ref / ident symbol comes from written text:
-    * that symbol is what the loader resolves, so `span` is where a name error about
-    * it belongs. THE single append point — keep it that way. */
+  /** Allocate a term built from the source text at `span` (WI-957). Use this wherever
+    * the term's own functor / ref / ident symbol comes from written text: that symbol
+    * is what the loader resolves, so `span` is where a name error about it belongs.
+    * THE single append point — keep it that way. */
   def allocAt(term: Term, span: Span): TermId =
     val id = TermId.fromRaw(terms.length)
     terms += term
     spans += span
     id
 
-  /** Allocate and mark as parse-minted, in one step — the two must not drift apart. */
-  def allocMinted(term: Term): TermId =
-    val id = alloc(term)
-    minted += id
-    id
-
-  /** [[allocMinted]] for a desugar whose FUNCTOR is derived from written text — the
-    * infix/prefix operator desugars, where `?a + ?b` mints `add(?a, ?b)` and the
-    * span is the `+` the author wrote. */
+  /** Allocate and mark as parse-minted, in one step — the two must not drift apart.
+    *
+    * There is no spanless `allocMinted` twin: everything the parse pipeline MINTS is a
+    * `Term.Fn` (an operator desugar, an accessor build), so such a twin could only be
+    * called with a name-bearing term and [[alloc]] no longer accepts one. The span is
+    * the token the desugar came FROM — `?a + ?b` mints `add(?a, ?b)`, whose functor is
+    * written nowhere, so it rides at the `+`. */
   def allocMintedAt(term: Term, span: Span): TermId =
     val id = allocAt(term, span)
     minted += id
@@ -80,6 +92,28 @@ class SimpleTermStore:
 
   /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957). */
   def spanOf(id: TermId): Span = spans(id.index)
+
+  /** WI-961: the name-bearing terms in this store that carry NO location.
+    *
+    * The audit `alloc`'s refusal cannot perform. That refusal catches the slip of
+    * calling the spanless entry point; it cannot catch a span that was supplied but
+    * came out EMPTY — which the type lowerings can do, because their span is DERIVED
+    * (`typeExprSpan` walks to the first located leaf and falls back to
+    * [[Span.empty]] when a whole subtree has none). Silent there, and the symptom is
+    * the same locationless diagnostic.
+    *
+    * EMPTY for every parser-built store, pinned over the whole stdlib by
+    * `ParseSpanCoverageTest`. A HAND-BUILT store is expected to be non-empty — the
+    * fixture declared `Span.empty` on purpose — which is why this reports rather than
+    * throws: only the caller knows which kind of store it holds. */
+  def nameBearingWithoutSpan: IndexedSeq[TermId] =
+    (0 until terms.length).view
+      .map(TermId.fromRaw)
+      .filter(id => !spans(id.index).hasLocation)
+      .filter(id => terms(id.index) match
+        case _: Term.Fn | _: Term.Ref | _: Term.Ident => true
+        case _                                        => false)
+      .toIndexedSeq
 
   def get(id: TermId): Term = terms(id.index)
   def size: Int = terms.length

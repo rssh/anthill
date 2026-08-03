@@ -13,8 +13,8 @@ import anthill.parse.{ParseError, ParsedFile, Parser}
   * survived.
   *
   * CONTROL, measured, not asserted from the armchair: make `Span.at` hand back a
-  * zero START and 21 of the 26 tests in this package fail (16 of 21 before WI-957
-  * added the ambiguous-symbol family below) — the survivors being the
+  * zero START and 23 of the 28 tests in this package fail (16 of 21 before WI-957
+  * added the ambiguous-symbol family below and WI-961 added `ParseSpanCoverageTest`) — the survivors being the
   * `LineIndex` units (which never build a span) and the locationless-`Span.empty`
   * case. Revert the `Index` capture in ONE production (`param`) and exactly 3 fail:
   * the two WI-727 ones and the rendering-parity one, which uses a WI-727 error as
