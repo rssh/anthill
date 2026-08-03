@@ -2,6 +2,7 @@ package anthill.parse
 
 import anthill.intern.TermSymbol
 import anthill.term.{Term, TermId}
+import anthill.span.Span
 
 /** Operator precedence parser — converts flat infix chains to nested Fn calls.
   *
@@ -70,28 +71,34 @@ object Pratt:
     *
     * @param operands alternating: [term, op, term, op, term, ...]
     *                 where ops are TermIds of the operator symbols
-    * @param terms the SimpleTermStore or function to alloc new terms
-    * @param intern function to resolve a TermSymbol to its string name
-    * @param allocFn function to allocate a new term
+    * @param ops each operator symbol WITH ITS OWN SOURCE SPAN (WI-957) — the
+    *            desugared node's functor (`add` for `+`) is written nowhere, so the
+    *            OPERATOR is what a diagnostic about that functor points at. One
+    *            paired sequence rather than two positional ones: the pairing is
+    *            then structural, so it cannot go one off and need an assert to
+    *            catch it.
+    * @param resolve function to resolve a TermSymbol to its string name
+    * @param alloc function to allocate a new term at a span
+    * @param intern function to intern a string as a TermSymbol
     */
   def desugar(
     operands: IndexedSeq[TermId],
-    opSymbols: IndexedSeq[TermSymbol],
+    ops: IndexedSeq[(TermSymbol, Span)],
     resolve: TermSymbol => String,
-    alloc: Term => TermId,
+    alloc: (Term, Span) => TermId,
     intern: String => TermSymbol
   ): TermId =
     if operands.length == 1 then return operands(0)
-    assert(operands.length == opSymbols.length + 1,
-      s"Expected ${opSymbols.length + 1} operands, got ${operands.length}")
-    desugarRec(operands, opSymbols, 0, operands.length - 1, resolve, alloc, intern)
+    assert(operands.length == ops.length + 1,
+      s"Expected ${ops.length + 1} operands, got ${operands.length}")
+    desugarRec(operands, ops, 0, operands.length - 1, resolve, alloc, intern)
 
   private def desugarRec(
     operands: IndexedSeq[TermId],
-    ops: IndexedSeq[TermSymbol],
+    ops: IndexedSeq[(TermSymbol, Span)],
     lo: Int, hi: Int,
     resolve: TermSymbol => String,
-    alloc: Term => TermId,
+    alloc: (Term, Span) => TermId,
     intern: String => TermSymbol
   ): TermId =
     if lo == hi then return operands(lo)
@@ -102,7 +109,7 @@ object Pratt:
     var splitAssoc = Assoc.Left
     var i = lo
     while i < hi do
-      val opName = resolve(ops(i))
+      val opName = resolve(ops(i)._1)
       val entry = infixTable.getOrElse(opName, InfixEntry(5, Assoc.Left, opName))
       val shouldSplit = entry.assoc match
         case Assoc.Left => entry.priority <= splitPriority
@@ -116,7 +123,8 @@ object Pratt:
 
     val lhs = desugarRec(operands, ops, lo, splitIdx, resolve, alloc, intern)
     val rhs = desugarRec(operands, ops, splitIdx + 1, hi, resolve, alloc, intern)
-    val opName = resolve(ops(splitIdx))
+    val (opSym, opSpan) = ops(splitIdx)
+    val opName = resolve(opSym)
     val entry = infixTable.getOrElse(opName, InfixEntry(5, Assoc.Left, opName))
     val functorSym = intern(entry.functor)
-    alloc(Term.Fn(functorSym, IArray(lhs, rhs), IArray.empty))
+    alloc(Term.Fn(functorSym, IArray(lhs, rhs), IArray.empty), opSpan)

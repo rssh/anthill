@@ -295,7 +295,7 @@ private class AnthillParserImpl(
   // ── Variables ────────────────────────────────────────────────
 
   private def variable[$: P]: P[TermId] =
-    P(Tokens.variableToken ~ fnArgsList.?).map { case (varName, args) =>
+    P(Index ~ Tokens.variableToken ~~ Index ~ fnArgsList.?).map { case (s, varName, e, args) =>
       val varTid =
         if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
         else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
@@ -310,7 +310,11 @@ private class AnthillParserImpl(
             case Left(tid) => posArgs += tid
             case Right((k, v)) => namedArgs += ((k, v))
           }
-          terms.alloc(Term.Fn(intern("ho_apply"), IArray.from(posArgs), IArray.from(namedArgs)))
+          // WI-957: `ho_apply` is a name the loader RESOLVES, so it is located — at
+          // the applied variable, the text that produced the application.
+          terms.allocAt(
+            Term.Fn(intern("ho_apply"), IArray.from(posArgs), IArray.from(namedArgs)),
+            mkSpan(s, e))
     }
 
   // ── Types ────────────────────────────────────────────────────
@@ -472,6 +476,16 @@ private class AnthillParserImpl(
 
   // ── Terms ────────────────────────────────────────────────────
 
+  /** An operator token and ITS OWN SPAN (WI-957) — what a diagnostic about the
+    * functor the desugar mints (`add` for `+`) has to point at, since that functor
+    * appears nowhere in the source.
+    *
+    * A CASE CLASS, not a pair: fastparse FLATTENS tuple results across `~`, so a
+    * `P[(TermSymbol, Span)]` would dissolve into the enclosing sequence's tuple and
+    * the operator list and the span list would be built by two separate positional
+    * drains — one rename away from mislocating every operator in a chain. */
+  private case class OpToken(sym: TermSymbol, span: Span)
+
   private def term[$: P]: P[TermId] =
     P(atomWithFieldAccess ~ (infixOp ~ atomWithFieldAccess).rep).map { case (first, pairs) =>
       buildInfix(first, pairs)
@@ -523,16 +537,20 @@ private class AnthillParserImpl(
       buildInfix(first, pairs.toSeq)
     }
 
-  private def buildInfix(first: TermId, pairs: Seq[(TermSymbol, TermId)]): TermId =
+  private def buildInfix(first: TermId, pairs: Seq[(OpToken, TermId)]): TermId =
     if pairs.isEmpty then first
     else
       val operands = ArrayBuffer(first)
-      val opSymbols = ArrayBuffer.empty[TermSymbol]
-      pairs.foreach { case (op, operand) => opSymbols += op; operands += operand }
+      val ops = ArrayBuffer.empty[(TermSymbol, Span)]
+      pairs.foreach { case (op, operand) =>
+        ops += ((op.sym, op.span)); operands += operand }
       // WI-618: every node the infix desugar builds is parse-MINTED — `?a + ?b`
       // yields `add(?a, ?b)` whose functor is the desugar's, not the source's.
-      Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name,
-                    terms.allocMinted, symbols.intern)
+      // WI-957: which is exactly why the span it is allocated at is the OPERATOR's
+      // — `add` appears nowhere in the source, so a diagnostic about that name
+      // points at the `+` that denotes it.
+      Pratt.desugar(operands.toIndexedSeq, ops.toIndexedSeq,
+                    symbols.name, terms.allocMintedAt, symbols.intern)
 
   /** A rule-body goal: the cut control primitive `!` (WI-568), a goal-position
     * `let ?v = expr` binding (WI-522), or a regular `_term`. Mirrors rustland's
@@ -549,15 +567,20 @@ private class AnthillParserImpl(
     * bare word `let`, and a longer identifier (`lettuce`) never matches the
     * keyword (maximal-munch lexing). */
   private def letGoal[$: P]: P[TermId] =
-    P(keyword("let") ~/ variable ~ "=" ~/ term).map { case (v, e) =>
-      terms.alloc(Term.Fn(intern("unify"), IArray(v, e), IArray.empty))
+    P(Index ~ keyword("let") ~~ Index ~/ variable ~ "=" ~/ term).map { case (s, e, v, rhs) =>
+      // WI-957: `unify` is resolved like any other functor, so it is located — at the
+      // `let` that produced it.
+      terms.allocAt(Term.Fn(intern("unify"), IArray(v, rhs), IArray.empty), mkSpan(s, e))
     }
 
   /** Cut (`!`) — kernel control primitive (proposal 033.1 / WI-568): a nullary
     * `cut` goal that commits to the current rule invocation. scaland has no
     * resolver-side cut semantics; the goal just round-trips as a `cut()` term. */
   private def cutGoal[$: P]: P[TermId] =
-    P("!").map(_ => terms.alloc(Term.Fn(intern("cut"), IArray.empty, IArray.empty)))
+    P(Index ~ "!" ~~ Index).map { case (s, e) =>
+      // WI-957: located at the `!`, for the same reason `unify` is located at `let`.
+      terms.allocAt(Term.Fn(intern("cut"), IArray.empty, IArray.empty), mkSpan(s, e))
+    }
 
   /** A base atom followed by a dotted access/call chain. WI-278: a chain
     * segment over a *value* receiver (`?x`, a call result, a literal, …)
@@ -570,8 +593,8 @@ private class AnthillParserImpl(
     P(atomBase ~ dotSegment.rep).map { case (base, segs) =>
       segs.foldLeft(base) { (obj, seg) =>
         seg match
-          case DotSeg.Field(field, callArgs) =>
-            buildFieldAccess(obj, field, isValueReceiver(obj), callArgs)
+          case DotSeg.Field(field, fieldSpan, callArgs) =>
+            buildFieldAccess(obj, field, fieldSpan, isValueReceiver(obj), callArgs)
           case DotSeg.Projection(members, span) =>
             buildDistributiveProjection(obj, members, span)
       }
@@ -584,23 +607,33 @@ private class AnthillParserImpl(
     * builds byte-identically to `x.m`. `valueRecv` is passed in (not recomputed)
     * so the projection can decide the receiver kind once for all its members.
     * A name receiver carrying call args never reaches here — `name`/`nameSuffix`
-    * consumes `Foo.bar(args)` — so a name receiver always has `callArgs == None`. */
+    * consumes `Foo.bar(args)` — so a name receiver always has `callArgs == None`.
+    * `memberSpan` is the member TOKEN's own span (WI-957): the accessor's `Ref` /
+    * `Ident` child is the symbol the loader resolves, so a name error about it
+    * belongs on the `.f`, not on the whole receiver chain. */
   private def buildFieldAccess(
-    obj: TermId, member: TermSymbol, valueRecv: Boolean,
+    obj: TermId, member: TermSymbol, memberSpan: Span, valueRecv: Boolean,
     callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]]
   ): TermId =
-    if valueRecv || callArgs.isDefined then buildDotApply(obj, member, callArgs)
+    if valueRecv || callArgs.isDefined then buildDotApply(obj, member, memberSpan, callArgs)
     else
-      val fieldRef = terms.alloc(Term.Ref(member))
+      val fieldRef = terms.allocAt(Term.Ref(member), memberSpan)
       // WI-618: accessor provenance, as for the dotted-name build.
-      terms.allocMinted(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
+      terms.allocMintedAt(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty), memberSpan)
 
   /** One dotted access after an atom: a field/method `.name` / `.name(args)`
     * (WI-278) or a distributive projection `.(m1, …, mn)` (WI-639). */
   private enum DotSeg:
-    case Field(name: TermSymbol, callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])
-    /** `(label, member)` pairs — a bare member auto-labels (`label == member`). */
-    case Projection(members: IndexedSeq[(TermSymbol, TermSymbol)], span: Span)
+    case Field(
+      name: TermSymbol, span: Span,
+      callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])
+    case Projection(members: IndexedSeq[ProjectionMember], span: Span)
+
+  /** One member of a distributive projection. A bare member auto-labels
+    * (`label == member`); `a: f` renames. `span` is the MEMBER token's — the
+    * member is the name that gets resolved, the label only keys the result tuple
+    * (WI-957). */
+  private case class ProjectionMember(label: TermSymbol, member: TermSymbol, span: Span)
 
   private def dotSegment[$: P]: P[DotSeg] =
     // The projection opener `.(` diverges from a `.name` field access on the
@@ -610,7 +643,9 @@ private class AnthillParserImpl(
 
   /** A field access `.name`, optionally a call `.name(args)` (WI-278). */
   private def fieldSeg[$: P]: P[DotSeg] =
-    P("." ~ ident ~ fnArgsList.?).map { case (name, args) => DotSeg.Field(name, args) }
+    P("." ~ Index ~ ident ~~ Index ~ fnArgsList.?).map {
+      case (s, name, e, args) => DotSeg.Field(name, mkSpan(s, e), args)
+    }
 
   /** WI-639: a distributive projection segment `.(m1, …, mn)`. The `.(` opener
     * is unambiguous (no other construct follows `x.` with a `(`), so it cuts
@@ -627,10 +662,10 @@ private class AnthillParserImpl(
     * (`label == member == f`), or `a: f` renames (label `a`, member `f`).
     * Members are plain identifiers — expression/call members are deferred
     * (proposal 052 OQ3), mirroring rustland's `projection_member`. */
-  private def projectionMember[$: P]: P[(TermSymbol, TermSymbol)] =
-    P(ident ~ (":" ~ ident).?).map {
-      case (label, Some(member)) => (label, member)
-      case (member, None)        => (member, member)
+  private def projectionMember[$: P]: P[ProjectionMember] =
+    P(Index ~ ident ~~ Index ~ (":" ~ Index ~ ident ~~ Index).?).map {
+      case (s, label, e, Some((ms, member, me))) => ProjectionMember(label, member, mkSpan(ms, me))
+      case (s, member, e, None)                  => ProjectionMember(member, member, mkSpan(s, e))
     }
 
   private lazy val fieldAccessSym = intern("field_access")
@@ -657,9 +692,10 @@ private class AnthillParserImpl(
   private def buildDotApply(
     receiver: TermId,
     field: TermSymbol,
+    fieldSpan: Span,
     callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]]
   ): TermId =
-    val nameTerm = terms.alloc(Term.Ident(field))
+    val nameTerm = terms.allocAt(Term.Ident(field), fieldSpan)
     val posArgs = ArrayBuffer(receiver, nameTerm)
     val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
     callArgs.foreach(_.foreach {
@@ -667,7 +703,7 @@ private class AnthillParserImpl(
       case Right((k, v)) => namedArgs += ((k, v))
     })
     // WI-618: accessor provenance, as for `field_access`.
-    terms.allocMinted(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)))
+    terms.allocMintedAt(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)), fieldSpan)
 
   /** WI-639: build `x.(m1, …, mn)` — distribute the receiver `x` over the
     * member list. Each member desugars to the SAME accessor a single `x.m`
@@ -678,15 +714,15 @@ private class AnthillParserImpl(
     * renamed), so the tuple key only matters for a multi-column result. Mirrors
     * rustland's `push_distributive_projection` build + `is_value_receiver`. */
   private def buildDistributiveProjection(
-    obj: TermId, members: IndexedSeq[(TermSymbol, TermSymbol)], span: Span
+    obj: TermId, members: IndexedSeq[ProjectionMember], span: Span
   ): TermId =
     // Validate result keys BEFORE building a multi-column tuple (a single member
     // 1-collapses to a scalar — no tuple, nothing to key). Each check turns an
     // otherwise-silent wrong result into a loud parse error (WI-639 review).
     if members.length > 1 then validateProjectionLabels(members, span)
     val valueRecv = isValueReceiver(obj)
-    val accessors = members.map { case (label, member) =>
-      (label, buildFieldAccess(obj, member, valueRecv, None))
+    val accessors = members.map { m =>
+      (m.label, buildFieldAccess(obj, m.member, m.span, valueRecv, None))
     }
     if accessors.length == 1 then accessors.head._2
     else terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)))
@@ -699,10 +735,10 @@ private class AnthillParserImpl(
     *     columns are silently dropped (first-match-wins downstream).
     * Mirrors rustland's `validate_projection_labels`. */
   private def validateProjectionLabels(
-    members: IndexedSeq[(TermSymbol, TermSymbol)], span: Span
+    members: IndexedSeq[ProjectionMember], span: Span
   ): Unit =
     val seen = scala.collection.mutable.HashSet.empty[TermSymbol]
-    for (label, _) <- members do
+    for label <- members.map(_.label) do
       val nm = symbols.name(label)
       if nm.startsWith("_") then
         errors += ParseError(
@@ -767,6 +803,11 @@ private class AnthillParserImpl(
     )
     case Bare
 
+  /** WI-957: EVERY term this production builds is allocated at `n.span` — the
+    * written name is the whole reason the node exists, and it is the symbol the
+    * loader later resolves. The dotted arms use the WHOLE name's span rather than
+    * the failing segment's: a `Name` carries one span for `a.b.c`, and pointing at
+    * the dotted name is truthful where inventing a per-segment offset would not be. */
   private def fnOrInstOrIdent[$: P]: P[TermId] =
     P(name ~ nameSuffix).map { case (n, suffix) =>
       suffix match
@@ -778,7 +819,7 @@ private class AnthillParserImpl(
             case Right((k, v)) => namedArgs += ((k, v))
           }
           val funcStr = n.segments.map(symbols.name).mkString(".")
-          terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
+          terms.allocAt(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)), n.span)
 
         case NameSuffix.InstArgs(bindings) =>
           val funcStr = n.segments.map(symbols.name).mkString(".")
@@ -790,7 +831,7 @@ private class AnthillParserImpl(
               case Some(p) => namedArgs += ((p.last, bt))
               case None => posArgs += bt
           }
-          terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
+          terms.allocAt(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)), n.span)
 
         case NameSuffix.InstThenFn(bindings, args) =>
           val funcStr = n.segments.map(symbols.name).mkString(".")
@@ -815,17 +856,18 @@ private class AnthillParserImpl(
             }
             val aux = terms.alloc(Term.Fn(intern("type_args"), IArray.from(bPos), IArray.from(bNamed)))
             namedArgs += ((intern("type_args"), aux))
-          terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
+          terms.allocAt(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)), n.span)
 
         case NameSuffix.Bare =>
-          if n.isSimple then terms.alloc(Term.Ident(n.last))
+          if n.isSimple then terms.allocAt(Term.Ident(n.last), n.span)
           else
-            var result = terms.alloc(Term.Ident(n.segments.head))
+            var result = terms.allocAt(Term.Ident(n.segments.head), n.span)
             for seg <- n.segments.tail do
-              val fieldRef = terms.alloc(Term.Ref(seg))
+              val fieldRef = terms.allocAt(Term.Ref(seg), n.span)
               // WI-618: accessor provenance — a dotted name's segments are built
               // here, they are not written as a `field_access(…)` call.
-              result = terms.allocMinted(Term.Fn(intern("field_access"), IArray(result, fieldRef), IArray.empty))
+              result = terms.allocMintedAt(
+                Term.Fn(intern("field_access"), IArray(result, fieldRef), IArray.empty), n.span)
             result
     }
 
@@ -889,7 +931,10 @@ private class AnthillParserImpl(
     P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
   private def typeExprToRef(te: TypeExpr): TermId = te match
-    case TypeExpr.Simple(n) => terms.alloc(Term.Ref(n.last))
+    // WI-957: a WRITTEN type name locates at the name it was written as; the
+    // structural lowerings below (arrow, tuple, effect row) mint `TypeExtractor`
+    // functors that appear nowhere in the source and stay locationless.
+    case TypeExpr.Simple(n) => terms.allocAt(Term.Ref(n.last), n.span)
     case TypeExpr.Parameterized(n, bindings) =>
       val posArgs = ArrayBuffer.empty[TermId]
       val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
@@ -899,7 +944,7 @@ private class AnthillParserImpl(
           case Some(p) => namedArgs += ((p.last, bt))
           case None => posArgs += bt
       }
-      terms.alloc(Term.Fn(n.last, IArray.from(posArgs), IArray.from(namedArgs)))
+      terms.allocAt(Term.Fn(n.last, IArray.from(posArgs), IArray.from(namedArgs)), n.span)
     case TypeExpr.Variable(tid, _) => tid
     // WI-288 / WI-361: arrow and tuple types lower to the structural
     // `TypeExtractor` entities (`anthill.prelude.TypeExtractor.Arrow` /
@@ -1084,37 +1129,44 @@ private class AnthillParserImpl(
       case other => other.toString
 
   private def refTerm[$: P]: P[TermId] =
-    P(keyword("Ref") ~ "(" ~/ name ~ ")").map(n => terms.alloc(Term.Ref(n.last)))
+    P(keyword("Ref") ~ "(" ~/ name ~ ")").map(n => terms.allocAt(Term.Ref(n.last), n.span))
 
   private def prefixTerm[$: P]: P[TermId] =
     P(prefixOp ~ atomWithFieldAccess).map { case (op, operand) =>
-      val opString = symbols.name(op)
+      val opString = symbols.name(op.sym)
       val entry = Pratt.lookupPrefix(opString)
-      val functorSym = entry.map(e => intern(e.functor)).getOrElse(op)
+      val functorSym = entry.map(e => intern(e.functor)).getOrElse(op.sym)
       // WI-618: prefix desugar, as for infix above.
-      terms.allocMinted(Term.Fn(functorSym, IArray(operand), IArray.empty))
+      // WI-957: located at the OPERATOR, as for infix above.
+      terms.allocMintedAt(Term.Fn(functorSym, IArray(operand), IArray.empty), op.span)
     }
 
-  private def prefixOp[$: P]: P[TermSymbol] =
-    P(
+  private def prefixOp[$: P]: P[OpToken] =
+    P(Index ~ (
       "!".!.map(_ => intern("!")) |
       keyword("not").map(_ => intern("not")) |
       "-".!.map(_ => intern("-"))
-    )
+    ) ~~ Index).map { case (s, sym, e) => OpToken(sym, mkSpan(s, e)) }
 
+  // WI-957: `ListLiteral` / `SetLiteral` / `TupleLiteral` / `forall_impl` are names
+  // the loader RESOLVES (they are not in `convertExprTerm`'s by-name dispatch, so they
+  // reach `resolveName` like a written call), which means each must be located. The
+  // span is the OPENING BRACKET — the token that decided which literal this is.
   private def collectionLiteral[$: P]: P[TermId] =
     // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
     // surface; list destructuring uses the explicit `cons(?h, ?t)` constructor.
-    P("[" ~/ (
-      "]".map(_ => terms.alloc(Term.Fn(intern("ListLiteral"), IArray.empty, IArray.empty))) |
-      (term.rep(1, sep = ",") ~ "]").map { elems =>
-        terms.alloc(Term.Fn(intern("ListLiteral"), IArray.from(elems), IArray.empty))
-      }
-    ))
+    P(Index ~ "[" ~~ Index ~/ (
+      "]".map(_ => None) |
+      (term.rep(1, sep = ",") ~ "]").map(Some(_))
+    )).map { case (s, e, elems) =>
+      terms.allocAt(
+        Term.Fn(intern("ListLiteral"), IArray.from(elems.getOrElse(Seq.empty)), IArray.empty),
+        mkSpan(s, e))
+    }
 
   private def setLiteral[$: P]: P[TermId] =
-    P("{" ~ term.rep(sep = ",") ~ "}").map { elems =>
-      terms.alloc(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty))
+    P(Index ~ "{" ~~ Index ~ term.rep(sep = ",") ~ "}").map { case (s, e, elems) =>
+      terms.allocAt(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty), mkSpan(s, e))
     }
 
   /** Parse `(...)` as one of:
@@ -1131,22 +1183,28 @@ private class AnthillParserImpl(
     * impl form if it lived in a separate alternative).
     */
   private def tupleLiteralOrParenExpr[$: P]: P[TermId] =
-    P("(" ~/ (
-      ")".map(_ => terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty))) |
-      (fnArg ~ ("," ~/ fnArg).rep ~ ",".? ~ ("-:" ~/ term.rep(1, sep = ",")).? ~ ")").map {
-        case (first, rest, Some(consequents)) =>
+    P(Index ~ "(" ~~ Index ~/ (
+      ")".map(_ => None) |
+      (fnArg ~ ("," ~/ fnArg).rep ~ ",".? ~ ("-:" ~/ term.rep(1, sep = ",")).? ~ ")").map(Some(_))
+    )).map { case (s, e, body) =>
+      // WI-957: the opening `(` — see `collectionLiteral`.
+      val span = mkSpan(s, e)
+      body match
+        case None =>
+          terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty), span)
+        case Some((first, rest, Some(consequents))) =>
           val antecedents = (first +: rest).collect { case Left(t) => t }
-          val antTuple = terms.alloc(Term.Fn(intern("tuple"),
-            IArray.from(antecedents), IArray.empty))
-          val conTuple = terms.alloc(Term.Fn(intern("tuple"),
-            IArray.from(consequents), IArray.empty))
-          terms.alloc(Term.Fn(intern("forall_impl"),
-            IArray(antTuple, conTuple), IArray.empty))
-        case (first, rest, None) =>
+          val antTuple = terms.allocAt(Term.Fn(intern("tuple"),
+            IArray.from(antecedents), IArray.empty), span)
+          val conTuple = terms.allocAt(Term.Fn(intern("tuple"),
+            IArray.from(consequents), IArray.empty), span)
+          terms.allocAt(Term.Fn(intern("forall_impl"),
+            IArray(antTuple, conTuple), IArray.empty), span)
+        case Some((first, rest, None)) =>
           if rest.isEmpty then first match
             case Left(tid) => tid
             case Right((k, v)) =>
-              terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray((k, v))))
+              terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray((k, v))), span)
           else
             val all = first +: rest
             val posArgs = ArrayBuffer.empty[TermId]
@@ -1155,36 +1213,41 @@ private class AnthillParserImpl(
               case Left(tid) => posArgs += tid
               case Right((k, v)) => namedArgs += ((k, v))
             }
-            terms.alloc(Term.Fn(intern("TupleLiteral"),
-              IArray.from(posArgs), IArray.from(namedArgs)))
-      }
-    ))
+            terms.allocAt(Term.Fn(intern("TupleLiteral"),
+              IArray.from(posArgs), IArray.from(namedArgs)), span)
+    }
 
-  private def infixOp[$: P]: P[TermSymbol] =
-    P(
+  /** An infix operator and ITS OWN TOKEN SPAN (WI-957). The span rides with the
+    * symbol rather than beside it because the desugar consumes them together:
+    * `Pratt.desugar` pairs op `i` with span `i`, and a pairing built by two
+    * separately-collected lists is one off-by-one from silently mislocating every
+    * diagnostic in the chain. */
+  private def infixOp[$: P]: P[OpToken] =
+    P(Index ~ (
       "!=".!.map(_ => intern("!=")) |
       keyword("or").map(_ => intern("or")) |
       keyword("and").map(_ => intern("and")) |
       keyword("mod").map(_ => intern("mod")) |
       keyword("div").map(_ => intern("div")) |
       Tokens.opToken.map(intern)
-    )
+    ) ~~ Index).map { case (s, sym, e) => OpToken(sym, mkSpan(s, e)) }
 
   /** A non-`=` clause-term infix op: every operator in `infixOp` except `=`.
     * `=` is handled separately by `eqClauseOp` (at most one per clause goal), so
     * a second `=` is left for the `= <body>` separator. Derived from `infixOp`
     * so the two operator sets can't drift. (`<=`/`>=`/`!=`/`<=>`/… are distinct
     * maximal-munch tokens, never `=`, so they remain ordinary chaining ops.) */
-  private def nonEqInfixOp[$: P]: P[TermSymbol] =
-    P(infixOp.filter(sym => symbols.name(sym) != "="))
+  private def nonEqInfixOp[$: P]: P[OpToken] =
+    P(infixOp.filter(op => symbols.name(op.sym) != "="))
 
   /** The single clause `=` (equality goal), consumed EXCEPT when it introduces
     * the operation body — i.e. when followed by an expr-body-only keyword
     * (`match`/`if`/`let`/`lambda`/`proof`), which cannot be a `_term` and so can
     * only be the `= <body>` separator. Mirrors rustland's GLR (the infix
     * `Eq[T] = match` parse is impossible, so `= match` is the body). */
-  private def eqClauseOp[$: P]: P[TermSymbol] =
-    P((Tokens.opToken.filter(_ == "=") ~ !exprBodyKeyword).map(_ => intern("=")))
+  private def eqClauseOp[$: P]: P[OpToken] =
+    P((Index ~ Tokens.opToken.filter(_ == "=") ~~ Index ~ !exprBodyKeyword)
+      .map { case (s, _, e) => OpToken(intern("="), mkSpan(s, e)) })
 
   /** The keywords that introduce an expr-body-only form (`_expr_body` minus the
     * `_term` fall-through). A lookahead over these distinguishes a clause `= goal`
@@ -1315,7 +1378,9 @@ private class AnthillParserImpl(
 
   private def patternConstructor[$: P]: P[TermId] =
     P(name ~ "(" ~ pattern.rep(sep = ",") ~ ")").map { case (n, pats) =>
-      val nameTerm = terms.alloc(Term.Ident(n.last))
+      // WI-957: the constructor name is resolved by `loadPatternConstructor`, so it
+      // carries the span a `case nosuchctor(…)` diagnostic points at.
+      val nameTerm = terms.allocAt(Term.Ident(n.last), n.span)
       terms.alloc(Term.Fn(intern("pattern_constructor"), IArray(nameTerm) ++ IArray.from(pats), IArray.empty))
     }
 

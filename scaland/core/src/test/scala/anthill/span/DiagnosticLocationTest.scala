@@ -13,7 +13,8 @@ import anthill.parse.{ParseError, ParsedFile, Parser}
   * survived.
   *
   * CONTROL, measured, not asserted from the armchair: make `Span.at` hand back a
-  * zero START and 16 of the 21 tests in this package fail — the survivors being the
+  * zero START and 21 of the 26 tests in this package fail (16 of 21 before WI-957
+  * added the ambiguous-symbol family below) — the survivors being the
   * `LineIndex` units (which never build a span) and the locationless-`Span.empty`
   * case. Revert the `Index` capture in ONE production (`param`) and exactly 3 fail:
   * the two WI-727 ones and the rendering-parity one, which uses a WI-727 error as
@@ -169,6 +170,165 @@ class DiagnosticLocationTest extends munit.FunSuite:
       .getOrElse(fail(s"expected the WI-949 missing-scope report, got: ${errs.map(_.render).mkString("; ")}"))
     assertEquals(at(span), (1, 11))
     assertEquals(src.split("\n")(0).substring(10), "demo")
+  }
+
+  // ── WI-957: the ambiguous-symbol family ──────────────────────
+  //
+  // CONTROL, measured on both halves of the change rather than asserted:
+  //
+  //   * revert the RAISE SITE (`Loader.resolveName` back to `Span.empty, ""`) and
+  //     exactly these 5 tests fail; the other 304 pass;
+  //   * make `SimpleTermStore.allocAt` DISCARD its span — the parser half, so every
+  //     name-bearing term is allocated locationless again — and the same 5 fail,
+  //     with the same 304 passing.
+  //
+  // So neither half is dead: threading a span to the diagnostic is worthless if the
+  // parser never captured one, and capturing one is worthless if the raise site still
+  // hard-codes `Span.empty`. Nothing in the pre-existing suite moves either way —
+  // `AmbiguousSymbol` had no position and no scope name to assert on, which is
+  // precisely how it survived WI-947.
+
+  /** A scope with TWO required parents that each declare `dup` — the only way a
+    * short name resolves to more than one symbol. `body` goes inside a third sort
+    * that requires both, so every occurrence in it is ambiguous. */
+  private def ambiguousDup(body: String): String =
+    s"""namespace demo
+       |  sort A
+       |    operation dup(x: A) -> A
+       |  end
+       |  sort B
+       |    operation dup(x: B) -> B
+       |  end
+       |  sort C
+       |    requires demo.A
+       |    requires demo.B
+       |$body
+       |  end
+       |end""".stripMargin
+
+  private def ambiguities(errs: IndexedSeq[LoadError]): IndexedSeq[LoadError.AmbiguousSymbol] =
+    errs.collect { case e: LoadError.AmbiguousSymbol => e }
+
+  test("WI-957: an ambiguous symbol is located at the occurrence, in a named scope") {
+    // The last locationless load diagnostic. It reported `ambiguous symbol 'dup' in
+    // scope ''` — no position, and a scope name that was never filled in.
+    val src = ambiguousDup("    rule uses(?x) :- dup(?x)")
+    val errs = ambiguities(loadErrors(src))
+    assertEquals(errs.length, 1, s"got: ${errs.map(_.render).mkString("; ")}")
+    val e = errs.head
+    assertEquals(e.name, "dup")
+    assertEquals(at(e.span), (11, 22))
+    assertEquals(src.split("\n")(10).substring(21, 24), "dup")   // the column really is the `dup`
+    // The scope is the one the resolution was actually attempted in, spelled by its
+    // qualified name — not the empty string the field carried before.
+    assertEquals(e.scopeName, "demo.C")
+    assertEquals(e.candidates.sorted, IndexedSeq("demo.A.dup", "demo.B.dup"))
+    assertEquals(e.render,
+      "demo.anthill:11:22: ambiguous symbol 'dup' in scope 'demo.C': candidates demo.A.dup, demo.B.dup")
+  }
+
+  test("WI-957: TWO occurrences of the same ambiguous name are located separately") {
+    // What "per OCCURRENCE" means, and the case a declaration-level or file-level span
+    // would pass the test above with: the same name, ambiguous twice, must report two
+    // DIFFERENT positions. The parse-time term store does not hash-cons, so each
+    // written `dup` is its own `TermId` with its own span — this is what pins that.
+    val src = ambiguousDup(
+      """    rule uses(?x) :- dup(?x)
+        |    rule again(?y) :- dup(?y)""".stripMargin)
+    val errs = ambiguities(loadErrors(src))
+    assertEquals(errs.length, 2, s"got: ${errs.map(_.render).mkString("; ")}")
+    assertEquals(errs.map(e => at(e.span)).toSet, Set((11, 22), (12, 23)))
+    assertEquals(src.split("\n")(11).substring(22, 25), "dup")
+  }
+
+  test("WI-957: an ambiguous INFIX operator is located at the operator token") {
+    // `?a + ?b` desugars to `add(?a, ?b)`, and `add` is what resolves. That functor is
+    // written nowhere, so the position has to be the `+` the author typed — the one
+    // token that denotes it.
+    val src =
+      """namespace demo
+        |  sort A
+        |    operation add(x: A, y: A) -> A
+        |  end
+        |  sort B
+        |    operation add(x: B, y: B) -> B
+        |  end
+        |  sort C
+        |    requires demo.A
+        |    requires demo.B
+        |    rule uses(?x) :- p(?x + ?x)
+        |  end
+        |end""".stripMargin
+    val errs = ambiguities(loadErrors(src))
+    assertEquals(errs.length, 1, s"got: ${errs.map(_.render).mkString("; ")}")
+    assertEquals(errs.head.name, "add")
+    assertEquals(at(errs.head.span), (11, 27))
+    assertEquals(src.split("\n")(10).charAt(26), '+')
+  }
+
+  test("WI-957: an ambiguous dot member is located at the member, not the receiver") {
+    // `?x.fld` builds `dot_apply(?x, Ident(fld))`; the `Ident` is what resolves, so the
+    // position is the member token — a span covering the whole accessor would point at
+    // the `?x`, which is not the ambiguous part.
+    val src =
+      """namespace demo
+        |  sort A
+        |    operation fld(x: A) -> A
+        |  end
+        |  sort B
+        |    operation fld(x: B) -> B
+        |  end
+        |  sort C
+        |    requires demo.A
+        |    requires demo.B
+        |    rule uses(?x) :- p(?x.fld)
+        |  end
+        |end""".stripMargin
+    val errs = ambiguities(loadErrors(src))
+    assertEquals(errs.length, 1, s"got: ${errs.map(_.render).mkString("; ")}")
+    assertEquals(errs.head.name, "fld")
+    assertEquals(at(errs.head.span), (11, 27))
+    assertEquals(src.split("\n")(10).substring(26, 29), "fld")
+  }
+
+  test("WI-957: a SYNTHESIZED marker the loader still resolves is located too") {
+    // The trap review caught: "the functor looks synthetic" is NOT a reason a node may
+    // claim `Span.empty`. `reallocTerm` resolves the functor of EVERY `Term.Fn`, and
+    // only the markers `convertExprTerm` dispatches on BY NAME (`if_expr`,
+    // `pattern_var`, …) are shielded from that. These five are not shielded — they
+    // reach `resolveName` exactly like a written call — so a user who declares an
+    // operation of the same name gets the locationless report this WI exists to
+    // retire. Measured, not reasoned: before the fix all five reported
+    // `hasLocation == false`.
+    //
+    // Each is located at the token that PRODUCED it (the `let`, the applied `?p`, the
+    // opening bracket), because the functor itself is written nowhere.
+    val cases = Seq(
+      ("unify",        "    rule uses(?x) :- let ?y = ?x",            22),
+      ("ho_apply",     "    rule uses(?p) :- ?p(1)",                  22),
+      ("ListLiteral",  "    rule uses(?x) :- p([?x, ?x])",            24),
+      ("SetLiteral",   "    rule uses(?x) :- p({?x})",                24),
+      ("TupleLiteral", "    rule uses(?x) :- p((a: ?x, b: ?x))",      24),
+    )
+    for (marker, body, col) <- cases do
+      val src =
+        s"""namespace demo
+           |  sort A
+           |    operation $marker(x: A) -> A
+           |  end
+           |  sort B
+           |    operation $marker(x: B) -> B
+           |  end
+           |  sort C
+           |    requires demo.A
+           |    requires demo.B
+           |$body
+           |  end
+           |end""".stripMargin
+      val found = ambiguities(loadErrors(src)).filter(_.name == marker)
+      assertEquals(found.length, 1, s"$marker: expected one ambiguity, got ${found.map(_.render)}")
+      assertEquals(at(found.head.span), (11, col), s"$marker located wrong")
+      assertEquals(found.head.scopeName, "demo.C", s"$marker scope wrong")
   }
 
   test("an unresolved name is located at the name") {

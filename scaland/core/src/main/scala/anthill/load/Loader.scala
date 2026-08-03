@@ -882,9 +882,13 @@ object Loader:
         // still matches the untyped form). Mirrors rustland's strip minus the
         // bound install.
         reallocTerm(kb, fileTerms, fileSym, fn.posArgs(0), scopeTerm, errors, varMap)
+      // The three name-bearing carriers, and the only arms that resolve anything:
+      // each hands `resolveName` the span its OWN parse term was allocated at
+      // (WI-957), so a diagnostic lands on the occurrence, not on the enclosing
+      // declaration and not nowhere.
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
-        val kbFunctor = resolveName(kb, name, scopeTerm, errors)
+        val kbFunctor = resolveName(kb, name, scopeTerm, errors, fileTerms.spanOf(termId))
         val kbPos = IArray.from(fn.posArgs.map(id => reallocTerm(kb, fileTerms, fileSym, id, scopeTerm, errors, varMap)))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
@@ -893,11 +897,11 @@ object Loader:
         kb.alloc(Term.Fn(kbFunctor, kbPos, kbNamed))
       case Term.Ref(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scopeTerm, errors)
+        val kbSym = resolveName(kb, name, scopeTerm, errors, fileTerms.spanOf(termId))
         kb.alloc(Term.Ref(kbSym))
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scopeTerm, errors)
+        val kbSym = resolveName(kb, name, scopeTerm, errors, fileTerms.spanOf(termId))
         kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
 
@@ -912,27 +916,52 @@ object Loader:
     * own `rule p(?x) :- q(?x)` — S's law was indexed under the global `p` and `S.p`
     * got no clauses at all, with no diagnostic. The mint guard in `scanRuleGoal` asks
     * `resolveInScope`, so this is also what keeps the two ladders answering alike:
-    * rustland has ONE ladder (`resolve_name_in_kb`) that both callers share. */
-  private def resolveName(kb: KnowledgeBase, name: String, scopeTerm: TermId, errors: ArrayBuffer[LoadError]): TermSymbol =
+    * rustland has ONE ladder (`resolve_name_in_kb`) that both callers share.
+    *
+    * WI-957: `span` is the OCCURRENCE's — the parse term this name was lifted out of,
+    * carried by [[anthill.parse.SimpleTermStore.spanOf]]. It is a parameter and not a
+    * lookup done here because the caller is the only one that knows WHICH term it took
+    * the name from: `reallocTerm`'s `Term.Fn` arm resolves the functor, and its
+    * arguments are separate terms with spans of their own. */
+  private def resolveName(
+    kb: KnowledgeBase, name: String, scopeTerm: TermId,
+    errors: ArrayBuffer[LoadError], span: Span
+  ): TermSymbol =
     (if name.contains('.') then kb.symbols.byQualifiedName.get(name) else None) match
       case Some(sym) => sym
       case None =>
         kb.symbols.resolveInScope(name, scopeTerm.raw) match
           case ResolveResult.Found(sym) => sym
           case ResolveResult.Ambiguous(candidates) =>
-            val qualNames = candidates.map(c => kb.symbols.get(c) match
-              case SymbolDef.Resolved(_, q, _, _) => q
-              case SymbolDef.Unresolved(n) => n
-            ).toIndexedSeq
-            // WI-947 did NOT reach this one, and says so rather than leaving it to be
-            // mistaken for a located diagnostic: `resolveName` is called with a NAME
-            // lifted out of an already-built term, and scaland's parse-time term store
-            // records no span per term — there is nothing here to point at, and giving
-            // it one means a term->span side table. Filed as WI-957.
-            errors += LoadError.AmbiguousSymbol(name, qualNames, Span.empty, "")
+            val qualNames = candidates.map(kb.qualifiedNameOf).toIndexedSeq
+            // WI-957: the last locationless load diagnostic, closed. `scopeName` was
+            // `""` for the same reason the span was empty — nothing was threaded here
+            // — and it is the scope this very resolution was attempted in, so it is
+            // read off `scopeTerm` rather than passed down a second channel that could
+            // disagree with the scope actually searched.
+            errors += LoadError.AmbiguousSymbol(
+              name, qualNames, span, scopeDisplayName(kb, scopeTerm))
             kb.intern(name)
           case ResolveResult.NotFound =>
             kb.intern(name)
+
+  /** The name to call `scopeTerm` in a diagnostic (WI-957) — its QUALIFIED name where
+    * the scope is a declared one, and the interned spelling (`_global`) for the
+    * synthetic global scope, which is not a declaration and has no qualified name.
+    *
+    * THROWS on a non-`Fn` scope term, rather than degrading to `""`. Every scope term
+    * is a nullary name term from `makeNameTerm`/`makeNameTermFromSym`, so this is the
+    * same "the producer cannot emit this" shape `reallocTerm`'s non-`Global` var arm
+    * refuses — and the empty string is the WORSE answer of the two here, because a
+    * scopeless `ambiguous symbol 'x' in scope ''` is byte-for-byte what this WI exists
+    * to retire: the regression would reappear wearing the fixed version's face. */
+  private def scopeDisplayName(kb: KnowledgeBase, scopeTerm: TermId): String =
+    kb.getTerm(scopeTerm) match
+      case f: Term.Fn => kb.qualifiedNameOf(f.functor)
+      case other =>
+        throw new IllegalStateException(
+          s"scopeDisplayName: scope term is not a name term ($other); " +
+          "scopes come from makeNameTerm/makeNameTermFromSym, which build only Term.Fn")
 
   /** Auto-import prelude sort contents into global scope.
     * Adds each sort defined directly under anthill.prelude as a parent of _global,
@@ -1038,7 +1067,8 @@ object Loader:
           // non-marker `typed_var` falls through to `loadApplyOrConstructor`.
           case "typed_var" if isTypedVarMarker(fn, fileSym) =>
             exprRec((kb, fileTerms, fileSym, scopeTerm, errors, varMap), fn.posArgs(0))
-          case _ => loadApplyOrConstructor(kb, fileTerms, fileSym, fn.functor, fn.posArgs, fn.namedArgs, scopeTerm, errors, varMap)
+          case _ => loadApplyOrConstructor(kb, fileTerms, fileSym, fn.functor, fileTerms.spanOf(parseId),
+                                           fn.posArgs, fn.namedArgs, scopeTerm, errors, varMap)
       case Term.Const(_) => loadLiteralExpr(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
       case Term.Ident(_) => loadVarRef(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
       case _ => reallocTerm(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
@@ -1137,11 +1167,12 @@ object Loader:
 
   private def loadApplyOrConstructor(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    parseFunctor: TermSymbol, posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)],
+    parseFunctor: TermSymbol, functorSpan: Span,
+    posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)],
     scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
-    val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope, errors)
+    val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope, errors, functorSpan)
     val isEntity = kb.symbols.get(kbFunctor) match
       case SymbolDef.Resolved(_, _, SymbolKind.Entity, _) => true
       case _ => false
@@ -1209,7 +1240,7 @@ object Loader:
     val ctx = (kb, ft, fs, scope, errors, vm)
     val nameRef = ft.get(posArgs(0)) match
       case Term.Ident(sym) =>
-        val kbSym = resolveName(kb, fs.name(sym), scope, errors)
+        val kbSym = resolveName(kb, fs.name(sym), scope, errors, ft.spanOf(posArgs(0)))
         kb.alloc(Term.Ref(kbSym))
       case _ => reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
     val subPatterns = IArray.tabulate(posArgs.length - 1)(i => exprRec(ctx, posArgs(i + 1)))

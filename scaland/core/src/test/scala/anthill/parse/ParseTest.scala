@@ -2,6 +2,7 @@ package anthill.parse
 
 import anthill.intern.{TermSymbol, SymbolTable}
 import anthill.term.{Term, TermId, Literal}
+import anthill.span.Span
 
 class ParseTest extends munit.FunSuite:
 
@@ -16,9 +17,9 @@ class ParseTest extends munit.FunSuite:
 
     val result = Pratt.desugar(
       IndexedSeq(v1, v2, v3),
-      IndexedSeq(plus, plus),
+      IndexedSeq((plus, Span.empty), (plus, Span.empty)),
       st.name,
-      terms.alloc,
+      terms.allocAt,
       st.intern
     )
 
@@ -50,9 +51,9 @@ class ParseTest extends munit.FunSuite:
 
     val result = Pratt.desugar(
       IndexedSeq(v2, v3, v4),
-      IndexedSeq(pow, pow),
+      IndexedSeq((pow, Span.empty), (pow, Span.empty)),
       st.name,
-      terms.alloc,
+      terms.allocAt,
       st.intern
     )
 
@@ -83,9 +84,9 @@ class ParseTest extends munit.FunSuite:
 
     val result = Pratt.desugar(
       IndexedSeq(v1, v2, v3),
-      IndexedSeq(plus, times),
+      IndexedSeq((plus, Span.empty), (times, Span.empty)),
       st.name,
-      terms.alloc,
+      terms.allocAt,
       st.intern
     )
 
@@ -108,7 +109,7 @@ class ParseTest extends munit.FunSuite:
     val st = SymbolTable()
     val terms = SimpleTermStore()
     val v = terms.alloc(Term.Const(Literal.IntLit(42)))
-    val result = Pratt.desugar(IndexedSeq(v), IndexedSeq.empty, st.name, terms.alloc, st.intern)
+    val result = Pratt.desugar(IndexedSeq(v), IndexedSeq.empty, st.name, terms.allocAt, st.intern)
     assertEquals(TermId.raw(result), TermId.raw(v))
   }
 

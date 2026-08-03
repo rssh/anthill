@@ -17,11 +17,49 @@ class SimpleTermStore:
     * the loader's rule-introduced-functor scan, which must not mint a symbol for a
     * desugar's own functor name. */
   private val minted = scala.collection.mutable.HashSet.empty[TermId]
+  /** WI-957: the source text each term was built from, parallel to `terms`.
+    *
+    * A parse-time term is the ONE IR shape with no node of its own to carry a span
+    * — the loader is handed a bare `TermId` and lifts a NAME out of it
+    * ([[anthill.load.Loader.reallocTerm]]), so a diagnostic about that name had
+    * nowhere to point. This is what WI-947 could not reach, and why
+    * `AmbiguousSymbol` was the last locationless load error in the tree.
+    *
+    * PARALLEL BUFFER, not a `HashMap` like `descriptions`: [[allocAt]] is the single
+    * append point (`alloc` delegates to it), so an entry exists for every id BY
+    * CONSTRUCTION — a key that can be missing is a key that can drift, and the reader
+    * would then have to invent a default indistinguishable from a real [[Span.empty]].
+    * `descriptions` is genuinely sparse — only the `{< … >}` doc-comment production
+    * writes it — where this is total, so the array is also the cheaper store.
+    *
+    * [[Span.empty]] is the CLAIM the allocation site makes: "no source text stands
+    * behind this node". It is NOT a placeholder for a position nobody captured.
+    *
+    * WHICH NODES MAY HONESTLY CLAIM IT is narrower than "everything the desugars
+    * mint", and the distinction is NOT that a functor looks synthetic: the loader's
+    * `reallocTerm` resolves the functor of EVERY `Term.Fn` it walks, marker or not, so
+    * a marker whose name a user can also declare reaches the same ambiguity report as
+    * a written call. Measured, not assumed — `unify`, `ho_apply`, `ListLiteral`,
+    * `SetLiteral` and `TupleLiteral` all reach it. Those markers are therefore
+    * allocated at the token that produced them (the `let`, the `[`, …), and what is
+    * left locationless is only what NO resolution path reaches: the `Expr`/`Pattern`
+    * markers (`if_expr`, `pattern_var`, …) that `convertExprTerm` dispatches on by
+    * name before any resolution, and the `TypeExtractor.*` type lowerings. */
+  private val spans = ArrayBuffer.empty[Span]
   val descriptions: HashMap[TermId, ArrayBuffer[String]] = HashMap.empty
 
-  def alloc(term: Term): TermId =
+  /** Allocate a SYNTHESIZED term — one with no source text of its own. See the
+    * `spans` comment for which nodes may honestly make that claim. */
+  def alloc(term: Term): TermId = allocAt(term, Span.empty)
+
+  /** Allocate a term built from the source text at `span` (WI-957). Use this
+    * wherever the term's own functor / ref / ident symbol comes from written text:
+    * that symbol is what the loader resolves, so `span` is where a name error about
+    * it belongs. THE single append point — keep it that way. */
+  def allocAt(term: Term, span: Span): TermId =
     val id = TermId.fromRaw(terms.length)
     terms += term
+    spans += span
     id
 
   /** Allocate and mark as parse-minted, in one step — the two must not drift apart. */
@@ -30,7 +68,18 @@ class SimpleTermStore:
     minted += id
     id
 
+  /** [[allocMinted]] for a desugar whose FUNCTOR is derived from written text — the
+    * infix/prefix operator desugars, where `?a + ?b` mints `add(?a, ?b)` and the
+    * span is the `+` the author wrote. */
+  def allocMintedAt(term: Term, span: Span): TermId =
+    val id = allocAt(term, span)
+    minted += id
+    id
+
   def isMinted(id: TermId): Boolean = minted.contains(id)
+
+  /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957). */
+  def spanOf(id: TermId): Span = spans(id.index)
 
   def get(id: TermId): Term = terms(id.index)
   def size: Int = terms.length
