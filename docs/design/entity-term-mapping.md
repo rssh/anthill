@@ -128,7 +128,7 @@ canonically → `KB::alloc` (nullary → `Ref`, Rule 4). Non-representable `Valu
 **2 — Materialize (Term → Value).** `materialize_entity` · `eval/builtins.rs:1454`
 (drivers `term_as_entity:1407`, `term_to_value:1543`).
 Field schema looked up by **`entity_field_types`** (free-standing entities have no
-`entity_parent`, so *not* `constructor_parent_sort`) → each field taken by name in
+`entity_parent`, so *not* `strict_parent_sort`) → each field taken by name in
 `named_args`, else by index in `pos_args` → absent **or `Var`-valued** `Option`
 field → `none()` → missing **required** field → `None` (fail loud). (Since WI-716 a
 value position stores `none()` for an absent optional directly, so the `Var`-valued

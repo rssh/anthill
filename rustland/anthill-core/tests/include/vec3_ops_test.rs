@@ -384,7 +384,7 @@ end
 ///
 /// WI-942 found two independent causes, and both are driven here:
 ///
-///  1. RUN TIME — `runtime_carrier_sort` asked `constructor_parent_sort`, the
+///  1. RUN TIME — `runtime_carrier_sort` asked `strict_parent_sort`, the
 ///     STRICT (irreflexive) view. Since WI-926 a `sort Vec3 { entity Vec3(…) }`
 ///     is ONE symbol, so that view answered `None` and a `Vec3` value reached
 ///     dispatch with NO carrier: `resolve_spec_op_target_by_value` returned

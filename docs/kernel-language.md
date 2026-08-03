@@ -1476,6 +1476,26 @@ Consequences worth stating, because they are what the rule buys:
   difference in meaning: `name`, `definition` and `constructors` agree, and no
   reader may branch on it to decide what a declaration *is*.
 
+- **Every reader of the belongs-to relation answers for both spellings**
+  (WI-946). WI-928 made the *record* reachable; this is the same equivalence for
+  the checks that then read it, and each was a place where the two spellings had
+  disagreed on whether a program is accepted. A value of a free-standing or
+  eponymous carrier in a field declared some *other* sort is a type error, as the
+  nested spelling's is (it was silently accepted); an eponymous *parametric*
+  sort's destructure binds `T` from the scrutinee, and its construction builds
+  `Box[T = …]` rather than a bare `Box`, so a wrong declared binding is caught
+  (`case Box(v)` was falsely rejected, and `-> Box[T = String] = Box(x)` on an
+  `Int64` field was accepted); an eponymous variant is a *sibling* of the other
+  variants of its sort, so a `match` arm naming it is a definite non-match.
+  Reading the relation as a chain to CLIMB stays the strict step — that is what
+  §4's subtype walk and provider search want, and it is genuinely absent here.
+
+- **A field declared `anthill.reflect.Term` holds a QUOTED term, so any value
+  conforms.** Reflection (value → Term) is total, so `entity Holder(pat: Term)`
+  accepts `Holder(pat: Thing(id: "z"))` whatever sort `Thing` belongs to.
+  Reification (Term → value) stays partial and explicit (`term_as_entity`), so the
+  reverse is *not* accepted, and `Term` is therefore **not** a top type.
+
 - **A free-standing entity is a CONCRETE carrier, so its provisions are checked**
   (WI-931). `entity EulerAngles(roll: Float, pitch: Float, yaw: Float)` is as instantiable as the
   `sort` spelling, so `fact Spec[Vec3]` carries the same obligation any other

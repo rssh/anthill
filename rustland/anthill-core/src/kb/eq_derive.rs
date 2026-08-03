@@ -155,13 +155,14 @@ pub(crate) fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
     let mut seen: HashSet<Symbol> = HashSet::new();
     let ctor_functors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
     for ctor in ctor_functors {
-        // A variant maps to its parent sort; a free-standing entity is its own sort.
-        // `constructor_parent_sort` yields the parent's NAME; a free-standing
-        // constructor (no registered parent) is its own sort.
-        let sort = match kb.constructor_parent_sort(ctor) {
-            Some(parent) => parent,
-            None => ctor,
-        };
+        // A variant maps to its parent sort; a free-standing / eponymous entity IS
+        // its own sort. WI-946: that reflexive case is what `sort_of_constructor`
+        // OWNS, so it is no longer re-spelled here as `strict(c)` + a `None` arm.
+        // `unwrap_or` is the residual for a symbol with no registered sort at all;
+        // measured over the loaded stdlib it never fires (244/244 field-schema
+        // functors answer `Some`) — every write to the field-schema registry is
+        // paired with a `register_entity_of` / `register_self_sort`.
+        let sort = kb.sort_of_constructor(ctor).unwrap_or(ctor);
         if seen.insert(sort) {
             sorts.push(sort);
         }

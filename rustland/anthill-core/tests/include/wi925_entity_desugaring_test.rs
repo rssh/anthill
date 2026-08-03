@@ -125,7 +125,7 @@ fn control_the_strict_parent_view_cuts_the_fixpoint() {
         let kb = load_src(&src(decl));
         let e = kb.try_resolve_symbol("test.wi925.E").expect("E resolves");
         assert_eq!(
-            kb.constructor_parent_sort(e),
+            kb.strict_parent_sort(e),
             None,
             "a chain-climbing walker sees no step from a name that is its own sort",
         );
@@ -140,7 +140,7 @@ fn control_a_named_variant_has_a_strict_parent() {
     let status = kb.try_resolve_symbol("test.wi925.Status").expect("Status resolves");
     let open = kb.try_resolve_symbol("test.wi925.Status.Open").expect("Open resolves");
     assert_eq!(kb.sort_of_constructor(open), Some(status));
-    assert_eq!(kb.constructor_parent_sort(open), Some(status));
+    assert_eq!(kb.strict_parent_sort(open), Some(status));
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn control_a_sort_body_variant_is_a_constructor_not_a_sort() {
     );
     assert!(kb.has_kind(open, SymbolKind::Entity), "it does construct");
     assert_eq!(
-        kb.constructor_parent_sort(open),
+        kb.strict_parent_sort(open),
         Some(status),
         "a differently-named variant IS the child of its sort",
     );

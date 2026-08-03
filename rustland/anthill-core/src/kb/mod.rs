@@ -3319,7 +3319,7 @@ impl KnowledgeBase {
     /// symbol), so the edge is REFLEXIVE — `E`'s sort is `E`.
     ///
     /// Prefer this wherever the question is "which sort does this belong to".
-    /// [`Self::constructor_parent_sort`] is the STRICT (irreflexive) view, for
+    /// [`Self::strict_parent_sort`] is the STRICT (irreflexive) view, for
     /// walkers that climb the chain.
     pub fn sort_of_constructor(&self, functor: Symbol) -> Option<Symbol> {
         self.entity_parent.get(&functor).copied()
@@ -3338,7 +3338,16 @@ impl KnowledgeBase {
     /// alternative being the same guard copied into `sort_provides_admissibly`,
     /// `sort_sym_compatible`, `bare_provider_binding_precise`, and any walker
     /// written later that would simply forget it.
-    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
+    ///
+    /// WI-946 RENAMED this from `constructor_parent_sort`, which named no
+    /// restriction and so read as the general belongs-to accessor: five
+    /// "which sort does this belong to" readers had reached for it by accident
+    /// and each silently answered `None` for an eponymous / free-standing
+    /// entity — the shape §6.3 exists to make equivalent to the long form.
+    /// The restriction now lives in the name. If you are about to call this,
+    /// the question must genuinely be "which DIFFERENT sort is this filed
+    /// under"; anything else wants [`Self::sort_of_constructor`].
+    pub fn strict_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
         self.entity_parent.get(&functor).copied().filter(|&p| p != functor)
     }
 
@@ -7348,7 +7357,7 @@ mod tests {
     /// cover, because it manufactured its own subject: nothing files a clause
     /// under a constructor symbol. The one path that keys on a declared sort is
     /// `assert_checked_persistent` -> [`Self::fact_trigger_sort`] ->
-    /// `view_to_trigger_sort`, which returns `constructor_parent_sort(functor)`
+    /// `view_to_trigger_sort`, which returns `strict_parent_sort(functor)`
     /// — the PARENT, never the child. So the union could only ever fire on a
     /// key a test wrote by hand. Deleted with the index; the `is_entity_of`
     /// half, which is about the entity registry and not the clause index,

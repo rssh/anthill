@@ -124,7 +124,7 @@ end
 #[test]
 fn term_as_entity_returns_none_for_unregistered_functor() {
     // Fn whose functor is not a registered constructor — should return
-    // `none()` because `constructor_parent_sort` reports `None`.
+    // `none()` because `strict_parent_sort` reports `None`.
     let src = r#"
 namespace test.wi260_unregistered
   operation main() -> Int64 = 0

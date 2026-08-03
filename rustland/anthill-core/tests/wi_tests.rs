@@ -946,3 +946,6 @@ mod wi931_free_standing_provider_backing_test;
 
 #[path = "include/wi936_field_type_load_order_test.rs"]
 mod wi936_field_type_load_order_test;
+
+#[path = "include/wi946_belongs_to_readers_test.rs"]
+mod wi946_belongs_to_readers_test;

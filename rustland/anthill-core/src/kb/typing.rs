@@ -1770,6 +1770,15 @@ fn resolve_pattern_ctor(kb: &KnowledgeBase, name: Symbol, scrutinee_ctors: &[Sym
 /// ([`resolve_pattern_ctor`]); failing that, a globally-known constructor symbol is taken
 /// as-is. Shared by [`collect_covered_entities`] (coverage) and [`pattern_match_value`]
 /// (the Γ pattern fact) so the two never drift on what counts as a nullary constructor.
+///
+/// WI-946 examined the fallback below and left it: `name` is `load_pattern_var`'s
+/// FRESH BINDER SYMBOL (see [`resolve_pattern_ctor`]), never the entity's own, so
+/// neither disjunct can fire and swapping the strict view for the total one is
+/// unobservable. Measured, not reasoned: `case Blue` over a `Colour` scrutinee,
+/// where `Blue` is a nullary constructor of ANOTHER enum and therefore genuinely
+/// `is_constructor_symbol`, is treated as a catch-all BINDER — the exhaustiveness
+/// check reports no missing `Green`, exactly as for a free-standing `entity Bare`.
+/// That the two agree is what shows the fallback is dead rather than strict-biased.
 fn pattern_var_ctor_sym(
     kb: &KnowledgeBase,
     name: Symbol,
@@ -1778,7 +1787,7 @@ fn pattern_var_ctor_sym(
     if let Some(ctor) = resolve_pattern_ctor(kb, name, scrutinee_ctors) {
         return Some(ctor);
     }
-    (kb.is_constructor_symbol(name) || kb.constructor_parent_sort(name).is_some()).then_some(name)
+    (kb.is_constructor_symbol(name) || kb.strict_parent_sort(name).is_some()).then_some(name)
 }
 
 /// A local binder reference as a Γ `Value` — its WI-537 `var_ref(x)` term twin
@@ -6421,6 +6430,15 @@ fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
 /// is `value: T` and whose expected is `Option[T = (xs.T, …)]` yields `(xs.T, …)`). `None`
 /// unless `expected` is a parameterized type of the constructor's parent sort and the walk
 /// SPECIALIZES the field type to a `named_tuple` (the only shape a tuple literal threads).
+///
+/// WI-946 left the STRICT accessor here, alone among the belongs-to readers, because
+/// no probe made the difference observable: an eponymous parametric `sort Box { sort
+/// T = ?; entity Box(v: T) }` gets no hint (strict answers `None`), yet both the
+/// direct build `Box((a, b))` against `Box[T = (Int64, Int64)]` and the WI-462-shaped
+/// path-dependent `Box((h, t))` off a `case cons(h, t)` destructure load clean either
+/// way — the components type bottom-up to the same thing the hint would have pushed.
+/// Recorded rather than converted: the ticket's bar is a test that FAILS before the
+/// change, and there is none. Converting is still the right move the moment one exists.
 fn tuple_field_expected_from_ctor(
     kb: &mut KnowledgeBase,
     ctor_sym: Symbol,
@@ -6431,7 +6449,7 @@ fn tuple_field_expected_from_ctor(
     let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
     let (_, field_decl) = field_types.iter().find(|(s, _)| *s == field_sym)?;
     let field_decl = field_decl.clone();
-    let parent_sym = kb.constructor_parent_sort(ctor_sym)?;
+    let parent_sym = kb.strict_parent_sort(ctor_sym)?;
     let parent_type = kb.make_sort_ref(parent_sym);
     let mut subst = Substitution::new();
     if !unify_types(kb, &mut subst, &TermIdView(parent_type), exp) {
@@ -23646,15 +23664,20 @@ fn check_constructor_iter(
     }
 
     // Free-standing entities (declared at namespace level, not nested in a
-    // sort block) have no parent sort, but their entity_field_types IS
+    // sort block) have no DISTINCT parent sort, but their entity_field_types IS
     // registered — the entity is its own type. Without this, a let-bound
     // `WorkItem(...)` types as `None`, the body's env loses enclosing_sort,
     // and downstream spec-op calls fail dispatch (WI-204 feedback).
-    let parent_sort = kb.constructor_parent_sort(ctor_sym);
-    let parent_type = match parent_sort {
-        Some(parent_sym) => kb.make_sort_ref(parent_sym),
-        None => kb.make_sort_ref(ctor_sym),
-    };
+    //
+    // WI-946: the TOTAL belongs-to, which OWNS that reflexive case — this used to
+    // open-code it as `strict(c)` + a `None` arm naming `ctor_sym`, which builds
+    // the same `parent_type` but hands `finish_constructor_type` a `None` that
+    // short-circuits `reconstruct_sort_params`. For an EPONYMOUS PARAMETRIC sort
+    // that lost the build's param bindings: `operation mk(x: Int64) -> Box[T =
+    // String] = Box(x)` loaded CLEAN, while the sort-nested spelling of the same
+    // declaration was refused `expected Crate[T = String], got Crate[T = Int64]`.
+    let parent_sort = kb.sort_of_constructor(ctor_sym);
+    let parent_type = kb.make_sort_ref(parent_sort.unwrap_or(ctor_sym));
 
     let field_types = match kb.entity_field_types(ctor_sym) {
         Some(ft) => ft.to_vec(),
@@ -26532,7 +26555,14 @@ fn bind_and_label_pattern(
             // `Option[T = String]`, `some.value`'s declared type `T` resolves
             // to `String` — without this `name` binds to the raw type-param
             // term and surfaces as a bare `TermId` in later return-type checks.
-            let parent_sort = kb.constructor_parent_sort(ctor_sym);
+            //
+            // WI-946: the TOTAL belongs-to. For an EPONYMOUS parametric sort
+            // (`sort Box { sort T = ?; entity Box(v: T) }`) the strict view
+            // answered `None`, `build_pattern_subst` was never run, and `v` stayed
+            // the abstract `T` — so `case Box(v) -> v` in an op returning `Int64`
+            // over a `Box[T = Int64]` scrutinee was FALSELY REJECTED, while the
+            // sort-nested spelling of the same declaration type-checked.
+            let parent_sort = kb.sort_of_constructor(ctor_sym);
             let subst = scrutinee_type
                 .as_ref()
                 .zip(parent_sort)
@@ -31827,7 +31857,7 @@ pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
 /// widened to their sort.
 fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
     let sym = extract_sort_ref_sym(kb, &TermIdView(t))?;
-    let parent = kb.constructor_parent_sort(sym)?;
+    let parent = kb.strict_parent_sort(sym)?;
     Some(kb.make_sort_ref(parent))
 }
 
@@ -32388,7 +32418,7 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 
     // Entity subtyping: actual is entity of parent sort.
     // Check both direct match and transitive (parent's requires chain).
-    if let Some(parent_sym) = kb.constructor_parent_sort(actual_sym) {
+    if let Some(parent_sym) = kb.strict_parent_sort(actual_sym) {
         if sort_sym_compatible(kb, parent_sym, expected_sym) {
             return true;
         }
@@ -32434,7 +32464,7 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
         return true;
     }
     // An entity value's provision comes from its parent sort.
-    if let Some(parent_sym) = kb.constructor_parent_sort(actual_sym) {
+    if let Some(parent_sym) = kb.strict_parent_sort(actual_sym) {
         return sort_provides_admissibly(kb, parent_sym, expected_sym);
     }
     false
@@ -32481,9 +32511,9 @@ fn bare_provider_binding_precise<E: TermView>(
         if let Some(view) = provider_spec_view_bindings(kb, carrier, expected_base) {
             break view;
         }
-        // Entity → parent sort. The chain is acyclic: `constructor_parent_sort` is
+        // Entity → parent sort. The chain is acyclic: `strict_parent_sort` is
         // the STRICT parent, so §6.3's eponymous self-edge never appears here.
-        let Some(parent_sym) = kb.constructor_parent_sort(carrier) else { return false };
+        let Some(parent_sym) = kb.strict_parent_sort(carrier) else { return false };
         carrier = parent_sym;
     };
     let mut probe = subst.clone();
@@ -34257,8 +34287,13 @@ fn finish_constructor_type(
     if subst.bindings.is_empty() {
         return Value::term(parent_type);
     }
-    // A free-standing entity has no parent sort to walk; its own symbol is the type —
-    // no type params to discover, so the simple `parent_type` sort_ref stands.
+    // A symbol with no registered sort at all has nothing to walk; its own symbol
+    // is the type, so the simple `parent_type` sort_ref stands. WI-946: this arm
+    // used to catch the free-standing / eponymous entity too, on the reasoning
+    // that it has "no type params to discover" — false for an eponymous
+    // PARAMETRIC sort (`sort Box { sort T = ?; entity Box(v: T) }`), whose params
+    // are declared on the very symbol the entity shares. Both callers now pass
+    // the TOTAL belongs-to, so that shape walks its own params here.
     let Some(parent_sym) = parent_sort else {
         return Value::term(parent_type);
     };
@@ -34377,11 +34412,11 @@ fn constructor_value_type(
         return seq_literal_value_type(kb, "anthill.prelude.Set", pos_child_types);
     }
 
-    let parent_sort = kb.constructor_parent_sort(ctor_sym);
-    let parent_type = match parent_sort {
-        Some(parent_sym) => kb.make_sort_ref(parent_sym),
-        None => kb.make_sort_ref(ctor_sym),
-    };
+    // WI-946: the TOTAL belongs-to — the value-typer twin of the same collapse
+    // `check_constructor` makes, so the two keep producing one type from one
+    // source (the WI-578 no-drift tie `finish_constructor_type` exists for).
+    let parent_sort = kb.sort_of_constructor(ctor_sym);
+    let parent_type = kb.make_sort_ref(parent_sort.unwrap_or(ctor_sym));
     let field_types = match kb.entity_field_types(ctor_sym) {
         Some(ft) => ft.to_vec(),
         // Not a registered constructor. WI-611: it may be a self-returning spec op
@@ -35730,6 +35765,19 @@ fn check_value_against_type(
     field_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
+    // WI-946: a field declared `anthill.reflect.Term` holds a QUOTED term, and
+    // reflection (value → Term) is TOTAL — every value has a Term representation —
+    // so ANY value conforms. Shares the one owner of that rule
+    // ([`is_reflect_term_type`], whose doc carries the why, including why `Term` is
+    // NOT thereby a top type) rather than restating it. Stated here because until
+    // WI-946 it was never REACHED: the membership check below was skipped for the
+    // free-standing carriers reflect fields actually hold (`entity Holder(pat:
+    // Term)` + `fact Holder(pat: Thing(id: "z"))`, WI-716), so the accident stood
+    // in for the rule. A sort-NESTED carrier in the same field was refused, which
+    // is the §6.3 disagreement in reverse.
+    if is_reflect_term_type(kb, declared_type) {
+        return None;
+    }
     // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
     // `Fn{S,named}` routes to the same arms as the deep `sort_ref` / `parameterized`.
     // WI-342: the declared type is carrier-agnostic — read it through [`TermView`]
@@ -35794,15 +35842,20 @@ fn check_value_against_sort_ref(
                 })
             }
         }
+        // WI-946: the value's sort is the TOTAL belongs-to (`sort_of_constructor`).
+        // The strict view answered `None` for an eponymous / free-standing carrier,
+        // and `check_value_sort_membership`'s `parent?` turned that into a SILENT
+        // ACCEPT: `fact Holder(c: Vec3(x: 1.0))` on a field declared `Colour` loaded
+        // clean, while the same fact with a sort-NESTED carrier was refused.
         Term::Fn { functor: val_functor, .. } => {
             check_value_sort_membership(
-                kb, kb.constructor_parent_sort(*val_functor),
+                kb, kb.sort_of_constructor(*val_functor),
                 declared_sym, declared_type, entity_sym, field_sym, span,
             )
         }
         Term::Ref(val_sym) if kb.is_constructor_symbol(*val_sym) => {
             check_value_sort_membership(
-                kb, kb.constructor_parent_sort(*val_sym),
+                kb, kb.sort_of_constructor(*val_sym),
                 declared_sym, declared_type, entity_sym, field_sym, span,
             )
         }
@@ -35888,7 +35941,13 @@ fn check_value_against_parameterized(
     // provides Eq requires elementEq: `Eq[T = List[Int]]` resolves,
     // `Eq[T = List[NonEq]]` does not). The base-only `sort_provides`
     // is kept for the binding-free case, where it is already precise.
-    if let Some(parent) = kb.constructor_parent_sort(val_functor) {
+    //
+    // WI-946: the TOTAL belongs-to. Under the strict view an eponymous /
+    // free-standing carrier answered `None`, skipping this whole check and
+    // falling straight through to the per-field walk below — so `fact Holder(l:
+    // Vec3(x: 1.0))` on a field declared `List[T = Int64]` loaded clean while the
+    // sort-NESTED carrier was refused.
+    if let Some(parent) = kb.sort_of_constructor(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
             let goal_bindings = declared_type_goal_bindings(kb, &bindings);
             let accepted = if goal_bindings.is_empty() {
@@ -38215,20 +38274,27 @@ fn head_result_carrier(kb: &KnowledgeBase, head: Symbol) -> Option<Symbol> {
         return sort_functor_of_view(kb, &rec.return_type);
     }
     // BEHAVIOUR CHANGE, deliberate. This was
-    // `sort_functor_of_view(kb, &kb.constructor_parent_sort(head)?)`, and
-    // `constructor_parent_sort` then returned the parent TERM — usually the
+    // `sort_functor_of_view(kb, &kb.strict_parent_sort(head)?)`, and the strict
+    // accessor then returned the parent TERM — usually the
     // nullary `Fn{P}` that `type_head` classifies as `TypeHead::Error` ("a bare
     // sort is `Ref(S)`, never `Fn{S}`"), so the branch answered `None`. But only
     // USUALLY: when the parent symbol was itself a constructor, WI-511's canon
     // stored `Ref(P)` and the same branch answered `Some(P)`. The result depended
     // on registration ORDER — the exact defect this migration removes. A
-    // constructor's result carrier IS its parent sort (what the doc above already
-    // claims), so it now answers that uniformly. Consequence to know: a
-    // constructor-headed operand can now resolve a carrier in
-    // `check_value_eq_override_backing`, so a carrier with an unbacked `eq`
-    // override can raise `EqOverrideUnbacked` at load where it previously could
-    // not. The suite is green, i.e. no in-repo carrier is in that state.
-    kb.constructor_parent_sort(head)
+    // constructor's result carrier IS its sort (what the doc above already
+    // claims). Consequence to know: a constructor-headed operand can resolve a
+    // carrier in `check_value_eq_override_backing`, so a carrier with an unbacked
+    // `eq` override can raise `EqOverrideUnbacked` at load where it previously
+    // could not. The suite is green, i.e. no in-repo carrier is in that state.
+    //
+    // WI-946: the TOTAL belongs-to, and the "uniformly" this comment used to
+    // claim was FALSE until then — the strict view still answered `None` for an
+    // EPONYMOUS carrier, so exactly the under-report the migration set out to
+    // remove survived for one §6.3 spelling. Measured: `eq(Boxy(v: 1), Boxy(v:
+    // 2))` over a `sort Boxy { entity Boxy(…) }` whose own `eq` override is
+    // unbacked loaded clean, while the sort-nested spelling raised
+    // `EqOverrideUnbacked`.
+    kb.sort_of_constructor(head)
 }
 
 /// WI-652 — walk a constraint/guard's untyped `LogicalQuery` Value for eq calls,

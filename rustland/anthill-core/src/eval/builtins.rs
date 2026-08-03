@@ -3086,7 +3086,7 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
     // namespace level rather than `sort … { entity X(...) }`) register
     // fields but no `entity_parent` — `WorkItem` in
     // `anthill-todo/domain.anthill` is the prototypical case — so the
-    // probe keys off `entity_field_types`, not `constructor_parent_sort`.
+    // probe keys off `entity_field_types`, not `strict_parent_sort`.
     // The last-resort scan covers a functor that is still an unqualified
     // short name.
     let canonical = if interp.kb.entity_field_types(functor).is_some() {
@@ -3182,7 +3182,7 @@ pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::Term
         Decision::Literal(Literal::Float(f)) => Value::Float(f.into_inner()),
         Decision::Literal(Literal::Bool(b)) => Value::Bool(b),
         Decision::Literal(Literal::String(s)) => Value::Str(s),
-        // `sort_of_constructor`, NOT `constructor_parent_sort` (WI-937). The
+        // `sort_of_constructor`, NOT `strict_parent_sort` (WI-937). The
         // question here is "is this an entity constructor", and the strict view
         // answers `None` for an EPONYMOUS one — `entity_parent[Vec3] == Vec3`, so
         // its `.filter(|&p| p != functor)` drops it. That is right for a walker

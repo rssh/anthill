@@ -13500,7 +13500,7 @@ impl<'a> Loader<'a> {
                 // WI-926 (§6.3): an eponymous constructor resolves to the sort's
                 // OWN symbol, so there is no entity→parent edge to record — the
                 // two ends would be the same node. Registering it would make
-                // `constructor_parent_sort(P) == Some(P)` and put P in its own
+                // `strict_parent_sort(P) == Some(P)` and put P in its own
                 // `constructors_of_sort`, asserting a containment that does not
                 // exist. `field_constructors_of_sort` already reaches this shape
                 // by its field schema (WI-490's free-standing-entity arm), which
@@ -14037,7 +14037,7 @@ impl<'a> Loader<'a> {
             // WI-925 / §6.3: `entity E` IS `sort E { entity E }`, and the whole
             // point of that wrapping is that an entity HAS a sort — so record it.
             // The sort is E itself (WI-926: one symbol), so the edge is reflexive;
-            // `constructor_parent_sort` is the strict view that cuts the fixpoint
+            // `strict_parent_sort` is the strict view that cuts the fixpoint
             // for chain-climbing walkers.
             self.kb.register_self_sort(functor);
 

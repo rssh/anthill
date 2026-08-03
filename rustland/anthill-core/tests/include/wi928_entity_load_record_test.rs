@@ -219,7 +219,7 @@ end
     let mut kb = try_load_kb_with(src).expect("loads");
     let status = kb.try_resolve_symbol("test.wi928v.Status").expect("Status");
     let open = kb.try_resolve_symbol("test.wi928v.Status.Open").expect("Open");
-    assert_eq!(kb.constructor_parent_sort(open), Some(status));
+    assert_eq!(kb.strict_parent_sort(open), Some(status));
 
     let si = kb.try_resolve_symbol("anthill.reflect.SortInfo").expect("reflect");
     let own_record = kb

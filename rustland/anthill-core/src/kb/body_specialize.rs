@@ -784,15 +784,25 @@ fn occ_head_ctor(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol>
 }
 
 /// The symbol of the sort a constructor belongs to (`cons`/`nil` → `List`), or
-/// `None` when the symbol is not a sort-owned constructor.
+/// `None` when the symbol has no registered sort at all.
+///
+/// WI-946: the TOTAL belongs-to. The strict view answered `None` for an
+/// EPONYMOUS constructor, which made [`same_ctor_sort`] deny that `Mix` and
+/// `Other` are variants of the same sort in `sort Mix { entity Mix(…); entity
+/// Other(…) }` — so a definite non-match read as undecidable, the arm was never
+/// skipped, and the residual stayed a `match`. Measured: that turned
+/// `synthesize_op_defining_rule_at` at a concrete `Other(…)` argument into a
+/// loud decline (`flatten_arms` refuses a residual `match`), where the
+/// all-nested spelling of the same sort synthesized the rule.
 fn ctor_sort_sym(kb: &KnowledgeBase, ctor: Symbol) -> Option<Symbol> {
-    kb.constructor_parent_sort(ctor)
+    kb.sort_of_constructor(ctor)
 }
 
 /// Whether two constructors are variants of the same sort — the condition under
 /// which a head mismatch is a genuine non-match (rather than a not-yet-lowered
-/// surface form). Requires both to resolve to a sort (a bare, sort-less symbol
-/// is treated as not-same, i.e. undecidable, conservatively).
+/// surface form). Requires both to resolve to a sort (a symbol with no
+/// registered sort at all is treated as not-same, i.e. undecidable,
+/// conservatively).
 fn same_ctor_sort(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
     match (ctor_sort_sym(kb, a), ctor_sort_sym(kb, b)) {
         (Some(sa), Some(sb)) => sa == sb,

@@ -94,7 +94,7 @@ fn a_differently_named_variant_keeps_its_nested_symbol() {
         .try_resolve_symbol("test.wi926.Person.mk")
         .expect("the differently-named constructor keeps its nested symbol");
     assert_eq!(kb.entity_field_names(mk).map(<[_]>::len), Some(1));
-    assert_eq!(kb.constructor_parent_sort(mk), Some(person));
+    assert_eq!(kb.strict_parent_sort(mk), Some(person));
 
     // Same for a multi-variant sort.
     let status = kb.try_resolve_symbol("test.wi926.Status").expect("Status resolves");
@@ -116,7 +116,7 @@ fn the_sugar_and_the_desugaring_agree() {
             "{name}: the declaration's schema is on the name that was written",
         );
         assert_eq!(
-            kb.constructor_parent_sort(sym),
+            kb.strict_parent_sort(sym),
             None,
             "{name}: an entity that is its own type has no parent sort",
         );

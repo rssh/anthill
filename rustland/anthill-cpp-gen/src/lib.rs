@@ -1128,9 +1128,13 @@ fn entity_struct_members(
     // (`parent_qualified_name` itself must NOT change: its other callers ask the
     // different question "which scope declares this name", for which the chop is
     // right — an eponymous entity is still declared in its namespace.)
-    let parent_sym = kb.constructor_parent_sort(functor).or_else(|| {
-        kb.is_entity_constructor(functor).then_some(functor)
-    });
+    //
+    // WI-946: WI-926 spelled that as `strict(c).or_else(is_entity_constructor)`,
+    // a per-site patch over the strict view. `sort_of_constructor` OWNS the
+    // reflexive case, so the patch is gone; the two agree on every functor
+    // reaching here, which all have a registered field schema (measured: 244/244
+    // such functors in the loaded stdlib answer `Some`).
+    let parent_sym = kb.sort_of_constructor(functor);
     let (template, type_params) = match parent_sym {
         Some(p) => template_prefix_for_sort(kb, p),
         None => (String::new(), std::collections::HashMap::new()),
