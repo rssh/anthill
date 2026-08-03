@@ -111,7 +111,7 @@ pub enum Value {
     /// is mutated in place via `Cell.set`. Cycles are inexpressible:
     /// the typer's `may_contain_cell` rule rejects `Cell[T]` whenever T
     /// transitively contains Cell, so the runtime never has to detect
-    /// cycles. See proposal 037 §"Cell[V]" + `docs/design/cell-runtime.md`.
+    /// cycles. See proposal 037 §`Cell[V]` + `docs/design/cell-runtime.md`.
     Cell(CellHandle),
     /// First-class requirement value — arena-refcounted handle into the
     /// per-interpreter RequirementArena. Materializes a resolved spec
@@ -166,7 +166,7 @@ pub enum Value {
     /// **abstract sort with no data constructor** — the same situation as
     /// `Stream`(`LogicalStream`) / `Map` / `Cell`. Nothing *builds* a `Relation`
     /// entity, so its values ride a **native carrier** variant that
-    /// [`runtime_carrier_sort`] maps to `Relation` by fiat (exactly as
+    /// `runtime_carrier_sort` maps to `Relation` by fiat (exactly as
     /// `Value::Stream`→`LogicalStream`), and it is `Opaque` in the term view for
     /// the same reason those are — a native carrier is not structural data. (It is
     /// NOT "a handle for live state": a relation's content is a `LogicalQuery`,
@@ -187,7 +187,7 @@ pub enum Value {
     ///   through these ids (1-collapsing to the element for one, `Unit` for zero).
     ///
     /// A `Relation` `provides LogicalStream[T, E]`, so it is consumed through the
-    /// ordinary Stream API: [`runtime_carrier_sort`] maps it to `Relation`, and
+    /// ordinary Stream API: `runtime_carrier_sort` maps it to `Relation`, and
     /// `Relation.splitFirst` (a host builtin) runs the query and pumps a
     /// [`crate::eval::stream::StreamSource::MaterializedResolver`] over `columns`.
     /// `Rc` payloads keep `clone` O(1) (an arg-bind / var-read cost).
@@ -452,7 +452,7 @@ impl<'a> TupleComponents<'a> {
     ///     (`positional_label_index`, WI-790), which maps 1-based `_N` to `pos[N-1]`
     ///     and refuses `_0` / `_01` as USER labels — those are reachable only by (1).
     ///
-    /// Both sides are normalized through [`short_name_of`], the WI-672 owner of the
+    /// Both sides are normalized through `short_name_of`, the WI-672 owner of the
     /// one place short-name matching legitimately survives. Normalizing only the
     /// COMPONENT side (as this first did) is a half-rule: `match_tuple_pattern`
     /// hands over a label read off a TYPE's field list, and those symbols can

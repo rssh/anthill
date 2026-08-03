@@ -142,7 +142,7 @@ pub(crate) fn walk_calls_node(
 /// "uncovered" if no entry in the enclosing sort's `requires` chain
 /// matches its spec_sort. Per `docs/design/operation-call-model.md`
 /// §"Sort-level requirements", such a body is an error: "B's body
-/// uses Eq[T] but `requires Eq[T]` isn't declared".
+/// uses `Eq[T]` but `requires Eq[T]` isn't declared".
 #[derive(Debug, Clone)]
 pub struct UncoveredRequirement {
     pub sort: Symbol,

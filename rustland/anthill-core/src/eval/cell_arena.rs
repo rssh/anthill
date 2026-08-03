@@ -1,5 +1,5 @@
 //! Cell arena — refcounted storage for first-class `Cell` values
-//! (proposal 037 §"Cell[V]" + design doc `docs/design/cell-runtime.md`).
+//! (proposal 037 §`Cell[V]` + design doc `docs/design/cell-runtime.md`).
 //!
 //! Mirrors `MapArena` / `SubstArena` / `StreamArena`: an arena slot owns
 //! the held `Value`; `CellHandle` is an arena slot index with

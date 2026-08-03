@@ -539,7 +539,7 @@ impl NodeOccurrence {
     /// inferred type is carrier-agnostic (`Value`) — a denoted-bearing type
     /// (a lambda arrow carrying `Modify[c]`) is stored as `Value::Node`
     /// rather than re-grounded; the sort-head read (`sort_functor_of_view` over
-    /// this) widens it via [`TermView`].
+    /// this) widens it via [`crate::kb::term_view::TermView`].
     pub fn set_inferred_type(&self, ty: Value) {
         if let NodeKind::Expr { inferred_type, .. } = &self.kind {
             *inferred_type.borrow_mut() = Some(ty);
@@ -2135,7 +2135,7 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
 /// helper). The two carriers are symmetric: both match ONLY the canonical binder
 /// form (`Expr::VarRef` / the `var_ref` functor), never a bare `Ref`/`Ident` — a
 /// guard's binders are normalized to that form and `Γ` is built with it
-/// ([`binder_ref_value`]), while a bare `Ref` is a closed datum (sort/op/const).
+/// (`binder_ref_value`), while a bare `Ref` is a closed datum (sort/op/const).
 /// Pre-order child walk.
 pub fn occurrence_has_var_ref(root: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];

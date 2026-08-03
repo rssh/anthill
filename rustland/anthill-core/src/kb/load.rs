@@ -1841,7 +1841,7 @@ pub enum LoadWarning {
 
 impl LoadWarning {
     /// Format with `line:col` using source text, parallel to
-    /// [`LoadError::format_with_source`]. Variants that carry a span will
+    /// [`LoadError::format_at`]. Variants that carry a span will
     /// resolve a location here; the current span-less `Other` ignores
     /// `source` and renders the bare message.
     pub fn format_with_source(&self, source: &str) -> String {

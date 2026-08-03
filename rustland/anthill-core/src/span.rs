@@ -110,7 +110,7 @@ impl<'a> LineIndex<'a> {
 
 /// WI-745 / WI-852: the ONE file-prefix rendering, shared by every diagnostic
 /// family — [`crate::kb::load::LoadError::Located`] and
-/// [`crate::parse::error::ParseError::format_located`] — so which STAGE found a
+/// [`crate::parse::error::ParseError::format_at`] — so which STAGE found a
 /// fault cannot change how its location reads. WI-745 gave LOAD errors
 /// `path:line:col`; parse errors kept rendering a raw byte offset, so the author
 /// got a clickable location or a number to count to depending on a stage

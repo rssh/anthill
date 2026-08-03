@@ -1297,7 +1297,7 @@ pub trait TermView {
     /// var-edge and a `Rigid` skolem to its `RigidVar` constant key, and the
     /// unifier / structural-equality test can compare two var heads by full
     /// `Var` identity. `None` for non-variable heads — the walk then keys on
-    /// [`head`]. (`head` now also surfaces every var kind as `ViewHead::Var`, so
+    /// [`Self::head`]. (`head` now also surfaces every var kind as `ViewHead::Var`, so
     /// the default suffices; the `TermId` / `Value` carriers keep a direct
     /// override that reads the carrier without a `head` round-trip.)
     fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {

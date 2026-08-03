@@ -138,7 +138,7 @@ impl ClosureArenaRef {
     /// arena's borrow is held, so `f` must not trigger further arena
     /// operations (no closure alloc/retain/release within it). Use this for
     /// extracting `Copy` fields only — to snapshot non-Copy data like the
-    /// env, go through [`Self::take_env`] which drops the borrow before
+    /// env, go through [`Self::clone_env`] which drops the borrow before
     /// the `Clone` impls run.
     pub fn with<R>(&self, h: &ClosureHandle, f: impl FnOnce(&Closure) -> R) -> R {
         let borrow = self.0.borrow();

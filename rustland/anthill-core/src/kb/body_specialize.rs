@@ -1071,14 +1071,14 @@ impl KnowledgeBase {
     /// `op(?0…?n-1, ?result) :- ?result = <refolded-if>`, the arms refolded into
     /// one nested `Expr::If`. Returns the rule id, or `None` — a *loud* decline —
     /// when `op` has no admissible defining equations (effectful / `requires` /
-    /// `match` body; see [`op_defining_equations`]). Idempotent: an
+    /// `match` body; see [`Self::op_defining_equations`]). Idempotent: an
     /// existing defining rule (a prior synth, or a hand-written one) is returned
     /// as-is.
     ///
     /// The head **functor is `op` itself** (labeled `<op_qn>__defeq`) so the
     /// emitter's ordinary `rules_by_functor → try_inline_rule_call` path picks it
     /// up unchanged. Built over **fresh `Var::Global`s** — not the raw
-    /// `Var::DeBruijn`s [`op_defining_equations`] emits — because
+    /// `Var::DeBruijn`s [`Self::op_defining_equations`] emits — because
     /// [`Self::assert_rule_debruijn_with_nodes`] derives the rule's arity from the
     /// *Global* head/body vars it collects; feeding raw DeBruijn would leave the
     /// collector with zero head vars and mint a malformed arity-0 rule.

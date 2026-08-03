@@ -187,7 +187,7 @@ pub enum BuiltinTag {
     // ── Conversion builtins ─────────────────────────────────
     /// `anthill.prelude.BigInt.to_bigint(?n, ?result)` — Int → BigInt.
     ToBigInt,
-    /// `anthill.prelude.BigInt.to_int(?n, ?result)` — BigInt → Option[Int].
+    /// `anthill.prelude.BigInt.to_int(?n, ?result)` — BigInt → `Option[Int]`.
     ToInt,
     // ── Occurrence builtins (stubs) ──────────────────────────
     /// `anthill.reflect.occurrence_term(occ)` → Term
@@ -196,7 +196,7 @@ pub enum BuiltinTag {
     OccurrenceSpan,
     /// `anthill.reflect.occurrence_owner(occ)` → Symbol
     OccurrenceOwner,
-    /// `anthill.reflect.sub_occurrences(occ)` → List[Occurrence]
+    /// `anthill.reflect.sub_occurrences(occ)` → `List[Occurrence]`
     SubOccurrences,
     /// anthill.reflect.operation_body(op) -> Option[NodeOccurrence]
     OperationBody,

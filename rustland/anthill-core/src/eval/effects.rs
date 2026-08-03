@@ -191,7 +191,7 @@ pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandle
 /// Cycle detection surfaces as [`EvalError::CyclicReference`] when a
 /// functor-keyed `set` would store a value that transitively references
 /// itself via `Value::Term` or entity args. Cell-routed `set` skips the
-/// runtime walk — proposal 037 §"Cell[V]" and WI-207's typer-side
+/// runtime walk — proposal 037 §`Cell[V]` and WI-207's typer-side
 /// `acyclic_cell` rule make cycles inexpressible at the type level.
 pub fn default_modify_handler() -> EffectHandler {
     let cells: Rc<RefCell<HashMap<Symbol, Value>>> =

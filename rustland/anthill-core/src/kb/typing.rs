@@ -69,7 +69,7 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
-    /// WI-565: the refinement of [`UnknownApplyFunctor`] for the specific case
+    /// WI-565: the refinement of [`TypeError::UnknownApplyFunctor`] for the specific case
     /// where the unresolved bare functor IS the short name of a MEMBER operation
     /// of one or more sorts (`owning_sorts`). A member's bare name is in scope
     /// only WITHIN its defining sort (a sibling member can bare-call it); from
@@ -1569,7 +1569,7 @@ impl FlowEnv {
     /// in its structure, not just at the top — is NOT inserted, and that loses
     /// nothing: it could never unify with a clean goal-shaped membership query
     /// (the goal heads as a `Functor`), so it could never discharge anything.
-    /// We skip it here ([`view_is_indexable`]) rather than weaken
+    /// We skip it here (`view_is_indexable`) rather than weaken
     /// `insert_pattern`'s rule-head invariant (it rightly panics on such heads).
     ///
     /// WI-814 SHRANK the skipped set rather than changing this rule: an `if` /
@@ -1951,7 +1951,7 @@ pub fn match_arm_gamma_facts(
 // ── TypeResult ─────────────────────────────────────────────────
 
 /// Result of type_check: inferred type + updated env + collected effects.
-/// Mirrors typing_pass_spec.anthill: TypeResult(type: Type, env: TypingEnv, effects: List[Type])
+/// Mirrors typing_pass_spec.anthill: `TypeResult(type: Type, env: TypingEnv, effects: List[Type])`
 pub struct TypeResult {
     /// WI-342 ty-slot migration: the inferred type is carrier-agnostic — a
     /// ground type rides as `Value::Term`, a denoted-bearing type (today: a
@@ -13461,7 +13461,7 @@ fn canonical_global_var(
 ///     the OP's own scope. So "declared by an operation" does not imply the second
 ///     bullet, and the rung ORDER below is what keeps that case right.
 ///   * a BRACKET parameter (`operation cmp[T](…)`) → its op's `OperationInfo.type_params`
-///     ([`op_info::declared_type_param_var`]). The loader mints it its own var and
+///     ([`declared_type_param_var`](crate::kb::op_info::declared_type_param_var)). The loader mints it its own var and
 ///     asserts NO `SortAlias` (`load_operation`: "an op type-param is its own logical
 ///     variable, distinct from any same-named outer SortAlias") — which is why this
 ///     channel had to be taught, not derived.
@@ -15257,7 +15257,7 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
 /// op the dict carries no row for).
 ///
 /// The single source for dict-threaded op resolution: the interpreter's
-/// [`Interpreter::dispatch_via_sort_ops_table`] and the reflect
+/// `Interpreter::dispatch_via_sort_ops_table` and the reflect
 /// `Dictionary.resolveOp` / `Dictionary.ops` faces all call this so the three
 /// cannot drift. `spec_op` is expected to be a RESOLVED (canonical) symbol —
 /// the interpreter's `fn_sym` is, and the reflect callers pass symbols minted by

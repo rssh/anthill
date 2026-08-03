@@ -1347,7 +1347,7 @@ impl KnowledgeBase {
     /// WI-727 (proposal 056) — the name of `op_sym`'s VARIADIC CAPTURE parameter
     /// (`...args: R`), if it declares one. `None` for the vast majority of ops. Read
     /// by the typer's argument matching to route leftover named arguments into the
-    /// capture record. Recorded by the loader ([`record_op_capture_param`]).
+    /// capture record. Recorded by the loader ([`Self::record_op_capture_param`]).
     pub fn op_capture_param(&self, op_sym: Symbol) -> Option<Symbol> {
         self.op_capture_params.get(&op_sym).copied()
     }
@@ -3729,7 +3729,7 @@ impl KnowledgeBase {
     }
 
     /// WI-282: replace a rule's body atoms with their typer-rewritten form (the
-    /// rule-body peer of [`set_op_body_node`]). Used after dot dispatch rewrites a
+    /// rule-body peer of [`Self::set_op_body_node`]). Used after dot dispatch rewrites a
     /// body's `Expr::DotApply` to its `Apply`/`field_access` form. Dispatch never
     /// changes a body's variable set (the receiver var is reused, the synthesized
     /// field-name is a `Ref` constant), so the rule's `arity`/`globals`/
@@ -4005,7 +4005,7 @@ impl KnowledgeBase {
     }
 
     /// Value-aware match: unifies a rule-head pattern (always `TermId`)
-    /// against any [`TermView`] target. For a `TermIdView(t)` target this
+    /// against any [`term_view::TermView`] target. For a `TermIdView(t)` target this
     /// is semantically equivalent to `match_term(pattern, t)`; for a
     /// `Value`-backed target it preserves lineage (no promotion into the
     /// `TermStore`). Variable bindings flow into the result substitution
@@ -4023,7 +4023,7 @@ impl KnowledgeBase {
             .find(|s| !s.is_contradiction())
     }
 
-    /// WI-683 — carrier-neutral peer of [`match_view`]: the PATTERN may itself
+    /// WI-683 — carrier-neutral peer of [`Self::match_view`]: the PATTERN may itself
     /// ride any carrier (a `Value::Node` occurrence / `Value::Entity`), not only
     /// a hash-consed `TermId`. Inserts the pattern via the already-generic
     /// [`SubstTree::insert_pattern`] and resolves the matched leaf against the
@@ -4275,7 +4275,7 @@ impl KnowledgeBase {
         }
     }
 
-    /// `TermView`-aware [`walk`] (WI-277): chase Var→binding chains through
+    /// `TermView`-aware [`Self::walk`] (WI-277): chase Var→binding chains through
     /// the substitution following **both** term and non-term `Value`
     /// bindings, returning the resolved `Value`. `Value::Term(t)` for a
     /// term-shaped result (a `Fn`, a leaf, or an unbound var — to recurse
@@ -4302,7 +4302,7 @@ impl KnowledgeBase {
     }
 
     /// Deep-reify a term through the substitution to a carrier-agnostic
-    /// [`Value`] (WI-348). The carrier-faithful successor of the former
+    /// [`crate::eval::Value`] (WI-348). The carrier-faithful successor of the former
     /// `TermId`-only reify: a var bound to a `Value::Node` (a denoted/occurrence
     /// answer) — or any other non-`Term` value — is returned with its
     /// **identity intact**, never materialized to a `TermId` (which is lossy: it
@@ -4391,7 +4391,7 @@ impl KnowledgeBase {
         }
     }
 
-    /// Deep-reify a goal [`Value`] through `σ`, carrier-faithfully — the
+    /// Deep-reify a goal [`crate::eval::Value`] through `σ`, carrier-faithfully — the
     /// `Value`-carrier front for [`Self::reify`] (WI-348). A `Value::Term`
     /// deep-substitutes via `reify` (rebuilding through `Term::Fn`); a
     /// `Value::Node` occurrence substitutes via `substitute_occurrence`, which
@@ -4930,7 +4930,7 @@ impl KnowledgeBase {
         }
     }
 
-    /// Open a de Bruijn term: replace DeBruijn(i) with Global(fresh_vars[i]).
+    /// Open a de Bruijn term: replace `DeBruijn(i)` with `Global(fresh_vars[i])`.
     /// `fresh_vars`: array of fresh VarIds, indexed by de Bruijn index.
     pub fn term_from_debruijn(&mut self, term: TermId, fresh_vars: &[VarId]) -> TermId {
         match self.terms.get(term).clone() {
@@ -5861,7 +5861,7 @@ impl KnowledgeBase {
         self.make_sort_ref(sym)
     }
 
-    /// parameterized(base: <type>, bindings: List[TypeBinding]).
+    /// `parameterized(base: <type>, bindings: List[TypeBinding])`.
     pub fn make_parameterized_type(&mut self, base: TermId, bindings: &[(Symbol, TermId)]) -> TermId {
         // WI-361 producer flip: term-backed — the base sort IS the functor and the
         // bindings ARE the named args (`List[T = Int]` = `Fn{List, named:[(T, …)]}`),
@@ -6360,7 +6360,7 @@ impl KnowledgeBase {
         self.make_entity_term(positioned_sym, SmallVec::new(), named_args)
     }
 
-    /// named_tuple(fields: List[NamedTupleElement]).
+    /// `named_tuple(fields: List[NamedTupleElement])`.
     pub fn make_named_tuple_type(&mut self, fields: &[(Symbol, TermId)]) -> TermId {
         let named_tuple_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.NamedTuple");
         let element_sym = self.resolve_symbol("anthill.prelude.NamedTupleElement");
@@ -6867,7 +6867,7 @@ impl KnowledgeBase {
     }
 
     /// `get_builtin` generic over the goal representation — classifies a goal
-    /// by the builtin table from the functor read through [`TermView`], so a
+    /// by the builtin table from the functor read through [`term_view::TermView`], so a
     /// `Value::Node` occurrence goal (WI-246) is dispatched without lowering.
     pub fn get_builtin_view<V: term_view::TermView>(&self, goal: &V) -> Option<BuiltinTag> {
         match goal.head(self) {

@@ -148,7 +148,7 @@ impl Var {
     /// discrim match records a matched De Bruijn position), return the De Bruijn
     /// index `n`; otherwise `None` (a real `Global`/`Rigid` VarId). The single
     /// decode of the `u32::MAX - n` scheme — its one caller
-    /// ([`KnowledgeBase::with_fresh_vars`] body-rename) pairs with the encoder
+    /// ([`crate::kb::KnowledgeBase::with_fresh_vars`] body-rename) pairs with the encoder
     /// above so they cannot silently desync. (The former second site, the
     /// deleted `apply_eq_rules` / `instantiate_eq_rhs` RHS-rename, is now
     /// `fire_simp_equation`, which binds head vars directly via `match_view` and
