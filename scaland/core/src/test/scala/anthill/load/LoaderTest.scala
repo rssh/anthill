@@ -60,6 +60,23 @@ class LoaderTest extends munit.FunSuite:
     val parsed = ParsedFile(items, symbols, terms)
     (parsed, TermSymbol.raw(grandparentSym))
 
+  /** A file whose ONLY declaration is `namespace Colors` holding one `color("red")`
+    * fact — the minimal scope-descent fixture. Built fresh per call: a `ParsedFile`
+    * carries its own symbol table and term store, so two KBs must not share one. */
+  private def buildNamespacedParsedFile(): ParsedFile =
+    val symbols = anthill.intern.SymbolTable()
+    val terms = SimpleTermStore()
+    val colorSym = symbols.intern("color")
+    val red = terms.alloc(Term.Const(Literal.StringLit("red")))
+    val factTerm = terms.alloc(Term.Fn(colorSym, IArray(red), IArray.empty))
+    val ns = Namespace(
+      name = Name.simple(symbols.intern("Colors"), emptySpan),
+      imports = IndexedSeq.empty,
+      items = IndexedSeq(Item.FactItem(Fact(factTerm, None, emptySpan))),
+      span = emptySpan
+    )
+    ParsedFile(ArrayBuffer[Item](Item.NamespaceItem(ns)), symbols, terms)
+
   test("prelude registers primitive sorts") {
     val kb = KnowledgeBase()
     Prelude.register(kb)
@@ -129,24 +146,7 @@ class LoaderTest extends munit.FunSuite:
     val kb = KnowledgeBase()
     Prelude.register(kb)
 
-    val symbols = anthill.intern.SymbolTable()
-    val terms = SimpleTermStore()
-
-    val colorSym = symbols.intern("color")
-    val red = terms.alloc(Term.Const(Literal.StringLit("red")))
-    val factTerm = terms.alloc(Term.Fn(colorSym, IArray(red), IArray.empty))
-
-    val nsName = Name.simple(symbols.intern("Colors"), emptySpan)
-    val ns = Namespace(
-      name = nsName,
-      imports = IndexedSeq.empty,
-      items = IndexedSeq(Item.FactItem(Fact(factTerm, None, emptySpan))),
-      span = emptySpan
-    )
-    val items = ArrayBuffer[Item](Item.NamespaceItem(ns))
-    val parsed = ParsedFile(items, symbols, terms)
-
-    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    val errors = Loader.loadAll(kb, IndexedSeq(buildNamespacedParsedFile()))
     assert(errors.isEmpty, s"Load errors: $errors")
 
     assert(kb.hasQualifiedName("Colors"))
@@ -394,4 +394,32 @@ class LoaderTest extends munit.FunSuite:
       .getOrElse(fail("no CpsMonad scope"))
     assert(cpsScope.typeParams.contains("F"), s"F should be a type param, got ${cpsScope.typeParams}")
     assert(cpsScope.typeParams.contains("A"), s"A should be a type param, got ${cpsScope.typeParams}")
+  }
+
+  /** WI-949: the scan passes and the loader walk ONE scope spine, so a scope they
+    * cannot find gets ONE answer — reported, not skipped. Before WI-949 pass 2 and the
+    * loader each `foreach`-skipped a miss while pass 3 reported it; a skip abandons the
+    * whole subtree (imports unwired, rule heads unregistered, facts never asserted)
+    * with no diagnostic at all.
+    *
+    * `Loader.load` without `scanDefinitions` is the only reachable miss — `loadAll`
+    * runs the defining pass over every file first. Back the change out and THIS test
+    * fails: the loader returns no errors and drops the namespace's fact in silence.
+    * The CONTROL is `load namespace with scoping`, which takes the same fixture through
+    * the full pipeline and still loads clean — it passes either way by design, and is
+    * what says the error here is about the missing scope and not about the file. */
+  test("WI-949: a scope the loader cannot find is reported, not silently skipped") {
+    val unscanned = KnowledgeBase()
+    Prelude.register(unscanned)
+    val errors = Loader.load(unscanned, buildNamespacedParsedFile())
+    assert(
+      errors.exists {
+        case LoadError.Other(msg) => msg.contains("Colors")
+        case _ => false
+      },
+      s"a scope that cannot be entered must be reported, and named: $errors")
+    // The fact IS dropped — which is precisely why the drop may not be silent.
+    assertEquals(unscanned.factCount, 0)
+    // The control — the same file through the full pipeline — is
+    // `load namespace with scoping`, which shares this fixture.
   }

@@ -273,8 +273,9 @@ case class Const(
   * type, `SortedSet[T = String, O = ByLength]`); an ANONYMOUS one is a constraint —
   * solved, not recorded. rustland desugars the named form into `sort O = ?` + the
   * requirement at CONVERT time; scaland has no such fan-out in `declaration`
-  * (`P[Item]`, one item per production), so the binder rides here and `scanItemsPass1`
-  * registers the type parameter directly — same effect, one production earlier. */
+  * (`P[Item]`, one item per production), so the binder rides here and the loader's
+  * `DefinePass` registers the type parameter directly — same effect, one production
+  * earlier. */
 case class RequiresDecl(binder: Option[Name], typeExpr: TypeExpr, span: Span)
 
 // ── Sugar ───────────────────────────────────────────────────────

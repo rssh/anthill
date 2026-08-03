@@ -29,7 +29,7 @@ object Loader:
 
     // Pass 1: Define all names
     for file <- files do
-      scanItemsPass1(kb, file.items, file.symbols, file.terms, globalScope, "")
+      walkScopes(file.items, globalScope, "", DefinePass(kb, file.symbols))
 
     // Pass 2: Process requires and imports (all sorts exist now). A Selective
     // import of a RULE-INTRODUCED predicate cannot resolve here — its head-functor
@@ -37,7 +37,7 @@ object Loader:
     // `pending` and retried below (WI-295).
     val pending = ArrayBuffer.empty[PendingImport]
     for file <- files do
-      scanItemsPass2(kb, file.items, file.symbols, globalScope, "", errors, pending)
+      walkScopes(file.items, globalScope, "", ImportPass(kb, file.symbols, errors, pending))
 
     // Post-pass: auto-import prelude sort contents into global scope. BEFORE pass 3,
     // and that ordering is load-bearing: pass 3's mint guard asks whether a head's
@@ -50,7 +50,7 @@ object Loader:
 
     // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898).
     for file <- files do
-      scanItemsPass3(kb, file.items, file.symbols, file.terms, globalScope, "", errors)
+      walkScopes(file.items, globalScope, "", RuleHeadPass(kb, file.symbols, file.terms, errors))
 
     // Pass 4 (WI-295): retry the deferred predicate imports. Pass 3's head-functor
     // symbols are in `byQualifiedName` now, so a cross-namespace rule-predicate
@@ -66,7 +66,7 @@ object Loader:
   def load(kb: KnowledgeBase, file: ParsedFile): ArrayBuffer[LoadError] =
     val globalScope = kb.makeNameTerm("_global")
     val errors = ArrayBuffer.empty[LoadError]
-    loadItems(kb, file.items, file.symbols, file.terms, globalScope, "", errors)
+    walkScopes(file.items, globalScope, "", LoadPass(kb, file.symbols, file.terms, errors))
     errors
 
   /** Load multiple files: scan first, then load all. */
@@ -76,35 +76,106 @@ object Loader:
       errors ++= load(kb, file)
     errors
 
-  // ── Pass 1: Define names ─────────────────────────────────────
+  // ── The scope spine ──────────────────────────────────────────
 
-  private def scanItemsPass1(
-    kb: KnowledgeBase,
+  /** A declaration that OPENS a child scope. Both carry a name, an import list and a
+    * body, which is all the walk needs; only the pass that DEFINES a scope has to tell
+    * the two apart, so `ScopeDecl` keeps that distinction available without making
+    * every pass re-derive it from `Item`. */
+  private enum ScopeDecl(
+    val name: Name, val imports: IndexedSeq[Import], val items: IndexedSeq[Item]
+  ):
+    case Ns(ns: Namespace) extends ScopeDecl(ns.name, ns.imports, ns.items)
+    case SortBody(sort: SortWithBody) extends ScopeDecl(sort.name, sort.imports, sort.items)
+
+  /** One pass over the scope spine.
+    *
+    * `walkScopes` owns the descent — qualify the short name against the enclosing
+    * prefix, obtain the child scope, recurse with the new (scope, prefix) pair — so a
+    * pass supplies only what it does AT a scope (`enterScope`, which yields the scope to
+    * recurse into) and at every other item (`atItem`, in the scope that encloses it).
+    *
+    * WI-949: ONE walker, not one per pass. The three scan passes and the loader each
+    * re-spelled this recursion, which is how the WI-853 top-level-import arm and the
+    * WI-295 `pending` buffer had to be threaded through separate copies in lockstep —
+    * and how the copies came to disagree about a scope that is missing (see
+    * `lookupScope`, which is now the single answer). */
+  private trait ScopePass:
+    /** The parse-time symbol table of the file being walked — names are file-local. */
+    def fileSym: SymbolTable
+
+    /** The child scope to recurse into, or `None` to abandon the subtree (only ever
+      * because the scope could not be found, which `lookupScope` has already reported). */
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId]
+
+    /** Every item that does not open a scope, with the scope and prefix enclosing it. */
+    def atItem(item: Item, scope: TermId, prefix: String): Unit
+
+  private def walkScopes(
     items: Iterable[Item],
-    fileSym: SymbolTable,
-    fileTerms: SimpleTermStore,
     scopeTerm: TermId,
-    prefix: String
+    prefix: String,
+    pass: ScopePass
   ): Unit =
     for item <- items do
-      item match
-        case Item.NamespaceItem(ns) =>
-          val shortName = joinSegments(fileSym, ns.name.segments)
+      val opened = item match
+        case Item.NamespaceItem(ns) => Some(ScopeDecl.Ns(ns))
+        case Item.SortWithBodyItem(sort) => Some(ScopeDecl.SortBody(sort))
+        case _ => None
+      opened match
+        case Some(decl) =>
+          val shortName = joinSegments(pass.fileSym, decl.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, scopeTerm.raw)
+          pass.enterScope(decl, shortName, qualName, scopeTerm).foreach { child =>
+            walkScopes(decl.items, child, qualName, pass)
+          }
+        case None => pass.atItem(item, scopeTerm, prefix)
+
+  /** The name term for `qualName`, which `DefinePass` defined before any later pass ran.
+    * A MISS is therefore a broken invariant, not a shape a pass may skip — and this is
+    * the ONE place that answers it, for every pass and every kind of name: report, and
+    * say what the miss costs. Skipping instead would drop the work with no diagnostic at
+    * all, which is exactly the silent skip the project forbids. Before WI-949 the copies
+    * disagreed: pass 2 and the loader skipped, pass 3 reported. */
+  private def lookupDefined(
+    kb: KnowledgeBase, qualName: String, consequence: String, errors: ArrayBuffer[LoadError]
+  ): Option[TermId] =
+    kb.symbols.byQualifiedName.get(qualName) match
+      case Some(sym) => Some(kb.makeNameTermFromSym(sym))
+      case None =>
+        errors += LoadError.Other(
+          s"internal: '$qualName' was not defined in pass 1, so $consequence")
+        None
+
+  /** The scope `qualName` names — the descent's use of [[lookupDefined]]. A miss here
+    * abandons the whole subtree: its imports unwired, its rule heads unregistered, its
+    * facts and rules never loaded. */
+  private def lookupScope(
+    kb: KnowledgeBase, qualName: String, errors: ArrayBuffer[LoadError]
+  ): Option[TermId] =
+    lookupDefined(kb, qualName, "the declarations inside it cannot be loaded", errors)
+
+  // ── Pass 1: Define names ─────────────────────────────────────
+
+  /** Pass 1 — DEFINE every name. The pass that creates the scopes the others look up,
+    * so its `enterScope` defines rather than resolving, and can never miss. */
+  private final class DefinePass(kb: KnowledgeBase, val fileSym: SymbolTable) extends ScopePass:
+
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+      decl match
+        case ScopeDecl.Ns(_) =>
+          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, enclosing.raw)
           val nsTerm = kb.makeNameTermFromSym(sym)
           // Enclosing scope. (Model C / proposal 044: names visible by default;
           // the `export` statement was removed in WI-291.)
-          kb.symbols.addParent(nsTerm.raw, ScopeInclusion(scopeTerm.raw, 0, isEnclosing = true))
-          scanItemsPass1(kb, ns.items, fileSym, fileTerms, nsTerm, qualName)
+          kb.symbols.addParent(nsTerm.raw, ScopeInclusion(enclosing.raw, 0, isEnclosing = true))
+          Some(nsTerm)
 
-        case Item.SortWithBodyItem(sort) =>
-          val shortName = joinSegments(fileSym, sort.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scopeTerm.raw)
+        case ScopeDecl.SortBody(sort) =>
+          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, enclosing.raw)
           val sortTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(sortTerm, SortKind.Defined)
-          kb.symbols.addParent(sortTerm.raw, ScopeInclusion(scopeTerm.raw, 0, isEnclosing = true))
+          kb.symbols.addParent(sortTerm.raw, ScopeInclusion(enclosing.raw, 0, isEnclosing = true))
           // Variant exposure (proposal 044 job 2): a sort exposes ONLY its
           // entity-variant names to the enclosing scope, linked as a
           // non-enclosing parent — so bare `Open` resolves to `WorkStatus.Open`
@@ -115,17 +186,19 @@ object Loader:
           }
           for v <- variants do kb.symbols.addExposed(sortTerm.raw, v)
           if variants.nonEmpty then
-            kb.symbols.addParent(scopeTerm.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
+            kb.symbols.addParent(enclosing.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
           // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
           // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type
           // parameter of the enclosing sort — register it like the `sort T = ?`
           // abstract-sort arm below. An UNMARKED `sort F { … }` stays a concrete
           // nested sort. (scaland emits no `SortAlias` backing-var fact — it has
           // no typer; the type-param marker is what the resolver and codegen read.)
-          if sort.isTypeParam && isSortScope(kb, scopeTerm) then
-            kb.symbols.addTypeParam(scopeTerm.raw, shortName)
-          scanItemsPass1(kb, sort.items, fileSym, fileTerms, sortTerm, qualName)
+          if sort.isTypeParam && isSortScope(kb, enclosing) then
+            kb.symbols.addTypeParam(enclosing.raw, shortName)
+          Some(sortTerm)
 
+    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
+      item match
         case Item.AbstractSortItem(sort) =>
           // `sort T = ?` inside a SortWithBody (or enum) declares a type
           // parameter local to the enclosing sort; `sort T = Concrete` is an
@@ -253,37 +326,26 @@ object Loader:
 
   // ── Pass 2: Process requires/imports ─────────────────────────
 
-  private def scanItemsPass2(
+  /** Pass 2 — wire the parent-scope chain: a scope's own `import` list, and the
+    * `requires` declarations inside it. Runs after every name exists (pass 1), so an
+    * import can name any declaration in any file. */
+  private final class ImportPass(
     kb: KnowledgeBase,
-    items: Iterable[Item],
-    fileSym: SymbolTable,
-    scopeTerm: TermId,
-    prefix: String,
+    val fileSym: SymbolTable,
     errors: ArrayBuffer[LoadError],
     pending: ArrayBuffer[PendingImport]
-  ): Unit =
-    for item <- items do
+  ) extends ScopePass:
+
+    // The import list attached to a `namespace` and to a `sort … end` body go through
+    // the SAME `processImports`; only the scope differs, and the walk already carries it.
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+      lookupScope(kb, qualName, errors).map { scope =>
+        processImports(kb, decl.imports, fileSym, scope, errors, pending)
+        scope
+      }
+
+    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
       item match
-        case Item.NamespaceItem(ns) =>
-          val shortName = joinSegments(fileSym, ns.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          val nsSym = kb.symbols.byQualifiedName.get(qualName)
-          nsSym.foreach { sym =>
-            val nsTerm = kb.makeNameTermFromSym(sym)
-            processImports(kb, ns.imports, fileSym, nsTerm, errors, pending)
-            scanItemsPass2(kb, ns.items, fileSym, nsTerm, qualName, errors, pending)
-          }
-
-        case Item.SortWithBodyItem(sort) =>
-          val shortName = joinSegments(fileSym, sort.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          val sortSym = kb.symbols.byQualifiedName.get(qualName)
-          sortSym.foreach { sym =>
-            val sortTerm = kb.makeNameTermFromSym(sym)
-            processImports(kb, sort.imports, fileSym, sortTerm, errors, pending)
-            scanItemsPass2(kb, sort.items, fileSym, sortTerm, qualName, errors, pending)
-          }
-
         case Item.RequiresDeclItem(req) =>
           processRequires(kb, req, fileSym, scopeTerm, errors)
 
@@ -301,7 +363,7 @@ object Loader:
         // WI-853: a TOP-LEVEL import feeds `_global` — the scope a file's top-level
         // declarations are defined in. Same `processImports` the namespace-attached
         // and sort-attached lists go through; only the scope differs, and it is
-        // already the one this recursion carries.
+        // already the one this walk carries.
         //
         // Only ever the top level: inside a namespace / sort body the parser's
         // `bodyContent` consumes an `import` before `declaration` is tried, so it
@@ -328,7 +390,7 @@ object Loader:
 
   // ── Pass 3: rule-introduced functors ─────────────────────────
 
-  /** WI-894/896/898: register the functor a RULE HEAD introduces. `ite` is the
+  /** Pass 3 — WI-894/896/898: register the functor a RULE HEAD introduces. `ite` is the
     * motivating case — `bool.anthill` declares no `ite` operation; its two `[simp]`
     * equations ARE its definition, and `int64.anthill` / `ordered.anthill` reach it by
     * `import anthill.prelude.Bool.{ite}`. Without this pass that import resolves to
@@ -336,48 +398,24 @@ object Loader:
     *
     * Runs after pass 2 because it must see whether the name ALREADY denotes: a head
     * naming a declared operation references it, and introduces nothing. */
-  private def scanItemsPass3(
+  private final class RuleHeadPass(
     kb: KnowledgeBase,
-    items: Iterable[Item],
-    fileSym: SymbolTable,
+    val fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
-    scopeTerm: TermId,
-    prefix: String,
     errors: ArrayBuffer[LoadError]
-  ): Unit =
-    for item <- items do
+  ) extends ScopePass:
+
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+      lookupScope(kb, qualName, errors)
+
+    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
       item match
-        case Item.NamespaceItem(ns) =>
-          val qualName = makeQualified(prefix, joinSegments(fileSym, ns.name.segments))
-          descend(kb, qualName, errors) { scope =>
-            scanItemsPass3(kb, ns.items, fileSym, fileTerms, scope, qualName, errors)
-          }
-
-        case Item.SortWithBodyItem(sort) =>
-          val qualName = makeQualified(prefix, joinSegments(fileSym, sort.name.segments))
-          descend(kb, qualName, errors) { scope =>
-            scanItemsPass3(kb, sort.items, fileSym, fileTerms, scope, qualName, errors)
-          }
-
         case Item.RuleItem(rule) => scanRuleGoal(kb, rule, fileSym, fileTerms, scopeTerm, prefix)
         case Item.RuleBlockItem(block) =>
           for rule <- block.entries do
             scanRuleGoal(kb, rule, fileSym, fileTerms, scopeTerm, prefix)
 
         case _ =>
-
-  /** Run `body` in the scope `qualName` names. Pass 1 defined it, so a MISS is a
-    * broken invariant, not a shape this pass may skip: every rule head in the subtree
-    * would silently go unregistered and fall back to a bare global name — the very
-    * defect this pass exists to prevent, and exactly the "silent skip" CLAUDE.md
-    * forbids. So the miss is reported instead of `continue`d. */
-  private def descend(kb: KnowledgeBase, qualName: String, errors: ArrayBuffer[LoadError])
-                     (body: TermId => Unit): Unit =
-    kb.symbols.byQualifiedName.get(qualName) match
-      case Some(sym) => body(kb.makeNameTermFromSym(sym))
-      case None => errors += LoadError.Other(
-        s"internal: scope '$qualName' was not defined in pass 1, so the rule heads " +
-        s"inside it cannot be registered")
 
   private def scanRuleGoal(
     kb: KnowledgeBase,
@@ -567,33 +605,21 @@ object Loader:
 
   // ── Phase 2: Load items into KB ─────────────────────────────
 
-  private def loadItems(
+  /** Phase 2 — fill the KB. Walks the SAME scope spine the scan passes do (WI-949): it
+    * looks a scope up exactly as they do, so a namespace whose imports pass 2 wired
+    * cannot be a namespace whose facts this phase silently drops. */
+  private final class LoadPass(
     kb: KnowledgeBase,
-    items: Iterable[Item],
-    fileSym: SymbolTable,
+    val fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
-    scopeTerm: TermId,
-    prefix: String,
     errors: ArrayBuffer[LoadError]
-  ): Unit =
-    for item <- items do
+  ) extends ScopePass:
+
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+      lookupScope(kb, qualName, errors)
+
+    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
       item match
-        case Item.NamespaceItem(ns) =>
-          val shortName = joinSegments(fileSym, ns.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          kb.symbols.byQualifiedName.get(qualName).foreach { sym =>
-            val nsTerm = kb.makeNameTermFromSym(sym)
-            loadItems(kb, ns.items, fileSym, fileTerms, nsTerm, qualName, errors)
-          }
-
-        case Item.SortWithBodyItem(sort) =>
-          val shortName = joinSegments(fileSym, sort.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          kb.symbols.byQualifiedName.get(qualName).foreach { sym =>
-            val sortTerm = kb.makeNameTermFromSym(sym)
-            loadItems(kb, sort.items, fileSym, fileTerms, sortTerm, qualName, errors)
-          }
-
         case Item.FactItem(fact) =>
           val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scopeTerm, errors)
           val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
@@ -611,9 +637,12 @@ object Loader:
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          kb.symbols.byQualifiedName.get(qualName).foreach { sym =>
-            val entityTerm = kb.makeNameTermFromSym(sym)
-            // Assert EntityOf fact
+          // Same invariant as a scope descent, so the same answer (WI-949): `DefinePass`
+          // defines every entity, and a name that is not there drops this `EntityOf`
+          // fact — silently, before the miss got a diagnostic.
+          val defined = lookupDefined(
+            kb, qualName, "its `entity_of` fact cannot be asserted", errors)
+          defined.foreach { entityTerm =>
             val entityOfSort = findSortTerm(kb, "anthill.reflect.EntityOf")
             val entityOfSym = kb.intern("entity_of")
             val entityOfFact = kb.alloc(Term.Fn(entityOfSym, IArray(entityTerm, scopeTerm), IArray.empty))
