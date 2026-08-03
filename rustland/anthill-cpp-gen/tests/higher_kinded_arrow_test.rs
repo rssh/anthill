@@ -15,7 +15,7 @@ use super::common;
 use std::process::Command;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{find_cxx, load_kb_with_lenient, scratch_dir};
+use common::{find_cxx, load_kb_with, load_kb_with_lenient, scratch_dir};
 
 #[test]
 fn hk_monad_traits_lowers_arrow_and_template_template() {
@@ -29,7 +29,7 @@ fn hk_monad_traits_lowers_arrow_and_template_template() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.hk_monad.Monad").expect("emit Monad");
 
     // (f) higher-kinded carrier → template-template parameter; first-order
@@ -65,7 +65,7 @@ fn pure_arrow_param_lowers_to_std_function() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.fmap.Functor").expect("emit Functor");
 
     assert!(
@@ -86,7 +86,7 @@ fn multi_param_and_effectful_arrow_lower() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.binop.Calc").expect("emit Calc");
 
     assert!(
@@ -107,7 +107,7 @@ fn non_hk_param_stays_typename() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.box1.Box").expect("emit Box");
 
     assert!(
@@ -125,7 +125,7 @@ fn non_hk_param_stays_typename() {
 /// EffP]`). The stdlib is always loaded by the test harness, so a trivial
 /// user source suffices to build the KB.
 fn emit_stdlib_monad() -> String {
-    let mut kb = load_kb_with_lenient("namespace test.use_monad\nend\n");
+    let mut kb = load_kb_with("namespace test.use_monad\nend\n");
     emit_traits_struct(&mut kb, "anthill.prelude.Monad").expect("emit anthill.prelude.Monad")
 }
 
@@ -223,6 +223,10 @@ fn first_order_param_applied_is_a_loud_error() {
           end
         end
     "#;
+    // LENIENT on purpose: `T[X = ?X]` IS the kind error under test, so the
+    // loader rightly refuses it — MEASURED, `6:31: invalid type argument:
+    // 'test.kind_err.Bad.T' has no type parameter named 'X'`. A fixture with no
+    // kind error would have no subject (WI-966).
     let mut kb = load_kb_with_lenient(source);
     let result = emit_traits_struct(&mut kb, "test.kind_err.Bad");
     match result {
@@ -252,7 +256,7 @@ fn hk_monad_traits_compiles() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let traits = emit_traits_struct(&mut kb, "test.hk_compile.Monad").expect("emit Monad");
 
     let cxx = match find_cxx() {

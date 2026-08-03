@@ -955,3 +955,6 @@ mod wi943_type_param_identity_test;
 
 #[path = "include/wi968_builtin_registration_names_test.rs"]
 mod wi968_builtin_registration_names_test;
+
+#[path = "include/wi966_loader_verdict_test.rs"]
+mod wi966_loader_verdict_test;

@@ -12,7 +12,7 @@
 use super::common;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{load_kb_with, load_kb_with_lenient};
+use common::load_kb_with;
 
 #[test]
 fn if_then_else_literal_branches() {
@@ -104,7 +104,7 @@ fn field_access_emits_dot_syntax() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_b_field.Calc")
         .expect("emit Calc");
 
@@ -128,7 +128,7 @@ fn field_access_in_expression_position() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_b_field2.Calc")
         .expect("emit Calc");
 

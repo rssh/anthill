@@ -1,7 +1,7 @@
 //! Diagnostic: dump body shapes for let-chains and lambdas.
 use super::common;
 use anthill_core::kb::term::Term;
-use common::load_kb_with_lenient;
+use common::load_kb_with;
 
 #[test]
 #[ignore]
@@ -21,7 +21,7 @@ fn dump_phase_c_shapes() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
+    let kb = load_kb_with(source);
 
     let op_impl_sym = kb.try_resolve_symbol("anthill.realization.OperationImpl").unwrap();
     for rid in kb.rules_by_functor(op_impl_sym) {

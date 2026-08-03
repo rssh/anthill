@@ -1952,10 +1952,10 @@ fn map_unary_op(qn: &str) -> Option<&'static str> {
 /// it reachable, so it stays deleted rather than restored for symmetry with no
 /// measurement behind it. NOT because such a program cannot get here: a `Bool.ite`
 /// spelling with `Bool` out of scope is a load ERROR, but a load error does not stop
-/// smt-gen — this crate's own test harness does `let _ = load_all(..)` and the CLI's run
-/// path mutes load errors too. The arm is absent because it is unmeasured, and if a real
-/// program is ever found reaching it the fix is a test plus the arm, not a symmetry
-/// argument.
+/// smt-gen — the CLI's run path mutes load errors. (WI-966 closed the other half of that
+/// route: this crate's test harness used to do `let _ = load_all(..)` and no longer
+/// does.) The arm is absent because it is unmeasured, and if a real program is ever found
+/// reaching it the fix is a test plus the arm, not a symmetry argument.
 ///
 /// WI-894 also UNBLOCKS the principled form this table has never had: `functor: Symbol`
 /// and `self.kb` are both in hand at the call site, so `by_qualified_name["anthill.

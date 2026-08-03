@@ -9,7 +9,7 @@
 use super::common;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::load_kb_with_lenient;
+use common::load_kb_with;
 
 #[test]
 fn option_some_binding_lowers_to_value_iife() {
@@ -24,7 +24,7 @@ fn option_some_binding_lowers_to_value_iife() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.mb_opt.Calc")
         .expect("emit Calc");
 
@@ -64,7 +64,7 @@ fn variant_constructor_pattern_binds_fields() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.mb_var.Calc")
         .expect("emit Calc");
 
@@ -99,7 +99,7 @@ fn nested_let_inside_branch_body_works() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.mb_nested.Calc")
         .expect("emit Calc");
 
@@ -131,7 +131,7 @@ fn wildcard_branch_after_constructor_works() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.mb_wild.Calc")
         .expect("emit Calc");
 

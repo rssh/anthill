@@ -2,7 +2,7 @@
 //! discover how `effects` is stored.
 use super::common;
 use anthill_core::kb::term::Term;
-use common::load_kb_with_lenient;
+use common::load_kb_with;
 
 #[test]
 #[ignore]
@@ -17,7 +17,7 @@ fn dump_phase_f_shapes() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
+    let kb = load_kb_with(source);
 
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
     for rid in kb.rules_by_functor(op_info_sym) {

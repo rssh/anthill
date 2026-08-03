@@ -147,13 +147,15 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     refs.push(&user);
 
     let mut kb = KnowledgeBase::new();
+    // WI-966: unconditionally strict. The panic used to be skipped when
+    // `ANTHILL_TEST_IGNORE_LOAD_ERRORS` was set — a switch nothing in the
+    // workspace ever set, and one that silently downgraded EVERY test in this
+    // crate to asserting over a half-loaded KB. A fixture that must load dirty
+    // opts in by NAME, through `load_kb_with_lenient`.
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("{}", e); }
-            if std::env::var("ANTHILL_TEST_IGNORE_LOAD_ERRORS").is_err() {
-                panic!("load failed with {} errors", errs.len());
-            }
-            load::LoadResult::default()
+            panic!("load failed with {} errors", errs.len());
         });
     kb
 }
@@ -181,9 +183,20 @@ pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
     kb
 }
 
-/// Variant of `load_kb_with` that does not panic on load errors —
-/// useful for diagnostics that need to inspect post-typing term
-/// shapes even when the type checker rejects an expression.
+/// Variant of `load_kb_with` that does not panic on load errors — for a fixture
+/// whose REJECTED SHAPE is the subject: codegen still has to degrade loudly over
+/// a spec the typer refused.
+///
+/// This is the workspace's one legitimate lenient loader, and it is deliberately
+/// a NAME rather than a discard at the call site. WI-966 measured its 57 callers
+/// by flipping the whole crate strict: 53 loaded clean and moved to
+/// [`load_kb_with`]; the 4 that remain are `unsupported_test`'s three
+/// degrade-to-`static_assert` fixtures and `higher_kinded_arrow_test`'s applied
+/// first-order param, each of which writes the error it is testing. Two of the
+/// six original failures turned out to be plain fixture bugs, not typer gaps —
+/// a missing `effects Error[T = String]` and an operation declaring `-> Int64`
+/// for a body that returns a lambda — so prefer fixing the source; reach for
+/// this only when the refusal IS the test, and say so at the call site.
 #[allow(dead_code)]
 pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
@@ -191,6 +204,8 @@ pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
     refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.push(&user);
     let mut kb = KnowledgeBase::new();
+    // The workspace's only discarded loader `Err`, and it is discarded HERE, once,
+    // under a name that says so — not at 57 call sites that read as strict.
     let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }

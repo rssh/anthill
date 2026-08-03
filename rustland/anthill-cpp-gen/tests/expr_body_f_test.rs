@@ -12,7 +12,7 @@
 use super::common;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{load_kb_with, load_kb_with_lenient};
+use common::load_kb_with;
 
 #[test]
 fn error_effect_wraps_return_in_tl_expected() {
@@ -38,20 +38,24 @@ fn error_effect_wraps_return_in_tl_expected() {
 fn raise_lowers_to_make_unexpected() {
     // The body returns `raise("boom")` directly; lowering should
     // emit `tl::make_unexpected("boom")` so the value matches the
-    // wrapped return type. The lenient loader is needed because the
-    // typer doesn't yet model raise's `Nothing` return as compatible
-    // with `Int64`.
+    // wrapped return type.
+    //
+    // WI-966: this used to load leniently, blamed on "the typer doesn't yet
+    // model raise's `Nothing` return as compatible with `Int64`". MEASURED, the
+    // loader was complaining about something else entirely — `expected
+    // declared: [Error], got undeclared effect: Error[T = String]`. The
+    // declaration was simply missing its type argument.
     let source = r#"
         namespace test.expr_f_raise
-          import anthill.prelude.{Int64, Error}
+          import anthill.prelude.{Int64, String, Error}
           import anthill.prelude.Error.{raise}
           sort Calc
-            operation always_fail() -> Int64 effects Error =
+            operation always_fail() -> Int64 effects Error[T = String] =
               raise("boom")
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_f_raise.Calc")
         .expect("emit Calc");
 
@@ -78,7 +82,7 @@ fn error_effect_in_effects_set_still_wraps() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_f_multi.CalcOps")
         .expect("emit CalcOps");
 
@@ -100,7 +104,7 @@ fn no_error_effect_keeps_plain_return_type() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_f_modify_only.CalcOps")
         .expect("emit CalcOps");
 

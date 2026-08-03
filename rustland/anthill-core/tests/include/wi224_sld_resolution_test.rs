@@ -26,6 +26,18 @@ use smallvec::SmallVec;
 
 /// Load stdlib + rustland bindings + an extra source string.
 fn load_with(extra: &str) -> KnowledgeBase {
+    load_expecting(extra, &[])
+}
+
+/// [`load_with`] for the two fixtures whose provider is DELIBERATELY incoherent
+/// — an `EqList` that declares the `Eq` marker and nothing else, so that
+/// resolving `Eq[List[…]]` has an unsatisfiable `PartialEq` leg to record as
+/// `Unavailable`. The loader rightly complains; `expected` pins that complaint.
+///
+/// WI-966: this file used to discard the loader's `Err`, which meant the two
+/// conditional-resolution tests could not tell "the fixture is incoherent on
+/// purpose" from "the fixture stopped loading". Both now say which they are.
+fn load_expecting(extra: &str, expected: &[&str]) -> KnowledgeBase {
     let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files.iter().map(|p| {
         let src = std::fs::read_to_string(p)
@@ -35,7 +47,12 @@ fn load_with(extra: &str) -> KnowledgeBase {
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    let result = load::load_all(&mut kb, &refs, &NullResolver);
+    if expected.is_empty() {
+        crate::common::expect_loaded(result);
+    } else {
+        crate::common::expect_load_errors(result, expected);
+    }
     kb
 }
 
@@ -176,7 +193,10 @@ fn one_level_conditional_resolves_via_subgoal() {
           end
         end
     "#;
-    let mut kb = load_with(src);
+    let mut kb = load_expecting(src, &[
+        "'test.wi224.one_level.EqList' provides 'anthill.prelude.Eq', \
+         which requires 'anthill.prelude.PartialEq'",
+    ]);
 
     // Build goal Eq[T = List[T = Int64]].
     let list_int = parametric_carrier(
@@ -239,7 +259,10 @@ fn two_level_conditional_chains_recursively() {
           end
         end
     "#;
-    let mut kb = load_with(src);
+    let mut kb = load_expecting(src, &[
+        "'test.wi224.two_level.EqList' provides 'anthill.prelude.Eq', \
+         which requires 'anthill.prelude.PartialEq'",
+    ]);
 
     // Build the outer goal: Eq[T = List[T = List[T = Int64]]].
     let list_int = parametric_carrier(

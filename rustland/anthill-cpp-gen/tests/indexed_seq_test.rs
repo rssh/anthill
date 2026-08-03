@@ -8,7 +8,7 @@
 use super::common;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::load_kb_with_lenient;
+use common::load_kb_with;
 
 #[test]
 fn length_lowers_to_size_cast() {
@@ -21,7 +21,7 @@ fn length_lowers_to_size_cast() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.is_len.Calc")
         .expect("emit Calc");
     assert!(
@@ -41,7 +41,7 @@ fn nth_lowers_to_bounds_checked_optional() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.is_nth.Calc")
         .expect("emit Calc");
     // The bounds check covers both lower and upper bounds in one

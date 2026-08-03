@@ -26,7 +26,7 @@ fn load_src(source: &str) -> KnowledgeBase {
     let parsed = parse::parse(source).expect("test source should parse");
     let mut kb = KnowledgeBase::new();
     let resolver = FileSourceResolver::new(vec![std::path::PathBuf::from("../../stdlib")]);
-    let _ = load::load_all(&mut kb, &[&parsed], &resolver);
+    crate::common::expect_loaded(load::load_all(&mut kb, &[&parsed], &resolver));
     kb
 }
 

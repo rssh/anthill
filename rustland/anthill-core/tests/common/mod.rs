@@ -79,15 +79,90 @@ pub fn example_source(rel: &str) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
+/// The stdlib + Rust host bindings, read and parsed ONCE per test binary.
+///
+/// [`try_load_kb_with_files`] has 683 call sites in this crate's suites and used
+/// to re-walk, re-read and re-parse all 76 files at every one of them. The
+/// parsed files are immutable inputs to `load_all`, so sharing them is safe —
+/// the shape `anthill-smt-gen`/`anthill-cpp-gen`'s harnesses already use, and
+/// the one WI-959 introduced on the `src/` side.
+static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
+    std::sync::LazyLock::new(|| {
+        let files = collect_stdlib_and_rust_bindings();
+        assert!(!files.is_empty(), "stdlib empty");
+        files.iter()
+            .map(|p| {
+                let src = std::fs::read_to_string(p)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+                parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            })
+            .collect()
+    });
+
+/// Turn a loader `Result` into a test failure that NAMES the errors. The one
+/// owner of the "a load error fails the test" policy for suites that build
+/// their own file set (a custom resolver, an incremental second phase, a
+/// stdlib-only KB) and so cannot go through [`load_kb_with`].
+///
+/// WI-966: 25 sites across 19 `tests/include/` files instead wrote
+/// `let _ = load::load_all(..)`. That is not a degraded diagnostic — it is NO
+/// GUARD, and the tests then assert over a KB that never finished loading.
+/// MEASURED by flipping all of them at once: `toml_ser_test`'s fixture had been
+/// carrying an unresolved `List` through all 18 of its tests, and two more
+/// suites' fixtures declared incoherent `provides` clauses. Three broken
+/// fixtures, silent for as long as the discard was there.
+///
+/// A fixture that must load dirty does NOT belong here: use
+/// [`try_load_kb_with`] and assert on the returned errors, so the intent lives
+/// in the test instead of in a discard.
+/// Generic over the error type so [`load_kb_with`] — whose `try_` twin renders
+/// its `LoadError`s to `String` for the suites that assert on them — shares this
+/// one policy instead of a second `unwrap_or_else` spelling of it.
+#[allow(dead_code)]
+pub fn expect_loaded<T, E: std::fmt::Display>(r: Result<T, Vec<E>>) -> T {
+    r.unwrap_or_else(|errs| {
+        for e in &errs { eprintln!("{}", e); }
+        panic!("load failed with {} errors: {:?}", errs.len(),
+               errs.iter().map(|e| e.to_string()).collect::<Vec<_>>())
+    })
+}
+
+/// The deliberate-dirty twin of [`expect_loaded`], for the rare fixture that
+/// must carry a shape the loader rejects — WI-224's variant pins how an
+/// unsatisfiable `requires` leg is RECORDED, so its provider has to stay
+/// incoherent for the test to have a subject at all.
+///
+/// Panics unless the load reported exactly the errors whose rendering contains
+/// `expected`, one per entry, in order. A fixture that starts loading clean is
+/// as much a test-authoring change as one that acquires a second error, so both
+/// fail here. That is the difference from a discard: the incoherence becomes a
+/// pinned invariant instead of a silence.
+#[allow(dead_code)]
+pub fn expect_load_errors<T, E: std::fmt::Display>(r: Result<T, Vec<E>>, expected: &[&str]) {
+    let errs = match r {
+        Ok(_) => panic!(
+            "fixture loaded CLEAN, but this call site declares it must fail with {expected:?} \
+             — route it through `expect_loaded` instead"),
+        Err(errs) => errs.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+    };
+    assert_eq!(errs.len(), expected.len(),
+        "expected {} load error(s), got {}: {errs:#?}", expected.len(), errs.len());
+    for (got, want) in errs.iter().zip(expected) {
+        assert!(got.contains(want), "expected a load error containing {want:?}, got {got:?}");
+    }
+}
+
 /// Load the stdlib + the given user source into a fresh KB. Panics with a
 /// readable diagnostic on parse or load errors. Used across every eval
 /// integration test; previously hand-copied in each file.
+///
+/// The name means the same thing in `anthill-smt-gen/tests/common` and
+/// `anthill-cpp-gen/tests/common` — panic on a load error (WI-966). Reach for
+/// the crate-local `*_lenient` twin, never a bare discard, when a fixture
+/// deliberately carries a shape the loader rejects.
 #[allow(dead_code)]
 pub fn load_kb_with(source: &str) -> KnowledgeBase {
-    try_load_kb_with(source).unwrap_or_else(|errs| {
-        for e in &errs { eprintln!("{}", e); }
-        panic!("load failed with {} errors", errs.len());
-    })
+    expect_loaded(try_load_kb_with(source))
 }
 
 /// Same load as [`load_kb_with`] (full stdlib + Rust host bindings + `source`)
@@ -105,21 +180,12 @@ pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
 /// (two files whose entities reference each other's sorts must both load).
 #[allow(dead_code)]
 pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
-    let files = collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "stdlib empty");
-
-    let mut parsed: Vec<_> = files.iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
+    let user: Vec<_> = sources.iter()
+        .map(|s| parse::parse(s).expect("parse user source"))
         .collect();
-    for source in sources {
-        parsed.push(parse::parse(source).expect("parse user source"));
-    }
 
-    let refs: Vec<_> = parsed.iter().collect();
+    let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.extend(user.iter());
     let mut kb = KnowledgeBase::new();
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => Ok(kb),
@@ -611,7 +677,12 @@ pub fn query_pattern_term(
 ) -> anthill_core::kb::term::TermId {
     let src = format!("fact {pattern}");
     let parsed = parse::parse(&src).expect("parse query pattern");
-    let _ = load::scan_definitions(kb, &[&parsed]);
+    // WI-966: MEASURED empty for every pattern the suites pass here, so the
+    // scan's verdict is asserted rather than dropped — a pattern that stops
+    // scanning clean must not reach `convert_query_term` unnoticed.
+    let errs = load::scan_definitions(kb, &[&parsed]);
+    assert!(errs.is_empty(), "query pattern `{pattern}` failed to scan: {:?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
     let global_raw = kb.make_name_term("_global").raw();
     let mut var_map = std::collections::HashMap::new();
     for item in &parsed.items {

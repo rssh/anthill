@@ -16,7 +16,7 @@
 use super::common;
 
 use anthill_cpp_gen::{emit_entity_struct, emit_traits_struct};
-use common::{load_kb_with, load_kb_with_lenient};
+use common::load_kb_with;
 
 #[test]
 fn generic_entity_emits_template_prefix() {
@@ -28,7 +28,7 @@ fn generic_entity_emits_template_prefix() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_entity_struct(&mut kb, "test.gen_box.Box")
         .expect("emit Box");
 
@@ -49,7 +49,7 @@ fn multi_param_entity_emits_template_with_two_args() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_entity_struct(&mut kb, "test.gen_pair.Pair")
         .expect("emit Pair");
 
@@ -95,7 +95,7 @@ fn generic_traits_class_emits_template_prefix() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.gen_id.Identity")
         .expect("emit Identity");
 
@@ -122,7 +122,7 @@ fn keyword_clash_gets_suffixed() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_entity_struct(&mut kb, "test.gen_kw.Holder")
         .expect("emit Holder");
 

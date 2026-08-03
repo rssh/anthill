@@ -20,7 +20,7 @@
 //!   - a genuinely-free input var appearing ONLY inside an `ite` in a
 //!     `FunctionLike` result's `(define-fun ...)` is still declared.
 
-use super::common::{load_kb_strict, load_kb_with, run_z3, z3_available};
+use super::common::{load_kb_with, run_z3, z3_available};
 
 use anthill_smt_gen::{emit_satisfiability_check, emit_satisfiability_check_with, ProofConfig};
 
@@ -111,16 +111,18 @@ fn imported_src() -> String {
     SRC.replace(marker, &format!("{marker}  import anthill.prelude.Bool.{{ite}}\n"))
 }
 
-/// LOADED STRICTLY, and that is the whole point of the test rather than a detail. This
-/// harness' `load_kb_with` DISCARDS load errors, and `is_ite_op` still matches the bare
-/// short name — so if the import ever stopped resolving, `ite` would intern bare, the
-/// SMT would still contain `(ite ...)`, and this test would pass while exercising the
-/// pre-WI-894 path it exists to distinguish from. WI-887 recorded this harness hiding a
-/// live load error in this very file. `load_kb_strict` + the qualified-symbol assertion
-/// are what make the claim falsifiable.
+/// LOADED STRICTLY, and that is the whole point of the test rather than a detail.
+/// `is_ite_op` still matches the bare short name — so if the import ever stopped
+/// resolving, `ite` would intern bare, the SMT would still contain `(ite ...)`, and this
+/// test would pass while exercising the pre-WI-894 path it exists to distinguish from.
+/// WI-887 recorded this harness hiding a live load error in this very file.
+///
+/// WI-966: `load_kb_with` is now that strict loader for the whole crate (the discarding
+/// twin this doc used to warn about is gone), so what makes the claim falsifiable is the
+/// qualified-symbol assertion below plus the fact that no loader here swallows an `Err`.
 #[test]
 fn an_imported_ite_lowers_by_its_qualified_name() {
-    let kb = load_kb_strict(&imported_src());
+    let kb = load_kb_with(&imported_src());
     assert!(
         kb.has_qualified_name("anthill.prelude.Bool.ite"),
         "WI-894 must give the rule-introduced `ite` a qualified identity, or the import \

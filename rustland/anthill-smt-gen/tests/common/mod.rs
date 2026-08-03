@@ -31,17 +31,25 @@ static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Like [`load_kb_with`] but PANICS on a load error instead of discarding it.
+/// Load the cached stdlib + `source` into a fresh KB, PANICKING on a load error.
 ///
-/// [`load_kb_with`] does `let _ = load_all(..)`, which is load-bearing for the fixtures
-/// that deliberately carry an unresolvable shape — but it means a fixture whose IMPORT
-/// silently stops resolving still returns a KB, and a test asserting on emitted SMT can
-/// then pass through a fallback path while claiming to pin the imported one. That is not
-/// hypothetical: WI-887 recorded exactly this harness hiding a live load error in
-/// `wi680_ite_lowering_test`. Any test whose claim depends on a name RESOLVING must load
-/// through here.
+/// WI-966 dissolved a name trap here rather than renaming around it. This crate
+/// used to spell the DISCARDING loader `load_kb_with` while
+/// `anthill-core/tests/common::load_kb_with` PANICS — same name, opposite
+/// guarantee, same workspace — with a strict `load_kb_strict` alongside that
+/// only `wi680_ite_lowering_test` reached for. The discard was justified in
+/// writing as "load-bearing for the fixtures that deliberately carry an
+/// unresolvable shape". MEASURED by flipping it: all 100 tests in this crate
+/// pass strict, so no such fixture exists. There is now one loader, and the name
+/// means panic-on-error in all three test crates.
+///
+/// A fixture that must load dirty needs a NAMED lenient entry point (see
+/// `anthill-cpp-gen/tests/common::load_kb_with_lenient`), never a bare discard:
+/// WI-887 recorded this very harness hiding a live load error in
+/// `wi680_ite_lowering_test`, whose assertions about emitted SMT went on passing
+/// through a fallback path while claiming to pin the imported one.
 #[allow(dead_code)]
-pub fn load_kb_strict(source: &str) -> KnowledgeBase {
+pub fn load_kb_with(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
     let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
     refs.push(&user);
@@ -53,17 +61,6 @@ pub fn load_kb_strict(source: &str) -> KnowledgeBase {
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
         );
     }
-    kb
-}
-
-#[allow(dead_code)]
-pub fn load_kb_with(source: &str) -> KnowledgeBase {
-    let user = parse::parse(source).expect("parse user source");
-    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
-    refs.push(&user);
-
-    let mut kb = KnowledgeBase::new();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }
 

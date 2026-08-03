@@ -8,7 +8,7 @@
 use super::common;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::load_kb_with_lenient;
+use common::load_kb_with;
 
 #[test]
 fn option_some_lowers_to_make_optional() {
@@ -24,7 +24,7 @@ fn option_some_lowers_to_make_optional() {
     // Lenient loader: typer rejects `some(x): Option[T = Int64]`
     // because the bare-Option-vs-Option[T = Int64] check is overstrict.
     // The lowering itself is what we test here.
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.opt_some.Calc")
         .expect("emit Calc");
     assert!(
@@ -44,7 +44,7 @@ fn option_none_lowers_to_nullopt() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.opt_none.Calc")
         .expect("emit Calc");
     assert!(

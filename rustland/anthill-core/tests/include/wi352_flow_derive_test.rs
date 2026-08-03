@@ -37,7 +37,7 @@ fn load_reduce() -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     // flow_derive runs in the load pipeline regardless of any typecheck errors.
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
     kb
 }
 

@@ -232,7 +232,7 @@ fn non_recursive_let_lambda_still_works() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.unsupported_ok.Calc")
         .expect("non-recursive lambda must still lower");
     assert!(

@@ -52,7 +52,13 @@ fn lf1_kb() -> KnowledgeBase {
     let refs: Vec<&ParsedFile> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    // WI-966: strict, and MEASURED to load clean. This fixture is the real lf1
+    // example, so a discarded `Err` here would let every proof below be emitted
+    // from a half-loaded spec.
+    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+        panic!("stdlib + lf1 must load clean; got: {:?}",
+               errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+    }
     kb
 }
 

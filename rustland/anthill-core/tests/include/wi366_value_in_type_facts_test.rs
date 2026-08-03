@@ -476,7 +476,10 @@ fn query_pattern_written_empty_effect_row_lowers() {
     // are already registered in `kb` above, so no import line is needed.
     let src = "fact Stream[T = Int64, E = {}]";
     let parsed = parse::parse(src).expect("parse query pattern");
-    let _ = load::scan_definitions(&mut kb, &[&parsed]);
+    // WI-966: the scan's verdict is asserted, not discarded — MEASURED empty.
+    let errs = load::scan_definitions(&mut kb, &[&parsed]);
+    assert!(errs.is_empty(), "the CLI query-pattern scan must be clean: {:?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
     let global_raw = kb.make_name_term("_global").raw();
     let mut var_map = HashMap::new();
     let mut term = None;

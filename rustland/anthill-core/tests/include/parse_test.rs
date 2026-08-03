@@ -63,7 +63,7 @@ fn load_literal_type_arg_in_body_no_reentrancy_panic() {
     let mut kb = KnowledgeBase::new();
     let src = "operation g[n](x: Int64) -> Int64\noperation f(x: Int64) -> Int64 = g[3](x)\n";
     let parsed = parse::parse(src).expect("parse failed");
-    let _ = load::load(&mut kb, &parsed, &NullResolver);
+    crate::common::expect_loaded(load::load(&mut kb, &parsed, &NullResolver));
 }
 
 #[test]

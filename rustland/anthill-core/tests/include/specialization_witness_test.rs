@@ -20,7 +20,7 @@ fn load_with(extra: &str) -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
     kb
 }
 
@@ -41,6 +41,13 @@ fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
 
 #[test]
 fn provides_clause_emits_specialization_proof_record() {
+    // B's `PartialEq`/`Eq` provisions and its `eq` body are not decoration: `A`
+    // requires `Eq[T = T]`, so a `B` that provides `A[T = B]` and nothing else
+    // is INCOHERENT and the loader says so. WI-966 — the error had been
+    // discarded here, and both tests in this file asserted over a KB that never
+    // finished loading. Discharging the requirement is what this fixture always
+    // meant to describe.
+    //
     // Sort A has a requires clause; sort B claims `provides A[T = B]`.
     // The α.6 pass auto-registers <A-qn>.requires.Eq_T for A's
     // requires; the α.8 pass walks the SortProvidesInfo fact for B
@@ -48,12 +55,17 @@ fn provides_clause_emits_specialization_proof_record() {
     // referencing A.requires.Eq_T plus the [T = B] substitution.
     let src = r#"
         namespace test.provides_alpha8
+          import anthill.prelude.{Bool, PartialEq, Eq}
           sort A
             sort T = ?
             requires anthill.prelude.Eq[T = T]
           end
           sort B
+            entity b
+            provides PartialEq[T = B]
+            provides Eq[T = B]
             provides A[T = B]
+            operation eq(x: B, y: B) -> Bool = true
           end
         end
     "#;
@@ -79,12 +91,17 @@ fn provides_clause_emits_specialization_proof_record() {
 fn provides_emission_is_idempotent_across_loads() {
     let src = r#"
         namespace test.provides_alpha8_idem
+          import anthill.prelude.{Bool, PartialEq, Eq}
           sort AA
             sort T = ?
             requires anthill.prelude.Eq[T = T]
           end
           sort CC
+            entity cc
+            provides PartialEq[T = CC]
+            provides Eq[T = CC]
             provides AA[T = CC]
+            operation eq(x: CC, y: CC) -> Bool = true
           end
         end
     "#;
@@ -100,7 +117,7 @@ fn provides_emission_is_idempotent_across_loads() {
     }).collect();
     parsed.push(parse::parse(src).unwrap());
     let refs: Vec<_> = parsed.iter().collect();
-    let _ = load::load_incremental(&mut kb, &refs, &NullResolver);
+    crate::common::expect_loaded(load::load_incremental(&mut kb, &refs, &NullResolver));
     let count2 = proof_records(&mut kb).iter()
         .filter(|r| r.contains("test.provides_alpha8_idem.CC.provides."))
         .count();

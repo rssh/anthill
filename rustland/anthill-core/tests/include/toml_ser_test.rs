@@ -3,7 +3,7 @@
 use anthill_core::intern::Symbol;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, FileSourceResolver};
+use anthill_core::kb::load;
 use anthill_core::parse;
 use anthill_core::persistence::term_ser;
 use anthill_core::persistence::print::TermPrinter;
@@ -15,10 +15,22 @@ use anthill_core::kb::ClauseKind;
 
 /// Build a KB with a simple entity definition for testing.
 /// Defines: sort Status { entity Open, entity Closed }
-///          sort Task { entity Task(id: String, status: Status, tags: List) }
+///          sort Task { entity Task(id: String, status: Status, tags: List[T = String]) }
+///
+/// WI-966: the load was `let _ = load::load_all(..)` against a
+/// `FileSourceResolver`, and BOTH halves of that were fiction. The fixture had
+/// been carrying `17:72: unresolved name 'List'` through all 18 of these tests,
+/// and the resolver could not have supplied it: it maps `anthill.prelude.List`
+/// to `anthill/prelude/List.anthill`, while the file is `list.anthill` — every
+/// lookup missed, and `List` was only ever the bare name `register_prelude`
+/// registers. MEASURED: swapping that resolver for `NullResolver` changed
+/// nothing at all. Loading the real stdlib is what makes `List[T = String]`
+/// mean a parametric `anthill.prelude.List`.
 fn build_test_kb() -> KnowledgeBase {
-    let source = r#"
+    crate::common::load_kb_with(r#"
 namespace test
+
+import anthill.prelude.{List, String}
 
 sort Status {
     entity Open
@@ -33,23 +45,14 @@ sort Acceptance {
 }
 
 sort Task {
-    entity Task(id: String, description: String, status: Status, tags: List[String])
+    entity Task(id: String, description: String, status: Status, tags: List[T = String])
 }
 
 sort Project {
     entity Project(name: String, language: String)
 }
 end
-"#;
-
-    let parsed = parse::parse(source).expect("test source should parse");
-    let mut kb = KnowledgeBase::new();
-    let resolver = FileSourceResolver::new(vec![
-        std::path::PathBuf::from("../../stdlib"),
-    ]);
-    let refs = vec![&parsed];
-    let _ = load::load_all(&mut kb, &refs, &resolver);
-    kb
+"#)
 }
 
 // ── Primitive tests ─────────────────────────────────────────────
@@ -111,7 +114,7 @@ end
 "#;
     let parsed = parse::parse(src).expect("parse");
     let resolver = load::NullResolver;
-    let _ = load::load_all(&mut kb, &[&parsed], &resolver);
+    crate::common::expect_loaded(load::load_all(&mut kb, &[&parsed], &resolver));
 
     let domain = kb.intern("test_domain");
     let toml_src = r#"
@@ -540,7 +543,7 @@ end
 "#;
     let parsed = parse::parse(src).expect("parse");
     let mut kb = KnowledgeBase::new();
-    let _ = load::load_all(&mut kb, &[&parsed], &load::NullResolver);
+    crate::common::expect_loaded(load::load_all(&mut kb, &[&parsed], &load::NullResolver));
 
     let rec_sym = kb.try_resolve_symbol("test.Rec").expect("Rec resolved");
 
@@ -647,15 +650,12 @@ x = 1
 
 // ── WI-503: residual round-trip gaps left by WI-501 ─────────────
 
-/// Load `src` (referencing the stdlib) into a fresh KB. Helper for the WI-503
-/// fixtures, which need custom sorts plus the prelude `Option`/`List`.
-fn load_kb_with_stdlib(src: &str) -> KnowledgeBase {
-    let parsed = parse::parse(src).expect("test source should parse");
-    let mut kb = KnowledgeBase::new();
-    let resolver = FileSourceResolver::new(vec![std::path::PathBuf::from("../../stdlib")]);
-    let _ = load::load_all(&mut kb, &[&parsed], &resolver);
-    kb
-}
+// The WI-503 fixtures below need custom sorts plus the prelude `Option`/`List`,
+// so they load through `common::load_kb_with` like everything else in this file.
+// WI-966: they used to go through a local wrapper naming a `FileSourceResolver`
+// that resolved nothing (see `build_test_kb`), which left `Option` as the bare
+// `register_prelude` name with no type parameter `T` — which is why both of them
+// spelled element types as the non-existent sort `Int` under a discarded `Err`.
 
 /// WI-503 gap (1): `some(none())` — a present-but-empty `Option[T = Option[U]]` —
 /// cannot be represented in the flattened TOML/JSON format. The inner `none`
@@ -664,9 +664,10 @@ fn load_kb_with_stdlib(src: &str) -> KnowledgeBase {
 /// error loudly rather than round-trip to the wrong value.
 #[test]
 fn serialize_nested_option_some_none_errors_loudly() {
-    let mut kb = load_kb_with_stdlib(r#"
+    let mut kb = crate::common::load_kb_with(r#"
 namespace test
-sort Box { entity Box(inner: Option[T = Option[T = Int]]) }
+import anthill.prelude.{Option, Int64}
+sort Box { entity Box(inner: Option[T = Option[T = Int64]]) }
 end
 "#);
 
@@ -710,10 +711,11 @@ end
 /// fields. It must serialize as an ordinary entity instead.
 #[test]
 fn serialize_user_entity_named_cons_is_not_flattened_as_list() {
-    let mut kb = load_kb_with_stdlib(r#"
+    let mut kb = crate::common::load_kb_with(r#"
 namespace test
-sort Holder { entity Holder(c: Pair, tags: List[Int]) }
-sort Pair { entity cons(x: Int, y: Int) }
+import anthill.prelude.{List, Int64}
+sort Holder { entity Holder(c: Pair, tags: List[T = Int64]) }
+sort Pair { entity cons(x: Int64, y: Int64) }
 end
 "#);
 
@@ -767,7 +769,7 @@ end
 /// never discrim-matched the named pattern; the deserializer must error loudly.
 #[test]
 fn deserialize_multifield_ctor_scalar_payload_errors_loudly() {
-    let mut kb = load_kb_with_stdlib(r#"
+    let mut kb = crate::common::load_kb_with(r#"
 namespace test
 sort Rec { entity Rec(outcome: Outcome) }
 sort Outcome { entity Verified(at: String, by: String)  entity Pending }

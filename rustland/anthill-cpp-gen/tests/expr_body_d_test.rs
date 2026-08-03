@@ -17,7 +17,7 @@ use super::common;
 use std::process::Command;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{find_cxx, load_kb_with_lenient, scratch_dir};
+use common::{find_cxx, load_kb_with, scratch_dir};
 
 #[test]
 fn entity_constructor_literal_emits_brace_init() {
@@ -30,7 +30,7 @@ fn entity_constructor_literal_emits_brace_init() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_d.Calc")
         .expect("emit Calc");
 
@@ -54,7 +54,7 @@ fn entity_constructor_named_args_reorder_to_field_order() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_d_reorder.Calc")
         .expect("emit Calc");
 
@@ -74,7 +74,7 @@ fn list_literal_emits_brace_init() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_d_list.Calc")
         .expect("emit Calc");
 
@@ -106,7 +106,7 @@ fn match_over_nullary_sum_emits_holds_alternative_chain() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_d_match.Calc")
         .expect("emit Calc");
 
@@ -142,7 +142,7 @@ fn match_with_let_in_branch_body() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_d_compose.Calc")
         .expect("emit Calc");
 
@@ -169,7 +169,7 @@ fn entity_constructor_literal_compiles() {
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let traits = emit_traits_struct(&mut kb, "test.expr_d_compile.Calc")
         .expect("emit Calc");
 

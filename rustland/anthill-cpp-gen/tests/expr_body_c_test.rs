@@ -14,7 +14,7 @@ use super::common;
 use std::process::Command;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{find_cxx, load_kb_with, load_kb_with_lenient, scratch_dir};
+use common::{find_cxx, load_kb_with, scratch_dir};
 
 #[test]
 fn single_let_emits_iife() {
@@ -95,17 +95,19 @@ fn lambda_emits_generic_lambda() {
     // with std::function or `auto`-typed callables without needing
     // a declared signature.
     //
-    // The type checker rejects "lambda as return value of Int64 op", so
-    // we use the lenient loader — the lowering itself is what we test.
+    // WI-966: this used to load leniently because "the type checker rejects
+    // lambda as return value of Int64 op". It does, and rightly — the fixture
+    // declared `-> Int64` for a body returning a function. Declaring the arrow
+    // return type it actually has loads clean and lowers the same.
     let source = r#"
         namespace test.expr_c
           import anthill.prelude.{Int64}
           sort Calc
-            operation lam(n: Int64) -> Int64 = lambda x -> add(x, n)
+            operation lam(n: Int64) -> (x: Int64) -> Int64 = lambda x -> add(x, n)
           end
         end
     "#;
-    let mut kb = load_kb_with_lenient(source);
+    let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.expr_c.Calc")
         .expect("emit Calc");
 
