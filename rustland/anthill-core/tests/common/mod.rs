@@ -206,8 +206,8 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
         .expect("register Modify handler");
 }
 
-/// The stdlib-only KB the re-type suites build on: parse + `register_prelude` +
-/// `register_standard_builtins` + `load_stdlib`, with NO user source. WI-732 lifted this here
+/// The stdlib-only KB the re-type suites build on: parse + `load_stdlib` (which
+/// bootstraps — WI-967), with NO user source. WI-732 lifted this here
 /// after finding six verbatim copies across the test tree (typing_test, incremental_load_test,
 /// wi211, wi219, wi759, and its own) — a change to the load sequence otherwise has to land in
 /// every one, and the copy that misses it fails as though the code under test were broken.
@@ -234,9 +234,9 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
 }
 
 /// The MIRROR IMAGE of [`load_stdlib_kb`]: the user sources with NO stdlib files —
-/// `register_prelude` + `register_standard_builtins` + `load_all`, nothing else. The
-/// configuration an EMBEDDER uses, and the one where a name's implicit-prelude target may
-/// simply not exist (WI-900).
+/// `load_all` (which bootstraps — WI-967), nothing else. The configuration an EMBEDDER
+/// uses, and the one where a name's implicit-prelude target may simply not exist
+/// (WI-900).
 ///
 /// Lifted here for the reason [`load_stdlib_kb`] records: verbatim copies of this exact
 /// sequence had accumulated (`wi720_ctor_order_test`, `wi458_head_span_occurrence_test`),

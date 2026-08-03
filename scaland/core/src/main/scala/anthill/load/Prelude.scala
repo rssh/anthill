@@ -17,7 +17,7 @@ object Prelude:
     registerPrimitiveSorts(kb)
     registerKernelMetaSorts(kb)
     registerExprSorts(kb)
-    registerStandardBuiltins(kb)
+    registerBuiltinTags(kb)
     registerGlobalParents(kb)
 
   private def registerStdlibScopes(kb: KnowledgeBase): Unit =
@@ -122,7 +122,7 @@ object Prelude:
         kb.symbols.addImport(globalScope.raw, name, sym)
       }
 
-  private def registerStandardBuiltins(kb: KnowledgeBase): Unit =
+  private def registerBuiltinTags(kb: KnowledgeBase): Unit =
     val builtinDefs = IndexedSeq(
       ("anthill.reflect.nonvar", BuiltinTag.NonVar),
       ("anthill.reflect.ground", BuiltinTag.Ground),
@@ -145,10 +145,10 @@ object Prelude:
         case Some(nsSym) =>
           val nsScope = kb.makeNameTermFromSym(nsSym)
           val sym = kb.symbols.define(short, qualName, SymbolKind.Operation, nsScope.raw)
-          kb.registerBuiltin(sym, tag)
+          kb.registerBuiltinTag(sym, tag)
         case None =>
           val sym = kb.intern(qualName)
-          kb.registerBuiltin(sym, tag)
+          kb.registerBuiltinTag(sym, tag)
 
   /** Add anthill.prelude and anthill.reflect as parents of _global,
     * making their exports visible everywhere.

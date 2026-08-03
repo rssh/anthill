@@ -3531,30 +3531,28 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[
 ///
 /// This function IS the bootstrap: kernel vocabulary, stdlib scope hierarchy
 /// (`register_stdlib_scopes`), builtin tags
-/// (`KnowledgeBase::register_standard_builtins` — `pub(crate)`, and this is its
+/// (`KnowledgeBase::register_builtin_tags` — `pub(crate)`, and this is its
 /// only caller), the `TermView` field keys, and the WI-320 bridge fact. Two
 /// rules cover every caller:
 ///
 /// 1. **About to load? Do NOT call this.** Every load entry point — [`load`],
 ///    [`load_all`], [`load_all_per_file`], and the [`load_stdlib`] /
 ///    [`load_incremental`] aliases — calls it first. Before WI-967 the "house
-///    sequence" (`new` → `register_prelude` → `register_standard_builtins` →
-///    `load_all`) ran BOTH this and `register_standard_builtins` twice, at 172
-///    files; being idempotent is exactly what kept that invisible.
+///    pre-registering "house sequence" ran BOTH this and the builtin-tag pass
+///    twice, at 172 files; being idempotent is exactly what kept that invisible.
 /// 2. **Never loading? Call it yourself** — a hand-built KB that needs kernel
 ///    names to resolve. That is the only caller-side use: of the 60 call sites
 ///    left, 3 are the load entry points below and 57 are this shape.
 ///
-/// (`KnowledgeBase::register_standard_builtins` is a step OF bootstrap, not a
-/// peer of it. Do not confuse it with
-/// [`crate::eval::builtins::register_standard_builtins`], an unrelated
-/// same-named function that registers host fns on an `Interpreter` and IS
-/// legitimately re-run per fresh interpreter.)
+/// (`KnowledgeBase::register_builtin_tags` is a step OF bootstrap, not a peer of
+/// it. It is unrelated to [`crate::eval::builtins::register_standard_builtins`],
+/// which registers host fns on an `Interpreter` and IS legitimately re-run per
+/// fresh interpreter; until WI-968 the two shared a name.)
 ///
 /// **Idempotent**, and load-bearingly so — under rule 1 any KB loaded into twice
 /// reaches a load entry point already bootstrapped. Every step guards itself:
 /// `define_qualified_only` returns the existing symbol, `register_stdlib_scopes`
-/// early-returns once `anthill` exists, `register_builtin` re-resolves and
+/// early-returns once `anthill` exists, `register_builtin_tag` re-resolves and
 /// re-inserts the same tag, and `emit_effects_runtime_bridge_fact` early-returns
 /// — the one step that would otherwise DUPLICATE, since
 /// `assert_rule_debruijn_with_nodes` does not consult `fact_dedup`.
@@ -3607,7 +3605,7 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     // Idempotent: skipped on re-entry or when stdlib has already been scanned.
     register_stdlib_scopes(kb, global_raw);
     // Register builtin operations (eq, gt, add, etc.) for the resolver.
-    kb.register_standard_builtins();
+    kb.register_builtin_tags();
     // WI-348: the Type-occurrence field keys (`Denoted.value`, `Arrow.param/
     // result/effects`, `EffectsRows.effects_expr`, `NamedTuple.fields`) are read
     // by the carrier-agnostic `TermView` walk (`goal_fingerprint`, `match_view`,
@@ -3922,7 +3920,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // hold the eq/neq and gt/lt/gte/lte OPERATIONS; Eq / Ordered are the lawful /
     // total markers above them (Eq requires PartialEq; Ordered requires Eq,
     // PartialOrd). The bootstrap pre-defines the ops on their base sorts so the
-    // builtin-tag registration (register_standard_builtins) and the bare-name
+    // builtin-tag registration (register_builtin_tags) and the bare-name
     // fallback resolve to the same symbols the stdlib .anthill files reuse.
 
     // anthill.prelude.PartialEq sort (operations: eq, neq)
@@ -5881,10 +5879,11 @@ pub const INTERPRETER_LANG: &str = "rust";
 /// op is host-backed and the interpreter has no implementation registered for it.
 ///
 /// CACHED rather than re-queried because the evaluator's pass runs far more often
-/// than once: `register_standard_builtins` is re-run for every FRESH interpreter,
-/// and `resolve.rs`'s `run_in_bridge_interp` builds one per bridged evaluation —
-/// per operand the structural fold cannot collapse, per instance-fact `eq`
-/// dispatch, per `[simp]` macro fire. A fact walk there would cost a
+/// than once: `eval::builtins::register_standard_builtins` is re-run for every
+/// FRESH interpreter, and `resolve.rs`'s `run_in_bridge_interp` builds one per
+/// bridged evaluation — per operand the structural fold cannot collapse, per
+/// instance-fact `eq` dispatch, per `[simp]` macro fire. A fact walk there would
+/// cost a
 /// `fact_head_named_args` clone and four linear named-arg scans per mapping, per
 /// crossing.
 ///

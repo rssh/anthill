@@ -908,7 +908,7 @@ pub struct KnowledgeBase {
     simp_gate_cache: Option<bool>,
 
     /// WI-627: the resolved `anthill.prelude.PartialEq.eq` / `anthill.kernel.unify`
-    /// connective symbols, cached at [`Self::register_standard_builtins`] time
+    /// connective symbols, cached at [`Self::register_builtin_tags`] time
     /// (re-synced in [`Self::resolve_builtins`]) so
     /// [`Self::is_equality_connective_functor`] — on the resolver's per-candidate
     /// `is_equation` hot path — is an O(1) field read, not two long-string
@@ -5026,7 +5026,7 @@ impl KnowledgeBase {
     /// it (WI-139) and drop it from SLD candidates. [`Self::cache_connective_syms`]
     /// already documented that arm as the hazard to avoid; now it cannot be taken.
     /// Only a never-bootstrapped KB reaches this branch (the cache is filled by
-    /// `register_standard_builtins` and `resolve_builtins`), and `false` is a
+    /// `register_builtin_tags` and `resolve_builtins`), and `false` is a
     /// DEFINED answer there rather than a guess — the same line the sibling
     /// fallbacks in `eq_functor` / `unify_functor` were removed on.
     pub(crate) fn is_equality_connective_functor(&self, functor: Symbol) -> bool {
@@ -5055,7 +5055,7 @@ impl KnowledgeBase {
 
     /// WI-627: (re)resolve and cache the equality-connective symbols read by
     /// [`Self::is_equality_connective_functor`]. Called at the end of
-    /// [`Self::register_standard_builtins`] (where `register_builtin` first defines
+    /// [`Self::register_builtin_tags`] (where `register_builtin_tag` first defines
     /// both) and [`Self::resolve_builtins`] (the builtin-symbol remap hook), so the
     /// cache reflects the final canonical symbols regardless of load order.
     fn cache_connective_syms(&mut self) {
@@ -6545,10 +6545,16 @@ impl KnowledgeBase {
 
     // ── Builtin dispatch ────────────────────────────────────────
 
-    /// Register a builtin by its fully-qualified name.
+    /// Bind one fully-qualified stdlib operation name to its [`BuiltinTag`].
     /// Creates a resolved definition if the name isn't already defined.
     /// Derives the proper scope from the namespace prefix of the qualified name.
-    pub fn register_builtin(&mut self, qualified_name: &str, tag: BuiltinTag) {
+    ///
+    /// WI-968 — named for the tag, because
+    /// [`Interpreter::register_builtin`](crate::eval::Interpreter::register_builtin)
+    /// binds a host Rust fn under the bare name. `pub(crate)`: the only caller is
+    /// [`Self::register_builtin_tags`], and `BuiltinTag` is a closed enum, so this
+    /// is no extension point.
+    pub(crate) fn register_builtin_tag(&mut self, qualified_name: &str, tag: BuiltinTag) {
         let sym = if let Some(&resolved) = self.symbols.by_qualified_name.get(qualified_name) {
             resolved
         } else {
@@ -6565,7 +6571,7 @@ impl KnowledgeBase {
                 self.make_name_term_from_sym(ns_sym).raw()
             } else {
                 panic!(
-                    "register_builtin: namespace prefix for '{}' not found. \
+                    "register_builtin_tag: namespace prefix for '{}' not found. \
                      Call register_prelude() first to create the namespace hierarchy.",
                     qualified_name
                 )
@@ -6575,12 +6581,14 @@ impl KnowledgeBase {
         self.builtins.insert(sym, tag);
     }
 
-    /// Register the standard builtins.
+    /// Register the builtin TAGS — each entry binds a fully-qualified stdlib
+    /// operation name to the [`BuiltinTag`] the resolver dispatches on. No host
+    /// code is bound here.
     ///
     /// WI-967 — a STEP OF BOOTSTRAP, not a peer of it.
     /// [`load::register_prelude`](crate::kb::load::register_prelude) is its ONE
     /// caller and owns the ordering (this needs the namespace hierarchy
-    /// `register_stdlib_scopes` creates — [`Self::register_builtin`] panics
+    /// `register_stdlib_scopes` creates — [`Self::register_builtin_tag`] panics
     /// without it). A caller-side call is therefore always redundant; 218 were
     /// deleted under WI-967, every one of them sitting beside a `register_prelude`
     /// or a load entry point that had already run it.
@@ -6590,35 +6598,38 @@ impl KnowledgeBase {
     /// unrepresentable outside this crate instead of merely documented. If you are
     /// reaching for it, you want `register_prelude`.
     ///
-    /// NOT the same function as
-    /// [`crate::eval::builtins::register_standard_builtins`], which registers host
-    /// fns on an `Interpreter`, returns a `Result`, and IS legitimately re-run per
-    /// fresh interpreter. The names collide; the owners do not.
-    pub(crate) fn register_standard_builtins(&mut self) {
-        self.register_builtin("anthill.reflect.nonvar", BuiltinTag::NonVar);
-        self.register_builtin("anthill.reflect.ground", BuiltinTag::Ground);
-        self.register_builtin("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);
-        self.register_builtin("anthill.reflect.short_name", BuiltinTag::ShortName);
-        self.register_builtin("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
-        self.register_builtin("anthill.reflect.not", BuiltinTag::Not);
-        self.register_builtin("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
-        self.register_builtin("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
-        self.register_builtin("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
-        self.register_builtin("anthill.reflect.scope", BuiltinTag::Scope);
-        self.register_builtin("anthill.reflect.kind", BuiltinTag::Kind);
-        self.register_builtin("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
-        self.register_builtin("anthill.reflect.field_access", BuiltinTag::FieldAccess);
-        self.register_builtin("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
+    /// WI-968 — `builtin_tag`, not `builtin`, because
+    /// [`crate::eval::builtins::register_standard_builtins`] claims the other half
+    /// of that word: a free function binding host fns on an `Interpreter`, re-run
+    /// per fresh interpreter. It kept the shared name — it is the one with call
+    /// sites throughout the suite while this has exactly one, and being a free
+    /// function it is also the only one of the two that can be imported bare and
+    /// misread. This side now says which registry it writes.
+    pub(crate) fn register_builtin_tags(&mut self) {
+        self.register_builtin_tag("anthill.reflect.nonvar", BuiltinTag::NonVar);
+        self.register_builtin_tag("anthill.reflect.ground", BuiltinTag::Ground);
+        self.register_builtin_tag("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);
+        self.register_builtin_tag("anthill.reflect.short_name", BuiltinTag::ShortName);
+        self.register_builtin_tag("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
+        self.register_builtin_tag("anthill.reflect.not", BuiltinTag::Not);
+        self.register_builtin_tag("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
+        self.register_builtin_tag("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
+        self.register_builtin_tag("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
+        self.register_builtin_tag("anthill.reflect.scope", BuiltinTag::Scope);
+        self.register_builtin_tag("anthill.reflect.kind", BuiltinTag::Kind);
+        self.register_builtin_tag("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
+        self.register_builtin_tag("anthill.reflect.field_access", BuiltinTag::FieldAccess);
+        self.register_builtin_tag("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
         // Resolver primitives (proposal 033 / 033.1 / 049)
-        self.register_builtin("anthill.kernel.push_choice", BuiltinTag::PushChoice);
-        self.register_builtin("anthill.kernel.cut", BuiltinTag::Cut);
-        self.register_builtin("anthill.kernel.unify", BuiltinTag::Unify);
+        self.register_builtin_tag("anthill.kernel.push_choice", BuiltinTag::PushChoice);
+        self.register_builtin_tag("anthill.kernel.cut", BuiltinTag::Cut);
+        self.register_builtin_tag("anthill.kernel.unify", BuiltinTag::Unify);
         // WI-300 — rule-body requirement guard. A rule-body `requires(X)` desugars
         // (converter) to `find_dictionary(X)`; the typer sweep rewrites the argument
         // to carry spec X's base symbol plus the rule vars that ground its
         // type-parameters. Guard tier: checks `provides` at the current binding,
         // suspends-as-residual on an under-determined carrier.
-        self.register_builtin("anthill.kernel.find_dictionary", BuiltinTag::FindDictionary);
+        self.register_builtin_tag("anthill.kernel.find_dictionary", BuiltinTag::FindDictionary);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then
@@ -6626,13 +6637,13 @@ impl KnowledgeBase {
         // `builtin_eq`: total, carrier-agnostic, never dispatches.
         // WI-644 / proposal 004: eq/neq live on PartialEq, gt/lt/gte/lte on
         // PartialOrd (the partial bases); Eq/Ordered are the lawful/total markers.
-        self.register_builtin("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
-        self.register_builtin("anthill.kernel.struct_eq", BuiltinTag::Eq);
-        self.register_builtin("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);
-        self.register_builtin("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
-        self.register_builtin("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
-        self.register_builtin("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
-        self.register_builtin("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
+        self.register_builtin_tag("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
+        self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::Eq);
+        self.register_builtin_tag("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);
+        self.register_builtin_tag("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
+        self.register_builtin_tag("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
+        self.register_builtin_tag("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
+        self.register_builtin_tag("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
         // WI-876 — the same four, keyed to each SCALAR CARRIER that now declares them
         // as its own operations. A bare `gt(?a, 0)` in a rule inside `sort Int64`
         // resolves to `Int64.gt`, not to the spec op, so without these entries the
@@ -6655,7 +6666,7 @@ impl KnowledgeBase {
         //   * THE LIST IS STILL HARDCODED, and "it runs before `load_all`" is why
         //     THIS function cannot read the facts — not why the list must be written
         //     by hand. `load::build_host_op_mappings` is a post-load pass holding
-        //     `&mut KnowledgeBase`, and `register_builtin` is a `&mut self` method,
+        //     `&mut KnowledgeBase`, and `register_builtin_tag` is a `&mut self` method,
         //     so the derivation site exists. Until it is taken, this array must be
         //     hand-synced with four `.anthill` files in another crate.
         // Spelled out rather than built with `format!`: this runs once per KB and the
@@ -6678,29 +6689,29 @@ impl KnowledgeBase {
             ("anthill.prelude.Float.gte", BuiltinTag::Gte),
             ("anthill.prelude.Float.lte", BuiltinTag::Lte),
         ] {
-            self.register_builtin(qn, tag);
+            self.register_builtin_tag(qn, tag);
         }
-        self.register_builtin("anthill.prelude.Numeric.add", BuiltinTag::Add);
-        self.register_builtin("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
-        self.register_builtin("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
+        self.register_builtin_tag("anthill.prelude.Numeric.add", BuiltinTag::Add);
+        self.register_builtin_tag("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
+        self.register_builtin_tag("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
         // div/mod live on Int64 (division is not total on Numeric); the `/` `div`
         // `%` `mod` operators desugar to the bare names, resolved to these
         // registrations so a query computes them (WI-863). divExact aliases div (a
         // stdlib rule); it is registered for the QUALIFIED form but deliberately
         // kept out of PRELUDE_QUALIFIED — no operator mints a bare `divExact`.
-        self.register_builtin("anthill.prelude.Int64.div", BuiltinTag::Div);
-        self.register_builtin("anthill.prelude.Int64.divExact", BuiltinTag::Div);
-        self.register_builtin("anthill.prelude.Int64.mod", BuiltinTag::Mod);
+        self.register_builtin_tag("anthill.prelude.Int64.div", BuiltinTag::Div);
+        self.register_builtin_tag("anthill.prelude.Int64.divExact", BuiltinTag::Div);
+        self.register_builtin_tag("anthill.prelude.Int64.mod", BuiltinTag::Mod);
         // Conversions
-        self.register_builtin("anthill.prelude.BigInt.to_bigint", BuiltinTag::ToBigInt);
-        self.register_builtin("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);
+        self.register_builtin_tag("anthill.prelude.BigInt.to_bigint", BuiltinTag::ToBigInt);
+        self.register_builtin_tag("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);
 
         // Occurrence builtins (stubs — full implementations in future phases)
-        self.register_builtin("anthill.reflect.occurrence_term", BuiltinTag::OccurrenceTerm);
-        self.register_builtin("anthill.reflect.occurrence_span", BuiltinTag::OccurrenceSpan);
-        self.register_builtin("anthill.reflect.occurrence_owner", BuiltinTag::OccurrenceOwner);
-        self.register_builtin("anthill.reflect.sub_occurrences", BuiltinTag::SubOccurrences);
-        self.register_builtin("anthill.reflect.operation_body", BuiltinTag::OperationBody);
+        self.register_builtin_tag("anthill.reflect.occurrence_term", BuiltinTag::OccurrenceTerm);
+        self.register_builtin_tag("anthill.reflect.occurrence_span", BuiltinTag::OccurrenceSpan);
+        self.register_builtin_tag("anthill.reflect.occurrence_owner", BuiltinTag::OccurrenceOwner);
+        self.register_builtin_tag("anthill.reflect.sub_occurrences", BuiltinTag::SubOccurrences);
+        self.register_builtin_tag("anthill.reflect.operation_body", BuiltinTag::OperationBody);
         // WI-627: cache the equality-connective symbols now that they're defined.
         self.cache_connective_syms();
     }

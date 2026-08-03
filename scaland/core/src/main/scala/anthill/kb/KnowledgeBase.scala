@@ -444,7 +444,7 @@ class KnowledgeBase:
 
   // ── Builtin dispatch ────────────────────────────────────────
 
-  def registerBuiltin(sym: TermSymbol, tag: BuiltinTag): Unit =
+  def registerBuiltinTag(sym: TermSymbol, tag: BuiltinTag): Unit =
     builtins_(TermSymbol.raw(sym)) = tag
 
   def getBuiltin(goal: TermId): Option[BuiltinTag] =

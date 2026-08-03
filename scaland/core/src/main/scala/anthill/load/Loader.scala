@@ -339,7 +339,7 @@ object Loader:
     * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
     * entity arm). Shared by operations and consts. A kernel operation such as
     * `anthill.reflect.not` is FIRST
-    * registered as a builtin by `Prelude.registerStandardBuiltins` (into the
+    * registered as a builtin by `Prelude.registerBuiltinTags` (into the
     * prelude's `anthill.reflect` scope); the stdlib then ALSO declares
     * `operation not(...)` in reflect.anthill. Because scaland scans a re-opened
     * namespace into a fresh scope (it does not yet reuse the prelude's scope),
@@ -969,7 +969,7 @@ object Loader:
     *
     * Skips the primitive type sorts (Bool/Int/Float/BigInt/String) — their
     * operations conflict with the kernel builtins (`anthill.reflect.not`,
-    * etc.) that Prelude.registerStandardBuiltins already imports at global.
+    * etc.) that Prelude.registerBuiltinTags already imports at global.
     * Mirrors rustland's `register_prelude`, which only imports explicit
     * global aliases instead of bulk-parenting every prelude sort.
     */

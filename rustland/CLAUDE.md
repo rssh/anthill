@@ -66,11 +66,13 @@ Rules in the KB use `Var::DeBruijn(u32)`. The resolver opens them via `with_fres
 
 Integration tests in `anthill-core/tests/` follow:
 1. Load stdlib via `common::collect_anthill_files(&common::stdlib_dir())`
-2. Parse + `load_all` — which BOOTSTRAPS. Do not call `register_prelude` or
-   `register_standard_builtins` first; every load entry point owns that, and the
+2. Parse + `load_all` — which BOOTSTRAPS. Do not call `register_prelude` or the
+   builtin-tag pass first; every load entry point owns that, and the
    pre-registering "house sequence" was deleted from 172 files (WI-967).
    `register_prelude` is for a hand-built KB that never loads; the KB method
-   `register_standard_builtins` is `pub(crate)` and has exactly one caller.
+   `register_builtin_tags` is `pub(crate)` and has exactly one caller.
+   `eval::builtins::register_standard_builtins` is a DIFFERENT function — it binds
+   host fns on an `Interpreter`, and you DO call it per fresh interpreter (WI-968).
 3. Build query term, call `kb.resolve(&[query], &config)`
 4. Assert on `solutions.len()`, `subst.resolve_with_term(var)`, `kb.reify(var, &subst)`
 

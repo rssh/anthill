@@ -93,8 +93,8 @@ end
 /// Every other test in this file passes either way by design, because they all
 /// call `load_stdlib` first, which bootstraps. So does the whole 4000-test
 /// suite: the WI-967 deletion of the redundant caller-side `register_prelude` /
-/// `register_standard_builtins` lines is a refactor over an idempotent function
-/// and is green both ways.
+/// builtin-tag lines is a refactor over an idempotent function and is green both
+/// ways.
 #[test]
 fn load_incremental_bootstraps_a_fresh_kb() {
     let user = parse::parse(r#"
@@ -116,12 +116,12 @@ end
     // (1) the kernel meta-sorts / stdlib scope hierarchy — `Int64` above resolved.
     assert!(kb.try_resolve_symbol("Int64").is_some(),
         "register_prelude's KERNEL_META_SORTS did not run");
-    // (2) the builtin TAGS — `register_standard_builtins`, which only
+    // (2) the builtin TAGS — `register_builtin_tags`, which only
     // `register_prelude` calls (WI-967).
     let eq = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("PartialEq.eq symbol must exist after bootstrap");
     assert!(kb.is_builtin(eq),
-        "register_standard_builtins did not run: PartialEq.eq carries no builtin tag");
+        "register_builtin_tags did not run: PartialEq.eq carries no builtin tag");
 
     // DRIVE the loaded content, so this is not a `loads clean` assertion:
     // the fact must be queryable through the bootstrapped KB.

@@ -17,7 +17,7 @@ mod common;
 use common::{anthill, fixtures_dir};
 
 /// props has no bearing on the arithmetic — div/mod are builtins registered by
-/// `register_standard_builtins` regardless of what a `-p` KB contains; props is
+/// `register_builtin_tags` regardless of what a `-p` KB contains; props is
 /// just a non-empty target the CLI requires.
 fn query(pattern: &str) -> common::Output {
     let kb = fixtures_dir("wi754").join("props.anthill");

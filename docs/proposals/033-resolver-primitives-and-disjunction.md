@@ -189,7 +189,7 @@ Solution {
 
 - Create `stdlib/anthill/kernel/kernel.anthill` with `operation push_choice(?goal: Term) -> Bool` and `rule or(?a, ?b) :- push_choice(?b), ?a`.
 - Wire `register_prelude` (or equivalent) to load `anthill.kernel` alongside `anthill.prelude` and `anthill.reflect`.
-- Add `BuiltinTag::PushChoice` in `kb/mod.rs:27`; register as `"anthill.kernel.push_choice"` in `register_standard_builtins` (`mod.rs:1656`).
+- Add `BuiltinTag::PushChoice` in `kb/mod.rs:27`; register as `"anthill.kernel.push_choice"` in `KnowledgeBase::register_builtin_tags`.
 - Handle `PushChoice` in `step_init` per §`BuiltinTag::PushChoice in step_init` above.
 - Tests: `push_choice(g)` standalone, `or(a, b)` with both branches succeeding, with one branch failing, with a shared variable.
 
