@@ -397,11 +397,19 @@ end
 ///     spec-op call in the op's body; whether the license was granted ran through
 ///     `op_requires_covers` → `sigma_pair_precise`, which needs a Global→Rigid
 ///     bridge for the param. `check_operation_bodies` rigidifies the op's OWN
-///     type params together with its sort's, but recorded only the sort half, and
-///     an op param has TWO canonical vars besides (the `OperationInfo.type_params`
-///     one and the `SortAlias` one a WRITTEN occurrence resolves through). So the
-///     written `requires Ordered[T]` and the call's rigidified carrier landed in
-///     different var spaces and the license was refused.
+///     type params together with its sort's, but recorded only the sort half. So
+///     the written `requires Ordered[T]` and the call's rigidified carrier landed
+///     in different var spaces and the license was refused.
+///
+///     WI-943 CORRECTED WHY. WI-942 read this as an op param having TWO canonical
+///     vars — the `OperationInfo.type_params` one and "the `SortAlias` one a WRITTEN
+///     occurrence resolves through" — and bridged both. There is no second one: the
+///     loader asserts NO `SortAlias` for a bracket param, so the written occurrence
+///     was resolving through `resolve_sort_alias`'s SHORT-NAME fallback and getting
+///     an UNRELATED sort's var. `T` collided with a stdlib alias, so both sides
+///     landed on the same wrong var and agreed — which is the only reason WI-942's
+///     bridge worked. `typing::type_param_global_var` now reads the operation's own
+///     record; the double-recording is gone.
 ///
 /// WHY THE SUBJECT LOADED ANYWAY, BEFORE — and why `renamed_op_type_params_…`
 /// below is the test that matters: `twice[V, F] … requires VectorSpace[V, F]`
@@ -421,6 +429,10 @@ end
 ///    `control_ring_…` fail AT LOAD (`MissingRequiresForSpecOp`); THIS test
 ///    still PASSES, on the name coincidence described above. That asymmetry is
 ///    the measurement: the subject alone cannot witness the load-side fix.
+///    RE-MEASURED at WI-943, which replaced (2)'s mechanism: reverting the
+///    op-record arm of `type_param_global_var` moves exactly the same three tests,
+///    the same way. The row therefore still reads true — only what "(2)" names has
+///    changed.
 ///  - `control_the_concrete_carrier_route_is_unaffected` passes under BOTH
 ///    reverts by design — it is what says the provision and the member were fine
 ///    all along and only the abstract route was broken.

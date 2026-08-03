@@ -43,20 +43,35 @@
 //! LOAD under an op-scoped `requires` while its sort-level twin is correct —
 //! the residue WI-822 LEG 1 would close).
 //!
+//! WI-943 FIXED THE OP-TYPE-PARAM ROW — the "separate §5.4 op-param-requires
+//! gap" the (b) pins below were written to flip on. An operation type parameter
+//! had no symbol→canonical-var channel at all, so `sigma_class` could not
+//! classify the `PT` written inside `requires Desc[PT]` and the operation's own
+//! clause never covered its own call. (WI-942 hit the same wall for `Ordered[T]`
+//! and got away with it: `T` collided by SHORT NAME with a stdlib `SortAlias`,
+//! so both sides landed on one wrong var and agreed. `PT` / `FT` / `GT` collide
+//! with nothing, so they simply had no answer.) With the channel in place the
+//! row measures the values this file has always stated as CORRECT.
+//!
 //! Outcome matrix (all pinned below; letters are the ticket's outcome codes —
 //! (b) load error, (c) eval error):
 //!
 //! | requires channel                  | 1 cond. level | mutual recursion | + lambda leg |
 //! |-----------------------------------|---------------|------------------|--------------|
-//! | op-scoped over OP type param      | (b) load err  | (b) load err     | (b) load err |
+//! | op-scoped over OP type param      | CORRECT (1)   | CORRECT 1/12/122 | CORRECT      |
 //! | op-scoped over SORT param         | CORRECT (12)  | CORRECT 1/12/122 | CORRECT      |
 //! | SORT-level                        | CORRECT (12)  | CORRECT 1/12/122 | CORRECT      |
+//!
+//! With every row correct, the ticket's PREDICTION is finally measurable on the
+//! op-param row it was written about — and it stays UNOBSERVED: control and
+//! witness are identical there too (1/12/122 both ways), so the operation/lambda
+//! asymmetry the ticket predicted is still nowhere in the measurements.
 //!
 //! The `requires`-eval-path hazard flagged by the ticket ("sort-level
 //! `requires` makes ops untrappable"; two competing error spellings, neither
 //! established) is SETTLED: neither reported error reproduces; sort-level
 //! requires works end-to-end through a conditional instance (V8 pins the
-//! correct 12). Remaining pinned defects: the (b)/(c) op-scoped rows above.
+//! correct 12). No pinned defects remain in this file.
 //! The GLOBAL two-provider rejection this file used to pin as a defect is
 //! GONE — WI-843 (058 §4.1 tier 3) moved it to the unselected use site, so
 //! the pair below is now a coexistence fixture (`two_describers_pinned_
@@ -67,10 +82,8 @@
 //! the rule and its second, silently-wrong-VALUE witness live in
 //! `wi824_abstract_mispin_test.rs`).
 //!
-//! The (b) rows still PIN CURRENT DEFECTS on purpose: wrong behaviour, named
-//! as such, correct values stated beside each pin. They flip to clean loads
-//! when the separate §5.4 op-param-requires gap closes. (The (c) rows flipped
-//! under WI-822 and now assert their correct values.)
+//! (The (c) rows flipped under WI-822 and the (b) rows under WI-943; all now
+//! assert their correct values.)
 
 use anthill_core::eval::Value;
 
@@ -143,22 +156,25 @@ fn positive_control_eval_error_is_reported() {
 
 // ── (b) op-scoped requires over an OP-level type param: LOAD-rejected ─
 
-/// PINS A CURRENT GAP. An op-scoped `requires Desc[PT]` over the operation's
-/// OWN `[PT]` type param does not license the abstract spec-op call the way
-/// the same clause over a SORT param does (`op_requires_covers_call` misses
-/// it): the covered call is rejected at load. Both binding spellings
-/// (`Desc[PT]`, `Desc[T = PT]`) fail identically. The kernel spec (§5.4) says
-/// operation type parameters may appear in requires positions, so this is a
-/// gap, not a rule.
+/// FIXED BY WI-943 (was: rejected at load, pinned here as the §5.4 op-param
+/// gap). An op-scoped `requires Desc[PT]` over the operation's OWN `[PT]` type
+/// param now licenses the abstract spec-op call exactly as the same clause over
+/// a SORT param does, in BOTH binding spellings (`Desc[PT]`, `Desc[T = PT]`).
 ///
-/// WI-824 changed WHICH rejection: the uncovered call used to reach dispatch,
-/// match the parametric `WrapDesc` head var-to-structure and fail on that
-/// impl's own unresolvable `requires` (DispatchNoMatch); with the mis-match
-/// refused there are no candidates at all, so the call lands on the WI-325
-/// ladder (`MissingRequiresForSpecOp`). Same gap, same site, better
-/// diagnostic — it now names the clause that would license the call.
+/// The gap was an identity one, not a licensing one: `op_requires_covers` asks
+/// whether the clause's element and the call's carrier are the same variable,
+/// and the WRITTEN `PT` resolved through `type_param_global_var`, which knew
+/// only the `SortAlias` channel — a channel an operation parameter is
+/// deliberately absent from. So `PT` resolved to NOTHING and no clause could
+/// cover anything. Driven to a VALUE (1, the `Leaf` describer), not merely to a
+/// clean load: `probe[Leaf](leaf())` must reach the right instance, and "it
+/// loads" would pass on a license granted to the wrong dictionary.
+///
+/// Backing WI-943 out restores the exact pre-fix text this test used to assert:
+/// the WI-325 ladder (`MissingRequiresForSpecOp`) at
+/// `wi817.opparam.Desc.describe.requires`, both spellings.
 #[test]
-fn op_param_requires_is_rejected_at_load() {
+fn op_param_requires_is_licensed_by_the_operations_own_clause() {
     for req in ["requires Desc[PT]", "requires Desc[T = PT]"] {
         let src = with_instances(
             "wi817.opparam",
@@ -166,26 +182,30 @@ fn op_param_requires_is_rejected_at_load() {
                 "  sort Holder\n    operation probe[PT](x: PT) -> Int64 {req} = Desc.describe(x)\n    operation drive(n: Int64) -> Int64 = probe[Leaf](leaf())\n  end"
             ),
         );
-        let errs = load_errs(&src);
-        let text = errs.join("\n");
+        let got = eval_fresh(&src, "wi817.opparam.Holder.drive", 0);
         assert!(
-            text.contains("wi817.opparam.Desc.describe.requires")
-                && text.contains(MISSING_REQUIRES),
-            "expected the WI-325 ladder on the covered describe call ({req}); got:\n{text}"
+            matches!(got, Ok(Value::Int(1))),
+            "({req}): expected Ok(Int(1)) — the operation's own `requires` licenses its \
+             own describe call and dispatch reaches the Leaf describer (WI-943; pre-fix \
+             the load was refused with the WI-325 ladder); got {got:?}"
         );
     }
 }
 
-/// PINS THE SAME §5.4 GAP as the test above, at full scale: the op-param
-/// CONTROL and WITNESS (mutual recursion via explicit per-call type
-/// arguments, proposal 042) are rejected at load the same way — outcome (b)
-/// for BOTH forms, at the same site (f's covered describe call), so the
-/// lambda changes nothing. CORRECT would be: both load clean and evaluate
-/// (drive → 1, 12, 122, …); when the op-param gap closes, this pin flips.
-/// WI-824 moved the rejection from DispatchNoMatch to the WI-325 ladder — see
-/// the sibling test above for why.
+/// FIXED BY WI-943 at full scale — the same §5.4 gap as the test above, on the
+/// ticket's actual witness: mutual recursion via explicit per-call type
+/// arguments (proposal 042), CONTROL (direct g→f leg) and WITNESS (the leg
+/// routed through a lambda invoked by a requirement-free applier). Both load
+/// clean and compute the depth-coded 1 / 12 / 122 — the values this test named
+/// as CORRECT while it pinned the load rejection.
+///
+/// AND THIS IS WHERE THE TICKET'S PREDICTION FINALLY GETS ITS OP-PARAM ROW:
+/// "expressible as an operation, inexpressible as a lambda". Control and witness
+/// are IDENTICAL, at every depth. The prediction stays unobserved on the one row
+/// that could not previously be measured at all, which is the same verdict every
+/// other row reached.
 #[test]
-fn op_param_control_and_witness_rejected_identically() {
+fn op_param_control_and_witness_recurse_identically() {
     let control = with_instances(
         "wi817.control",
         r#"  sort Poly
@@ -208,13 +228,21 @@ fn op_param_control_and_witness_rejected_identically() {
   end"#,
     );
     for (label, src, ns) in [("control", &control, "wi817.control"), ("witness", &witness, "wi817.lam")] {
-        let errs = load_errs(src);
-        let text = errs.join("\n");
-        assert!(
-            text.contains(&format!("{ns}.Desc.describe.requires"))
-                && text.contains(MISSING_REQUIRES),
-            "{label}: expected the WI-325 ladder at f's describe; got:\n{text}"
-        );
+        let entry = format!("{ns}.Poly.drive");
+        // One interpreter for all three depths: every call is asserted Ok (no trap
+        // ever occurs), so the poisoning footgun does not apply.
+        let mut interp = crate::common::interp_for(src);
+        for (n, correct) in [(0, 1), (1, 12), (2, 122)] {
+            let got = interp.call(&entry, &[Value::Int(n)]);
+            assert!(
+                matches!(got, Ok(Value::Int(v)) if v == correct),
+                "{label} drive({n}): expected the depth-coded Ok(Int({correct})) \
+                 (WI-943 gave the op type param a canonical identity, so f's own \
+                 `requires Desc[FT]` covers its own describe; pre-fix the load was \
+                 refused with the WI-325 ladder at {ns}.Desc.describe.requires); \
+                 got {got:?}"
+            );
+        }
     }
 }
 
@@ -875,9 +903,14 @@ end
 /// `NoCandidates`/`NoMatch`, not a `Unique`). WI-824 refuses that match — a
 /// rigid skolem is not provably a `Wrap` — so the call falls into the WI-325
 /// ladder and is REJECTED AT LOAD, naming the spec op and the `requires`
-/// clause that would license it. Both sites are named: f's covered call (the
-/// op-param §5.4 gap keeps it uncovered — see the (b) rows above) and
-/// WrapDesc's own body, which genuinely lost its `requires` here.
+/// clause that would license it.
+///
+/// WI-943 narrowed WHICH site: the rejection used to name TWO — f's covered
+/// call, uncovered only because of the op-param gap, and `WrapDesc.describe`'s
+/// own body. f's is now licensed (its `requires Desc[FT]` covers it), so the
+/// ONE surviving error is `Desc.describe(w.inner)` in `WrapDesc`'s body, which
+/// genuinely lost its `requires` here — measured, and the sharper report: the
+/// only thing named is the only thing actually missing a clause.
 #[test]
 fn unconditioned_parametric_fact_refused_at_abstract_call() {
     let src = with_instances(

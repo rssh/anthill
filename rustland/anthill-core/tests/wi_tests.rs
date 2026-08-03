@@ -949,3 +949,6 @@ mod wi936_field_type_load_order_test;
 
 #[path = "include/wi946_belongs_to_readers_test.rs"]
 mod wi946_belongs_to_readers_test;
+
+#[path = "include/wi943_type_param_identity_test.rs"]
+mod wi943_type_param_identity_test;

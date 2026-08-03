@@ -13442,20 +13442,79 @@ fn canonical_global_var(
     g
 }
 
-/// The canonical `Var::Global` a sort-parameter symbol aliases to (via its
-/// `SortAlias`), or `None` when it does not alias to one. This is the one shared
-/// "type-param symbol → canonical VarId" primitive underlying both worlds that
-/// reason about type-param identity: the σ-class machinery ([`sigma_class`] via
-/// [`elem_var_step`], for requirement attribution) and carrier grounding
-/// ([`declared_type_param_vid`], [`type_param_vid_in_sort`], WI-424/600). They
-/// diverge in their layers — σ-class adds the substitution chase + rigid bridge,
-/// carrier grounding stays structural and carrier-agnostic — but the alias
-/// resolution is identical, so it lives here once.
-fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
-    match kb.get_term(resolve_sort_alias(kb, sym)?) {
+/// The canonical `Var::Global` a type-parameter symbol denotes, or `None` when it
+/// denotes none. This is the one shared "type-param symbol → canonical VarId"
+/// primitive underlying both worlds that reason about type-param identity: the
+/// σ-class machinery ([`sigma_class`] via [`elem_var_step`], for requirement
+/// attribution) and carrier grounding ([`declared_type_param_vid`],
+/// [`type_param_vid_in_sort`], WI-424/600). They diverge in their layers — σ-class
+/// adds the substitution chase + rigid bridge, carrier grounding stays structural and
+/// carrier-agnostic — but the identity resolution is identical, so it lives here once.
+///
+/// WI-943 — A TYPE PARAMETER PUBLISHES ITS CANONICAL VAR IN ONE OF TWO PLACES,
+/// ACCORDING TO HOW IT WAS WRITTEN, and this is the one function that knows which:
+///
+///   * an `alias`-form declaration → its `SortAlias` fact, matched on EXACT symbol
+///     identity ([`sort_alias_exact`]). `sort T = ?` and the WI-452 marked structured
+///     param are the sort-body cases — but NOT only those: WI-402's existential carrier
+///     (`-> C ensures Spec[C, …]`, `build_existential_return`) registers `C` this way in
+///     the OP's own scope. So "declared by an operation" does not imply the second
+///     bullet, and the rung ORDER below is what keeps that case right.
+///   * a BRACKET parameter (`operation cmp[T](…)`) → its op's `OperationInfo.type_params`
+///     ([`op_info::declared_type_param_var`]). The loader mints it its own var and
+///     asserts NO `SortAlias` (`load_operation`: "an op type-param is its own logical
+///     variable, distinct from any same-named outer SortAlias") — which is why this
+///     channel had to be taught, not derived.
+///
+/// [`sort_alias_by_name`] is consulted LAST, for the legacy callers [`resolve_sort_alias`]
+/// documents. It is a NAME-DIRECTED GUESS, and a bracket parameter used to reach it and be
+/// answered with an unrelated sort's var — see the ticket for the measurement.
+///
+/// `pub` so a test can drive the invariant this function owns: that its answer and the
+/// declaration's own are the SAME variable. Agreement is only assertable if both sides
+/// are reachable from outside — `wi943_type_param_identity_test`.
+pub fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
+    let as_global = |tid: TermId| match kb.get_term(tid) {
         Term::Var(Var::Global(v)) => Some(*v),
         _ => None,
+    };
+    sort_alias_exact(kb, sym)
+        .and_then(as_global)
+        .or_else(|| op_declared_type_param_var(kb, sym))
+        .or_else(|| sort_alias_by_name(kb, sym).and_then(as_global))
+}
+
+/// WI-943 — the var an operation declares for `sym` in its BRACKET, when `sym` is the
+/// op-scoped local `scan_operation_params` defines for one (`<ns>.<op>.T`). `None` for
+/// every other symbol — a sort parameter (its scope is a sort), and equally an op-scoped
+/// parameter the bracket did not declare (WI-402's existential carrier `C`, which the op
+/// scope holds but `type_params` does not list; it is answered by the rung above).
+///
+/// The owner comes from [`KnowledgeBase::declaring_scope_symbol`] rather than a
+/// qualified-name split, which would have to decide where the owner's name ends —
+/// `<ns>.<Sort>.<op>.<T>` has TWO plausible owners and no local rule picks between them.
+/// The symbol table already knows; asking it needs no rule at all.
+///
+/// `has_kind`, not `kind_of`: a symbol's categories are a SET, and asking whether this
+/// scope PLAYS the operation role is insensitive to which keyword registered first.
+///
+/// The [`is_sort_param_symbol`] gate is LOAD-BEARING FOR COST, not for correctness: an
+/// operation scope also holds its value parameters, argument places and `result`, none of
+/// which can be in `type_params`. Without it every one of those reaches
+/// [`op_info::declared_type_param_var`], whose pre-`build_op_signatures` tier is a scan of
+/// every `OperationInfo` fact in the KB — a fallback-on-miss driven by a SPECULATIVE
+/// caller, which is exactly what [`sort_alias_exact`] refuses for the same reason. The
+/// gate reads the very set `scan_operation_params` fills (`add_type_param` on the op
+/// scope), so it admits precisely the declared parameters.
+fn op_declared_type_param_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
+    if !is_sort_param_symbol(kb, sym) {
+        return None;
     }
+    let owner = kb.declaring_scope_symbol(sym)?;
+    if !kb.has_kind(owner, crate::intern::SymbolKind::Operation) {
+        return None;
+    }
+    super::op_info::declared_type_param_var(kb, owner, kb.resolve_sym(sym))?.as_global()
 }
 
 /// WI-857 — the functor a dictionary slot carries when its goal did not resolve
@@ -26373,11 +26432,6 @@ fn build_pattern_subst(
     if any { Some(subst) } else { None }
 }
 
-/// Look up the type-parameter `Var(Global)` registered for
-/// `<parent_sort>.<param_sym>`. Resolves the qualified short name to a
-/// `Symbol` and delegates to [`resolve_sort_alias`]'s exact-symbol
-/// match — unambiguous even when many sorts declare the same short
-/// param name (`sort T = ?` recurs in List, Option, Stream …).
 /// WI-424 — a parametric sort's declared type parameters as `(param symbol,
 /// canonical Var term)` pairs, source order — the same shape an operation's own
 /// `type_params` take, so [`rigidify_op_type_params`] consumes either. The Var
@@ -26407,6 +26461,11 @@ fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Sy
     rc
 }
 
+/// The canonical `Var::Global` registered for `<parent_sort>.<param_sym>`. Qualifying
+/// the short param name first is what ANCHORS the lookup: `sort T = ?` recurs across
+/// List, Option, Stream …, so the short name alone would be ambiguous. The resolution
+/// itself is [`type_param_global_var`] — the same one the σ-class side uses, so a
+/// carrier grounded here and a requirement attributed there speak of one variable.
 fn type_param_vid_in_sort(
     kb: &KnowledgeBase,
     parent_sort: Symbol,
@@ -26418,8 +26477,6 @@ fn type_param_vid_in_sort(
         kb.resolve_sym(param_sym),
     );
     let qualified_sym = kb.try_resolve_symbol(&qualified)?;
-    // Same alias resolution as the σ-class side — anchored to `parent_sort` by
-    // qualifying the short param name first.
     type_param_global_var(kb, qualified_sym)
 }
 
@@ -27994,18 +28051,14 @@ fn ground_rigid_projection_if_concrete(
         return None;
     }
     // The subject `Ref` is a DISTINCT registration of the op type-param from the canonical
-    // inference var the call binds (there is no `SortAlias` bridge for op type-params, so
-    // `walk_type(subject)` lands on an unbound sibling var). Bridge by name to the op's own
-    // `OperationInfo.type_params`, whose var IS the one arg-inference binds.
+    // inference var the call binds (an op type-param has no `SortAlias`, so
+    // `walk_type(subject)` lands on an unbound sibling var). Go to the op's own
+    // `OperationInfo.type_params`, whose var IS the one arg-inference binds — the same
+    // authority [`type_param_global_var`] consults for a written occurrence (WI-943).
     let Value::Term { id: subj_t, .. } = subject else { return None };
     let subj_sym = extract_sort_ref_sym(kb, &TermIdView(subj_t))?;
     let subj_name = kb.resolve_sym(subj_sym).to_owned();
-    let rec = super::op_info::lookup_operation_info(kb, sort)?;
-    let tp_var = rec
-        .type_params
-        .iter()
-        .find(|(n, _)| kb.resolve_sym(*n) == subj_name)
-        .map(|(_, v)| *v)?;
+    let tp_var = super::op_info::declared_type_param_var(kb, sort, &subj_name)?;
     let tp_var = type_param_var_term(kb, tp_var);
     // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) subject fill is
     // seen through the view; a `Node` that is not a concrete `sort_ref` yields
@@ -28065,13 +28118,12 @@ fn ground_rigid_projection_if_concrete(
         let member_qn = format!("{}.{}", kb.qualified_name_of(s).to_owned(), member_str);
         if let Some(member_sym) = kb.symbols.by_qualified_name.get(&member_qn).copied() {
             // Must be the carrier's OWN declared abstract-sort member (`sort <member> = …`):
-            // a Sort symbol with an EXACT `SortAlias`. `resolve_sort_alias`'s short-name
-            // FALLBACK is deliberately NOT used here — it would return an UNRELATED sort's
-            // same-named member when this child is an entity/operation/body-sort that merely
-            // shares the name (a soundness hole). `sort_alias_target_exact` matches only this
-            // symbol.
+            // a Sort symbol with an EXACT `SortAlias`. [`sort_alias_by_name`] is deliberately
+            // NOT consulted here — it would return an UNRELATED sort's same-named member when
+            // this child is an entity/operation/body-sort that merely shares the name (a
+            // soundness hole). [`sort_alias_exact`] matches only this symbol.
             if kb.kind_of(member_sym) == Some(crate::intern::SymbolKind::Sort) {
-                if let Some(target) = sort_alias_target_exact(kb, member_sym) {
+                if let Some(target) = sort_alias_exact(kb, member_sym) {
                     let g = walk_type_deep(kb, subst, target);
                     // Ground ONLY a manifest member (`sort V = Int64`). An abstract
                     // `sort V = ?` (resolves to a Var) or a sibling-param alias
@@ -28081,31 +28133,6 @@ fn ground_rigid_projection_if_concrete(
                         // WI-391: the SortAlias target is the canonical `Ref(S)` shape
                         // (`type_expr_to_value`), so the manifest member grounds directly.
                         return Some(g);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// The `SortAlias` target for EXACTLY `sym` — the exact-match half of
-/// [`resolve_sort_alias`] WITHOUT its short-name fallback. The self-carrier projection
-/// grounding (`ground_rigid_projection_if_concrete`) must read the carrier's OWN declared
-/// member; the fallback would return an unrelated sort's same-named member when the looked-
-/// up child is not itself a `sort X = …` alias, grounding `T.member` to a wrong type.
-fn sort_alias_target_exact(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
-    let alias_sym = kb.try_resolve_symbol("SortAlias")?;
-    for rid in kb.rules_by_functor(alias_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(head) = kb.fact_head_term(rid) else { continue };
-        if let Term::Fn { pos_args, .. } = kb.get_term(head) {
-            if pos_args.len() >= 2 {
-                if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
-                    if *functor == sym {
-                        return Some(pos_args[1]);
                     }
                 }
             }
@@ -28216,46 +28243,75 @@ pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// List.T, …) — without exact-match-first the fallback would return whichever
 /// alias appeared first in rules_by_functor order, causing proposal-038 / WI-210
 /// dispatch to resolve the wrong logical Var.
+///
+/// WI-943 split pass 1 out as [`sort_alias_exact`] — a reader that wants an IDENTITY
+/// must not accept the name-directed guess — and this function is now literally
+/// "exact, then by name", so the two cannot drift apart.
 pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+    sort_alias_exact(kb, sym).or_else(|| sort_alias_by_name(kb, sym))
+}
+
+/// WI-943 — [`resolve_sort_alias`]'s FIRST pass alone: the alias target of the EXACT
+/// symbol. The only one of the two that is an IDENTITY — it answers "what does THIS
+/// declaration alias to" — which is why [`type_param_global_var`] takes it on its own
+/// before consulting anything name-directed.
+fn sort_alias_exact(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     // WI-659 fast path: the SortAlias index (built once at type-check start by
-    // `build_sort_alias_index`) answers both scan passes in O(1) — by source Symbol
-    // first (the exact-identity precedence the doc above requires), then by source
-    // name. A built index is COMPLETE, so a miss is a genuine "not a SortAlias" and
-    // returns `None` with NO fallback re-scan: unlike a rare `op_info` miss,
-    // `resolve_sort_alias` is called on MANY non-alias syms, so a fallback-on-miss
-    // would re-introduce the very scan this removes.
+    // `build_sort_alias_index`) answers in O(1). A built index is COMPLETE, so a miss
+    // is a genuine "not a SortAlias" and returns `None` with NO fallback re-scan:
+    // unlike a rare `op_info` miss, this is called on MANY non-alias syms, so a
+    // fallback-on-miss would re-introduce the very scan the index removes.
     if let Some(index) = &kb.sort_alias_index {
-        return index
-            .by_sym
-            .get(&sym)
-            .copied()
-            .or_else(|| index.by_name.get(kb.resolve_sym(sym)).copied());
+        return index.by_sym.get(&sym).copied();
     }
-    // Fallback: the two-pass scan, for calls BEFORE the index is built (load-time
-    // value-typing / alias resolution). Behaviour-identical to pre-WI-659.
+    scan_sort_aliases(kb, |functor| functor == sym)
+}
+
+/// WI-943 — [`resolve_sort_alias`]'s SECOND pass alone: the first alias whose source
+/// has the same SHORT NAME. A NAME-DIRECTED GUESS, not an identity — parameter short
+/// names recur across sorts (37 sources are named `T` after a stdlib load), so this
+/// answers with whichever came first. Kept for the legacy callers the doc on
+/// [`resolve_sort_alias`] describes, and consulted only after the exact pass misses.
+fn sort_alias_by_name(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+    if let Some(index) = &kb.sort_alias_index {
+        return index.by_name.get(kb.resolve_sym(sym)).copied();
+    }
+    let name = kb.resolve_sym(sym);
+    scan_sort_aliases(kb, |functor| kb.resolve_sym(functor) == name)
+}
+
+/// The pre-index scan behind both passes, for calls BEFORE `build_sort_alias_index`
+/// (load-time value-typing / alias resolution). Behaviour-identical to pre-WI-659:
+/// first `SortAlias` fact in `rules_by_functor` order whose source functor `matches`.
+///
+/// `rules_by_functor_iter`, not `rules_by_functor`: this loop only `continue`s and
+/// `return`s under `&KnowledgeBase`, so it needs no snapshot — and it runs in exactly
+/// the window WI-659 measured as `type_check_sorts`' #1 hotspot, where a
+/// `Vec<RuleId>` sized to every `SortAlias` fact was being allocated per call, twice
+/// per miss.
+fn scan_sort_aliases(
+    kb: &KnowledgeBase,
+    matches: impl Fn(Symbol) -> bool,
+) -> Option<TermId> {
     let alias_sym = kb.try_resolve_symbol("SortAlias")?;
-    let sort_name = kb.resolve_sym(sym);
-    let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
-        for rid in kb.rules_by_functor(alias_sym) {
-            if !kb.is_fact(rid) { continue; }
-            // A value-fact SortAlias (denoted-bearing target) carries no ground
-            // target `TermId` — skip it (callers want a ground `Var`/alias term),
-            // and avoid the term-only `rule_head` panic on a `Value::Node` head.
-            let Some(head) = kb.fact_head_term(rid) else { continue };
-            if let Term::Fn { pos_args, .. } = kb.get_term(head) {
-                if pos_args.len() >= 2 {
-                    if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
-                        if matches(kb, *functor, sym, sort_name) {
-                            return Some(pos_args[1]);
-                        }
-                    }
-                }
-            }
+    for rid in kb.rules_by_functor_iter(alias_sym) {
+        if !kb.is_fact(rid) {
+            continue;
         }
-        None
-    };
-    find(|_, f, s, _| f == s)
-        .or_else(|| find(|kb, f, _, n| kb.resolve_sym(f) == n))
+        // A value-fact SortAlias (denoted-bearing target) carries no ground target
+        // `TermId` — skip it (callers want a ground `Var`/alias term), and avoid the
+        // term-only `rule_head` panic on a `Value::Node` head.
+        let Some(head) = kb.fact_head_term(rid) else { continue };
+        let Term::Fn { pos_args, .. } = kb.get_term(head) else { continue };
+        if pos_args.len() < 2 {
+            continue;
+        }
+        let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) else { continue };
+        if matches(*functor) {
+            return Some(pos_args[1]);
+        }
+    }
+    None
 }
 
 /// WI-659 — the SortAlias resolution index built once by [`build_sort_alias_index`]
@@ -36466,10 +36522,10 @@ fn check_operation_bodies(
         let parent_sort_params: Rc<Vec<(Symbol, TermId)>> = parent_of_op
             .map(|p| sort_type_params_as_pairs(kb, p))
             .unwrap_or_default();
-        // The two halves of the body's rigid bridge, collected separately only so
-        // the sort half can be counted; they are concatenated into one list below.
-        let mut sort_param_rigids: Vec<(VarId, TermId)> = Vec::new();
-        let mut op_param_rigids: Vec<(VarId, TermId)> = Vec::new();
+        // The body's rigid bridge: enclosing-sort params first (`sort_rigid_len` of
+        // them), then the op's own. Filled below, empty when the op has neither.
+        let mut param_rigids: Vec<(VarId, TermId)> = Vec::new();
+        let mut sort_rigid_len = 0usize;
         let mut rigidify_subst = Substitution::new();
         let (params, return_type, declared_effects) = if rec.type_params.is_empty()
             && parent_sort_params.is_empty()
@@ -36489,43 +36545,34 @@ fn check_operation_bodies(
                 ),
             }));
             let rigidify = rigidify_op_type_params(kb, &all_params);
-            // ONE walk of `all_params`, which is `rec.type_params ++
-            // parent_sort_params` — so the SORT half lands in `param_rigids` first
-            // and `sort_rigid_len` is where the op's own begin. (WI-942: the sort
-            // half used to be collected alone, which is what left an op-declared
-            // param with no Global→Rigid bridge; walking the list the rigidifier
-            // was actually given is what keeps the two from coming apart again.)
-            for (i, (name, var)) in all_params.iter().enumerate() {
-                let Var::Global(vid) = var else { continue };
-                // `rigidify` binds each param to its fresh `Rigid` term — always a
-                // `Value::Term`; a non-`Term` binding would not be a rigid here.
-                let Some(Value::Term { id: rigid, .. }) = rigidify.resolve_as_value(*vid) else {
-                    continue;
-                };
-                let rigid = *rigid;
-                let is_sort_param = i >= rec.type_params.len();
-                let half =
-                    if is_sort_param { &mut sort_param_rigids } else { &mut op_param_rigids };
-                half.push((*vid, rigid));
-                // A param has a SECOND canonical var: the one its SYMBOL aliases to
-                // via `SortAlias`, which is what a WRITTEN occurrence resolves
-                // through and therefore what `sigma_class` sees when it reads the
-                // `Ref(T)` inside a `requires`. For a SORT param it is the SAME var
-                // (`sort_type_params_as_pairs` IS the alias table), so the push below
-                // is a no-op and the asymmetry stayed invisible; for an OP param the
-                // two differ. MEASURED on `cmp[T](a: T, b: T) requires Ordered[T]`:
-                // record var 1325, alias var 1 — so the written `Ordered[T]` and the
-                // call's rigidified carrier landed in different var spaces and
-                // [`op_requires_covers`] refused a requirement the author had
-                // written. That the two identities exist at all is a separate
-                // question (WI-943); bridging both is what makes σ answer once.
-                let owner = if is_sort_param { parent_of_op } else { Some(rec.op_sym) };
-                if let Some(alias_vid) =
-                    owner.and_then(|o| type_param_vid_in_sort(kb, o, *name)).filter(|a| a != vid)
-                {
-                    half.push((alias_vid, rigid));
-                }
-            }
+            // EVERY param the rigidifier was given gets its bridge — reading back from
+            // the list it was actually handed is what keeps the two from coming apart
+            // (WI-942: the sort half used to be collected on its own, leaving an
+            // op-declared param with no Global→Rigid entry at all). ONE entry per param,
+            // because a param has ONE canonical var: what the record holds is what a
+            // written occurrence resolves to ([`type_param_global_var`], WI-943).
+            let to_rigids = |params: &[(Symbol, Var)]| -> Vec<(VarId, TermId)> {
+                params
+                    .iter()
+                    .filter_map(|(_, var)| {
+                        let Var::Global(vid) = var else { return None };
+                        // `rigidify` binds each param to its fresh `Rigid` term — always
+                        // a `Value::Term`; a non-`Term` binding would not be a rigid.
+                        match rigidify.resolve_as_value(*vid) {
+                            Some(Value::Term { id: rigid, .. }) => Some((*vid, *rigid)),
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            };
+            // `all_params` is `rec.type_params ++ parent_sort_params`; `param_rigids` is
+            // the other order — enclosing SORT params first, so `sort_rigid_len` is where
+            // the op's own begin. Split and reverse explicitly rather than partitioning
+            // in-place: the length must be read BETWEEN the two halves.
+            let (op_half, sort_half) = all_params.split_at(rec.type_params.len());
+            param_rigids = to_rigids(sort_half);
+            sort_rigid_len = param_rigids.len();
+            param_rigids.extend(to_rigids(op_half));
             let params = rec
                 .params
                 .iter()
@@ -36547,11 +36594,8 @@ fn check_operation_bodies(
             body_node,
             params,
             span,
-            sort_rigid_len: sort_param_rigids.len(),
-            param_rigids: Rc::new({
-                sort_param_rigids.extend(op_param_rigids);
-                sort_param_rigids
-            }),
+            sort_rigid_len,
+            param_rigids: Rc::new(param_rigids),
             rigidify: Rc::new(rigidify_subst),
             parent_sym: parent_of_op,
         });

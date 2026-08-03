@@ -231,6 +231,36 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
         .any(|rid| kb.is_fact(rid) && head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
 }
 
+/// WI-943 — the canonical logical variable `op_sym` DECLARES for the type parameter
+/// whose short name is `short`, or `None` when it declares no such parameter.
+///
+/// THE ONE AUTHORITY for an operation type parameter's identity. The loader mints
+/// exactly one `fresh_var` per declared parameter (`kb/load.rs` `load_operation`) and
+/// publishes it here; `rigidify_op_type_params` skolemizes THAT var, and
+/// [`crate::kb::typing`]'s `type_param_global_var` resolves a written occurrence of the
+/// parameter through this function. An operation parameter has no `SortAlias`, so this
+/// is the only place its canonical variable is recorded — one store, nothing to
+/// disagree with.
+///
+/// Keyed by SHORT NAME because that is how the loader interns each entry's `Symbol`
+/// (`kb.intern("T")`), not as the op-scoped `<ns>.<op>.T` local a body reference
+/// resolves to — the same two keyings WI-708 bridges in the other direction
+/// (`op_scoped_type_param_symbol`).
+///
+/// [`declared_arity`]'s sibling in shape: the same two tiers (the WI-656 cached record,
+/// then [`lookup_operation_info`] for calls before `build_op_signatures`) and the same
+/// reason for existing — reading one variable should not build an [`OpInfoRecord`] on
+/// the path that already has the answer cached.
+pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) -> Option<Var> {
+    let pick = |tps: &[(Symbol, Var)]| -> Option<Var> {
+        tps.iter().find(|(n, _)| kb.resolve_sym(*n) == short).map(|(_, v)| *v)
+    };
+    if let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.as_ref()) {
+        return pick(&sig.type_params);
+    }
+    pick(&lookup_operation_info(kb, op_sym)?.type_params)
+}
+
 /// WI-886 — how many parameters does `op_sym` DECLARE? [`operation_is_declared`]'s
 /// sibling: same two tiers (the WI-656 cached record, then the pre-
 /// `build_op_signatures` fact scan), and the same reason for existing — reading one
