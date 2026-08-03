@@ -13,14 +13,24 @@ object AnthillParser:
     val terms = SimpleTermStore()
     val errors = ArrayBuffer.empty[ParseError]
     val parser = new AnthillParserImpl(source, fileName, symbols, terms, errors)
-    fastparse.parse(source, parser.sourceFile(using _)) match
+    val result = fastparse.parse(source, parser.sourceFile(using _))
+    // WI-952: the trivia skipper has no error channel of its own. It runs inside
+    // productions that backtrack, so a refusal it pushed into `errors` could be
+    // dropped by the WI-950 scoping — it records the OPENER of an unterminated
+    // block comment on the parser instead, and it is reported from here, ahead of
+    // any other error: the unterminated comment is the root cause of whatever the
+    // parse then made of the text it swallowed, and it is reported whether or not
+    // the parse failed (a comment left open at the last line swallows to `End` and
+    // the file parses "clean" without this).
+    val unterminated = parser.unterminatedComment.toList
+    result match
       case Parsed.Success(items, _) =>
-        if errors.nonEmpty then Left(errors.toIndexedSeq)
-        else Right(ParsedFile(ArrayBuffer.from(items), symbols, terms))
+        if unterminated.isEmpty && errors.isEmpty then Right(ParsedFile(ArrayBuffer.from(items), symbols, terms))
+        else Left((unterminated ++ errors).toIndexedSeq)
       case f: Parsed.Failure =>
         val idx = f.index
         errors += ParseError(s"Parse error at $idx: ${f.msg}", Span(fileName, idx, idx, 0, 0, 0, 0))
-        Left(errors.toIndexedSeq)
+        Left((unterminated ++ errors).toIndexedSeq)
 
 end AnthillParser
 
@@ -160,6 +170,27 @@ private class AnthillParserImpl(
 
   // ── Custom whitespace ────────────────────────────────────────
 
+  /** WI-952: an unterminated `{- … ` / `{< … ` block, named by its OPENING position
+    * — the opener is what the author has to fix, and the position where the scan
+    * gave up is the far end of text they meant as a comment.
+    *
+    * NOT the `errors` buffer: the skipper runs inside productions that backtrack,
+    * and WI-950 scoping drops what a discarded production recorded. This field is
+    * outside that scoping, which is sound because the fact is about the SOURCE, not
+    * about any production: a `{-` reached at a trivia position with no `-}` after it
+    * is unterminated whichever alternative was being tried. Backtracking can reach
+    * the same defect by several routes, so keep the EARLIEST opener seen — for a
+    * nested `{- {- `, that is the outer one. */
+  private var unterminated: Option[ParseError] = None
+
+  def unterminatedComment: Option[ParseError] = unterminated
+
+  private def noteUnterminatedComment(open: Int, opener: String, closer: String): Unit =
+    if unterminated.forall(_.span.startByte > open) then
+      unterminated = Some(ParseError(
+        s"Unterminated block comment: `$opener` opened at $open is never closed by `$closer`",
+        mkSpan(open, open + opener.length)))
+
   given ws: Whitespace with
     def apply(ctx: P[?]): P[Unit] =
       var index = ctx.index
@@ -174,6 +205,7 @@ private class AnthillParserImpl(
           index += 2
           while index < length && input(index) != '\n' do index += 1
         else if index + 1 < length && c == '{' && input(index + 1) == '-' then
+          val open = index
           index += 2
           var depth = 1
           while index + 1 < length && depth > 0 do
@@ -182,13 +214,25 @@ private class AnthillParserImpl(
             else if input(index) == '-' && input(index + 1) == '}' then
               depth -= 1; index += 2
             else index += 1
+          // Input exhausted with the comment still open (WI-952). Swallow the rest —
+          // it is comment text by intent — and let `parse` report the opener, rather
+          // than resuming a declaration on the comment's last character.
+          if depth > 0 then
+            noteUnterminatedComment(open, "{-", "-}")
+            index = length
         else if index + 1 < length && c == '{' && input(index + 1) == '<' then
           // Doc-comment block: `{< ... >}` (used by stdlib sort.anthill).
+          val open = index
           index += 2
           while index + 1 < length &&
               !(input(index) == '>' && input(index + 1) == '}') do
             index += 1
+          // Loop exits either ON the `>}` or on exhausted input — `index + 1 < length`
+          // separates the two, and the second is the WI-952 unterminated case.
           if index + 1 < length then index += 2
+          else
+            noteUnterminatedComment(open, "{<", ">}")
+            index = length
         else
           continue = false
       ctx.freshSuccessUnit(index)

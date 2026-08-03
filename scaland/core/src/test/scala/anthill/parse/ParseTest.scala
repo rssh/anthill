@@ -1534,3 +1534,68 @@ end
     assertEquals(maps.head.map(e => pf.symbols.name(e.constName)).toList,
                  List("infinity", "nan"))
   }
+
+  // ── WI-952: an unterminated block comment is named at its OPENER ─────────
+  //   The trivia skipper used to give up ON the comment: its inner scan is guarded
+  //   by `index + 1 < length`, so on a file ending mid-comment it stopped one
+  //   character short of the end and the parser tried to begin a declaration there
+  //   — reporting a syntax error at a position INSIDE text the author meant as a
+  //   comment. Worse, when that last character was whitespace the outer loop ate it
+  //   and the file parsed CLEAN, comment and all.
+  //
+  //   WHAT FAILS WITHOUT THE FIX: all five `assertUnterminated` tests — the three
+  //   whose file does not end in whitespace report `Parse error at <inside the
+  //   comment>`, and the two `trailing newline` ones return `Right`. They are five
+  //   separate tests on purpose: as a loop inside one, the first failure hides
+  //   whether the silent-swallow case is really the silent one. The two controls
+  //   pass either way BY DESIGN: they pin the `index + 1 < length` boundary the fix
+  //   has to keep, so a scan that calls every comment closing at end-of-file
+  //   unterminated does not pass them.
+
+  private def assertUnterminated(src: String, opener: String): Unit =
+    Parser.parse(src, "<wi952>") match
+      case Right(_) => fail("expected the unterminated comment to be reported")
+      case Left(errs) =>
+        val head = errs.head
+        assert(head.message.startsWith(s"Unterminated block comment: `$opener`"),
+          s"expected the unterminated-comment error first, got: ${errs.map(_.message).mkString("; ")}")
+        assertEquals(head.span.startByte, src.indexOf(opener),
+          s"the error must point at the OPENER; got: ${head.message}")
+
+  test("WI-952: `{- ` left open on an incomplete file reports the opener") {
+    assertUnterminated("sort Demo\n  sort A = ?\n{- oops, never closed", "{-")
+  }
+
+  test("WI-952: `{- ` left open at the end of an otherwise complete file reports the opener") {
+    // The last character is a newline, so the pre-WI-952 skipper consumed the whole
+    // file and this parsed CLEAN — a silent swallow, not merely a bad message.
+    assertUnterminated("sort Demo end\n{- oops, never closed\n", "{-")
+  }
+
+  test("WI-952: a nested `{- {- -} ` reports the OUTER opener") {
+    // The inner comment closes; the outer one is what the author has to fix.
+    assertUnterminated("sort Demo end\n{- outer {- inner -}\n", "{-")
+  }
+
+  test("WI-952: `{< ` left open swallowing the rest of the file reports the opener") {
+    assertUnterminated("{< a doc comment that never ends\nsort Demo end", "{<")
+  }
+
+  test("WI-952: `{< ` left open at the end of a complete file reports the opener") {
+    assertUnterminated("sort Demo end\n{< never closed\n", "{<")
+  }
+
+  test("WI-952 control: a well-formed nested `{- {- -} -}` still skips as before") {
+    probeOk("nested-comment",
+      """sort Demo
+        |  {- outer {- inner -} still outer -}
+        |  sort A = ?
+        |end""".stripMargin)
+  }
+
+  test("WI-952 control: a comment closed by the file's last two characters is fine") {
+    // The closer sits at exactly `length - 2` — one step from where the scan gives
+    // up — so this is the case an over-eager unterminated check would misreport.
+    probeOk("closer-at-eof", "sort Demo end {- done -}")
+    probeOk("doc-closer-at-eof", "sort Demo end {< done >}")
+  }
