@@ -6197,6 +6197,40 @@ impl KnowledgeBase {
     }
 
     /// type_var(name: <sym>) — a type variable for inference.
+    ///
+    /// WI-963 — why a TERM, and why a bare `Var` is not enough. Asked twice; the answer
+    /// is checkable, so it lives here and is DRIVEN by
+    /// `typing::wi963_type_var_representation_tests` — read those before deleting any
+    /// of this as speculation. The whole-system control is recorded there too: making
+    /// this function return a bare `Var::Global` stops the stdlib from loading.
+    ///
+    /// A type is a term in the DECLARED reflect vocabulary — `entity TypeVar(name:
+    /// Symbol)` beside `SortRef` / `Parameterized` / the arrow, in
+    /// `stdlib/anthill/prelude/sort.anthill` — and `typing::type_head` dispatches on
+    /// the functor's qualified name. `Var` is not in that vocabulary: `type_head` reads
+    /// `ViewHead::functor_sym()`, which is `None` for a `Var`, so a bare logic var in
+    /// type position classifies as `TypeHead::Error`. It would not be an UNKNOWN type,
+    /// it would be a MALFORMED one.
+    ///
+    /// The semantics differ where it matters. A `Var::Global` is a LOGIC variable:
+    /// unification BINDS it, and the discrimination tree reads a flex `Global` as a
+    /// wildcard edge matching any subterm. A `type_var` is INERT — compatible-with-
+    /// anything in the unify/subtype dispatch WITHOUT committing (the M6 flounder
+    /// posture on `typing::fresh_type_var`). With a logic var the first unification
+    /// turns "this type is undetermined" into "it is now `Int64`" and propagates that
+    /// to every occurrence of the same `VarId`; WI-384 states the same at its site
+    /// ("a `type_var` WILDCARD (not a bare logic `Var`)").
+    ///
+    /// Hash-consing it is right, not incidental: the result is keyed by NAME, and every
+    /// caller passes one of ~7 literals (`?_`, `?T`, `?param`, …), so the store holds
+    /// about seven of these in total — nominal identity, which is what the CLAUDE.md
+    /// representation note reserves interning FOR. A `Var::Global` would instead carry a
+    /// distinct `VarId` per site, so two undetermined types would not be structurally
+    /// equal and each site would have to allocate a fresh var.
+    ///
+    /// Not a hot path, so do not "optimize" the `resolve_symbol` here: measured at 6
+    /// calls for a full stdlib + host-bindings load and type-check, unchanged by a 200×
+    /// driver on the unbound-param path (WI-960, rejected on that measurement).
     pub fn make_type_var(&mut self, name: Symbol) -> TermId {
         let type_var_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.TypeVar");
         let name_key = self.intern("name");

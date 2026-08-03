@@ -41456,3 +41456,135 @@ end
         }
     }
 }
+
+/// WI-963 — the three checkable facts behind [`KnowledgeBase::make_type_var`]'s doc:
+/// why an under-determined type is a TERM in the declared reflect vocabulary, why a
+/// bare logic `Var` is not enough, and why interning it per NAME is right.
+///
+/// The question was asked twice about this code. A prose answer rots; these drive it.
+#[cfg(test)]
+mod wi963_type_var_representation_tests {
+    use super::stdlib_fixture::load_stdlib;
+    use super::{type_head, unify_types, TypeHead};
+    use crate::eval::value::Value;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId, Var};
+    use crate::kb::KnowledgeBase;
+
+    fn sort_ty(kb: &mut KnowledgeBase, qn: &str) -> TermId {
+        let s = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("{qn}"));
+        kb.make_sort_ref(s)
+    }
+
+    /// A bare logic `Var` in TYPE position is not an unknown type — it is a MALFORMED
+    /// one. `type_head` reads `ViewHead::functor_sym()`, which a `Var` does not have,
+    /// so it classifies as `Error`; `type_var` is a member of the declared vocabulary
+    /// (`entity TypeVar(name: Symbol)` in `stdlib/anthill/prelude/sort.anthill`) and
+    /// classifies as `TypeVar`.
+    ///
+    /// CONTROL — the two assertions are OPPOSITE verdicts on two terms built in the
+    /// same test, so neither passes vacuously. The `TypeVar` arm is what fails if the
+    /// stdlib entity is renamed or moved out of `TypeExtractor`. The `Error` arm states
+    /// what a `Var` would classify as; note that the whole-system backout (making
+    /// `make_type_var` return a bare `Var`) does not even reach it — see the measured
+    /// note on [`a_type_var_never_commits_where_a_logic_var_does`].
+    #[test]
+    fn a_bare_logic_var_in_type_position_is_not_a_type_variable() {
+        let mut kb = load_stdlib(None);
+        let name = kb.intern("?_");
+        let tv = kb.make_type_var(name);
+        let vid = kb.fresh_var(name);
+        let var_term = kb.alloc(Term::Var(Var::Global(vid)));
+
+        match type_head(&kb, &Value::term(tv)) {
+            TypeHead::TypeVar(s) => assert_eq!(kb.resolve_sym(s), "?_", "carries its name"),
+            _ => panic!("a type_var must classify as TypeHead::TypeVar"),
+        }
+        assert!(
+            matches!(type_head(&kb, &Value::term(var_term)), TypeHead::Error),
+            "a bare `Var` has no functor, so it is not in the type vocabulary at all — \
+             substituting one for `type_var` yields an ERROR type, not an unknown one",
+        );
+    }
+
+    /// THE load-bearing difference. A `type_var` is compatible-with-anything WITHOUT
+    /// committing (the M6 flounder posture): it unifies with `Int64` and then, in the
+    /// SAME substitution, with `String`, binding nothing either time. A logic `Var`
+    /// unifies with `Int64` by BINDING itself, and that substitution then REFUSES
+    /// `String` — "this type is undetermined" has silently become "it is `Int64`".
+    ///
+    /// CONTROL — all four verdicts were measured before being written here, and the two
+    /// blocks are each other's control: they assert OPPOSITE outcomes for the same pair
+    /// of unifications, so neither can pass by accident.
+    ///
+    /// The whole-system backout is stronger than this test and worth recording, because
+    /// it says the representation is load-bearing for real code rather than only for
+    /// these synthetic unifications: making `make_type_var` return a bare
+    /// `Var::Global` stops THE STDLIB FROM LOADING, with exactly the commitment this
+    /// test describes — `62:39 type mismatch in match.rule: expected Option[T = Pair[A =
+    /// ?T, …]], got Option[T = Pair[A = ??_, …]]` (measured, `stream.anthill` and
+    /// `list.anthill`). So these tests fail under that backout at their FIXTURE, not at
+    /// their assertions; the assertions exist to name WHY, which a load error does not.
+    #[test]
+    fn a_type_var_never_commits_where_a_logic_var_does() {
+        let mut kb = load_stdlib(None);
+        let int_ty = sort_ty(&mut kb, "anthill.prelude.Int64");
+        let str_ty = sort_ty(&mut kb, "anthill.prelude.String");
+        let name = kb.intern("?_");
+        let tv = kb.make_type_var(name);
+
+        let mut s = Substitution::new();
+        assert!(unify_types(&mut kb, &mut s, &Value::term(tv), &Value::term(int_ty)));
+        assert!(s.bindings.is_empty(), "a type_var matches without binding anything");
+        assert!(
+            unify_types(&mut kb, &mut s, &Value::term(tv), &Value::term(str_ty)),
+            "and still matches an INCOMPATIBLE second type — it never committed to Int64",
+        );
+        assert!(s.bindings.is_empty(), "still nothing bound");
+
+        let vid = kb.fresh_var(name);
+        let var_term = kb.alloc(Term::Var(Var::Global(vid)));
+        let mut s2 = Substitution::new();
+        assert!(unify_types(&mut kb, &mut s2, &Value::term(var_term), &Value::term(int_ty)));
+        assert_eq!(s2.bindings.len(), 1, "a logic var unifies by BINDING itself");
+        assert!(
+            !unify_types(&mut kb, &mut s2, &Value::term(var_term), &Value::term(str_ty)),
+            "and is then committed: the same var now REFUSES String — which is why an \
+             under-determined type must not be carried as a logic var",
+        );
+    }
+
+    /// A `type_var`'s identity is its NAME. Interning is therefore nominal identity —
+    /// what CLAUDE.md's representation note reserves hash-consing FOR — not the
+    /// per-site transient it would be if each unknown carried its own `VarId`.
+    ///
+    /// CONTROL — the third assertion is the one that fails if this reader ever moves to
+    /// logic vars: two independently-minted `?_` VARS are distinct terms, so two
+    /// undetermined types would stop being structurally equal. The first two would pass
+    /// under any interning scheme and are here to say what the identity IS.
+    #[test]
+    fn a_type_vars_identity_is_its_name() {
+        let mut kb = load_stdlib(None);
+        let wildcard = kb.intern("?_");
+        let named = kb.intern("?T");
+        assert_eq!(
+            kb.make_type_var(wildcard),
+            kb.make_type_var(wildcard),
+            "same name ⇒ one shared hash-consed term",
+        );
+        assert_ne!(
+            kb.make_type_var(wildcard),
+            kb.make_type_var(named),
+            "different names stay distinct",
+        );
+
+        let (v1, v2) = (kb.fresh_var(wildcard), kb.fresh_var(wildcard));
+        let t1 = kb.alloc(Term::Var(Var::Global(v1)));
+        let t2 = kb.alloc(Term::Var(Var::Global(v2)));
+        assert_ne!(
+            t1, t2,
+            "two logic vars of the SAME name are distinct terms — the contrast: as \
+             logic vars, two undetermined types would never be structurally equal",
+        );
+    }
+}
