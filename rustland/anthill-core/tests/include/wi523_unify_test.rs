@@ -197,6 +197,7 @@ fn unify_headed_fact_is_recognized_as_equation() {
     // its long-standing `eq` recognition — and the rule must index under
     // `unify_functor()`, where `apply_eq_rules` / the typer's `try_fire` select it.
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb); // WI-969: `unify_functor` needs the kernel vocabulary
     let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let unify_sym = kb.unify_functor();
@@ -225,6 +226,7 @@ fn unify_headed_equation_fires_in_apply_eq_rules() {
     // tagged `[simp]`: WI-292 fires only directional `[simp]`/`[unfold]` rewrites
     // (a bare `<=>` law is not a rewrite).
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb); // WI-969: `unify_functor` needs the kernel vocabulary
     let sort = ClauseKind::Fact;
     let domain = kb.intern("test");
     let unify_sym = kb.unify_functor();

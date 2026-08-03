@@ -7229,6 +7229,16 @@ mod tests {
     use crate::kb::term::{Literal, Term};
     use smallvec::SmallVec;
 
+    /// A KB with the kernel vocabulary registered — the configuration in which
+    /// `eq_functor()` / `unify_functor()` answer (WI-969). Tests that build
+    /// equations need this; tests below that keep a bare `KnowledgeBase::new()`
+    /// are deliberately exercising the prelude-less KB.
+    fn kb_with_prelude() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb
+    }
+
     /// Build a `meta(simp: true)` term — the `[simp]` tag a loaded directional
     /// rewrite carries. `apply_eq_rules` fires only `[simp]`/`[unfold]`-tagged
     /// equations (WI-292, mirroring the typer's `simp_rewrite`), so a test that
@@ -7365,10 +7375,15 @@ mod tests {
 
     #[test]
     fn is_equation_true() {
-        let mut kb = KnowledgeBase::new();
+        // WI-969: the CANONICAL head, not a bare `intern("eq")`. This pair is the
+        // contrast — same head, bodyless here vs bodied below — so both must use
+        // the head a real equation carries, or the negative one below would pass
+        // because its head is not the connective at all rather than because it
+        // has a body.
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
 
         let lhs = kb.alloc(Term::Const(Literal::Int(1)));
         let rhs = kb.alloc(Term::Const(Literal::Int(1)));
@@ -7384,10 +7399,12 @@ mod tests {
 
     #[test]
     fn is_equation_false_for_rule() {
-        let mut kb = KnowledgeBase::new();
+        // WI-969: canonical head (see the peer above) so this measures the BODY,
+        // which is the only thing that should make it not an equation.
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let g_sym = kb.intern("g");
 
         let lhs = kb.alloc(Term::Const(Literal::Int(1)));
@@ -7780,7 +7797,7 @@ mod tests {
         // empty residual — a definite verdict from an incomplete search. The fix
         // consults the sub-stream's `truncated` flag (WI-616 substrate) and folds
         // truncation into the floundered/undecided branch.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
@@ -7878,7 +7895,7 @@ mod tests {
         // `truncated == false` — so the guard read the empty result as a definite
         // refutation. Now `self.truncated |= v.truncated` folds it up and
         // `drain_all` surfaces it.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
@@ -7958,7 +7975,7 @@ mod tests {
         // definite-only handler skips the frame WITHOUT setting `self.truncated`; a
         // guard draining the stream then read the empty result as a definite verdict.
         // Now the truncation rides a `DelayTruncated` and the step loop folds it up.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         // Force truncation cheaply: a tiny sub-proof budget (vs the 100_000 default)
         // so the self-looping `myeq` truncates in a handful of steps, not 100k.
         kb.sem_eq_sub_depth = 32;
@@ -8132,7 +8149,7 @@ mod tests {
         // suspend spuriously (the over-blocking direction); the Refuted contrast in
         // `wi628_carrier_eq_truncation_taints_outer_stream` can't catch this because
         // a Refuted eq maps to Failure, never a Delay.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
@@ -8236,10 +8253,10 @@ mod tests {
 
     #[test]
     fn simplify_constant_equation() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
 
         // Equation: eq(double(2), 4)
         let double_sym = kb.intern("double");
@@ -8265,10 +8282,10 @@ mod tests {
 
     #[test]
     fn simplify_variable_equation() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
 
         // Equation: eq(negate(negate(?x)), ?x)
         let negate_sym = kb.intern("negate");
@@ -8312,10 +8329,10 @@ mod tests {
 
     #[test]
     fn simplify_nested_subterms() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
 
         // Equation: eq(double(?x), twice(?x))
         let double_sym = kb.intern("double");
@@ -8372,7 +8389,7 @@ mod tests {
 
     #[test]
     fn simplify_no_match_passthrough() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let f_sym = kb.intern("f");
         let val = kb.alloc(Term::Const(Literal::Int(42)));
         let term = kb.alloc(Term::Fn {
@@ -8390,10 +8407,10 @@ mod tests {
 
     #[test]
     fn resolve_with_simplification() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let f_sym = kb.intern("f");
         let g_sym = kb.intern("g");
 
@@ -8448,10 +8465,10 @@ mod tests {
         // the fact `found(7)` resolves — binding ?q = 7. Before WI-634's
         // threading the redex was SKIPPED (severing ?q), so the goal never
         // matched the fact → 0 solutions.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → resolver fires
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let pick_sym = kb.intern("pick");
         let found_sym = kb.intern("found");
 
@@ -8519,10 +8536,10 @@ mod tests {
         // discrim routes a `Global` query head to EVERY leaf, so re-querying
         // would wildcard-match every fact and manufacture spurious solutions. A
         // bare-var goal is not resolvable → 0 solutions.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let pick_sym = kb.intern("pick");
 
         let a_sym = kb.intern("a");
@@ -8576,10 +8593,10 @@ mod tests {
 
     #[test]
     fn apply_eq_rules_returns_changes() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
 
         // Equation: eq(double(2), 4)
         let double_sym = kb.intern("double");
@@ -8610,10 +8627,10 @@ mod tests {
         // WI-584: a DeBruijn var-RHS equation (the loaded `[simp]` form, unlike
         // the arity-0 `assert_fact` Global-var form which never hit the bug)
         // must fire to its SUBSTITUTED RHS, not the raw `DeBruijn(n)` template.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq"); // matches `eq_functor()`'s bare fallback
+        let eq_sym = kb.eq_functor();
         let pick_sym = kb.intern("pick");
 
         // Equation: eq(pick(?a, ?b), ?a) — projects the first argument.
@@ -8663,10 +8680,10 @@ mod tests {
         // cannot carry — so the candidate must NOT fire (it would rewrite to
         // `0`, silently dropping the constraint). The doubly-ground redex
         // (synthetic entries only) fires as before.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let sub_sym = kb.intern("sub");
         let f_sym = kb.intern("f");
 
@@ -8732,10 +8749,10 @@ mod tests {
         // disconnected fresh global — so the rewrite fires to `?q`, keeping it
         // bound through resolution (was skipped before the threading landed; the
         // earlier gate proved severing, not correctness).
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let pick_sym = kb.intern("pick");
 
         let a_sym = kb.intern("a");
@@ -8797,10 +8814,10 @@ mod tests {
         // query link at DB-0 AND a synthetic value at DB-0 — the constraint
         // `?q = f(42)` a rewrite cannot carry. Must skip, not silently thread
         // one and drop the other.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let sub_sym = kb.intern("sub");
         let f_sym = kb.intern("f");
 
@@ -8850,10 +8867,10 @@ mod tests {
         // The former recursive term walk spent `fuel` on DESCENT DEPTH (`fuel - 1`
         // per level), so an innermost redex nested deeper than `fuel` (100) was
         // never reached — this test nests it far deeper and confirms it fires.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → the resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let add = kb.intern("add");
         let wrap = kb.intern("wrap");
 
@@ -8914,10 +8931,10 @@ mod tests {
         // simp-ONLY predicate. A KB with an `[unfold]`-tagged equation and ZERO
         // `[simp]` equations must still rewrite — an earlier `has_simp_equations`
         // short-circuit (simp-only) silently skipped every unfold rewrite here.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → the resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let unfold_me = kb.intern("unfold_me");
         let done = kb.intern("done");
 
@@ -8976,7 +8993,7 @@ mod tests {
         // `[simp]` rule is later asserted, or `apply_eq_rules` would keep
         // short-circuiting and never rewrite. Exercises the compute-false →
         // invalidate-on-assert → recompute-true sequence.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = kb.intern("add");
         let seven = kb.alloc(Term::Const(Literal::Int(7)));
         let zero = kb.alloc(Term::Const(Literal::Int(0)));
@@ -8994,7 +9011,7 @@ mod tests {
         // gate (via `push_value_head_entry`).
         let sort = ClauseKind::Fact; // requires-free → the resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
@@ -9034,7 +9051,7 @@ mod tests {
         // functor-specific invalidation, superseding WI-646's drop-on-any-write.
         // Behaviourally a needless drop is invisible (it just recomputes the same
         // value), so this asserts on the cache field directly.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = kb.intern("add");
         let seven = kb.alloc(Term::Const(Literal::Int(7)));
         let zero = kb.alloc(Term::Const(Literal::Int(0)));
@@ -9068,7 +9085,7 @@ mod tests {
         );
 
         // Asserting an `eq` [simp] rule DOES touch the gate's bucket → invalidated.
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
@@ -9107,10 +9124,10 @@ mod tests {
         // the host-stack budget simplifies without crashing — and the innermost
         // redex still fires. Mirrors the typer's
         // `deeply_nested_body_does_not_overflow_host_stack`, on the resolver path.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → the resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let add = kb.intern("add");
         let wrap = kb.intern("wrap");
 
@@ -9189,10 +9206,10 @@ mod tests {
         // fires, exactly as the former recursive walk's shared top-fire did.
         // Without the fire/descend split a `Const` leaf child would be skipped,
         // diverging from the term carrier (which still fires it).
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → resolver fires it
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let wrap = kb.intern("wrap");
 
         // [simp] eq(1, 2) — a bare-Const LHS (stored_lhs_functor == None).
@@ -9235,17 +9252,10 @@ mod tests {
 
     // ── Builtin dispatch + delay tests ─────────────────────────
 
-    /// Helper: set up a KB with standard builtins registered.
-    fn kb_with_builtins() -> KnowledgeBase {
-        let mut kb = KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
-        kb
-    }
-
     #[test]
     fn nonvar_succeeds_on_bound_var() {
         // f(?x), anthill.reflect.nonvar(?x) where f("hello") exists → success, no residual
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         let f_sym = kb.intern("f");
@@ -9285,7 +9295,7 @@ mod tests {
     #[test]
     fn nonvar_delays_then_succeeds() {
         // anthill.reflect.nonvar(?x), f(?x) → nonvar delays, f binds x, nonvar retried → success
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         let f_sym = kb.intern("f");
@@ -9325,7 +9335,7 @@ mod tests {
     #[test]
     fn nonvar_residualizes_when_permanently_unbound() {
         // anthill.reflect.nonvar(?x) alone → residual contains the goal
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let x_sym = kb.intern("x");
@@ -9348,7 +9358,7 @@ mod tests {
     #[test]
     fn ground_succeeds_on_literal() {
         // f(?x), anthill.reflect.ground(?x) where f(42) exists → success
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         let f_sym = kb.intern("f");
@@ -9386,7 +9396,7 @@ mod tests {
     #[test]
     fn ground_delays_on_partial_binding() {
         // f(?x), anthill.reflect.ground(?x) where f binds x to pair(?y) → ground delays, residualizes
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         let f_sym = kb.intern("f");
@@ -9466,7 +9476,7 @@ mod tests {
     fn builtin_precedence_over_rules() {
         // Rules can be asserted for builtin functors, but builtins always
         // take precedence at resolution time.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
@@ -9508,7 +9518,7 @@ mod tests {
         //   is_thing enumerates, nonvar becomes vacuous (guard defeated).
         // With propagation: check(?a) delays (nonvar on caller var),
         //   bind_a binds ?a=42, check(42) retries → nonvar(42) succeeds.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
@@ -9582,7 +9592,7 @@ mod tests {
     fn delay_propagation_residualizes_when_unresolvable() {
         // Rule: check(?x) :- nonvar(?x), is_thing(?x)
         // Query: check(?a) with ?a never bound → check(?a) delays, residualizes
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
@@ -9642,7 +9652,7 @@ mod tests {
         // Rule: foo(?x) :- bar(?y), nonvar(?y), baz(?y, ?x)
         // Here ?y is internal — nonvar(?y) should reorder within body (not propagate).
         // bar(?y) binds ?y, then nonvar succeeds.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
@@ -9821,7 +9831,7 @@ mod tests {
     #[test]
     fn search_stream_delay_residual() {
         // nonvar(?x) alone → residualized solution via stream
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let x_sym = kb.intern("x");
@@ -9957,8 +9967,7 @@ mod tests {
 
     #[test]
     fn builtin_qualified_name_binds_result() {
-        let mut kb = KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
+        let mut kb = kb_with_prelude();
 
         // Define a symbol "foo.Bar" via the symbol table
         let global = kb.make_name_term("_global");
@@ -9992,8 +10001,7 @@ mod tests {
 
     #[test]
     fn builtin_short_name_binds_result() {
-        let mut kb = KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
+        let mut kb = kb_with_prelude();
 
         let global = kb.make_name_term("_global");
         kb.symbols.define("Baz", "alpha.beta.Baz", crate::intern::SymbolKind::Sort, global.raw());
@@ -10023,8 +10031,7 @@ mod tests {
 
     #[test]
     fn builtin_lookup_symbol_finds_existing() {
-        let mut kb = KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
+        let mut kb = kb_with_prelude();
 
         let global = kb.make_name_term("_global");
         kb.symbols.define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, global.raw());
@@ -10054,8 +10061,7 @@ mod tests {
 
     #[test]
     fn builtin_lookup_symbol_fails_for_unknown() {
-        let mut kb = KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
+        let mut kb = kb_with_prelude();
 
         let name_str = kb.alloc(Term::Const(Literal::String("does.not.Exist".into())));
 
@@ -10076,8 +10082,7 @@ mod tests {
 
     #[test]
     fn builtin_qualified_name_delays_on_unbound() {
-        let mut kb = KnowledgeBase::new();
-        crate::kb::load::register_prelude(&mut kb);
+        let mut kb = kb_with_prelude();
 
         let sym_name = kb.intern("?sym");
         let sym_vid = kb.fresh_var(sym_name);
@@ -10104,7 +10109,7 @@ mod tests {
 
     #[test]
     fn builtin_eq_succeeds_on_equal_ints() {
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
         let a = kb.alloc(Term::Const(Literal::Int(42)));
         let b = kb.alloc(Term::Const(Literal::Int(42)));
@@ -10119,7 +10124,7 @@ mod tests {
 
     #[test]
     fn builtin_eq_fails_on_different_ints() {
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let eq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.eq");
         let a = kb.alloc(Term::Const(Literal::Int(1)));
         let b = kb.alloc(Term::Const(Literal::Int(2)));
@@ -10134,7 +10139,7 @@ mod tests {
 
     #[test]
     fn builtin_neq_succeeds_on_different() {
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let neq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.neq");
         let a = kb.alloc(Term::Const(Literal::String("hello".into())));
         let b = kb.alloc(Term::Const(Literal::String("world".into())));
@@ -10149,7 +10154,7 @@ mod tests {
 
     #[test]
     fn builtin_gt_on_ints() {
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let gt_sym = kb.resolve_symbol("anthill.prelude.PartialOrd.gt");
         let five = kb.alloc(Term::Const(Literal::Int(5)));
         let three = kb.alloc(Term::Const(Literal::Int(3)));
@@ -10175,7 +10180,7 @@ mod tests {
 
     #[test]
     fn builtin_add_three_arg_binds_result() {
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let add_sym = kb.resolve_symbol("anthill.prelude.Numeric.add");
         let three = kb.alloc(Term::Const(Literal::Int(3)));
         let four = kb.alloc(Term::Const(Literal::Int(4)));
@@ -10197,7 +10202,7 @@ mod tests {
 
     #[test]
     fn builtin_comparison_delays_on_unbound() {
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let gt_sym = kb.resolve_symbol("anthill.prelude.PartialOrd.gt");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -10220,7 +10225,7 @@ mod tests {
     #[test]
     fn not_succeeds_when_goal_fails() {
         // not(p(a)) with no p(a) fact → succeeds
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -10244,7 +10249,7 @@ mod tests {
     #[test]
     fn not_fails_when_goal_succeeds() {
         // not(p(a)) with p(a) fact → fails (no solutions)
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -10279,7 +10284,7 @@ mod tests {
     #[test]
     fn not_delays_on_unbound_var() {
         // not(p(?x)) with ?x unbound → residualizes
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let x_sym = kb.intern("x");
@@ -10306,7 +10311,7 @@ mod tests {
     fn not_succeeds_after_delay_reorder() {
         // Goals: [not(p(?x)), f(?x)] where f(a) exists and p(a) does not.
         // not(p(?x)) delays initially, f(?x) binds ?x=a, then not(p(a)) succeeds.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let f_sym = kb.intern("f");
@@ -10367,7 +10372,7 @@ mod tests {
         // With deep groundness + carry-or-rotate: the outer delays-and-rotates,
         // `f(?x)` binds `?x = a`, then `not(not(p(a)))` decides DEFINITELY (p(a)
         // holds ⇒ not(p(a)) fails ⇒ not(not(p(a))) succeeds).
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let f_sym = kb.intern("f");
@@ -10431,7 +10436,7 @@ mod tests {
         // (floundered) answer. Carry-or-rotate makes it rotate the undecided
         // not(r()) behind the tail, so `s(a)` is attempted, fails, and the whole
         // conjunction correctly has NO solution.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let r_sym = kb.intern("r");
@@ -10496,7 +10501,7 @@ mod tests {
         // `Value::Entity` whose only child is the ground `p(a)`. It must still be
         // read as ground and DECIDE: p(a) holds ⇒ not(p(a)) fails ⇒ not(not(p(a)))
         // succeeds, a single definite solution.
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -10539,7 +10544,7 @@ mod tests {
         // 1` pins the counter, so neither `>= 2`: the pair rotates until the depth
         // limit and returns ZERO solutions (verdict-dishonest — an UNDECIDED
         // conjunction read as refuted).
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let sort = ClauseKind::Fact;
@@ -10608,7 +10613,7 @@ mod tests {
         // definitely — it residualizes as undecided. (Before WI-628 this test
         // asserted a DEFINITE success, i.e. the very decide-from-incomplete-search
         // bug: it read the truncated empty stream as "r(a) is refuted".)
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let r_sym = kb.intern("r");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -10671,7 +10676,7 @@ mod tests {
         // safe(?x) :- thing(?x), not(dangerous(?x))
         // Facts: thing(a), thing(b), dangerous(b)
         // Expected: only ?x=a
-        let mut kb = kb_with_builtins();
+        let mut kb = kb_with_prelude();
         let not_sym = kb.resolve_symbol("anthill.reflect.not");
         let thing_sym = kb.intern("thing");
         let dangerous_sym = kb.intern("dangerous");

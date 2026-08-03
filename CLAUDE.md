@@ -120,3 +120,8 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
  - prefer make illegal state unrpepresentable over check logic
  - a test for a capability must DRIVE the capability: resolve the goal, call the operation, assert the value. "It loads clean" is not evidence that anything works — a test that only asserts a declaration loaded keeps passing when the name it uses resolves to nothing, and a suite of them stays green through a silent regression.
  - assert the CONTROL too: a test that passes both with and without the change measures nothing. Say at its site which tests fail when the change is backed out, and which pass either way by design.
+
+# Work with anthill-todo
+ - before openig follow-up tickets think:
+   - is this ticket can be implemented inline without firing?
+   - is it necessory?  

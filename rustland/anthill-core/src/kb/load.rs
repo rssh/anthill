@@ -3559,23 +3559,38 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[
 /// — the one step that would otherwise DUPLICATE, since
 /// `assert_rule_debruijn_with_nodes` does not consult `fact_dedup`.
 ///
-/// **A bare, never-bootstrapped KB is a SUPPORTED configuration**, not an illegal
-/// state to design out — which is why `KnowledgeBase::new()` deliberately does not
-/// call this. Moving bootstrap into the constructor was MEASURED under WI-967: it
-/// does make every load-entry arrival pre-bootstrapped (3911 of 3911), and it
-/// fails 25 tests.
+/// # A KB without the prelude (WI-969)
 ///
-/// * 22 in `resolve.rs` / `simp_rewrite.rs`, because it silently changes what a
-///   hand-interned `eq` MEANS. [`KnowledgeBase::eq_functor`] /
-///   [`KnowledgeBase::unify_functor`] resolve the qualified name and fall back to
-///   a bare `intern("eq")` / `intern("unify")` for "kernel-less unit KBs"; those
-///   tests build their `[simp]` equations on that fallback, which a bootstrapped
-///   KB no longer hands them, so the rules stop firing.
-/// * 2 in `kb/mod.rs`, which assert whole-KB counters (`fact_count() == 0`) that
-///   the WI-320 bridge fact breaks.
-/// * 1, `typing_test::types_compatible_bootstrap_safe_when_prelude_not_registered`,
-///   which exists to pin this very configuration — WI-337 made the typer's arrow
-///   comparison degrade to `false` rather than panic on a never-bootstrapped KB.
+/// `KnowledgeBase::new()` deliberately does NOT call this, so a bare KB remains
+/// constructible. It is a MINIMAL configuration, not a second supported mode:
+/// nothing in production ever holds one (every real path loads, and every load
+/// bootstraps), and it exists so crate-internal unit tests can exercise the KB
+/// without paying for the stdlib.
+///
+/// Asking a bare KB for kernel vocabulary is therefore an ERROR, not a case to
+/// paper over. WI-969 deleted the fallback that papered over it:
+/// [`KnowledgeBase::eq_functor`] / [`KnowledgeBase::unify_functor`] used to mint a
+/// bare `intern("eq")` / `intern("unify")` — a SECOND spelling of the canonical
+/// equation head that no loaded KB can produce, whose failure mode was a `[simp]`
+/// rule that silently never matched (WI-283). They now panic naming this function.
+/// The 26 unit tests that had been built on that fallback call `register_prelude`
+/// and the real accessors, so they drive the head production actually uses;
+/// `kb::tests::bare_kb_{eq,unify}_functor_is_loud` plus
+/// `typing_test::types_compatible_bootstrap_safe_when_prelude_not_registered` are
+/// the smoke tests that keep the bare configuration itself pinned.
+///
+/// The distinction that decides such cases: a bare KB may give a DEFINED
+/// conservative answer, but it may not GUESS. `try_make_empty_effects_rows`
+/// returns `None` and the WI-337 typer path rejects — never claiming
+/// compatibility it cannot check — and `is_equality_connective_functor` answers
+/// `false`, because a KB with no canonical connective has none. Neither invents a
+/// symbol. What WI-969 deleted are the two that did: `eq_functor`'s bare
+/// `intern("eq")`, and that predicate's SHORT-NAME arm, which would have matched a
+/// carrier's own `Map.eq` — the WI-627 mis-classification.
+///
+/// (Bootstrapping in the constructor was also measured, under WI-967: it makes all
+/// 3911 load-entry arrivals pre-bootstrapped, but it removes the bare KB entirely
+/// rather than defining it, so the smoke tests above would have nothing to pin.)
 pub fn register_prelude(kb: &mut KnowledgeBase) {
     let global = kb.make_name_term("_global");
     let global_raw = global.raw();

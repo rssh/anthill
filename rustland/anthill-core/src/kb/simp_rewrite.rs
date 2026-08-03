@@ -1291,10 +1291,20 @@ mod tests {
     use crate::span::{SourceId, SourceSpan};
     use smallvec::SmallVec;
 
+    /// A KB with the kernel vocabulary registered — the configuration in which
+    /// `eq_functor()` / `unify_functor()` answer (WI-969). Tests that build
+    /// equations need this; tests below that keep a bare `KnowledgeBase::new()`
+    /// are deliberately exercising the prelude-less KB.
+    fn kb_with_prelude() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb
+    }
+
     /// Build the `[simp]` equation `eq(add(?x, 0), ?x)` head + `[simp]` meta,
     /// returning `(eq_head, meta, add_sym)` without asserting.
     fn build_add_zero(kb: &mut KnowledgeBase) -> (TermId, TermId, Symbol) {
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let add = kb.intern("add");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -1358,7 +1368,7 @@ mod tests {
     #[test]
     fn value_fact_head_skips_term_only_equation_readers() {
         use crate::eval::value::Value;
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let eq = kb.eq_functor();
         let a = kb.intern("a");
         let b = kb.intern("b");
@@ -1394,8 +1404,8 @@ mod tests {
         // `simp_enabled` fires it even in a KB with no `eq`-headed simp law and no
         // dot-applies. The former `eq`-only spelling returned `false` here — the
         // under-firing this fixes.
-        let mut kb = KnowledgeBase::new();
-        let unify = kb.unify_functor(); // bare `unify` in a prelude-less KB
+        let mut kb = kb_with_prelude();
+        let unify = kb.unify_functor(); // the canonical `anthill.kernel.unify` (WI-969)
         let add = kb.intern("add");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -1432,7 +1442,7 @@ mod tests {
 
     #[test]
     fn guard_free_simp_rule_rewrites_op_body() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = assert_add_zero(&mut kb);
 
         // op body: add(7, 0)
@@ -1468,7 +1478,7 @@ mod tests {
 
     #[test]
     fn nested_redex_rewrites_and_parent_rebuilds() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = assert_add_zero(&mut kb);
         let wrap = kb.intern("wrap");
 
@@ -1511,7 +1521,7 @@ mod tests {
         // The same `[simp]` rule reduces add(7, 0) → 7 in BOTH the resolver
         // (term, via simplify/apply_eq_rules) and the typer phase (occurrence,
         // via run) — the phase-agreement invariant (proposal 043 §4.7).
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = assert_add_zero(&mut kb);
 
         // Resolver phase: simplify the term add(7, 0).
@@ -1549,7 +1559,7 @@ mod tests {
         // Real-world shape: a `[simp]` rule stored with DeBruijn vars
         // (`assert_rule_debruijn_with_nodes`, as the loader produces) still
         // fires — `open_equation` opens it via `term_from_debruijn`.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = assert_add_zero_db(&mut kb);
 
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
@@ -1579,11 +1589,11 @@ mod tests {
         // f(7) fires → synthesized g(add(7,0)); the engine re-rewrites that to
         // fixpoint → add(7,0) fires → g(7). The g node was synthesized, then
         // rebuilt when its child changed: it must keep its Synthesized origin.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = assert_add_zero(&mut kb);
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
-        let eq_sym = kb.intern("eq");
+        let eq_sym = kb.eq_functor();
         let f = kb.intern("f");
         let g = kb.intern("g");
         let y_sym = kb.intern("y");
@@ -1638,7 +1648,7 @@ mod tests {
         // wrap(wrap(…wrap(add(7, 0))…)) at a depth that the old recursive
         // `rewrite`/`map_children` could not survive, and confirm the
         // innermost redex still fires.
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb_with_prelude();
         let add = assert_add_zero(&mut kb);
         let wrap = kb.intern("wrap");
 

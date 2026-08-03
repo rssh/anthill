@@ -4954,22 +4954,33 @@ impl KnowledgeBase {
 
     // ── Rule classification ─────────────────────────────────────
 
-    /// The canonical equality functor — the head symbol every loaded
-    /// equation (`lhs = rhs`) carries. Resolves to `anthill.prelude.PartialEq.eq`
-    /// when the prelude is loaded (the symbol the loader builds equation
-    /// heads with — `load.rs`), falling back to a bare `eq` only for
-    /// prelude-less KBs (e.g. `simp_rewrite`'s bare-`new()` unit tests).
+    /// The canonical equality functor — `anthill.prelude.PartialEq.eq`, the head
+    /// symbol every loaded equation (`lhs = rhs`) carries, and the one the loader
+    /// builds equation heads with (`load.rs`).
     ///
     /// `[simp]` firing (`simp_rewrite`) must look up `rules_by_functor` under
-    /// *this* symbol, not a freshly-interned bare `eq`: the two differ once
-    /// the prelude is loaded, so a bare `intern("eq")` finds none of the
-    /// loaded `[simp]` equations (WI-283).
+    /// *this* symbol, not a freshly-interned bare `eq`: the two differ once the
+    /// prelude is registered, so a bare `intern("eq")` finds none of the loaded
+    /// `[simp]` equations (WI-283).
+    ///
+    /// WI-969 — PANICS on a KB that was never bootstrapped, where this used to
+    /// fall back to a bare `intern("eq")`. The fallback had no production
+    /// reachability (every real path loads, and every load calls
+    /// [`load::register_prelude`](crate::kb::load::register_prelude)); it existed
+    /// so unit tests could skip bootstrap, and it bought that at the price of a
+    /// SECOND spelling of the canonical equality head. That second spelling fails
+    /// silently in the worst way — a `[simp]` rule built on it simply never
+    /// matches, so the rewrite does not happen and nothing reports why (WI-283 is
+    /// that bug). A missing prelude is now a loud, immediate error instead.
     pub fn eq_functor(&mut self) -> Symbol {
         // WI-644 / proposal 004: the `eq`/`neq` ops moved from `Eq` to its base
         // `PartialEq` (Eq is now the lawful marker requiring PartialEq). Equation
         // heads and `[simp]` lookups key on this symbol.
-        self.try_resolve_symbol("anthill.prelude.PartialEq.eq")
-            .unwrap_or_else(|| self.intern("eq"))
+        self.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect(
+            "eq_functor: `anthill.prelude.PartialEq.eq` is unregistered — this KB was \
+             never bootstrapped. Load into it (every load entry point bootstraps) or, \
+             for a hand-built KB that never loads, call `load::register_prelude` first.",
+        )
     }
 
     /// The canonical unification functor — `anthill.kernel.unify`, the head an
@@ -4977,10 +4988,16 @@ impl KnowledgeBase {
     /// [`Self::eq_functor`]: equational rule selection (`apply_eq_rules`, the
     /// typer's `try_fire`) queries/scans under BOTH so a migrated `<=>` equation
     /// and a legacy `=` one are both found while WI-526's `=`→`<=>` relabel is
-    /// in flight. Falls back to a bare `unify` only for kernel-less unit KBs.
+    /// in flight.
+    ///
+    /// WI-969 — PANICS on a never-bootstrapped KB, for the reasons at
+    /// [`Self::eq_functor`]; the bare-`unify` fallback is gone.
     pub fn unify_functor(&mut self) -> Symbol {
-        self.try_resolve_symbol("anthill.kernel.unify")
-            .unwrap_or_else(|| self.intern("unify"))
+        self.try_resolve_symbol("anthill.kernel.unify").expect(
+            "unify_functor: `anthill.kernel.unify` is unregistered — this KB was never \
+             bootstrapped. Load into it (every load entry point bootstraps) or, for a \
+             hand-built KB that never loads, call `load::register_prelude` first.",
+        )
     }
 
     /// WI-627: is `functor` the KB's canonical equality / unification connective
@@ -4997,24 +5014,26 @@ impl KnowledgeBase {
     ///
     /// Reads the cached [`Self::eq_connective_sym`] / [`Self::unify_connective_sym`]
     /// (O(1), no interning — the `&self`-only peer of the `&mut`
-    /// [`Self::eq_functor`] / [`Self::unify_functor`], which mint a bare fallback).
-    /// Each connective is tested INDEPENDENTLY: exact symbol match when its
-    /// canonical symbol is cached, else short-name match (a prelude/kernel-less
-    /// unit KB whose bare `intern("eq")`/`intern("unify")` head is the only
-    /// equation shape). Per-connective so the classification never hinges on both
-    /// symbols being defined together — a KB with only one of them still
-    /// classifies the other by short name.
+    /// [`Self::eq_functor`] / [`Self::unify_functor`]). Each connective is tested
+    /// INDEPENDENTLY, by EXACT SYMBOL, so the classification never hinges on both
+    /// being defined together.
+    ///
+    /// WI-969 — an uncached connective answers `false`: a KB with no canonical
+    /// equality connective has no equality connective. It used to fall back to
+    /// SHORT-NAME matching, which is precisely the `Map.eq` / `Set.eq`
+    /// mis-classification WI-627 fixed — a carrier's own `eq` merely SHARES the
+    /// short name and is a normal relational op, so matching it here would unindex
+    /// it (WI-139) and drop it from SLD candidates. [`Self::cache_connective_syms`]
+    /// already documented that arm as the hazard to avoid; now it cannot be taken.
+    /// Only a never-bootstrapped KB reaches this branch (the cache is filled by
+    /// `register_standard_builtins` and `resolve_builtins`), and `false` is a
+    /// DEFINED answer there rather than a guess — the same line the sibling
+    /// fallbacks in `eq_functor` / `unify_functor` were removed on.
     pub(crate) fn is_equality_connective_functor(&self, functor: Symbol) -> bool {
-        // The `qn`/short-name work runs ONLY on the fallback arm (canonical not
-        // cached); the common prelude-loaded case is two `Symbol` comparisons.
-        let matches = |canonical: Option<Symbol>, short: &str| match canonical {
-            Some(sym) => functor == sym,
-            None => {
-                let qn = self.qualified_name_of(functor);
-                qn.rsplit('.').next().unwrap_or(qn) == short
-            }
-        };
-        matches(self.eq_connective_sym, "eq") || matches(self.unify_connective_sym, "unify")
+        // Two `Symbol` comparisons, always — an uncached connective is `None`, which
+        // no `Some(functor)` equals. WI-969: this was a closure over a short name
+        // because the uncached case did string work; nothing here reads a name now.
+        self.eq_connective_sym == Some(functor) || self.unify_connective_sym == Some(functor)
     }
 
     /// WI-665: drop the cached simp gate ([`Self::simp_gate_cache`]) only when a
@@ -5052,8 +5071,7 @@ impl KnowledgeBase {
     }
 
     /// WI-646 — the candidate equational rule ids for `[simp]`/`[unfold]` firing:
-    /// the `eq` (`=`) bucket plus the `unify` (`<=>`) bucket (deduped when the two
-    /// functors coincide, e.g. a prelude-less unit KB). ONE helper for the eq+unify
+    /// the `eq` (`=`) bucket plus the `unify` (`<=>`) bucket. ONE helper for the eq+unify
     /// SELECTION that `has_simp_equations`, `try_fire`, `fire_simp_equation` (and
     /// the [`Self::has_directional_rewrite`] gate) all previously spelled inline —
     /// so the gate can never again drift from the fire sites (that drift, an
@@ -6879,6 +6897,79 @@ mod tests {
     use super::*;
     use term::Literal;
     use smallvec::SmallVec;
+
+    // ── WI-969: a KB without the prelude ─────────────────────────
+    //
+    // A bare `KnowledgeBase::new()` is still constructible and still a defined
+    // configuration — these are its smoke tests. What changed in WI-969 is what
+    // it does when asked for kernel vocabulary it does not have: `eq_functor` /
+    // `unify_functor` used to invent a bare `intern("eq")` / `intern("unify")`,
+    // a SECOND spelling of the canonical head that no loaded KB can ever
+    // produce. Its failure mode was the worst kind — a `[simp]` rule built on
+    // the bare spelling simply never matched, so the rewrite silently did not
+    // happen (WI-283). Now the KB says so.
+    //
+    // CONTROL: `bootstrapped_kb_resolves_the_canonical_equality_head` below is
+    // the other half — without it these two would also pass if the accessors
+    // panicked unconditionally. Both `#[should_panic]` tests fail (they stop
+    // panicking) if the `unwrap_or_else` fallbacks are restored.
+
+    #[test]
+    #[should_panic(expected = "never bootstrapped")]
+    fn bare_kb_eq_functor_is_loud() {
+        let mut kb = KnowledgeBase::new();
+        kb.eq_functor();
+    }
+
+    #[test]
+    #[should_panic(expected = "never bootstrapped")]
+    fn bare_kb_unify_functor_is_loud() {
+        let mut kb = KnowledgeBase::new();
+        kb.unify_functor();
+    }
+
+    #[test]
+    fn bare_kb_does_not_classify_a_short_named_eq_as_the_connective() {
+        // WI-969 — the CONTROL for the removed SHORT-NAME arm, and the only test
+        // that fails if it comes back. With no canonical connective cached, an
+        // `eq`-NAMED head is not the equality connective; the deleted fallback
+        // compared short names and answered `true` here. The same comparison, on a
+        // loaded KB whose cache had not been filled, would classify a carrier's own
+        // `Map.eq`/`Set.eq` as an equational law — unindexing it (WI-139) and
+        // dropping it from SLD candidates. That is the WI-627 bug.
+        let mut kb = KnowledgeBase::new();
+        let domain = kb.intern("test");
+        let eq_named = kb.intern("eq");
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let head = kb.alloc(Term::Fn {
+            functor: eq_named,
+            pos_args: SmallVec::from_slice(&[one, one]),
+            named_args: SmallVec::new(),
+        });
+        let rid = kb.assert_fact(head, ClauseKind::Fact, domain, None);
+        assert!(
+            !kb.is_equation(rid),
+            "a bare `eq`-NAMED head is not the canonical equality connective"
+        );
+    }
+
+    #[test]
+    fn bootstrapped_kb_resolves_the_canonical_equality_head() {
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+
+        // The accessors return the QUALIFIED symbols, and `intern` of the short
+        // name is a DIFFERENT symbol — the distinction the deleted fallback
+        // erased, and the reason a bare `intern("eq")` found none of the loaded
+        // `[simp]` equations.
+        let eq = kb.eq_functor();
+        assert_eq!(Some(eq), kb.try_resolve_symbol("anthill.prelude.PartialEq.eq"));
+        assert_ne!(eq, kb.intern("eq"), "the qualified head and a bare `eq` must stay distinct");
+
+        let unify = kb.unify_functor();
+        assert_eq!(Some(unify), kb.try_resolve_symbol("anthill.kernel.unify"));
+        assert_ne!(unify, kb.intern("unify"));
+    }
 
     #[test]
     fn reify_value_chases_and_guards_var_bindings() {
