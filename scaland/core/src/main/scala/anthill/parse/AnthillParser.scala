@@ -91,6 +91,44 @@ private class AnthillParserImpl(
   errors: ArrayBuffer[ParseError]
 ):
 
+  // ── Refusal scoping (WI-950) ─────────────────────────────────
+
+  /** `P`, SHADOWING `fastparse.P` for every production in this class: a production
+    * that FAILS drops the refusals recorded under it, along with the rest of its
+    * output.
+    *
+    * Three productions refuse from inside a `.map` — the WI-639 projection-label
+    * checks, the braced-`operation`-block visibility refusal, the WI-850 type-param
+    * default. A `.map` runs when ITS production succeeds, which is not the same as
+    * the enclosing parse accepting that text: fastparse may backtrack out of the
+    * alternative afterwards. In a flat shared buffer the refusal outlived the
+    * backtrack, and since `AnthillParser.parse` returns `Left` whenever the buffer
+    * is non-empty, a discarded production could both add noise to an unrelated
+    * failure and — given one more backtrackable alternative over any refusal site —
+    * REFUSE AN OTHERWISE-GOOD PARSE.
+    *
+    * WHERE A REFUSAL LANDS, exactly: a `.map` is applied to the value this wrapper
+    * already returned, so a refusal is recorded into the scope of the INNERMOST
+    * ENCLOSING wrapped production, not the mapped one's own. That is enough, because
+    * discarding a production's output is always the failure of something that
+    * encloses it, and the whole grammar is written as `def x[$: P] = P(…)` — so
+    * there is a wrapped production between every backtrack point and every refusal.
+    * Keep new productions in that shape: this is a convention the compiler does not
+    * check, and a production written as a bare `inner.map(…)` at an outer position
+    * would establish no scope of its own.
+    *
+    * `sourceFile` is the deliberate exception — see the comment there. The `Tokens`
+    * object is a separate scope and keeps `fastparse.P`; it records nothing. */
+  private inline def P[T](inline t: fastparse.P[T])(using
+    name: sourcecode.Name, ctx: fastparse.P[?]
+  ): fastparse.P[T] =
+    val mark = errors.length
+    val run = fastparse.P[T](t)(using name, ctx)
+    // Production failure is the ordinary control flow of a backtracking parser, and
+    // almost none of it records anything — so test before calling.
+    if !run.isSuccess && errors.length > mark then errors.dropRightInPlace(errors.length - mark)
+    run
+
   // ── Variable scoping ─────────────────────────────────────────
 
   private var nextVar: Int = 0
@@ -1562,11 +1600,17 @@ private class AnthillParserImpl(
   /** A type parameter plus the DEFAULT as written, if any. The default is carried
     * only as far as `refuseTypeParamDefaults`, which reports it and drops it —
     * `TypeParam` has no field to store it in (WI-850). */
-  private case class WrittenTypeParam(param: TypeParam, writtenDefault: Option[String])
+  private case class WrittenTypeParam(param: TypeParam, writtenDefault: Option[TypeExpr])
 
   private def operationTypeParam[$: P]: P[WrittenTypeParam] =
-    P(Index ~ ident ~ ("=" ~/ typeExpr.!).?).map { case (idx, n, default) =>
-      WrittenTypeParam(TypeParam(n, mkSpan(idx, idx)), default.map(_.trim))
+    // The default is carried as the parsed `TypeExpr`, NOT as a `.!` source capture:
+    // the refusal quotes it back to the author, and a capture spans whatever trivia
+    // was written inside the type — a comment, a line break, or (because an anthill
+    // identifier may contain `-`) a `my--type` whose `--` reads as a line comment to
+    // anything that re-lexes the slice. `renderTypeExpr` reads the tree instead, so
+    // there is nothing to re-lex (WI-950).
+    P(Index ~ ident ~ ("=" ~/ typeExpr).?).map { case (idx, n, default) =>
+      WrittenTypeParam(TypeParam(n, mkSpan(idx, idx)), default)
     }
 
   /** WI-850: a declared type-param DEFAULT (`operation foo[T = Int64](…)`) is
@@ -1581,9 +1625,10 @@ private class AnthillParserImpl(
     * (`singleOperation` and a braced block's `operationEntry`) reach — mirroring
     * rustland, which refuses in the converter for the same reason. */
   private def refuseTypeParamDefaults(op: Name, tps: IndexedSeq[WrittenTypeParam]): IndexedSeq[TypeParam] =
-    for wtp <- tps; written <- wtp.writtenDefault do
+    for wtp <- tps; writtenType <- wtp.writtenDefault do
       val opName = op.segments.map(symbols.name).mkString(".")
       val pName = symbols.name(wtp.param.name)
+      val written = renderTypeExpr(writtenType)
       errors += ParseError(
         s"operation `$opName`: type parameter `$pName` carries a default " +
         s"(`$pName = $written`), which nothing reads — the declaration means exactly " +
@@ -1591,6 +1636,85 @@ private class AnthillParserImpl(
         s"let the call bind it, either from the arguments or explicitly " +
         s"(`$opName[$pName = $written](…)`)", wtp.param.span)
     tps.map(_.param)
+
+  /** Render a parsed `TypeExpr` back as anthill surface syntax, for the refusal
+    * above — the ONE diagnostic that has to show the author a type they wrote.
+    *
+    * Rendering the TREE rather than normalising a `.!` source capture is what keeps
+    * this honest (WI-950): a capture spans the trivia written inside the type, and
+    * anything that strips that trivia has to re-lex the slice — which needs the whole
+    * token model, not just the comment forms (an anthill identifier may contain `-`,
+    * so `my--type` is ONE token whose `--` is not a line comment). These matches are
+    * exhaustive over sealed types, so a new `TypeExpr` / `Term` / `Literal` case is a
+    * COMPILE error here rather than a silently mis-rendered diagnostic.
+    *
+    * The spelling is canonical, not verbatim: interior trivia is gone (the point),
+    * and a term written infix inside an effect guard renders as the functor call it
+    * desugared to. Both are what the author's declaration MEANS, which is what the
+    * message is about. */
+  private def renderTypeExpr(te: TypeExpr): String = te match
+    case TypeExpr.Simple(n)              => renderName(n)
+    case TypeExpr.Parameterized(n, bs)   => s"${renderName(n)}[${bs.map(renderSortBinding).mkString(", ")}]"
+    // The `descriptions` a `{< … >}` doc block attaches are trivia by nature — the
+    // very thing this rendering exists to leave out.
+    case TypeExpr.Variable(tid, _)       => renderTerm(tid)
+    case TypeExpr.TupleType(fields)      =>
+      // `tupleTypeArg` labels an unnamed component `_`; render those bare.
+      s"(${fields.map((n, t) =>
+        if symbols.name(n) == "_" then renderTypeExpr(t)
+        else s"${symbols.name(n)}: ${renderTypeExpr(t)}").mkString(", ")})"
+    case TypeExpr.Arrow(ps, ret, effs)   =>
+      val base = s"(${ps.map(renderTypeExpr).mkString(", ")}) -> ${renderTypeExpr(ret)}"
+      if effs.isEmpty then base else s"$base @ {${effs.map(renderTypeExpr).mkString(", ")}}"
+    case TypeExpr.Denoted(v)             => renderTerm(v)
+    case TypeExpr.EffectRow(effs)        => s"{${effs.map(renderTypeExpr).mkString(", ")}}"
+    case TypeExpr.EffectGuarded(l, g)    =>
+      s"${renderTypeExpr(l)} :- ${g.map(renderTerm).mkString(", ")}"
+
+  private def renderName(n: Name): String = n.segments.map(symbols.name).mkString(".")
+
+  private def renderSortBinding(b: SortBinding): String = b.param match
+    case Some(p) => s"${renderName(p)} = ${renderTypeExpr(b.bound)}"
+    case None    => renderTypeExpr(b.bound)
+
+  /** Render a parse-time term as surface syntax. Reached from `renderTypeExpr` only,
+    * for a value-in-type (`Vector[Int64, 3]`) or an effect guard's goals. */
+  private def renderTerm(tid: TermId): String = terms.get(tid) match
+    case Term.Const(lit)  => renderLiteral(lit)
+    case Term.Var(v)      => v match
+      // The parser only ever builds `Global`; `DeBruijn` is the loader's canonical
+      // form for a STORED rule and `Rigid` is resolution's, so neither can reach here.
+      case Var.Global(id)   => s"?${symbols.name(id.name)}"
+      case Var.Rigid(id)    => s"?${symbols.name(id.name)}"
+      case Var.DeBruijn(i)  => s"?_$i"
+    case Term.Bottom      => "⊥"
+    case Term.Ref(s)      => symbols.name(s)
+    case Term.Ident(s)    => symbols.name(s)
+    case fn: Term.Fn      =>
+      val pos = fn.posArgs.map(renderTerm)
+      val named = fn.namedArgs.map((k, v) => s"${symbols.name(k)}: ${renderTerm(v)}")
+      s"${symbols.name(fn.functor)}(${(pos ++ named).mkString(", ")})"
+
+  private def renderLiteral(lit: Literal): String = lit match
+    // Re-encode the escapes `Tokens.decodeStringEscapes` decoded, so the quoted
+    // default is anthill source the author could paste back.
+    case Literal.StringLit(s) =>
+      val out = new StringBuilder(s.length + 2)
+      out += '"'
+      s.foreach {
+        case '"'  => out ++= "\\\""
+        case '\\' => out ++= "\\\\"
+        case '\n' => out ++= "\\n"
+        case '\r' => out ++= "\\r"
+        case '\t' => out ++= "\\t"
+        case c    => out += c
+      }
+      out += '"'
+      out.toString
+    case Literal.IntLit(v)    => v.toString
+    case Literal.BigIntLit(v) => v.toString
+    case Literal.FloatLit(v)  => v.value.toString
+    case Literal.BoolLit(v)   => v.toString
 
   /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
     * requirement slots found in the `requires` lists — each becomes an operation type
@@ -1702,7 +1826,7 @@ private class AnthillParserImpl(
       Fact(t, meta, mkSpan(0, 0))
     }
 
-  private def factDecl[$: P]: P[Item] = factDeclInner.map(Item.FactItem(_))
+  private def factDecl[$: P]: P[Item] = P(factDeclInner).map(Item.FactItem(_))
 
   private def constraintDecl[$: P]: P[Item] =
     P(keyword("constraint") ~/ (simpleName ~ ":").? ~ term.rep(1, sep = ",") ~
@@ -1750,7 +1874,7 @@ private class AnthillParserImpl(
         ProofDecl(target, strategy, body, using0, mkSpan(0, 0))
     }
 
-  private def proofDecl[$: P]: P[Item] = proofDeclInner.map(Item.ProofItem(_))
+  private def proofDecl[$: P]: P[Item] = P(proofDeclInner).map(Item.ProofItem(_))
 
   private def proofBodyForm[$: P]: P[(IndexedSeq[Name], Option[ProofStrategy], Option[ProofBody])] =
     P(structuredProofForm | singleTacticProofForm)
@@ -1883,21 +2007,21 @@ private class AnthillParserImpl(
     P(ident ~ ":" ~/ term)
 
   private def providesProof[$: P]: P[ProvidesItem] =
-    proofDeclInner.map(ProvidesItem.ProofI(_))
+    P(proofDeclInner).map(ProvidesItem.ProofI(_))
 
   /** Inside a `provides` block, `rule { ... }` desugars to a block-of-
     * rules and a bare `rule h :- b` to a single rule — `ruleDecl`
     * already returns the `Item.RuleItem` / `Item.RuleBlockItem` union,
     * so the partial match here mirrors that existing union. */
   private def providesRule[$: P]: P[ProvidesItem] =
-    ruleDecl.map {
+    P(ruleDecl).map {
       case Item.RuleItem(r) => ProvidesItem.RuleI(r)
       case Item.RuleBlockItem(rb) => ProvidesItem.RuleBlockI(rb)
       case other => sys.error(s"ruleDecl returned unexpected $other")
     }
 
   private def providesFact[$: P]: P[ProvidesItem] =
-    factDeclInner.map(ProvidesItem.FactI(_))
+    P(factDeclInner).map(ProvidesItem.FactI(_))
 
   // ── Declaration dispatch ─────────────────────────────────────
 
@@ -1925,7 +2049,16 @@ private class AnthillParserImpl(
 
   // ── Top-level ────────────────────────────────────────────────
 
+  /** The one production that deliberately does NOT scope refusals — note the
+    * explicit `fastparse.P`, not this class's shadowing one.
+    *
+    * Its scope would be the whole file, so a syntax error anywhere (`End` failing on
+    * trailing garbage, say) would drop every refusal in the buffer — including ones
+    * recorded by declarations `declaration.rep` had ACCEPTED. Those refusals are
+    * live: that declaration parsed, and the author should see it in the same run as
+    * the syntax error rather than discovering it only after fixing the typo. A
+    * declaration that fails still drops its own, one level down (WI-950). */
   def sourceFile[$: P]: P[Seq[Item]] =
-    P(Start ~ declaration.rep ~ End)
+    fastparse.P(Start ~ declaration.rep ~ End)
 
 end AnthillParserImpl

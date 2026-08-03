@@ -533,6 +533,177 @@ class ParseTest extends munit.FunSuite:
     assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)), IndexedSeq("A", "B"))
   }
 
+  // ── WI-950: a refusal belongs to the production that recorded it ─────────
+  //   Three productions refuse from inside a fastparse `.map` — the WI-639
+  //   projection-label checks, the braced-`operation`-block visibility refusal,
+  //   and the WI-850 type-param default. A `.map` runs when ITS production
+  //   succeeds, which is not the same as the enclosing parse accepting that
+  //   text, so a shared error buffer kept the refusal across the backtrack.
+  //   WHAT EACH TEST HOLDS DOWN — the three `assertOnlyParseFailure` tests and
+  //   `drops interior comments and newlines` fail on the pre-WI-950 parser (two
+  //   errors instead of one, and a message carrying the author's comment). The
+  //   rest are controls that pass on the pre-WI-950 parser and fail on a WRONG
+  //   fix, which is what makes them worth keeping: `still surfaces` catches
+  //   scoping that truncates refusals the parse accepted; `survives a later
+  //   syntax error` catches scoping the TOP production, which discards refusals
+  //   about declarations that parsed; and the `-`-bearing identifier catches
+  //   normalising a `.!` source capture instead of rendering the tree, since an
+  //   anthill identifier may contain `-`.
+
+  private def assertOnlyParseFailure(label: String, src: String): Unit =
+    Parser.parse(src, "<wi950>") match
+      case Right(_) => fail(s"$label: expected the parse to fail")
+      case Left(errs) =>
+        assertEquals(errs.length, 1,
+          s"$label: expected only the parse failure, got: ${errs.map(_.message).mkString("; ")}")
+        assert(errs.head.message.startsWith("Parse error at"),
+          s"$label: expected the parse failure, got: ${errs.head.message}")
+
+  test("WI-950: a discarded type-param-default refusal does not survive the parse") {
+    // The entry parses (recording the WI-850 refusal), then the closing `}` fails
+    // under the `~/` cut and the whole declaration is discarded with it.
+    assertOnlyParseFailure("braced block",
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  operation { g[T = Int](x: A) -> B  <garbage> }
+        |end""".stripMargin)
+    assertOnlyParseFailure("single operation",
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  operation g[T = Int](x: A) -> B <garbage>
+        |end""".stripMargin)
+  }
+
+  test("WI-950: a discarded projection refusal does not survive the parse") {
+    // The projection parses inside the literal (recording the duplicate-key
+    // refusal); the unterminated literal then discards the term it was built for.
+    assertOnlyParseFailure("unclosed set literal", "fact p({?y.(a, a))")
+    assertOnlyParseFailure("unclosed list literal", "fact p([?y.(a, a), 1)")
+  }
+
+  test("WI-950: a discarded visibility refusal does not survive the parse") {
+    // The `operation` declaration parses (recording the refusal), then the sort
+    // body's missing `end` discards the declaration.
+    assertOnlyParseFailure("unterminated sort body",
+      """sort Demo
+        |  sort A = ?
+        |  internal operation { g(x: A) -> A }""".stripMargin)
+  }
+
+  test("WI-950: a refusal the parse DID accept still surfaces") {
+    for (label, src) <- Seq(
+      "type-param default" ->
+        """sort Demo
+          |  sort A = ?
+          |  sort B = ?
+          |  operation g[T = Int](x: A) -> B
+          |end""".stripMargin,
+      "projection" -> "fact p({?y.(a, a)})",
+      "block visibility" ->
+        """sort Demo
+          |  sort A = ?
+          |  internal operation { g(x: A) -> A }
+          |end""".stripMargin,
+    ) do
+      Parser.parse(src, "<wi950>") match
+        case Right(_) => fail(s"$label: expected a refusal")
+        case Left(errs) =>
+          assertEquals(errs.length, 1,
+            s"$label: expected exactly the refusal, got: ${errs.map(_.message).mkString("; ")}")
+          assert(!errs.head.message.startsWith("Parse error at"),
+            s"$label: expected the refusal, got: ${errs.head.message}")
+  }
+
+  test("WI-950: a refusal about an ACCEPTED declaration survives a later syntax error") {
+    // `sourceFile` deliberately does not scope: the operation below parses, so its
+    // refusal is live even though the file as a whole does not. Scoping the top
+    // production (the shape the first cut of WI-950 shipped) reports ONLY the
+    // syntax error here, and the author learns about the default one run later.
+    val src =
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  operation g[T = A](x: A) -> B
+        |end
+        |fact p(""".stripMargin
+    Parser.parse(src, "<wi950>") match
+      case Right(_) => fail("expected the parse to fail")
+      case Left(errs) =>
+        val msgs = errs.map(_.message)
+        assert(msgs.exists(_.contains("type parameter `T` carries a default")),
+          s"the accepted declaration's refusal must survive; got: ${msgs.mkString("; ")}")
+        assert(msgs.exists(_.startsWith("Parse error at")),
+          s"the syntax error must be reported too; got: ${msgs.mkString("; ")}")
+  }
+
+  // WI-950: the refusal quotes the default back to the author, and it renders the
+  // parsed `TypeExpr` to do it. A `.!` source capture spans whatever trivia was
+  // written inside the type, and normalising THAT needs the whole token model — not
+  // just the comment forms. `renderTypeExpr` has no lexer to keep in sync.
+
+  private def assertQuotedDefault(src: String, expected: String): Unit =
+    Parser.parse(src, "<wi950>") match
+      case Right(_) => fail("expected a refusal for the type-param default")
+      case Left(errs) =>
+        assertEquals(errs.length, 1, errs.map(_.message).mkString("; "))
+        val m = errs.head.message
+        assert(m.contains(s"`T = $expected`"), s"expected `T = $expected`; got: $m")
+        assert(!m.contains("\n"), m)
+
+  test("WI-950: the quoted type-param default drops interior comments and newlines") {
+    assertQuotedDefault(
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  sort List = ?
+        |  operation g[T = List[ {- note -} Int
+        |        ]](x: A) -> B
+        |end""".stripMargin,
+      "List[Int]")
+  }
+
+  test("WI-950: a `-`-bearing identifier in the quoted default is not truncated") {
+    // An anthill identifier may contain `-` (`Tokens.identToken`), so `my--type` is
+    // ONE token whose `--` is not a line comment. Anything that re-lexes a source
+    // capture to strip trivia truncates this to `my` and then RECOMMENDS the
+    // truncation — quoting a type the author never wrote.
+    assertQuotedDefault(
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  sort my--type = ?
+        |  operation g[T = my--type](x: A) -> B
+        |end""".stripMargin,
+      "my--type")
+  }
+
+  test("WI-950: a string literal in the quoted default keeps its contents and quotes") {
+    // `"a -- b"` is a string, not a line comment; the literal is re-encoded from the
+    // parsed `StringLit`, so the quoted default is source the author could paste back.
+    assertQuotedDefault(
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  sort Tagged = ?
+        |  operation g[T = Tagged["a -- b"]](x: A) -> B
+        |end""".stripMargin,
+      """Tagged["a -- b"]""")
+  }
+
+  test("WI-950: a value-in-type and a named binding render in the quoted default") {
+    assertQuotedDefault(
+      """sort Demo
+        |  sort A = ?
+        |  sort B = ?
+        |  sort Vector = ?
+        |  sort Int64 = ?
+        |  operation g[T = Vector[E = Int64, 3]](x: A) -> B
+        |end""".stripMargin,
+      "Vector[E = Int64, 3]")
+  }
+
   test("WI-269: no type-param list ⇒ empty typeParams") {
     val (_, op) = parseDemoOp("  operation g(t: Term) -> Int")
     assertEquals(op.typeParams.length, 0)
