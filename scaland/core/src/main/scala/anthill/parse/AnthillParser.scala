@@ -34,8 +34,39 @@ private object Tokens:
   def variableToken[$: P]: P[String] =
     P("?" ~ (CharIn("a-zA-Z_") ~ CharsWhileIn("a-zA-Z0-9_\\-", 0)).?.!)
 
+  /** A string literal, ESCAPE-AWARE. Mirrors rustland's token regex
+    * `/"([^"\\]|\\.)*"/`: a `\` consumes the next character whatever it is, so an
+    * embedded `\"` does not close the literal. Without this a C++ include mapping
+    * (`"#include \"anthill_runtime.hpp\""`, stdlib `realization/cpp_std.anthill`)
+    * ended at the first inner quote and the rest of the line was a syntax error. */
   def stringToken[$: P]: P[String] =
-    P("\"" ~ CharsWhile(_ != '"', 0).! ~ "\"")
+    P("\"" ~ (CharsWhile(c => c != '"' && c != '\\', 1) | ("\\" ~ AnyChar)).rep.! ~ "\"")
+      .map(decodeStringEscapes)
+
+  /** Decode the `\.`-style escapes the token above accepts. Mirrors rustland's
+    * `decode_string_escapes`, down to its two fall-through rules: an UNKNOWN escape
+    * passes the trailing char through, and a lone trailing `\` is kept literal. The
+    * matching encoder is `persistence::print`'s String case (\" \\ \n \r \t). */
+  private def decodeStringEscapes(raw: String): String =
+    if !raw.contains('\\') then raw
+    else
+      val out = new StringBuilder(raw.length)
+      var i = 0
+      while i < raw.length do
+        val c = raw.charAt(i)
+        if c == '\\' && i + 1 < raw.length then
+          raw.charAt(i + 1) match
+            case '"'  => out += '"'
+            case '\\' => out += '\\'
+            case 'n'  => out += '\n'
+            case 'r'  => out += '\r'
+            case 't'  => out += '\t'
+            case other => out += other
+          i += 2
+        else
+          out += c
+          i += 1
+      out.toString
 
   def floatToken[$: P]: P[String] =
     P(("-".? ~ CharsWhileIn("0-9", 1) ~ "." ~ CharsWhileIn("0-9", 1)).!)
@@ -319,8 +350,17 @@ private class AnthillParserImpl(
       }
     )
 
+  /** A component of a tuple type. WI-763 adds the DENOTED component `person:
+    * "name"` — a named component whose value is a CONSTANT standing in type
+    * position. Its motivating case is a projection's keep spec (`Project[T = …,
+    * Keep = (person: "name", years: "age")]`), which maps each result key to its
+    * source column's NAME, and a name reaches type position only as a denoted
+    * (there are no singleton types). The denoted arm is tried FIRST for the same
+    * reason `commonTypeExpr` orders it first: `true` / `false` would otherwise be
+    * read as a `simple_type` name. */
   private def tupleTypeArg[$: P]: P[TupleField] =
     P(
+      (ident ~ ":" ~ denotedLiteral).map { case (n, t) => TupleField(n, t) } |
       (ident ~ ":" ~ typeExpr).map { case (n, t) => TupleField(n, t) } |
       typeExpr.map(t => TupleField(intern("_"), t))
     )
@@ -378,7 +418,10 @@ private class AnthillParserImpl(
       val operands = ArrayBuffer(first)
       val opSymbols = ArrayBuffer.empty[TermSymbol]
       pairs.foreach { case (op, operand) => opSymbols += op; operands += operand }
-      Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name, terms.alloc, symbols.intern)
+      // WI-618: every node the infix desugar builds is parse-MINTED — `?a + ?b`
+      // yields `add(?a, ?b)` whose functor is the desugar's, not the source's.
+      Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name,
+                    terms.allocMinted, symbols.intern)
 
   /** A rule-body goal: the cut control primitive `!` (WI-568), a goal-position
     * `let ?v = expr` binding (WI-522), or a regular `_term`. Mirrors rustland's
@@ -438,7 +481,8 @@ private class AnthillParserImpl(
     if valueRecv || callArgs.isDefined then buildDotApply(obj, member, callArgs)
     else
       val fieldRef = terms.alloc(Term.Ref(member))
-      terms.alloc(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
+      // WI-618: accessor provenance, as for the dotted-name build.
+      terms.allocMinted(Term.Fn(fieldAccessSym, IArray(obj, fieldRef), IArray.empty))
 
   /** One dotted access after an atom: a field/method `.name` / `.name(args)`
     * (WI-278) or a distributive projection `.(m1, …, mn)` (WI-639). */
@@ -511,7 +555,8 @@ private class AnthillParserImpl(
       case Left(tid)     => posArgs += tid
       case Right((k, v)) => namedArgs += ((k, v))
     })
-    terms.alloc(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)))
+    // WI-618: accessor provenance, as for `field_access`.
+    terms.allocMinted(Term.Fn(dotApplySym, IArray.from(posArgs), IArray.from(namedArgs)))
 
   /** WI-639: build `x.(m1, …, mn)` — distribute the receiver `x` over the
     * member list. Each member desugars to the SAME accessor a single `x.m`
@@ -667,7 +712,9 @@ private class AnthillParserImpl(
             var result = terms.alloc(Term.Ident(n.segments.head))
             for seg <- n.segments.tail do
               val fieldRef = terms.alloc(Term.Ref(seg))
-              result = terms.alloc(Term.Fn(intern("field_access"), IArray(result, fieldRef), IArray.empty))
+              // WI-618: accessor provenance — a dotted name's segments are built
+              // here, they are not written as a `field_access(…)` call.
+              result = terms.allocMinted(Term.Fn(intern("field_access"), IArray(result, fieldRef), IArray.empty))
             result
     }
 
@@ -933,7 +980,8 @@ private class AnthillParserImpl(
       val opString = symbols.name(op)
       val entry = Pratt.lookupPrefix(opString)
       val functorSym = entry.map(e => intern(e.functor)).getOrElse(op)
-      terms.alloc(Term.Fn(functorSym, IArray(operand), IArray.empty))
+      // WI-618: prefix desugar, as for infix above.
+      terms.allocMinted(Term.Fn(functorSym, IArray(operand), IArray.empty))
     }
 
   private def prefixOp[$: P]: P[TermSymbol] =
@@ -1067,7 +1115,8 @@ private class AnthillParserImpl(
 
   private def matchBranch[$: P]: P[TermId] =
     P(keyword("case") ~/ pattern ~ "->" ~ exprBody).map { case (pat, body) =>
-      terms.alloc(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty))
+      // WI-618: binder-form provenance, as for the accessor builds.
+      terms.allocMinted(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty))
     }
 
   private def ifExpr[$: P]: P[TermId] =
@@ -1089,12 +1138,14 @@ private class AnthillParserImpl(
         val named = tyAnno match
           case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty)))
           case None     => IArray.empty[(TermSymbol, TermId)]
-        terms.alloc(Term.Fn(intern("let_expr"), IArray(pat, value, body), named))
+        // WI-618: binder-form provenance.
+        terms.allocMinted(Term.Fn(intern("let_expr"), IArray(pat, value, body), named))
     }
 
   private def lambdaExpr[$: P]: P[TermId] =
     P(keyword("lambda") ~/ pattern ~ "->" ~ exprBody).map { case (param, body) =>
-      terms.alloc(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty))
+      // WI-618: binder-form provenance.
+      terms.allocMinted(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty))
     }
 
   // ── Patterns ─────────────────────────────────────────────────
@@ -1170,8 +1221,14 @@ private class AnthillParserImpl(
   private def fieldDecl[$: P]: P[FieldDecl] =
     P(ident ~ ":" ~ typeExpr).map { case (n, t) => FieldDecl(n, t) }
 
+  /** WI-727 (proposal 056): an optional leading `...` marks a VARIADIC CAPTURE
+    * parameter — a trailing param collecting every named argument not matched to a
+    * declared parameter into one named-tuple record (`fix[R](p: Relation, ...args:
+    * R)`, stdlib `prelude/relation.anthill`). "At most one, trailing" is enforced in
+    * the loader, not here, matching rustland — the diagnostic quotes the qualified
+    * operation name, which only the loader has. */
   private def param[$: P]: P[Param] =
-    P(ident ~ ":" ~ typeExpr).map { case (n, t) => Param(n, t) }
+    P("...".!.? ~ ident ~ ":" ~ typeExpr).map { case (rest, n, t) => Param(n, t, rest.isDefined) }
 
   // ── Visibility ───────────────────────────────────────────────
 
@@ -1478,7 +1535,8 @@ private class AnthillParserImpl(
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
     ).map { case (vis, n, tps, params, retType, clauses, opBody, trailingMeta) =>
       Item.OperationItem(Operation(vis, n,
-        tps.getOrElse(IndexedSeq.empty) ++ clauses.slotBinders, params.toIndexedSeq, retType,
+        refuseTypeParamDefaults(n, tps.getOrElse(IndexedSeq.empty)) ++ clauses.slotBinders,
+        params.toIndexedSeq, retType,
         clauses.requires, clauses.ensures, clauses.effects, opBody,
         combineMeta(clauses.meta, trailingMeta), mkSpan(0, 0)))
     }
@@ -1487,7 +1545,8 @@ private class AnthillParserImpl(
     P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
     ).map { case (vis, n, tps, params, retType, clauses, opBody, trailingMeta) =>
-      Operation(vis, n, tps.getOrElse(IndexedSeq.empty) ++ clauses.slotBinders,
+      Operation(vis, n,
+        refuseTypeParamDefaults(n, tps.getOrElse(IndexedSeq.empty)) ++ clauses.slotBinders,
         params.toIndexedSeq, retType, clauses.requires, clauses.ensures, clauses.effects,
         opBody, combineMeta(clauses.meta, trailingMeta), mkSpan(0, 0))
     }
@@ -1497,13 +1556,41 @@ private class AnthillParserImpl(
     * coincide: this declares operation-local logical variables, not
     * bindings of sort parameters at an instantiation site. Mirrors
     * rustland's `operation_type_param_list`. */
-  private def operationTypeParamList[$: P]: P[IndexedSeq[TypeParam]] =
+  private def operationTypeParamList[$: P]: P[IndexedSeq[WrittenTypeParam]] =
     P("[" ~ operationTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
-  private def operationTypeParam[$: P]: P[TypeParam] =
-    P(ident ~ ("=" ~/ typeExpr).?).map { case (n, default) =>
-      TypeParam(n, default, mkSpan(0, 0))
+  /** A type parameter plus the DEFAULT as written, if any. The default is carried
+    * only as far as `refuseTypeParamDefaults`, which reports it and drops it —
+    * `TypeParam` has no field to store it in (WI-850). */
+  private case class WrittenTypeParam(param: TypeParam, writtenDefault: Option[String])
+
+  private def operationTypeParam[$: P]: P[WrittenTypeParam] =
+    P(Index ~ ident ~ ("=" ~/ typeExpr.!).?).map { case (idx, n, default) =>
+      WrittenTypeParam(TypeParam(n, mkSpan(idx, idx)), default.map(_.trim))
     }
+
+  /** WI-850: a declared type-param DEFAULT (`operation foo[T = Int64](…)`) is
+    * REFUSED. The production above parses it so the refusal can name the operation
+    * and the parameter, instead of failing as an unexpected `=` pointing at a token.
+    *
+    * It has no semantics anywhere: the loader mints a fresh var per parameter from
+    * its NAME alone, so `[T = Int64]` loaded EXACTLY as `[T]` and the default was
+    * dropped in silence. The kernel spec's production is `TypeParam ::= Name` (§5.4).
+    * Refused HERE rather than in the loader because the verdict is decidable from the
+    * surface form alone, and this is the one point both declaration spellings
+    * (`singleOperation` and a braced block's `operationEntry`) reach — mirroring
+    * rustland, which refuses in the converter for the same reason. */
+  private def refuseTypeParamDefaults(op: Name, tps: IndexedSeq[WrittenTypeParam]): IndexedSeq[TypeParam] =
+    for wtp <- tps; written <- wtp.writtenDefault do
+      val opName = op.segments.map(symbols.name).mkString(".")
+      val pName = symbols.name(wtp.param.name)
+      errors += ParseError(
+        s"operation `$opName`: type parameter `$pName` carries a default " +
+        s"(`$pName = $written`), which nothing reads — the declaration means exactly " +
+        s"`$pName`, and the default would be dropped in silence. Declare it bare and " +
+        s"let the call bind it, either from the arguments or explicitly " +
+        s"(`$opName[$pName = $written](…)`)", wtp.param.span)
+    tps.map(_.param)
 
   /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
     * requirement slots found in the `requires` lists — each becomes an operation type
@@ -1534,7 +1621,7 @@ private class AnthillParserImpl(
           reqs += items.map(_.goal)
           items.zipWithIndex.foreach {
             case (RequiresItem(_, Some(binder)), i) =>
-              binders += TypeParam(binder, None, mkSpan(0, 0), Some(slotBase + i))
+              binders += TypeParam(binder, mkSpan(0, 0), Some(slotBase + i))
             case _ => ()
           }
         case (1, terms: IndexedSeq[TermId] @unchecked) => enss += terms
@@ -1754,6 +1841,7 @@ private class AnthillParserImpl(
       providesCarrier |
       providesNamespaceMap |
       providesOperationMap |
+      providesConstMap |
       providesProof |
       providesRule |
       providesFact
@@ -1778,6 +1866,14 @@ private class AnthillParserImpl(
   private def providesOperationMap[$: P]: P[ProvidesItem] =
     P(keyword("operation_map") ~/ providesBindings).map { bs =>
       ProvidesItem.OperationMapI(bs.map { case (k, v) => OperationMapEntry(k, v) })
+    }
+
+  /** WI-889: `const_map { infinity: "f64::INFINITY" }` — the const-level peer of
+    * `operation_map`. Mirrors rustland's `const_map_clause`.
+    */
+  private def providesConstMap[$: P]: P[ProvidesItem] =
+    P(keyword("const_map") ~/ providesBindings).map { bs =>
+      ProvidesItem.ConstMapI(bs.map { case (k, v) => ConstMapEntry(k, v) })
     }
 
   private def providesBindings[$: P]: P[IndexedSeq[(TermSymbol, TermId)]] =
@@ -1807,6 +1903,11 @@ private class AnthillParserImpl(
 
   private def declaration[$: P]: P[Item] =
     P(
+      // WI-853: a file's top level admits an `import`, as a namespace / sort body
+      // already did — the top level IS a scope (`_global`), and an import is how
+      // names enter one. First in the choice because `import` is its own keyword,
+      // shared with no other declaration.
+      importClause.map(Item.ImportItem(_)) |
       namespaceDecl |
       sortDecl |
       effectsSortItem |

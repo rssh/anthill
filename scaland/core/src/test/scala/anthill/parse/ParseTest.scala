@@ -501,21 +501,36 @@ class ParseTest extends munit.FunSuite:
 
   // ── WI-269 Phase A: operation type parameters ──────────────────
 
-  test("WI-269: operation type param `[E]` is captured, no default") {
+  test("WI-269: operation type param `[E]` is captured") {
     val (pf, op) = parseDemoOp("  operation g[E](t: Term) -> Int")
     assertEquals(op.typeParams.length, 1)
     assertEquals(pf.symbols.name(op.typeParams.head.name), "E")
-    assertEquals(op.typeParams.head.default, None)
   }
 
-  test("WI-269: type params with default `[A, B = Int]`") {
-    val (pf, op) = parseDemoOp("  operation g[A, B = Int](t: Term) -> Int")
-    assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)),
-      IndexedSeq("A", "B"))
-    assertEquals(op.typeParams(0).default, None)
-    op.typeParams(1).default match
-      case Some(TypeExpr.Simple(n)) => assertEquals(pf.symbols.name(n.last), "Int")
-      case other => fail(s"expected default Simple(Int), got $other")
+  // WI-850: a type-param DEFAULT is REFUSED, not stored. It still PARSES — that is
+  // what lets the message name the operation and the parameter instead of failing as
+  // an unexpected `=`. (This test used to assert the default was captured; nothing
+  // ever read it, and the loader minted a fresh var from the NAME alone.)
+  test("WI-850: an operation type-param default `[B = Int]` is refused, naming both") {
+    val src =
+      """sort Demo
+        |  sort Int = ?
+        |  sort Term = ?
+        |  operation g[A, B = Int](t: Term) -> Int
+        |end""".stripMargin
+    Parser.parse(src, "<op>") match
+      case Right(_) => fail("expected a refusal for the type-param default")
+      case Left(errs) =>
+        assertEquals(errs.length, 1, s"one error, got: ${errs.map(_.message)}")
+        val m = errs.head.message
+        assert(m.contains("operation `g`"), m)
+        assert(m.contains("type parameter `B`"), m)
+        assert(m.contains("`B = Int`"), m)
+  }
+
+  test("WI-850: a bare type-param list carries no refusal") {
+    val (pf, op) = parseDemoOp("  operation g[A, B](t: Term) -> Int")
+    assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)), IndexedSeq("A", "B"))
   }
 
   test("WI-269: no type-param list ⇒ empty typeParams") {
@@ -1218,4 +1233,133 @@ end
   test("stdlib fix: a plain `operation …` (no visibility) still has none") {
     val (_, op) = parseDemoOp("  operation worker(x: Int) -> Int")
     assertEquals(op.visibility, None)
+  }
+
+  // ── Rust parser resync, WI-639 → WI-889 ──────────────────────────
+  //   Each test below fails on the pre-resync parser; that is what makes it a
+  //   test of the port and not of the surrounding grammar.
+
+  /** WI-890 lexer gap: a string literal is ESCAPE-AWARE (rustland's token regex is
+    * `/"([^"\\]|\\.)*"/`). Before this, `"#include \"hdr.hpp\""` ended at the inner
+    * quote and the rest of the line was a syntax error — which is exactly how the
+    * whole of stdlib `realization/cpp_std.anthill` failed to parse. */
+  test("string escapes: `\\\"` does not close the literal, and decodes to a quote") {
+    val (pf, term) = factTerm("""fact F(x: "#include \"hdr.hpp\"")""")
+    val named = term match
+      case fn: Term.Fn => fn.namedArgs.head._2
+      case other => fail(s"expected Fn, got $other")
+    pf.terms.get(named) match
+      case Term.Const(Literal.StringLit(s)) =>
+        assertEquals(s, "#include \"hdr.hpp\"")
+      case other => fail(s"expected StringLit, got $other")
+  }
+
+  test("string escapes: `\\n` `\\t` `\\\\` decode, an unknown escape passes through") {
+    val (pf, term) = factTerm("""fact F(x: "a\nb\tc\\d\qe")""")
+    val named = term match
+      case fn: Term.Fn => fn.namedArgs.head._2
+      case other => fail(s"expected Fn, got $other")
+    pf.terms.get(named) match
+      case Term.Const(Literal.StringLit(s)) => assertEquals(s, "a\nb\tc\\dqe")
+      case other => fail(s"expected StringLit, got $other")
+  }
+
+  test("string escapes: an ordinary literal is unchanged") {
+    val (pf, term) = factTerm("""fact F(x: "plain")""")
+    val named = term match
+      case fn: Term.Fn => fn.namedArgs.head._2
+      case other => fail(s"expected Fn, got $other")
+    pf.terms.get(named) match
+      case Term.Const(Literal.StringLit(s)) => assertEquals(s, "plain")
+      case other => fail(s"expected StringLit, got $other")
+  }
+
+  /** WI-727 (proposal 056): the `...` variadic-capture marker. Drives the FLAG, not
+    * just the parse — a port that dropped `rest` would still parse `relation.anthill`
+    * and leave the loader's "at most one, trailing" check unable to fire. */
+  test("WI-727: `...args: R` marks the parameter as a variadic capture") {
+    val (pf, op) = parseDemoOp("  operation fix(p: Term, ...args: Map) -> Term")
+    assertEquals(op.params.map(p => pf.symbols.name(p.name)), IndexedSeq("p", "args"))
+    assertEquals(op.params.map(_.rest), IndexedSeq(false, true))
+  }
+
+  test("WI-727: an ordinary parameter list carries no capture") {
+    val (_, op) = parseDemoOp("  operation f(p: Term, q: Map) -> Term")
+    assertEquals(op.params.map(_.rest), IndexedSeq(false, false))
+  }
+
+  /** WI-853: a file's TOP LEVEL admits an `import`. */
+  test("WI-853: a top-level `import` parses as its own item") {
+    val pf = Parser.parse("import anthill.prelude.List\nfact F(x: 1)", "<wi853>")
+      .toOption.getOrElse(fail("parse failed"))
+    val imports = pf.items.collect { case Item.ImportItem(i) => i }
+    assertEquals(imports.length, 1)
+    assertEquals(imports.head.path.segments.map(pf.symbols.name).mkString("."),
+                 "anthill.prelude.List")
+    assertEquals(pf.items.collect { case Item.FactItem(f) => f }.length, 1,
+      "the declaration after the import still parses")
+  }
+
+  test("WI-853: a selective top-level import keeps its selection") {
+    val pf = Parser.parse("import anthill.prelude.Bool.{ite}", "<wi853-sel>")
+      .toOption.getOrElse(fail("parse failed"))
+    pf.items.collect { case Item.ImportItem(i) => i }.head.kind match
+      case ImportKind.Selective(names) =>
+        assertEquals(names.map(n => n.segments.map(pf.symbols.name).mkString(".")).toList,
+                     List("ite"))
+      case other => fail(s"expected Selective, got $other")
+  }
+
+  /** WI-763: a named-tuple type COMPONENT may be a constant standing in type
+    * position — the shape a projection's keep spec is written in. */
+  test("WI-763: `(person: \"name\")` is a denoted named-tuple component") {
+    val (pf, te) = parseReturnType("""Project[T = Row, Keep = (person: "name", years: "age")]""")
+    val keep = te match
+      case TypeExpr.Parameterized(_, bindings) => bindings(1).bound
+      case other => fail(s"expected Parameterized, got $other")
+    keep match
+      case TypeExpr.TupleType(members) =>
+        assertEquals(members.map { case (n, _) => pf.symbols.name(n) },
+                     IndexedSeq("person", "years"))
+        members.map(_._2).foreach {
+          case TypeExpr.Denoted(v) =>
+            pf.terms.get(v) match
+              case Term.Const(Literal.StringLit(_)) => ()
+              case other => fail(s"expected a string denoted, got $other")
+          case other => fail(s"expected Denoted, got $other")
+        }
+      case other => fail(s"expected TupleType, got $other")
+  }
+
+  test("WI-763: an ordinary named-tuple component is still a TYPE, not a denoted") {
+    val (_, te) = parseReturnType("(name: Int, age: Int)")
+    te match
+      case TypeExpr.TupleType(members) =>
+        members.map(_._2).foreach {
+          case TypeExpr.Simple(_) => ()
+          case other => fail(s"expected Simple, got $other")
+        }
+      case other => fail(s"expected TupleType, got $other")
+  }
+
+  /** WI-889: `const_map` — the const-level peer of `operation_map`. */
+  test("WI-889: `const_map` in a binding block parses") {
+    val src = """
+namespace test
+  provides Float language rust
+    artifact "src/float.rs"
+    carrier { Float: "f64" }
+    const_map { infinity: "f64::INFINITY", nan: "f64::NAN" }
+  end
+end
+"""
+    val pf = Parser.parse(src, "constmap.anthill") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString(", ")}")
+    val blocks = pf.items.collect { case Item.NamespaceItem(ns) => ns }
+      .head.items.collect { case Item.ProvidesBlockItem(b) => b }
+    val maps = blocks.head.items.collect { case ProvidesItem.ConstMapI(es) => es }
+    assertEquals(maps.length, 1, "one const_map clause")
+    assertEquals(maps.head.map(e => pf.symbols.name(e.constName)).toList,
+                 List("infinity", "nan"))
   }

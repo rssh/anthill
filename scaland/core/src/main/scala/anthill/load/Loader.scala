@@ -31,12 +31,34 @@ object Loader:
     for file <- files do
       scanItemsPass1(kb, file.items, file.symbols, file.terms, globalScope, "")
 
-    // Pass 2: Process requires and imports
+    // Pass 2: Process requires and imports (all sorts exist now). A Selective
+    // import of a RULE-INTRODUCED predicate cannot resolve here — its head-functor
+    // symbol is not registered until pass 3 — so such names are deferred into
+    // `pending` and retried below (WI-295).
+    val pending = ArrayBuffer.empty[PendingImport]
     for file <- files do
-      scanItemsPass2(kb, file.items, file.symbols, globalScope, "", errors)
+      scanItemsPass2(kb, file.items, file.symbols, globalScope, "", errors, pending)
 
-    // Post-pass: auto-import prelude sort contents into global scope
+    // Post-pass: auto-import prelude sort contents into global scope. BEFORE pass 3,
+    // and that ordering is load-bearing: pass 3's mint guard asks whether a head's
+    // name ALREADY denotes, so every name a declaration provides must be visible
+    // first. Otherwise `rule eq_refl: eq(?a, ?a) <=> true` (stdlib `eq.anthill`,
+    // where `eq` is PartialEq's declared operation reached through the requires
+    // chain) mints a SECOND `eq` and makes the real one ambiguous. rustland reaches
+    // the same state by registering the prelude before `scan_definitions` runs.
     autoImportPrelude(kb, globalScope)
+
+    // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898).
+    for file <- files do
+      scanItemsPass3(kb, file.items, file.symbols, file.terms, globalScope, "", errors)
+
+    // Pass 4 (WI-295): retry the deferred predicate imports. Pass 3's head-functor
+    // symbols are in `byQualifiedName` now, so a cross-namespace rule-predicate
+    // import resolves like any declared name — erroring only if it is still unbound.
+    for p <- pending do
+      resolveSelectiveImport(kb, p.target, p.scopeName, p.short) match
+        case Some(sym) => kb.symbols.addImport(p.scopeRaw, p.short, sym)
+        case None => errors += LoadError.UnresolvedName(p.short, p.span, p.scopeName)
 
     errors
 
@@ -237,7 +259,8 @@ object Loader:
     fileSym: SymbolTable,
     scopeTerm: TermId,
     prefix: String,
-    errors: ArrayBuffer[LoadError]
+    errors: ArrayBuffer[LoadError],
+    pending: ArrayBuffer[PendingImport]
   ): Unit =
     for item <- items do
       item match
@@ -247,8 +270,8 @@ object Loader:
           val nsSym = kb.symbols.byQualifiedName.get(qualName)
           nsSym.foreach { sym =>
             val nsTerm = kb.makeNameTermFromSym(sym)
-            processImports(kb, ns.imports, fileSym, nsTerm, errors)
-            scanItemsPass2(kb, ns.items, fileSym, nsTerm, qualName, errors)
+            processImports(kb, ns.imports, fileSym, nsTerm, errors, pending)
+            scanItemsPass2(kb, ns.items, fileSym, nsTerm, qualName, errors, pending)
           }
 
         case Item.SortWithBodyItem(sort) =>
@@ -257,21 +280,216 @@ object Loader:
           val sortSym = kb.symbols.byQualifiedName.get(qualName)
           sortSym.foreach { sym =>
             val sortTerm = kb.makeNameTermFromSym(sym)
-            processImports(kb, sort.imports, fileSym, sortTerm, errors)
-            scanItemsPass2(kb, sort.items, fileSym, sortTerm, qualName, errors)
+            processImports(kb, sort.imports, fileSym, sortTerm, errors, pending)
+            scanItemsPass2(kb, sort.items, fileSym, sortTerm, qualName, errors, pending)
           }
 
         case Item.RequiresDeclItem(req) =>
           processRequires(kb, req, fileSym, scopeTerm, errors)
 
+        // WI-727 (proposal 056): "at most one variadic capture parameter, and
+        // trailing" is checked HERE and not in the parser — the diagnostic quotes the
+        // QUALIFIED operation name, which only the loader has. Mirrors rustland's
+        // `load.rs` check. Both spellings reach it: a free operation and one written
+        // inside a braced `operation { … }` block.
+        case Item.OperationItem(op) =>
+          checkVariadicCapture(fileSym, prefix, op, errors)
+
+        case Item.OperationBlockItem(block) =>
+          for op <- block.entries do checkVariadicCapture(fileSym, prefix, op, errors)
+
+        // WI-853: a TOP-LEVEL import feeds `_global` — the scope a file's top-level
+        // declarations are defined in. Same `processImports` the namespace-attached
+        // and sort-attached lists go through; only the scope differs, and it is
+        // already the one this recursion carries.
+        //
+        // Only ever the top level: inside a namespace / sort body the parser's
+        // `bodyContent` consumes an `import` before `declaration` is tried, so it
+        // lands in that body's `imports` list and never reaches this arm as an Item.
+        case Item.ImportItem(imp) =>
+          processImports(kb, Seq(imp), fileSym, scopeTerm, errors, pending)
+
         case _ =>
+
+  /** WI-727: a variadic capture (`...args: R`) must be the operation's LAST
+    * parameter, and there may be at most one. Messages mirror rustland's, which
+    * names the operation the same way. */
+  private def checkVariadicCapture(
+    fileSym: SymbolTable, prefix: String, op: Operation, errors: ArrayBuffer[LoadError]
+  ): Unit =
+    val restCount = op.params.count(_.rest)
+    val opQualified = makeQualified(prefix, joinSegments(fileSym, op.name.segments))
+    if restCount > 1 then
+      errors += LoadError.Other(
+        s"operation '$opQualified': at most one variadic capture parameter (`...`) is allowed")
+    else if restCount == 1 && !op.params.last.rest then
+      errors += LoadError.Other(
+        s"operation '$opQualified': a variadic capture parameter (`...`) must be the LAST parameter")
+
+  // ── Pass 3: rule-introduced functors ─────────────────────────
+
+  /** WI-894/896/898: register the functor a RULE HEAD introduces. `ite` is the
+    * motivating case — `bool.anthill` declares no `ite` operation; its two `[simp]`
+    * equations ARE its definition, and `int64.anthill` / `ordered.anthill` reach it by
+    * `import anthill.prelude.Bool.{ite}`. Without this pass that import resolves to
+    * nothing, which is how the whole stdlib failed to load.
+    *
+    * Runs after pass 2 because it must see whether the name ALREADY denotes: a head
+    * naming a declared operation references it, and introduces nothing. */
+  private def scanItemsPass3(
+    kb: KnowledgeBase,
+    items: Iterable[Item],
+    fileSym: SymbolTable,
+    fileTerms: SimpleTermStore,
+    scopeTerm: TermId,
+    prefix: String,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    for item <- items do
+      item match
+        case Item.NamespaceItem(ns) =>
+          val qualName = makeQualified(prefix, joinSegments(fileSym, ns.name.segments))
+          descend(kb, qualName, errors) { scope =>
+            scanItemsPass3(kb, ns.items, fileSym, fileTerms, scope, qualName, errors)
+          }
+
+        case Item.SortWithBodyItem(sort) =>
+          val qualName = makeQualified(prefix, joinSegments(fileSym, sort.name.segments))
+          descend(kb, qualName, errors) { scope =>
+            scanItemsPass3(kb, sort.items, fileSym, fileTerms, scope, qualName, errors)
+          }
+
+        case Item.RuleItem(rule) => scanRuleGoal(kb, rule, fileSym, fileTerms, scopeTerm, prefix)
+        case Item.RuleBlockItem(block) =>
+          for rule <- block.entries do
+            scanRuleGoal(kb, rule, fileSym, fileTerms, scopeTerm, prefix)
+
+        case _ =>
+
+  /** Run `body` in the scope `qualName` names. Pass 1 defined it, so a MISS is a
+    * broken invariant, not a shape this pass may skip: every rule head in the subtree
+    * would silently go unregistered and fall back to a bare global name — the very
+    * defect this pass exists to prevent, and exactly the "silent skip" CLAUDE.md
+    * forbids. So the miss is reported instead of `continue`d. */
+  private def descend(kb: KnowledgeBase, qualName: String, errors: ArrayBuffer[LoadError])
+                     (body: TermId => Unit): Unit =
+    kb.symbols.byQualifiedName.get(qualName) match
+      case Some(sym) => body(kb.makeNameTermFromSym(sym))
+      case None => errors += LoadError.Other(
+        s"internal: scope '$qualName' was not defined in pass 1, so the rule heads " +
+        s"inside it cannot be registered")
+
+  private def scanRuleGoal(
+    kb: KnowledgeBase,
+    rule: Rule,
+    fileSym: SymbolTable,
+    fileTerms: SimpleTermStore,
+    scopeTerm: TermId,
+    prefix: String
+  ): Unit =
+    for (name, kind) <- ruleIntroducedFunctor(rule, fileSym, fileTerms) do
+      // Already denotes something in this scope ⇒ the head REFERENCES it, and a
+      // second definition would shadow the real target for the whole scope.
+      // `defineSymbolOnce`, not `define`: `define` writes `byQualifiedName` for the
+      // qualified name UNCONDITIONALLY whenever the SHORT name is new in the target
+      // scope, so a rule head in a re-opened namespace could replace a builtin's
+      // mapping (the case that gate was written for — see its doc).
+      if !kb.symbols.resolveInScope(name, scopeTerm.raw).denotes then
+        defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scopeTerm)
+
+  /** The functor a rule introduces, and which kind of introduction it is — or `None`
+    * when the rule introduces nothing. Mirrors rustland's
+    * `rule_introduced_functor_name`, including its three refusals:
+    *
+    *  - a MULTI-head rule, or a denial head, introduces nothing;
+    *  - a MINTED subject introduces nothing (WI-618) — the desugar's functor is the
+    *    desugar's name, not the rule's, so `rule ?x.m(?y) :- p(?x)` must not mint
+    *    `dot_apply` and shadow reserved kernel vocab for the whole scope;
+    *  - a QUALIFIED (dotted) head REFERENCES an existing symbol and never introduces
+    *    one — otherwise `rule String.isEmpty(?s) <=> true` defines a symbol whose
+    *    SHORT name is literally `String.isEmpty`.
+    *
+    * The SUBJECT is the node the rule is about: for an equation (`ite(true, ?t, ?_) =
+    * ?t`) that is the LHS; for a predicate head it is the head itself. This is the one
+    * place the two part ways, and the answer travels with the name so a second walk
+    * cannot disagree (WI-898). The rule's LABEL is deliberately never read. */
+  private def ruleIntroducedFunctor(
+    rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
+  ): Option[(String, SymbolKind)] =
+    if rule.heads.length != 1 then return None
+    val headId = rule.heads.head match
+      case RuleHead.TermHead(t) => t
+      case RuleHead.Bottom => return None
+    // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
+    // ordinary predicate whose head happens to be an equality goal).
+    val equationLhs = if rule.body.isDefined then None else parseEquationLhs(fileSym, fileTerms, headId)
+    val (subject, kind) = equationLhs match
+      case Some(lhs) => (lhs, SymbolKind.EquationFunctor)
+      case None      => (headId, SymbolKind.Goal)
+    if fileTerms.isMinted(subject) then return None
+    fileTerms.get(subject) match
+      case fn: Term.Fn =>
+        val name = fileSym.name(fn.functor)
+        if name.contains('.') then None else Some((name, kind))
+      case _ => None
+
+  /** The LHS operand of a parse-layer EQUATION head (`lhs = rhs` / `<=>` / `===`), or
+    * `None` when `head` is not one. The connective sits at the head with its subject
+    * at position 0; arity 2 is load-bearing — a 2-ary head is told from an equation by
+    * the CONNECTIVE (`Pratt.isEquationFunctor`, the one source of truth for the
+    * functors the infix desugar mints), never by arity alone. */
+  private def parseEquationLhs(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
+  ): Option[TermId] =
+    // `isMinted` FIRST, and it is not redundant with the name test: only a node the
+    // infix desugar built is a written connective. Without it the decision would be
+    // re-derived from a name blocklist — the thing `SimpleTermStore.minted` exists to
+    // replace — and a legitimate 2-ary predicate head spelled as an ordinary call
+    // (`rule eq(?a, ?b)`) would be read as an equation whose "LHS" is a variable,
+    // introducing nothing at all. (rustland's `parse_equation_lhs` still tests the
+    // name alone; this is a deliberate divergence, and the fix belongs there too.)
+    if !fileTerms.isMinted(head) then None
+    else fileTerms.get(head) match
+      case fn: Term.Fn
+        if fn.posArgs.length == 2 && fn.namedArgs.isEmpty
+        && Pratt.isEquationFunctor(fileSym.name(fn.functor)) => Some(fn.posArgs(0))
+      case _ => None
+
+  /** WI-295: a `Selective` import name that did not resolve in pass 2. The
+    * head-functor symbol of a rule-introduced predicate is not registered until pass
+    * 3, so such names are deferred and retried after it. `scopeName` is the imported
+    * path, kept for the diagnostic if the retry also fails. */
+  private case class PendingImport(
+    scopeRaw: Int, short: String, target: TermSymbol, span: Span, scopeName: String)
+
+  /** Resolve one name of a `Selective` import against the imported symbol `target`
+    * (whose qualified name is `pathStr`). THE one resolution both pass 2 and the
+    * pass-4 retry use — the retry differs only in WHEN it runs, never in which rungs
+    * it tries, so a name that pass 3 has since registered resolves through exactly the
+    * ladder that first missed it. */
+  private def resolveSelectiveImport(
+    kb: KnowledgeBase, target: TermSymbol, pathStr: String, name: String
+  ): Option[TermSymbol] =
+    kb.symbols.resolveInScope(name, kb.makeNameTermFromSym(target).raw) match
+      case ResolveResult.Found(s) => Some(s)
+      // Fall back to direct fully-qualified lookup — covers top-level multi-segment
+      // sort decls like `enum anthill.prelude.Pair` whose symbol is registered at
+      // global with the dotted name and never gets attached to the
+      // `anthill.prelude` namespace's exports.
+      case _ => kb.symbols.byQualifiedName.get(s"$pathStr.$name")
+        // Last resort: an entity exported by the namespace but defined one scope
+        // deeper, e.g. `execution_platform` declared inside `sort ExecutionPlatform`
+        // of namespace `anthill.realization.platform`. Mirrors rustland's
+        // `find_in_nested_scope`.
+        .orElse(findInNestedScope(kb, pathStr, name))
 
   private def processImports(
     kb: KnowledgeBase,
     imports: Iterable[Import],
     fileSym: SymbolTable,
     scopeTerm: TermId,
-    errors: ArrayBuffer[LoadError]
+    errors: ArrayBuffer[LoadError],
+    pending: ArrayBuffer[PendingImport]
   ): Unit =
     for imp <- imports do
       val pathStr = joinSegments(fileSym, imp.path.segments)
@@ -284,25 +502,15 @@ object Loader:
             case ImportKind.Selective(names) =>
               for n <- names do
                 val name = joinSegments(fileSym, n.segments)
-                val symTerm = kb.makeNameTermFromSym(sym)
-                val found = kb.symbols.resolveInScope(name, symTerm.raw) match
-                  case ResolveResult.Found(s) => Some(s)
-                  // Fall back to direct fully-qualified lookup — covers
-                  // top-level multi-segment sort decls like
-                  // `enum anthill.prelude.Pair` whose symbol is registered at
-                  // global with the dotted name and never gets attached to
-                  // the `anthill.prelude` namespace's exports.
-                  case _ => kb.symbols.byQualifiedName.get(s"$pathStr.$name")
-                    // Last resort: an entity exported by the namespace but
-                    // defined one scope deeper, e.g. `execution_platform`
-                    // declared inside `sort ExecutionPlatform` of namespace
-                    // `anthill.realization.platform` (qualified name
-                    // `…platform.ExecutionPlatform.execution_platform`).
-                    // Mirrors rustland's `find_in_nested_scope`.
-                    .orElse(findInNestedScope(kb, pathStr, name))
-                found match
+                resolveSelectiveImport(kb, sym, pathStr, name) match
                   case Some(s) => kb.symbols.addImport(scopeTerm.raw, name, s)
-                  case None => errors += LoadError.UnresolvedName(name, n.span, pathStr)
+                  // WI-295: a RULE-INTRODUCED predicate's head-functor symbol is not
+                  // registered until pass 3, which runs AFTER imports — so a selective
+                  // import of one (`import anthill.prelude.Bool.{ite}`, stdlib
+                  // int64/ordered) cannot resolve here. Defer instead of erroring; the
+                  // post-pass-3 retry re-resolves it and errors only if still unbound.
+                  case None =>
+                    pending += PendingImport(scopeTerm.raw, name, sym, n.span, pathStr)
             case ImportKind.Wildcard =>
               val parentTerm = kb.makeNameTermFromSym(sym)
               kb.symbols.addParent(scopeTerm.raw,
@@ -542,7 +750,10 @@ object Loader:
          // scaland emits no `Implementation` fact either, so it emits no
          // `OperationMapping` — the fact-emitting half is rustland's (see
          // `emit_operation_mapping_facts`) and is the port that remains.
-         | ProvidesItem.OperationMapI(_) =>
+         | ProvidesItem.OperationMapI(_)
+         // WI-889: same standing as `OperationMapI` — parsed so a binding file
+         // using it can be read; no `ConstMapping` fact, for the same reason.
+         | ProvidesItem.ConstMapI(_) =>
 
   private def specName(fileSym: SymbolTable, te: TypeExpr): String = te match
     case TypeExpr.Simple(n) => joinSegments(fileSym, n.segments)
@@ -622,9 +833,20 @@ object Loader:
         kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
 
-  /** Resolve a name in scope, falling back to intern for user-defined predicates. */
+  /** Resolve a name in scope, falling back to intern for user-defined predicates.
+    *
+    * The `byQualifiedName` rung fires only for a DOTTED spelling — a name with no dot
+    * is a SHORT name, and a short name is answered by scope, never by the global
+    * qualified-name table. Before pass 3 the distinction did not bite, because only
+    * dotted or namespaced declarations reached that table; pass 3 registers an
+    * UNQUALIFIED entry for every top-level rule head, and taking that rung for a short
+    * name then let a top-level `rule p(?y) :- q(?y)` capture an unrelated `sort S`'s
+    * own `rule p(?x) :- q(?x)` — S's law was indexed under the global `p` and `S.p`
+    * got no clauses at all, with no diagnostic. The mint guard in `scanRuleGoal` asks
+    * `resolveInScope`, so this is also what keeps the two ladders answering alike:
+    * rustland has ONE ladder (`resolve_name_in_kb`) that both callers share. */
   private def resolveName(kb: KnowledgeBase, name: String, scopeTerm: TermId, errors: ArrayBuffer[LoadError]): TermSymbol =
-    kb.symbols.byQualifiedName.get(name) match
+    (if name.contains('.') then kb.symbols.byQualifiedName.get(name) else None) match
       case Some(sym) => sym
       case None =>
         kb.symbols.resolveInScope(name, scopeTerm.raw) match

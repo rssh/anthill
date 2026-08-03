@@ -9,12 +9,28 @@ import scala.collection.mutable.{ArrayBuffer, HashMap}
 
 class SimpleTermStore:
   private val terms = ArrayBuffer.empty[Term]
+  /** WI-618: the `Term.Fn` nodes the parse pipeline MINTED — infix/prefix operator
+    * desugars (`?a + ?b` → `add`) and accessor builds (`?x.f` → `field_access`,
+    * `?x.m(…)` → `dot_apply`) — as opposed to nodes written as a call. Provenance,
+    * carried rather than re-derived from a name blocklist: a user may legitimately
+    * write a functor called `add`, and only this set tells the two apart. Read by
+    * the loader's rule-introduced-functor scan, which must not mint a symbol for a
+    * desugar's own functor name. */
+  private val minted = scala.collection.mutable.HashSet.empty[TermId]
   val descriptions: HashMap[TermId, ArrayBuffer[String]] = HashMap.empty
 
   def alloc(term: Term): TermId =
     val id = TermId.fromRaw(terms.length)
     terms += term
     id
+
+  /** Allocate and mark as parse-minted, in one step — the two must not drift apart. */
+  def allocMinted(term: Term): TermId =
+    val id = alloc(term)
+    minted += id
+    id
+
+  def isMinted(id: TermId): Boolean = minted.contains(id)
 
   def get(id: TermId): Term = terms(id.index)
   def size: Int = terms.length
@@ -107,6 +123,12 @@ enum Item:
   case ProofItem(proof: ProofDecl)
   case ProvidesClauseItem(pc: ProvidesClause)
   case ProvidesBlockItem(pb: ProvidesBlock)
+  // WI-853: a file's TOP LEVEL admits an `import`, as a namespace / sort body
+  // already did. The top level is a scope — the `_global` one every top-level
+  // `sort` / `fact` / `rule` is defined in — and an import is how names enter a
+  // scope. Rides as its own `Item` (rather than a file-level `imports` list)
+  // because scaland's `declaration` yields one `Item` per production.
+  case ImportItem(imp: Import)
 
 // ── Namespace ───────────────────────────────────────────────────
 
@@ -194,12 +216,23 @@ case class Operation(
   span: Span
 )
 
-case class Param(name: TermSymbol, ty: TypeExpr)
+/** An operation parameter. `rest` is WI-727 (proposal 056): `true` for a
+  * VARIADIC CAPTURE parameter — one written `...name: R`, which collects every
+  * named argument not matched to a declared parameter into a single named-tuple
+  * record. At most one, and trailing; enforced in the loader (which knows the
+  * qualified operation name the diagnostic quotes), as rustland does. */
+case class Param(name: TermSymbol, ty: TypeExpr, rest: Boolean)
 
-/** Operation-local type parameter (WI-269): `[T]` or `[T = Default]`.
+/** Operation-local type parameter (WI-269): `[T]`.
   * Mirrors rustland's `TypeParam`. These declare operation-local logical
   * variables, distinct from sort-parameter bindings at an instantiation
-  * site. `default` carries the optional `= Type` right-hand side.
+  * site.
+  *
+  * WI-850: there is no `default` field. A written `[T = Int64]` still PARSES —
+  * so the refusal can name the operation and the parameter instead of failing as
+  * an unexpected `=` — and is then refused, never stored. The kernel spec's
+  * production is `TypeParam ::= Name` (§5.4), and a stored default had no reader:
+  * the loader mints a fresh var per parameter from its NAME alone.
   *
   * WI-840 (proposal 058 §4.7): `requirementSlot` is `Some(k)` when the parameter was
   * declared as a NAMED requirement slot in the operation's `requires` clause list
@@ -210,7 +243,6 @@ case class Param(name: TermSymbol, ty: TypeExpr)
   * `requires plus: Monoid[T], times: Monoid[T]` are the same type. */
 case class TypeParam(
   name: TermSymbol,
-  default: Option[TypeExpr],
   span: Span,
   requirementSlot: Option[Int] = None
 )
@@ -460,7 +492,13 @@ enum ProvidesItem:
   // realizes one of the carrier's operations. The operation-level peer of
   // `CarrierI`, which says which host TYPE realizes a sort.
   case OperationMapI(entries: IndexedSeq[OperationMapEntry])
+  // WI-889: `const_map { infinity: "f64::INFINITY" }` — the CONST-level peer of
+  // `operation_map`, saying which host EXPRESSION realizes a carrier's body-less
+  // `const`. A const is not an operation, so it has no place in `operation_map`,
+  // whose reader refuses a non-operation by design.
+  case ConstMapI(entries: IndexedSeq[ConstMapEntry])
 
 case class CarrierBinding(anthillParam: TermSymbol, hostType: TermId)
 case class NamespaceMapEntry(anthillNamespace: TermSymbol, hostModule: TermId)
 case class OperationMapEntry(operation: TermSymbol, hostFn: TermId)
+case class ConstMapEntry(constName: TermSymbol, hostExpr: TermId)

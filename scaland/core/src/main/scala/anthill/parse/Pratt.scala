@@ -57,6 +57,15 @@ object Pratt:
   def lookupInfix(name: String): Option[InfixEntry] = infixTable.get(name)
   def lookupPrefix(name: String): Option[PrefixEntry] = prefixTable.get(name)
 
+  /** Is `name` one of the equation-connective functors the infix desugar mints for
+    * `=` / `<=>` / `===`? Derived from `infixTable` above rather than restated, so a
+    * new equation spelling cannot drift out of the loader's equational-head
+    * recognition. Mirrors rustland's `pratt::is_equation_functor`. */
+  private val equationFunctors: Set[String] =
+    Set("=", "<=>", "===").flatMap(infixTable.get).map(_.functor)
+
+  def isEquationFunctor(name: String): Boolean = equationFunctors.contains(name)
+
   /** Desugar a flat infix chain.
     *
     * @param operands alternating: [term, op, term, op, term, ...]

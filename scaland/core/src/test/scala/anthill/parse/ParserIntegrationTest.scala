@@ -970,8 +970,11 @@ class ParserIntegrationTest extends munit.FunSuite:
 
     // Find the same/2 rule and walk into its body to confirm `eq` resolved
     // to anthill.prelude.PartialEq.eq (not the would-be-ambiguous anthill.prelude.eq).
-    // `same` is the rule's head functor — interned, not a registered Symbol.
-    val sameSym = kb.intern("same")
+    // `same` is the rule's head functor — a RULE-INTRODUCED symbol since the pass-3
+    // port (WI-894/896/898), registered as `Demo.same`; it used to be a bare intern,
+    // which is why this lookup changed with that pass and not with anything about `eq`.
+    val sameSym = kb.tryResolveSymbol("Demo.same")
+      .getOrElse(fail("`same` should be registered as a rule-introduced functor"))
     val rules = kb.byFunctor(sameSym)
     assertEquals(rules.length, 1)
     val body = kb.ruleBody(rules.head)
@@ -983,3 +986,279 @@ class ParserIntegrationTest extends munit.FunSuite:
       case other => fail(s"expected Fn for body atom, got $other")
   }
 
+
+  // ── Rust parser resync: the two LOAD-side halves ──────────────────
+
+  /** WI-727: "at most one variadic capture, and trailing" is checked in the loader,
+    * not the parser — the diagnostic quotes the QUALIFIED operation name, which only
+    * the loader has. Both messages mirror rustland's. These fail on the pre-resync
+    * loader in the opposite direction: `...` did not parse at all, so nothing reached
+    * the check. */
+  private def loadOpSource(src: String): IndexedSeq[LoadError] =
+    val pf = Parser.parse(src, "<variadic>") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString("; ")}")
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    Loader.loadAll(kb, IndexedSeq(pf)).toIndexedSeq
+
+  test("WI-727: a trailing single `...` capture loads clean") {
+    val errs = loadOpSource(
+      """namespace v
+        |  sort Rel
+        |    sort R = ?
+        |    operation fix(p: Rel, ...args: R) -> Rel
+        |  end
+        |end""".stripMargin)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+  }
+
+  test("WI-727: a NON-TRAILING capture is refused, naming the qualified operation") {
+    val errs = loadOpSource(
+      """namespace v
+        |  sort Rel
+        |    sort R = ?
+        |    operation fix(...args: R, p: Rel) -> Rel
+        |  end
+        |end""".stripMargin)
+    val m = errs.collectFirst { case LoadError.Other(msg) if msg.contains("variadic") => msg }
+      .getOrElse(fail(s"expected a variadic refusal, got: $errs"))
+    assert(m.contains("v.Rel.fix"), m)
+    assert(m.contains("LAST parameter"), m)
+  }
+
+  test("WI-727: TWO captures are refused") {
+    val errs = loadOpSource(
+      """namespace v
+        |  sort Rel
+        |    sort R = ?
+        |    operation fix(...a: R, ...b: R) -> Rel
+        |  end
+        |end""".stripMargin)
+    val m = errs.collectFirst { case LoadError.Other(msg) if msg.contains("variadic") => msg }
+      .getOrElse(fail(s"expected a variadic refusal, got: $errs"))
+    assert(m.contains("at most one"), m)
+  }
+
+  /** WI-853: a TOP-LEVEL import feeds `_global`, the scope a file's top-level
+    * declarations are defined in. Drives the capability rather than the parse: the
+    * imported short name must actually RESOLVE afterwards. */
+  test("WI-853: a top-level import puts the imported name in scope at `_global`") {
+    val provider = Parser.parse(
+      """namespace lib
+        |  sort Widget853
+        |    sort T = ?
+        |  end
+        |end""".stripMargin, "<provider>").toOption.getOrElse(fail("provider parse failed"))
+    val user = Parser.parse(
+      "import lib.{Widget853}\nfact Uses(w: 1)", "<user>")
+      .toOption.getOrElse(fail("user parse failed"))
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(provider, user)).filterNot(isToleratedLoadError)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+
+    val globalRaw = kb.makeNameTerm("_global").raw
+    kb.symbols.resolveInScope("Widget853", globalRaw) match
+      case ResolveResult.Found(sym) =>
+        kb.symbols.get(sym) match
+          case SymbolDef.Resolved(_, qn, _, _) => assertEquals(qn, "lib.Widget853")
+          case other => fail(s"expected a resolved symbol, got $other")
+      case other =>
+        fail(s"`Widget853` should resolve at _global through the top-level import, got $other")
+  }
+
+  // ── Pass 3 + 4: rule-introduced functors, deferred predicate imports ──
+  //   Port of rustland WI-295 / WI-894 / WI-896 / WI-898. Before it, every test
+  //   below either failed to resolve the imported name or minted a symbol it
+  //   should not have; the whole shared stdlib failed to LOAD on the first one.
+
+  private def loadFixture(src: String): (KnowledgeBase, IndexedSeq[LoadError]) =
+    val pf = Parser.parse(src, "<pass3>") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString("; ")}")
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    (kb, Loader.loadAll(kb, IndexedSeq(pf)).toIndexedSeq)
+
+  private def kindOf(kb: KnowledgeBase, qualified: String): Option[SymbolKind] =
+    kb.symbols.byQualifiedName.get(qualified).map(kb.symbols.get).collect {
+      case SymbolDef.Resolved(_, _, kind, _) => kind
+    }
+
+  /** The `ite` shape verbatim: a functor NO declaration names, introduced by its
+    * equations alone and reached from another sort by a selective import. */
+  private val rulePredicateFixture =
+    """namespace p3
+      |  sort Boolish
+      |    rule {
+      |      ite_true:  ite(true, ?t, ?e) = ?t
+      |      ite_false: ite(false, ?t, ?e) = ?e
+      |    }
+      |    rule likes(?a, ?b) :- ite(?a, ?b, ?a)
+      |  end
+      |  sort User
+      |    import p3.Boolish.{ite}
+      |    rule uses(?x) :- ite(?x, 1, 2)
+      |  end
+      |end""".stripMargin
+
+  test("WI-898: an EQUATION head introduces its LHS functor, not the connective") {
+    val (kb, errs) = loadFixture(rulePredicateFixture)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+    assertEquals(kindOf(kb, "p3.Boolish.ite"), Some(SymbolKind.EquationFunctor))
+    assertEquals(kb.symbols.byQualifiedName.get("p3.Boolish.eq"), None,
+      "the `=` connective must not be introduced as a functor")
+  }
+
+  test("WI-896: a PREDICATE head introduces a Goal") {
+    val (kb, _) = loadFixture(rulePredicateFixture)
+    assertEquals(kindOf(kb, "p3.Boolish.likes"), Some(SymbolKind.Goal))
+    assertEquals(kindOf(kb, "p3.User.uses"), Some(SymbolKind.Goal))
+  }
+
+  test("WI-295: a selective import of a rule-introduced functor resolves") {
+    val (kb, errs) = loadFixture(rulePredicateFixture)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+    val userScope = kb.symbols.byQualifiedName.get("p3.User")
+      .map(s => kb.makeNameTermFromSym(s).raw)
+      .getOrElse(fail("p3.User should be registered"))
+    kb.symbols.resolveInScope("ite", userScope) match
+      case ResolveResult.Found(sym) =>
+        kb.symbols.get(sym) match
+          case SymbolDef.Resolved(_, qn, _, _) => assertEquals(qn, "p3.Boolish.ite")
+          case other => fail(s"expected a resolved symbol, got $other")
+      case other => fail(s"`ite` should resolve in p3.User through the import, got $other")
+  }
+
+  test("WI-295: an import naming nothing at all is STILL an error after the retry") {
+    val (_, errs) = loadFixture(
+      """namespace p3b
+        |  sort Boolish
+        |    rule ite(true, ?t, ?e) = ?t
+        |  end
+        |  sort User
+        |    import p3b.Boolish.{nosuchname}
+        |  end
+        |end""".stripMargin)
+    assert(errs.exists { case LoadError.UnresolvedName("nosuchname", _, _) => true; case _ => false },
+      s"expected an unresolved-name error for the deferred import, got: $errs")
+  }
+
+  test("WI-618: a MINTED subject introduces nothing (accessor and infix desugars)") {
+    val (kb, _) = loadFixture(
+      """namespace p3c
+        |  sort S
+        |    rule ?x.m(?y) :- holds(?x)
+        |    rule ?a + ?b = ?c :- holds(?a)
+        |  end
+        |end""".stripMargin)
+    for minted <- Seq("dot_apply", "add", "eq") do
+      assertEquals(kb.symbols.byQualifiedName.get(s"p3c.S.$minted"), None,
+        s"`$minted` is the desugar's own functor and must not be introduced")
+  }
+
+  test("a head naming a DECLARED operation introduces nothing (no second meaning)") {
+    val (kb, _) = loadFixture(
+      """namespace p3d
+        |  sort S
+        |    sort T = ?
+        |    operation f(x: T) -> T
+        |    rule f(?x) = ?x
+        |  end
+        |end""".stripMargin)
+    assertEquals(kindOf(kb, "p3d.S.f"), Some(SymbolKind.Operation),
+      "the operation keeps its kind — the rule head references it, it does not redefine it")
+  }
+
+  test("a QUALIFIED head introduces nothing") {
+    val (kb, _) = loadFixture(
+      """namespace p3e
+        |  sort S
+        |    rule Other.isEmpty(?s) = true
+        |  end
+        |end""".stripMargin)
+    assertEquals(kb.symbols.byQualifiedName.get("p3e.S.Other.isEmpty"), None)
+    assertEquals(kb.symbols.byQualifiedName.get("p3e.S.isEmpty"), None)
+  }
+
+  test("a MULTI-HEAD rule introduces nothing") {
+    val (kb, _) = loadFixture(
+      """namespace p3f
+        |  sort S
+        |    rule pair_law: h1(?x), h2(?x) :- holds(?x)
+        |  end
+        |end""".stripMargin)
+    for h <- Seq("h1", "h2") do
+      assertEquals(kb.symbols.byQualifiedName.get(s"p3f.S.$h"), None,
+        s"`$h` is one of several heads — a multi-head rule introduces nothing")
+  }
+
+  /** The mint guard and the reference resolver must answer a SHORT name the same way.
+    * Pass 3 registers an unqualified `byQualifiedName` entry for every top-level rule
+    * head, and while `resolveName` took that entry ahead of scope, a sort's law about
+    * its own operation was indexed under an unrelated global predicate of the same
+    * short name — with no diagnostic. Fails without the dotted-only rung in
+    * `resolveName`; unaffected by anything else in the pass-3 port. */
+  test("a scope's own rule clauses are not captured by a same-named global functor") {
+    val globalRule = Parser.parse("rule p(?y) :- q(?y)", "<global>")
+      .toOption.getOrElse(fail("global parse failed"))
+    val scoped = Parser.parse(
+      """namespace n
+        |  sort S
+        |    sort T = ?
+        |    operation p(x: T) -> T
+        |    rule p(?x) :- q(?x)
+        |  end
+        |end""".stripMargin, "<scoped>").toOption.getOrElse(fail("scoped parse failed"))
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(globalRule, scoped)).filterNot(isToleratedLoadError)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+
+    val globalP = kb.symbols.byQualifiedName.get("p").getOrElse(fail("global `p` should exist"))
+    val scopedP = kb.symbols.byQualifiedName.get("n.S.p").getOrElse(fail("`n.S.p` should exist"))
+    assertEquals(kb.byFunctor(globalP).length, 1, "the global rule keeps exactly its own clause")
+    assertEquals(kb.byFunctor(scopedP).length, 1, "S's law is indexed under S's own operation")
+  }
+
+  /** The pass-4 retry must try the SAME rungs pass 2 tried. Here the import names the
+    * enclosing NAMESPACE, so the functor is one scope deeper and only
+    * `findInNestedScope` finds it — a retry that looked up the exact qualified string
+    * `p4.ite` alone would refuse a name that is plainly there. */
+  test("WI-295: a deferred import resolves through the nested-scope rung too") {
+    val (kb, errs) = loadFixture(
+      """namespace p4
+        |  sort Boolish
+        |    rule ite(true, ?t, ?e) = ?t
+        |  end
+        |  sort User
+        |    import p4.{ite}
+        |  end
+        |end""".stripMargin)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+    val userScope = kb.symbols.byQualifiedName.get("p4.User")
+      .map(s => kb.makeNameTermFromSym(s).raw).getOrElse(fail("p4.User should be registered"))
+    kb.symbols.resolveInScope("ite", userScope) match
+      case ResolveResult.Found(sym) =>
+        kb.symbols.get(sym) match
+          case SymbolDef.Resolved(_, qn, _, _) => assertEquals(qn, "p4.Boolish.ite")
+          case other => fail(s"expected a resolved symbol, got $other")
+      case other => fail(s"`ite` should resolve through the namespace-path import, got $other")
+  }
+
+  /** A 2-ary head spelled as an ordinary CALL is a predicate, not an equation — the
+    * connective test is guarded by parse provenance, so a user functor that happens to
+    * be named `eq` is not mistaken for the `=` desugar and dropped. */
+  test("WI-618: a written `eq(?a, ?b)` head is a predicate, not an equation") {
+    val (kb, _) = loadFixture(
+      """namespace p5
+        |  sort S
+        |    rule eq(?a, ?b)
+        |  end
+        |end""".stripMargin)
+    assertEquals(kindOf(kb, "p5.S.eq"), Some(SymbolKind.Goal),
+      "a written call introduces a Goal; only the infix desugar makes an equation")
+  }

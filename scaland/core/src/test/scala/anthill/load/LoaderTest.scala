@@ -11,6 +11,14 @@ import scala.collection.mutable.ArrayBuffer
 
 class LoaderTest extends munit.FunSuite:
 
+  /** The symbol a top-level rule HEAD carries. Since the pass-3 port
+    * (WI-894/896/898) a rule-introduced functor is a REGISTERED symbol, distinct
+    * from the bare intern of the same string — so a `byFunctor` lookup must ask the
+    * symbol table, not `intern`. */
+  private def ruleFunctor(kb: KnowledgeBase, name: String): TermSymbol =
+    kb.tryResolveSymbol(name)
+      .getOrElse(fail(s"`$name` should be registered as a rule-introduced functor"))
+
   private def emptySpan = Span.empty
 
   /** Helper to build a manual ParsedFile with facts and rules. */
@@ -97,8 +105,11 @@ class LoaderTest extends munit.FunSuite:
     val errors = Loader.loadAll(kb, IndexedSeq(parsed))
     assert(errors.isEmpty, s"Load errors: $errors")
 
-    // Query: grandparent(?a, ?b)
-    val gpSym = kb.intern("grandparent")
+    // Query: grandparent(?a, ?b).
+    // `grandparent` is a RULE-INTRODUCED functor, so since the pass-3 port
+    // (WI-894/896/898) it is a REGISTERED symbol, not a bare intern — the query must
+    // name the same symbol the head does or it matches nothing.
+    val gpSym = ruleFunctor(kb, "grandparent")
     val aSym = kb.intern("a"); val bSym = kb.intern("b")
     val va = kb.freshVar(aSym); val vb = kb.freshVar(bSym)
     val varA = kb.alloc(Term.Var(Var.Global(va))); val varB = kb.alloc(Term.Var(Var.Global(vb)))
@@ -326,7 +337,7 @@ class LoaderTest extends munit.FunSuite:
     // The head `p(?x: Numeric)` strips to the bare `p(?x)`: the ground query
     // `p(42)` resolves through the body `q(42)`. Were the marker NOT stripped,
     // the head arg would be `typed_var(?x, …)` (a Fn) and `p(42)` would not unify.
-    val pSym = kb.intern("p")
+    val pSym = ruleFunctor(kb, "p")
     val fortyTwo = kb.alloc(Term.Const(Literal.IntLit(42)))
     val query = kb.alloc(Term.Fn(pSym, IArray(fortyTwo), IArray.empty))
     val solutions = SearchStream.resolve(kb, query).allSolutions(kb)
@@ -346,7 +357,7 @@ class LoaderTest extends munit.FunSuite:
     assert(errors.isEmpty, s"Load errors: $errors")
     // Stripped-by-name would rewrite the head to the literal `1` (no `typed_var`
     // rule); the tightened guard leaves it as the 2-ary functor.
-    assertEquals(kb.byFunctor(kb.intern("typed_var")).length, 1,
+    assertEquals(kb.byFunctor(ruleFunctor(kb, "typed_var")).length, 1,
       "the non-marker `typed_var` rule loads as itself")
   }
 
@@ -359,7 +370,7 @@ class LoaderTest extends munit.FunSuite:
     // requires exactly one pos arg, so this loads as an ordinary 0-ary functor.
     val errors = Loader.loadAll(kb, IndexedSeq(parsed))
     assert(errors.isEmpty, s"Load errors: $errors")
-    assertEquals(kb.byFunctor(kb.intern("typed_var")).length, 1)
+    assertEquals(kb.byFunctor(ruleFunctor(kb, "typed_var")).length, 1)
   }
 
   // WI-451/WI-452 (§5.4): the enclosing-list HK sort type-param form loads, and
