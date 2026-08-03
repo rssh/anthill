@@ -4966,7 +4966,7 @@ impl KnowledgeBase {
     /// WI-969 — PANICS on a KB that was never bootstrapped, where this used to
     /// fall back to a bare `intern("eq")`. The fallback had no production
     /// reachability (every real path loads, and every load calls
-    /// [`load::register_prelude`](crate::kb::load::register_prelude)); it existed
+    /// [`load::register_prelude`]); it existed
     /// so unit tests could skip bootstrap, and it bought that at the price of a
     /// SECOND spelling of the canonical equality head. That second spelling fails
     /// silently in the worst way — a `[simp]` rule built on it simply never
@@ -5577,7 +5577,7 @@ impl KnowledgeBase {
 
     // ── Type term constructors (anthill.prelude.Type entities) ───
 
-    /// sort_ref(name: <sym>) — reference to a named sort.
+    /// `sort_ref(name: <sym>)` — reference to a named sort.
     pub fn make_sort_ref(&mut self, sort_sym: Symbol) -> TermId {
         // WI-361 producer flip: a bare sort is the term `Ref(S)` itself — no
         // `sort_ref(name: Ref(S))` wrapper. The sort symbol IS the functor for
@@ -5883,7 +5883,7 @@ impl KnowledgeBase {
         self.make_entity_term(base_sym, SmallVec::new(), named_args)
     }
 
-    /// arrow(param: <type>, result: <type>, effects: <effects_rows Type>).
+    /// `arrow(param: <type>, result: <type>, effects: <effects_rows Type>)`.
     ///
     /// WI-307 v1a row-substrate: `effects` is the singular
     /// `effects_rows(EffectExpression)` Type — not `List[Type]`. The caller
@@ -6216,7 +6216,7 @@ impl KnowledgeBase {
         self.make_effects_rows_type(acc)
     }
 
-    /// type_var(name: <sym>) — a type variable for inference.
+    /// `type_var(name: <sym>)` — a type variable for inference.
     ///
     /// WI-963 — why a TERM, and why a bare `Var` is not enough. Asked twice; the answer
     /// is checkable, so it lives here and is DRIVEN by
@@ -6260,7 +6260,7 @@ impl KnowledgeBase {
         self.make_entity_term(type_var_sym, SmallVec::new(), named_args)
     }
 
-    /// denoted(value: <term>) — a value-in-type carried faithfully as a hash-consed
+    /// `denoted(value: <term>)` — a value-in-type carried faithfully as a hash-consed
     /// term. The term twin of `TypeNode::Denoted` (WI-390 re-introduced this after
     /// WI-366 retired the ground builder), so a `denoted` round-trips through the
     /// term store. `value` is the ground/qualified reference structure; a local-binder
@@ -6273,7 +6273,7 @@ impl KnowledgeBase {
         self.make_entity_term(denoted_sym, SmallVec::new(), named_args)
     }
 
-    /// expr_carried(value: <term>, member: Ref(<sym>)) — the term twin of an
+    /// `expr_carried(value: <term>, member: Ref(<sym>))` — the term twin of an
     /// expression-carried type projection `s.T` / `s.Sort` (WI-376). `value` is the
     /// receiver occurrence's term (a ground `Ref(s)` for a param/local receiver);
     /// `member` is the projected type-member name, carried as `Ref(sym)` exactly as
@@ -6291,7 +6291,7 @@ impl KnowledgeBase {
         self.make_entity_term(expr_carried_sym, SmallVec::new(), named_args)
     }
 
-    /// rigid_type_projection(sort: Ref(<decl>), var: <subject>, member: Ref(<sym>)) —
+    /// `rigid_type_projection(sort: Ref(<decl>), var: <subject>, member: Ref(<sym>))` —
     /// the TYPE-receiver projection `P.Key` / `MemStore.Key` (WI-428, design §5.3): the
     /// type-keyed sibling of [`Self::make_expr_carried`]. `subject` is the projection's
     /// receiver TERM — `Ref(P)` for a rigid type-parameter, `Ref(S)` for a concrete
@@ -6586,7 +6586,7 @@ impl KnowledgeBase {
     /// code is bound here.
     ///
     /// WI-967 — a STEP OF BOOTSTRAP, not a peer of it.
-    /// [`load::register_prelude`](crate::kb::load::register_prelude) is its ONE
+    /// [`load::register_prelude`] is its ONE
     /// caller and owns the ordering (this needs the namespace hierarchy
     /// `register_stdlib_scopes` creates — [`Self::register_builtin_tag`] panics
     /// without it). A caller-side call is therefore always redundant; 218 were

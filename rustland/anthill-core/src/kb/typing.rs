@@ -283,7 +283,7 @@ pub enum TypeError {
     /// WI-709: a parameterized type WRITTEN AS A VALUE (WI-707 —
     /// `is_modifiable(Cell[W = Int64])`) whose type arguments do not fit the sort's
     /// declared params. The value-position face of
-    /// [`LoadError::InvalidTypeArgument`](super::load::LoadError::InvalidTypeArgument):
+    /// [`LoadError::InvalidTypeArgument`]:
     /// both are decided by [`KnowledgeBase::check_sort_type_args`], so the written and
     /// the evaluated spelling of one type agree on what is admissible — without which
     /// they would build DIFFERENT terms for the same source text, defeating the

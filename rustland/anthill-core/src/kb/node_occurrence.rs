@@ -1554,7 +1554,7 @@ pub fn open_debruijn_node(
 /// `Rc<NodeOccurrence>` children AND inside the remaining `TermId`-typed
 /// occurrence fields — `Apply`/`ApplyWithin.type_args` (post-WI-319 the pattern
 /// slots — Lambda/LambdaWithin.param, Let.pattern, MatchBranch.pattern — are
-/// themselves Pattern-kind Rc<NodeOccurrence> children, no longer TermId; and
+/// themselves Pattern-kind `Rc<NodeOccurrence>` children, no longer TermId; and
 /// WI-819 retired `Let.type_annotation`, whose replacement is an ordinary
 /// Expr-kind child of the pattern occurrence) — by running those through
 /// `KnowledgeBase::term_to_debruijn` (hence `&mut self`). So a body atom is
