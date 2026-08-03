@@ -188,6 +188,60 @@ private class AnthillParserImpl(
   private def mkSpan(s: Int, e: Int): Span = Span.at(fileName, lines, s, e)
   private def intern(s: String): TermSymbol = symbols.intern(s)
 
+  /** The span of the ONE token `p` matches, discarding its value — what a
+    * keyword-led production wants (`spanOfToken(keyword("if"))`, `spanOfToken("[")`).
+    *
+    * WI-965: this and [[located]] replace the open-coded `Index ~ p ~~ Index` +
+    * `mkSpan(s, e)` that had accreted at ~30 productions, each spelling the same
+    * three-step bracket-and-resolve by hand and each free to get the `~~` wrong.
+    * What stays written out is the genuine MULTI-TOKEN span — a declaration
+    * bracketing itself from its own first token to its last (see the WI-947 note at
+    * `namespaceDecl`), a dotted `name`, a `.(…)` projection — which neither
+    * combinator fits and which then reads as the deliberate thing it is.
+    *
+    * `~~` for the trailing `Index`, always: fastparse's plain `~` skips the trivia
+    * after the token FIRST, which stretches the span over it (see [[Span]]'s note on
+    * `end` being an upper bound). Having two places that spell it is the point — the
+    * trailing `~` was a per-site decision at every one of the ~30.
+    *
+    * TWO and not one, deliberately: `spanOfToken(p) = located(p).map(_._2)` does
+    * compile (checked, not assumed — a `P[Unit]` rides `located` as `A = Unit`), and
+    * it was rejected because it allocates a throwaway `(Unit, Span)` per token on the
+    * parser's hottest path and hands fastparse's failure stack the wrong production
+    * name. One line of duplication buys both back.
+    *
+    * The `Span` rides as ONE slot through further `~` composition, because fastparse
+    * flattens `scala.TupleN`s and `Span` is a nominal case class — `spanOfToken(…) ~/
+    * x` is `(Span, X)`, where a raw `(start, end)` pair would dissolve into two loose
+    * `Int`s for the call site to re-pair by position. Same reason [[OpToken]] /
+    * [[ProjectionMember]] are case classes.
+    *
+    * CONTROL — WI-965 adds NO test, because it changes no behaviour, so the honest
+    * question is which EXISTING ones would catch a mis-conversion. Measured by
+    * breaking each combinator in turn against the 311-test suite:
+    *
+    *   * make `located` hand back [[Span.empty]] and 6 fail — `ParseSpanCoverageTest`
+    *     (both cases), `DiagnosticLocationTest`'s infix / dot-member / synthesized-
+    *     marker cases, and `DeclarationSpanTest`'s type-param-name case;
+    *   * make `spanOfToken` hand back [[Span.empty]] and 3 fail — both
+    *     `ParseSpanCoverageTest` cases and the synthesized-marker one (the `let` and
+    *     the bracket literals go through this one).
+    *
+    * The suite pins span STARTS. Swap the `~~` below back to a whitespace-skipping
+    * `~` — the exact mistake these two exist to make unrepeatable — and NOTHING
+    * fails: `end` has no reader yet ([[Span]]), and the one width assertion
+    * (`DeclarationSpanTest`, the `F` of `sort Parameterized[A, F[T]]`) sits where no
+    * trivia follows the token. Which is the argument for one place to get it right
+    * rather than thirty, not an argument that it does not matter. */
+  private def spanOfToken[$: P](p: => P[Unit]): P[Span] =
+    P(Index ~ p ~~ Index).map { case (s, e) => mkSpan(s, e) }
+
+  /** [[spanOfToken]] for a token that CARRIES a value: `located(ident)` is
+    * `(TermSymbol, Span)`. The pair flattens into the enclosing sequence, so a caller
+    * destructures it as two adjacent slots — `case (sym, span, …)`. */
+  private def located[A, $: P](p: => P[A]): P[(A, Span)] =
+    P(Index ~ p ~~ Index).map { case (s, a, e) => (a, mkSpan(s, e)) }
+
   // ── Custom whitespace ────────────────────────────────────────
 
   /** WI-952: an unterminated `{- … ` / `{< … ` block, named by its OPENING position
@@ -267,6 +321,18 @@ private class AnthillParserImpl(
   private def keyword[$: P](kw: String): P[Unit] =
     P(Tokens.identToken.filter(_ == kw)).map(_ => ())
 
+  // WI-965: five productions end on a plain `~ Index` rather than the `~~ Index` the
+  // rest use — these two, `importPath`, `distributiveProjectionSeg` and
+  // `proofStrategy`. `~` is whitespace-SKIPPING, so their `end` reaches past the
+  // construct into the trivia after it. Measured, not assumed: `simpleName` over
+  // `rule lbl   :` reports width 6 for a 3-character `lbl`.
+  //
+  // Three of the five are multi-token anyway, so no combinator fits them regardless.
+  // `simpleName` is the one this note exists for: it is a single identifier and
+  // [[located]] fits it exactly, and it stays hand-written ONLY because converting it
+  // would silently tighten its span — a behavioural change, and not this refactor's
+  // business. WI-970 decides whether the widened end is a defect at all (only `start`
+  // has a reader today; see [[Span]]).
   private def name[$: P]: P[Name] =
     P(Index ~ ident ~ ("." ~ ident).rep ~ Index).map { case (s, first, rest, e) =>
       Name(first +: rest.toIndexedSeq, mkSpan(s, e))
@@ -295,7 +361,7 @@ private class AnthillParserImpl(
   // ── Variables ────────────────────────────────────────────────
 
   private def variable[$: P]: P[TermId] =
-    P(Index ~ Tokens.variableToken ~~ Index ~ fnArgsList.?).map { case (s, varName, e, args) =>
+    P(located(Tokens.variableToken) ~ fnArgsList.?).map { case (varName, span, args) =>
       val varTid =
         if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
         else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
@@ -314,7 +380,7 @@ private class AnthillParserImpl(
           // the applied variable, the text that produced the application.
           terms.allocAt(
             Term.Fn(intern("ho_apply"), IArray.from(posArgs), IArray.from(namedArgs)),
-            mkSpan(s, e))
+            span)
     }
 
   // ── Types ────────────────────────────────────────────────────
@@ -427,12 +493,12 @@ private class AnthillParserImpl(
     * has no typer, so these lower to plain functor terms that round-trip
     * through `typeExprToRef`; the lacks-semantics live only in the rust typer. */
   private def effectPresence[$: P]: P[TypeExpr] =
-    P(Index ~ "+" ~~ Index ~/ simpleEffect).map { case (s, e, te) =>
-      wrapEffectOp("present", mkSpan(s, e))(te) }
+    P(spanOfToken("+") ~/ simpleEffect).map { case (span, te) =>
+      wrapEffectOp("present", span)(te) }
 
   private def effectAbsence[$: P]: P[TypeExpr] =
-    P(Index ~ "-" ~~ Index ~/ simpleEffect).map { case (s, e, te) =>
-      wrapEffectOp("absent", mkSpan(s, e))(te) }
+    P(spanOfToken("-") ~/ simpleEffect).map { case (span, te) =>
+      wrapEffectOp("absent", span)(te) }
 
   /** WI-961: located at the `+` / `-`, the token that chose the wrapper — the
     * `present`/`absent` functor is written nowhere, exactly as `add` is not. */
@@ -525,8 +591,8 @@ private class AnthillParserImpl(
     * when no `:` follows, so an ordinary goal (which may begin with the same
     * identifier token) still parses. */
   private def requiresItem[$: P]: P[RequiresItem] =
-    P((Index ~ ident ~~ Index ~ ":" ~ clauseTerm).map {
-        case (s, b, e, t) => RequiresItem(t, Some((b, mkSpan(s, e)))) } |
+    P((located(ident) ~ ":" ~ clauseTerm).map {
+        case (b, span, t) => RequiresItem(t, Some((b, span))) } |
       clauseTerm.map(RequiresItem(_, None)))
 
   private def clauseTerm[$: P]: P[TermId] =
@@ -572,19 +638,19 @@ private class AnthillParserImpl(
     * bare word `let`, and a longer identifier (`lettuce`) never matches the
     * keyword (maximal-munch lexing). */
   private def letGoal[$: P]: P[TermId] =
-    P(Index ~ keyword("let") ~~ Index ~/ variable ~ "=" ~/ term).map { case (s, e, v, rhs) =>
+    P(spanOfToken(keyword("let")) ~/ variable ~ "=" ~/ term).map { case (span, v, rhs) =>
       // WI-957: `unify` is resolved like any other functor, so it is located — at the
       // `let` that produced it.
-      terms.allocAt(Term.Fn(intern("unify"), IArray(v, rhs), IArray.empty), mkSpan(s, e))
+      terms.allocAt(Term.Fn(intern("unify"), IArray(v, rhs), IArray.empty), span)
     }
 
   /** Cut (`!`) — kernel control primitive (proposal 033.1 / WI-568): a nullary
     * `cut` goal that commits to the current rule invocation. scaland has no
     * resolver-side cut semantics; the goal just round-trips as a `cut()` term. */
   private def cutGoal[$: P]: P[TermId] =
-    P(Index ~ "!" ~~ Index).map { case (s, e) =>
+    P(spanOfToken("!")).map { span =>
       // WI-957: located at the `!`, for the same reason `unify` is located at `let`.
-      terms.allocAt(Term.Fn(intern("cut"), IArray.empty, IArray.empty), mkSpan(s, e))
+      terms.allocAt(Term.Fn(intern("cut"), IArray.empty, IArray.empty), span)
     }
 
   /** A base atom followed by a dotted access/call chain. WI-278: a chain
@@ -648,8 +714,8 @@ private class AnthillParserImpl(
 
   /** A field access `.name`, optionally a call `.name(args)` (WI-278). */
   private def fieldSeg[$: P]: P[DotSeg] =
-    P("." ~ Index ~ ident ~~ Index ~ fnArgsList.?).map {
-      case (s, name, e, args) => DotSeg.Field(name, mkSpan(s, e), args)
+    P("." ~ located(ident) ~ fnArgsList.?).map {
+      case (name, span, args) => DotSeg.Field(name, span, args)
     }
 
   /** WI-639: a distributive projection segment `.(m1, …, mn)`. The `.(` opener
@@ -668,9 +734,9 @@ private class AnthillParserImpl(
     * Members are plain identifiers — expression/call members are deferred
     * (proposal 052 OQ3), mirroring rustland's `projection_member`. */
   private def projectionMember[$: P]: P[ProjectionMember] =
-    P(Index ~ ident ~~ Index ~ (":" ~ Index ~ ident ~~ Index).?).map {
-      case (s, label, e, Some((ms, member, me))) => ProjectionMember(label, member, mkSpan(ms, me))
-      case (s, member, e, None)                  => ProjectionMember(member, member, mkSpan(s, e))
+    P(located(ident) ~ (":" ~ located(ident)).?).map {
+      case (label, _, Some((member, memberSpan))) => ProjectionMember(label, member, memberSpan)
+      case (member, span, None)                   => ProjectionMember(member, member, span)
     }
 
   private lazy val fieldAccessSym = intern("field_access")
@@ -777,10 +843,9 @@ private class AnthillParserImpl(
     * ordinary paren exprs still parse. Mirrors rustland's
     * `convert_bounded_quantification`. */
   private def boundedQuantification[$: P]: P[TermId] =
-    P("(" ~ Index ~ (keyword("forall").map(_ => "forall_in") | keyword("some").map(_ => "some_in")) ~~ Index
+    P("(" ~ located(keyword("forall").map(_ => "forall_in") | keyword("some").map(_ => "some_in"))
       ~ boundedBinderVar ~ keyword("in") ~/ term ~ ":" ~ goalTerm.rep(1, sep = ",") ~ ")").map {
-      case (s, functor, e, binder, collection, body) =>
-        val span = mkSpan(s, e)
+      case (functor, span, binder, collection, body) =>
         val bodyTuple = terms.allocAt(Term.Fn(intern("tuple"), IArray.from(body), IArray.empty), span)
         terms.allocAt(
           Term.Fn(intern(functor), IArray(binder, collection, bodyTuple), IArray.empty), span)
@@ -927,12 +992,12 @@ private class AnthillParserImpl(
     * leaving `: T` dangling). The cut is AFTER `:`, so a plain `?x` argument
     * (no colon) fails this alt cleanly and falls through to `exprBody`. */
   private def typedVarArg[$: P]: P[TermId] =
-    P(Index ~ Tokens.variableToken ~~ Index ~ ":" ~/ typeExpr).map { case (s, varName, e, ty) =>
+    P(located(Tokens.variableToken) ~ ":" ~/ typeExpr).map { case (varName, span, ty) =>
       val varTid =
         if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
         else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
       terms.allocAt(Term.Fn(intern("typed_var"), IArray(varTid),
-        IArray((intern("type"), typeExprToRef(ty)))), mkSpan(s, e))
+        IArray((intern("type"), typeExprToRef(ty)))), span)
     }
 
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
@@ -1181,11 +1246,11 @@ private class AnthillParserImpl(
     }
 
   private def prefixOp[$: P]: P[OpToken] =
-    P(Index ~ (
+    P(located(
       "!".!.map(_ => intern("!")) |
       keyword("not").map(_ => intern("not")) |
       "-".!.map(_ => intern("-"))
-    ) ~~ Index).map { case (s, sym, e) => OpToken(sym, mkSpan(s, e)) }
+    )).map { case (sym, span) => OpToken(sym, span) }
 
   // WI-957: `ListLiteral` / `SetLiteral` / `TupleLiteral` / `forall_impl` are names
   // the loader RESOLVES (they are not in `convertExprTerm`'s by-name dispatch, so they
@@ -1194,18 +1259,18 @@ private class AnthillParserImpl(
   private def collectionLiteral[$: P]: P[TermId] =
     // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
     // surface; list destructuring uses the explicit `cons(?h, ?t)` constructor.
-    P(Index ~ "[" ~~ Index ~/ (
+    P(spanOfToken("[") ~/ (
       "]".map(_ => None) |
       (term.rep(1, sep = ",") ~ "]").map(Some(_))
-    )).map { case (s, e, elems) =>
+    )).map { case (span, elems) =>
       terms.allocAt(
         Term.Fn(intern("ListLiteral"), IArray.from(elems.getOrElse(Seq.empty)), IArray.empty),
-        mkSpan(s, e))
+        span)
     }
 
   private def setLiteral[$: P]: P[TermId] =
-    P(Index ~ "{" ~~ Index ~ term.rep(sep = ",") ~ "}").map { case (s, e, elems) =>
-      terms.allocAt(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty), mkSpan(s, e))
+    P(spanOfToken("{") ~ term.rep(sep = ",") ~ "}").map { case (span, elems) =>
+      terms.allocAt(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty), span)
     }
 
   /** Parse `(...)` as one of:
@@ -1222,12 +1287,11 @@ private class AnthillParserImpl(
     * impl form if it lived in a separate alternative).
     */
   private def tupleLiteralOrParenExpr[$: P]: P[TermId] =
-    P(Index ~ "(" ~~ Index ~/ (
+    // WI-957: the span is the opening `(` — see `collectionLiteral`.
+    P(spanOfToken("(") ~/ (
       ")".map(_ => None) |
       (fnArg ~ ("," ~/ fnArg).rep ~ ",".? ~ ("-:" ~/ term.rep(1, sep = ",")).? ~ ")").map(Some(_))
-    )).map { case (s, e, body) =>
-      // WI-957: the opening `(` — see `collectionLiteral`.
-      val span = mkSpan(s, e)
+    )).map { case (span, body) =>
       body match
         case None =>
           terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty), span)
@@ -1262,14 +1326,14 @@ private class AnthillParserImpl(
     * separately-collected lists is one off-by-one from silently mislocating every
     * diagnostic in the chain. */
   private def infixOp[$: P]: P[OpToken] =
-    P(Index ~ (
+    P(located(
       "!=".!.map(_ => intern("!=")) |
       keyword("or").map(_ => intern("or")) |
       keyword("and").map(_ => intern("and")) |
       keyword("mod").map(_ => intern("mod")) |
       keyword("div").map(_ => intern("div")) |
       Tokens.opToken.map(intern)
-    ) ~~ Index).map { case (s, sym, e) => OpToken(sym, mkSpan(s, e)) }
+    )).map { case (sym, span) => OpToken(sym, span) }
 
   /** A non-`=` clause-term infix op: every operator in `infixOp` except `=`.
     * `=` is handled separately by `eqClauseOp` (at most one per clause goal), so
@@ -1285,8 +1349,8 @@ private class AnthillParserImpl(
     * only be the `= <body>` separator. Mirrors rustland's GLR (the infix
     * `Eq[T] = match` parse is impossible, so `= match` is the body). */
   private def eqClauseOp[$: P]: P[OpToken] =
-    P((Index ~ Tokens.opToken.filter(_ == "=") ~~ Index ~ !exprBodyKeyword)
-      .map { case (s, _, e) => OpToken(intern("="), mkSpan(s, e)) })
+    P((located(Tokens.opToken.filter(_ == "=")) ~ !exprBodyKeyword)
+      .map { case (_, span) => OpToken(intern("="), span) })
 
   /** The keywords that introduce an expr-body-only form (`_expr_body` minus the
     * `_term` fall-through). A lookahead over these distinguishes a clause `= goal`
@@ -1308,38 +1372,37 @@ private class AnthillParserImpl(
     * continuation; mirrors rustland's `proof_statement` shape (which rides the
     * proof metadata as a `ParseAux::ProofStmt`). */
   private def proofStatement[$: P]: P[TermId] =
-    P(Index ~ keyword("proof") ~~ Index ~/ name ~ (keyword("using") ~/ proofUsingList).? ~
+    P(spanOfToken(keyword("proof")) ~/ name ~ (keyword("using") ~/ proofUsingList).? ~
       (keyword("by") ~/ proofStrategy).? ~ (keyword("conclude") ~/ term).? ~
       keyword("end") ~ exprBody).map {
-      case (kws, kwe, target, _using, _strategy, conclude, body) =>
+      case (kwSpan, target, _using, _strategy, conclude, body) =>
         val targetStr = terms.alloc(Term.Const(
           Literal.StringLit(target.segments.map(symbols.name).mkString("."))))
         val named = ArrayBuffer((intern("target"), targetStr))
         conclude.foreach(c => named += ((intern("conclude"), c)))
-        terms.allocAt(Term.Fn(intern("proof_stmt"), IArray(body), IArray.from(named)),
-          mkSpan(kws, kwe))
+        terms.allocAt(Term.Fn(intern("proof_stmt"), IArray(body), IArray.from(named)), kwSpan)
     }
 
   private def matchExpr[$: P]: P[TermId] =
     // Mirrors rustland's tree-sitter grammar: `match scrut repeat1(branch)`,
     // no `end`. `matchBranch.rep(1)` self-terminates at the first non-`case`.
-    P(Index ~ keyword("match") ~~ Index ~/ term ~ matchBranch.rep(1)).map {
-      case (s, e, scrutinee, branches) =>
+    P(spanOfToken(keyword("match")) ~/ term ~ matchBranch.rep(1)).map {
+      case (span, scrutinee, branches) =>
         terms.allocAt(
           Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty),
-          mkSpan(s, e))
+          span)
     }
 
   private def matchBranch[$: P]: P[TermId] =
-    P(Index ~ keyword("case") ~~ Index ~/ pattern ~ "->" ~ exprBody).map { case (s, e, pat, body) =>
+    P(spanOfToken(keyword("case")) ~/ pattern ~ "->" ~ exprBody).map { case (span, pat, body) =>
       // WI-618: binder-form provenance, as for the accessor builds.
-      terms.allocMintedAt(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty), mkSpan(s, e))
+      terms.allocMintedAt(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty), span)
     }
 
   private def ifExpr[$: P]: P[TermId] =
-    P(Index ~ keyword("if") ~~ Index ~/ term ~ keyword("then") ~ exprBody ~ keyword("else") ~ exprBody).map {
-      case (s, e, cond, thenB, elseB) =>
-        terms.allocAt(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty), mkSpan(s, e))
+    P(spanOfToken(keyword("if")) ~/ term ~ keyword("then") ~ exprBody ~ keyword("else") ~ exprBody).map {
+      case (span, cond, thenB, elseB) =>
+        terms.allocAt(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty), span)
     }
 
   /** `let pat [: T] = value [in] body`. The `in` keyword is OPTIONAL:
@@ -1350,20 +1413,20 @@ private class AnthillParserImpl(
     * rustland: encoded as a `type_name` named-arg child holding the type
     * lowered to a term; positional args stay `(pattern, value, body)`. */
   private def letExpr[$: P]: P[TermId] =
-    P(Index ~ keyword("let") ~~ Index ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~
+    P(spanOfToken(keyword("let")) ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~
       keyword("in").? ~ exprBody).map {
-      case (s, e, pat, tyAnno, value, body) =>
+      case (span, pat, tyAnno, value, body) =>
         val named = tyAnno match
           case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty)))
           case None     => IArray.empty[(TermSymbol, TermId)]
         // WI-618: binder-form provenance.
-        terms.allocMintedAt(Term.Fn(intern("let_expr"), IArray(pat, value, body), named), mkSpan(s, e))
+        terms.allocMintedAt(Term.Fn(intern("let_expr"), IArray(pat, value, body), named), span)
     }
 
   private def lambdaExpr[$: P]: P[TermId] =
-    P(Index ~ keyword("lambda") ~~ Index ~/ pattern ~ "->" ~ exprBody).map { case (s, e, param, body) =>
+    P(spanOfToken(keyword("lambda")) ~/ pattern ~ "->" ~ exprBody).map { case (span, param, body) =>
       // WI-618: binder-form provenance.
-      terms.allocMintedAt(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty), mkSpan(s, e))
+      terms.allocMintedAt(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty), span)
     }
 
   // ── Patterns ─────────────────────────────────────────────────
@@ -1389,8 +1452,7 @@ private class AnthillParserImpl(
     * lowers the type to a term via `typeExprToRef`). Cut-free so a non-typed
     * tuple element backtracks cleanly. */
   private def typedBinder[$: P]: P[TermId] =
-    P(Index ~ ident ~~ Index ~ ":" ~ typeExpr).map { case (s, nameSym, e, ty) =>
-      val span = mkSpan(s, e)
+    P(located(ident) ~ ":" ~ typeExpr).map { case (nameSym, span, ty) =>
       val idTerm = terms.allocAt(Term.Ident(nameSym), span)
       terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm),
         IArray((intern("type"), typeExprToRef(ty)))), span)
@@ -1408,20 +1470,19 @@ private class AnthillParserImpl(
     P(typedBinder | pattern)
 
   private def patternWildcard[$: P]: P[TermId] =
-    P(Index ~ "_" ~~ Index).map { case (s, e) =>
-      terms.allocAt(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty), mkSpan(s, e))
+    P(spanOfToken("_")).map { span =>
+      terms.allocAt(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty), span)
     }
 
   private def patternVar[$: P]: P[TermId] =
-    P(Index ~ ident ~~ Index).map { case (s, sym, e) =>
-      val span = mkSpan(s, e)
+    P(located(ident)).map { case (sym, span) =>
       val idTerm = terms.allocAt(Term.Ident(sym), span)
       terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm), IArray.empty), span)
     }
 
   private def patternLiteral[$: P]: P[TermId] =
-    P(Index ~ literal ~~ Index).map { case (s, tid, e) =>
-      terms.allocAt(Term.Fn(intern("pattern_literal"), IArray(tid), IArray.empty), mkSpan(s, e))
+    P(located(literal)).map { case (tid, span) =>
+      terms.allocAt(Term.Fn(intern("pattern_literal"), IArray(tid), IArray.empty), span)
     }
 
   private def patternConstructor[$: P]: P[TermId] =
@@ -1435,12 +1496,12 @@ private class AnthillParserImpl(
 
   private def patternTuple[$: P]: P[TermId] =
     P(
-      (Index ~ "(" ~~ Index ~ ")").map { case (s, e) =>
-        terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty), mkSpan(s, e)) } |
-      (Index ~ "(" ~~ Index ~ patternTupleElem ~ "," ~ patternTupleElem.rep(1, sep = ",") ~ ")").map {
-        case (s, e, first, rest) =>
+      (spanOfToken("(") ~ ")").map { span =>
+        terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty), span) } |
+      (spanOfToken("(") ~ patternTupleElem ~ "," ~ patternTupleElem.rep(1, sep = ",") ~ ")").map {
+        case (span, first, rest) =>
           terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.from(first +: rest), IArray.empty),
-            mkSpan(s, e))
+            span)
       }
     )
 
@@ -1607,18 +1668,18 @@ private class AnthillParserImpl(
   /** WI-454: `sort ?X [ { sort ?T … } ]` — `?X` reuses the logical-var marker as
     * the binder name. Desugars to the SAME IR the enclosing-list form produces. */
   private def sortVarBinderDecl[$: P]: P[SortDeclBuilder] =
-    P(Index ~ Tokens.variableToken ~~ Index ~ sortBinderBody.? ~ metaBlock.? ~~ Index).map {
-      case (ns, nm, ne, members, _, e) =>
+    P(located(Tokens.variableToken) ~ sortBinderBody.? ~ metaBlock.? ~~ Index).map {
+      case (nm, nameSpan, members, _, e) =>
         (_: Option[Visibility], s: Int) =>
-          desugarSortTypeParam(SortTypeParam(intern(nm), members, mkSpan(ns, ne), mkSpan(s, e)))
+          desugarSortTypeParam(SortTypeParam(intern(nm), members, nameSpan, mkSpan(s, e)))
     }
 
   /** WI-454: `sort [X] [ { sort [T] … } ]` — the standalone bracket binder. */
   private def sortBracketBinderDecl[$: P]: P[SortDeclBuilder] =
-    P("[" ~/ Index ~ ident ~~ Index ~ "]" ~ sortBinderBody.? ~ metaBlock.? ~~ Index).map {
-      case (ns, nameSym, ne, members, _, e) =>
+    P("[" ~/ located(ident) ~ "]" ~ sortBinderBody.? ~ metaBlock.? ~~ Index).map {
+      case (nameSym, nameSpan, members, _, e) =>
         (_: Option[Visibility], s: Int) =>
-          desugarSortTypeParam(SortTypeParam(nameSym, members, mkSpan(ns, ne), mkSpan(s, e)))
+          desugarSortTypeParam(SortTypeParam(nameSym, members, nameSpan, mkSpan(s, e)))
     }
 
   /** A structured binder's brace body — members are themselves type-variable
@@ -1629,11 +1690,11 @@ private class AnthillParserImpl(
 
   private def sortBinderMember[$: P]: P[SortTypeParam] =
     P(Index ~ keyword("sort") ~/ (
-      (Index ~ Tokens.variableToken ~~ Index ~ sortBinderBody.? ~~ Index)
-        .map { case (ns, nm, ne, ms, e) => (intern(nm), ms, ns, ne, e) } |
-      ("[" ~/ Index ~ ident ~~ Index ~ "]" ~ sortBinderBody.? ~~ Index)
-        .map { case (ns, nm, ne, ms, e) => (nm, ms, ns, ne, e) }
-    )).map { case (s, (nm, ms, ns, ne, e)) => SortTypeParam(nm, ms, mkSpan(ns, ne), mkSpan(s, e)) }
+      (located(Tokens.variableToken) ~ sortBinderBody.? ~~ Index)
+        .map { case (nm, nameSpan, ms, e) => (intern(nm), ms, nameSpan, e) } |
+      ("[" ~/ located(ident) ~ "]" ~ sortBinderBody.? ~~ Index)
+        .map { case (nm, nameSpan, ms, e) => (nm, ms, nameSpan, e) }
+    )).map { case (s, (nm, ms, nameSpan, e)) => SortTypeParam(nm, ms, nameSpan, mkSpan(s, e)) }
 
   /** `effects E = ?` (or `= X`) at sort-item position (WI-320 / proposal
     * 045). Rustland (`effects_sort_item`) desugars this to the pair
@@ -1691,8 +1752,15 @@ private class AnthillParserImpl(
     P("[" ~ sortTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
   private def sortTypeParam[$: P]: P[SortTypeParam] =
-    P(Index ~ ident ~~ Index ~ sortTypeParamList.? ~~ Index).map {
-      case (s, n, ne, members, e) => SortTypeParam(n, members, mkSpan(s, ne), mkSpan(s, e))
+    // The declaration span starts where the NAME does, so it is read back off the
+    // name's span rather than captured a second time. THE ONE SITE THAT RECONSTRUCTS
+    // AN OFFSET instead of using a captured one, so it names its dependency: this
+    // holds because [[Span.at]] stores the `start` it was handed VERBATIM. A `Span.at`
+    // that ever normalised `start` would break this and nothing else — no other
+    // production reads an offset back out of a span.
+    P(located(ident) ~ sortTypeParamList.? ~~ Index).map {
+      case (n, nameSpan, members, e) =>
+        SortTypeParam(n, members, nameSpan, mkSpan(nameSpan.start, e))
     }
 
   /** Desugar one enclosing type-param binder to the SAME IR rustland's
@@ -1837,6 +1905,12 @@ private class AnthillParserImpl(
     // identifier may contain `-`) a `my--type` whose `--` reads as a line comment to
     // anything that re-lexes the slice. `renderTypeExpr` reads the tree instead, so
     // there is nothing to re-lex (WI-950).
+    // WI-965: the one `Index` capture that brackets NOTHING — `mkSpan(idx, idx)` is a
+    // zero-WIDTH span at the parameter's first character, so [[located]] does not
+    // apply and widening it to the token would be a behavioural change (WI-970). The
+    // WI-850 refusal below is a live reader of it, which is what makes that a real
+    // change rather than a cosmetic one. (`operationDecl`'s braced-block refusal also
+    // builds a `mkSpan(s, s)`, but from an `Index` that brackets a real range too.)
     P(Index ~ ident ~ ("=" ~/ typeExpr).?).map { case (idx, n, default) =>
       WrittenTypeParam(TypeParam(n, mkSpan(idx, idx)), default)
     }
@@ -2036,9 +2110,9 @@ private class AnthillParserImpl(
     * `name`: it DECLARES a parameter rather than referencing one, so a dotted
     * spelling would have no meaning. */
   private def requiresDeclItem[$: P]: P[Item] =
-    P(Index ~ keyword("requires") ~/ (Index ~ ident ~~ Index ~ ":").? ~ typeExpr ~~ Index).map {
+    P(Index ~ keyword("requires") ~/ (located(ident) ~ ":").? ~ typeExpr ~~ Index).map {
       case (s, binder, te, e) =>
-        val binderName = binder.map { case (bs, b, be) => Name(IndexedSeq(b), mkSpan(bs, be)) }
+        val binderName = binder.map { case (b, bSpan) => Name(IndexedSeq(b), bSpan) }
         Item.RequiresDeclItem(RequiresDecl(binderName, te, mkSpan(s, e)))
     }
 
