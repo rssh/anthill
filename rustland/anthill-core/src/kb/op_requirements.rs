@@ -221,40 +221,9 @@ pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Sy
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kb::load::{self, NullResolver};
-    use crate::parse;
-    use std::path::PathBuf;
-
-    fn workspace_root() -> PathBuf {
-        let mut p = std::env::current_dir().unwrap();
-        loop {
-            if p.join("rustland").join("Cargo.toml").exists() { return p; }
-            if !p.pop() { panic!("workspace root not found"); }
-        }
-    }
-
-    // WI-747: the walk is the shared `crate::fs_util`.
-    fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-        crate::fs_util::collect_files(dir, &["anthill"]).expect("collect .anthill files")
-    }
 
     fn load_with_src(src: &str) -> KnowledgeBase {
-        let root = workspace_root();
-        let mut files = collect_anthill_files(&root.join("stdlib").join("anthill"));
-        files.extend(collect_anthill_files(
-            &root.join("rustland").join("anthill-stl").join("anthill"),
-        ));
-        let mut parsed: Vec<_> = files.iter().map(|p| {
-            let s = std::fs::read_to_string(p).unwrap();
-            parse::parse(&s).unwrap()
-        }).collect();
-        parsed.push(parse::parse(src).unwrap());
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
-        let _ = load::load_all(&mut kb, &refs, &NullResolver);
-        kb
+        crate::kb::test_support::load_stdlib_and_stl(Some(src))
     }
 
     #[test]

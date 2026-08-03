@@ -27,6 +27,8 @@ pub mod execute;
 pub mod extent;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 /// WI-669: body-derived defining-equation types, produced by
 /// `KnowledgeBase::op_defining_equations` for the prover/SMT tier.

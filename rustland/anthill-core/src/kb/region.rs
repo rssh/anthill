@@ -440,10 +440,7 @@ mod tests {
 #[cfg(test)]
 mod wi353_tests {
     use super::*;
-    use crate::kb::load::{self, NullResolver};
-    use crate::parse;
     use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
 
     const OPS: &str = r#"
 namespace anthill.test.wi353
@@ -453,7 +450,7 @@ namespace anthill.test.wi353
   -- place `f.a` is fed `element_of` from `l`.
   operation each(l: List[T = Cell], f: (a: Cell) -> Unit) -> Unit =
     match l
-      case nil() -> unit
+      case nil() -> ()
       case cons(h, rest) -> f(h)
 
   -- foldLeft over a region-bearing accumulator. The accumulator place `f.a`
@@ -473,35 +470,8 @@ namespace anthill.test.wi353
 end
 "#;
 
-    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-        if dir.is_dir() {
-            for e in std::fs::read_dir(dir).unwrap() {
-                let p = e.unwrap().path();
-                if p.is_dir() {
-                    collect(&p, out);
-                } else if p.extension().is_some_and(|x| x == "anthill") {
-                    out.push(p);
-                }
-            }
-        }
-    }
-
     fn load_ops() -> KnowledgeBase {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
-        let mut files = Vec::new();
-        collect(&dir, &mut files);
-        let mut parsed: Vec<_> = files
-            .iter()
-            .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-            .collect();
-        parsed.push(parse::parse(OPS).expect("parse ops"));
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
-        // flow_derive runs in the load pipeline regardless of typecheck outcome.
-        let _ = load::load_all(&mut kb, &refs, &NullResolver);
-        kb
+        crate::kb::test_support::load_stdlib(Some(OPS))
     }
 
     fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {

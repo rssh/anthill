@@ -1,4 +1,6 @@
--- Unit: the sort with exactly one value.
--- `unit` is a built-in literal constant (like true, false, 42, "hello").
--- Requires: grammar keyword `unit`, Rust `Literal::Unit` variant.
+-- Unit: the sort with exactly one value, spelled `()` — the empty tuple literal
+-- (spec §4.5, `TupleLiteral ::= '(' ')'`).
+-- There is NO bare `unit` keyword: writing `unit` in term position is a load error
+-- ("expected resolved name, got unresolved"). Adding one would need a grammar
+-- keyword and a Rust literal variant, neither of which exists.
 sort anthill.prelude.Unit = ?

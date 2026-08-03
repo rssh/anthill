@@ -40000,41 +40000,9 @@ mod p4_tests {
 /// POSITION; two callbacks' i-th params are the same up to renaming.
 #[cfg(test)]
 mod wi341_alpha_tests {
-    use crate::kb::load::{self, NullResolver};
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::subst::Substitution;
     use crate::kb::KnowledgeBase;
-    use crate::parse;
-    use std::path::{Path, PathBuf};
-
-    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-        if dir.is_dir() {
-            for e in std::fs::read_dir(dir).unwrap() {
-                let p = e.unwrap().path();
-                if p.is_dir() {
-                    collect(&p, out);
-                } else if p.extension().is_some_and(|x| x == "anthill") {
-                    out.push(p);
-                }
-            }
-        }
-    }
-
-    fn load_ops(src: &str) -> KnowledgeBase {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
-        let mut files = Vec::new();
-        collect(&dir, &mut files);
-        let mut parsed: Vec<_> = files
-            .iter()
-            .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-            .collect();
-        parsed.push(parse::parse(src).expect("parse ops"));
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
-        let _ = load::load_all(&mut kb, &refs, &NullResolver);
-        kb
-    }
 
     /// The (`Value`) type of an op's first parameter — a callback arrow.
     fn first_param_type(kb: &KnowledgeBase, op_qn: &str) -> crate::eval::value::Value {
@@ -40053,7 +40021,7 @@ namespace anthill.test.wi341alpha
   operation op2(g: (c: Cell) -> Unit @ Modify[c]) -> Unit
 end
 "#;
-        let mut kb = load_ops(src);
+        let mut kb = load_stdlib(Some(src));
         let f_arrow = first_param_type(&kb, "anthill.test.wi341alpha.op1");
         let g_arrow = first_param_type(&kb, "anthill.test.wi341alpha.op2");
         // The denoted-bearing callback arrows are `Value::Node` (Stage A).
@@ -40075,7 +40043,7 @@ namespace anthill.test.wi341alpha2
   operation op4(g: (c: Cell, d: Cell) -> Unit @ Modify[d]) -> Unit
 end
 "#;
-        let mut kb = load_ops(src);
+        let mut kb = load_stdlib(Some(src));
         let f_arrow = first_param_type(&kb, "anthill.test.wi341alpha2.op3");
         let g_arrow = first_param_type(&kb, "anthill.test.wi341alpha2.op4");
         let mut subst = Substitution::new();
@@ -40096,14 +40064,12 @@ end
 /// fixture, then drives the private lattice ops directly.
 #[cfg(test)]
 mod wi464_variance_join_meet_tests {
+    use crate::kb::test_support::load_stdlib;
     use super::{extract_sort_ref_sym, extract_type, join_types, meet_types, type_dispatch_name_view, TypeExtractor};
     use crate::eval::value::Value;
     use crate::intern::Symbol;
-    use crate::kb::load::{self, NullResolver};
     use crate::kb::term::TermId;
     use crate::kb::KnowledgeBase;
-    use crate::parse;
-    use std::path::{Path, PathBuf};
 
     const SRC: &str = r#"namespace test.wi464
   import anthill.prelude.{Option, Function, Int64}
@@ -40121,39 +40087,8 @@ mod wi464_variance_join_meet_tests {
 end
 "#;
 
-    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-        if dir.is_dir() {
-            for e in std::fs::read_dir(dir).unwrap() {
-                let p = e.unwrap().path();
-                if p.is_dir() {
-                    collect(&p, out);
-                } else if p.extension().is_some_and(|x| x == "anthill") {
-                    out.push(p);
-                }
-            }
-        }
-    }
-
     fn load_kb() -> KnowledgeBase {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
-        let mut files = Vec::new();
-        collect(&dir, &mut files);
-        let mut parsed: Vec<_> = files
-            .iter()
-            .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-            .collect();
-        parsed.push(parse::parse(SRC).expect("parse fixture"));
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
-        if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
-            panic!(
-                "fixture load errors: {:?}",
-                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
-            );
-        }
-        kb
+        load_stdlib(Some(SRC))
     }
 
     fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
@@ -41012,54 +40947,6 @@ mod wi799_tuple_align_policy {
     }
 }
 
-/// The stdlib-loading fixture the `#[cfg(test)]` modules below share. WI-955 lifted it
-/// here at the second caller rather than adding a copy: the sequence
-/// (`fs_util` walk → parse each → `register_prelude` + `register_standard_builtins` →
-/// `load_all`) has to change as a unit when a second source dir or a real resolver is
-/// added, and the WI-747 reason for each `panic!` is worth stating once.
-#[cfg(test)]
-mod stdlib_fixture {
-    use crate::kb::load::{self, NullResolver};
-    use crate::kb::KnowledgeBase;
-    use crate::parse;
-    use std::path::PathBuf;
-
-    /// The stdlib, plus an optional extra source loaded alongside it.
-    pub(super) fn load_stdlib(extra: Option<&str>) -> KnowledgeBase {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
-        // WI-747: the walk is the shared `crate::fs_util`, which fails LOUD on an
-        // unreadable/missing dir. A hand-rolled `if dir.is_dir()` copy returns an
-        // EMPTY list instead, and a caller's headline test would then report e.g.
-        // "the stdlib declares no anthill.prelude.Function" — blaming the constant
-        // for a bad path, the exact misdiagnosis it exists to prevent.
-        let files = crate::fs_util::collect_files(&dir, &["anthill"])
-            .unwrap_or_else(|e| panic!("collect stdlib .anthill files: {e}"));
-        // Each `expect` NAMES the file: a bare `unwrap` here reports an Io or
-        // parse error with no path, which is the same mute-diagnostic problem the
-        // walk above was just fixed for.
-        let mut parsed: Vec<_> = files
-            .iter()
-            .map(|p| {
-                let text = std::fs::read_to_string(p)
-                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-                parse::parse(&text).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-            })
-            .collect();
-        if let Some(src) = extra {
-            parsed.push(parse::parse(src).expect("parse fixture"));
-        }
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
-        if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
-            panic!("stdlib load errors: {:?}",
-                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
-        }
-        kb
-    }
-}
-
 /// WI-802 — the `anthill.prelude.Function` recognizer has ONE owner.
 ///
 /// The convention was hand-compared at three independent sites, so a rename or
@@ -41073,11 +40960,10 @@ mod stdlib_fixture {
 /// it; the workspace figure is higher).
 #[cfg(test)]
 mod wi802_function_spec_owner_tests {
-    use super::stdlib_fixture::load_stdlib;
+    use crate::kb::test_support::load_stdlib;
     use super::{extract_sort_ref_sym, function_spec_parts, is_function_spec, FUNCTION_SPEC_QNAME};
     use crate::eval::value::Value;
     use crate::intern::SymbolKind;
-    use crate::kb::KnowledgeBase;
 
 
     /// THE guard the ticket asks for: the constant must name a sort the stdlib
@@ -41327,7 +41213,7 @@ end
 /// happens to.
 #[cfg(test)]
 mod wi955_one_alias_keying_tests {
-    use super::stdlib_fixture::load_stdlib;
+    use crate::kb::test_support::load_stdlib;
     use super::{reconstruct_sort_params, value_type_term};
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
@@ -41464,7 +41350,7 @@ end
 /// The question was asked twice about this code. A prose answer rots; these drive it.
 #[cfg(test)]
 mod wi963_type_var_representation_tests {
-    use super::stdlib_fixture::load_stdlib;
+    use crate::kb::test_support::load_stdlib;
     use super::{type_head, unify_types, TypeHead};
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
