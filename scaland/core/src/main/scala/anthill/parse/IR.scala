@@ -220,8 +220,10 @@ case class Operation(
   * VARIADIC CAPTURE parameter — one written `...name: R`, which collects every
   * named argument not matched to a declared parameter into a single named-tuple
   * record. At most one, and trailing; enforced in the loader (which knows the
-  * qualified operation name the diagnostic quotes), as rustland does. */
-case class Param(name: TermSymbol, ty: TypeExpr, rest: Boolean)
+  * qualified operation name the diagnostic quotes), as rustland does — and WI-947
+  * added `span` so that refusal can also point AT the offending parameter, which is
+  * the driving case for giving `LoadError.Other` a location at all. */
+case class Param(name: TermSymbol, ty: TypeExpr, rest: Boolean, span: Span)
 
 /** Operation-local type parameter (WI-269): `[T]`.
   * Mirrors rustland's `TypeParam`. These declare operation-local logical

@@ -414,7 +414,7 @@ class LoaderTest extends munit.FunSuite:
     val errors = Loader.load(unscanned, buildNamespacedParsedFile())
     assert(
       errors.exists {
-        case LoadError.Other(msg) => msg.contains("Colors")
+        case LoadError.Other(msg, _) => msg.contains("Colors")
         case _ => false
       },
       s"a scope that cannot be entered must be reported, and named: $errors")

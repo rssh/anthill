@@ -111,12 +111,24 @@ object EmbeddedStdlib:
     val errors = IndexedSeq.newBuilder[String]
     for path <- stdlibPaths do
       resolver.resolve(path) match
+        // No file was read, so there is no path to name — the MODULE ID is the whole
+        // identity this branch has, and it is spelled as one.
         case Left(msg) => errors += s"stdlib $path: $msg"
         case Right(source) =>
-          Parser.parse(source, s"$path.anthill") match
+          // WI-947: the RELATIVE PATH, not `s"$path.anthill"`. `path` is a dotted module
+          // id (`anthill.realization.witness`), and `Span.render` puts whatever it is
+          // given into `file:line:col:` — the shape editors and terminals make
+          // openable. Spelled the module way, that named a file which does not exist,
+          // in a syntax that invited someone to click it. This is the SAME mapping
+          // `FileSourceResolver.resolve` just used to find the text.
+          val relPath = path.replace('.', '/') + ".anthill"
+          Parser.parse(source, relPath) match
             case Right(pf) => parsed += pf
             case Left(errs) =>
-              for e <- errs do errors += s"stdlib $path: ${e.message}"
+              // `render`, not `message`: the rendering names the file AND the position
+              // inside it. Hand-prefixing `$path` is what a caller reaches for when a
+              // diagnostic cannot locate itself, and it still could not say WHERE.
+              for e <- errs do errors += s"stdlib ${e.render}"
     (parsed.result(), errors.result())
 
   /** Convenience: build a [[FileSourceResolver]] rooted at `stdlibBaseDir`

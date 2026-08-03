@@ -6,7 +6,19 @@ import anthill.span.Span
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 
 /** Error from parsing/conversion. */
-case class ParseError(message: String, span: Span)
+case class ParseError(message: String, span: Span):
+  /** WI-947: `file:line:col: message`, through the ONE located renderer that
+    * [[anthill.load.LoadError.render]] also uses — so which STAGE found a fault
+    * cannot change how its location reads. Before this, a parse error rendered
+    * fastparse's own `Position row:col` buried in the message text on the
+    * whole-parse-failure path, and nothing locational at all on every other.
+    *
+    * Also `toString`, for the same reason it is on `LoadError`: every existing
+    * printer interpolates the error rather than calling a renderer by name, and a
+    * rendering nothing reaches is a seam with no user. */
+  def render: String = span.render(message)
+
+  override def toString: String = render
 
 /** CST-to-IR converter. This is the skeleton — tree-sitter JNI binding
   * provides the CST nodes that drive conversion.

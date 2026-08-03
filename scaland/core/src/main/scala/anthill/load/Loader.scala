@@ -8,12 +8,42 @@ import anthill.span.Span
 
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 
-/** Load errors. */
+/** Load errors.
+  *
+  * EVERY variant carries a span (WI-947). `Other` did not, which meant the
+  * diagnostics that use it — the WI-727 variadic-capture refusals, the multi-head
+  * rule refusals, the WI-949 missing-scope report — could not point anywhere even
+  * in principle. A span may still be [[Span.empty]], but that is now a CLAIM the
+  * raise site makes ("this has nowhere to point"), not the absence of a field. */
 enum LoadError:
   case UnresolvedName(name: String, span: Span, scopeName: String)
   case UnresolvedImport(path: String, span: Span)
   case AmbiguousSymbol(name: String, candidates: IndexedSeq[String], span: Span, scopeName: String)
-  case Other(message: String)
+  case Other(message: String, span: Span)
+
+  /** WI-947: `file:line:col: message`, through the ONE located renderer that
+    * [[anthill.parse.ParseError.render]] also uses — so a load error and a parse
+    * error at the same character render identically by construction, not by
+    * convention. A locationless variant degrades to the bare message;
+    * [[Span.render]] owns that rule.
+    *
+    * IT IS ALSO `toString` (below), which is how it reaches consumers: scaland has
+    * no CLI or driver, so nothing in this tree calls `Loader.loadAll` outside tests,
+    * and a `render` reachable only by name would have been a seam with no user. As
+    * `toString` it is what every `s"$errs"` and `mkString` already prints, in this
+    * tree and in a downstream one. Mirrors rustland, where `LoadError` puts the same
+    * rendering behind `Display`. */
+  def render: String = this match
+    case UnresolvedName(name, span, scopeName) =>
+      span.render(s"unresolved name '$name' in scope '$scopeName'")
+    case UnresolvedImport(path, span) =>
+      span.render(s"unresolved import '$path'")
+    case AmbiguousSymbol(name, candidates, span, scopeName) =>
+      span.render(s"ambiguous symbol '$name' in scope '$scopeName': candidates ${candidates.mkString(", ")}")
+    case Other(message, span) =>
+      span.render(message)
+
+  override def toString: String = render
 
 /** IR → KB loading.
   *
@@ -138,22 +168,25 @@ object Loader:
     * all, which is exactly the silent skip the project forbids. Before WI-949 the copies
     * disagreed: pass 2 and the loader skipped, pass 3 reported. */
   private def lookupDefined(
-    kb: KnowledgeBase, qualName: String, consequence: String, errors: ArrayBuffer[LoadError]
+    kb: KnowledgeBase, qualName: String, span: Span, consequence: String, errors: ArrayBuffer[LoadError]
   ): Option[TermId] =
     kb.symbols.byQualifiedName.get(qualName) match
       case Some(sym) => Some(kb.makeNameTermFromSym(sym))
       case None =>
+        // WI-947: the DECLARATION's span, not the missing name's — the name is missing
+        // from the symbol table, so there is nothing to point at on that side; what the
+        // reader needs is the declaration whose contents were dropped.
         errors += LoadError.Other(
-          s"internal: '$qualName' was not defined in pass 1, so $consequence")
+          s"internal: '$qualName' was not defined in pass 1, so $consequence", span)
         None
 
   /** The scope `qualName` names — the descent's use of [[lookupDefined]]. A miss here
     * abandons the whole subtree: its imports unwired, its rule heads unregistered, its
     * facts and rules never loaded. */
   private def lookupScope(
-    kb: KnowledgeBase, qualName: String, errors: ArrayBuffer[LoadError]
+    kb: KnowledgeBase, qualName: String, span: Span, errors: ArrayBuffer[LoadError]
   ): Option[TermId] =
-    lookupDefined(kb, qualName, "the declarations inside it cannot be loaded", errors)
+    lookupDefined(kb, qualName, span, "the declarations inside it cannot be loaded", errors)
 
   // ── Pass 1: Define names ─────────────────────────────────────
 
@@ -339,7 +372,7 @@ object Loader:
     // The import list attached to a `namespace` and to a `sort … end` body go through
     // the SAME `processImports`; only the scope differs, and the walk already carries it.
     def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
-      lookupScope(kb, qualName, errors).map { scope =>
+      lookupScope(kb, qualName, decl.name.span, errors).map { scope =>
         processImports(kb, decl.imports, fileSym, scope, errors, pending)
         scope
       }
@@ -379,14 +412,18 @@ object Loader:
   private def checkVariadicCapture(
     fileSym: SymbolTable, prefix: String, op: Operation, errors: ArrayBuffer[LoadError]
   ): Unit =
-    val restCount = op.params.count(_.rest)
+    val captures = op.params.filter(_.rest)
     val opQualified = makeQualified(prefix, joinSegments(fileSym, op.name.segments))
-    if restCount > 1 then
+    // WI-947: each refusal points at the OFFENDING capture — the second one for the
+    // count, the misplaced one for the position — not at the operation as a whole.
+    if captures.length > 1 then
       errors += LoadError.Other(
-        s"operation '$opQualified': at most one variadic capture parameter (`...`) is allowed")
-    else if restCount == 1 && !op.params.last.rest then
+        s"operation '$opQualified': at most one variadic capture parameter (`...`) is allowed",
+        captures(1).span)
+    else if captures.length == 1 && !op.params.last.rest then
       errors += LoadError.Other(
-        s"operation '$opQualified': a variadic capture parameter (`...`) must be the LAST parameter")
+        s"operation '$opQualified': a variadic capture parameter (`...`) must be the LAST parameter",
+        captures.head.span)
 
   // ── Pass 3: rule-introduced functors ─────────────────────────
 
@@ -406,7 +443,7 @@ object Loader:
   ) extends ScopePass:
 
     def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
-      lookupScope(kb, qualName, errors)
+      lookupScope(kb, qualName, decl.name.span, errors)
 
     def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
       item match
@@ -616,7 +653,7 @@ object Loader:
   ) extends ScopePass:
 
     def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
-      lookupScope(kb, qualName, errors)
+      lookupScope(kb, qualName, decl.name.span, errors)
 
     def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
       item match
@@ -641,7 +678,7 @@ object Loader:
           // defines every entity, and a name that is not there drops this `EntityOf`
           // fact — silently, before the miss got a diagnostic.
           val defined = lookupDefined(
-            kb, qualName, "its `entity_of` fact cannot be asserted", errors)
+            kb, qualName, entity.name.span, "its `entity_of` fact cannot be asserted", errors)
           defined.foreach { entityTerm =>
             val entityOfSort = findSortTerm(kb, "anthill.reflect.EntityOf")
             val entityOfSym = kb.intern("entity_of")
@@ -690,13 +727,15 @@ object Loader:
 
     if hasBottom && rule.heads.length > 1 then
       errors += LoadError.Other(
-        "denial heads (`⊥`) cannot be combined with positive heads in a multi-head rule")
+        "denial heads (`⊥`) cannot be combined with positive heads in a multi-head rule",
+        rule.span)
       return
 
     if positiveHeads.length > 1 && rule.label.isEmpty then
       errors += LoadError.Other(
         "multi-head rule requires a label so the rule has a unique citation handle " +
-        "(e.g. `rule my_law: H1, H2 :- B`)")
+        "(e.g. `rule my_law: H1, H2 :- B`)",
+        rule.span)
       return
 
     val kbBody = rule.body.map(_.map(b =>
@@ -885,6 +924,11 @@ object Loader:
               case SymbolDef.Resolved(_, q, _, _) => q
               case SymbolDef.Unresolved(n) => n
             ).toIndexedSeq
+            // WI-947 did NOT reach this one, and says so rather than leaving it to be
+            // mistaken for a located diagnostic: `resolveName` is called with a NAME
+            // lifted out of an already-built term, and scaland's parse-time term store
+            // records no span per term — there is nothing here to point at, and giving
+            // it one means a term->span side table. Filed as WI-957.
             errors += LoadError.AmbiguousSymbol(name, qualNames, Span.empty, "")
             kb.intern(name)
           case ResolveResult.NotFound =>

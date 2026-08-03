@@ -349,7 +349,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     Prelude.register(kb)
     val errs = Loader.loadAll(kb, IndexedSeq(pf))
     assert(errs.nonEmpty, "Expected a load error for unlabeled multi-head rule")
-    val msg = errs.collectFirst { case anthill.load.LoadError.Other(m) => m }
+    val msg = errs.collectFirst { case anthill.load.LoadError.Other(m, _) => m }
     assert(msg.exists(_.contains("multi-head")), s"Expected multi-head error, got: $errs")
   }
 
@@ -1021,7 +1021,7 @@ class ParserIntegrationTest extends munit.FunSuite:
         |    operation fix(...args: R, p: Rel) -> Rel
         |  end
         |end""".stripMargin)
-    val m = errs.collectFirst { case LoadError.Other(msg) if msg.contains("variadic") => msg }
+    val m = errs.collectFirst { case LoadError.Other(msg, _) if msg.contains("variadic") => msg }
       .getOrElse(fail(s"expected a variadic refusal, got: $errs"))
     assert(m.contains("v.Rel.fix"), m)
     assert(m.contains("LAST parameter"), m)
@@ -1035,7 +1035,7 @@ class ParserIntegrationTest extends munit.FunSuite:
         |    operation fix(...a: R, ...b: R) -> Rel
         |  end
         |end""".stripMargin)
-    val m = errs.collectFirst { case LoadError.Other(msg) if msg.contains("variadic") => msg }
+    val m = errs.collectFirst { case LoadError.Other(msg, _) if msg.contains("variadic") => msg }
       .getOrElse(fail(s"expected a variadic refusal, got: $errs"))
     assert(m.contains("at most one"), m)
   }

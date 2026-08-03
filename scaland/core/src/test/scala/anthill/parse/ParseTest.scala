@@ -556,7 +556,7 @@ class ParseTest extends munit.FunSuite:
       case Left(errs) =>
         assertEquals(errs.length, 1,
           s"$label: expected only the parse failure, got: ${errs.map(_.message).mkString("; ")}")
-        assert(errs.head.message.startsWith("Parse error at"),
+        assert(errs.head.message.startsWith("parse error: "),
           s"$label: expected the parse failure, got: ${errs.head.message}")
 
   test("WI-950: a discarded type-param-default refusal does not survive the parse") {
@@ -612,7 +612,7 @@ class ParseTest extends munit.FunSuite:
         case Left(errs) =>
           assertEquals(errs.length, 1,
             s"$label: expected exactly the refusal, got: ${errs.map(_.message).mkString("; ")}")
-          assert(!errs.head.message.startsWith("Parse error at"),
+          assert(!errs.head.message.startsWith("parse error: "),
             s"$label: expected the refusal, got: ${errs.head.message}")
   }
 
@@ -634,7 +634,7 @@ class ParseTest extends munit.FunSuite:
         val msgs = errs.map(_.message)
         assert(msgs.exists(_.contains("type parameter `T` carries a default")),
           s"the accepted declaration's refusal must survive; got: ${msgs.mkString("; ")}")
-        assert(msgs.exists(_.startsWith("Parse error at")),
+        assert(msgs.exists(_.startsWith("parse error: ")),
           s"the syntax error must be reported too; got: ${msgs.mkString("; ")}")
   }
 
@@ -1559,7 +1559,7 @@ end
         val head = errs.head
         assert(head.message.startsWith(s"Unterminated block comment: `$opener`"),
           s"expected the unterminated-comment error first, got: ${errs.map(_.message).mkString("; ")}")
-        assertEquals(head.span.startByte, src.indexOf(opener),
+        assertEquals(head.span.start, src.indexOf(opener),
           s"the error must point at the OPENER; got: ${head.message}")
 
   test("WI-952: `{- ` left open on an incomplete file reports the opener") {
