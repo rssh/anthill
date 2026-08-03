@@ -32,8 +32,6 @@ fn load_stdlib_kb() -> KnowledgeBase {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let result = load::load_all(&mut kb, &refs, &NullResolver);
     if let Err(errs) = &result {
         for e in errs {
@@ -110,7 +108,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_qualified_name_term("Color.red");
@@ -131,7 +128,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_qualified_name_term("Color.red");
@@ -159,7 +155,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     // Query: EntityInfo(name: ?x, fields: ?f) — should find red, green, blue
@@ -256,7 +251,6 @@ sort Color {
 fn extract_sort_ref_from_parameterized_type() {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
 
     // Build SortView(Eq(), T=Int64())
     let eq_sym = kb.intern("Eq");
@@ -302,7 +296,6 @@ fn extract_sort_ref_from_parameterized_type() {
 fn extract_sort_ref_from_simple_ref() {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
 
     let eq_sym = kb.intern("Eq");
     let eq_ref = kb.alloc(Term::Ref(eq_sym));
@@ -553,7 +546,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     // Query EntityInfo facts by functor
@@ -577,7 +569,6 @@ sort Outer {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let leaf_term = kb.resolve_qualified_name_term("Outer.Inner.leaf");
@@ -604,7 +595,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_qualified_name_term("Color.red");
@@ -624,7 +614,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let color_term = kb.resolve_qualified_name_term("Color");
@@ -649,7 +638,6 @@ entity Account(id: Int64, balance: Int64)
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     // Exactly one EntityInfo fact — for the standalone Account.
@@ -674,7 +662,6 @@ sort Shape {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_qualified_name_term("Color.red");
@@ -710,7 +697,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let var_x = make_var(&mut kb, "x");
@@ -733,7 +719,6 @@ sort Color {
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_qualified_name_term("Color.red");
@@ -1045,7 +1030,6 @@ fn wi630_metadata_fact_headed_by_user_functor_is_rejected() {
     // `assert_metadata_fact` seam enforces the invariant loudly.
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, "entity edge(from: Int64, to: Int64)\n");
 
     // Build a metadata fact whose HEAD is the user functor `edge` (the WI-515
@@ -1073,7 +1057,6 @@ entity Foo(x: ?)
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     // WI-515: the declaration-side record is the entity field-types registry
@@ -1098,7 +1081,6 @@ entity Box(contents: ?)
 "#;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     // Get Box's declared field types (WI-515: the registry, not a schema fact)
@@ -1703,8 +1685,6 @@ fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let result = load::load_all(&mut kb, &refs, &NullResolver);
     match result {
         Ok(load_result) => (kb, load_result),
@@ -4796,8 +4776,6 @@ fn rule_typing_stdlib_no_spurious_errors() {
             .collect();
         let refs: Vec<_> = parsed.iter().collect();
         let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
         let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
         (kb, result)
     };
@@ -4849,8 +4827,6 @@ fn pattern_fragment_stdlib_valid() {
             .collect();
         let refs: Vec<_> = parsed.iter().collect();
         let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
         let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
         (kb, result)
     };
@@ -4883,8 +4859,6 @@ fn effect_scoping_stdlib_no_spurious_errors() {
             .collect();
         let refs: Vec<_> = parsed.iter().collect();
         let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
         let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
         (kb, result)
     };

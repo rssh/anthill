@@ -30,8 +30,6 @@ fn load_stdlib_kb() -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_stdlib(&mut kb, &refs, &NullResolver).expect("stdlib load");
     kb
 }
@@ -82,6 +80,56 @@ namespace test.increment
 end
 "#;
 
+/// WI-967 — `load_incremental` bootstraps like every other load entry point.
+///
+/// It used to be the ONE entry point that skipped `register_prelude`, on the
+/// assumption that it is only ever reached second. Nothing enforced that, and
+/// reaching it FIRST silently produced a KB whose kernel vocabulary did not
+/// resolve. This drives the fixed behaviour on a genuinely fresh KB: no stdlib,
+/// no prior load, no caller-side registration.
+///
+/// CONTROL — this test is the evidence for that one behaviour change; it FAILS
+/// when `load_incremental` is reverted to `load_phase(kb, files, resolver)`.
+/// Every other test in this file passes either way by design, because they all
+/// call `load_stdlib` first, which bootstraps. So does the whole 4000-test
+/// suite: the WI-967 deletion of the redundant caller-side `register_prelude` /
+/// `register_standard_builtins` lines is a refactor over an idempotent function
+/// and is green both ways.
+#[test]
+fn load_incremental_bootstraps_a_fresh_kb() {
+    let user = parse::parse(r#"
+namespace test.wi967
+  sort Boxed
+    entity Boxed(n: Int64)
+  end
+
+  fact Boxed(n: 42)
+end
+"#).expect("parse");
+
+    let mut kb = KnowledgeBase::new();
+    // FIRST call into the KB — no register_prelude, no load_stdlib, nothing.
+    load::load_incremental(&mut kb, &[&user], &NullResolver)
+        .expect("load_incremental must bootstrap a fresh KB, not leave kernel names unresolved");
+
+    // Both halves of bootstrap must have run.
+    // (1) the kernel meta-sorts / stdlib scope hierarchy — `Int64` above resolved.
+    assert!(kb.try_resolve_symbol("Int64").is_some(),
+        "register_prelude's KERNEL_META_SORTS did not run");
+    // (2) the builtin TAGS — `register_standard_builtins`, which only
+    // `register_prelude` calls (WI-967).
+    let eq = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("PartialEq.eq symbol must exist after bootstrap");
+    assert!(kb.is_builtin(eq),
+        "register_standard_builtins did not run: PartialEq.eq carries no builtin tag");
+
+    // DRIVE the loaded content, so this is not a `loads clean` assertion:
+    // the fact must be queryable through the bootstrapped KB.
+    let boxed = kb.try_resolve_symbol("test.wi967.Boxed").expect("Boxed symbol");
+    assert_eq!(kb.rules_by_functor(boxed).len(), 1,
+        "the `fact Boxed(n: 42)` should be indexed under its head functor");
+}
+
 #[test]
 fn load_incremental_equivalent_to_load_all() {
     // Build KB-A via one-shot load_all.
@@ -93,14 +141,10 @@ fn load_incremental_equivalent_to_load_all() {
     all_refs.push(&user_parsed);
 
     let mut kb_a = KnowledgeBase::new();
-    load::register_prelude(&mut kb_a);
-    kb_a.register_standard_builtins();
     load::load_all(&mut kb_a, &all_refs, &NullResolver).expect("one-shot load");
 
     // Build KB-B via load_stdlib then load_incremental.
     let mut kb_b = KnowledgeBase::new();
-    load::register_prelude(&mut kb_b);
-    kb_b.register_standard_builtins();
     let stdlib_refs: Vec<&_> = stdlib_parsed.iter().collect();
     load::load_stdlib(&mut kb_b, &stdlib_refs, &NullResolver).expect("stdlib load");
     load::load_incremental(&mut kb_b, &[&user_parsed], &NullResolver)

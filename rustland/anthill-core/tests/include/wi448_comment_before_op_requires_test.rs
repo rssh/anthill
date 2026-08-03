@@ -28,8 +28,6 @@ fn load_errors_no_stdlib(src: &str) -> Vec<String> {
     let parsed = parse::parse(src).expect("parse");
     let refs = vec![&parsed];
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => vec![],
         Err(errs) => errs.iter().map(|e| e.to_string()).collect(),

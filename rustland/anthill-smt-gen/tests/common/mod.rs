@@ -47,8 +47,6 @@ pub fn load_kb_strict(source: &str) -> KnowledgeBase {
     refs.push(&user);
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
         panic!(
             "load must be clean for a test that depends on name resolution; got: {:?}",
@@ -65,8 +63,6 @@ pub fn load_kb_with(source: &str) -> KnowledgeBase {
     refs.push(&user);
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }

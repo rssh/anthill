@@ -51,8 +51,6 @@ end
     parsed.push(parse::parse(src).expect("parse test source"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver).expect("load");
     kb
 }
@@ -187,8 +185,6 @@ end
     parsed.push(parse::parse(src).expect("parse test source"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver).expect("load");
 
     let middle = kb.try_resolve_symbol("test.wi662b.Middle").expect("Middle");

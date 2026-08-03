@@ -3516,18 +3516,66 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[
     ("meta", "meta"),
 ];
 
-/// Register primitive sorts and kernel vocabulary in the global scope,
-/// plus stdlib scope hierarchy for loader-referenced names.
-///
-/// Call this before `scan_definitions` / `load` to ensure that references to
-/// `Int64`, `Float`, `String`, `Bool` never produce unresolved-name errors,
-/// and that all loader-internal functor names are resolvable.
+/// Register primitive sorts and kernel vocabulary in the global scope, plus the
+/// stdlib scope hierarchy for loader-referenced names — so that references to
+/// `Int64`, `Float`, `String`, `Bool` never produce unresolved-name errors and
+/// every loader-internal functor name is resolvable.
 ///
 /// Stdlib names (`cons`, `nil`, `some`, `none`, `SortInfo`, `FieldInfo`,
-/// `OperationInfo`) are defined in their correct scopes with proper
-/// qualified names, matching what `scan_definitions` would produce from
-/// the stdlib `.anthill` files.  `scan_definitions` is idempotent for these
-/// entries and will reuse the existing symbols.
+/// `OperationInfo`) are defined in their correct scopes with proper qualified
+/// names, matching what `scan_definitions` would produce from the stdlib
+/// `.anthill` files; `scan_definitions` is idempotent for these entries and
+/// reuses the existing symbols.
+///
+/// # THE ONE OWNER of bootstrap (WI-967)
+///
+/// This function IS the bootstrap: kernel vocabulary, stdlib scope hierarchy
+/// (`register_stdlib_scopes`), builtin tags
+/// (`KnowledgeBase::register_standard_builtins` — `pub(crate)`, and this is its
+/// only caller), the `TermView` field keys, and the WI-320 bridge fact. Two
+/// rules cover every caller:
+///
+/// 1. **About to load? Do NOT call this.** Every load entry point — [`load`],
+///    [`load_all`], [`load_all_per_file`], and the [`load_stdlib`] /
+///    [`load_incremental`] aliases — calls it first. Before WI-967 the "house
+///    sequence" (`new` → `register_prelude` → `register_standard_builtins` →
+///    `load_all`) ran BOTH this and `register_standard_builtins` twice, at 172
+///    files; being idempotent is exactly what kept that invisible.
+/// 2. **Never loading? Call it yourself** — a hand-built KB that needs kernel
+///    names to resolve. That is the only caller-side use: of the 60 call sites
+///    left, 3 are the load entry points below and 57 are this shape.
+///
+/// (`KnowledgeBase::register_standard_builtins` is a step OF bootstrap, not a
+/// peer of it. Do not confuse it with
+/// [`crate::eval::builtins::register_standard_builtins`], an unrelated
+/// same-named function that registers host fns on an `Interpreter` and IS
+/// legitimately re-run per fresh interpreter.)
+///
+/// **Idempotent**, and load-bearingly so — under rule 1 any KB loaded into twice
+/// reaches a load entry point already bootstrapped. Every step guards itself:
+/// `define_qualified_only` returns the existing symbol, `register_stdlib_scopes`
+/// early-returns once `anthill` exists, `register_builtin` re-resolves and
+/// re-inserts the same tag, and `emit_effects_runtime_bridge_fact` early-returns
+/// — the one step that would otherwise DUPLICATE, since
+/// `assert_rule_debruijn_with_nodes` does not consult `fact_dedup`.
+///
+/// **A bare, never-bootstrapped KB is a SUPPORTED configuration**, not an illegal
+/// state to design out — which is why `KnowledgeBase::new()` deliberately does not
+/// call this. Moving bootstrap into the constructor was MEASURED under WI-967: it
+/// does make every load-entry arrival pre-bootstrapped (3911 of 3911), and it
+/// fails 25 tests.
+///
+/// * 22 in `resolve.rs` / `simp_rewrite.rs`, because it silently changes what a
+///   hand-interned `eq` MEANS. [`KnowledgeBase::eq_functor`] /
+///   [`KnowledgeBase::unify_functor`] resolve the qualified name and fall back to
+///   a bare `intern("eq")` / `intern("unify")` for "kernel-less unit KBs"; those
+///   tests build their `[simp]` equations on that fallback, which a bootstrapped
+///   KB no longer hands them, so the rules stop firing.
+/// * 2 in `kb/mod.rs`, which assert whole-KB counters (`fact_count() == 0`) that
+///   the WI-320 bridge fact breaks.
+/// * 1, `typing_test::types_compatible_bootstrap_safe_when_prelude_not_registered`,
+///   which exists to pin this very configuration — WI-337 made the typer's arrow
+///   comparison degrade to `false` rather than panic on a never-bootstrapped KB.
 pub fn register_prelude(kb: &mut KnowledgeBase) {
     let global = kb.make_name_term("_global");
     let global_raw = global.raw();
@@ -3584,10 +3632,14 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// a *kind* of `EffectsRuntime`, which no other clause in the KB did. See
 /// proposal 045 §2.0.1.
 ///
-/// **Idempotency** — `register_prelude` is called more than once on the
-/// same KB by the common test pattern (e.g. `register_prelude(&mut kb);
-/// kb.register_standard_builtins(); load::load_all(&mut kb, …)` — `load_all`
-/// itself re-enters `register_prelude`). `assert_rule_debruijn_with_nodes` does
+/// **Idempotency** — `register_prelude` is called more than once on the same KB
+/// whenever that KB is loaded into more than once (`load_stdlib` then
+/// `load_incremental`, or two `load_all`s), since every load entry point
+/// bootstraps. Until WI-967 it was re-entered far more often than that: the
+/// "house sequence" at 172 files pre-registered and then called `load_all`,
+/// which re-entered `register_prelude` itself. Those caller-side lines are gone;
+/// this guard is still required for the loaded-twice case.
+/// `assert_rule_debruijn_with_nodes` does
 /// NOT consult `fact_dedup` (only `assert_fact` does), so an unguarded second
 /// call duplicates the rule entry in `by_sort` / `rules_by_functor` / `by_domain`
 /// / `discrim`. We therefore early-return when `rules_by_functor[EffectsRuntime]`
@@ -4188,6 +4240,9 @@ pub fn load(
 /// Load multiple parsed files into the same knowledge base, including the
 /// prelude. Scans ALL files for definitions first, then loads them, so that
 /// cross-file references resolve correctly regardless of load order.
+///
+/// WI-967 — bootstraps via [`register_prelude`], which owns it; see that
+/// function for the rule. The caller must NOT pre-register.
 pub fn load_all(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
@@ -4208,17 +4263,30 @@ pub fn load_stdlib(
     load_all(kb, files, resolver)
 }
 
-/// Load additional files on top of an already-populated KB. Skips
-/// `register_prelude`. Relies on `resolve_instantiations` being idempotent
-/// (`resolved_requires_facts` guard) so stdlib facts are not retracted or
-/// reasserted. The returned `LoadResult.defined_sorts` contains only sorts
-/// defined in `files`.
+/// Load additional files on top of an already-populated KB. Relies on
+/// `resolve_instantiations` being idempotent (`resolved_requires_facts` guard)
+/// so stdlib facts are not retracted or reasserted. The returned
+/// `LoadResult.defined_sorts` contains only sorts defined in `files`.
+///
+/// Alias of [`load_all`], like [`load_stdlib`] — the name carries the INTENT
+/// (phase 2 of a staged load), not a different mechanism.
+///
+/// WI-967 REMOVED the one thing that did differ: this function used to skip
+/// [`register_prelude`], the sole asymmetry among the load entry points. Skipping
+/// was never protective — `register_prelude` is idempotent, and `load_all` is
+/// called on an already-bootstrapped KB throughout the suite (3476 measured
+/// arrivals) — while the cost was real and unguarded: nothing enforced "second
+/// phase only", and reaching this entry point FIRST did not degrade, it PANICKED
+/// mid-load (`resolve_symbol: 'anthill.reflect.Expr.match_expr' is not a resolved
+/// symbol`, measured). Now every load entry point bootstraps and the rule has no
+/// exceptions. Driven by `incremental_load_test::load_incremental_bootstraps_a_fresh_kb`,
+/// which is also the CONTROL for this change.
 pub fn load_incremental(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<LoadResult, Vec<LoadError>> {
-    load_phase(kb, files, resolver)
+    load_all(kb, files, resolver)
 }
 
 fn load_phase(
@@ -17121,7 +17189,7 @@ mod wi351_place_tests {
     //! `result` (`OpResult`). `provenance` and `is_result_binder` are functions
     //! of this kind (no side-table). Public *resolution* is also covered by
     //! `tests/include/wi351_callback_place_test.rs`.
-    use super::{load, register_prelude, NullResolver};
+    use super::{load, NullResolver};
     use crate::intern::SymbolKind;
     use crate::kb::KnowledgeBase;
     use crate::parse;
@@ -17131,8 +17199,6 @@ mod wi351_place_tests {
     /// concrete (`Int64`/`Bool`) arrow params loads cleanly without the stdlib.
     fn load_op(src: &str) -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
-        register_prelude(&mut kb);
-        kb.register_standard_builtins();
         let parsed = parse::parse(src).expect("parse");
         load(&mut kb, &parsed, &NullResolver).expect("load");
         kb

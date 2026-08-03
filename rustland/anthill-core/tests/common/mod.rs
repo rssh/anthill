@@ -121,8 +121,6 @@ pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<Str
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => Ok(kb),
         Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
@@ -231,8 +229,6 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_stdlib(&mut kb, &refs, &NullResolver).expect("stdlib load");
     kb
 }
@@ -250,8 +246,6 @@ pub fn load_kb_bare(sources: &[&str]) -> KnowledgeBase {
     let parsed: Vec<_> = sources.iter().map(|s| parse::parse(s).expect("parse source")).collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("Load error: {e}");

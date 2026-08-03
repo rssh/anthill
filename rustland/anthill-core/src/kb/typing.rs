@@ -41145,8 +41145,6 @@ end
     fn kb() -> KnowledgeBase {
         let parsed = crate::parse::parse(SRC).expect("parse");
         let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
         if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
             panic!(
                 "the two-provider program must LOAD — it is the only way to put two \

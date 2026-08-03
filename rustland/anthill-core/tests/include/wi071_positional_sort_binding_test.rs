@@ -21,8 +21,6 @@ use anthill_core::kb::load::{self, NullResolver};
 fn load_ok(source: &str) -> KnowledgeBase {
     let parsed = parse::parse(source).expect("parse");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let stdlib_dir = crate::common::stdlib_dir();
     let stdlib_files = crate::common::collect_anthill_files(&stdlib_dir);
     let stdlib_parsed: Vec<_> = stdlib_files.iter()

@@ -61,8 +61,6 @@ fn load_literal_type_arg_in_body_no_reentrancy_panic() {
     // NOT re-enter `convert_expr_term` (it is not re-entrant). Loading must not
     // panic (an Err for unrelated resolution reasons is acceptable).
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let src = "operation g[n](x: Int64) -> Int64\noperation f(x: Int64) -> Int64 = g[3](x)\n";
     let parsed = parse::parse(src).expect("parse failed");
     let _ = load::load(&mut kb, &parsed, &NullResolver);
@@ -112,8 +110,6 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     }
     fn effects_of_f(src: &str) -> Result<(KnowledgeBase, Vec<anthill_core::eval::Value>), String> {
         let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
         let full = format!("{MODIFY}{src}");
         let parsed = parse::parse(&full).map_err(|e| format!("parse: {e:?}"))?;
         load::load(&mut kb, &parsed, &NullResolver).map_err(|e| format!("load: {e:?}"))?;
@@ -758,7 +754,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check we have facts of various sorts
@@ -913,7 +908,6 @@ sort Store {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_sort = ClauseKind::Operation;
@@ -969,7 +963,6 @@ fn load_operation_with_abstract_effect() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_sort = ClauseKind::Operation;
@@ -1068,7 +1061,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
@@ -1098,7 +1090,6 @@ fn member_facts_for_namespace() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
@@ -1162,7 +1153,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
@@ -1209,7 +1199,6 @@ fn reflection_inventory_schemas_survive_an_empty_relation() {
     let source = "namespace empty_ns\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
@@ -1293,7 +1282,6 @@ sort Ordered {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check that a Requirement fact exists
@@ -1403,7 +1391,6 @@ end
 
     // Load both files into the same KB — order shouldn't matter for basic loading
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load_all(&mut kb, &[&parsed_x, &parsed_y], &NullResolver)
         .expect("load_all failed");
 
@@ -1539,7 +1526,6 @@ fn stdlib_load_all_into_kb() {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     let load_result = load::load_all(&mut kb, &refs, &NullResolver);
 
     assert!(kb.fact_count() > 0,
@@ -1588,7 +1574,6 @@ fn nested_namespace_sees_outer_imports() {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     let load_result = load::load_all(&mut kb, &refs, &NullResolver);
 
     if let Err(ref errors) = load_result {
@@ -2066,7 +2051,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     let result = load::load(&mut kb, &parsed, &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved import");
 
@@ -2086,7 +2070,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     let result = load::load(&mut kb, &parsed, &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved wildcard import");
 
@@ -2145,7 +2128,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     let result = load::load(&mut kb, &parsed, &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved selective import");
 
@@ -2221,7 +2203,6 @@ sort Ordered {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver)
         .expect("load should succeed with all names resolved");
 }
@@ -2473,7 +2454,6 @@ fn nested_items_have_qualified_names() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Sort Eq at top level
@@ -2500,7 +2480,6 @@ fn nested_items_in_dotted_sort_have_qualified_names() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     assert!(kb.has_qualified_name("anthill.prelude.Eq"),
@@ -2524,7 +2503,6 @@ fn nested_items_in_namespace_have_qualified_names() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     assert!(kb.has_qualified_name("anthill.reflect"),
@@ -3265,8 +3243,6 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
     }
     fn callback_field_names(src: &str) -> Vec<String> {
         let mut kb = KnowledgeBase::new();
-        load::register_prelude(&mut kb);
-        kb.register_standard_builtins();
         let parsed = parse::parse(src).expect("parse");
         load::load(&mut kb, &parsed, &NullResolver).expect("load");
         let sym = kb.try_resolve_symbol("foo").expect("op foo");
@@ -3359,7 +3335,6 @@ sort Host {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Drill OperationInfo for `run` to find parameter `f`'s arrow type
@@ -3476,11 +3451,9 @@ sort Host
     let parsed_plus = parse::parse(&source_plus).expect("`+E` parse failed");
 
     let mut kb_bare = KnowledgeBase::new();
-    load::register_prelude(&mut kb_bare);
     load::load(&mut kb_bare, &parsed_bare, &NullResolver).expect("bare load failed");
 
     let mut kb_plus = KnowledgeBase::new();
-    load::register_prelude(&mut kb_plus);
     load::load(&mut kb_plus, &parsed_plus, &NullResolver).expect("`+E` load failed");
 
     // Build the canonical effects rows from the same input set in both
@@ -3536,7 +3509,6 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // The reflect-side effects list still uses cons. Walk it and verify
@@ -3580,11 +3552,9 @@ sort Host
     let parsed_braced = parse::parse(&source_braced).expect("braced parse failed");
 
     let mut kb_merge = KnowledgeBase::new();
-    load::register_prelude(&mut kb_merge);
     load::load(&mut kb_merge, &parsed_merge, &NullResolver).expect("merge load failed");
 
     let mut kb_braced = KnowledgeBase::new();
-    load::register_prelude(&mut kb_braced);
     load::load(&mut kb_braced, &parsed_braced, &NullResolver).expect("braced load failed");
 
     // Count cons cells in both effects lists — should be 2 each.
@@ -4307,7 +4277,6 @@ fn try_load_with_stdlib(
 
     let refs: Vec<_> = all_parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load_all(&mut kb, &refs, &NullResolver)?;
     Ok(kb)
 }
@@ -4959,7 +4928,6 @@ fn assert_var_id(kb: &KnowledgeBase, term: TermId) -> u32 {
 fn load_op_type_param_resolves_bare_name_to_var() {
     let parsed = parse::parse("operation identity[T](x: T) -> T\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "identity");
@@ -4975,7 +4943,6 @@ fn load_op_type_param_shares_var_across_param_and_return() {
         "operation identity[A](x: A) -> A\n"
     ).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "identity");
@@ -4998,7 +4965,6 @@ fn load_op_distinct_type_params_get_distinct_vars() {
         "operation pair[A, B](a: A, b: B) -> A\n"
     ).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "pair");
@@ -5021,7 +4987,6 @@ operation just[A](x: A) -> Box[A]
 ";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "just");
@@ -5043,7 +5008,6 @@ operation just[A](x: A) -> Box[A]
 fn load_op_without_type_params_unaffected() {
     let parsed = parse::parse("operation length(x: Int64) -> Int64\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "length");
@@ -5068,7 +5032,6 @@ end
 "#;
     let parsed = parse::parse(src).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
     // Pre-fix this panicked with index-out-of-bounds in convert_term.
     load::load(&mut kb, &parsed, &NullResolver)
         .expect("load should succeed (1-arg dot_apply falls through, no panic)");

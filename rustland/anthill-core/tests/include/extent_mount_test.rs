@@ -235,8 +235,6 @@ fn source_fact_for_owned_functor_refused_at_load() {
     refs.push(&base_parsed);
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_stdlib(&mut kb, &refs, &NullResolver).expect("phase-1 load");
 
     // Phase 2: mount WorkItem, THEN load a file that seeds a resident fact for it.
@@ -279,8 +277,6 @@ fn source_rule_for_owned_functor_refused_at_load() {
     refs.push(&base_parsed);
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_stdlib(&mut kb, &refs, &NullResolver).expect("phase-1 load");
 
     let functor = kb.try_resolve_symbol(WORKITEM_QN).expect("WorkItem loaded");

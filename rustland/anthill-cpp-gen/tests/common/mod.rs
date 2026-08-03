@@ -147,8 +147,6 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     refs.push(&user);
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("{}", e); }
@@ -175,8 +173,6 @@ pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
     refs.push(&user);
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("{}", e); }
@@ -195,8 +191,6 @@ pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
     refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.push(&user);
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }

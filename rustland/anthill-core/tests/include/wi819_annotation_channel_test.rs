@@ -57,8 +57,6 @@ fn load_with(extras: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
     }
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     // FOOTGUN, paid for once already: `anthill run` MUTES load errors, so the
     // loader's verdict is taken from `load_all` directly.
     match load::load_all(&mut kb, &refs, &NullResolver) {

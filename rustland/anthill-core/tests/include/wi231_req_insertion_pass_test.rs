@@ -154,8 +154,6 @@ end
     parsed.push(parse::parse(src).expect("parse user"));
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
 
     // Scan + load WITHOUT the trailing req_insertion::run.
     // The simplest way to do this: invoke the inner scan/load functions

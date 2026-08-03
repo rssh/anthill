@@ -52,8 +52,6 @@ fn lf1_kb() -> KnowledgeBase {
     let refs: Vec<&ParsedFile> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }

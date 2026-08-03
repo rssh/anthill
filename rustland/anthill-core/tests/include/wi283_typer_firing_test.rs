@@ -29,7 +29,6 @@ use anthill_core::kb::ClauseKind;
 fn fresh_kb() -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     kb
 }
 

@@ -82,8 +82,6 @@ fn load_libraries(libs: &[&Vec<ParsedFile>], extra: Option<&str>) -> KnowledgeBa
     refs.extend(extra_parsed.iter());
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     // The subject is "library + fixture", NOT "stdlib". `extra` loads in the same
     // batch and is by far the likelier culprit, so labelling this a stdlib error
     // blames the wrong file — the misdiagnosis the walk above is loud to avoid,

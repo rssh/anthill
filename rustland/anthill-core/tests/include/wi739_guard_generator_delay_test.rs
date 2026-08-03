@@ -125,8 +125,6 @@ fn load_src(src: &str) -> KnowledgeBase {
     parsed.push(parse::parse(src).unwrap_or_else(|e| panic!("parse extra: {e:?}")));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|e| panic!("load: {e:?}"));
     kb
 }

@@ -33,8 +33,6 @@ fn load_with(extra: &str) -> KnowledgeBase {
     parsed.push(parsed_extra);
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => {}
         Err(errs) => {

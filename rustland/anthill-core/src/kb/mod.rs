@@ -6558,7 +6558,25 @@ impl KnowledgeBase {
     }
 
     /// Register the standard builtins.
-    pub fn register_standard_builtins(&mut self) {
+    ///
+    /// WI-967 — a STEP OF BOOTSTRAP, not a peer of it.
+    /// [`load::register_prelude`](crate::kb::load::register_prelude) is its ONE
+    /// caller and owns the ordering (this needs the namespace hierarchy
+    /// `register_stdlib_scopes` creates — [`Self::register_builtin`] panics
+    /// without it). A caller-side call is therefore always redundant; 218 were
+    /// deleted under WI-967, every one of them sitting beside a `register_prelude`
+    /// or a load entry point that had already run it.
+    ///
+    /// `pub(crate)` SO THEY CANNOT COME BACK. It was `pub`, which is what let the
+    /// redundant line spread to 172 files; narrowing it makes the whole class
+    /// unrepresentable outside this crate instead of merely documented. If you are
+    /// reaching for it, you want `register_prelude`.
+    ///
+    /// NOT the same function as
+    /// [`crate::eval::builtins::register_standard_builtins`], which registers host
+    /// fns on an `Interpreter`, returns a `Result`, and IS legitimately re-run per
+    /// fresh interpreter. The names collide; the owners do not.
+    pub(crate) fn register_standard_builtins(&mut self) {
         self.register_builtin("anthill.reflect.nonvar", BuiltinTag::NonVar);
         self.register_builtin("anthill.reflect.ground", BuiltinTag::Ground);
         self.register_builtin("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);

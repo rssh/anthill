@@ -540,8 +540,6 @@ end
 "#;
     let parsed = parse::parse(src).expect("parse");
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let _ = load::load_all(&mut kb, &[&parsed], &load::NullResolver);
 
     let rec_sym = kb.try_resolve_symbol("test.Rec").expect("Rec resolved");

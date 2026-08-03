@@ -43,8 +43,6 @@ namespace test_desc
 end
 "#;
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let parsed = parse::parse(source).expect("parse failed");
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 

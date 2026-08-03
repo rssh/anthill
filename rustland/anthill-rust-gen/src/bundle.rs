@@ -247,8 +247,6 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
     }}
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {{
         // Batched: each source is indexed once, not re-walked per error.
         let detail: Vec<String> = load::LoadError::render_all(&errs).collect();

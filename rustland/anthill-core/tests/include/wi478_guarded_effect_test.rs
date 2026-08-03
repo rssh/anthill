@@ -29,8 +29,6 @@ fn load_result(source: &str) -> Result<(), Vec<String>> {
     parsed.push(parse::parse(source).expect("parse user source"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver)
         .map(|_| ())
         .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
@@ -163,8 +161,6 @@ fn ground_guarded_effect_renders_with_guard_not_dropped() {
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib loads");
 
     let label = kb.make_name_term("Boom");

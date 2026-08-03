@@ -198,8 +198,9 @@ use anthill_core::kb::{KnowledgeBase, load};
 use anthill_core::parse;
 
 let mut kb = KnowledgeBase::new();
-load::register_prelude(&mut kb);
-// parse and load stdlib + project .anthill files
+// parse and load stdlib + project .anthill files.
+// `load_all` bootstraps the KB itself (`register_prelude`) — do not call that
+// first; it is only for a hand-built KB that never loads (WI-967).
 load::load_all(&mut kb, &parsed_refs, &load::NullResolver)?;
 kb.resolve_builtins();
 ```
@@ -274,8 +275,7 @@ Existing facilities marked with [done], gaps marked with [needed].
 | Facility | Status |
 |----------|--------|
 | `parse::parse(source) -> Result<ParsedFile>` | [done] |
-| `load::register_prelude(kb)` | [done] |
-| `load::load_all(kb, files, resolver)` | [done] |
+| `load::load_all(kb, files, resolver)` (bootstraps the KB itself) | [done] |
 | `kb.resolve_builtins()` | [done] |
 | Sugar desugaring (project, tool, workitem, feedback → Fact) | [done] |
 | Stdlib loading from filesystem | [done] |

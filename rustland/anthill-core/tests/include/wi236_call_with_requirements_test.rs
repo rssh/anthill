@@ -51,8 +51,6 @@ fn load_with_driver() -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("{}", e); }
@@ -242,8 +240,6 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("{}", e); }

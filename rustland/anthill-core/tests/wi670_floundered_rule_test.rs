@@ -37,8 +37,6 @@ namespace test.wi670
 end
 "#;
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let parsed = parse::parse(source).expect("parse failed");
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
@@ -89,8 +87,6 @@ namespace test.wi670b
 end
 "#;
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let parsed = parse::parse(source).expect("parse failed");
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
@@ -130,7 +126,6 @@ end
 fn genuine_stuck_builtin_residual_still_counts() {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
 
     // anthill.reflect.nonvar(?s) with ?s unbound → floundered stuck builtin.
     let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");

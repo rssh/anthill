@@ -27,8 +27,6 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => (kb, vec![]),
         Err(errs) => (kb, errs),
@@ -150,8 +148,6 @@ fn stdlib_with_bindings_is_op_complete() {
     }).collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => vec![],
         Err(errs) => errs,

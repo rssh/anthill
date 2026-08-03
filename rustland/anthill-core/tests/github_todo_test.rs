@@ -34,8 +34,6 @@ fn load_github_todo_kb() -> KnowledgeBase {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     let result = load::load_all(&mut kb, &refs, &NullResolver);
     if let Err(errs) = &result {
         for e in errs {
@@ -67,8 +65,6 @@ fn load_github_todo_kb_with_extra(extra: &str) -> KnowledgeBase {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::register_prelude(&mut kb);
-    kb.register_standard_builtins();
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("Load error: {e}"); }
