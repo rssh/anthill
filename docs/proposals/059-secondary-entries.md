@@ -171,6 +171,18 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
 
   Like the two clauses above it, this one is stated over the **scope**, not over secondary entries: measured, the same flip happens when the capturing operation is written in the main entry, so an entry-local rule would patch the wrong object and would split the one scope R2 rests on. §6.3 records the hazard for the long form as a caution already (WI-935); this makes it a check, for both spellings at once.
 
+**Is R4 implementable?** Each clause is decidable, and each has a measured blast radius — but they need two different mechanisms, and clause 3 needs a predicate the route alone does not give.
+
+| clause | sites in the corpus | what it needs |
+|---|---|---|
+| 1 — two suppliers of one member name | **0** | a pass-1 declaration ledger |
+| 2 — a secondary entry redeclaring a main-entry member | **0** (a sub-case of 1) | the same ledger |
+| 3 — capturing an operation it does not override | **2** | the override relation, after pass 2 |
+
+Clauses 1 and 2 cannot be checked by walking symbols: `define` **merges** two same-named declarations in one scope into one symbol, so by the time symbols exist the duplication is gone. They need each *declaration* recorded as pass 1 makes it, keyed on (scope, local name) — the same ledger R1 needs for duplicate type declarations, so it is one piece of machinery for both. Measured that way over 427 operation/const declarations in stdlib, `anthill-stl`, examples and `anthill-todo`: **no name is declared twice in one scope**, so both clauses land with no migration. (The zero is honest but easy: the corpus contains no secondary entries at all, so clause 2 has nothing to bite on yet. Clause 1 also covers two same-named operations in one *main* entry, and that is genuinely zero.)
+
+Clause 3 must key on the **override relation** — is the captured operation a member of a spec the declaring sort requires or provides — and **not** on the route by which the name was reached. The measurement is why: 4 of the legitimate overrides arrive through an `import` of the spec's member rather than through the `requires` link, so a route-based rule refuses exactly the wrong four. That relation is known only after pass 2, so the check runs there, not in pass 1 beside the ledger.
+
 The first two clauses are silent last-wins today, which is what makes a secondary entry indistinguishable from monkey-patching. Note the sort's *own* member already outranks other supply routes at dispatch (WI-842 refuses a tie between a member, an instance fact's binding, and a witness sort's member, naming each by its route); R4 closes the one route that never reaches that check, because it overwrites rather than competes.
 
 **Provisions declared in a secondary entry are arbitrated by 058, not here.** A secondary entry's `provides Spec[X]` is an ordinary provision: `one_default` refuses a second default for a `(spec, carrier)`, and the nameability gate decides whether rivals may coexist at all — *"`one_default` arbitrates all rows regardless of origin"*. 058 already contemplates this mechanism by name, prescribing "mark inline when you own the carrier **or ship its canonical companion**". Two consequences worth stating, both inherited rather than invented: a carrier that provides for itself has an inferred default, so a secondary entry declaring a rival **violates `one_default`** — the orphan case is already refused where it would displace; and since 058 §4 proposes retiring the `fact X[…]` spelling of a provision in favour of `provides X[…]`, a secondary entry should be written in the latter.
