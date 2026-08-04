@@ -196,14 +196,14 @@ fn a_contested_name_is_found_in_every_position_wi863_tolerates() {
             1,
             "`{pattern}` names a contested `SortInfo`, which must be reported wherever it \
              is written; got {:?}",
-            found.iter().map(|&s| kb.resolve_sym(s).to_owned()).collect::<Vec<_>>(),
+            found.iter().map(|&s| kb.local_name_of(s).to_owned()).collect::<Vec<_>>(),
         );
         assert_ne!(
             found[0], contested,
             "and the reported symbol is the WI-476 bare intern the pattern actually bound \
              — not one of the candidates, which would be deciding the conflict",
         );
-        assert_eq!(kb.resolve_sym(found[0]), "SortInfo");
+        assert_eq!(kb.local_name_of(found[0]), "SortInfo");
     }
 }
 

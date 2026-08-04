@@ -118,12 +118,12 @@ end
         Term::Fn { functor, named_args, .. } => (functor, named_args),
         other => panic!("expected a parameterized `Fn` type term, got {other:?}"),
     };
-    assert_eq!(interp.kb().resolve_sym(functor), "Cell", "the base sort is the functor");
+    assert_eq!(interp.kb().local_name_of(functor), "Cell", "the base sort is the functor");
     assert_eq!(named.len(), 1, "one type argument");
-    assert_eq!(interp.kb().resolve_sym(named[0].0), "V", "keyed by the declared type-param name");
+    assert_eq!(interp.kb().local_name_of(named[0].0), "V", "keyed by the declared type-param name");
     match interp.kb().get_term(named[0].1).clone() {
         Term::Ref(s) | Term::Ident(s) => {
-            assert_eq!(interp.kb().resolve_sym(s), "Int64", "the type argument is Int64")
+            assert_eq!(interp.kb().local_name_of(s), "Int64", "the type argument is Int64")
         }
         other => panic!("expected the argument to be a sort reference, got {other:?}"),
     }

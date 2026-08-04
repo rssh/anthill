@@ -183,7 +183,7 @@ fn resolver_field_wise_eq_agrees() {
     // needs the unique `point` ctor of its own fixture).
     let ctor = {
         let funcs: Vec<_> = kb.entity_field_type_functors().copied().collect();
-        funcs.into_iter().find(|&f| kb.resolve_sym(f) == "point").expect("point constructor")
+        funcs.into_iter().find(|&f| kb.local_name_of(f) == "point").expect("point constructor")
     };
     let fields = kb.entity_field_names(ctor).expect("point fields").to_vec();
     let (x, y) = (fields[0], fields[1]);

@@ -223,5 +223,5 @@ fn fn_node(kb: &KnowledgeBase, tag: &[u8], functor: Symbol, h: &mut Sha256, out:
 
 fn leaf_sym(kb: &KnowledgeBase, tag: &[u8], sym: Symbol, h: &mut Sha256) {
     h.update(tag);
-    h.update(kb.resolve_sym(sym).as_bytes());
+    h.update(kb.local_name_of(sym).as_bytes());
 }

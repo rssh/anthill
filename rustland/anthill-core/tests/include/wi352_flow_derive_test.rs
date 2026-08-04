@@ -82,10 +82,10 @@ fn flow_facts_for_reduce_match_046() {
         let Term::Fn { named_args, .. } = kb.get_term(head) else { continue };
         let (mut from, mut to, mut kind) = (None, None, None);
         for (f, v) in named_args {
-            match kb.resolve_sym(*f) {
+            match kb.local_name_of(*f) {
                 "from" => from = term_sym(&kb, *v),
                 "to" => to = term_sym(&kb, *v),
-                "kind" => kind = term_sym(&kb, *v).map(|s| kb.resolve_sym(s).to_string()),
+                "kind" => kind = term_sym(&kb, *v).map(|s| kb.local_name_of(s).to_string()),
                 _ => {}
             }
         }
@@ -170,7 +170,7 @@ fn provenance_builtin_reads_symbol_kind() {
         let sols = kb.resolve(&[goal], &ResolveConfig::default());
         let s = sols.first()?;
         let reified = kb.reify(v, &s.subst).expect_term();
-        term_sym(kb, reified).map(|s| kb.resolve_sym(s).to_string())
+        term_sym(kb, reified).map(|s| kb.local_name_of(s).to_string())
     };
     let (z, result, f_result, f_a) = (
         place(&kb, "z"),

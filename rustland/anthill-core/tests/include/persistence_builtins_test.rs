@@ -30,7 +30,7 @@ fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
 /// Build a `Value::Entity` matching `FileStore(root: <r>, convention: Flat)`.
 /// All names go through `kb_mut().intern` — the canonical-key path doesn't
 /// care whether the symbol is resolved or fresh, since both produce the
-/// same short_name on `resolve_sym`. Mutable borrow because intern may
+/// same short_name on `local_name_of`. Mutable borrow because intern may
 /// allocate a new symbol slot.
 fn filestore_value(interp: &mut Interpreter, root: &str) -> Value {
     let fs = interp.kb_mut().intern("FileStore");
@@ -251,7 +251,7 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     let Value::Entity { functor, named, .. } = updated else {
         panic!("update must return Option.some(StoredRef)");
     };
-    assert_eq!(interp.kb().resolve_sym(functor), "some");
+    assert_eq!(interp.kb().local_name_of(functor), "some");
     let updated_reference = named.iter().find_map(|(_, value)| match value {
         Value::Entity { .. } => Some(stored_reference(&mut interp, value)),
         _ => None,

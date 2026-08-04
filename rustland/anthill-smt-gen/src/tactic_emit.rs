@@ -19,11 +19,11 @@ use anthill_core::parse::ir::{Tactic, TacticArg, TacticArgValue};
 pub fn emit_tactic_expr(symbols: &SymbolTable, tactic: &Tactic) -> Option<String> {
     match tactic {
         Tactic::Bare(sym) => {
-            let name = symbols.name(*sym);
+            let name = symbols.local_name(*sym);
             if is_default_smt(symbols, name, &[]) { None } else { Some(name.to_string()) }
         }
         Tactic::App(sym, args) => {
-            let name = symbols.name(*sym);
+            let name = symbols.local_name(*sym);
             if is_default_smt(symbols, name, args) { return None; }
             Some(emit_app(symbols, name, args))
         }
@@ -45,7 +45,7 @@ fn is_default_smt(symbols: &SymbolTable, name: &str, args: &[TacticArg]) -> bool
     // model.compact) requires a `using-params` wrapper, so we don't
     // elide.
     args.iter().all(|a| match a.name {
-        Some(sym) => matches!(symbols.name(sym), "logic" | "timeout"),
+        Some(sym) => matches!(symbols.local_name(sym), "logic" | "timeout"),
         None => false,
     })
 }
@@ -81,9 +81,9 @@ fn emit_combinator(symbols: &SymbolTable, kw: &str, args: &[TacticArg]) -> Strin
 
 fn emit_tactic_force(symbols: &SymbolTable, tactic: &Tactic) -> String {
     match tactic {
-        Tactic::Bare(sym) => symbols.name(*sym).to_string(),
+        Tactic::Bare(sym) => symbols.local_name(*sym).to_string(),
         Tactic::App(sym, args) => {
-            let name = symbols.name(*sym);
+            let name = symbols.local_name(*sym);
             emit_app(symbols, name, args)
         }
         Tactic::Raw(s) => s.clone(),
@@ -99,7 +99,7 @@ fn emit_repeat(symbols: &SymbolTable, args: &[TacticArg]) -> String {
     let mut tactic_arg: Option<&Tactic> = None;
     let mut times: Option<i64> = None;
     for a in args {
-        match (a.name.as_ref().map(|s| symbols.name(*s)), &a.value) {
+        match (a.name.as_ref().map(|s| symbols.local_name(*s)), &a.value) {
             (Some("times"), TacticArgValue::Int(n)) => times = Some(*n),
             (None, TacticArgValue::Tactic(t)) => tactic_arg = Some(t.as_ref()),
             _ => {}
@@ -120,7 +120,7 @@ fn emit_using_params(symbols: &SymbolTable, name: &str, args: &[TacticArg]) -> S
     // and positional args are skipped (they belong to anthill-layer
     // meta-tactics like `induction`/`ranking`, handled elsewhere).
     let kv: Vec<(String, String)> = args.iter().filter_map(|a| {
-        let key = symbols.name(a.name.as_ref().copied()?);
+        let key = symbols.local_name(a.name.as_ref().copied()?);
         let val = match &a.value {
             TacticArgValue::String(s) => format!("\"{s}\""),
             TacticArgValue::Int(n) => n.to_string(),

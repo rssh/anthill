@@ -23,7 +23,7 @@ fn dump_match_binding_shapes() {
     for rid in kb.rules_by_functor(op_impl_sym) {
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
-            let op = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "operation")
+            let op = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "operation")
                 .map(|(_, v)| *v).unwrap();
             let op_sym = match kb.get_term(op) {
                 Term::Ref(s) => *s,

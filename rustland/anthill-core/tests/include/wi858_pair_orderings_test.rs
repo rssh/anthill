@@ -192,7 +192,7 @@ fn the_prelude_makes_a_pair_lawful_with_no_language_binding() {
         .filter_map(|rid| kb.fact_head_named_args(rid))
         .filter_map(|named| {
             let get = |key: &str| {
-                named.iter().find(|(s, _)| kb.resolve_sym(*s) == key).map(|(_, t)| *t)
+                named.iter().find(|(s, _)| kb.local_name_of(*s) == key).map(|(_, t)| *t)
             };
             let (sort_ref, spec) = (get("sort_ref")?, get("spec")?);
             if functor_qn(sort_ref).as_deref() != Some("anthill.prelude.Pair") {

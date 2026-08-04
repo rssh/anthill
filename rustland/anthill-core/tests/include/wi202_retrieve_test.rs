@@ -91,7 +91,7 @@ fn retrieve_fast_path_via_by_id() {
     let head_id = hits[0];
     if let Term::Fn { named_args, .. } = kb.get_term(head_id) {
         let id_val = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "id")
+            .find(|(s, _)| kb.local_name_of(*s) == "id")
             .expect("hit has id field");
         if let Term::Const(Literal::String(s)) = kb.get_term(id_val.1) {
             assert_eq!(s, "WI-001");

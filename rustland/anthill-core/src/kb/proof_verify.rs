@@ -173,7 +173,7 @@ pub fn set_proof_result(kb: &mut KnowledgeBase, rid: RuleId, verdict: VerdictWri
     // re-canonicalises it regardless (WI-299).
     let mut wrote_result = false;
     for entry in named.iter_mut() {
-        match kb.resolve_sym(entry.0) {
+        match kb.local_name_of(entry.0) {
             "result" => {
                 entry.1 = result_term;
                 wrote_result = true;

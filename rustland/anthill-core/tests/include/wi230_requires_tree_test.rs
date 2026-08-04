@@ -140,7 +140,7 @@ end
             _ => return None,
         };
         for (k, v) in named_args {
-            if kb.resolve_sym(*k) != "T" {
+            if kb.local_name_of(*k) != "T" {
                 continue;
             }
             match kb.get_term(*v) {
@@ -234,7 +234,7 @@ end
 fn requires_chain_does_not_collide_on_short_name() {
     // Regression: `direct_requires` (and the SortInfo lookups) used to
     // match reflection facts by SHORT name. Two sorts named `Main` in
-    // different namespaces both resolve_sym to "Main", so the chain
+    // different namespaces both local_name_of to "Main", so the chain
     // walk for `inner.Main` would pick up `outer.Main`'s requires —
     // and vice versa during the recursive descent — doubling the
     // chain. Pin that `requires_chain_flat` keys on the resolved

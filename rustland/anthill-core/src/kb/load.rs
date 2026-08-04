@@ -118,7 +118,7 @@ fn join_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> S
         if i > 0 {
             out.push('.');
         }
-        out.push_str(symbols.name(sym));
+        out.push_str(symbols.local_name(sym));
     }
     out
 }
@@ -1495,7 +1495,7 @@ fn collect_negated_unify_violations(
             node_occurrence::collect_occurrence_global_vars(&occ, &mut vars, &mut seen);
             for v in vars {
                 if !bound.contains(&v.raw()) && reported.insert(v.raw()) {
-                    out.push((kb.symbols.name(v.name()).to_string(), occ.span.span));
+                    out.push((kb.symbols.local_name(v.name()).to_string(), occ.span.span));
                 }
             }
         }
@@ -2154,7 +2154,7 @@ fn eponymous_sort_symbol(kb: &KnowledgeBase, scope: TermId, name: &str, short: &
         return None;
     }
     let Term::Fn { functor, .. } = kb.get_term(scope) else { return None };
-    (kb.resolve_sym(*functor) == short).then_some(*functor)
+    (kb.local_name_of(*functor) == short).then_some(*functor)
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -2265,7 +2265,7 @@ fn register_entity_field_names_scan(
     let field_names: Vec<Symbol> = e
         .fields
         .iter()
-        .map(|f| kb.intern(parse_sym.name(f.name)))
+        .map(|f| kb.intern(parse_sym.local_name(f.name)))
         .collect();
     kb.register_entity_fields(entity_sym, field_names.clone());
     // Sugar-generated facts reference the bare short name (`kb.intern("WorkItem")`,
@@ -2312,7 +2312,7 @@ fn scan_operation_params(
     // branch in `type_expr_to_child` — same mechanism as `sort T = ?`
     // inside a sort body.
     for tp in &op.type_params {
-        let tp_name = parse_sym.name(tp.name);
+        let tp_name = parse_sym.local_name(tp.name);
         let qualified = make_qualified(prefix, tp_name);
         kb.symbols.define(tp_name, &qualified, SymbolKind::Sort, op_term.raw());
         kb.symbols.add_type_param(op_term.raw(), tp_name);
@@ -2323,7 +2323,7 @@ fn scan_operation_params(
     // i-th param place from symbol data alone (the flow-derivation pass).
     let mut op_arg_places: Vec<Symbol> = Vec::new();
     for p in &op.params {
-        let param_name = parse_sym.name(p.name);
+        let param_name = parse_sym.local_name(p.name);
         // Skip param-name `result` here; the load pass reports the
         // collision with the reserved return-value name.
         if param_name == "result" {
@@ -2402,7 +2402,7 @@ fn register_callback_places(
     let mut cb_arg_places: Vec<Symbol> = Vec::new();
     for (i, (cb_name_sym, cb_ty)) in params.iter().enumerate() {
         let cb_name = match cb_name_sym {
-            Some(s) => parse_sym.name(*s).to_owned(),
+            Some(s) => parse_sym.local_name(*s).to_owned(),
             // Unnamed arrow param: 1-based positional (`_1`, `_2`, …; spec §4.5).
             None => positional_label(i),
         };
@@ -2574,7 +2574,7 @@ fn parse_equation_lhs(
     match parse_terms.get(head) {
         Term::Fn { functor, pos_args, .. }
             if pos_args.len() == 2
-                && crate::parse::pratt::is_equation_functor(parse_sym.name(*functor)) =>
+                && crate::parse::pratt::is_equation_functor(parse_sym.local_name(*functor)) =>
         {
             Some(pos_args[0])
         }
@@ -2654,7 +2654,7 @@ fn rule_introduced_functor_name<'a>(
     let Term::Fn { functor, .. } = parse_terms.get(subject) else {
         return None;
     };
-    let name = parse_sym.name(*functor);
+    let name = parse_sym.local_name(*functor);
     // A QUALIFIED name REFERENCES an existing symbol; it never introduces one — a
     // SPEC rule about the SPELLING (kernel-language.md §"A rule-introduced functor is
     // scoped where it is written"), NOT a ladder tier, and deliberately stricter than
@@ -2737,7 +2737,7 @@ fn scan_items_pass1(
                 let mut has_variant = false;
                 for item in &s.items {
                     if let Item::Entity(e) = item {
-                        let vshort = parse_sym.name(*e.name.segments.last().unwrap());
+                        let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
                         kb.symbols.add_exposed(sort_term.raw(), vshort);
                         has_variant = true;
                     }
@@ -3197,7 +3197,7 @@ fn build_instantiation_term(
             let tuple_sym = kb.symbols.by_qualified_name.get("anthill.reflect.TupleLiteral").copied()
                 .unwrap_or_else(|| kb.symbols.intern("TupleLiteral"));
             let named_args: SmallVec<[(Symbol, TermId); 2]> = fields.iter().map(|(sym, ty)| {
-                let key = kb.symbols.intern(parse_sym.name(*sym));
+                let key = kb.symbols.intern(parse_sym.local_name(*sym));
                 let val = build_instantiation_term(kb, parse_sym, ty, current_scope);
                 (key, val)
             }).collect();
@@ -3298,7 +3298,7 @@ fn forbid_internal_import(
     };
     let scope_name = match kb.get_term(scope) {
         Term::Fn { functor, .. } => match kb.symbols.get(*functor) {
-            SymbolDef::Resolved { short_name, .. } => short_name.clone(),
+            SymbolDef::Resolved { local_name, .. } => local_name.clone(),
             SymbolDef::Unresolved { name } => name.clone(),
         },
         _ => "_unknown".to_owned(),
@@ -5091,7 +5091,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                         if pos_args.len() > 1 {
                             let params = kb.type_params_of_sort(ss);
                             let named_shorts: Vec<String> = bindings.iter()
-                                .map(|(k, _)| kb.resolve_sym(*k)
+                                .map(|(k, _)| kb.local_name_of(*k)
                                     .rsplit('.').next().unwrap_or("").to_string())
                                 .collect();
                             for (i, pv) in pos_args.iter().skip(1).enumerate() {
@@ -5124,7 +5124,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         let op_syms = collect_sort_operations(kb, spec_sort_sym);
         let op_short_names: Vec<String> = op_syms.iter()
             .map(|s| {
-                let name = kb.resolve_sym(*s);
+                let name = kb.local_name_of(*s);
                 name.rsplit('.').next().unwrap_or(name).to_owned()
             })
             .collect();
@@ -5134,14 +5134,14 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         // uses scope-qualified symbols (e.g., "Monoid.T"). Match by short name.
         let explicit_by_short: Vec<(String, TermId)> = explicit_bindings.iter()
             .map(|(s, t)| {
-                let name = kb.resolve_sym(*s);
+                let name = kb.local_name_of(*s);
                 let short = name.rsplit('.').next().unwrap_or(name).to_owned();
                 (short, *t)
             })
             .collect();
 
         for (slot_sym, default_tid) in &base_subst {
-            let slot_name = kb.resolve_sym(*slot_sym);
+            let slot_name = kb.local_name_of(*slot_sym);
             let slot_short = slot_name.rsplit('.').next().unwrap_or(slot_name).to_owned();
 
             // Check if explicit binding overrides this slot (by short name)
@@ -6331,7 +6331,7 @@ pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)
             _ => continue,
         };
         let sort_sym = match named.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .find(|(s, _)| kb.local_name_of(*s) == "name")
             .map(|(_, v)| *v)
             .map(|t| kb.get_term(t))
         {
@@ -6339,7 +6339,7 @@ pub(crate) fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)
             _ => continue,
         };
         let ops = match named.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "operations")
+            .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| *v)
         {
             Some(ops_tid) => super::typing::list_to_vec(kb, ops_tid)
@@ -6379,14 +6379,14 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
         if !kb.is_fact(rid) { continue; }
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let sort_sym = match named.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .find(|(s, _)| kb.local_name_of(*s) == "name")
             .map(|(_, v)| kb.get_term(*v))
         {
             Some(Term::Ref(s) | Term::Ident(s) | Term::Fn { functor: s, .. }) => *s,
             _ => continue,
         };
         let has_ctors = named.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "constructors")
+            .find(|(s, _)| kb.local_name_of(*s) == "constructors")
             .map(|(_, v)| !super::typing::list_to_vec(kb, *v).is_empty())
             .unwrap_or(false);
         if has_ctors {
@@ -6453,7 +6453,7 @@ pub(crate) fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbo
         Term::Fn { functor, named_args, .. } => {
             // `sort_ref(name: Ref(S))` wrapping — prefer the inner name.
             if let Some(name_tid) = named_args.iter()
-                .find(|(k, _)| kb.resolve_sym(*k) == "name")
+                .find(|(k, _)| kb.local_name_of(*k) == "name")
                 .map(|(_, v)| *v)
             {
                 if let Term::Ref(s) | Term::Ident(s) = kb.get_term(name_tid) {
@@ -6538,9 +6538,9 @@ fn sort_view_substitution(
                 return None;
             }
         }
-        let k_short = last_segment(kb.resolve_sym(*k_sym)).to_owned();
+        let k_short = last_segment(kb.local_name_of(*k_sym)).to_owned();
         let v_short = match value_sym {
-            Some(s) => last_segment(kb.resolve_sym(s)).to_owned(),
+            Some(s) => last_segment(kb.local_name_of(s)).to_owned(),
             None => "_".to_string(),
         };
         Some((k_short, v_short))
@@ -6591,7 +6591,7 @@ pub fn sort_info_is_inductive(
         None => return false,
     };
     match kb.get_term(kind_tid) {
-        Term::Ident(s) | Term::Ref(s) => kb.resolve_sym(*s) == "enum",
+        Term::Ident(s) | Term::Ref(s) => kb.local_name_of(*s) == "enum",
         Term::Const(Literal::String(s)) => s == "enum",
         _ => false,
     }
@@ -6662,7 +6662,7 @@ pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> boo
     let tid = match meta { Some(t) => t, None => return false };
     if let Term::Fn { named_args, .. } = kb.get_term(tid) {
         for (k, _) in named_args.iter() {
-            if kb.resolve_sym(*k) == key { return true; }
+            if kb.local_name_of(*k) == key { return true; }
         }
     }
     false
@@ -6676,7 +6676,7 @@ pub fn meta_value(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> Option
     let tid = meta?;
     if let Term::Fn { named_args, .. } = kb.get_term(tid) {
         for (k, v) in named_args.iter() {
-            if kb.resolve_sym(*k) == key { return Some(*v); }
+            if kb.local_name_of(*k) == key { return Some(*v); }
         }
     }
     None
@@ -6705,7 +6705,7 @@ fn denoted_value_short(kb: &KnowledgeBase, denoted_tid: TermId) -> String {
     };
     let inner = named_args
         .iter()
-        .find(|(k, _)| kb.resolve_sym(*k).rsplit('.').next() == Some("value"))
+        .find(|(k, _)| kb.local_name_of(*k).rsplit('.').next() == Some("value"))
         .map(|(_, t)| *t);
     let Some(inner) = inner else { return "den".to_string() };
     match kb.get_term(inner) {
@@ -6715,7 +6715,7 @@ fn denoted_value_short(kb: &KnowledgeBase, denoted_tid: TermId) -> String {
         Term::Const(Literal::String(s)) => format!("den_str_{s}"),
         Term::Const(Literal::Float(f)) => format!("den_f{}", f.0),
         Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-            let n = kb.resolve_sym(*functor);
+            let n = kb.local_name_of(*functor);
             format!("den_{}", n.rsplit('.').next().unwrap_or(n))
         }
         _ => "den".to_string(),
@@ -6740,14 +6740,14 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
             (*functor, pos_args.clone(), named_args.clone()),
         _ => return None,
     };
-    let functor_name = kb.resolve_sym(functor);
+    let functor_name = kb.local_name_of(functor);
     let functor_short = functor_name.rsplit('.').next().unwrap_or(functor_name);
     if functor_short != "SortView" {
         return Some(functor_short.to_owned());
     }
     let base_short = match pos_args.first().map(|t| kb.get_term(*t)) {
         Some(Term::Fn { functor, .. }) | Some(Term::Ref(functor)) | Some(Term::Ident(functor)) => {
-            let n = kb.resolve_sym(*functor);
+            let n = kb.local_name_of(*functor);
             n.rsplit('.').next().unwrap_or(n).to_owned()
         }
         _ => return None,
@@ -6764,7 +6764,7 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
                 return None;
             }
         }
-        let k_name = kb.resolve_sym(*k_sym);
+        let k_name = kb.local_name_of(*k_sym);
         let k_short = k_name.rsplit('.').next().unwrap_or(k_name).to_owned();
         let v_short = match value_sym {
             // WI-390: a `denoted` value-in-type renders by its inner value so two
@@ -6773,7 +6773,7 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
                 denoted_value_short(kb, *v_tid)
             }
             Some(s) => {
-                let n = kb.resolve_sym(s);
+                let n = kb.local_name_of(s);
                 n.rsplit('.').next().unwrap_or(n).to_owned()
             }
             None => match kb.get_term(*v_tid) {
@@ -6877,7 +6877,7 @@ pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: Term
                 };
 
                 if op_scope_matches {
-                    let op_name = kb.resolve_sym(op_s);
+                    let op_name = kb.local_name_of(op_s);
                     let op_short = op_name.rsplit('.').next().unwrap_or(op_name);
                     if op_short == short_name {
                         return Some(op_s);
@@ -7065,7 +7065,7 @@ pub fn convert_query_term(
             let kb_vid = if let Some(&mapped) = var_map.get(&vid.raw()) {
                 mapped
             } else {
-                let name_str = parse_symbols.name(vid.name());
+                let name_str = parse_symbols.local_name(vid.name());
                 let kb_name = kb.intern(name_str);
                 let new_vid = kb.fresh_var(kb_name);
                 var_map.insert(vid.raw(), new_vid);
@@ -7080,7 +7080,7 @@ pub fn convert_query_term(
             unreachable!("Var::Rigid in stored parse term")
         }
         Term::Fn { functor, pos_args, named_args } => {
-            let functor_name = parse_symbols.name(functor);
+            let functor_name = parse_symbols.local_name(functor);
             let kb_functor = resolve_query_name(kb, functor_name, scope_raw);
             let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                 .iter()
@@ -7089,7 +7089,7 @@ pub fn convert_query_term(
             let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                 .iter()
                 .map(|&(sym, id)| {
-                    let n = parse_symbols.name(sym);
+                    let n = parse_symbols.local_name(sym);
                     let kb_sym = kb.intern(n);
                     (kb_sym, convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
                 })
@@ -7153,7 +7153,7 @@ pub fn convert_query_term(
             kb.alloc(Term::Fn { functor: kb_functor, pos_args: new_pos, named_args: new_named })
         }
         Term::Ident(sym) => {
-            let name = parse_symbols.name(sym);
+            let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope_raw) {
                 ResolveResult::Found(resolved) => kb.alloc(Term::Ref(resolved)),
                 ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
@@ -7163,7 +7163,7 @@ pub fn convert_query_term(
             }
         }
         Term::Ref(sym) => {
-            let name = parse_symbols.name(sym);
+            let name = parse_symbols.local_name(sym);
             let kb_sym = resolve_query_name(kb, name, scope_raw);
             kb.alloc(Term::Ref(kb_sym))
         }
@@ -8057,7 +8057,7 @@ impl<'a> Loader<'a> {
             _ => return,
         };
         let (is_arrow, binder_layout) = {
-            let name = self.parsed.symbols.name(functor);
+            let name = self.parsed.symbols.local_name(functor);
             (pratt::is_arrow_functor(name), binder_form_layout(name))
         };
         if is_arrow && self.parsed.terms.is_minted(parse_id) {
@@ -8136,7 +8136,7 @@ impl<'a> Loader<'a> {
     ) -> Option<String> {
         match self.parsed.terms.get(parse_id) {
             Term::Ident(sym) => {
-                let name = self.parsed.symbols.name(*sym);
+                let name = self.parsed.symbols.local_name(*sym);
                 let binder_lead = name
                     .chars()
                     .next()
@@ -8153,7 +8153,7 @@ impl<'a> Loader<'a> {
                 None
             }
             Term::Fn { functor, pos_args, named_args } => {
-                let name = self.parsed.symbols.name(*functor);
+                let name = self.parsed.symbols.local_name(*functor);
                 // Provenance + arity gate, as in `check_bare_arrow_typo`.
                 let minted_binder = binder_form_layout(name)
                     .filter(|_| self.parsed.terms.is_minted(parse_id))
@@ -8207,11 +8207,11 @@ impl<'a> Loader<'a> {
     fn pattern_binder_names(&self, parse_id: TermId, out: &mut HashSet<String>) {
         let Term::Fn { functor, pos_args, named_args } = self.parsed.terms.get(parse_id)
         else { return };
-        match self.parsed.symbols.name(*functor) {
+        match self.parsed.symbols.local_name(*functor) {
             "pattern_var" => {
                 if let Some(&first) = pos_args.first() {
                     if let Term::Ident(sym) = self.parsed.terms.get(first) {
-                        out.insert(self.parsed.symbols.name(*sym).to_owned());
+                        out.insert(self.parsed.symbols.local_name(*sym).to_owned());
                     }
                 }
             }
@@ -8259,7 +8259,7 @@ impl<'a> Loader<'a> {
             let t = self.parsed.terms.get(parse_id);
             match t {
                 Term::Fn { functor, pos_args, named_args } => {
-                    let n = self.parsed.symbols.name(*functor).to_owned();
+                    let n = self.parsed.symbols.local_name(*functor).to_owned();
                     (n, pos_args.clone(), named_args.clone())
                 }
                 _ => return,
@@ -8273,7 +8273,7 @@ impl<'a> Loader<'a> {
                 // owned name first (dropping the `parsed` borrow) before minting.
                 let name = pos_args.first().and_then(|&first| {
                     match self.parsed.terms.get(first) {
-                        Term::Ident(sym) => Some(self.parsed.symbols.name(*sym).to_owned()),
+                        Term::Ident(sym) => Some(self.parsed.symbols.local_name(*sym).to_owned()),
                         _ => None,
                     }
                 });
@@ -8310,7 +8310,7 @@ impl<'a> Loader<'a> {
         if let Some(&mapped) = self.sym_map.get(&sym.index()) {
             return mapped;
         }
-        let s = self.parsed.symbols.resolve(sym);
+        let s = self.parsed.symbols.local_name(sym);
         let new_sym = self.kb.intern(s);
         self.sym_map.insert(sym.index(), new_sym);
         new_sym
@@ -8321,7 +8321,7 @@ impl<'a> Loader<'a> {
         match self.kb.get_term(self.current_scope) {
             Term::Fn { functor, .. } => {
                 match self.kb.symbols.get(*functor) {
-                    SymbolDef::Resolved { short_name, .. } => short_name.clone(),
+                    SymbolDef::Resolved { local_name, .. } => local_name.clone(),
                     SymbolDef::Unresolved { name } => name.clone(),
                 }
             }
@@ -8387,7 +8387,7 @@ impl<'a> Loader<'a> {
     /// rule / op / param / etc., so a body's reference to a let-bound
     /// `y` resolves to the binder, not an unrelated definition elsewhere.
     fn remap_symbol(&mut self, sym: Symbol, span: Span) -> Symbol {
-        let name = self.parsed.symbols.name(sym).to_owned();
+        let name = self.parsed.symbols.local_name(sym).to_owned();
         self.remap_name_str(&name, span)
     }
 
@@ -8580,7 +8580,7 @@ impl<'a> Loader<'a> {
     /// `UnresolvedName` / `AmbiguousSymbol` / `ForbiddenInternalAccess` raised
     /// here points at the use site instead of `Span::default()` (byte 0).
     fn remap_symbol_strict(&mut self, sym: Symbol, span: Span) -> Symbol {
-        let name = self.parsed.symbols.name(sym);
+        let name = self.parsed.symbols.local_name(sym);
         let scope = self.current_scope.raw();
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
@@ -8615,7 +8615,7 @@ impl<'a> Loader<'a> {
     /// Scope-aware name resolution for multi-segment names.
     fn remap_name(&mut self, name: &Name) -> Symbol {
         let lookup_name = if name.segments.len() == 1 {
-            self.parsed.symbols.name(name.segments[0]).to_owned()
+            self.parsed.symbols.local_name(name.segments[0]).to_owned()
         } else {
             join_segments(&self.parsed.symbols, &name.segments)
         };
@@ -8663,7 +8663,7 @@ impl<'a> Loader<'a> {
                     && self
                         .parsed
                         .symbols
-                        .name(*name.segments.last().unwrap())
+                        .local_name(*name.segments.last().unwrap())
                         .chars()
                         .next()
                         .is_some_and(|c| c.is_uppercase())
@@ -8746,7 +8746,7 @@ impl<'a> Loader<'a> {
             // `bindings`, so read it here rather than re-walking via extract_type_param.
             let hint = bindings
                 .iter()
-                .find(|(p, _)| kb.resolve_sym(*p) == "T")
+                .find(|(p, _)| kb.local_name_of(*p) == "T")
                 .and_then(|(_, v)| match v {
                     Value::Term { id: t, .. } => Some(*t),
                     _ => None,
@@ -8871,9 +8871,9 @@ impl<'a> Loader<'a> {
                 // variable's DeBruijn index. A `typed_var` outside a rule head is
                 // a misuse (annotation on a non-pattern variable) — report loudly
                 // rather than silently dropping the bound.
-                if self.parsed.symbols.name(functor) == "typed_var"
+                if self.parsed.symbols.local_name(functor) == "typed_var"
                     && pos_args.len() == 1
-                    && named_args.iter().any(|(s, _)| self.parsed.symbols.name(*s) == "type")
+                    && named_args.iter().any(|(s, _)| self.parsed.symbols.local_name(*s) == "type")
                 {
                     let var_kb = self.convert_term(pos_args[0]);
                     let ty_expr_opt = self.read_parse_aux(parse_id, "type", |aux| match aux {
@@ -8890,9 +8890,9 @@ impl<'a> Loader<'a> {
                             if n.segments.len() == 1
                                 && self
                                     .rule_tvar_bounds
-                                    .contains_key(self.parsed.symbols.name(n.segments[0])) =>
+                                    .contains_key(self.parsed.symbols.local_name(n.segments[0])) =>
                         {
-                            let nm = self.parsed.symbols.name(n.segments[0]);
+                            let nm = self.parsed.symbols.local_name(n.segments[0]);
                             *self.rule_tvar_bounds.get(nm).unwrap()
                         }
                         Some(ty_expr) => {
@@ -8983,7 +8983,7 @@ impl<'a> Loader<'a> {
                 // `entity dot_apply` (named-arg construction) falls through to
                 // generic conversion — and MUST, else `pos_args[1]` would panic
                 // on < 2 positional args.
-                if self.parsed.symbols.name(functor) == "dot_apply"
+                if self.parsed.symbols.local_name(functor) == "dot_apply"
                     && pos_args.len() >= 2
                     && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_))
                 {
@@ -9202,7 +9202,7 @@ impl<'a> Loader<'a> {
                             self.errors.push(LoadError::Other {
                                 message: format!(
                                     "constructor '{}' given {} positional argument(s) but has {} unfilled field(s) (declares: {})",
-                                    self.kb.resolve_sym(new_functor),
+                                    self.kb.local_name_of(new_functor),
                                     new_pos.len(),
                                     unfilled,
                                     fields,
@@ -9244,7 +9244,7 @@ impl<'a> Loader<'a> {
                              registered field schema"
                         ),
                     };
-                    let ctor = self.kb.resolve_sym(new_functor).to_string();
+                    let ctor = self.kb.local_name_of(new_functor).to_string();
                     // Span-bearing so the message renders `path:line:col` and so
                     // `dedup_load_errors` keeps two violations of the same entity+label
                     // apart — it keys on the rendered string, and a span-less `Other`
@@ -9253,7 +9253,7 @@ impl<'a> Loader<'a> {
                     for label in unknown {
                         self.errors.push(LoadError::UnknownEntityField {
                             entity: ctor.clone(),
-                            field: self.kb.resolve_sym(label).to_string(),
+                            field: self.kb.local_name_of(label).to_string(),
                             declared: declared.clone(),
                             span,
                         });
@@ -9518,7 +9518,7 @@ impl<'a> Loader<'a> {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         match parse_term {
             Term::Fn { functor, pos_args, named_args } => {
-                let name = self.parsed.symbols.name(functor).to_owned();
+                let name = self.parsed.symbols.local_name(functor).to_owned();
                 match name.as_str() {
                     "match_expr" => {
                         let branch_count = pos_args.len() - 1;
@@ -10239,11 +10239,11 @@ impl<'a> Loader<'a> {
         loop {
             match self.parsed.terms.get(cur) {
                 Term::Ident(sym) => {
-                    let name = self.parsed.symbols.name(*sym).to_owned();
+                    let name = self.parsed.symbols.local_name(*sym).to_owned();
                     return self.dot_receiver_binder(&name);
                 }
                 Term::Fn { functor, pos_args, .. }
-                    if self.parsed.symbols.name(*functor) == "field_access"
+                    if self.parsed.symbols.local_name(*functor) == "field_access"
                         && !pos_args.is_empty() =>
                 {
                     cur = pos_args[0];
@@ -10353,18 +10353,18 @@ impl<'a> Loader<'a> {
         loop {
             match self.parsed.terms.get(cur) {
                 Term::Ident(sym) => {
-                    segments.push(self.parsed.symbols.name(*sym));
+                    segments.push(self.parsed.symbols.local_name(*sym));
                     break;
                 }
                 Term::Fn { functor, pos_args, named_args }
-                    if self.parsed.symbols.name(*functor) == "field_access"
+                    if self.parsed.symbols.local_name(*functor) == "field_access"
                         && pos_args.len() == 2
                         && named_args.is_empty() =>
                 {
                     let Term::Ident(field) = self.parsed.terms.get(pos_args[1]) else {
                         return None;
                     };
-                    segments.push(self.parsed.symbols.name(*field));
+                    segments.push(self.parsed.symbols.local_name(*field));
                     cur = pos_args[0];
                 }
                 _ => return None,
@@ -10618,14 +10618,14 @@ impl<'a> Loader<'a> {
                         .target
                         .segments
                         .last()
-                        .map(|s| self.parsed.symbols.name(*s).to_owned())
+                        .map(|s| self.parsed.symbols.local_name(*s).to_owned())
                         .unwrap_or_else(|| "_proof".to_owned());
                     self.kb.intern(&txt)
                 } else {
                     self.remap_name(&meta.target)
                 };
                 let strategy = meta.strategy_name.map(|s| {
-                    let txt = self.parsed.symbols.name(s).to_owned();
+                    let txt = self.parsed.symbols.local_name(s).to_owned();
                     self.kb.intern(&txt)
                 });
                 let using: Vec<Symbol> =
@@ -11006,7 +11006,7 @@ impl<'a> Loader<'a> {
         }
         for (id, functor) in unconsumed {
             let span = self.parsed.terms.span(id);
-            let callee = self.parsed.symbols.name(functor).to_string();
+            let callee = self.parsed.symbols.local_name(functor).to_string();
             let position = if self.rule_head_bracket_bindings.contains(&id) {
                 CallTypeArgsPosition::RuleHead
             } else {
@@ -11490,7 +11490,7 @@ impl<'a> Loader<'a> {
     /// the param path never reads or writes `var_map`, so the two cannot
     /// cross-contaminate even when they share a parse `vid`.
     fn load_op_body_var(&mut self, parse_id: TermId, vid: VarId) -> TermId {
-        let name = self.parsed.symbols.name(vid.name()).to_owned();
+        let name = self.parsed.symbols.local_name(vid.name()).to_owned();
         // WI-550: a `?x` naming a let/lambda/match binder REFERS to that binder, so
         // bind it to the binder's per-site (gensym) Symbol — the same identity its
         // `var_ref(x)` references and its env type binding carry. The generic
@@ -11595,7 +11595,7 @@ impl<'a> Loader<'a> {
             // NOT `reintern(sym)`, which would dedup `let x; let x` to one symbol
             // and collide their Γ facts. `binder_sym` get-or-mints, so an
             // un-framed pattern (none reach here) still gets a unique identity.
-            let name = self.parsed.symbols.name(sym).to_owned();
+            let name = self.parsed.symbols.local_name(sym).to_owned();
             let kb_sym = self.binder_sym(&name, parse_id);
             self.kb.alloc(Term::Ref(kb_sym))
         } else {
@@ -11652,36 +11652,26 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// Find the `Var` target of `SortAlias(<sym>, Var)`. Matches by
-    /// exact `Symbol` identity first (one pass), then by short name as
-    /// a fallback (second pass). The two-pass order matters: short-name
-    /// resolution is ambiguous when many sorts share a type-param name
-    /// (`sort T = ?` in List, Option, Stream …), and an exact match
-    /// elsewhere in the table must take precedence over an earlier
-    /// short-name hit.
+    /// The `Var` target of `SortAlias(<sym>, Var)` — `sym`'s backing type-param
+    /// variable, or `None` when `sym` has no alias or its alias names a CONCRETE sort
+    /// (`sort T = Int64`, whose target is a `sort_ref`, not the type-param indirection
+    /// this wants).
+    ///
+    /// EXACT symbol identity, one pass. It was two — exact, then by the source's LOCAL
+    /// NAME — until WI-956 deleted the by-name pass everywhere (see
+    /// [`super::typing::resolve_sort_alias`]): a local name identifies nothing outside
+    /// the scope that declares it, and MEASURED, no test in the workspace wanted the
+    /// guess. With one pass there is at most one candidate — `sort_alias_exists`
+    /// dedup-guards emission — so the `Var` test is a filter on the ANSWER.
+    ///
+    /// NOT `resolve_sort_alias`, for one reason only: this runs during LOAD, and that
+    /// reader prefers the `SortAlias` INDEX, which is not built until type-check start
+    /// (`build_sort_alias_index`). A stale index from an earlier type check must not
+    /// answer for facts this load is still asserting, so the walk stays the scan.
     fn find_sort_alias_var(&self, sym: Symbol) -> Option<TermId> {
-        let alias_sym = self.kb.try_resolve_symbol("SortAlias")?;
-        let sort_name = self.kb.resolve_sym(sym);
-        let scan = |matches: &dyn Fn(Symbol, &str) -> bool| -> Option<TermId> {
-            for rid in self.kb.rules_by_functor(alias_sym) {
-                if !self.kb.is_fact(rid) { continue; }
-                // A value-fact SortAlias (denoted-bearing target, e.g.
-                // `sort T = Vector[Int64, 3]`) never has a logic `Var` target, so it
-                // can't be the type-param indirection we're after — skip it (this
-                // also avoids the term-only `rule_head` panic on a `Value::Node`
-                // head). Type-param aliases (`sort T = ?`) stay ground `Term`s.
-                let Some(head) = self.kb.fact_head_term(rid) else { continue };
-                let Term::Fn { pos_args, .. } = self.kb.get_term(head) else { continue };
-                if pos_args.len() < 2 { continue; }
-                let Term::Fn { functor, .. } = self.kb.get_term(pos_args[0]) else { continue };
-                if !matches(*functor, self.kb.resolve_sym(*functor)) { continue; }
-                if matches!(self.kb.get_term(pos_args[1]), Term::Var(_)) {
-                    return Some(pos_args[1]);
-                }
-            }
-            None
-        };
-        scan(&|f, _| f == sym).or_else(|| scan(&|_, n| n == sort_name))
+        let kb: &KnowledgeBase = self.kb;
+        super::typing::scan_sort_aliases(kb, |functor| functor == sym)
+            .filter(|t| matches!(kb.get_term(*t), Term::Var(_)))
     }
 
     /// The DOMAIN of whatever is being loaded right now: the name of the
@@ -11839,11 +11829,11 @@ impl<'a> Loader<'a> {
         // NOT a type projection — leave it to the denoted / sort-ref path (`None`). This
         // is the discriminator that keeps the per-result-component effect syntax
         // (`Modify[result.a]`, WI-261) lowering to a denoted place, not an ExprCarried.
-        let member_name = self.parsed.symbols.name(*segs.last().unwrap()).to_owned();
+        let member_name = self.parsed.symbols.local_name(*segs.last().unwrap()).to_owned();
         if !member_name.chars().next().is_some_and(|c| c.is_uppercase()) {
             return None;
         }
-        let head_name = self.parsed.symbols.name(segs[0]).to_owned();
+        let head_name = self.parsed.symbols.local_name(segs[0]).to_owned();
         // WI-400 increment C: a let / lambda / match LOCAL is a value head too — consult
         // the local-name scope stack first (mirrors `remap_symbol`), so a projection off a
         // let-bound receiver (`let y = …; … : y.K`) resolves its head. A local binding is
@@ -11893,7 +11883,7 @@ impl<'a> Loader<'a> {
             // static type at the call site.
             let mut receiver = NodeOccurrence::new_expr(Expr::Ref(head_sym), span, owner);
             for &field_seg in &segs[1..segs.len() - 1] {
-                let field_name = self.parsed.symbols.name(field_seg).to_owned();
+                let field_name = self.parsed.symbols.local_name(field_seg).to_owned();
                 let field_sym = self.kb.intern(&field_name);
                 receiver = NodeOccurrence::new_expr(
                     Expr::DotApply {
@@ -11955,7 +11945,7 @@ impl<'a> Loader<'a> {
         owner: Option<Symbol>,
     ) -> Option<node_occurrence::TypeChild> {
         let segs = &name.segments;
-        let head_name = self.parsed.symbols.name(segs[0]).to_owned();
+        let head_name = self.parsed.symbols.local_name(segs[0]).to_owned();
         // A let / lambda / match LOCAL is a value head (mirrors the projection sibling);
         // otherwise the head must resolve to a value binder. A namespace / sort head is
         // a qualified ref, left to the normal path (`None`).
@@ -11987,7 +11977,7 @@ impl<'a> Loader<'a> {
         // the single-ref `denoted` carrier).
         let mut value = NodeOccurrence::new_expr(Expr::Ref(head_sym), span, owner);
         for &field_seg in &segs[1..] {
-            let field_name = self.parsed.symbols.name(field_seg).to_owned();
+            let field_name = self.parsed.symbols.local_name(field_seg).to_owned();
             let field_sym = self.kb.intern(&field_name);
             value = NodeOccurrence::new_expr(
                 Expr::DotApply {
@@ -12028,7 +12018,7 @@ impl<'a> Loader<'a> {
         let mut running = head_ty;
         let mut path = head_name.to_owned();
         for &field_seg in &segs[1..] {
-            let field_name = self.parsed.symbols.name(field_seg).to_owned();
+            let field_name = self.parsed.symbols.local_name(field_seg).to_owned();
             match self.field_step_in_value(&running, &field_name) {
                 FieldStep::Found(next) => {
                     running = next;
@@ -12063,7 +12053,7 @@ impl<'a> Loader<'a> {
             TypeExtractor::NamedTuple(fields) => {
                 // Named field first (a field literally named `_1` wins over positional).
                 if let Some((_, v)) =
-                    fields.iter().find(|(s, _)| self.kb.resolve_sym(*s) == field_name)
+                    fields.iter().find(|(s, _)| self.kb.local_name_of(*s) == field_name)
                 {
                     return FieldStep::Found(v.clone());
                 }
@@ -12174,7 +12164,7 @@ impl<'a> Loader<'a> {
         member_name: &str,
         span: SourceSpan,
     ) -> Option<node_occurrence::TypeChild> {
-        let head_short = self.kb.resolve_sym(head_resolved).to_owned();
+        let head_short = self.kb.local_name_of(head_resolved).to_owned();
         let qn = self.kb.qualified_name_of(head_resolved).to_owned();
         let sort_qn = self.logical_sort_qn(&qn, &head_short).to_owned();
         // Rigid type-parameter head (`P.Key`): the head names a member sort whose
@@ -12451,7 +12441,7 @@ impl<'a> Loader<'a> {
                 // resolves to its `CallbackParam` place — minted as a
                 // `Value::Node` `denoted` occurrence (not a hash-consed `Ref`).
                 if name.segments.len() == 1 && !self.arrow_binder_scope.is_empty() {
-                    let nm = self.parsed.symbols.name(name.segments[0]);
+                    let nm = self.parsed.symbols.local_name(name.segments[0]);
                     if let Some(&place) = self.arrow_binder_scope.get(nm) {
                         return node_occurrence::TypeChild::Node(
                             self.kb.make_denoted_occ_ref(place, span, owner),
@@ -12482,7 +12472,7 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let sort_sym = self.remap_name(name);
-                let short_name = self.kb.resolve_sym(sort_sym).to_owned();
+                let short_name = self.kb.local_name_of(sort_sym).to_owned();
                 // A type-param name is a ground logic Var (no denoted) — build it
                 // via the shared `type_param_var` helper (NOT `type_expr_to_value`,
                 // which this fn must not call, see the wrapper note on it).
@@ -12648,7 +12638,7 @@ impl<'a> Loader<'a> {
                     for (i, (name, p)) in params.iter().enumerate() {
                         let key = match name {
                             Some(s) => {
-                                let nm = self.parsed.symbols.name(*s).to_owned();
+                                let nm = self.parsed.symbols.local_name(*s).to_owned();
                                 self.kb.intern(&nm)
                             }
                             None => self.kb.intern(&positional_label(i)),
@@ -13050,7 +13040,7 @@ impl<'a> Loader<'a> {
                 // bare sort stays the `Fn{S}` functor here; the binding-value position
                 // canonicalizes to `Ref(S)` separately (WI-391, `sort_binding_to_value`).
                 let sort_sym = self.remap_name(name);
-                let short_name = self.kb.resolve_sym(sort_sym).to_owned();
+                let short_name = self.kb.local_name_of(sort_sym).to_owned();
                 if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
                     Value::term(self.kb.make_sort_ref(sort_sym))
                 } else {
@@ -13781,7 +13771,7 @@ impl<'a> Loader<'a> {
             let mut binder_vars: SmallVec<[TermId; 4]> = SmallVec::new();
             let mut recursive_vars: SmallVec<[TermId; 2]> = SmallVec::new();
             for f in &e.fields {
-                let f_name_str = self.parsed.symbols.name(f.name).to_owned();
+                let f_name_str = self.parsed.symbols.local_name(f.name).to_owned();
                 let f_sym = self.kb.intern(&f_name_str);
                 let var = self.kb.fresh_var(f_sym);
                 let var_term = self.kb.alloc(Term::Var(Var::Global(var)));
@@ -13837,7 +13827,7 @@ impl<'a> Loader<'a> {
             // (WI-429: and falsely failed) the real lowering's diagnostics.
             TypeExpr::Simple(n) => {
                 let lookup = if n.segments.len() == 1 {
-                    self.parsed.symbols.name(n.segments[0]).to_owned()
+                    self.parsed.symbols.local_name(n.segments[0]).to_owned()
                 } else {
                     join_segments(&self.parsed.symbols, &n.segments)
                 };
@@ -13993,7 +13983,7 @@ impl<'a> Loader<'a> {
             .iter()
             .zip(lowered)
             .map(|(f, type_value)| {
-                let field_name_str = self.parsed.symbols.name(f.name).to_owned();
+                let field_name_str = self.parsed.symbols.local_name(f.name).to_owned();
                 let field_qualified = format!("{}.{}", ctor_qualified, field_name_str);
                 let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
                     existing
@@ -14578,7 +14568,7 @@ impl<'a> Loader<'a> {
             for b in &bindings {
                 let introducer = match (&b.param, &b.bound) {
                     (None, crate::parse::ir::TypeExpr::Simple(n)) if n.segments.len() == 1 => {
-                        Some(self.parsed.symbols.name(n.segments[0]).to_owned())
+                        Some(self.parsed.symbols.local_name(n.segments[0]).to_owned())
                     }
                     _ => None,
                 };
@@ -14615,7 +14605,7 @@ impl<'a> Loader<'a> {
         if let Term::Fn { functor, pos_args, named_args } = self.parsed.terms.get(gtid) {
             if named_args.is_empty() && pos_args.len() == 1 {
                 if let Term::Ref(x_sym) = self.parsed.terms.get(pos_args[0]) {
-                    let x_name = self.parsed.symbols.name(*x_sym).to_owned();
+                    let x_name = self.parsed.symbols.local_name(*x_sym).to_owned();
                     if introducers.contains(&x_name) {
                         return Some((x_name, *functor));
                     }
@@ -14963,11 +14953,11 @@ impl<'a> Loader<'a> {
         if ret_name.segments.len() != 1 {
             return None;
         }
-        let ret_str = self.parsed.symbols.name(ret_name.segments[0]).to_owned();
+        let ret_str = self.parsed.symbols.local_name(ret_name.segments[0]).to_owned();
         if !ret_str.chars().next().is_some_and(|c| c.is_uppercase()) {
             return None;
         }
-        if o.type_params.iter().any(|tp| self.parsed.symbols.name(tp.name) == ret_str) {
+        if o.type_params.iter().any(|tp| self.parsed.symbols.local_name(tp.name) == ret_str) {
             return None;
         }
         if !matches!(
@@ -14996,11 +14986,11 @@ impl<'a> Loader<'a> {
     /// / nullary `Fn`).
     fn parse_bare_name(&self, tid: TermId) -> Option<String> {
         match self.parsed.terms.get(tid) {
-            Term::Ident(s) | Term::Ref(s) => Some(self.parsed.symbols.name(*s).to_owned()),
+            Term::Ident(s) | Term::Ref(s) => Some(self.parsed.symbols.local_name(*s).to_owned()),
             Term::Fn { functor, pos_args, named_args }
                 if pos_args.is_empty() && named_args.is_empty() =>
             {
-                Some(self.parsed.symbols.name(*functor).to_owned())
+                Some(self.parsed.symbols.local_name(*functor).to_owned())
             }
             _ => None,
         }
@@ -15076,14 +15066,14 @@ impl<'a> Loader<'a> {
     /// carrier matching when stripping the existential carrier.
     fn kb_leaf_name(&self, tid: TermId) -> Option<String> {
         match self.kb.get_term(tid) {
-            Term::Ref(s) | Term::Ident(s) => Some(self.kb.resolve_sym(*s).to_owned()),
+            Term::Ref(s) | Term::Ident(s) => Some(self.kb.local_name_of(*s).to_owned()),
             Term::Var(Var::Global(vid) | Var::Rigid(vid)) => {
-                Some(self.kb.resolve_sym(vid.name()).to_owned())
+                Some(self.kb.local_name_of(vid.name()).to_owned())
             }
             Term::Fn { functor, pos_args, named_args }
                 if pos_args.is_empty() && named_args.is_empty() =>
             {
-                Some(self.kb.resolve_sym(*functor).to_owned())
+                Some(self.kb.local_name_of(*functor).to_owned())
             }
             _ => None,
         }
@@ -15154,7 +15144,7 @@ impl<'a> Loader<'a> {
 
         // `result` as a parameter name collides with the reserved
         // return-value name; one diagnostic per operation suffices.
-        if o.params.iter().any(|p| self.parsed.symbols.name(p.name) == "result") {
+        if o.params.iter().any(|p| self.parsed.symbols.local_name(p.name) == "result") {
             self.errors.push(LoadError::Other {
                 message: format!(
                     "operation '{}': parameter name 'result' is reserved for the return value; rename the parameter",
@@ -15197,7 +15187,7 @@ impl<'a> Loader<'a> {
         // variable, distinct from any same-named outer SortAlias.
         let mut type_param_var_terms: Vec<TermId> = Vec::with_capacity(o.type_params.len());
         for tp in &o.type_params {
-            let tp_name = self.parsed.symbols.name(tp.name).to_owned();
+            let tp_name = self.parsed.symbols.local_name(tp.name).to_owned();
             let tp_sym = self.kb.intern(&tp_name);
             let cache_key = (op_scope.raw(), tp_name.clone());
             let var_tid = if let Some(&cached) = self.type_param_vars.get(&cache_key) {
@@ -15251,7 +15241,7 @@ impl<'a> Loader<'a> {
         let param_field_values: Vec<crate::eval::value::Value> = o.params
             .iter()
             .map(|p| {
-                let param_name_str = self.parsed.symbols.name(p.name).to_owned();
+                let param_name_str = self.parsed.symbols.local_name(p.name).to_owned();
                 // Register field symbol for parameter
                 let field_qualified = format!("{}.{}", op_qualified, param_name_str);
                 let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
@@ -15518,7 +15508,7 @@ impl<'a> Loader<'a> {
 
                 let op_name_ref = self.kb.alloc(Term::Ref(functor));
                 let param_syms: Vec<TermId> = o.params.iter().map(|p| {
-                    let name = self.parsed.symbols.name(p.name).to_owned();
+                    let name = self.parsed.symbols.local_name(p.name).to_owned();
                     let sym = self.kb.intern(&name);
                     self.kb.alloc(Term::Ref(sym))
                 }).collect();
@@ -15562,7 +15552,7 @@ impl<'a> Loader<'a> {
 
         let mut param_vars: Vec<(Symbol, VarId)> = Vec::new();
         for p in &o.params {
-            let pname = self.parsed.symbols.name(p.name).to_owned();
+            let pname = self.parsed.symbols.local_name(p.name).to_owned();
             let kb_sym = self.kb.intern(&pname);
             let var = self.kb.fresh_var(kb_sym);
             param_vars.push((kb_sym, var));
@@ -15969,7 +15959,7 @@ impl<'a> Loader<'a> {
             if super::typing::is_value_precondition_clause(self.kb, &Value::term(converted)) {
                 continue;
             }
-            let short = self.kb.resolve_sym(base);
+            let short = self.kb.local_name_of(base);
             let qn = self.kb.qualified_name_of(base);
             // The capture test without building the concatenation: `<op>.<short>` is
             // where `scan_operation_params` defines a bracket type param.
@@ -15983,7 +15973,7 @@ impl<'a> Loader<'a> {
         }
 
         for tp in &o.type_params {
-            let name = self.parsed.symbols.name(tp.name);
+            let name = self.parsed.symbols.local_name(tp.name);
             // Rung (1)'s OTHER scope, tested against the enclosing scope directly.
             // `is_type_param` is an O(1) `HashSet` hit on the very set
             // `add_type_param` filled during the scan — including a sort-level NAMED
@@ -16054,7 +16044,7 @@ impl<'a> Loader<'a> {
         let goals: Vec<TermId> = o.requires.iter().flatten().copied().collect();
         for tp in &o.type_params {
             let Some(slot) = tp.requirement_slot else { continue };
-            let binder = self.kb.intern(self.parsed.symbols.name(tp.name));
+            let binder = self.kb.intern(self.parsed.symbols.local_name(tp.name));
             let spec_base = goals.get(slot).and_then(|g| {
                 let converted = self.convert_term(*g);
                 self.kb.head_functor(converted)
@@ -16077,7 +16067,7 @@ impl<'a> Loader<'a> {
     /// proofs (proposal 031).
     fn encode_strategy(&mut self, s: &ProofStrategy) -> TermId {
         let sname_sym = self.kb.alloc(Term::Const(
-            super::term::Literal::String(self.parsed.symbols.name(s.name).to_string())
+            super::term::Literal::String(self.parsed.symbols.local_name(s.name).to_string())
         ));
         let strat_sym = self.kb.resolve_symbol("anthill.realization.ProofStrategyKind");
         let arg_ids: Vec<TermId> = s.args.iter().map(|&t| self.convert_term(t)).collect();
@@ -16226,7 +16216,7 @@ impl<'a> Loader<'a> {
         if target.segments.len() < 2 {
             return None;
         }
-        let last = self.parsed.symbols.name(*target.segments.last().unwrap());
+        let last = self.parsed.symbols.local_name(*target.segments.last().unwrap());
         // The clause-keyword set is owned by the verification pass (the single
         // source of truth shared with its inverse split, `proof_verify::contract_target`).
         if !crate::kb::proof_verify::CONTRACT_CLAUSE_KEYWORDS.contains(&last) {
@@ -16577,7 +16567,7 @@ impl<'a> Loader<'a> {
 
         self.current_scope = prev_scope;
 
-        if self.parsed.symbols.name(pb.language) != "anthill" {
+        if self.parsed.symbols.local_name(pb.language) != "anthill" {
             self.emit_implementation_fact(pb, spec_term, spec_domain);
             self.emit_operation_mapping_facts(pb, spec_term, spec_domain);
             self.emit_const_mapping_facts(pb, spec_term, spec_domain);
@@ -16624,7 +16614,7 @@ impl<'a> Loader<'a> {
     ) -> Option<(String, String)> {
         let Term::Fn { functor, .. } = self.kb.get_term(spec_term) else { return None };
         let qn = self.kb.qualified_name_of(*functor).to_string();
-        Some((qn, self.parsed.symbols.name(pb.language).to_string()))
+        Some((qn, self.parsed.symbols.local_name(pb.language).to_string()))
     }
 
     /// WI-876 — assert one `anthill.realization.OperationMapping` fact per
@@ -16669,7 +16659,7 @@ impl<'a> Loader<'a> {
         for item in &pb.items {
             let ProvidesItem::OperationMap(entries) = item else { continue };
             for e in entries {
-                let op_name = self.parsed.symbols.name(e.operation).to_string();
+                let op_name = self.parsed.symbols.local_name(e.operation).to_string();
                 // The host function must be a STRING LITERAL, refused HERE — at the
                 // producer — so the fact this emits is always well-shaped and its
                 // readers need no "malformed?" arm to skip on. MEASURED: without
@@ -16748,7 +16738,7 @@ impl<'a> Loader<'a> {
         for item in &pb.items {
             let ProvidesItem::ConstMap(entries) = item else { continue };
             for e in entries {
-                let const_name = self.parsed.symbols.name(e.const_name).to_string();
+                let const_name = self.parsed.symbols.local_name(e.const_name).to_string();
                 // The host value source must be a STRING LITERAL, refused HERE at the
                 // producer — the same guard the operation emitter draws, for the same
                 // reason: an unquoted key produces a non-string `host_fn` the shape
@@ -16821,7 +16811,7 @@ impl<'a> Loader<'a> {
         for item in &pb.items {
             if let ProvidesItem::Carrier(bindings) = item {
                 for b in bindings {
-                    let sort_name = self.parsed.symbols.name(b.anthill_param).to_string();
+                    let sort_name = self.parsed.symbols.local_name(b.anthill_param).to_string();
                     let sort_name_term = self.kb.alloc(Term::Const(
                         super::term::Literal::String(sort_name)));
                     let host_type_term = self.host_type_to_string_term(b.host_type);
@@ -16846,7 +16836,7 @@ impl<'a> Loader<'a> {
         for item in &pb.items {
             if let ProvidesItem::NamespaceMap(entries) = item {
                 for e in entries {
-                    let ns_name = self.parsed.symbols.name(e.anthill_namespace).to_string();
+                    let ns_name = self.parsed.symbols.local_name(e.anthill_namespace).to_string();
                     let ns_name_term = self.kb.alloc(Term::Const(
                         super::term::Literal::String(ns_name)));
                     let host_mod_term = self.host_type_to_string_term(e.host_module);

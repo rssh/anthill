@@ -257,7 +257,7 @@ fn wi714_project_rename() {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
                 rows += 1;
                 let keys: Vec<String> =
-                    fields.iter().map(|(k, _)| interp.kb().resolve_sym(*k).to_string()).collect();
+                    fields.iter().map(|(k, _)| interp.kb().local_name_of(*k).to_string()).collect();
                 assert!(
                     keys.iter().any(|k| k.ends_with("person"))
                         && keys.iter().any(|k| k.ends_with("years")),

@@ -90,7 +90,7 @@ fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId 
 /// Find a named arg key symbol by short name.
 fn find_named_arg_sym_by_short(kb: &KnowledgeBase, named_args: &[(anthill_core::intern::Symbol, TermId)], short: &str) -> Option<anthill_core::intern::Symbol> {
     named_args.iter().find(|(sym, _)| {
-        let name = kb.resolve_sym(*sym);
+        let name = kb.local_name_of(*sym);
         let s = name.rsplit('.').next().unwrap_or(name);
         s == short
     }).map(|(sym, _)| *sym)
@@ -99,7 +99,7 @@ fn find_named_arg_sym_by_short(kb: &KnowledgeBase, named_args: &[(anthill_core::
 /// Find a named arg by its short name (last segment of qualified name).
 fn find_named_arg_by_short(kb: &KnowledgeBase, named_args: &[(anthill_core::intern::Symbol, TermId)], short: &str) -> Option<TermId> {
     named_args.iter().find(|(sym, _)| {
-        let name = kb.resolve_sym(*sym);
+        let name = kb.local_name_of(*sym);
         let s = name.rsplit('.').next().unwrap_or(name);
         s == short
     }).map(|(_, tid)| *tid)
@@ -109,11 +109,11 @@ fn find_named_arg_by_short(kb: &KnowledgeBase, named_args: &[(anthill_core::inte
 fn extract_short_name(kb: &KnowledgeBase, tid: TermId) -> String {
     match kb.get_term(tid) {
         Term::Ref(sym) => {
-            let name = kb.resolve_sym(*sym);
+            let name = kb.local_name_of(*sym);
             name.rsplit('.').next().unwrap_or(name).to_owned()
         }
         Term::Fn { functor, .. } => {
-            let name = kb.resolve_sym(*functor);
+            let name = kb.local_name_of(*functor);
             name.rsplit('.').next().unwrap_or(name).to_owned()
         }
         _ => format!("{:?}", kb.get_term(tid)),
@@ -133,7 +133,7 @@ fn base_subst_computed_for_monoid() {
     assert_eq!(base.len(), 3, "Monoid should have 3 slots (T, combine, identity)");
 
     let slot_names: Vec<&str> = base.iter()
-        .map(|(sym, _)| kb.resolve_sym(*sym))
+        .map(|(sym, _)| kb.local_name_of(*sym))
         .map(|n| n.rsplit('.').next().unwrap_or(n))
         .collect();
 
@@ -170,7 +170,7 @@ fn requires_spec_inst_completed_for_int_add() {
     // spec should be SortView(Monoid(), T=Int64(), combine=Ref(add), identity=Ref(zero))
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref functor, ref named_args, .. } => {
-            let functor_name = kb.resolve_sym(*functor);
+            let functor_name = kb.local_name_of(*functor);
             assert!(
                 functor_name == "SortView" || functor_name.ends_with(".SortView"),
                 "spec should be SortView, got: {functor_name}"
@@ -272,8 +272,8 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     // test cares about the bound VALUE (Int64), not its carrier shape, so accept either the
     // canonical `Ref(S)` or a (legacy) nullary `Fn{S}` — both name the sort.
     let name = match kb.get_term(val_tid) {
-        Term::Ref(s) => kb.resolve_sym(*s).to_owned(),
-        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+        Term::Ref(s) => kb.local_name_of(*s).to_owned(),
+        Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
         other => panic!("T value should be Int64 (Ref(Int64) or Int64()), got: {:?}", other),
     };
     assert!(name == "Int64" || name.ends_with(".Int64"), "T should resolve to Int64, got: {name}");

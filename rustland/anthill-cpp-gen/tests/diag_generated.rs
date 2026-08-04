@@ -26,7 +26,7 @@ fn dump_generated_profile_shape() {
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             for (name, val) in named_args {
-                let n = kb.resolve_sym(*name);
+                let n = kb.local_name_of(*name);
                 if n != "profile" && n != "description" { continue; }
                 println!("\n== {n} ==");
                 dump(&kb, *val, 2);
@@ -43,7 +43,7 @@ fn dump(kb: &anthill_core::kb::KnowledgeBase, term: anthill_core::kb::term::Term
             println!("{pad}Fn {qn:?} pos={} named={}", pos_args.len(), named_args.len());
             for p in pos_args { dump(kb, *p, indent + 4); }
             for (n, v) in named_args {
-                println!("{pad}  {} =", kb.resolve_sym(*n));
+                println!("{pad}  {} =", kb.local_name_of(*n));
                 dump(kb, *v, indent + 4);
             }
         }

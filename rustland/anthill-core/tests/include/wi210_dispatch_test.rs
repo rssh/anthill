@@ -273,27 +273,10 @@ fn subst_with_param(
     param_short: &str,
     carrier_qn: &str,
 ) -> Substitution {
-    use anthill_core::kb::term::{Term, Var};
     let param_qn = format!("{spec_qn}.{param_short}");
     let param_sym = kb.try_resolve_symbol(&param_qn)
         .unwrap_or_else(|| panic!("{} not registered", param_qn));
-    let alias_sym = kb.try_resolve_symbol("SortAlias").expect("SortAlias");
-    let mut param_var = None;
-    for rid in kb.rules_by_functor(alias_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
-        if let Term::Fn { pos_args, .. } = kb.get_term(head).clone() {
-            if pos_args.len() < 2 { continue; }
-            if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
-                if *functor == param_sym {
-                    if let Term::Var(Var::Global(v)) = kb.get_term(pos_args[1]) {
-                        param_var = Some(*v);
-                    }
-                }
-            }
-        }
-    }
-    let param_var = param_var.unwrap_or_else(||
+    let param_var = crate::common::sort_alias_backing_var(kb, param_sym).unwrap_or_else(||
         panic!("{}'s SortAlias not found for {spec_qn}", param_short));
 
     let carrier_sym = kb.try_resolve_symbol(carrier_qn)

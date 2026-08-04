@@ -128,7 +128,7 @@ fn both_spellings_emit_one_sort_info_whose_constructor_is_itself() {
         let ctors: Vec<String> =
             anthill_core::kb::typing::list_to_vec(&kb, field(&kb, &records[0], "constructors"))
                 .into_iter()
-                .map(|t| kb.resolve_sym(head_sym(&kb, t).expect("a constructor ref")).to_string())
+                .map(|t| kb.local_name_of(head_sym(&kb, t).expect("a constructor ref")).to_string())
                 .collect();
         assert_eq!(ctors, vec!["Thing".to_string()], "[{label}] its sole constructor is itself");
     }
@@ -146,7 +146,7 @@ fn the_records_differ_only_in_the_written_keyword() {
             let thing = subject(&kb);
             let records = records_naming(&kb, "anthill.reflect.SortInfo", thing);
             let kind = field(&kb, &records[0], "kind");
-            kb.resolve_sym(head_sym(&kb, kind).expect("kind is a name")).to_string()
+            kb.local_name_of(head_sym(&kb, kind).expect("kind is a name")).to_string()
         })
         .collect();
     assert_eq!(kinds, vec!["entity".to_string(), "sort".to_string()]);
@@ -229,7 +229,7 @@ end
         .filter_map(|rid| kb.fact_head_named_args(rid))
         .any(|named| {
             named.iter().any(|(f, v)| {
-                kb.resolve_sym(*f) == "name" && head_sym(&kb, *v) == Some(open)
+                kb.local_name_of(*f) == "name" && head_sym(&kb, *v) == Some(open)
             })
         });
     assert!(!own_record, "a variant is not a sort; it has no SortInfo of its own");
@@ -264,7 +264,7 @@ fn records_naming(kb: &KnowledgeBase, functor: &str, subject: Symbol) -> Vec<Rec
 type Record = smallvec::SmallVec<[(Symbol, TermId); 2]>;
 
 fn field_of(kb: &KnowledgeBase, record: &Record, name: &str) -> Option<TermId> {
-    record.iter().find(|(f, _)| kb.resolve_sym(*f) == name).map(|(_, v)| *v)
+    record.iter().find(|(f, _)| kb.local_name_of(*f) == name).map(|(_, v)| *v)
 }
 
 fn field(kb: &KnowledgeBase, record: &Record, name: &str) -> TermId {

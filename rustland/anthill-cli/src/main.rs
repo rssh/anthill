@@ -1765,11 +1765,11 @@ fn report_unknown_functor_name(
     debug_assert!(
         kb.kind_of(sym).is_none(),
         "the unknown-functor reporters must only pass an undefined (bare-interned) \
-         functor; `{}` is declared, and `resolve_sym` would hand its SHORT name to the \
+         functor; `{}` is declared, and `local_name_of` would hand its SHORT name to the \
          ladder — reporting a qualified pattern as an ambiguity it never had",
-        kb.resolve_sym(sym),
+        kb.local_name_of(sym),
     );
-    let name = kb.resolve_sym(sym);
+    let name = kb.local_name_of(sym);
     let read = load::resolve_name_in_kb(kb, name, global_raw);
     report_unresolved_name(kb, name, &read, "query pattern", "functor");
 }
@@ -1930,14 +1930,14 @@ fn render_value(
         Value::Entity { functor, pos, named, .. } => {
             let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
             parts.extend(named.iter().map(|(s, c)| {
-                format!("{}: {}", kb.resolve_sym(*s), render_value(printer, kb, c))
+                format!("{}: {}", kb.local_name_of(*s), render_value(printer, kb, c))
             }));
-            format!("{}({})", kb.resolve_sym(*functor), parts.join(", "))
+            format!("{}({})", kb.local_name_of(*functor), parts.join(", "))
         }
         Value::Tuple { pos, named, .. } => {
             let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
             parts.extend(named.iter().map(|(s, c)| {
-                format!("{}: {}", kb.resolve_sym(*s), render_value(printer, kb, c))
+                format!("{}: {}", kb.local_name_of(*s), render_value(printer, kb, c))
             }));
             format!("({})", parts.join(", "))
         }
@@ -1994,7 +1994,7 @@ fn print_program_clause_match_results(
         let bindings: Vec<String> = matched.bindings
             .iter()
             .map(|(vid, val)| {
-                format!("?{} = {}", kb.resolve_sym(vid.name()), render_value(&printer, kb, val))
+                format!("?{} = {}", kb.local_name_of(vid.name()), render_value(&printer, kb, val))
             })
             .collect();
         if !bindings.is_empty() {
@@ -2046,7 +2046,7 @@ fn print_solutions(
                 // WI-348: read the binding as a Value — narrowing it to a term
                 // would drop a `Value::Node` binding (e.g. a `denoted` effect label).
                 sol.subst.resolve_as_value(*vid).map(|val| {
-                    format!("?{} = {}", kb.resolve_sym(vid.name()), render_value(&printer, kb, val))
+                    format!("?{} = {}", kb.local_name_of(vid.name()), render_value(&printer, kb, val))
                 })
             })
             .collect();

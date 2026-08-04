@@ -458,7 +458,7 @@ fn backfill_absent_fields(
         } else {
             return Err(SerError::MissingField {
                 entity: entity_name.into(),
-                field: kb.resolve_sym(field).to_string(),
+                field: kb.local_name_of(field).to_string(),
             });
         }
     }
@@ -717,7 +717,7 @@ fn build_constructor_term_typed(
                 let term = value_to_term_typed(kb, v, fty, var_map)?;
                 named_args.push((field_sym, term));
             }
-            let ctor_name = kb.resolve_sym(ctor_sym).to_string();
+            let ctor_name = kb.local_name_of(ctor_sym).to_string();
             backfill_absent_fields(kb, &fields, &field_types, &mut named_args, &ctor_name)?;
             // WI-498: canonicalize named-constructor / enum-variant args to
             // declared field order via the funnel (not interning order).
@@ -741,7 +741,7 @@ fn build_constructor_term_typed(
                 Err(SerError::InvalidValue(format!(
                     "constructor '{}' has {} named fields but the persisted payload is a \
                      scalar/array, not an object — cannot reconstruct its named fields",
-                    kb.resolve_sym(ctor_sym),
+                    kb.local_name_of(ctor_sym),
                     fields.len(),
                 )))
             } else {
@@ -760,7 +760,7 @@ fn build_constructor_term_typed(
 /// Find a field Symbol by name, falling back to intern if not in the schema.
 fn find_field_sym(kb: &mut KnowledgeBase, fields: &[Symbol], key: &str) -> Symbol {
     fields.iter()
-        .find(|&&f| kb.resolve_sym(f) == key)
+        .find(|&&f| kb.local_name_of(f) == key)
         .copied()
         .unwrap_or_else(|| kb.intern(key))
 }
@@ -824,7 +824,7 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
     match kb.get_term(term) {
         Term::Const(lit) => literal_to_json(lit),
         Term::Var(Var::Global(vid)) => {
-            let name = kb.resolve_sym(vid.name());
+            let name = kb.local_name_of(vid.name());
             if name == "_" {
                 Ok(serde_json::Value::String("?".into()))
             } else {
@@ -835,13 +835,13 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             Ok(serde_json::Value::String(format!("?#{n}")))
         }
         Term::Var(Var::Rigid(vid)) => {
-            Ok(serde_json::Value::String(format!("!{}", kb.resolve_sym(vid.name()))))
+            Ok(serde_json::Value::String(format!("!{}", kb.local_name_of(vid.name()))))
         }
         Term::Fn { functor, pos_args, named_args } => {
             let functor = *functor;
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
-            let name = kb.resolve_sym(functor);
+            let name = kb.local_name_of(functor);
 
             // Check for list cons/nil (WI-503: qualified-gated, see `is_prelude`).
             if is_prelude(kb, functor, LIST_NIL)
@@ -855,7 +855,7 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             // Check for Option some/none (WI-503: qualified-gated).
             if is_prelude(kb, functor, OPTION_SOME) {
                 let inner_id = named_args.iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "value")
+                    .find(|(s, _)| kb.local_name_of(*s) == "value")
                     .map(|(_, id)| *id)
                     .or_else(|| (pos_args.len() == 1).then(|| pos_args[0]));
                 if let Some(inner_id) = inner_id {
@@ -894,7 +894,7 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             if pos_args.is_empty() && !named_args.is_empty() {
                 let mut fields = serde_json::Map::new();
                 for &(sym, val_id) in &named_args {
-                    let field_name = kb.resolve_sym(sym).to_string();
+                    let field_name = kb.local_name_of(sym).to_string();
                     let val = term_to_value(kb, val_id)?;
                     // Skip none() values (Option absent)
                     if val != serde_json::Value::Null {
@@ -949,7 +949,7 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
                 all_fields.insert(positional_label(i), val);
             }
             for &(sym, val_id) in &named_args {
-                let field_name = kb.resolve_sym(sym).to_string();
+                let field_name = kb.local_name_of(sym).to_string();
                 let val = term_to_value(kb, val_id)?;
                 all_fields.insert(field_name, val);
             }
@@ -967,11 +967,11 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             if is_prelude(kb, *sym, OPTION_NONE) {
                 return Ok(serde_json::Value::Null);
             }
-            let name = kb.resolve_sym(*sym);
+            let name = kb.local_name_of(*sym);
             Ok(serde_json::Value::String(name.to_string()))
         }
         Term::Ident(sym) => {
-            let name = kb.resolve_sym(*sym);
+            let name = kb.local_name_of(*sym);
             Ok(serde_json::Value::String(name.to_string()))
         }
         Term::Bottom => Ok(serde_json::Value::Null),
@@ -996,10 +996,10 @@ fn cons_to_json_array(
                 }
                 if is_prelude(kb, *functor, LIST_CONS) {
                     let head = named_args.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                        .find(|(s, _)| kb.local_name_of(*s) == "head")
                         .map(|(_, id)| *id);
                     let tail = named_args.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                        .find(|(s, _)| kb.local_name_of(*s) == "tail")
                         .map(|(_, id)| *id);
                     Some((head, tail))
                 } else {

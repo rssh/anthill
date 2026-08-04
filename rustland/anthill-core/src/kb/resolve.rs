@@ -876,7 +876,7 @@ impl SearchStream {
         // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
             ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
-                is_scoping_marker(kb.resolve_sym(f), pos_arity)
+                is_scoping_marker(kb.local_name_of(f), pos_arity)
             }
             _ => false,
         };
@@ -1432,7 +1432,7 @@ impl SearchStream {
     fn is_forall_impl(kb: &KnowledgeBase, goal: &Value) -> bool {
         matches!(
             goal.head(kb),
-            ViewHead::Functor { functor: Some(f), .. } if kb.resolve_sym(f) == "forall_impl"
+            ViewHead::Functor { functor: Some(f), .. } if kb.local_name_of(f) == "forall_impl"
         )
     }
 
@@ -1540,7 +1540,7 @@ impl SearchStream {
     /// the caller passes the already-σ-applied goal, so no walk is needed.
     fn bounded_quant_kind(kb: &KnowledgeBase, goal: &Value) -> Option<bool> {
         match goal.head(kb) {
-            ViewHead::Functor { functor: Some(f), .. } => match kb.resolve_sym(f) {
+            ViewHead::Functor { functor: Some(f), .. } => match kb.local_name_of(f) {
                 "forall_in" => Some(true),
                 "some_in" => Some(false),
                 _ => None,
@@ -1558,7 +1558,7 @@ impl SearchStream {
     /// themselves need not be ground — only the SPINE. Returns `None` when the
     /// spine is not ground (an unbound `cons` tail, or a non-list head): the
     /// caller then DELAYs rather than silently deciding the quantifier.
-    /// Constructors match by SHORT NAME via `resolve_sym` (`functor_sym` reads
+    /// Constructors match by SHORT NAME via `local_name_of` (`functor_sym` reads
     /// the `Fn{c}` / `Ref(c)` spellings alike), since a value list and the
     /// resolver can carry distinct `Symbol`s sharing the name `cons` / `nil`.
     ///
@@ -1582,7 +1582,7 @@ impl SearchStream {
         let mut seen: HashSet<VarId> = HashSet::new();
         let mut cur = Self::walk_value_chain(kb, list.clone(), subst, &mut seen)?;
         loop {
-            let name = cur.head(kb).functor_sym().map(|f| kb.resolve_sym(f));
+            let name = cur.head(kb).functor_sym().map(|f| kb.local_name_of(f));
             match name.as_deref() {
                 // The nullary terminator (a bare `Ref(nil)` or an empty `Fn{nil}`
                 // / `Entity{nil}` — `functor_sym` unifies the spellings).
@@ -1652,7 +1652,7 @@ impl SearchStream {
     /// falling back to the positional slot for a `cons(h, t)`.
     fn cons_child(kb: &KnowledgeBase, cell: &Value, name: &str, pos: usize) -> Option<Value> {
         for key in cell.named_keys(kb) {
-            if kb.resolve_sym(key) == name {
+            if kb.local_name_of(key) == name {
                 return cell.named_arg(kb, key).map(|c| c.to_value());
             }
         }
@@ -1834,7 +1834,7 @@ impl SearchStream {
     ) -> Option<TermId> {
         let pos_arity = match goal.head(kb) {
             ViewHead::Functor { functor: Some(f), pos_arity, .. }
-                if kb.resolve_sym(f) == "ho_apply" => pos_arity,
+                if kb.local_name_of(f) == "ho_apply" => pos_arity,
             _ => return None,
         };
         if pos_arity == 0 { return None; }
@@ -2040,7 +2040,7 @@ impl SearchStream {
     fn pop_assumption_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<usize> {
         match goal.head(kb) {
             ViewHead::Functor { functor: Some(f), pos_arity: 1, named_arity: 0 }
-                if kb.resolve_sym(f) == "__pop_assumption" =>
+                if kb.local_name_of(f) == "__pop_assumption" =>
             {
                 match goal.pos_arg(kb, 0)?.head(kb) {
                     ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
@@ -2060,7 +2060,7 @@ impl SearchStream {
     fn unwrap_tuple_args(kb: &KnowledgeBase, goal: &impl TermView) -> Vec<Value> {
         let is_tuple = matches!(
             goal.head(kb).functor_sym(),
-            Some(f) if kb.resolve_sym(f) == "tuple"
+            Some(f) if kb.local_name_of(f) == "tuple"
         );
         if !is_tuple {
             return Vec::new();
@@ -2351,7 +2351,7 @@ impl SearchStream {
             // it, do not drop it silently.
             eprintln!(
                 "[extent] `{}`: no query mode for ground slots {:?} — goal unanswerable",
-                kb.resolve_sym(functor),
+                kb.local_name_of(functor),
                 ground
             );
             return Vec::new();
@@ -2368,7 +2368,7 @@ impl SearchStream {
         match kb.drain_extent_query(functor, &pattern) {
             Ok(rows) => rows.into_iter().map(|row| row.row).collect(),
             Err(e) => {
-                eprintln!("[extent] `{}`: {e}", kb.resolve_sym(functor));
+                eprintln!("[extent] `{}`: {e}", kb.local_name_of(functor));
                 Vec::new()
             }
         }
@@ -3671,8 +3671,18 @@ impl KnowledgeBase {
             Term::Ref(s) | Term::Ident(s) => *s,
             _ => return BuiltinResult::Failure,
         };
-        let full = self.symbols.resolve(sym);
-        let short = full.rsplit('.').next().unwrap_or(full).to_string();
+        // `name` is the symbol's name IN ITS DECLARING SCOPE, which is usually one
+        // segment but not always: a WI-341 callback place `<op>.f.a` is declared in
+        // the OPERATION's scope under the binder path `f.a`. MEASURED over stdlib +
+        // anthill-stl, 53 of 2598 symbols carry a dotted one, all of that shape — so
+        // the split below is load-bearing, not defensive, and this builtin's
+        // "last dot-separated segment" really does mean the last.
+        //
+        // (It read `let full = self.symbols.resolve(sym)` until WI-956. That alias
+        // said "resolve", so the local claimed a qualified name it never held —
+        // `symbol_qualified_name`, one builtin up, is the reader that does.)
+        let name = self.symbols.local_name(sym);
+        let short = name.rsplit('.').next().unwrap_or(name).to_string();
         let str_term = self.alloc(Term::Const(super::term::Literal::String(short)));
         self.finish_result(target, str_term)
     }
@@ -3754,7 +3764,7 @@ impl KnowledgeBase {
             // sort name; read ITS head symbol. Any other functor is the sort itself
             // (e.g. `Eq()` / `SortInfo(...)`).
             ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
-                if self.symbols.name(functor) == "SortView" && pos_arity > 0 {
+                if self.symbols.local_name(functor) == "SortView" && pos_arity > 0 {
                     inst.pos_arg(self, 0)
                         .and_then(|name| name.head(self).functor_sym())
                 } else {
@@ -4193,7 +4203,7 @@ impl KnowledgeBase {
         if fields.is_empty() {
             return "none".to_string();
         }
-        fields.iter().map(|s| self.resolve_sym(*s).to_string()).collect::<Vec<_>>().join(", ")
+        fields.iter().map(|s| self.local_name_of(*s).to_string()).collect::<Vec<_>>().join(", ")
     }
 
     /// WI-500: plan the positional→named desugar for a constructor — the loader's
@@ -4277,7 +4287,7 @@ impl KnowledgeBase {
             return BuiltinResult::Failure;
         };
         let value_tid = match self.terms.get(inst_term).clone() {
-            Term::Fn { ref functor, ref named_args, .. } if self.symbols.name(*functor) == "SortView" => {
+            Term::Fn { ref functor, ref named_args, .. } if self.symbols.local_name(*functor) == "SortView" => {
                 named_args.iter().find(|(sym, _)| *sym == param_sym).map(|(_, tid)| *tid)
             }
             _ => None,
@@ -5529,7 +5539,7 @@ impl KnowledgeBase {
             Term::Fn { functor, .. } => {
                 let f = *functor;
                 // Check if scope is _global (top-level, no meaningful parent)
-                if self.symbols.name(f) == "_global" {
+                if self.symbols.local_name(f) == "_global" {
                     return BuiltinResult::Failure;
                 }
                 self.finish_result(target, scope_tid)
@@ -5649,8 +5659,8 @@ impl KnowledgeBase {
     /// symbol or `Fn` functor → its short name, a `String` const → the string.
     fn field_operand_name(&self, field_term: TermId) -> Option<String> {
         match self.terms.get(field_term) {
-            Term::Ref(s) | Term::Ident(s) => Some(self.symbols.name(*s).to_owned()),
-            Term::Fn { functor, .. } => Some(self.symbols.name(*functor).to_owned()),
+            Term::Ref(s) | Term::Ident(s) => Some(self.symbols.local_name(*s).to_owned()),
+            Term::Fn { functor, .. } => Some(self.symbols.local_name(*functor).to_owned()),
             Term::Const(Literal::String(s)) => Some(s.clone()),
             _ => None,
         }
@@ -5670,7 +5680,7 @@ impl KnowledgeBase {
         if self.entity_fields.contains_key(&functor) {
             return named_args
                 .iter()
-                .find(|(arg_sym, _)| self.symbols.name(*arg_sym) == field_name)
+                .find(|(arg_sym, _)| self.symbols.local_name(*arg_sym) == field_name)
                 .map(|(_, v)| *v);
         }
         // Dispatch 2: sort component access — resolve `functor_qname.field`.
@@ -6875,7 +6885,7 @@ impl KnowledgeBase {
             // marker name is NOT resolved off-discrim, so it is refutable here.
             if self.extent_owner(functor).is_some()
                 || self.bare_bodied_bool_relation(functor)
-                || is_scoping_marker(self.resolve_sym(functor), pos_arity)
+                || is_scoping_marker(self.local_name_of(functor), pos_arity)
             {
                 continue;
             }

@@ -52,7 +52,7 @@ fn env_lookup<'a>(env: &'a Env, name: Symbol) -> Option<&'a Rc<NodeOccurrence>> 
 }
 
 fn short_of<'a>(kb: &'a KnowledgeBase, s: Symbol) -> &'a str {
-    kb.resolve_sym(s).rsplit('.').next().unwrap_or("")
+    kb.local_name_of(s).rsplit('.').next().unwrap_or("")
 }
 
 /// A `match`-arm exposed by unfolding a bodied op-call one step at its call

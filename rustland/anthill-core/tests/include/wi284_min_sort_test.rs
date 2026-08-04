@@ -72,7 +72,7 @@ fn typed_min_sort(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Sy
 /// A sort symbol resolves to `name` exactly, or to a qualified path
 /// ending in `.name` (e.g. `anthill.prelude.Int64`).
 fn assert_sort_named(kb: &KnowledgeBase, sym: Symbol, name: &str) {
-    let full = kb.resolve_sym(sym);
+    let full = kb.local_name_of(sym);
     assert!(
         full == name || full.ends_with(&format!(".{name}")),
         "expected min_sort {name}, got {full}",

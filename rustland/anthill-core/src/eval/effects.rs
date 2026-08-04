@@ -111,7 +111,7 @@ fn stdio_console_write_handler<W: Write + 'static>(sink: W) -> EffectHandler {
         })?;
         let mut out = sink.borrow_mut();
         out.write_all(s.as_bytes()).map_err(|e| EvalError::Internal(e.to_string()))?;
-        if op_appends_newline(interp.kb().resolve_sym(op_sym)) {
+        if op_appends_newline(interp.kb().local_name_of(op_sym)) {
             out.write_all(b"\n").map_err(|e| EvalError::Internal(e.to_string()))?;
         }
         out.flush().map_err(|e| EvalError::Internal(e.to_string()))?;
@@ -148,7 +148,7 @@ pub fn buffered_console_handler(buf: SharedBuffer) -> EffectHandler {
             EvalError::TypeMismatch { expected: "String", got: "missing or non-String argument".into() }
         })?;
         buf.borrow_mut().push_str(s);
-        if op_appends_newline(interp.kb().resolve_sym(op_sym)) {
+        if op_appends_newline(interp.kb().local_name_of(op_sym)) {
             buf.borrow_mut().push('\n');
         }
         Ok(HandlerAction::Pure(Value::Unit))
@@ -201,7 +201,7 @@ pub fn default_modify_handler() -> EffectHandler {
         let target = args.first().ok_or_else(|| EvalError::ArityMismatch {
             op: "Modify", expected: 1, got: 0,
         })?;
-        let op_name = interp.kb().resolve_sym(op_sym);
+        let op_name = interp.kb().local_name_of(op_sym);
 
         // Cell arm: route through the cell arena. Identity is the slot,
         // not the functor; two Cell.new calls produce distinct handles.
@@ -234,7 +234,7 @@ pub fn default_modify_handler() -> EffectHandler {
                     .map(HandlerAction::Pure)
                     .ok_or_else(|| EvalError::Internal(
                         format!("Modify.get: no value set for `{}`",
-                                interp.kb().resolve_sym(key))
+                                interp.kb().local_name_of(key))
                     ))
             }
             "set" => {
@@ -459,7 +459,7 @@ impl Interpreter {
                 Err(EvalError::UnsupportedHandlerAction {
                     action: unsupported.kind_name(),
                     effect: effect_qname.to_string(),
-                    op: self.kb().resolve_sym(op_sym).to_string(),
+                    op: self.kb().local_name_of(op_sym).to_string(),
                     detail,
                     backtrace: std::backtrace::Backtrace::force_capture(),
                 })

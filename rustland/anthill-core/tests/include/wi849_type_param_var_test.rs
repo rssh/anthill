@@ -36,7 +36,7 @@ end
         .expect("a declared operation has an OperationInfo record");
 
     let names: Vec<String> =
-        rec.type_params.iter().map(|(n, _)| kb.resolve_sym(*n).to_string()).collect();
+        rec.type_params.iter().map(|(n, _)| kb.local_name_of(*n).to_string()).collect();
     assert_eq!(names, vec!["A".to_string(), "B".to_string()], "declaration order, by name");
 
     // Every entry is a flex variable — the property `rigidify_op_type_params` (WI-392)
@@ -45,7 +45,7 @@ end
         assert!(
             var.is_global(),
             "type param '{}' must be a flex Global var, got {var:?}",
-            kb.resolve_sym(*name),
+            kb.local_name_of(*name),
         );
     }
 

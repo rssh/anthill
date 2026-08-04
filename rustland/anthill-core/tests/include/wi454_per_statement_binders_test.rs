@@ -23,7 +23,7 @@ use anthill_core::parse::{
 fn short(name: &Name, syms: &SymbolTable) -> String {
     name.segments
         .last()
-        .map(|s| syms.name(*s).to_string())
+        .map(|s| syms.local_name(*s).to_string())
         .unwrap_or_default()
 }
 

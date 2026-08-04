@@ -276,7 +276,7 @@ pub enum ExtentError {
     ///
     /// The owner rides as its `Symbol` and is rendered as such, NOT as a name: this KB's
     /// symbol table is the wrong book to look a foreign symbol up in — an in-range index
-    /// names a DIFFERENT functor, and an out-of-range one makes `resolve_sym` panic
+    /// names a DIFFERENT functor, and an out-of-range one makes `local_name_of` panic
     /// outright (it indexes `defs`). A caller holding the producing KB can name it.
     UnmountedOwner { op: String, owner: Symbol },
     /// A backend-specific failure (I/O, a remote error), carrying its message.
@@ -848,7 +848,7 @@ impl KnowledgeBase {
         let rid = self.rules_by_functor_iter(functor).find(|&rid| !self.is_fact(rid))
             .expect("has_bodied_rule implies a bodied rule");
         Err(FactWriteShapeError {
-            functor: self.resolve_sym(functor).to_string(),
+            functor: self.local_name_of(functor).to_string(),
             rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
         })
     }
@@ -938,13 +938,13 @@ impl KnowledgeBase {
         if self.extents.profile(functor).is_some() {
             let profile = self.extents.profile(functor).expect("profile checked above");
             let mode = profile.select_mode(&[]).ok_or_else(|| ExtentReadError::NoSupportedMode {
-                functor: self.resolve_sym(functor).to_string(),
+                functor: self.local_name_of(functor).to_string(),
             })?;
             let pattern = QueryPattern { mode, bound: Vec::new() };
             return self
                 .drain_extent_query(functor, &pattern)
                 .map_err(|source| ExtentReadError::Extent {
-                    functor: self.resolve_sym(functor).to_string(),
+                    functor: self.local_name_of(functor).to_string(),
                     source,
                 })
                 .map(|rows| rows
@@ -960,7 +960,7 @@ impl KnowledgeBase {
                     .find(|&rid| !self.is_fact(rid))
                     .expect("has_bodied_rule ⇒ a bodied rule is in the bucket");
                 return Err(ExtentReadError::BodiedRule {
-                    functor: self.resolve_sym(functor).to_string(),
+                    functor: self.local_name_of(functor).to_string(),
                     rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
                 });
             }
@@ -969,7 +969,7 @@ impl KnowledgeBase {
 
         let mirror = self.extents.sole_mirror_key().map_err(|mirrors| {
             ExtentReadError::AmbiguousResidentMirror {
-                functor: self.resolve_sym(functor).to_string(),
+                functor: self.local_name_of(functor).to_string(),
                 mirrors,
             }
         })?;
@@ -1047,7 +1047,7 @@ impl KnowledgeBase {
                         .find(|&rid| !self.is_fact(rid))
                         .expect("has_bodied_rule ⇒ a bodied rule is in the bucket");
                     return Err(ExtentReadError::BodiedRule {
-                        functor: self.resolve_sym(functor).to_string(),
+                        functor: self.local_name_of(functor).to_string(),
                         rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
                     });
                 }
@@ -1090,7 +1090,7 @@ impl KnowledgeBase {
                         scanned,
                         "read_facts: discrim pushdown for `{}` returned {} rows but the scan \
                          matched {} — a non-full-arity fact bypassed the full-arity pattern",
-                        self.resolve_sym(functor),
+                        self.local_name_of(functor),
                         rows.len(),
                         scanned,
                     );
@@ -1111,7 +1111,7 @@ impl KnowledgeBase {
                         false,
                         "read_facts: has_bodied_rule was false but a bodied rule under {} \
                          slipped through (bodied_rule_counts drift)",
-                        self.resolve_sym(functor),
+                        self.local_name_of(functor),
                     );
                     return None;
                 }
@@ -1218,7 +1218,7 @@ impl KnowledgeBase {
             self.resolve_goals_with_truncation(vec![goal.clone()], &config);
         if truncated {
             return Err(ExtentReadError::SearchTruncated {
-                functor: self.resolve_sym(functor).to_string(),
+                functor: self.local_name_of(functor).to_string(),
             });
         }
         Ok(solutions
@@ -1245,7 +1245,7 @@ impl KnowledgeBase {
         let fields: Vec<Symbol> = self
             .entity_field_names(functor)
             .ok_or_else(|| ExtentReadError::NoFieldSchema {
-                functor: self.resolve_sym(functor).to_string(),
+                functor: self.local_name_of(functor).to_string(),
             })?
             .to_vec();
         // Every selection key must be a declared field — else the caller selected
@@ -1253,7 +1253,7 @@ impl KnowledgeBase {
         for (key, _) in selection {
             if !fields.contains(key) {
                 return Err(ExtentReadError::NoFieldSchema {
-                    functor: self.resolve_sym(functor).to_string(),
+                    functor: self.local_name_of(functor).to_string(),
                 });
             }
         }
@@ -1284,7 +1284,7 @@ impl KnowledgeBase {
         let bound = named_selection_as_bound(selection);
         let ground: Vec<ArgKey> = bound.iter().map(|(k, _)| *k).collect();
         let mode = profile.select_mode(&ground).ok_or_else(|| {
-            ExtentReadError::NoSupportedMode { functor: self.resolve_sym(functor).to_string() }
+            ExtentReadError::NoSupportedMode { functor: self.local_name_of(functor).to_string() }
         })?;
         // `bound` moves into the pattern; the drain borrows `&pattern` and hands
         // back owned rows (the cursor does not borrow it), so the re-filter below
@@ -1292,7 +1292,7 @@ impl KnowledgeBase {
         // (`named_selection_as_bound` already cloned once).
         let pattern = QueryPattern { mode, bound };
         let rows = self.drain_extent_query(functor, &pattern).map_err(|source| {
-            ExtentReadError::Extent { functor: self.resolve_sym(functor).to_string(), source }
+            ExtentReadError::Extent { functor: self.local_name_of(functor).to_string(), source }
         })?;
         // The source may over-return, and read_facts hands rows straight to the
         // consumer with no further matching — so narrow here. Keep a row only if it

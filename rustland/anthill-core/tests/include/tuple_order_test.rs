@@ -42,7 +42,7 @@ end
         Value::Tuple { named, .. } => {
             let shape: Vec<(&str, i64)> = named
                 .iter()
-                .map(|(s, val)| (interp.kb().resolve_sym(*s), val.as_int().expect("int field")))
+                .map(|(s, val)| (interp.kb().local_name_of(*s), val.as_int().expect("int field")))
                 .collect();
             // source order is (zqzeta: 1, zqalpha: 2)
             assert_eq!(

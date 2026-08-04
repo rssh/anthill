@@ -310,12 +310,12 @@ impl KnowledgeBase {
                     }
                     PositionalPlan::OverArity { declared, unfilled } => {
                         return Err(LowerError::OverArityConstructor {
-                            functor: self.resolve_sym(*functor).to_string(),
+                            functor: self.local_name_of(*functor).to_string(),
                             given: pos_args.len(),
                             unfilled,
                             declared: declared
                                 .iter()
-                                .map(|s| self.resolve_sym(*s).to_string())
+                                .map(|s| self.local_name_of(*s).to_string())
                                 .collect::<Vec<_>>()
                                 .join(", "),
                         });

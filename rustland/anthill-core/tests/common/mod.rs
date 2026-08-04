@@ -426,7 +426,7 @@ pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
             continue;
         }
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let get = |f: &str| named.iter().find(|(s, _)| kb.resolve_sym(*s) == f).map(|(_, v)| *v);
+        let get = |f: &str| named.iter().find(|(s, _)| kb.local_name_of(*s) == f).map(|(_, v)| *v);
         let (Some(sr), Some(spec_view)) = (get("sort_ref"), get("spec")) else { continue };
         // `SortView(Spec, …)` carries the spec as its first positional; a bare
         // reference is already the spec.
@@ -437,6 +437,49 @@ pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
         out.push((name_of(kb, sr, "sort_ref"), name_of(kb, spec_term, "spec")));
     }
     out
+}
+
+/// The `Var::Global` id backing `sort_sym` as a type parameter — the target of its
+/// `SortAlias(<sort_sym>, ?V)` fact. `None` when the sort has no alias at all, and
+/// also when its alias target is not a logic var (`sort T = Int64` aliases a concrete
+/// sort; only `sort T = ?` and the WI-452 marked-param shape mint a backing var).
+///
+/// WI-956 — ONE reader for five suites (wi210, wi221, wi224, wi452, wi943) that each
+/// hand-rolled this walk. Deliberately a HAND READ of the `SortAlias` relation and NOT
+/// a call into the loader/typer's own `find_sort_alias_var` / `resolve_sort_alias`:
+/// every one of those suites exists to assert that a production reader agrees with the
+/// DECLARATION, and routing the expected side through the production reader would only
+/// assert that it agrees with itself.
+///
+/// FIRST match in `rules_by_functor` order, which is the production scan's precedence.
+/// Three of the five copies took the LAST match instead; that has never differed,
+/// because the loader's `sort_alias_exists` dedup guard means a sort has at most one
+/// `SortAlias` fact — but a test should not depend on a property it does not state.
+#[allow(dead_code)]
+pub fn sort_alias_backing_var(
+    kb: &KnowledgeBase,
+    sort_sym: anthill_core::intern::Symbol,
+) -> Option<anthill_core::kb::term::VarId> {
+    use anthill_core::kb::term::Term;
+    let alias_sym = kb.try_resolve_symbol("SortAlias")?;
+    // `rules_by_functor_iter`, as the production scan does: nothing here needs a
+    // snapshot, and callers run this once per type-param in a loop.
+    kb.rules_by_functor_iter(alias_sym)
+        .filter(|rid| kb.is_fact(*rid))
+        .find_map(|rid| {
+            // `fact_head_term`, matching the readers under test: a `Value::Node` head
+            // carries a denoted-bearing target, which is never a logic `Var`.
+            let head = kb.fact_head_term(rid)?;
+            let Term::Fn { pos_args, .. } = kb.get_term(head) else { return None };
+            let Term::Fn { functor, .. } = kb.get_term(*pos_args.first()?) else { return None };
+            if *functor != sort_sym {
+                return None;
+            }
+            match kb.get_term(*pos_args.get(1)?) {
+                Term::Var(v) => v.as_global(),
+                _ => None,
+            }
+        })
 }
 
 /// field and the head is the other one, so a list whose elements are themselves
@@ -601,7 +644,7 @@ pub fn assert_req_param_spec(
     expected_base: &str,
     why: &str,
 ) {
-    let actual_s = kb.resolve_sym(actual);
+    let actual_s = kb.local_name_of(actual);
     let disambiguated = |rest: &str| {
         let digits = rest.strip_prefix("_d").or_else(|| rest.strip_prefix('_'));
         digits.is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
@@ -637,7 +680,7 @@ pub fn head_short(
     use anthill_core::kb::node_occurrence::Expr;
     match occ.as_expr() {
         Some(Expr::Apply { functor, .. }) => {
-            kb.resolve_sym(*functor).rsplit('.').next().unwrap_or("").to_string()
+            kb.local_name_of(*functor).rsplit('.').next().unwrap_or("").to_string()
         }
         other => panic!("expected a functor application, got {other:?}"),
     }

@@ -69,7 +69,7 @@ fn an_eponymous_constructor_is_the_sort_itself() {
     let fields = kb
         .entity_field_names(project)
         .expect("the eponymous sort carries the entity's field schema");
-    let names: Vec<&str> = fields.iter().map(|f| kb.resolve_sym(*f)).collect();
+    let names: Vec<&str> = fields.iter().map(|f| kb.local_name_of(*f)).collect();
     assert_eq!(names, vec!["name", "language"], "declared field order");
 
     assert!(
@@ -121,7 +121,7 @@ fn the_sugar_and_the_desugaring_agree() {
             "{name}: an entity that is its own type has no parent sort",
         );
         assert!(
-            kb.try_resolve_symbol(&format!("{name}.{}", kb.resolve_sym(sym))).is_none(),
+            kb.try_resolve_symbol(&format!("{name}.{}", kb.local_name_of(sym))).is_none(),
             "{name}: no nested twin",
         );
         assert!(

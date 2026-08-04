@@ -125,7 +125,7 @@ fn classification_keys_on_resolved_symbol_not_short_name() {
     let my_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
         .iter()
         .copied()
-        .find(|&rid| kb.rule_label(rid).map(|l| kb.resolve_sym(l) == "my_law").unwrap_or(false))
+        .find(|&rid| kb.rule_label(rid).map(|l| kb.local_name_of(l) == "my_law").unwrap_or(false))
         .expect("my_law must load with head functor anthill.prelude.PartialEq.eq");
     assert!(kb.is_equation(my_law), "a genuine `=` law is an equation");
     let Value::Term { id: law_head, .. } = *kb.rule_head_value(my_law) else {
@@ -149,7 +149,7 @@ fn wi139_unchanged_for_law_carrier_eq_stays_indexed() {
     let my_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
         .iter()
         .copied()
-        .find(|&rid| kb.rule_label(rid).map(|l| kb.resolve_sym(l) == "my_law").unwrap_or(false))
+        .find(|&rid| kb.rule_label(rid).map(|l| kb.local_name_of(l) == "my_law").unwrap_or(false))
         .expect("my_law loads");
     assert!(
         !kb.rules_by_functor(eq_sym).contains(&my_law),

@@ -470,7 +470,7 @@ end
                 );
                 let scrutinee = named
                     .iter()
-                    .find(|(s, _)| interp.kb().resolve_sym(*s) == "scrutinee")
+                    .find(|(s, _)| interp.kb().local_name_of(*s) == "scrutinee")
                     .map(|(_, v)| v);
                 assert_eq!(
                     scrutinee.and_then(|v| v.as_int()),
@@ -531,12 +531,12 @@ end
             // occurrence field rides as a Value::Node (the reflect NodeOccurrence
             // carrier); scrutinee is the failing value (7).
             let has_occurrence = named.iter().any(|(s, v)| {
-                interp.kb().resolve_sym(*s) == "occurrence" && matches!(v, Value::Node(_))
+                interp.kb().local_name_of(*s) == "occurrence" && matches!(v, Value::Node(_))
             });
             assert!(has_occurrence, "occurrence rides as Value::Node; got {payload:?}");
             let scrutinee = named
                 .iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "scrutinee")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "scrutinee")
                 .and_then(|(_, v)| v.as_int());
             assert_eq!(scrutinee, Some(7), "handler saw the failing scrutinee; got {payload:?}");
         }
@@ -2796,7 +2796,7 @@ fn wi362_stream_provides_iterable() {
         let get = |key: &str| {
             named
                 .iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == key)
+                .find(|(s, _)| kb.local_name_of(*s) == key)
                 .map(|(_, t)| *t)
         };
         let (Some(sort_ref), Some(spec)) = (get("sort_ref"), get("spec")) else {

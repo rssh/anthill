@@ -104,7 +104,7 @@ fn components(kb: &KnowledgeBase, v: &Value) -> (f64, f64, f64) {
     };
     let read = |label: &str| -> f64 {
         named.iter()
-            .find(|(sym, _)| kb.resolve_sym(*sym) == label)
+            .find(|(sym, _)| kb.local_name_of(*sym) == label)
             .map(|(_, val)| match val {
                 Value::Float(f) => *f,
                 other => panic!("field `{label}` is not a Float: {other:?}"),

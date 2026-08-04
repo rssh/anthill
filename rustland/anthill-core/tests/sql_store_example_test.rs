@@ -213,7 +213,7 @@ fn the_demo_binding_carries_its_quoted_sql() {
     };
     let (functor, pos_args) = (*functor, pos_args.clone());
     assert_eq!(
-        kb.resolve_sym(functor),
+        kb.local_name_of(functor),
         "Quoted",
         "the fragment stays a `Quoted` term — nothing evaluates or unwraps it",
     );

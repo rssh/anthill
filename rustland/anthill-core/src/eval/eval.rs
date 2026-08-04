@@ -311,7 +311,7 @@ impl Interpreter {
     }
 
     fn reduce_var(&mut self, sym: Symbol, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
-        let target_name = self.kb.resolve_sym(sym).to_string();
+        let target_name = self.kb.local_name_of(sym).to_string();
         // Local binding first, then a frame requirement (a body reading
         // a `__req_*` param by name — WI-237 names model), then a
         // frame type-arg (a body reading a declared `T` from
@@ -908,7 +908,7 @@ impl Interpreter {
                 find_requirement(&top.requirements, *name).cloned().ok_or_else(|| {
                     EvalError::Internal(format!(
                         "var_ref({}) unbound in requirement position",
-                        self.kb.resolve_sym(*name)
+                        self.kb.local_name_of(*name)
                     ))
                 })
             }
@@ -1321,7 +1321,7 @@ impl Interpreter {
         let caller_names = crate::kb::typing::synth_req_names(&mut self.kb, encl);
         let name_sym = *caller_names.get(slot).ok_or_else(|| EvalError::Internal(format!(
             "DeferToRequirement slot {slot} out of range for {} (chain len {})",
-            self.kb.resolve_sym(encl), caller_names.len())))?;
+            self.kb.local_name_of(encl), caller_names.len())))?;
         let mut dispatching_dict = {
             let top = self.stack.top().ok_or_else(|| EvalError::Internal(
                 "start_apply_deferred without a current frame".into()))?;
@@ -1337,7 +1337,7 @@ impl Interpreter {
                 .ok_or_else(|| EvalError::Internal(format!(
                     "DeferToRequirement: requirement param `{}` not bound in caller frame \
                      (running `{running_op}`, requires-chain owner `{}`)",
-                    self.kb.resolve_sym(name_sym),
+                    self.kb.local_name_of(name_sym),
                     self.kb.qualified_name_of(encl),
                 )))?
                 .clone()
@@ -1350,7 +1350,7 @@ impl Interpreter {
             // WI-857: through the shared owner, so this and the two
             // `requirement_at_sort` reductions cannot drift on either failure. The
             // `what` names the frame slot, which is what locates the read.
-            let what = format!("requirement `{}`", self.kb.resolve_sym(name_sym));
+            let what = format!("requirement `{}`", self.kb.local_name_of(name_sym));
             dispatching_dict = self.project_requirement(&dispatching_dict, k, &what)?;
         }
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict)?;
@@ -1612,7 +1612,7 @@ impl Interpreter {
         // 1. Local binding to target — a closure, or (WI-275) an eta'd
         //    operation reference. Clone out the callable value (a handle/Symbol
         //    copy) so the `self.stack` borrow is released before dispatch.
-        let target_name = self.kb.resolve_sym(target).to_string();
+        let target_name = self.kb.local_name_of(target).to_string();
         let local_callable = {
             let top = self.stack.top()
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
@@ -1973,7 +1973,7 @@ impl Interpreter {
                         "value-directed dispatch to `{}`: requirement `{}` resolved \
                          to a caller-scope slot, but the resolution ran with no scope",
                         self.kb.qualified_name_of(impl_target),
-                        self.kb.resolve_sym(name),
+                        self.kb.local_name_of(name),
                     ))
                 })
             }
@@ -2004,7 +2004,7 @@ impl Interpreter {
             None => match crate::kb::op_info::lookup_operation_info(&self.kb, op) {
                 Some(info) => info.params.len(),
                 None => return Err(EvalError::UnknownOperation {
-                    name: self.kb.resolve_sym(op).to_string(),
+                    name: self.kb.local_name_of(op).to_string(),
                 }),
             },
         };
@@ -2196,7 +2196,7 @@ impl Interpreter {
             crate::kb::resolve::PredicateProof::Undecided { .. } => Err(EvalError::Internal(format!(
                 "rule-backed predicate `{}` could not be decided at eval \
                  (proof truncated or floundered)",
-                self.kb.resolve_sym(pred)
+                self.kb.local_name_of(pred)
             ))),
         }
     }
@@ -2818,7 +2818,7 @@ fn find_local<'a>(
     target_name: &str,
 ) -> Option<&'a Value> {
     for (bound, val) in locals.iter().rev() {
-        if kb.resolve_sym(*bound) == target_name {
+        if kb.local_name_of(*bound) == target_name {
             return Some(val);
         }
     }
@@ -3012,7 +3012,7 @@ fn classify_ctor_arg(
         Some(sym)
             if is_tuple_literal
                 && named.is_empty()
-                && is_positional_label_at(kb.resolve_sym(sym), pos.len()) =>
+                && is_positional_label_at(kb.local_name_of(sym), pos.len()) =>
         {
             pos.push(value);
         }

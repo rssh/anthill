@@ -20,7 +20,7 @@ fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol])
         if i > 0 {
             out.push('.');
         }
-        out.push_str(symbols.name(sym));
+        out.push_str(symbols.local_name(sym));
     }
     out
 }
@@ -1262,8 +1262,8 @@ impl<'a> Converter<'a> {
     ///    to the convention would make `x.(_b)` legal and silently reopen 052 OQ3.
     fn validate_projection_labels(&mut self, node: Node, entries: &[ProjEntry]) {
         for (i, e) in entries.iter().enumerate() {
-            if self.symbols.name(e.label).starts_with('_') {
-                let nm = self.symbols.name(e.label).to_string();
+            if self.symbols.local_name(e.label).starts_with('_') {
+                let nm = self.symbols.local_name(e.label).to_string();
                 self.err(
                     format!(
                         "distributive projection key `{nm}` is `_`-prefixed, colliding with the \
@@ -1274,7 +1274,7 @@ impl<'a> Converter<'a> {
                 );
             }
             if entries[..i].iter().any(|p| p.label == e.label) {
-                let nm = self.symbols.name(e.label).to_string();
+                let nm = self.symbols.local_name(e.label).to_string();
                 self.err(
                     format!(
                         "duplicate distributive projection key `{nm}`; each projected member must \
@@ -1356,7 +1356,7 @@ impl<'a> Converter<'a> {
         if !seen.into_iter().any(|prev| prev == sym) {
             return;
         }
-        let nm = self.symbols.name(sym).to_string();
+        let nm = self.symbols.local_name(sym).to_string();
         self.err(format!("duplicate {what} `{nm}`; {why}"), at);
     }
 
@@ -2787,7 +2787,7 @@ impl<'a> Converter<'a> {
     fn rewrite_requires_goal(&mut self, tid: TermId) -> TermId {
         let (spec_arg, span) = match self.terms.get(tid) {
             Term::Fn { functor, pos_args, named_args }
-                if self.symbols.name(*functor) == "requires"
+                if self.symbols.local_name(*functor) == "requires"
                     && pos_args.len() == 1
                     && named_args.is_empty() =>
             {
@@ -4047,11 +4047,11 @@ impl<'a> Converter<'a> {
     }
 
     fn parse_symbol_name(&self, sym: Option<Symbol>) -> Option<&str> {
-        sym.map(|s| self.symbols.name(s))
+        sym.map(|s| self.symbols.local_name(s))
     }
 
     fn symbol_text(&self, sym: Symbol) -> &str {
-        self.symbols.name(sym)
+        self.symbols.local_name(sym)
     }
 
     /// _proof_body is either `:- hints` or `query "..." [mapping {...}]`,

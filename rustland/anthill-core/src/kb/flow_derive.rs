@@ -304,7 +304,7 @@ impl<'a> Deriver<'a> {
 /// The callable place whose param name (last dotted segment) equals the
 /// named-arg key — maps a named call `f(a: x)` to the place `f.a`.
 fn place_by_name(kb: &KnowledgeBase, places: &[Symbol], key: Symbol) -> Option<Symbol> {
-    let kn = kb.resolve_sym(key);
+    let kn = kb.local_name_of(key);
     places
         .iter()
         .copied()

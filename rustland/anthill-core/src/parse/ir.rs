@@ -222,7 +222,7 @@ impl TermSource for ParsedFile {
         self.terms.get(id)
     }
     fn sym_name(&self, sym: Symbol) -> &str {
-        self.symbols.name(sym)
+        self.symbols.local_name(sym)
     }
 }
 

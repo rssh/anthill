@@ -104,7 +104,7 @@ end
     let r = interp.call("test.wi186_make_pair.main", &[]).expect("call main");
     match r {
         Value::Entity { functor, pos, named, .. } => {
-            let name = interp.kb().resolve_sym(functor);
+            let name = interp.kb().local_name_of(functor);
             assert!(
                 name == "pair" || name == "anthill.prelude.Pair.pair",
                 "expected Pair.pair functor, got {name}",

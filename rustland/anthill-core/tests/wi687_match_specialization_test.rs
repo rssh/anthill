@@ -60,12 +60,12 @@ fn op_sym(kb: &KnowledgeBase, short: &str) -> Symbol {
     all_operation_params(kb)
         .into_iter()
         .map(|(s, _)| s)
-        .find(|s| kb.resolve_sym(*s).rsplit('.').next() == Some(short))
+        .find(|s| kb.local_name_of(*s).rsplit('.').next() == Some(short))
         .unwrap_or_else(|| panic!("operation `{short}` not found"))
 }
 
 fn short(kb: &KnowledgeBase, s: Symbol) -> String {
-    kb.resolve_sym(s).rsplit('.').next().unwrap_or("").to_string()
+    kb.local_name_of(s).rsplit('.').next().unwrap_or("").to_string()
 }
 
 /// The one synthesized (non-fact) defining rule for `op`, or `None`.

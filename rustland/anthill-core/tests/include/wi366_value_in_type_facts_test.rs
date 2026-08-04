@@ -274,13 +274,13 @@ fn provides_e_binding(
         let Term::Fn { named_args, .. } = kb.get_term(*t) else { continue };
         let matches_ns = named_args
             .iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")
+            .find(|(s, _)| kb.local_name_of(*s) == "sort_ref")
             .is_some_and(|(_, v)| matches!(kb.get_term(*v),
                 Term::Fn { functor, .. } if *functor == myl));
         if !matches_ns { continue; }
-        let spec = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "spec")?.1;
+        let spec = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "spec")?.1;
         if let Term::Fn { named_args: sv, .. } = kb.get_term(spec) {
-            return sv.iter().find(|(s, _)| kb.resolve_sym(*s) == "E").map(|(_, t)| *t);
+            return sv.iter().find(|(s, _)| kb.local_name_of(*s) == "E").map(|(_, t)| *t);
         }
     }
     None
@@ -502,7 +502,7 @@ fn query_pattern_written_empty_effect_row_lowers() {
     };
     let e = named_args
         .iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == "E")
+        .find(|(s, _)| kb.local_name_of(*s) == "E")
         .map(|(_, t)| *t)
         .expect("E binding present (not dropped) in query pattern term");
     assert!(
@@ -567,7 +567,7 @@ fn carrier_requires_spec(
         .find_map(|rid| {
             let Value::Term { id: t, .. } = kb.rule_head_value(rid) else { return None };
             let Term::Fn { named_args, .. } = kb.get_term(*t) else { return None };
-            let sr = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")?.1;
+            let sr = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "sort_ref")?.1;
             let sr_functor = match kb.get_term(sr) {
                 Term::Fn { functor, .. } => *functor,
                 Term::Ref(s) => *s,
@@ -576,7 +576,7 @@ fn carrier_requires_spec(
             if sr_functor != carrier {
                 return None;
             }
-            named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "spec").map(|(_, t)| *t)
+            named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "spec").map(|(_, t)| *t)
         })
 }
 
@@ -692,8 +692,8 @@ fn positioned_is_a_structural_term() {
         panic!("Positioned must be a Term::Fn");
     };
     assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.Positioned");
-    let got_pos = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "pos").map(|(_, t)| *t);
-    let got_int = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "internal").map(|(_, t)| *t);
+    let got_pos = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "pos").map(|(_, t)| *t);
+    let got_int = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "internal").map(|(_, t)| *t);
     assert_eq!(got_pos, Some(site_a), "pos child reads back");
     assert_eq!(got_int, Some(x), "internal child reads back");
 }

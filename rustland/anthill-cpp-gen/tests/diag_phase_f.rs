@@ -23,7 +23,7 @@ fn dump_phase_f_shapes() {
     for rid in kb.rules_by_functor(op_info_sym) {
         let head = kb.rule_head(rid);
         let nm = if let Term::Fn { named_args, .. } = kb.get_term(head) {
-            named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
+            named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "name")
                 .and_then(|(_, v)| match kb.get_term(*v) {
                     Term::Ref(s) => Some(kb.qualified_name_of(*s).to_string()),
                     _ => None,
@@ -44,7 +44,7 @@ fn dump_term(kb: &anthill_core::kb::KnowledgeBase, term: anthill_core::kb::term:
             println!("{pad}Fn {qn:?} pos={} named:", pos_args.len());
             for p in pos_args { dump_term(kb, *p, indent + 4); }
             for (n, v) in named_args {
-                println!("{pad}  {} =", kb.resolve_sym(*n));
+                println!("{pad}  {} =", kb.local_name_of(*n));
                 dump_term(kb, *v, indent + 4);
             }
         }

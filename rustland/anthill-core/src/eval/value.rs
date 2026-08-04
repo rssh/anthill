@@ -483,7 +483,7 @@ impl<'a> TupleComponents<'a> {
     pub fn by_label_index(&self, kb: &crate::kb::KnowledgeBase, label: &str) -> Option<usize> {
         let want = crate::kb::typing::short_name_of(label);
         for (i, (sym, _)) in self.named.iter().enumerate() {
-            if crate::kb::typing::short_name_of(kb.resolve_sym(*sym)) == want {
+            if crate::kb::typing::short_name_of(kb.local_name_of(*sym)) == want {
                 return Some(self.pos.len() + i);
             }
         }
@@ -526,7 +526,7 @@ impl<'a> TupleComponents<'a> {
         !labels.is_empty()
             && labels.iter().enumerate().all(|(i, l)| {
                 crate::intern::is_positional_label_at(
-                    crate::kb::typing::short_name_of(kb.resolve_sym(*l)),
+                    crate::kb::typing::short_name_of(kb.local_name_of(*l)),
                     i,
                 )
             })

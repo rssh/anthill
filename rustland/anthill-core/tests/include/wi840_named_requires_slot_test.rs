@@ -66,7 +66,7 @@ fn slots_of(kb: &KnowledgeBase, owner_qn: &str) -> Vec<(String, usize)> {
         .unwrap_or_else(|| panic!("no symbol {owner_qn}"));
     kb.named_requirement_slots(sym)
         .iter()
-        .map(|s| (kb.resolve_sym(s.binder).to_owned(), s.slot))
+        .map(|s| (kb.local_name_of(s.binder).to_owned(), s.slot))
         .collect()
 }
 
@@ -458,7 +458,7 @@ fn sort_info_requires_bases(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String>
         }
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let field = |k: &str| {
-            named.iter().find(|(s, _)| kb.resolve_sym(*s) == k).map(|(_, t)| *t)
+            named.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
         };
         let (Some(name), Some(reqs)) = (field("name"), field("requires")) else { continue };
         if head_sym(kb, name) != Some(sort_sym) {
@@ -480,7 +480,7 @@ fn sort_requires_fact_bases(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String>
         }
         let Some(named) = kb.fact_head_named_args(rid) else { continue };
         let field = |k: &str| {
-            named.iter().find(|(s, _)| kb.resolve_sym(*s) == k).map(|(_, t)| *t)
+            named.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
         };
         let (Some(owner), Some(spec)) = (field("sort_ref"), field("spec")) else { continue };
         if head_sym(kb, owner) != Some(sort_sym) {
@@ -497,11 +497,11 @@ fn cons_list_bases(kb: &KnowledgeBase, list: anthill_core::kb::term::TermId) -> 
     let mut out = Vec::new();
     let mut cur = list;
     while let Term::Fn { functor, named_args, .. } = kb.get_term(cur) {
-        if kb.resolve_sym(*functor) != "cons" {
+        if kb.local_name_of(*functor) != "cons" {
             break;
         }
         let field = |k: &str| {
-            named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == k).map(|(_, t)| *t)
+            named_args.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
         };
         let (Some(h), Some(t)) = (field("head"), field("tail")) else { break };
         out.push(spec_base_name(kb, h));
@@ -516,13 +516,13 @@ fn cons_list_bases(kb: &KnowledgeBase, list: anthill_core::kb::term::TermId) -> 
 fn spec_base_name(kb: &KnowledgeBase, spec: anthill_core::kb::term::TermId) -> String {
     use anthill_core::kb::term::Term;
     if let Term::Fn { functor, pos_args, .. } = kb.get_term(spec) {
-        if kb.resolve_sym(*functor) == "SortView" && !pos_args.is_empty() {
+        if kb.local_name_of(*functor) == "SortView" && !pos_args.is_empty() {
             let inner = pos_args[0];
             return head_sym(kb, inner)
-                .map_or_else(|| "?".to_owned(), |f| kb.resolve_sym(f).to_owned());
+                .map_or_else(|| "?".to_owned(), |f| kb.local_name_of(f).to_owned());
         }
     }
-    head_sym(kb, spec).map_or_else(|| "?".to_owned(), |f| kb.resolve_sym(f).to_owned())
+    head_sym(kb, spec).map_or_else(|| "?".to_owned(), |f| kb.local_name_of(f).to_owned())
 }
 
 /// A term's head functor. `KnowledgeBase::head_functor` is `pub(crate)`, so this local

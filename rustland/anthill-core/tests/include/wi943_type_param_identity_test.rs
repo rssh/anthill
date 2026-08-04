@@ -94,7 +94,7 @@ fn via_declaration(kb: &KnowledgeBase, op_qn: &str, param: &str) -> u32 {
     let (_, var) = rec
         .type_params
         .iter()
-        .find(|(n, _)| kb.resolve_sym(*n) == param)
+        .find(|(n, _)| kb.local_name_of(*n) == param)
         .unwrap_or_else(|| panic!("`{op_qn}` must declare type param `{param}`"));
     var.as_global().unwrap_or_else(|| panic!("`{op_qn}.{param}` must be a flex Global var")).raw()
 }
@@ -215,25 +215,10 @@ end
     let via_sym = via_symbol(&kb, "test.wi943.sortparam.SortHolder", "T");
 
     // The declaration side for a sort param: the `SortAlias(T, Var)` fact's target.
-    let alias_sym = kb.try_resolve_symbol("SortAlias").expect("SortAlias");
     let t_sym = kb.try_resolve_symbol("test.wi943.sortparam.SortHolder.T").expect("SortHolder.T");
-    let declared = kb
-        .rules_by_functor(alias_sym)
-        .into_iter()
-        .filter(|rid| kb.is_fact(*rid))
-        .find_map(|rid| {
-            let head = kb.fact_head_term(rid)?;
-            let Term::Fn { pos_args, .. } = kb.get_term(head) else { return None };
-            let Term::Fn { functor, .. } = kb.get_term(*pos_args.first()?) else { return None };
-            if *functor != t_sym {
-                return None;
-            }
-            match kb.get_term(*pos_args.get(1)?) {
-                Term::Var(v) => v.as_global().map(|v| v.raw()),
-                _ => None,
-            }
-        })
-        .expect("`sort T = ?` must assert a `SortAlias` with a Var target");
+    let declared = crate::common::sort_alias_backing_var(&kb, t_sym)
+        .expect("`sort T = ?` must assert a `SortAlias` with a Var target")
+        .raw();
     assert_eq!(
         via_sym, declared,
         "a sort param's symbol must resolve to its own `SortAlias` target",

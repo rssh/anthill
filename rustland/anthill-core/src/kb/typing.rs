@@ -496,16 +496,16 @@ pub enum TypeErrorContext {
 impl TypeErrorContext {
     pub fn entity_name(&self, kb: &KnowledgeBase) -> String {
         match self {
-            TypeErrorContext::EntityField { entity, .. } => kb.resolve_sym(*entity).to_string(),
-            TypeErrorContext::OperationArgument { op_name, .. } => kb.resolve_sym(*op_name).to_string(),
+            TypeErrorContext::EntityField { entity, .. } => kb.local_name_of(*entity).to_string(),
+            TypeErrorContext::OperationArgument { op_name, .. } => kb.local_name_of(*op_name).to_string(),
             TypeErrorContext::OperationReturn { op_name }
             | TypeErrorContext::OperationEffects { op_name }
-            | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
-            TypeErrorContext::Rule { name, .. } => kb.resolve_sym(*name).to_string(),
-            TypeErrorContext::LetBinding { var } => kb.resolve_sym(*var).to_string(),
+            | TypeErrorContext::OperationMatch { op_name } => kb.local_name_of(*op_name).to_string(),
+            TypeErrorContext::Rule { name, .. } => kb.local_name_of(*name).to_string(),
+            TypeErrorContext::LetBinding { var } => kb.local_name_of(*var).to_string(),
             TypeErrorContext::OperationAsFunctionValue { op_name }
             | TypeErrorContext::OperationTypeParams { op_name } => {
-                kb.resolve_sym(*op_name).to_string()
+                kb.local_name_of(*op_name).to_string()
             }
             // The receiver's identity is not carried — the member name is what locates the
             // projection for the reader, and it rides in `field_name` below.
@@ -539,8 +539,8 @@ impl TypeErrorContext {
 
     pub fn field_name(&self, kb: &KnowledgeBase) -> String {
         match self {
-            TypeErrorContext::EntityField { field, .. } => kb.resolve_sym(*field).to_string(),
-            TypeErrorContext::OperationArgument { param, .. } => kb.resolve_sym(*param).to_string(),
+            TypeErrorContext::EntityField { field, .. } => kb.local_name_of(*field).to_string(),
+            TypeErrorContext::OperationArgument { param, .. } => kb.local_name_of(*param).to_string(),
             TypeErrorContext::OperationReturn { .. } => "return".to_string(),
             TypeErrorContext::OperationEffects { .. } => "effects".to_string(),
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
@@ -548,8 +548,8 @@ impl TypeErrorContext {
             TypeErrorContext::LetBinding { .. } => "annotation".to_string(),
             TypeErrorContext::OperationAsFunctionValue { .. } => "function-value".to_string(),
             TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
-            TypeErrorContext::DotProjection { member } => kb.resolve_sym(*member).to_string(),
-            TypeErrorContext::BinderAnnotation { binder } => kb.resolve_sym(*binder).to_string(),
+            TypeErrorContext::DotProjection { member } => kb.local_name_of(*member).to_string(),
+            TypeErrorContext::BinderAnnotation { binder } => kb.local_name_of(*binder).to_string(),
         }
     }
 }
@@ -577,21 +577,21 @@ impl TypeError {
                 format!("type mismatch: expected {expected}, got {actual}")
             }
             TypeError::NoParentSort { name } => {
-                format!("entity has no parent sort: {}", kb.resolve_sym(*name))
+                format!("entity has no parent sort: {}", kb.local_name_of(*name))
             }
             TypeError::UnresolvedName { name, .. } => {
-                format!("unresolved name: {}", kb.resolve_sym(*name))
+                format!("unresolved name: {}", kb.local_name_of(*name))
             }
             TypeError::NoConstructor { name, .. } => {
-                format!("no constructor: {}", kb.resolve_sym(*name))
+                format!("no constructor: {}", kb.local_name_of(*name))
             }
             TypeError::UnknownApplyFunctor { name, .. } => {
-                format!("unknown apply functor: {}", kb.resolve_sym(*name))
+                format!("unknown apply functor: {}", kb.local_name_of(*name))
             }
             TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
                 let sort_names: Vec<String> =
-                    owning_sorts.iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
-                bare_member_call_message(kb.resolve_sym(*member), &sort_names, *dot_dispatchable)
+                    owning_sorts.iter().map(|s| kb.local_name_of(*s).to_string()).collect();
+                bare_member_call_message(kb.local_name_of(*member), &sort_names, *dot_dispatchable)
             }
             TypeError::UnreducedEquationFunctor { functor, census, .. } => {
                 unreduced_equation_functor_message(kb.qualified_name_of(*functor), *census)
@@ -615,7 +615,7 @@ impl TypeError {
                 format!(
                     "{} has no type parameter named '{}'",
                     kb.qualified_name_of(*op),
-                    kb.resolve_sym(*name),
+                    kb.local_name_of(*name),
                 )
             }
             TypeError::ExcessCallTypeArgs { op, given, free, .. } => {
@@ -630,7 +630,7 @@ impl TypeError {
                     "{} binds the type parameter '{}' more than once in one call-site \
                      bracket",
                     kb.qualified_name_of(*op),
-                    kb.resolve_sym(*name),
+                    kb.local_name_of(*name),
                 )
             }
             TypeError::TypeArgsOnNonOperation { callee, .. } => {
@@ -646,7 +646,7 @@ impl TypeError {
                      SHORT NAME selects a provider only when it picks out ONE anonymous \
                      slot; name the slot you mean (`requires <name>: {0}[…]`) and bind \
                      that name instead",
-                    kb.resolve_sym(*name),
+                    kb.local_name_of(*name),
                     kb.qualified_name_of(*op),
                     slots.join(", "),
                 )
@@ -732,7 +732,7 @@ impl TypeError {
                 let op_name = kb.qualified_name_of(*op);
                 format!(
                     "type parameter '{0}' of {1} is unconstrained — use `{2}[{0} = …](…)`",
-                    kb.resolve_sym(*type_param),
+                    kb.local_name_of(*type_param),
                     op_name,
                     short_name_of(op_name),
                 )
@@ -745,7 +745,7 @@ impl TypeError {
                 let spec_short = short_name_of(spec_qn);
                 let params_list: Vec<String> = abstract_params
                     .iter()
-                    .map(|p| format!("{0} = …", kb.resolve_sym(*p)))
+                    .map(|p| format!("{0} = …", kb.local_name_of(*p)))
                     .collect();
                 format!(
                     "spec op `{}` called at abstract type — add `requires {}[{}]` to the enclosing sort, or specialize to a concrete carrier",
@@ -778,7 +778,7 @@ impl TypeError {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
             TypeError::DotDispatchNoMatch { member, receiver_sort, .. } => {
-                let m = kb.resolve_sym(*member);
+                let m = kb.local_name_of(*member);
                 match receiver_sort {
                     Some(s) => format!(
                         "no member '{}' on {}: dot dispatch found no operation '{}' declared on the receiver's sort",
@@ -793,7 +793,7 @@ impl TypeError {
             TypeError::ForbiddenInternalField { entity, field, .. } => {
                 format!(
                     "'{}' is an internal field of {} and cannot be projected from another scope",
-                    kb.resolve_sym(*field), kb.qualified_name_of(*entity),
+                    kb.local_name_of(*field), kb.qualified_name_of(*entity),
                 )
             }
             // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
@@ -899,7 +899,7 @@ impl TypeError {
             }
             TypeError::NoParentSort { name } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: kb.resolve_sym(*name).to_string(),
+                entity_name: kb.local_name_of(*name).to_string(),
                 field_name: "parent_sort".to_string(),
                 expected_type: "parent sort".to_string(),
                 actual_type: "none".to_string(),
@@ -907,7 +907,7 @@ impl TypeError {
             },
             TypeError::UnresolvedName { name, .. } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: kb.resolve_sym(*name).to_string(),
+                entity_name: kb.local_name_of(*name).to_string(),
                 field_name: "name".to_string(),
                 expected_type: "resolved name".to_string(),
                 actual_type: "unresolved".to_string(),
@@ -915,7 +915,7 @@ impl TypeError {
             },
             TypeError::NoConstructor { name, .. } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: kb.resolve_sym(*name).to_string(),
+                entity_name: kb.local_name_of(*name).to_string(),
                 field_name: "constructor".to_string(),
                 expected_type: "known constructor".to_string(),
                 actual_type: "unknown".to_string(),
@@ -923,7 +923,7 @@ impl TypeError {
             },
             TypeError::UnknownApplyFunctor { name, .. } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: kb.resolve_sym(*name).to_string(),
+                entity_name: kb.local_name_of(*name).to_string(),
                 field_name: "apply".to_string(),
                 expected_type: "known operation or arrow-typed variable".to_string(),
                 actual_type: "unknown functor".to_string(),
@@ -932,10 +932,10 @@ impl TypeError {
             TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
                 LoadError::BareMemberCall {
                     span: self.span(kb),
-                    member: kb.resolve_sym(*member).to_string(),
+                    member: kb.local_name_of(*member).to_string(),
                     owning_sorts: owning_sorts
                         .iter()
-                        .map(|s| kb.resolve_sym(*s).to_string())
+                        .map(|s| kb.local_name_of(*s).to_string())
                         .collect(),
                     dot_dispatchable: *dot_dispatchable,
                 }
@@ -975,7 +975,7 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: "declared type-param name".to_string(),
-                actual_type: format!("unknown type-param '{}'", kb.resolve_sym(*name)),
+                actual_type: format!("unknown type-param '{}'", kb.local_name_of(*name)),
                 span: self.span(kb),
             },
             TypeError::ExcessCallTypeArgs { op, given, free, .. } => LoadError::TypeMismatch {
@@ -993,7 +993,7 @@ impl TypeError {
                 expected_type: "each type parameter bound at most once".to_string(),
                 actual_type: format!(
                     "type-param '{}' bound twice in one bracket",
-                    kb.resolve_sym(*name),
+                    kb.local_name_of(*name),
                 ),
                 span: self.span(kb),
             },
@@ -1016,7 +1016,7 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: format!(
-                    "'{}' to name ONE requirement slot", kb.resolve_sym(*name),
+                    "'{}' to name ONE requirement slot", kb.local_name_of(*name),
                 ),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -1081,13 +1081,13 @@ impl TypeError {
                 let suggestion = format!(
                     "unconstrained — use `{}[{} = …](…)`",
                     short_name_of(op_qn),
-                    kb.resolve_sym(*type_param),
+                    kb.local_name_of(*type_param),
                 );
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: op_qn.to_string(),
                     field_name: "type_arg".to_string(),
-                    expected_type: format!("a type for '{}'", kb.resolve_sym(*type_param)),
+                    expected_type: format!("a type for '{}'", kb.local_name_of(*type_param)),
                     actual_type: suggestion,
                     span: self.span(kb),
                 }
@@ -1100,7 +1100,7 @@ impl TypeError {
                 let spec_short = short_name_of(spec_qn);
                 let params_list: Vec<String> = abstract_params
                     .iter()
-                    .map(|p| format!("{0} = …", kb.resolve_sym(*p)))
+                    .map(|p| format!("{0} = …", kb.local_name_of(*p)))
                     .collect();
                 let suggestion = format!(
                     "missing `requires {}[{}]` on enclosing sort",
@@ -1169,7 +1169,7 @@ impl TypeError {
                 entity_name: receiver_sort
                     .map(|s| kb.qualified_name_of(s).to_string())
                     .unwrap_or_else(|| "<unresolved receiver>".to_string()),
-                field_name: kb.resolve_sym(*member).to_string(),
+                field_name: kb.local_name_of(*member).to_string(),
                 expected_type: "operation declared on the receiver's sort".to_string(),
                 actual_type: "no such member (dot dispatch)".to_string(),
                 span: self.span(kb),
@@ -1180,7 +1180,7 @@ impl TypeError {
                     q.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_else(|| q.to_string())
                 };
                 LoadError::ForbiddenInternalAccess {
-                    name: kb.resolve_sym(*field).to_string(),
+                    name: kb.local_name_of(*field).to_string(),
                     declared_in,
                     scope_name: "another scope".to_string(),
                     span: self.span(kb).unwrap_or_default(),
@@ -2179,7 +2179,7 @@ fn concat_named_tuple_types(
             return Err(format!(
                 "`concat` operands share the field name `{}` — a merged schema requires \
                  disjoint field names (rename one, or project first)",
-                kb.resolve_sym(name)
+                kb.local_name_of(name)
             ));
         }
         merged.push((name, ty));
@@ -2425,7 +2425,7 @@ fn reduce_binary_type_ctor(
                 let mut a: Option<Value> = None;
                 let mut b: Option<Value> = None;
                 for (p, v) in &reduced {
-                    let name = kb.resolve_sym(*p);
+                    let name = kb.local_name_of(*p);
                     if name == cfg.operands[0] {
                         a = Some(v.clone());
                     } else if name == cfg.operands[1] {
@@ -2549,7 +2549,7 @@ fn without_named_tuple_types(
                 return Err(format!(
                     "`Without` drops the field `{}`, which is not a column of the base schema \
                      (a captured argument names no column to restrict)",
-                    kb.resolve_sym(*dname)
+                    kb.local_name_of(*dname)
                 ))
             }
             Some((_, tty)) => {
@@ -2558,7 +2558,7 @@ fn without_named_tuple_types(
                     return Err(format!(
                         "`Without` drops the field `{}` with a value whose type does not match \
                          its column",
-                        kb.resolve_sym(*dname)
+                        kb.local_name_of(*dname)
                     ));
                 }
             }
@@ -2619,7 +2619,7 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
             "`{field_name}` is not a component of the tuple ({})",
             fields
                 .iter()
-                .map(|(f, _)| short_name_of(kb.resolve_sym(*f)).to_string())
+                .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2694,7 +2694,7 @@ fn resolve_projected_member(
     if let TypeExtractor::NamedTuple(fields) = extract_type(kb, recv_ty) {
         return fields
             .iter()
-            .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
+            .find(|(f, _)| short_name_of(kb.local_name_of(*f)) == field_name)
             .map(|(_, t)| ProjectedMember { ty: t.clone(), owners: Vec::new() })
             .ok_or(MemberMiss::NoSuchMember);
     }
@@ -2707,7 +2707,7 @@ fn resolve_projected_member(
             kb.entity_field_types(c).and_then(|fields| {
                 fields
                     .iter()
-                    .find(|(f, _)| short_name_of(kb.resolve_sym(*f)) == field_name)
+                    .find(|(f, _)| short_name_of(kb.local_name_of(*f)) == field_name)
                     .map(|(f, _)| (c, *f))
             })
         })
@@ -3340,9 +3340,9 @@ pub(crate) fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
 /// contract). An unrecognized carried shape stays `?`.
 fn denoted_value_display(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
     match &occ.kind {
-        NodeKind::Expr { expr: Expr::Ref(s), .. } => kb.resolve_sym(*s).to_string(),
+        NodeKind::Expr { expr: Expr::Ref(s), .. } => kb.local_name_of(*s).to_string(),
         NodeKind::Expr { expr: Expr::DotApply { receiver, name, .. }, .. } => {
-            format!("{}.{}", denoted_value_display(kb, receiver), kb.resolve_sym(*name))
+            format!("{}.{}", denoted_value_display(kb, receiver), kb.local_name_of(*name))
         }
         // WI-404: a value-in-type LITERAL (`3` in `Vec[N = 3]`, carried as
         // `Expr::Const` — see `value_term_to_occ`) renders as the literal value, so a
@@ -3388,7 +3388,7 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
             } else {
                 let params: Vec<String> = bindings
                     .iter()
-                    .map(|(p, c)| format!("{} = {}", kb.resolve_sym(*p), type_child_display_name(kb, c)))
+                    .map(|(p, c)| format!("{} = {}", kb.local_name_of(*p), type_child_display_name(kb, c)))
                     .collect();
                 format!("{}[{}]", base_name, params.join(", "))
             }
@@ -3419,7 +3419,7 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         NodeKind::Type(TypeNode::NamedTuple { fields }) => {
             let parts: Vec<String> = list_records_to_pairs(kb, fields, "name", "type")
                 .into_iter()
-                .map(|(n, v)| format!("{}: {}", kb.resolve_sym(n), type_display_name_value(kb, &v)))
+                .map(|(n, v)| format!("{}: {}", kb.local_name_of(n), type_display_name_value(kb, &v)))
                 .collect();
             format!("({})", parts.join(", "))
         }
@@ -3449,13 +3449,13 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         // value reference (`s`) or a field-access path (`s.provider`) — so the neutral
         // prints legibly (`s.provider.K`, not `?.K`) in a type error.
         NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => {
-            kb.resolve_sym(*s).to_string()
+            kb.local_name_of(*s).to_string()
         }
         NodeKind::Expr {
             expr: Expr::DotApply { receiver, name, pos_args, named_args },
             ..
         } if pos_args.is_empty() && named_args.is_empty() => {
-            format!("{}.{}", type_display_name_occ(kb, receiver), kb.resolve_sym(*name))
+            format!("{}.{}", type_display_name_occ(kb, receiver), kb.local_name_of(*name))
         }
         _ => "?".to_string(),
     }
@@ -3689,7 +3689,7 @@ fn one_collapse_site(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> Op
             let (label, elem) = &fields[0];
             let elem_rendered = type_display_name_value(kb, elem);
             (elem_rendered == type_display_name_value(kb, actual))
-                .then(|| (kb.resolve_sym(*label).to_string(), elem_rendered))
+                .then(|| (kb.local_name_of(*label).to_string(), elem_rendered))
         }
         TypeExtractor::Parameterized { base: expected_base, bindings: expected_args } => {
             let TypeExtractor::Parameterized { base: actual_base, bindings: actual_args } =
@@ -3818,7 +3818,7 @@ fn type_child_is_named_tuple(kb: &KnowledgeBase, child: &TypeChild) -> bool {
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
     match kb.get_term(ty) {
         Term::Fn { functor, named_args, .. } => {
-            let fname = kb.resolve_sym(*functor);
+            let fname = kb.local_name_of(*functor);
             // WI-361: a bare sort is `Term::Ref(S)` (the `Term::Ref` arm below),
             // and a parameterized type is `Fn{S, named}` whose functor is the base
             // sort — handled by the generic `_` arm (renders `S[p = v, …]`). The
@@ -3844,7 +3844,7 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                 }
                 "TypeVar" => {
                     extract_ref_field(kb, named_args, "name")
-                        .map(|s| format!("?{}", kb.resolve_sym(s)))
+                        .map(|s| format!("?{}", kb.local_name_of(s)))
                         .unwrap_or_else(|| "?".to_string())
                 }
                 "NamedTuple" => {
@@ -3853,7 +3853,7 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     let parts: Vec<String> = fields.iter().map(|f| {
                         if let Term::Fn { named_args: fa, .. } = kb.get_term(*f) {
                             let n = extract_ref_field(kb, fa, "name")
-                                .map(|s| kb.resolve_sym(s).to_string())
+                                .map(|s| kb.local_name_of(s).to_string())
                                 .unwrap_or_else(|| "?".to_string());
                             let t = get_named_arg(kb, fa, "type")
                                 .map(|v| type_display_name(kb, v))
@@ -3913,7 +3913,7 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     // Fallback: raw term display (for non-type terms)
                     let name = fname.to_string();
                     let params: Vec<String> = named_args.iter()
-                        .map(|(s, v)| format!("{} = {}", kb.resolve_sym(*s), type_display_name(kb, *v)))
+                        .map(|(s, v)| format!("{} = {}", kb.local_name_of(*s), type_display_name(kb, *v)))
                         .collect();
                     if params.is_empty() {
                         name
@@ -3923,7 +3923,7 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                 }
             }
         }
-        Term::Ref(s) => kb.resolve_sym(*s).to_string(),
+        Term::Ref(s) => kb.local_name_of(*s).to_string(),
         Term::Var(v) => {
             // WI-307 code-review #7: render variables by their name (not
             // TermId Debug, which would embed allocation-order indices and
@@ -3944,7 +3944,7 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                 }
                 crate::kb::term::Var::Rigid(vid) => vid.name(),
             };
-            format!("?{}", kb.resolve_sym(name_sym))
+            format!("?{}", kb.local_name_of(name_sym))
         }
         _ => format!("{:?}", ty),
     }
@@ -3973,7 +3973,7 @@ fn sort_constructor_syms(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
 
 pub fn get_named_arg(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId); 2]>, key: &str) -> Option<TermId> {
     named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == key)
+        .find(|(s, _)| kb.local_name_of(*s) == key)
         .map(|(_, v)| *v)
 }
 
@@ -3999,7 +3999,7 @@ pub fn extract_sym_arg(
     key: &str,
 ) -> Option<Symbol> {
     named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == key)
+        .find(|(s, _)| kb.local_name_of(*s) == key)
         .and_then(|(_, v)| match kb.get_term(*v) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),
             _ => None,
@@ -4012,7 +4012,7 @@ pub fn extract_sym_arg(
 
 pub fn unwrap_option(kb: &KnowledgeBase, opt: TermId) -> Option<TermId> {
     if let Term::Fn { functor, pos_args, named_args } = kb.get_term(opt) {
-        if kb.resolve_sym(*functor) == "some" {
+        if kb.local_name_of(*functor) == "some" {
             if !pos_args.is_empty() { return Some(pos_args[0]); }
             if !named_args.is_empty() { return Some(named_args[0].1); }
         }
@@ -4025,15 +4025,15 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
     loop {
         match kb.get_term(term) {
             Term::Fn { functor, named_args, pos_args } => {
-                let name = kb.resolve_sym(*functor);
+                let name = kb.local_name_of(*functor);
                 if name == "nil" { break; }
                 if name == "cons" {
                     let head = named_args.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                        .find(|(s, _)| kb.local_name_of(*s) == "head")
                         .map(|(_, v)| *v)
                         .or_else(|| pos_args.first().copied());
                     let tail = named_args.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                        .find(|(s, _)| kb.local_name_of(*s) == "tail")
                         .map(|(_, v)| *v)
                         .or_else(|| pos_args.get(1).copied());
                     if let Some(h) = head { items.push(h); }
@@ -4677,7 +4677,7 @@ fn relation_reference_type_applied(
                     kb,
                     format!(
                         "argument binding column `{}` has an incompatible type",
-                        kb.resolve_sym(*cname)
+                        kb.local_name_of(*cname)
                     ),
                 ));
             }
@@ -4783,7 +4783,7 @@ fn relation_columns_across_clauses(
                         span,
                         context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
                         expected: "a common column type across relation clauses".to_string(),
-                        actual: format!("disjoint types for column `{}`", kb.resolve_sym(cname)),
+                        actual: format!("disjoint types for column `{}`", kb.local_name_of(cname)),
                     });
                 }
             }
@@ -4905,7 +4905,7 @@ fn assemble_relation_type(
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
     let mut schema = Some(schema);
     for (psym, _) in params.iter() {
-        let short = short_name_of(kb.resolve_sym(*psym)).to_string();
+        let short = short_name_of(kb.local_name_of(*psym)).to_string();
         if sort_param_is_effect_row(kb, relation_sym, &short) {
             if let Some(e) = &effect_row {
                 bindings.push((*psym, e.clone()));
@@ -4951,14 +4951,14 @@ fn projection_columns(
     for (result_key, source) in projections {
         let col_ty = fields
             .iter()
-            .find_map(|(f, t)| (short_name_of(kb.resolve_sym(*f)) == *source).then(|| t.clone()))
+            .find_map(|(f, t)| (short_name_of(kb.local_name_of(*f)) == *source).then(|| t.clone()))
             .ok_or_else(|| {
                 format!(
                     "the projection selects column `{source}`, which the relation's schema \
                      does not have (its columns are: {})",
                     fields
                         .iter()
-                        .map(|(f, _)| short_name_of(kb.resolve_sym(*f)).to_string())
+                        .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -4988,7 +4988,7 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
                     "`Project` keep-spec entry `{}` must name its source column as a string in \
                      type position (a `denoted`), which is how a compile-time name reaches a \
                      type argument",
-                    short_name_of(kb.resolve_sym(*result_key))
+                    short_name_of(kb.local_name_of(*result_key))
                 )
             })
         })
@@ -5015,8 +5015,8 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
     // that way: these are one tuple's own field labels, so this is a within-schema field
     // comparison (WI-638 mode 3), not a cross-scope symbol identity (WI-672).
     for (i, (key, _)) in projections.iter().enumerate() {
-        let key_name = short_name_of(kb.resolve_sym(*key));
-        if projections[..i].iter().any(|(k, _)| short_name_of(kb.resolve_sym(*k)) == key_name) {
+        let key_name = short_name_of(kb.local_name_of(*key));
+        if projections[..i].iter().any(|(k, _)| short_name_of(kb.local_name_of(*k)) == key_name) {
             return Err(format!(
                 "`Project` keep spec names the result key `{key_name}` twice; each key is a \
                  distinct column of the projected schema, so it must appear once"
@@ -5122,7 +5122,7 @@ fn build_relation_projection(
     let keep_param = lookup_operation_info_full(kb, project_run).and_then(|op| {
         op.type_params
             .iter()
-            .find(|(n, _)| short_name_of(kb.resolve_sym(*n)) == PROJECT_CTOR.operands[1])
+            .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == PROJECT_CTOR.operands[1])
             .map(|(n, _)| *n)
     });
     let Some(keep_param) = keep_param else {
@@ -5207,7 +5207,7 @@ fn relation_column_access_parts(
         Expr::DotApply { receiver, name, pos_args, named_args }
             if pos_args.is_empty() && named_args.is_empty() =>
         {
-            Some((Rc::clone(receiver), short_name_of(kb.resolve_sym(*name)).to_string()))
+            Some((Rc::clone(receiver), short_name_of(kb.local_name_of(*name)).to_string()))
         }
         _ => None,
     }
@@ -5525,11 +5525,11 @@ impl RelationArgError {
             ),
             Self::UnknownParam(k) => format!(
                 "named argument `{}` names no free column",
-                kb.resolve_sym(*k)
+                kb.local_name_of(*k)
             ),
             Self::DoubleBind(k) => format!(
                 "named argument `{}` binds a column already bound positionally",
-                kb.resolve_sym(*k)
+                kb.local_name_of(*k)
             ),
         }
     }
@@ -6108,19 +6108,18 @@ fn op_tp_pinning_params(
             _ => None,
         })
         .collect();
-    // (code-review) Kind-gate + memoized read. `impl_parent_of_op` returns a
-    // NAMESPACE for a free op, and the uncached `impl_param_symbols` →
-    // `type_params_of_sort` walk scans the whole symbol table per call — paid
-    // on every call with any lambda-or-VarRef argument just to learn a
-    // namespace has no params. `sort_type_params_as_pairs` is the same filter
-    // chain (qualified param symbol → sort alias → keep `Var::Global`),
-    // memoized on `sort_param_pairs_cache`.
-    if let Some(parent) = impl_parent_of_op(kb, functor) {
-        if kb.kind_of(parent) == Some(crate::intern::SymbolKind::Sort) {
-            for (_, target) in sort_type_params_as_pairs(kb, parent).iter() {
-                if let Term::Var(Var::Global(v)) = kb.get_term(*target) {
-                    tp_vars.push(*v);
-                }
+    // (code-review) Kind-gate + memoized read. A free op's parent is a NAMESPACE, and
+    // the uncached `impl_param_symbols` → `type_params_of_sort` walk scans the whole
+    // symbol table per call — paid on every call with any lambda-or-VarRef argument
+    // just to learn a namespace has no params. `sort_type_params_as_pairs` is the same
+    // filter chain (qualified param symbol → sort alias → keep `Var::Global`),
+    // memoized on `sort_param_pairs_cache`. WI-956: the gate is
+    // `impl_parent_sort_of_op`'s, which asks `has_kind` — see its doc for the
+    // re-declared sort whose params this dropped under `kind_of`.
+    if let Some(parent) = impl_parent_sort_of_op(kb, functor) {
+        for (_, target) in sort_type_params_as_pairs(kb, parent).iter() {
+            if let Term::Var(Var::Global(v)) = kb.get_term(*target) {
+                tp_vars.push(*v);
             }
         }
     }
@@ -6878,7 +6877,7 @@ fn redirect_provider_self_spec_op(
     if recv_sort.is_some_and(|rs| kb.canonical_sort_sym(rs) == kb.canonical_sort_sym(enclosing)) {
         return None;
     }
-    let short = short_name_of(kb.resolve_sym(fn_sym)).to_string();
+    let short = short_name_of(kb.local_name_of(fn_sym)).to_string();
     let spec_op = find_spec_op_for_provided_sort(kb, enclosing, &short)?;
     (spec_op != fn_sym).then_some(spec_op)
 }
@@ -6909,7 +6908,7 @@ fn match_dot_rule_lhs(
     // Member name — compared by short name, robust to interning differences
     // between the rule's `name:` field and the occurrence's member symbol.
     let rule_name = dot_member_sym(kb, name_t)?;
-    if short_name_of(kb.resolve_sym(rule_name)) != short_name_of(kb.resolve_sym(member)) {
+    if short_name_of(kb.local_name_of(rule_name)) != short_name_of(kb.local_name_of(member)) {
         return None;
     }
     let val_pats = collect_positional_arg_value_pats(kb, args_t)?;
@@ -6976,7 +6975,7 @@ fn collect_positional_arg_value_pats(kb: &KnowledgeBase, args_t: TermId) -> Opti
     for elem in list_to_vec(kb, args_t) {
         let aargs = match kb.get_term(elem) {
             Term::Fn { functor, named_args, .. }
-                if short_name_of(kb.resolve_sym(*functor)) == "ApplyArg" =>
+                if short_name_of(kb.local_name_of(*functor)) == "ApplyArg" =>
             {
                 named_args.clone()
             }
@@ -6990,7 +6989,7 @@ fn collect_positional_arg_value_pats(kb: &KnowledgeBase, args_t: TermId) -> Opti
             Term::Ref(s) => *s,
             _ => return None,
         };
-        if short_name_of(kb.resolve_sym(name_functor)) != "none" {
+        if short_name_of(kb.local_name_of(name_functor)) != "none" {
             return None; // named arg → follow-up
         }
         out.push(get_named_arg(kb, &aargs, "value")?);
@@ -7618,7 +7617,7 @@ fn visit_type(
             let discharged = match strategy {
                 // Tier-A `by derivation`: prove inline over Γ ∪ KB under
                 // the resolver's floundering guard.
-                Some(strat) if kb.resolve_sym(strat) == "derivation" => {
+                Some(strat) if kb.local_name_of(strat) == "derivation" => {
                     prove_from_gamma(kb, &env.flow, &goal)
                 }
                 // Tier-B (external) and open obligations contribute
@@ -7956,7 +7955,7 @@ fn unroll_annotation_with_inferred(
                 if matches!(
                     extract_type(kb, &slot.1),
                     TypeExtractor::TypeVar(name)
-                        if matches!(kb.resolve_sym(name), "?" | "?_")
+                        if matches!(kb.local_name_of(name), "?" | "?_")
                 ) =>
             {
                 slot.1 = v.clone();
@@ -8400,7 +8399,7 @@ fn build_type(
             // dynamically), not a writable rule.
             // Owned: `kb` is mutated below (alloc / find_operation_in_scope),
             // so the borrowed name can't be held across it.
-            let short = short_name_of(kb.resolve_sym(member)).to_string();
+            let short = short_name_of(kb.local_name_of(member)).to_string();
             let op_sym = recv_sort.and_then(|s| {
                 // `find_operation_in_scope` reads the sort symbol from a bare
                 // `Ref(sort)` / `sort(args)` head — not the `sort_ref(name:…)`
@@ -8473,7 +8472,7 @@ fn build_type(
                 // name. (Inherits `resolve_field_type`'s contract that a given field name is
                 // the same symbol across a sort's constructors; a multi-variant short-name
                 // collision resolves via the first.)
-                let member_short = short_name_of(kb.resolve_sym(member)).to_string();
+                let member_short = short_name_of(kb.local_name_of(member)).to_string();
                 // The SAME resolution the `FieldOf` reduction runs — here only to decide
                 // that `member` names a member AT ALL. `NoSuchMember` falls through to the
                 // relation-projection mode below and then to `DotDispatchNoMatch`, exactly
@@ -8537,7 +8536,7 @@ fn build_type(
             // tuple checker's pre-check; this arm is the single-member / 1-collapse leaf.
             // Sits last: an ordinary op/field member already resolved above.
             if pos_nodes.is_empty() && named_nodes.is_empty() {
-                let member_short = short_name_of(kb.resolve_sym(member)).to_string();
+                let member_short = short_name_of(kb.local_name_of(member)).to_string();
                 if let Some(r) = build_relation_projection(
                     kb,
                     &env,
@@ -8934,10 +8933,10 @@ fn build_type(
                                         .iter()
                                         .any(|c| same_sort_canonical(kb, *c, **e))
                                 })
-                                .map(|s| kb.resolve_sym(*s).to_string())
+                                .map(|s| kb.local_name_of(*s).to_string())
                                 .collect();
                             if !missing.is_empty() {
-                                let sort_name = kb.resolve_sym(sort_sym);
+                                let sort_name = kb.local_name_of(sort_sym);
                                 result_env.diagnostics.push(format!(
                                     "non-exhaustive match on {}: missing {}",
                                     sort_name,
@@ -9248,7 +9247,7 @@ fn classify_pin_or_apply_within(
                     dict.is_some(),
                     "WI-829: cross-sort constructing tree for {} failed to emit a \
                      dispatch dict (ProjectionSyms / emit_tree_as_projection)",
-                    kb.resolve_sym(impl_op),
+                    kb.local_name_of(impl_op),
                 );
                 dict
             }
@@ -9434,7 +9433,7 @@ fn synthesize_field_access(
         .and_then(|op| {
             op.type_params
                 .iter()
-                .find(|(n, _)| short_name_of(kb.resolve_sym(*n)) == FIELD_OF_CTOR.operands[1])
+                .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == FIELD_OF_CTOR.operands[1])
                 .map(|(n, _)| *n)
         })
         .ok_or_else(|| {
@@ -9631,7 +9630,7 @@ fn normalize_variadic_capture(
         // with no reachable path today — stated plainly, because a rationale that sounds
         // reachable is worse than none: it is what stops the next reader from re-checking.
         if captured_fields.iter().any(|(prev, _)| same_label(kb, *prev, *label)) {
-            let name = short_name_of(kb.resolve_sym(*label)).to_string();
+            let name = short_name_of(kb.local_name_of(*label)).to_string();
             return Err(TypeError::Other {
                 site: std::panic::Location::caller(),
                 span: Some(occ.span.span),
@@ -9666,7 +9665,7 @@ fn normalize_variadic_capture(
     // Bind the record as the capture parameter's argument (kept named args first, the
     // record last), keyed by the capture parameter's short name so ordinary named-arg
     // matching binds it to `...args: R`.
-    let capture_short = short_name_of(kb.resolve_sym(capture_sym)).to_string();
+    let capture_short = short_name_of(kb.local_name_of(capture_sym)).to_string();
     let capture_label = kb.intern(&capture_short);
     kept_args.push((capture_label, Rc::clone(&tuple_occ)));
     kept_results.push(tuple_result);
@@ -10206,8 +10205,7 @@ fn check_apply_iter(
         // A FOREIGN sort's var contradicted through two independent bare refs
         // (§3 bullet 2: independent) is not scanned — and with the signature
         // expansion above, foreign refs no longer touch canonical vars at all.
-        let op_parent_sort = impl_parent_of_op(kb, fn_sym)
-            .filter(|p| matches!(kb.kind_of(*p), Some(crate::intern::SymbolKind::Sort)));
+        let op_parent_sort = impl_parent_sort_of_op(kb, fn_sym);
         if let Some(parent) = op_parent_sort {
             enforce_member_tie(
                 kb, &subst, parent, fn_sym, span,
@@ -11230,7 +11228,7 @@ fn check_apply_iter(
                         for short in kb.type_params_of_sort(spec_sort) {
                             if provider_bindings.as_ref().is_some_and(|binds| {
                                 binds.iter().any(|(p, v)| {
-                                    short_name_of(kb.resolve_sym(*p)) == short.as_str()
+                                    short_name_of(kb.local_name_of(*p)) == short.as_str()
                                         && type_value_is_ground(kb, *v)
                                 })
                             }) {
@@ -11665,7 +11663,7 @@ fn check_apply_iter(
                                     .to_string(),
                                 actual: format!(
                                     "named argument '{}'",
-                                    short_name_of(kb.resolve_sym(*arg_name))
+                                    short_name_of(kb.local_name_of(*arg_name))
                                 ),
                             })
                             .collect(),
@@ -11919,10 +11917,9 @@ pub(crate) fn short_name_of(qn: &str) -> &str {
 /// domain is exactly its readers' — it cannot answer a scope that is not a
 /// declaration.
 ///
-/// (The `kind_of` in those caller-side gates vs the `has_kind` in
-/// [`spec_op_parent_sort`] is a real asymmetry, but not one this touches: MEASURED,
-/// all 52 parametric sorts have `kind_of == Some(Sort)`, so it is inert. It belongs
-/// to WI-956's `kind_of`-vs-`has_kind` sweep.)
+/// (The `kind_of`-vs-`has_kind` asymmetry between those caller-side gates and
+/// [`spec_op_parent_sort`] was real, and WI-956 settled it — in `has_kind`'s favour,
+/// against a driven case. The gate now lives once, in [`impl_parent_sort_of_op`].)
 ///
 /// Note the qualified name is read via `qualified_name_of`, NOT by walking
 /// `by_qualified_name` — one symbol can be registered under several keys (`BigInt`
@@ -11932,6 +11929,45 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let qn = kb.qualified_name_of(op_sym);
     let (parent_qn, _) = qn.rsplit_once('.')?;
     kb.try_resolve_symbol(parent_qn)
+}
+
+/// WI-956 — [`impl_parent_of_op`] narrowed to the case its callers almost always
+/// mean: the SORT that declares `op_sym`, and `None` for a FREE operation (whose
+/// parent is a NAMESPACE, which declares no type parameters and owns no requirement
+/// slots). Five sites spelled this as `impl_parent_of_op(..).filter(kind is Sort)`;
+/// [`spec_op_parent_sort`] is this plus its two extra gates.
+///
+/// `has_kind`, not `kind_of`. This is the WHOLE point of the function, so state it
+/// once here rather than five times: a symbol's categories are a SET (§6.3 — an
+/// eponymous constructor IS its sort), and `kind_of` reports only the FIRST-declared
+/// one. The two answers differ, and DRIVEN, not argued:
+///
+/// ```text
+/// entity Rec(n: Int64)          -- §6.3 sugar: registers Rec as Entity, then Sort
+/// sort Rec                      -- the same name, now with a body
+///   sort T = ?
+///   operation peek(x: T) -> T
+/// end
+/// ```
+///
+/// loads clean, and `Rec` comes out `kinds = [Entity, Sort]` with
+/// `type_params_of_sort(Rec) == ["T"]`. Under `kind_of` the gate answers "not a sort"
+/// and `call_bracket_scopes(peek)` returned `[]` — the sort's own `T` silently
+/// missing from the bracket scopes, so `peek[T = …]` could not name it. The same
+/// misread dropped the parent in [`rigidify_op_type_params`], the WI-374 member tie,
+/// [`names_any_requirement_slot`] and [`callee_requirement_slots`]. Write the two
+/// declarations the other way round and everything works, which is precisely the
+/// source-order sensitivity `kind_of`'s own doc warns against.
+///
+/// Inert on today's libraries, and that is worth writing down rather than leaving as
+/// a green suite: MEASURED over stdlib + anthill-stl (2598 symbols), 64 sorts are
+/// invisible to `kind_of` — all 64 from the top-level `entity X(…)` sugar, whose
+/// desugared body is that one entity — and 0 of them carries a type param, a named
+/// requirement slot or a `requires` chain, so 0 of the 373 operations has such a
+/// parent. It takes the re-declaration above to build one.
+pub(crate) fn impl_parent_sort_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    impl_parent_of_op(kb, op_sym)
+        .filter(|p| kb.has_kind(*p, crate::intern::SymbolKind::Sort))
 }
 
 /// WI-565: the sorts that declare a MEMBER operation whose SHORT name equals that
@@ -11949,7 +11985,7 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
 /// WI-898 widened "member" from an OPERATION to an operation OR an equation functor,
 /// and split off `dot_dispatchable` because the two do not answer the same remedies.
 fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> BareMemberCandidates {
-    let short = kb.resolve_sym(fn_sym).to_string();
+    let short = kb.local_name_of(fn_sym).to_string();
     // Keyed by the owning sort's qualified name: dedups interned copies and yields
     // the sorts in a deterministic (qualified-name) order via `into_values`.
     let mut by_qn: std::collections::BTreeMap<String, Symbol> = std::collections::BTreeMap::new();
@@ -11975,7 +12011,11 @@ fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> BareMembe
         let Some(parent_sym) = kb.try_resolve_symbol(parent_qn) else {
             continue;
         };
-        if kb.kind_of(parent_sym) != Some(crate::intern::SymbolKind::Sort) {
+        // `has_kind` here for the same reason as the `is_op` test just above, and
+        // WI-956 makes it the same reason at both ends: a §6.3 sort whose ENTITY role
+        // registered first still declares members, and dropping it here drops the sort
+        // this diagnostic exists to NAME — the author is told nothing owns the member.
+        if !kb.has_kind(parent_sym, crate::intern::SymbolKind::Sort) {
             continue;
         }
         // Only an OPERATION answers `receiver.member(…)`: dot dispatch selects a
@@ -12576,7 +12616,7 @@ fn explain_dep_refusal(
             if matches!(sigma_class_terminal(kb, ctx, *v), Some((_, false))) {
                 unconstrained.push(format!(
                     "`{} = {}`",
-                    kb.resolve_sym(*k),
+                    kb.local_name_of(*k),
                     format_term_for_goal(kb, *v),
                 ));
             }
@@ -13496,7 +13536,7 @@ fn canonical_global_var(
 /// ACCORDING TO HOW IT WAS WRITTEN, and this is the one function that knows which:
 ///
 ///   * an `alias`-form declaration → its `SortAlias` fact, matched on EXACT symbol
-///     identity ([`sort_alias_exact`]). `sort T = ?` and the WI-452 marked structured
+///     identity ([`resolve_sort_alias`]). `sort T = ?` and the WI-452 marked structured
 ///     param are the sort-body cases — but NOT only those: WI-402's existential carrier
 ///     (`-> C ensures Spec[C, …]`, `build_existential_return`) registers `C` this way in
 ///     the OP's own scope. So "declared by an operation" does not imply the second
@@ -13507,9 +13547,11 @@ fn canonical_global_var(
 ///     variable, distinct from any same-named outer SortAlias") — which is why this
 ///     channel had to be taught, not derived.
 ///
-/// [`sort_alias_by_name`] is consulted LAST, for the legacy callers [`resolve_sort_alias`]
-/// documents. It is a NAME-DIRECTED GUESS, and a bracket parameter used to reach it and be
-/// answered with an unrelated sort's var — see the ticket for the measurement.
+/// THE TWO RUNGS ARE NOW THE WHOLE LADDER. A third ran last — the name-directed
+/// `sort_alias_by_name` — and it is exactly what WI-943 measured going wrong here: a
+/// bracket parameter fell through to it and was answered with an unrelated sort's var.
+/// WI-943 fixed that by adding the second rung above; WI-956 deleted the third, so this
+/// reader can no longer answer with a variable that belongs to some other declaration.
 ///
 /// `pub` so a test can drive the invariant this function owns: that its answer and the
 /// declaration's own are the SAME variable. Agreement is only assertable if both sides
@@ -13519,10 +13561,9 @@ pub fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
         Term::Var(Var::Global(v)) => Some(*v),
         _ => None,
     };
-    sort_alias_exact(kb, sym)
+    resolve_sort_alias(kb, sym)
         .and_then(as_global)
         .or_else(|| op_declared_type_param_var(kb, sym))
-        .or_else(|| sort_alias_by_name(kb, sym).and_then(as_global))
 }
 
 /// WI-943 — the var an operation declares for `sym` in its BRACKET, when `sym` is the
@@ -13544,7 +13585,7 @@ pub fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
 /// which can be in `type_params`. Without it every one of those reaches
 /// [`op_info::declared_type_param_var`], whose pre-`build_op_signatures` tier is a scan of
 /// every `OperationInfo` fact in the KB — a fallback-on-miss driven by a SPECULATIVE
-/// caller, which is exactly what [`sort_alias_exact`] refuses for the same reason. The
+/// caller, which is exactly what [`resolve_sort_alias`] refuses for the same reason. The
 /// gate reads the very set `scan_operation_params` fills (`add_type_param` on the op
 /// scope), so it admits precisely the declared parameters.
 fn op_declared_type_param_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
@@ -13555,7 +13596,7 @@ fn op_declared_type_param_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> 
     if !kb.has_kind(owner, crate::intern::SymbolKind::Operation) {
         return None;
     }
-    super::op_info::declared_type_param_var(kb, owner, kb.resolve_sym(sym))?.as_global()
+    super::op_info::declared_type_param_var(kb, owner, kb.local_name_of(sym))?.as_global()
 }
 
 /// WI-857 — the functor a dictionary slot carries when its goal did not resolve
@@ -13576,12 +13617,12 @@ pub(crate) fn no_provider_sym(kb: &mut KnowledgeBase) -> Symbol {
 /// True iff `sym` is the [`no_provider_sym`] marker. By NAME, because this reader
 /// holds only a shared `kb` and cannot intern — and it IS on the per-dispatch path
 /// (via [`marker_refusal`] ← `resolve_op_target_checked` ← every dict-threaded
-/// dispatch). The cost is one `resolve_sym` plus a 26-byte compare that
+/// dispatch). The cost is one `local_name_of` plus a 26-byte compare that
 /// short-circuits on length for nearly every call; making it a `Symbol` compare needs
 /// the marker cached where a `&KnowledgeBase` reader can see it (a KB well-known
 /// slot), which the interpreter's `fields.no_provider` does only for eval.
 pub(crate) fn is_no_provider(kb: &KnowledgeBase, sym: Symbol) -> bool {
-    kb.resolve_sym(sym) == NO_PROVIDER_NAME
+    kb.local_name_of(sym) == NO_PROVIDER_NAME
 }
 
 const NO_PROVIDER_NAME: &str = "anthill.reflect.NoProvider";
@@ -13854,7 +13895,7 @@ pub(crate) fn resolve_bridge_requirements(
         let all_pinned = spec_tparams.iter().all(|tp| {
             goal.bindings
                 .iter()
-                .any(|(k, v)| kb.resolve_sym(*k) == tp && type_value_is_ground(kb, *v))
+                .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
         });
         if !all_pinned {
             return BridgeRequirements::Unresolvable {
@@ -14155,7 +14196,7 @@ fn op_scoped_type_param_symbol(
     op_scope_raw: u32,
     declared: Symbol,
 ) -> Symbol {
-    let short = kb.resolve_sym(declared).to_string();
+    let short = kb.local_name_of(declared).to_string();
     if !kb.symbols.is_type_param(op_scope_raw, &short) {
         return declared;
     }
@@ -14393,14 +14434,11 @@ fn selections_from_slot_bindings(
 /// fourth spelling of it is how the parent's KIND GATE goes missing: the other two
 /// that resolve a parent require it to be a `Sort`, because a FREE operation's "parent"
 /// is its NAMESPACE. That changes nothing today — a namespace's slot index is empty —
-/// which is exactly why the drift would be silent, and why
-/// [`callee_requirement_slots`] states the same reason at its own gate.
+/// which is exactly why the drift would be silent. WI-956 made the gate itself one
+/// function ([`impl_parent_sort_of_op`]), so there is no longer a spelling to drift.
 fn names_any_requirement_slot(kb: &KnowledgeBase, fn_sym: Symbol) -> bool {
     let owns = |owner: Symbol| !kb.named_requirement_slots(owner).is_empty();
-    owns(fn_sym)
-        || impl_parent_of_op(kb, fn_sym)
-            .filter(|p| kb.kind_of(*p) == Some(crate::intern::SymbolKind::Sort))
-            .is_some_and(owns)
+    owns(fn_sym) || impl_parent_sort_of_op(kb, fn_sym).is_some_and(owns)
 }
 
 /// WI-841 (058 §4.1 tier 1) — the witness the CALL SITE selected for `spec`, if any.
@@ -14476,10 +14514,9 @@ fn call_bracket_scopes(
     fn_sym: Symbol,
 ) -> Vec<(Symbol, Var)> {
     let mut declared = op.type_params.clone();
-    let Some(parent) = impl_parent_of_op(kb, fn_sym) else { return declared };
-    if kb.kind_of(parent) != Some(crate::intern::SymbolKind::Sort) {
-        return declared;
-    }
+    // WI-956: the kind gate is `impl_parent_sort_of_op`'s — under `kind_of` a sort
+    // whose Entity role registered first lost its params here, silently.
+    let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) else { return declared };
     // Read out of the memo first: `kb.intern` below needs `&mut kb`, and the pairs are
     // an owned `Rc` snapshot, so nothing borrows `kb` across the loop.
     let pairs: Vec<(String, Var)> = sort_type_params_as_pairs(kb, parent)
@@ -14553,9 +14590,8 @@ fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -> Vec<Calle
     // NAMESPACE. Its requires/named-slot indexes happen to be empty today, so the gate
     // changes nothing — but two functions written against the SAME call disagreeing
     // about what that symbol is, is how a later index turns into a silent wrong list.
-    if let Some(parent) = impl_parent_of_op(kb, fn_sym)
-        .filter(|p| kb.kind_of(*p) == Some(crate::intern::SymbolKind::Sort))
-    {
+    // WI-956: it is now literally the same gate, `impl_parent_sort_of_op`.
+    if let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) {
         let sort_entries = direct_requires_chain(kb, parent);
         push_slots(kb, parent, sort_entries, CalleeSlotSource::SortRequires, &mut out);
         // The spec-op's own dispatch target. Only for a BODY-LESS spec op: a member
@@ -14820,7 +14856,7 @@ fn resolve_call_type_arg_targets(
         }
         // Rung 2. A QUALIFIED key is not a slot name — it is refused below with the
         // rung-1 message, which is what it already gets today.
-        let written = kb.resolve_sym(*name_sym);
+        let written = kb.local_name_of(*name_sym);
         let matched: Vec<Symbol> = if written.contains('.') {
             Vec::new()
         } else {
@@ -15093,7 +15129,7 @@ fn goal_from_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
         let unbound: Vec<String> = kb
             .type_params_of_sort(entry.required_sort)
             .into_iter()
-            .filter(|p| !bindings.iter().any(|(k, _)| kb.resolve_sym(*k) == p))
+            .filter(|p| !bindings.iter().any(|(k, _)| kb.local_name_of(*k) == p))
             .collect();
         // ABORT, never skip: `zip` pairs by POSITION, so dropping an unreadable
         // positional would shift every later value onto the wrong parameter name and
@@ -15203,12 +15239,10 @@ fn check_unconstrained_type_params(
 ///
 /// WI-958 — and THE one reader of "the parametric sort that declares this op":
 /// [`self_receiver_spec_sort`] is this plus a self-receiver gate, so the two cannot
-/// disagree about which sorts are spec sorts. The owner itself comes from
-/// [`impl_parent_of_op`]; only the two gates are stated here.
-///
-/// `has_kind`, not `kind_of`: a symbol's categories are a SET (§6.3 — an eponymous
-/// constructor IS its sort), and the question is whether the parent PLAYS the sort
-/// role, not which keyword registered first.
+/// disagree about which sorts are spec sorts. The owner AND its kind gate come from
+/// [`impl_parent_sort_of_op`] (WI-956, which took that gate's `has_kind` — stated
+/// there — and gave it to this reader's four siblings); only the PARAMETRIC gate is
+/// stated here.
 ///
 /// The kind gate is NOT subsumed by the parametric one, though on today's surface
 /// it never fires: `add_type_param`'s two surface sites are gated on
@@ -15219,12 +15253,7 @@ fn check_unconstrained_type_params(
 /// so the parametric gate alone states "some scope with brackets", which is not the
 /// question either caller asks.
 pub(crate) fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
-    use crate::intern::SymbolKind;
-
-    let parent_sym = impl_parent_of_op(kb, op_sym)?;
-    if !kb.has_kind(parent_sym, SymbolKind::Sort) {
-        return None;
-    }
+    let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
     if kb.type_params_of_sort(parent_sym).is_empty() {
         return None;
     }
@@ -15709,7 +15738,7 @@ fn entry_type_param_bindings(
     };
     let mut out: SmallVec<[(TermId, TermId); 2]> = SmallVec::new();
     for (binding_short_sym, entry_value) in &bindings {
-        let binding_short = kb.resolve_sym(*binding_short_sym);
+        let binding_short = kb.local_name_of(*binding_short_sym);
         let param_qn = format!("{spec_qn}.{binding_short}");
         let Some(param_qn_sym) = kb.try_resolve_symbol(&param_qn) else { continue };
         let Some(alias_target) = resolve_sort_alias(kb, param_qn_sym) else { continue };
@@ -16922,7 +16951,7 @@ fn collect_provides_candidates(
         let mut all_match = true;
         let mut resolved_head_bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         for (binding_short, candidate_value) in &view_bindings {
-            let short_name = kb.resolve_sym(*binding_short);
+            let short_name = kb.local_name_of(*binding_short);
             if !type_param_names.iter().any(|n| n == short_name) {
                 // Op-binding (auto-bound `eq`/`neq`/…) — doesn't drive
                 // dispatch.
@@ -16952,7 +16981,7 @@ fn collect_provides_candidates(
                     //    else every concrete `Eq` impl would match a bare `Eq` goal (a
                     //    coherence violation: wi325 / wi237); WI-357's pre-dispatch
                     //    element re-walk owns the self-receiver element threading.
-                    let param_name = kb.resolve_sym(*binding_short).to_string();
+                    let param_name = kb.local_name_of(*binding_short).to_string();
                     if sort_param_is_effect_row(kb, goal.spec_sort, &param_name) {
                         continue;
                     }
@@ -17073,10 +17102,10 @@ fn goal_binding_value(kb: &KnowledgeBase, goal: &SortGoal, short: Symbol) -> Opt
     if let Some(v) = goal.bindings.iter().find(|(k, _)| *k == short).map(|(_, v)| *v) {
         return Some(v);
     }
-    let name = kb.resolve_sym(short);
+    let name = kb.local_name_of(short);
     goal.bindings
         .iter()
-        .find(|(k, _)| kb.resolve_sym(*k) == name)
+        .find(|(k, _)| kb.local_name_of(*k) == name)
         .map(|(_, v)| *v)
 }
 
@@ -17261,10 +17290,10 @@ fn match_candidate_against_goal(
             if kb.canonical_sort_sym(p_base) == kb.canonical_sort_sym(impl_sort) {
                 let mut aligned = false;
                 for (p_key, p_val) in &p_bindings {
-                    let p_short = short_name_of(kb.resolve_sym(*p_key));
+                    let p_short = short_name_of(kb.local_name_of(*p_key));
                     let Some(ip) = impl_params
                         .iter()
-                        .find(|ip| short_name_of(kb.resolve_sym(**ip)) == p_short)
+                        .find(|ip| short_name_of(kb.local_name_of(**ip)) == p_short)
                     else {
                         continue;
                     };
@@ -17869,7 +17898,7 @@ fn dict_sub_goals(
         // (`Ordered requires Eq[T]` stores the value as `Eq`'s OWN `T`).
         let sigma: SmallVec<[(String, TermId); 2]> = head_bindings
             .iter()
-            .map(|(k, v)| (kb.resolve_sym(*k).to_string(), *v))
+            .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
             .collect();
         out.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma));
     }
@@ -18049,7 +18078,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             // Named bindings (`F = Float`, `C = List[T]`).
             for (k, v) in &named_args {
                 if is_type_param_binding(kb, *k, &spec_qn) {
-                    sigma.push((kb.resolve_sym(*k).to_string(), *v));
+                    sigma.push((kb.local_name_of(*k).to_string(), *v));
                 }
             }
             // Positional bindings (`VectorSpace[Vec3, Float]`): `unwrap_spec_view`
@@ -18322,7 +18351,7 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
         let sigma: SmallVec<[(String, TermId); 2]> = site
             .bindings
             .iter()
-            .map(|(k, v)| (kb.resolve_sym(*k).to_string(), *v))
+            .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
             .collect();
         // Base's `requires` clauses, both σ-substituted (`Map[K=Float]` ⇒ `Eq[T =
         // Float]`) and RAW. The raw pass names the parameter the diagnostic must
@@ -18381,9 +18410,9 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
                     .and_then(|raw| requires_bare_name_sym(kb, raw))
                     // Accept the raw name only when it is the one σ actually
                     // substituted — the SAME comparison `map_requires_name` makes
-                    // (bare `resolve_sym` against the σ key), so the parameter
+                    // (bare `local_name_of` against the σ key), so the parameter
                     // reported is exactly the parameter that carried the carrier in.
-                    .filter(|s| sigma.iter().any(|(n, _)| n == kb.resolve_sym(*s)))
+                    .filter(|s| sigma.iter().any(|(n, _)| n == kb.local_name_of(*s)))
                     .unwrap_or(*key);
                 if seen.insert((
                     kb.canonical_sort_sym(base),
@@ -18393,7 +18422,7 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
                 )) {
                     let err = LoadError::NonEqKeyRequiresLawfulEq {
                         container: kb.qualified_name_of(base).to_string(),
-                        param: kb.resolve_sym(param).to_string(),
+                        param: kb.local_name_of(param).to_string(),
                         spec: kb.qualified_name_of(goal.spec_sort).to_string(),
                         carrier: kb.qualified_name_of(carrier).to_string(),
                         span: Some(site_span.span),
@@ -18754,10 +18783,10 @@ fn check_provision_binding_agreement(
         // right: they name one application by having no application to differ in.
         let carrier_param = sort_type_params_as_pairs(kb, *spec)
             .first()
-            .map(|(sym, _)| short_name_of(kb.resolve_sym(*sym)));
+            .map(|(sym, _)| short_name_of(kb.local_name_of(*sym)));
         let binding_of = |view: &SmallVec<[(Symbol, TermId); 2]>, short: &str| {
             view.iter()
-                .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
+                .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
                 .map(|(_, v)| *v)
         };
         // Bucket by the carrier-param binding: one bucket per APPLICATION.
@@ -18781,11 +18810,11 @@ fn check_provision_binding_agreement(
             }
             // Per PARAM SHORT NAME, because a param resolved in two import scopes can
             // carry two Symbols for one spec parameter — the same reason the readers
-            // compare `short_name_of(resolve_sym(param))`.
+            // compare `short_name_of(local_name_of(param))`.
             let mut seen: Vec<(&str, SmallVec<[TermId; 2]>)> = Vec::new();
             for view in bucket {
                 for (param, value) in view.iter() {
-                    let short = short_name_of(kb.resolve_sym(*param));
+                    let short = short_name_of(kb.local_name_of(*param));
                     match seen.iter_mut().find(|(s, _)| *s == short) {
                         Some((_, vals)) => {
                             if !vals.iter().any(|v| provision_bindings_agree(kb, *v, *value)) {
@@ -18945,11 +18974,11 @@ fn provision_carrier_sort(
 ) -> Option<Symbol> {
     let params = sort_type_params_as_pairs(kb, spec_sort);
     let carrier_param = params.first()?.0;
-    let carrier_short = short_name_of(kb.resolve_sym(carrier_param));
+    let carrier_short = short_name_of(kb.local_name_of(carrier_param));
     let (_, bindings) = unwrap_spec_view_value(kb, spec_view)?;
     let val = bindings
         .iter()
-        .find_map(|(k, v)| (short_name_of(kb.resolve_sym(*k)) == carrier_short).then_some(*v))?;
+        .find_map(|(k, v)| (short_name_of(kb.local_name_of(*k)) == carrier_short).then_some(*v))?;
     super::load::provides_spec_base_sym(kb, val).filter(|&s| {
         matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
             || kb.is_free_standing_entity(s)
@@ -19190,7 +19219,7 @@ fn provision_supplier(
     spec_t: TermId,
     bindings: &[(Symbol, TermId)],
 ) -> Option<(Symbol, SpecOpSupplier)> {
-    let op_short = kb.resolve_sym(op_short_sym);
+    let op_short = kb.local_name_of(op_short_sym);
     // KIND 2 — WITNESS SORT (WI-450): the dispatch carrier is what the provision
     // binds to the spec's carrier param, not the provider. `witness_dispatch_carrier`
     // is the ONE owner of what counts as a witness, shared with the load-time
@@ -19595,7 +19624,7 @@ fn map_requires_name(
     orig: TermId,
     sigma: &[(String, TermId)],
 ) -> TermId {
-    let short = kb.resolve_sym(s);
+    let short = kb.local_name_of(s);
     sigma.iter().find(|(n, _)| n == short).map_or(orig, |(_, val)| *val)
 }
 
@@ -19640,10 +19669,10 @@ fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bo
 /// different `Symbol` copy (resolved in the fact's scope), against which
 /// `substitute_impl_params_alloc`'s `Symbol`-equality match is a silent no-op.
 fn type_param_sym_of_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> Option<Symbol> {
-    // `resolve_sym` borrows from `kb`, which is only read here — no `to_string()`
+    // `local_name_of` borrows from `kb`, which is only read here — no `to_string()`
     // needed to build the qualified name (this runs per binding key, per cover
     // walk, on the dispatch path).
-    let qn = format!("{spec_qn}.{}", kb.resolve_sym(short));
+    let qn = format!("{spec_qn}.{}", kb.local_name_of(short));
     let s = kb.try_resolve_symbol(&qn)?;
     resolve_sort_alias(kb, s).map(|_| s)
 }
@@ -20233,7 +20262,7 @@ fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
                 out.push_str(", ");
             }
             first = false;
-            out.push_str(kb.resolve_sym(*k));
+            out.push_str(kb.local_name_of(*k));
             out.push_str(" = ");
             out.push_str(&format_term_for_goal(kb, *v));
         }
@@ -20263,7 +20292,7 @@ fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
                 for (k, v) in named_args.iter() {
                     if !first { s.push_str(", "); }
                     first = false;
-                    s.push_str(kb.resolve_sym(*k));
+                    s.push_str(kb.local_name_of(*k));
                     s.push_str(" = ");
                     s.push_str(&format_term_for_goal(kb, *v));
                 }
@@ -21171,7 +21200,7 @@ fn bind_spec_params_from_carrier_param(
                     .or_else(|| {
                         let arg_sym = recv_arg_sym?;
                         let param_sym = typaram_occurrence_sym(kb, carrier_value)?;
-                        let member_name = short_name_of(kb.resolve_sym(param_sym)).to_owned();
+                        let member_name = short_name_of(kb.local_name_of(param_sym)).to_owned();
                         // Positively verify the row is UNWRITTEN on the receiver, not merely
                         // absent from the Term-only `recv_bindings`: a WRITTEN Node-carried
                         // row (`Stream[E = {Modify[x]}]`) is dropped by
@@ -21492,8 +21521,8 @@ fn provider_spec_view_bindings(
             // than a new third one.
             Some(view) => {
                 for (param, value) in bindings {
-                    let short = short_name_of(kb.resolve_sym(param));
-                    if !view.iter().any(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short) {
+                    let short = short_name_of(kb.local_name_of(param));
+                    if !view.iter().any(|(p, _)| short_name_of(kb.local_name_of(*p)) == short) {
                         view.push((param, value));
                     }
                 }
@@ -21684,7 +21713,7 @@ fn typaram_ref_vid(kb: &KnowledgeBase, tid: TermId, owner_sort: Symbol) -> Optio
 /// separate short-name provision lookup — not the WI-600 identity-keyed param
 /// match, which now goes through [`typaram_ref_vid`]).
 fn typaram_ref_short_name(kb: &KnowledgeBase, tid: TermId) -> Option<String> {
-    typaram_occurrence_sym(kb, tid).map(|s| short_name_of(kb.resolve_sym(s)).to_string())
+    typaram_occurrence_sym(kb, tid).map(|s| short_name_of(kb.local_name_of(s)).to_string())
 }
 
 /// WI-210/WI-224 — find the unique impl operation symbol for a spec-op
@@ -22737,7 +22766,7 @@ fn named_arg_coverage_errors(
                 expected: "a named argument matching a distinct unbound parameter".to_string(),
                 actual: format!(
                     "named argument '{}' {}",
-                    short_name_of(kb.resolve_sym(*arg_name)),
+                    short_name_of(kb.local_name_of(*arg_name)),
                     reason
                 ),
             });
@@ -23042,7 +23071,7 @@ fn signature_self_contradiction_error(
             context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
             expected: format!(
                 "callback parameter `{}` of `{}` to have a consistent effect row",
-                kb.resolve_sym(param_sym),
+                kb.local_name_of(param_sym),
                 op_qn,
             ),
             actual: format!(
@@ -23189,7 +23218,7 @@ fn validate_callback_effect_row(
                 context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
                 expected: format!(
                     "callback for parameter `{}` of `{}` to lack `{}` (its `-…` lacks-constraint)",
-                    kb.resolve_sym(param_sym),
+                    kb.local_name_of(param_sym),
                     kb.qualified_name_of(fn_sym),
                     type_display_name_value(kb, viol),
                 ),
@@ -23210,7 +23239,7 @@ fn validate_callback_effect_row(
                 context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
                 expected: format!(
                     "callback effects admitted by parameter `{}` of `{}` (a closed row)",
-                    kb.resolve_sym(param_sym),
+                    kb.local_name_of(param_sym),
                     kb.qualified_name_of(fn_sym),
                 ),
                 actual: format!(
@@ -23496,7 +23525,7 @@ fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) 
         }
         if let Some(v) = spec_binding_value(kb, &entry.spec, "Effects") {
             if let Some(head) = spec_binding_head_sym(kb, v) {
-                if short_name_of(kb.resolve_sym(head)) == member {
+                if short_name_of(kb.local_name_of(head)) == member {
                     return true;
                 }
             }
@@ -23565,7 +23594,7 @@ fn bare_spec_arg_self_projection(
         // Member interned from the binding's SHORT name (`Stream.E` ⟹ `E`) so the
         // formed `s.E` matches the source-written projection (loaded via the same
         // short intern in `try_expr_carried_projection`).
-        let member_short = short_name_of(kb.resolve_sym(*field_key)).to_owned();
+        let member_short = short_name_of(kb.local_name_of(*field_key)).to_owned();
         let member_sym = kb.intern(&member_short);
         let recv_term = kb.alloc(Term::Ref(recv));
         let proj = kb.make_expr_carried(recv_term, member_sym);
@@ -23630,7 +23659,7 @@ fn carrier_provision_short_bindings(
     }
     let params = sort_type_params_as_pairs(kb, spec);
     let (carrier_param, _) = params.first()?;
-    if short_name_of(kb.resolve_sym(*carrier_param)) != arg_carrier {
+    if short_name_of(kb.local_name_of(*carrier_param)) != arg_carrier {
         return None;
     }
     let rigids = env.enclosing_instance_param_rigids().to_vec();
@@ -23646,7 +23675,7 @@ fn carrier_provision_short_bindings(
                         .unwrap_or(*t),
                     _ => *t,
                 };
-                (short_name_of(kb.resolve_sym(*p)).to_owned(), Value::term(val))
+                (short_name_of(kb.local_name_of(*p)).to_owned(), Value::term(val))
             })
             .collect(),
     )
@@ -23706,7 +23735,7 @@ fn carrier_arg_provision_projection(
     let base_ref = kb.make_sort_ref(field_base);
     let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
     for (field_key, _) in &bindings {
-        let member_short = short_name_of(kb.resolve_sym(*field_key)).to_owned();
+        let member_short = short_name_of(kb.local_name_of(*field_key)).to_owned();
         let val = provision.iter().find(|(s, _)| *s == member_short).map(|(_, v)| v.clone())?;
         // An EFFECT-ROW param threads as a single-label row (`{c.E}`), matching the
         // source-written provision; a SORT param threads the bare value. A value
@@ -24116,7 +24145,7 @@ fn function_spec_parts<'b>(
         return None;
     }
     let find = |name: &str| {
-        bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == name).map(|(_, v)| v)
+        bindings.iter().find(|(p, _)| kb.local_name_of(*p) == name).map(|(_, v)| v)
     };
     let result = find("B")?;
     Some((find("A"), result, find("E")))
@@ -24512,7 +24541,7 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
             // keeps the row-tail visible to downstream readers.
             Term::Var(_) => out.push(node),
             Term::Fn { functor, named_args, .. } => {
-                let name = kb.resolve_sym(*functor);
+                let name = kb.local_name_of(*functor);
                 match name {
                     "empty_row" => {}
                     "present" => {
@@ -24565,7 +24594,7 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
             // WI-511: a 0-ary effect constructor (`empty_row`) is stored as the
             // canonical `Ref` form after the alloc flip; the closed empty row
             // carries no atoms — same as the `Fn{empty_row}` arm above.
-            Term::Ref(s) if kb.resolve_sym(*s) == "empty_row" => {}
+            Term::Ref(s) if kb.local_name_of(*s) == "empty_row" => {}
             // Term::Ref / Const / Ident / Bottom inside an EffectExpression
             // are ill-typed — surface in dev, ignore in release.
             _ => {
@@ -24952,7 +24981,7 @@ fn extract_pattern_var_name(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
 pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param: &str) -> Option<Value> {
     if let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) {
         bindings.into_iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == param)
+            .find(|(s, _)| kb.local_name_of(*s) == param)
             .map(|(_, v)| v)
     } else {
         None
@@ -25499,7 +25528,7 @@ fn resolve_compound_projection(
 ) -> Result<ProjResult, TypeError> {
     let (recv_ty, recv_decl_sort) =
         resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
-    let member_str = kb.resolve_sym(member).to_owned();
+    let member_str = kb.local_name_of(member).to_owned();
     project_type_member(kb, &recv_ty, &member_str, recv_decl_sort, ctx, span)
 }
 
@@ -25526,7 +25555,7 @@ fn resolve_receiver_path_type(
         let ty = arg_types.get(&head).cloned().ok_or_else(|| {
             projection_type_error(ctx, span, &format!(
                 "type projection receiver '{}' is not an argument-bound parameter of this call",
-                kb.resolve_sym(head),
+                kb.local_name_of(head),
             ))
         })?;
         return Ok((ty, None));
@@ -25600,7 +25629,7 @@ fn resolve_field_type(
     let sort_sym = sort_functor_of_view(kb, recv_ty).ok_or_else(|| {
         projection_type_error(ctx, span, &format!(
             "cannot access field '{}' on a receiver with no concrete sort",
-            kb.resolve_sym(field_sym),
+            kb.local_name_of(field_sym),
         ))
     })?;
     // The receiver's type-arg substitution is the same for every constructor.
@@ -25634,7 +25663,7 @@ fn resolve_field_type(
                 return Err(projection_type_error(ctx, span, &format!(
                     "field '{}' is declared with differing types across the constructors of \
                      '{}'; a compound projection off it is ambiguous",
-                    kb.resolve_sym(field_sym),
+                    kb.local_name_of(field_sym),
                     kb.qualified_name_of(sort_sym).to_owned(),
                 )));
             }
@@ -25643,7 +25672,7 @@ fn resolve_field_type(
     let resolved = resolved.ok_or_else(|| projection_type_error(ctx, span, &format!(
         "type '{}' has no field '{}'",
         kb.qualified_name_of(sort_sym).to_owned(),
-        kb.resolve_sym(field_sym),
+        kb.local_name_of(field_sym),
     )))?;
     // The field's resolved type is an ABSTRACT type-parameter of `sort_sym` (an unbound
     // `sort P = ?` left as a logic var, not a concrete sort / arrow / tuple) iff it is a
@@ -25705,11 +25734,11 @@ fn eliminate_expr_carried_projection(
         None => {
             return Err(projection_type_error(ctx, span, &format!(
                 "type projection receiver '{}' is not an argument-bound parameter of this call",
-                kb.resolve_sym(receiver),
+                kb.local_name_of(receiver),
             )));
         }
     };
-    let member_str = kb.resolve_sym(member).to_owned();
+    let member_str = kb.local_name_of(member).to_owned();
     // Single-ref receiver: the arg's inferred type (a concrete sort, or a bound
     // type-param). No abstract-type-param declaring sort is in hand here (that arises
     // only on the compound field-projection path) — `None`.
@@ -26016,7 +26045,7 @@ fn project_via_provided_spec(
             continue;
         };
         let Some((_, carrier_val)) =
-            bindings.iter().find(|(p, _)| kb.resolve_sym(*p) == member).copied()
+            bindings.iter().find(|(p, _)| kb.local_name_of(*p) == member).copied()
         else {
             continue;
         };
@@ -26095,7 +26124,7 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
     }
     match clause.head(kb) {
         ViewHead::Functor { functor: Some(f), pos_arity, .. }
-            if kb.resolve_sym(f) == "conjunction" =>
+            if kb.local_name_of(f) == "conjunction" =>
         {
             for i in 0..pos_arity {
                 if let Some(child) = clause.pos_arg(kb, i) {
@@ -26115,7 +26144,7 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
 /// WI-662: the ground `TermId` walk under [`push_op_requires_clause`].
 fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<RequiresEntry>) {
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "conjunction" => {
+        Term::Fn { functor, pos_args, .. } if kb.local_name_of(*functor) == "conjunction" => {
             let conjuncts: Vec<TermId> = pos_args.iter().copied().collect();
             for c in conjuncts {
                 push_op_requires_clause_term(kb, c, out);
@@ -26155,7 +26184,7 @@ fn resolve_rigid_projection(
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
-    let member_str = kb.resolve_sym(member).to_owned();
+    let member_str = kb.local_name_of(member).to_owned();
     let Value::Term { id: subject_term, .. } = subject else {
         return Err(projection_type_error(ctx, span,
             "rigid type projection subject is not a sort / type-parameter reference"));
@@ -26175,7 +26204,7 @@ fn resolve_rigid_projection(
                 ProjResult::Grounded(v) => Ok(ProjResult::Grounded(v)),
                 ProjResult::Neutral => {
                     let sort_name = kb.qualified_name_of(subject_sym).to_owned();
-                    let short = kb.resolve_sym(subject_sym).to_owned();
+                    let short = kb.local_name_of(subject_sym).to_owned();
                     Err(projection_type_error(ctx, span, &format!(
                         "'{short}.{member_str}' is not manifest: '{sort_name}' declares \
                          '{member_str}' but does not bind it — a projection off the spec sort \
@@ -26384,12 +26413,12 @@ fn spec_binding_value(kb: &KnowledgeBase, spec: &Value, member: &str) -> Option<
     // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
     if let Value::Term { id, .. } = spec {
         let Term::Fn { named_args, .. } = kb.get_term(*id) else { return None };
-        return named_args.iter().find(|(p, _)| kb.resolve_sym(*p) == member).map(|(_, v)| *v);
+        return named_args.iter().find(|(p, _)| kb.local_name_of(*p) == member).map(|(_, v)| *v);
     }
     // Denoted spec — the member's binding via TermView, when it is a ground term.
     // A denoted binding value has no `TermId`; callers treat `None` as "not a
     // projectable member" (the deferred parametric-effect boundary).
-    let key = spec.named_keys(kb).into_iter().find(|k| kb.resolve_sym(*k) == member)?;
+    let key = spec.named_keys(kb).into_iter().find(|k| kb.local_name_of(*k) == member)?;
     spec.named_arg(kb, key).and_then(|it| it.as_term_id())
 }
 
@@ -26547,7 +26576,7 @@ fn type_param_vid_in_sort(
     param_sym: Symbol,
 ) -> Option<crate::kb::term::VarId> {
     let qualified_sym =
-        qualified_type_param_sym(kb, parent_sort, kb.resolve_sym(param_sym))?;
+        qualified_type_param_sym(kb, parent_sort, kb.local_name_of(param_sym))?;
     type_param_global_var(kb, qualified_sym)
 }
 
@@ -27651,7 +27680,7 @@ fn resolved_functor_name<'a>(kb: &'a KnowledgeBase, r: &impl TermView) -> Option
     // symbol off either spelling (`functor_sym` accepts both `Functor` and
     // `Ref`), so a 0-ary EffectExpression / reflect constructor canonicalized to
     // the bare `Ref` (`empty_row`, `wildcard`, …) is still recognized by name.
-    r.head(kb).functor_sym().map(|sym| kb.resolve_sym(sym))
+    r.head(kb).functor_sym().map(|sym| kb.local_name_of(sym))
 }
 
 /// WI-342 P3: unify two `denoted` types by their carried value. For the value
@@ -27956,7 +27985,7 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
         let qualified = format!(
             "{}.{}",
             kb.qualified_name_of(pbase_sym),
-            kb.resolve_sym(*psym),
+            kb.local_name_of(*psym),
         );
         let Some(qualified_sym) = kb.try_resolve_symbol(&qualified) else { continue };
         let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) else { continue };
@@ -28016,8 +28045,31 @@ fn filled_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, functor: Symbol
     // through the view; a `Node` that is not a concrete `sort_ref` yields
     // `None` ("not filled to a concrete sort"), the same as a bare var.
     let walked = walk_term_to_resolved(kb, subst, var_t);
-    let s = extract_sort_ref_sym(kb, &walked)?;
-    if is_sort_param_symbol(kb, s) || kb.kind_of(s) != Some(crate::intern::SymbolKind::Sort) {
+    genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)
+}
+
+/// WI-956 — "`s` is a GENUINE CONCRETE sort": not a sort-type-param (an abstract
+/// carrier, which must stay abstract and forward), and a name that really plays the
+/// sort role. Two readers ask it in the same two lines — [`filled_carrier_sort`] on a
+/// marked carrier's fill and [`ground_rigid_projection_if_concrete`] on an op
+/// type-param's fill — and both mean it as "may I treat this as a carrier now".
+///
+/// `has_kind`, not the `kind_of` both used to spell — and say the strength of that
+/// honestly, because it is NOT the driven half of WI-956. MEASURED over stdlib +
+/// anthill-stl: 64 of 2598 symbols are sorts whose ENTITY role registered first (the
+/// top-level `entity X(…)` sugar of §6.3 — `reflect.SortInfo`, `prelude.TypeBinding`,
+/// …), and `kind_of` answers "not a sort" for every one, which here reads as "the fill
+/// is not concrete". A HARDENING, not a fix: no program could be built to observe it,
+/// because a kind-hidden sort cannot currently carry the `provides` or the member this
+/// grounding reads. The only two ways to make one are that sugar, whose desugared body
+/// is exactly one entity, and re-declaring the name with a body — and the re-declared
+/// body does not resolve names from its namespace (MEASURED: `provides Resource[…]`
+/// inside one reports *unresolved name 'Resource'*), which is its own defect and not
+/// this one. Kept anyway: `kind_of` is documented for DISPLAY, and a membership gate
+/// that happens to be unreachable is still asking the wrong question. The same misread
+/// on the PARENT side is reachable and driven — see [`impl_parent_sort_of_op`].
+fn genuine_concrete_sort(kb: &KnowledgeBase, s: Symbol) -> Option<Symbol> {
+    if is_sort_param_symbol(kb, s) || !kb.has_kind(s, crate::intern::SymbolKind::Sort) {
         return None;
     }
     Some(s)
@@ -28118,7 +28170,25 @@ fn ground_rigid_projection_if_concrete(
     // WI-383: only an OPERATION-type-param projection grounds here (decl_sort = the op). A
     // SORT-type-param projection (decl_sort = a sort) keeps the WI-428 opacity untouched —
     // its grounding rides the existing eliminator path.
-    if kb.kind_of(sort) != Some(crate::intern::SymbolKind::Operation) {
+    //
+    // WI-956 answered this ticket's question — is the gate doing MORE than "the owner is
+    // an operation"? It was doing LESS. `kind_of` asks which keyword came FIRST, and an
+    // `entity foo(…)` + `operation foo(…)` pair really does register
+    // `[Entity, Sort, Operation]` (MEASURED), which `kind_of` reports as `Entity`.
+    //
+    // A HARDENING, not a fix, and no test claims otherwise: that collision is not a
+    // usable program. MEASURED on the fixture — with `entity getV(k: Int64)` beside
+    // `operation getV[T](target: T) -> T.V`, the ENTITY wins the call site and the load
+    // fails in the entity's own field check (*type mismatch in getV.k (entity-field)*)
+    // long before any projection grounds. So the divergence cannot be observed here
+    // today; `has_kind` is used because a membership gate should ask the membership
+    // question, not because a program noticed. (`kind_of`'s doc: for DISPLAY only.)
+    //
+    // Switching does not blur the WI-383 split. The op-record lookup two lines down is
+    // what decides: a name playing both roles reaches `declared_type_param_var`, which
+    // answers `None` unless the OPERATION itself declares this param — so the split
+    // still turns on where the param was declared, never on a registration order.
+    if !kb.has_kind(sort, crate::intern::SymbolKind::Operation) {
         return None;
     }
     // The subject `Ref` is a DISTINCT registration of the op type-param from the canonical
@@ -28128,21 +28198,17 @@ fn ground_rigid_projection_if_concrete(
     // authority [`type_param_global_var`] consults for a written occurrence (WI-943).
     let Value::Term { id: subj_t, .. } = subject else { return None };
     let subj_sym = extract_sort_ref_sym(kb, &TermIdView(subj_t))?;
-    let subj_name = kb.resolve_sym(subj_sym).to_owned();
+    let subj_name = kb.local_name_of(subj_sym).to_owned();
     let tp_var = super::op_info::declared_type_param_var(kb, sort, &subj_name)?;
     let tp_var = type_param_var_term(kb, tp_var);
     // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) subject fill is
     // seen through the view; a `Node` that is not a concrete `sort_ref` yields
     // `None`, keeping the projection the abstract neutral (as a bare var did).
     let walked = walk_term_to_resolved(kb, subst, tp_var);
-    let s = extract_sort_ref_sym(kb, &walked)?;
     // A genuine concrete sort only: never a sort-type-param (abstract carrier → forward),
-    // and not an operation / other kind.
-    if is_sort_param_symbol(kb, s)
-        || kb.kind_of(s) != Some(crate::intern::SymbolKind::Sort)
-    {
-        return None;
-    }
+    // and not an operation / other kind. WI-956 gave that test its one owner, shared with
+    // `filled_carrier_sort` which asked it in the same two lines.
+    let s = genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)?;
     // SOUND grounding (WI-383 /code-review): read `member` ONLY through a spec that
     // LICENSES this projection — an op `requires Spec[C = subject]` clause that declares
     // `member` and mentions the subject — AND that the carrier `s` actually PROVIDES; then
@@ -28152,7 +28218,7 @@ fn ground_rigid_projection_if_concrete(
     // `provides` declaration order (two soundness holes). A carrier that does not provide
     // the licensing spec leaves the projection the opaque neutral — the requirement is
     // unmet and the call is rejected downstream, never silently ground to a wrong member.
-    let member_str = kb.resolve_sym(member).to_owned();
+    let member_str = kb.local_name_of(member).to_owned();
     let key = subject_key_of_term(kb, subj_t)?;
     let mut mentions_subject = false;
     for e in op_requires_entries(kb, sort) {
@@ -28168,7 +28234,7 @@ fn ground_rigid_projection_if_concrete(
         };
         let Some(bound) = bindings
             .iter()
-            .find(|(n, _)| kb.resolve_sym(*n) == member_str)
+            .find(|(n, _)| kb.local_name_of(*n) == member_str)
             .map(|(_, b)| *b)
         else {
             continue;
@@ -28189,12 +28255,13 @@ fn ground_rigid_projection_if_concrete(
         let member_qn = format!("{}.{}", kb.qualified_name_of(s).to_owned(), member_str);
         if let Some(member_sym) = kb.symbols.by_qualified_name.get(&member_qn).copied() {
             // Must be the carrier's OWN declared abstract-sort member (`sort <member> = …`):
-            // a Sort symbol with an EXACT `SortAlias`. [`sort_alias_by_name`] is deliberately
+            // a Sort symbol with an EXACT `SortAlias`. A name-directed pass is deliberately
             // NOT consulted here — it would return an UNRELATED sort's same-named member when
             // this child is an entity/operation/body-sort that merely shares the name (a
-            // soundness hole). [`sort_alias_exact`] matches only this symbol.
+            // soundness hole); WI-956 deleted the one that existed, so [`resolve_sort_alias`]
+                // now matches only this symbol for every caller.
             if kb.kind_of(member_sym) == Some(crate::intern::SymbolKind::Sort) {
-                if let Some(target) = sort_alias_exact(kb, member_sym) {
+                if let Some(target) = resolve_sort_alias(kb, member_sym) {
                     let g = walk_type_deep(kb, subst, target);
                     // Ground ONLY a manifest member (`sort V = Int64`). An abstract
                     // `sort V = ?` (resolves to a Var) or a sibling-param alias
@@ -28301,32 +28368,33 @@ pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
     let SymbolDef::Resolved { scope_raw, .. } = kb.symbols.get(sym) else {
         return false;
     };
-    let short_name = kb.resolve_sym(sym);
+    let short_name = kb.local_name_of(sym);
     kb.symbols.is_type_param(*scope_raw, short_name)
 }
 
-/// Look up SortAlias(sort_term, target) for a symbol. Returns the target TermId if found.
+/// The alias target of `SortAlias(<sym>, target)`, matched on EXACT symbol identity.
+/// An IDENTITY — it answers "what does THIS declaration alias to" — and, since WI-956,
+/// the ONLY thing it answers.
 ///
-/// Two passes with exact-Symbol-identity precedence over short-name fallback.
-/// The fallback exists for legacy callers that pass a short-name symbol when
-/// the SortAlias's pos-arg holds the qualified one. The precedence matters
-/// because parameter short names like "T" recur across sorts (Eq.T, Numeric.T,
-/// List.T, …) — without exact-match-first the fallback would return whichever
-/// alias appeared first in rules_by_functor order, causing proposal-038 / WI-210
-/// dispatch to resolve the wrong logical Var.
+/// IT USED TO GUESS. A second pass keyed on the source's LOCAL NAME ran whenever the
+/// exact one missed, "for legacy callers that pass a short-name symbol against a
+/// qualified pos-arg". A local name means nothing outside the scope that declares it —
+/// 37 `SortAlias` sources are named `T` after a stdlib load — so that pass answered
+/// with whichever alias came first in `rules_by_functor` order, i.e. an unrelated
+/// sort's variable. It had already caused one measured bug: WI-943 found a BRACKET
+/// parameter reaching it and being answered `anthill.kernel.T`, so `cmp[T]` and
+/// `cmp2[T]` shared one var. WI-943 fixed the caller and left the guess in place.
 ///
-/// WI-943 split pass 1 out as [`sort_alias_exact`] — a reader that wants an IDENTITY
-/// must not accept the name-directed guess — and this function is now literally
-/// "exact, then by name", so the two cannot drift apart.
+/// WI-956 removed it instead of re-keying it on `(parent, local name)` — MEASURED, with
+/// the pass forced to `None` the FULL WORKSPACE ran 4091 tests, 0 failures. Nothing
+/// wanted it. A caller that reached it now gets `None`, i.e. "not an alias", which its
+/// own diagnostic can say; before, it got a plausible wrong variable.
+///
+/// A `sym` whose alias is genuinely wanted must therefore BE the declaration's symbol.
+/// The three readers that used to lean on the guess build a qualified symbol first;
+/// [`type_param_global_var`] reaches an operation's BRACKET parameter through the op's
+/// own record, which is where a bracket parameter's variable actually lives.
 pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
-    sort_alias_exact(kb, sym).or_else(|| sort_alias_by_name(kb, sym))
-}
-
-/// WI-943 — [`resolve_sort_alias`]'s FIRST pass alone: the alias target of the EXACT
-/// symbol. The only one of the two that is an IDENTITY — it answers "what does THIS
-/// declaration alias to" — which is why [`type_param_global_var`] takes it on its own
-/// before consulting anything name-directed.
-fn sort_alias_exact(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     // WI-659 fast path: the SortAlias index (built once at type-check start by
     // `build_sort_alias_index`) answers in O(1). A built index is COMPLETE, so a miss
     // is a genuine "not a SortAlias" and returns `None` with NO fallback re-scan:
@@ -28336,19 +28404,6 @@ fn sort_alias_exact(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
         return index.by_sym.get(&sym).copied();
     }
     scan_sort_aliases(kb, |functor| functor == sym)
-}
-
-/// WI-943 — [`resolve_sort_alias`]'s SECOND pass alone: the first alias whose source
-/// has the same SHORT NAME. A NAME-DIRECTED GUESS, not an identity — parameter short
-/// names recur across sorts (37 sources are named `T` after a stdlib load), so this
-/// answers with whichever came first. Kept for the legacy callers the doc on
-/// [`resolve_sort_alias`] describes, and consulted only after the exact pass misses.
-fn sort_alias_by_name(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
-    if let Some(index) = &kb.sort_alias_index {
-        return index.by_name.get(kb.resolve_sym(sym)).copied();
-    }
-    let name = kb.resolve_sym(sym);
-    scan_sort_aliases(kb, |functor| kb.resolve_sym(functor) == name)
 }
 
 /// The pre-index scan behind both passes, for calls BEFORE `build_sort_alias_index`
@@ -28362,7 +28417,17 @@ fn sort_alias_by_name(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
 /// per miss. Its sibling scan [`sort_param_alias_vars`] takes the SNAPSHOT instead,
 /// and that is not an oversight: it interns a symbol per alias, so it needs `&mut kb`
 /// inside the loop.
-fn scan_sort_aliases(
+///
+/// WI-956 made it `pub(crate)` for `load`'s
+/// [`super::load::Loader::find_sort_alias_var`], which carried a verbatim copy of this
+/// walk. That caller keeps only a `Var` target, and the first cut widened `matches` to
+/// `(functor, target)` so the rejection could happen per fact and let the scan CONTINUE
+/// — which it had to, while a by-name pass could still be looking at several same-named
+/// candidates. With that pass deleted the predicate is an EXACT symbol match, one
+/// source has at most one alias (`load`'s `sort_alias_exists` dedup guard; MEASURED,
+/// 103 facts over 103 distinct sources in a stdlib load), so there is never a second
+/// candidate to continue to and the caller post-filters instead.
+pub(crate) fn scan_sort_aliases(
     kb: &KnowledgeBase,
     matches: impl Fn(Symbol) -> bool,
 ) -> Option<TermId> {
@@ -28382,23 +28447,20 @@ fn scan_sort_aliases(
 }
 
 /// WI-659 — the SortAlias resolution index built once by [`build_sort_alias_index`]
-/// so [`resolve_sort_alias`] is O(1) instead of a DOUBLE linear scan (by symbol,
-/// then by name) of every SortAlias fact per call — the #1 `type_check_sorts`
-/// hotspot after WI-656. Mirrors the scan's two passes and their precedence.
+/// so [`resolve_sort_alias`] is O(1) instead of a linear scan of every SortAlias fact
+/// per call — the #1 `type_check_sorts` hotspot after WI-656. (It was a DOUBLE scan
+/// until WI-956 deleted the by-name pass.)
 #[derive(Debug, Default)]
 pub(crate) struct SortAliasIndex {
-    /// Pass 1 — source functor Symbol → alias target. Exact-identity match, which
-    /// WINS: parameter short names (`T`) recur across sorts, so exact-match-first is
-    /// load-bearing (the precedence note on [`resolve_sort_alias`]).
+    /// Source functor Symbol → alias target. Exact identity, and since WI-956 the only
+    /// keying: a companion `by_name` map keyed on the source's LOCAL name was deleted
+    /// with the pass that read it (see [`resolve_sort_alias`] — a local name does not
+    /// identify a declaration outside its own scope).
     by_sym: HashMap<Symbol, TermId>,
-    /// Pass 2 — source functor NAME → alias target. The short-name fallback for a
-    /// caller that passes a short-name symbol against a qualified pos-arg; consulted
-    /// only when `by_sym` misses, mirroring the scan's `.or_else`.
-    by_name: HashMap<String, TermId>,
     /// WI-657(7) — parent-sort Symbol → its declared type params as
     /// `(param short-name Symbol, backing `Var::Global` id)`, for
     /// [`reconstruct_sort_params`] (which needs ALL of a sort's params, a query
-    /// neither `by_sym` nor `by_name` answers). Every entry — key, name, and whether
+    /// `by_sym` does not answer). Every entry — key, name, and whether
     /// the alias counts at all — is [`sort_param_alias_entry`]'s, the same call
     /// [`sort_param_alias_vars`]' pre-index scan makes (WI-955).
     by_parent: HashMap<Symbol, Vec<(Symbol, VarId)>>,
@@ -28507,7 +28569,7 @@ fn sort_param_alias_entry(
     };
     let vid = *vid;
     let parent = kb.declaring_scope_symbol(alias_functor)?;
-    let param_short = kb.resolve_sym(alias_functor).to_string();
+    let param_short = kb.local_name_of(alias_functor).to_string();
     let param_sym = kb.intern(&param_short);
     Some((parent, (param_sym, vid)))
 }
@@ -28524,16 +28586,12 @@ pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
         return;
     };
     let mut by_sym: HashMap<Symbol, TermId> = HashMap::new();
-    let mut by_name: HashMap<String, TermId> = HashMap::new();
     let mut by_parent: HashMap<Symbol, Vec<(Symbol, VarId)>> = HashMap::new();
     for rid in kb.rules_by_functor(alias_sym) {
         let Some((functor, target)) = sort_alias_head_slots(kb, rid) else {
             continue;
         };
         by_sym.entry(functor).or_insert(target);
-        by_name
-            .entry(kb.resolve_sym(functor).to_string())
-            .or_insert(target);
         // WI-657(7): file this alias under its parent sort for reconstruct_sort_params.
         // WI-955: which sort, under what name, and whether it counts at all are all
         // `sort_param_alias_entry`'s — the same call the scan makes.
@@ -28541,7 +28599,7 @@ pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
             by_parent.entry(parent).or_default().push(entry);
         }
     }
-    kb.sort_alias_index = Some(SortAliasIndex { by_sym, by_name, by_parent });
+    kb.sort_alias_index = Some(SortAliasIndex { by_sym, by_parent });
 }
 
 /// WI-374 (§8.1, site-scoped): expand a FOREIGN bare/partial parametric sort
@@ -28586,8 +28644,8 @@ fn expand_foreign_sort_application(
     let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(declared_syms.len());
     let mut filled = false;
     for qsym in declared_syms {
-        let short = kb.resolve_sym(qsym).to_string();
-        match written.iter().find(|(k, _)| kb.resolve_sym(*k) == short) {
+        let short = kb.local_name_of(qsym).to_string();
+        match written.iter().find(|(k, _)| kb.local_name_of(*k) == short) {
             Some((k, v)) => match v {
                 Value::Term { id: t, .. } => bindings.push((*k, *t)),
                 // A Term carrier's children are Term-carried; guard anyway.
@@ -29641,7 +29699,7 @@ pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, clause: &Value) -> Vec<Value>
     // `Node`, or `Entity` `conjunction(g1, …, gn)` decomposes identically into its
     // goal `Value`s (each carrier-faithful — a `Node` conjunct stays an occurrence).
     if let ViewHead::Functor { functor: Some(f), pos_arity, .. } = clause.head(kb) {
-        if kb.resolve_sym(f) == "conjunction" {
+        if kb.local_name_of(f) == "conjunction" {
             // Every slot `i < pos_arity` is present by the View's own arity report;
             // `.expect` (never `filter_map`) so a hole surfaces loudly rather than
             // silently dropping a conjunct — a dropped `requires`/guard conjunct would
@@ -30685,7 +30743,7 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
         && fields
             .iter()
             .enumerate()
-            .all(|(i, (name, _))| is_positional_label_at(kb.resolve_sym(*name), i))
+            .all(|(i, (name, _))| is_positional_label_at(kb.local_name_of(*name), i))
 }
 
 /// WI-799: the alignment policy and its axes, SEALED in a private module.
@@ -31845,7 +31903,7 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
             let q = format!(
                 "{}.{}",
                 kb.qualified_name_of(actual_base),
-                kb.resolve_sym(*ap)
+                kb.local_name_of(*ap)
             );
             let Some(qsym) = kb.try_resolve_symbol(&q) else { continue };
             let Some(target) = resolve_sort_alias(kb, qsym) else { continue };
@@ -31874,10 +31932,10 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         let ok = match binding_for_param(kb, &actual_bindings, *param, key_match) {
             Some(av) => check_binding_by_variance(kb, subst, expected_base, *param, av, ev),
             None => {
-                let short = short_name_of(kb.resolve_sym(*param));
+                let short = short_name_of(kb.local_name_of(*param));
                 let pv = cross_sort_provider.as_ref().and_then(|view| {
                     view.iter()
-                        .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
+                        .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
                         .map(|(_, v)| *v)
                 });
                 match pv {
@@ -32613,8 +32671,8 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
     }
 
     // Name-based equality (handles qualified vs short name)
-    let actual_name = kb.resolve_sym(actual_sym);
-    let expected_name = kb.resolve_sym(expected_sym);
+    let actual_name = kb.local_name_of(actual_sym);
+    let expected_name = kb.local_name_of(expected_sym);
     if actual_name == expected_name {
         return true;
     }
@@ -32721,10 +32779,10 @@ fn bare_provider_binding_precise<E: TermView>(
     };
     let mut probe = subst.clone();
     for (param, ev) in &expected_bindings {
-        let short = short_name_of(kb.resolve_sym(*param));
+        let short = short_name_of(kb.local_name_of(*param));
         let Some(pv) = provider_view
             .iter()
-            .find(|(p, _)| short_name_of(kb.resolve_sym(*p)) == short)
+            .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
             .map(|(_, v)| *v)
         else {
             return false;
@@ -33203,7 +33261,7 @@ fn project_constructor_arg(
                     .map(|(_, v)| Rc::clone(v)),
                 None => named_args
                     .iter()
-                    .find(|(k, _)| is_positional_label_at(kb.resolve_sym(*k), *i))
+                    .find(|(k, _)| is_positional_label_at(kb.local_name_of(*k), *i))
                     .map(|(_, v)| Rc::clone(v)),
             }
         }
@@ -33624,7 +33682,7 @@ impl DictLayout {
 /// non-alphanumeric characters mapped to `_`, to `out` — for building
 /// identifier-safe synthesized names.
 fn push_short_lc(kb: &KnowledgeBase, sym: Symbol, out: &mut String) {
-    let name = kb.resolve_sym(sym);
+    let name = kb.local_name_of(sym);
     let short = name.rsplit('.').next().unwrap_or(name);
     for ch in short.chars() {
         if ch.is_ascii_alphanumeric() {
@@ -33879,7 +33937,7 @@ fn build_child_subst_map(
     };
     let base_qn = kb.qualified_name_of(base_sort).to_string();
     for (short_sym, value) in &bindings {
-        let short_name = kb.resolve_sym(*short_sym);
+        let short_name = kb.local_name_of(*short_sym);
         let param_qn = format!("{base_qn}.{short_name}");
         if let Some(param_qualified) = kb.try_resolve_symbol(&param_qn) {
             map.insert(param_qualified, *value);
@@ -33911,7 +33969,7 @@ pub struct MissingObligation {
 /// Returns a list of missing obligations.
 pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObligation> {
     let mut missing = Vec::new();
-    let sort_name = kb.resolve_sym(sort_sym).to_string();
+    let sort_name = kb.local_name_of(sort_sym).to_string();
     let chain = requires_chain_flat(kb, sort_sym);
 
     // Collect operations provided by this sort
@@ -33920,7 +33978,7 @@ pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObl
     for entry in &chain {
         // Get operations required by the spec sort
         let required_ops = sort_operation_names(kb, entry.required_sort);
-        let required_sort_name = kb.resolve_sym(entry.required_sort).to_string();
+        let required_sort_name = kb.local_name_of(entry.required_sort).to_string();
 
         for op in &required_ops {
             if !provided_ops.iter().any(|p| p == op) {
@@ -33950,7 +34008,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
 
         // Match sort by name field (may be Ref(sym) or Fn { functor: sym })
         let name_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .find(|(s, _)| kb.local_name_of(*s) == "name")
             .map(|(_, v)| *v)
         {
             Some(t) => t,
@@ -33967,7 +34025,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
 
         // Extract operations list
         let ops_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "operations")
+            .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| *v)
         {
             Some(t) => t,
@@ -33976,8 +34034,8 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
 
         return list_to_vec(kb, ops_tid).iter().filter_map(|op_ref| {
             match kb.get_term(*op_ref) {
-                Term::Ref(s) => Some(kb.resolve_sym(*s).to_string()),
-                Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor).to_string()),
+                Term::Ref(s) => Some(kb.local_name_of(*s).to_string()),
+                Term::Fn { functor, .. } => Some(kb.local_name_of(*functor).to_string()),
                 _ => None,
             }
         }).collect();
@@ -34362,7 +34420,7 @@ fn reconstruct_sort_params(
                         debug_assert!(
                             false,
                             "WI-516: param `{}` bound to un-lowerable carrier {}: {e:?}",
-                            kb.resolve_sym(param_sym),
+                            kb.local_name_of(param_sym),
                             other.type_name(),
                         );
                         let name = kb.intern("?_");
@@ -34397,11 +34455,13 @@ fn reconstruct_sort_params(
 /// objection to `type_params_of_sort` does not apply to it). Three things block it
 /// here: its `sort_param_pairs_cache` has a `get` and an `insert` and NO invalidator,
 /// so populating it from the load-time window would let a half-loaded sort's param
-/// list poison every type-check-time reader; it resolves each param through
-/// `resolve_sort_alias`, whose last rung is the name-directed `sort_alias_by_name`
-/// guess this reader just stopped making; and it keys its pairs by the QUALIFIED param
-/// symbol, not the bare one. WI-954 would remove all three by publishing the loader's
+/// list poison every type-check-time reader; and it keys its pairs by the QUALIFIED
+/// param symbol, not the bare one. WI-954 would remove both by publishing the loader's
 /// param→var map, and with it this two-source structure goes away entirely.
+///
+/// (WI-955 listed a THIRD: that `resolve_sort_alias`' last rung was a name-directed
+/// guess this reader had just stopped making. WI-956 deleted that rung, so the
+/// objection is gone — two blockers remain, not three.)
 fn sort_param_alias_vars(kb: &mut KnowledgeBase, parent_sym: Symbol) -> Vec<(Symbol, VarId)> {
     if let Some(index) = &kb.sort_alias_index {
         return index.by_parent.get(&parent_sym).cloned().unwrap_or_default();
@@ -34968,7 +35028,7 @@ fn param_is_spec_carrier(
 ) -> bool {
     match carrier_sort_of_value(kb, param_type) {
         Some(s) if self_representing => same_sort_canonical(kb, s, spec_sort),
-        Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)),
+        Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.local_name_of(s)),
         None => false,
     }
 }
@@ -35576,7 +35636,7 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
         }
         if let Some(cycle_syms) = param_projection_cycle(kb, &params) {
             let mut names: Vec<String> =
-                cycle_syms.iter().map(|s| kb.resolve_sym(*s).to_owned()).collect();
+                cycle_syms.iter().map(|s| kb.local_name_of(*s).to_owned()).collect();
             // Close the cycle visually (`a -> b -> a`) so the diagnostic reads as one.
             if let Some(first) = names.first().cloned() {
                 names.push(first);
@@ -35845,7 +35905,7 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 /// Extract constructor and operation symbol lists from a SortInfo fact.
 ///
 /// WI-237: matched by qualified-name identity (`same_symbol` then; `canonical_sort_sym`
-/// since WI-672) like the other five resolve_sym audit sites. The bundle's `sort Main` short
+/// since WI-672) like the other five local_name_of audit sites. The bundle's `sort Main` short
 /// name no longer collides with `anthill.cli.Main` here, so the typer
 /// actually checks the anthill-todo bundle's cmd_X bodies. The chain of
 /// follow-up issues this exposed is fixed under WI-237: types_compatible
@@ -35869,7 +35929,7 @@ fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbo
         };
 
         let name_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .find(|(s, _)| kb.local_name_of(*s) == "name")
             .map(|(_, v)| *v)
         {
             Some(t) => t,
@@ -35885,12 +35945,12 @@ fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbo
         }
 
         let ctors = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "constructors")
+            .find(|(s, _)| kb.local_name_of(*s) == "constructors")
             .map(|(_, v)| extract_sym_list(kb, *v))
             .unwrap_or_default();
 
         let ops = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "operations")
+            .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| extract_sym_list(kb, *v))
             .unwrap_or_default();
 
@@ -35965,7 +36025,7 @@ fn check_value_against_sort_ref(
     span: Option<Span>,
 ) -> Option<TypeError> {
     let is_prim = |sym: Symbol, expected: &str| -> bool {
-        let name = kb.resolve_sym(sym);
+        let name = kb.local_name_of(sym);
         name == expected || name == &format!("anthill.prelude.{}", expected)
     };
 
@@ -36052,7 +36112,7 @@ fn check_value_sort_membership(
         span,
         context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
         expected: type_display_name_value(kb, declared_type),
-        actual: kb.resolve_sym(parent).to_string(),
+        actual: kb.local_name_of(parent).to_string(),
     })
 }
 
@@ -36121,7 +36181,7 @@ fn check_value_against_parameterized(
                 span,
                 context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                 expected: type_display_name_value(kb, declared_type),
-                actual: kb.resolve_sym(parent).to_string(),
+                actual: kb.local_name_of(parent).to_string(),
             });
         }
     }
@@ -36428,8 +36488,8 @@ fn sort_provides_reach(
 
 /// Check if a constructor's parent sort matches the declared type symbol.
 fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_type_sym: Symbol) -> bool {
-    let declared_name = kb.resolve_sym(declared_type_sym);
-    let pn = kb.resolve_sym(parent);
+    let declared_name = kb.local_name_of(declared_type_sym);
+    let pn = kb.local_name_of(parent);
     pn == declared_name
         || pn.strip_suffix(declared_name).is_some_and(|p| p.ends_with('.'))
         || declared_name.strip_suffix(pn).is_some_and(|p| p.ends_with('.'))
@@ -36473,7 +36533,7 @@ fn rigidify_op_type_params(
             // short name makes it `?A` vs `?B`. Purely cosmetic: a rigid's identity is its
             // fresh `VarId`, never its name (unification compares VarIds; `SubjectKey` keys
             // on `v.raw()`), so the rename cannot affect any judgement.
-            let name = short_name_of(kb.resolve_sym(*param_sym)).to_owned();
+            let name = short_name_of(kb.local_name_of(*param_sym)).to_owned();
             let name_sym = kb.intern(&name);
             let fresh = kb.fresh_var(name_sym);
             let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
@@ -37562,7 +37622,7 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                         name: rule_sym.unwrap_or(fd_sym),
                         field: RuleField::Body,
                     },
-                    expected: format!("at most one `requires` on spec `{}` per rule", kb.resolve_sym(base)),
+                    expected: format!("at most one `requires` on spec `{}` per rule", kb.local_name_of(base)),
                     actual: "multiple `requires` on the same spec base — type-parameter attribution is not yet supported (guard tier; Tier B)".into(),
                 });
                 has_duplicate_spec = true;
@@ -38004,8 +38064,8 @@ fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> bool {
 /// Borrows from `kb` — no allocation.
 fn spec_arg_head_name(kb: &KnowledgeBase, tid: TermId) -> Option<&str> {
     match kb.get_term(tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(kb.resolve_sym(*s)),
-        Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor)),
+        Term::Ref(s) | Term::Ident(s) => Some(kb.local_name_of(*s)),
+        Term::Fn { functor, .. } => Some(kb.local_name_of(*functor)),
         _ => None,
     }
 }
@@ -38781,7 +38841,7 @@ fn rewrite_find_dictionary_goal(
         format!(
             "a body call to one of `{}`'s operations (or to an operation that \
              `requires` it, directly or by spec inheritance) to ground the requirement",
-            kb.resolve_sym(spec_base)
+            kb.local_name_of(spec_base)
         ),
         "no such call in the rule body".into(),
     ))
@@ -40210,7 +40270,7 @@ end
     fn binding<'a>(kb: &KnowledgeBase, binds: &'a [(Symbol, Value)], name: &str) -> &'a Value {
         binds
             .iter()
-            .find(|(p, _)| kb.resolve_sym(*p) == name)
+            .find(|(p, _)| kb.local_name_of(*p) == name)
             .map(|(_, v)| v)
             .unwrap_or_else(|| panic!("no `{name}` binding among the result bindings"))
     }
@@ -41136,7 +41196,7 @@ mod wi802_function_spec_owner_tests {
     /// is why the doc cites [`same_label`]'s lookup rule rather than an identity
     /// comparison.
     ///
-    /// Nothing pinned this: swapping `resolve_sym` for `qualified_name_of` in
+    /// Nothing pinned this: swapping `local_name_of` for `qualified_name_of` in
     /// `function_spec_parts` left ALL 3318 workspace tests green (measured), so
     /// the canonical spelling had zero coverage at this reader. It is a live
     /// spelling — `anthill.prelude.Function.A` resolves in a stdlib KB — so the
@@ -41312,7 +41372,7 @@ end
     /// `kb.sort_alias_index` currently selects.
     fn param_names(kb: &mut KnowledgeBase, sort: Symbol) -> Vec<String> {
         let params = reconstruct_sort_params(kb, sort, &Substitution::new());
-        params.iter().map(|(s, _)| kb.resolve_sym(*s).to_string()).collect()
+        params.iter().map(|(s, _)| kb.local_name_of(*s).to_string()).collect()
     }
 
     /// THE ticket's acceptance, at the reconstruction itself: both data sources report
@@ -41399,7 +41459,7 @@ end
                     .iter()
                     .map(|(k, v)| format!(
                         "{} = {}",
-                        kb.resolve_sym(*k),
+                        kb.local_name_of(*k),
                         super::sort_functor_of(kb, *v)
                             .map(|s| kb.qualified_name_of(s).to_string())
                             .unwrap_or_else(|| format!("{:?}", kb.get_term(*v))),
@@ -41452,7 +41512,7 @@ mod wi963_type_var_representation_tests {
         let var_term = kb.alloc(Term::Var(Var::Global(vid)));
 
         match type_head(&kb, &Value::term(tv)) {
-            TypeHead::TypeVar(s) => assert_eq!(kb.resolve_sym(s), "?_", "carries its name"),
+            TypeHead::TypeVar(s) => assert_eq!(kb.local_name_of(s), "?_", "carries its name"),
             _ => panic!("a type_var must classify as TypeHead::TypeVar"),
         }
         assert!(
@@ -41730,5 +41790,333 @@ end
                 kb.declaring_scope_symbol(s).map(|p| kb.qualified_name_of(p).to_string()),
             );
         }
+    }
+}
+
+/// WI-956 item 4 — `kind_of` vs `has_kind` at the gates that ask "is this a SORT".
+///
+/// The ticket asked whether the two are the same question. They are not, and the
+/// difference is REACHABLE from source, not just in principle: `kind_of` reports the
+/// FIRST-declared of a symbol's categories, so a sort whose ENTITY role registered
+/// first does not look like a sort to it. The fixture below is the smallest program
+/// that builds one WITH type parameters and an operation, which is what turns the
+/// asymmetry from inert into a wrong answer.
+///
+/// Everything here fails on the pre-WI-956 code, and the failures were MEASURED by
+/// restoring each `kind_of`, not predicted — see each test.
+#[cfg(test)]
+mod wi956_kind_gate_tests {
+    use super::{
+        call_bracket_scopes, impl_parent_of_op, impl_parent_sort_of_op,
+        lookup_operation_info_full, sort_type_params_as_pairs,
+    };
+    use crate::intern::SymbolKind;
+    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::{KnowledgeBase, Symbol};
+
+    /// `Rec` is declared TWICE: once by the §6.3 top-level `entity` sugar (which
+    /// registers the Entity role, then the Sort role it desugars to) and once with a
+    /// body carrying a type parameter and an operation. It loads clean, and `Rec` comes
+    /// out `kinds == [Entity, Sort]`.
+    ///
+    /// That the loader ACCEPTS the re-declaration at all is a separate open question —
+    /// WI-975, filed from here: the second body does not resolve names from its
+    /// namespace, so the shape is half-wired. Whichever way WI-975 goes, these gates
+    /// were asking a display question (`kind_of`) at a membership site and are wrong
+    /// independently of it; if WI-975 refuses the shape, this fixture needs replacing,
+    /// not the fix.
+    ///
+    /// `Ord` is the control: the SAME sort written the other way round. Nothing about
+    /// it differs except which declaration the loader saw first.
+    const SRC: &str = r#"
+namespace test.wi956
+  entity Rec(n: Int64)
+  sort Rec
+    sort T = ?
+    operation peek(x: T) -> T
+  end
+
+  sort Ord
+    sort U = ?
+    operation look(x: U) -> U
+  end
+  entity Ord2(n: Int64)
+
+  operation loose(n: Int64) -> Int64
+end
+"#;
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// The premise the rest of the module rests on: this fixture really does build a
+    /// sort that `kind_of` calls something else, and it really is parametric. If the
+    /// loader ever refuses the re-declaration, THIS is the test that says so — the
+    /// others would then be passing over a fixture that no longer poses the question.
+    #[test]
+    fn a_sort_can_be_registered_under_another_kind_first() {
+        let kb = load_stdlib_and_stl(Some(SRC));
+        let rec = sym(&kb, "test.wi956.Rec");
+        assert_eq!(
+            kb.symbols.get(rec).kinds(),
+            &[SymbolKind::Entity, SymbolKind::Sort],
+            "the `entity` sugar registers Entity first, and the body adds Sort",
+        );
+        assert!(kb.has_kind(rec, SymbolKind::Sort), "`Rec` PLAYS the sort role");
+        assert_ne!(
+            kb.kind_of(rec),
+            Some(SymbolKind::Sort),
+            "…and `kind_of` says otherwise — the whole asymmetry, in one assert",
+        );
+        assert_eq!(
+            kb.type_params_of_sort(rec),
+            vec!["T".to_string()],
+            "and it is PARAMETRIC, which is what makes the misread cost something",
+        );
+        // The control sort, same shape, opposite declaration order.
+        let ord = sym(&kb, "test.wi956.Ord");
+        assert_eq!(kb.kind_of(ord), Some(SymbolKind::Sort));
+        assert_eq!(kb.type_params_of_sort(ord), vec!["U".to_string()]);
+    }
+
+    /// The live consequence, and the reason item 4 is a FIX rather than a hardening:
+    /// an operation of `Rec` could not see `Rec`'s own type parameter, so a written
+    /// `peek[T = …]` had no `T` to bind.
+    ///
+    /// CONTROL, MEASURED by putting `kind_of(parent) == Some(Sort)` back into
+    /// `call_bracket_scopes`: `peek` reports `[]` and this test fails; `look` reports
+    /// `["U"]` either way. Nothing else in the workspace fails, which is exactly why
+    /// the divergence survived two tickets that both looked at it.
+    #[test]
+    fn an_operation_sees_its_sorts_type_params_whichever_way_the_sort_was_declared() {
+        let mut kb = load_stdlib_and_stl(Some(SRC));
+        let scopes = |kb: &mut KnowledgeBase, op_qn: &str| -> Vec<String> {
+            let op = sym(kb, op_qn);
+            let info = lookup_operation_info_full(kb, op)
+                .unwrap_or_else(|| panic!("{op_qn} has no OperationInfo"));
+            call_bracket_scopes(kb, &info, op)
+                .iter()
+                .map(|(s, _)| kb.local_name_of(*s).to_string())
+                .collect()
+        };
+        assert_eq!(
+            scopes(&mut kb, "test.wi956.Rec.peek"),
+            vec!["T".to_string()],
+            "`peek` is declared in `Rec`, which declares `T` — the bracket scopes must \
+             carry it. Under `kind_of` this was empty.",
+        );
+        assert_eq!(
+            scopes(&mut kb, "test.wi956.Ord.look"),
+            vec!["U".to_string()],
+            "the control: identical sort, declared sort-first. It passed before too — \
+             which is the point, the answer must not depend on declaration order.",
+        );
+    }
+
+    /// One gate, five readers. Each of the five sites that used to spell
+    /// `impl_parent_of_op(..)` + a kind test now calls [`impl_parent_sort_of_op`], so
+    /// this pins the gate itself rather than re-driving each caller: it answers the
+    /// parent for a member op of EITHER declaration order, and `None` for a free op.
+    ///
+    /// CONTROL, MEASURED — restore `kind_of` inside `impl_parent_sort_of_op` and the
+    /// `Rec.peek` row fails (`None`, where `impl_parent_of_op` alone answers `Rec`).
+    /// The free-op row passes either way by design; it is here because it is the
+    /// reason the gate exists at all, and a "fix" that dropped the gate entirely would
+    /// let a NAMESPACE through and only this row would notice.
+    #[test]
+    fn the_parent_sort_gate_admits_a_sort_and_refuses_a_namespace() {
+        let kb = load_stdlib_and_stl(Some(SRC));
+        let row = |op_qn: &str| -> (Option<String>, Option<String>) {
+            let op = sym(&kb, op_qn);
+            let name = |s: Option<Symbol>| s.map(|s| kb.qualified_name_of(s).to_string());
+            (name(impl_parent_of_op(&kb, op)), name(impl_parent_sort_of_op(&kb, op)))
+        };
+        assert_eq!(
+            row("test.wi956.Rec.peek"),
+            (Some("test.wi956.Rec".into()), Some("test.wi956.Rec".into())),
+            "`Rec` IS the declaring sort; the gate must not lose it over registration \
+             order",
+        );
+        assert_eq!(
+            row("test.wi956.Ord.look"),
+            (Some("test.wi956.Ord".into()), Some("test.wi956.Ord".into())),
+        );
+        // A FREE operation: the split answers its NAMESPACE, and the gate must drop it.
+        let free = sym(&kb, "test.wi956.loose");
+        assert!(
+            kb.has_kind(impl_parent_of_op(&kb, free).expect("a namespace parent"),
+                        SymbolKind::Namespace),
+            "the fixture for this row must really be a free op",
+        );
+        assert_eq!(
+            impl_parent_sort_of_op(&kb, free),
+            None,
+            "a namespace declares no type params and owns no requirement slots — \
+             letting it through is what the gate exists to stop",
+        );
+    }
+
+
+    /// The measurement `impl_parent_sort_of_op`'s doc rests on, re-run rather than
+    /// re-argued: on the LIBRARIES the two spellings agree, so the fix is inert there
+    /// and the fixture above is what makes it observable.
+    ///
+    /// This one passes either way by design. It is here so that a future library
+    /// change which DOES introduce a kind-hidden parametric sort trips a test that
+    /// names the reason, instead of surfacing as a missing type param somewhere else.
+    #[test]
+    fn on_the_libraries_the_two_spellings_still_agree() {
+        let mut kb = load_stdlib_and_stl(None);
+        let mut seen: std::collections::HashSet<Symbol> = Default::default();
+        let mut syms: Vec<Symbol> = Vec::new();
+        for &s in kb.symbols.by_qualified_name.values() {
+            if seen.insert(s) {
+                syms.push(s);
+            }
+        }
+        let hidden: Vec<Symbol> = syms
+            .iter()
+            .copied()
+            .filter(|&s| kb.has_kind(s, SymbolKind::Sort) && kb.kind_of(s) != Some(SymbolKind::Sort))
+            .collect();
+        assert!(
+            hidden.len() > 40,
+            "kind-hidden sorts must exist for this to measure anything (the top-level \
+             `entity X(…)` sugar makes them); got {}",
+            hidden.len(),
+        );
+        let mut carrying: Vec<String> = Vec::new();
+        for &h in &hidden {
+            if !kb.type_params_of_sort(h).is_empty()
+                || !kb.named_requirement_slots(h).is_empty()
+                || !sort_type_params_as_pairs(&mut kb, h).is_empty()
+            {
+                carrying.push(kb.qualified_name_of(h).to_string());
+            }
+        }
+        assert_eq!(
+            carrying,
+            Vec::<String>::new(),
+            "no LIBRARY sort is both kind-hidden and parametric — the sugar that hides \
+             a sort desugars to a body of exactly one entity. That is why the fix needed \
+             a hand-written re-declaration to drive, and why it was inert for two tickets.",
+        );
+        let ops: Vec<Symbol> =
+            syms.iter().copied().filter(|&s| kb.has_kind(s, SymbolKind::Operation)).collect();
+        assert!(ops.len() > 300, "the library fixture must carry operations; got {}", ops.len());
+        for &op in &ops {
+            assert_eq!(
+                impl_parent_of_op(&kb, op).filter(|p| kb.kind_of(*p) == Some(SymbolKind::Sort)),
+                impl_parent_sort_of_op(&kb, op),
+                "`{}`: the two gates disagree on a LIBRARY operation",
+                kb.qualified_name_of(op),
+            );
+        }
+    }
+}
+
+/// WI-956 — AN ALIAS IS FOUND BY ITS OWN SYMBOL, NEVER BY ITS LOCAL NAME.
+///
+/// [`resolve_sort_alias`] had a second pass keyed on the source's LOCAL name, run
+/// whenever the exact one missed. A local name means nothing outside the scope that
+/// declares it, so that pass answered with whichever same-named alias happened to come
+/// first — an unrelated declaration's variable. WI-943 measured it doing exactly that
+/// to a bracket parameter and fixed the caller; WI-956 deleted the pass.
+///
+/// MEASURED before deleting: with it forced to `None`, the FULL WORKSPACE ran 4091
+/// tests, 0 failures. Nothing depended on the guess — which also means nothing but this
+/// module notices if it comes back, and that is why this module exists.
+#[cfg(test)]
+mod wi956_alias_identity_tests {
+    use super::{resolve_sort_alias, type_param_global_var};
+    use crate::kb::term::{Term, Var};
+    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::KnowledgeBase;
+
+    /// Three declarations sharing ONE local name, `Wi956T`, in three different scopes:
+    /// a type parameter, an alias to a concrete sort, and an ENTITY that is not an
+    /// alias at all. The name is fixture-unique so nothing from the stdlib (which
+    /// declares 37 sources short-named `T`) can answer in their place.
+    ///
+    /// The PARAMETER is declared FIRST on purpose. A restored by-name pass takes the
+    /// first match in `rules_by_functor` order, so this order makes the borrowed answer
+    /// a `Var` — which is what lets the second test below feel the difference at all.
+    /// Written the other way round, the borrowed target is a `sort_ref`, `as_global`
+    /// rejects it, and `type_param_global_var` answers `None` for the right result by
+    /// the wrong route. (Measured: the first draft was written that way, and its
+    /// control claim was false.)
+    const SRC: &str = r#"
+namespace test.wi956.alias
+  import anthill.prelude.Int64
+  sort Wi956Param
+    sort Wi956T = ?
+  end
+  sort Wi956Fixed
+    sort Wi956T = Int64
+  end
+  sort Wi956Other
+    entity Wi956T(n: Int64)
+  end
+end
+"#;
+
+    fn is_var(kb: &KnowledgeBase, t: crate::kb::term::TermId) -> bool {
+        matches!(kb.get_term(t), Term::Var(Var::Global(_)))
+    }
+
+    /// CONTROL, MEASURED by restoring the by-name pass (`.or_else(|| scan by local
+    /// name)`) on `resolve_sort_alias`: the third row fails — `Wi956Other.Wi956T` is
+    /// answered with `Wi956Fixed`'s `Int64` target, an alias belonging to a different
+    /// declaration in a different scope. The first two rows pass either way by design;
+    /// they are what says the deletion did not simply break the reader.
+    #[test]
+    fn an_alias_is_found_only_by_its_own_symbol() {
+        let kb = load_stdlib_and_stl(Some(SRC));
+        let sym = |qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"));
+
+        let fixed = resolve_sort_alias(&kb, sym("test.wi956.alias.Wi956Fixed.Wi956T"))
+            .expect("`sort Wi956T = Int64` asserts an alias");
+        assert!(!is_var(&kb, fixed), "an alias to a concrete sort targets a sort_ref");
+
+        let param = resolve_sort_alias(&kb, sym("test.wi956.alias.Wi956Param.Wi956T"))
+            .expect("`sort Wi956T = ?` asserts an alias");
+        assert!(is_var(&kb, param), "a type param targets its backing Var");
+        assert_ne!(fixed, param, "two declarations, two answers — not one name, one answer");
+
+        // THE POINT. Same local name, no alias of its own: the only truthful answer is
+        // `None`. The deleted pass answered `fixed` here.
+        assert_eq!(
+            resolve_sort_alias(&kb, sym("test.wi956.alias.Wi956Other.Wi956T")),
+            None,
+            "`Wi956Other.Wi956T` is an entity, not an alias — sharing a LOCAL name with \
+             one declared in another scope must not lend it that scope's target",
+        );
+    }
+
+    /// The same removal seen through [`type_param_global_var`], whose LAST rung the
+    /// deleted pass was — the rung WI-943 measured answering `cmp[T]` and `cmp2[T]`
+    /// with one shared `anthill.kernel.T` var. Its two surviving rungs are both
+    /// identities, so a symbol that is neither an alias nor a bracket parameter now
+    /// resolves to nothing instead of to someone else's variable.
+    ///
+    /// CONTROL, MEASURED with the same edit as above: this fails, answering
+    /// `Wi956Param`'s var for a symbol that is not a type parameter at all. The
+    /// first row passes either way; it is here so a regression that merely EMPTIES
+    /// the reader cannot be mistaken for the fix.
+    #[test]
+    fn a_type_param_reader_answers_nothing_rather_than_someone_elses_var() {
+        let kb = load_stdlib_and_stl(Some(SRC));
+        let sym = |qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"));
+        assert!(
+            type_param_global_var(&kb, sym("test.wi956.alias.Wi956Param.Wi956T")).is_some(),
+            "a declared type param still resolves to its own var",
+        );
+        assert_eq!(
+            type_param_global_var(&kb, sym("test.wi956.alias.Wi956Other.Wi956T")),
+            None,
+            "an entity that merely SHARES a type param's local name has no canonical \
+             var, and must not borrow one",
+        );
     }
 }

@@ -37,16 +37,16 @@ end
     // Drill down to the first cons head.
     let stored = match &facts {
         Value::Entity { named, .. } => named.iter()
-            .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+            .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
             .map(|(_, v)| v.clone())
             .expect("cons.head"),
         _ => panic!("expected list, got {facts:?}"),
     };
     match stored {
         Value::Entity { functor, ref named, .. } => {
-            assert_eq!(interp.kb().resolve_sym(functor), "stored_ref");
+            assert_eq!(interp.kb().local_name_of(functor), "stored_ref");
             assert!(named.iter().any(|(s, v)| {
-                interp.kb().resolve_sym(*s) == "reference" && matches!(v, Value::FactRef(_))
+                interp.kb().local_name_of(*s) == "reference" && matches!(v, Value::FactRef(_))
             }));
         }
         other => panic!("expected StoredRef entity, got {other:?}"),
@@ -83,16 +83,16 @@ end
             match cur {
                 Value::Entity { ref named, .. } => {
                     let h = named.iter()
-                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
                         .map(|(_, v)| v.clone());
                     let t = named.iter()
-                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "tail")
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
                         .map(|(_, v)| v.clone());
                     match (h, t) {
                         (Some(Value::Term { id: tid, .. }), Some(tail)) => {
                             if let Term::Fn { named_args, .. } = interp.kb().get_term(tid) {
                                 let is_user_fact = named_args.iter().any(|(s, t)| {
-                                    interp.kb().resolve_sym(*s) == "fst" &&
+                                    interp.kb().local_name_of(*s) == "fst" &&
                                     matches!(interp.kb().get_term(*t), Term::Const(Literal::Int(_)))
                                 });
                                 if is_user_fact { found = Some(Value::term(tid)); break; }
@@ -124,10 +124,10 @@ end
     match term {
         Term::Fn { named_args, .. } => {
             let snd = named_args.iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "snd")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "snd")
                 .map(|(_, t)| *t).expect("snd field");
             let fst = named_args.iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "fst")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "fst")
                 .map(|(_, t)| *t).expect("fst field");
             assert!(matches!(interp.kb().get_term(snd),
                 Term::Const(Literal::Int(99))),

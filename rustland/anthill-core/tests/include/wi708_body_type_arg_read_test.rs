@@ -44,15 +44,15 @@ end
         Term::Fn { functor, named_args, .. } => (functor, named_args),
         other => panic!("expected a parameterized `Fn` type term (`Cell[V = …]`), got {other:?}"),
     };
-    assert_eq!(interp.kb().resolve_sym(functor), "Cell", "the base sort is Cell");
+    assert_eq!(interp.kb().local_name_of(functor), "Cell", "the base sort is Cell");
     assert_eq!(named.len(), 1, "one type argument (V)");
-    assert_eq!(interp.kb().resolve_sym(named[0].0), "V", "keyed by the declared param V");
+    assert_eq!(interp.kb().local_name_of(named[0].0), "V", "keyed by the declared param V");
 
     // The V binding must be `Int64` — the type argument `T` was bound to. Before the
     // fix it was the op-scoped `Ref(T)` (a dangling self-reference to the param name).
     match interp.kb().get_term(named[0].1).clone() {
         Term::Ref(s) | Term::Ident(s) => assert_eq!(
-            interp.kb().resolve_sym(s),
+            interp.kb().local_name_of(s),
             "Int64",
             "the type param `T` must read as its binding `Int64`, not a dangling `Ref(T)`"
         ),
@@ -85,7 +85,7 @@ end
             other => panic!("{op}: expected Fn, got {other:?}"),
         };
         match interp.kb().get_term(named[0].1).clone() {
-            Term::Ref(s) | Term::Ident(s) => interp.kb().resolve_sym(s).to_string(),
+            Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
             other => panic!("{op}: expected a sort ref binding, got {other:?}"),
         }
     };
@@ -138,7 +138,7 @@ end
         other => panic!("expected a `Cell[V = …]` Fn, got {other:?}"),
     };
     let arg = match interp.kb().get_term(named[0].1).clone() {
-        Term::Ref(s) | Term::Ident(s) => interp.kb().resolve_sym(s).to_string(),
+        Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
         other => panic!("expected a sort ref binding, got {other:?}"),
     };
     assert_eq!(

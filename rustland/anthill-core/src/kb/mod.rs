@@ -1541,9 +1541,29 @@ impl KnowledgeBase {
         VarId::new(id, name)
     }
 
-    /// Resolve a Symbol back to its short (display) name.
-    pub fn resolve_sym(&self, sym: Symbol) -> &str {
-        self.symbols.name(sym)
+    /// `sym`'s name WITHIN THE SCOPE THAT DECLARES IT — the key it is filed under in
+    /// that scope. `fill` for `Tank.fill`. Pairs with [`Self::qualified_name_of`],
+    /// which answers the other half of the same question.
+    ///
+    /// LOCAL, not SHORT, and the difference is real: it is usually one segment but
+    /// need not be. A WI-341 callback place is declared in the OPERATION's scope under
+    /// its path relative to that operation, so `anthill.prelude.Monad.flatMap.f._1`
+    /// answers `f._1` — the dot keeps it distinct from a sibling callback's `_1` in
+    /// the one flat scope map. MEASURED over stdlib + anthill-stl: 53 of 2598 symbols
+    /// answer with a dotted name, all of that shape.
+    ///
+    /// So this is NOT `typing::short_name_of`, which slices the last segment off a
+    /// qualified name STRING, nor the language-level `anthill.reflect.short_name`,
+    /// which `rsplit`s for the same reason. Those two answer `_1`; this answers
+    /// `f._1`. Composing them (`short_name_of(kb.local_name_of(sym))`) is a real and
+    /// common idiom — the two are not interchangeable.
+    ///
+    /// Named `resolve_sym` until WI-956. That read as a sibling of
+    /// [`Self::resolve_symbol`] / [`Self::try_resolve_symbol`] — one truncation apart
+    /// from it — while running in the OPPOSITE direction: those take a name and answer
+    /// a `Symbol`, this takes a `Symbol` and answers a name.
+    pub fn local_name_of(&self, sym: Symbol) -> &str {
+        self.symbols.local_name(sym)
     }
 
     /// Get the qualified name for a resolved Symbol.
@@ -1675,14 +1695,14 @@ impl KnowledgeBase {
             return Ok(());
         }
         for (i, n) in named.iter().enumerate() {
-            let short = self.resolve_sym(*n);
+            let short = self.local_name_of(*n);
             if !declared.iter().any(|d| d == short) {
                 return Err(TypeArgProblem::UndeclaredParam { param: short.to_owned() });
             }
             // WI-764: reject a param bound twice. Compared by the SHORT name the argument
             // was written with (the same key `declared` is matched on just above), so the
             // two spellings one slot can arrive under never read as two distinct params.
-            if named[..i].iter().any(|p| self.resolve_sym(*p) == short) {
+            if named[..i].iter().any(|p| self.local_name_of(*p) == short) {
                 return Err(TypeArgProblem::DuplicateParam { param: short.to_owned() });
             }
         }
@@ -1691,7 +1711,7 @@ impl KnowledgeBase {
         // `finish_sort_type` and the loader bind by.
         let free = declared
             .iter()
-            .filter(|d| !named.iter().any(|n| self.resolve_sym(*n) == d.as_str()))
+            .filter(|d| !named.iter().any(|n| self.local_name_of(*n) == d.as_str()))
             .count();
         if positional_count > free {
             return Err(TypeArgProblem::ExcessPositional { given: positional_count, free });
@@ -2732,7 +2752,7 @@ impl KnowledgeBase {
     /// before resolution (WI-754).
     pub fn undefined_query_functor(&self, tid: TermId) -> Option<Symbol> {
         let sym = self.head_functor(tid)?;
-        if crate::kb::resolve::is_scoping_marker(self.resolve_sym(sym), self.head_pos_arity(tid)) {
+        if crate::kb::resolve::is_scoping_marker(self.local_name_of(sym), self.head_pos_arity(tid)) {
             return None;
         }
         let defined =
@@ -2869,7 +2889,7 @@ impl KnowledgeBase {
         // rare and the tree walk is the expensive half.
         if let Some(sym) = self.undefined_query_functor(tid) {
             let ambiguous = matches!(
-                load::resolve_name_in_kb(self, self.resolve_sym(sym), scope_raw),
+                load::resolve_name_in_kb(self, self.local_name_of(sym), scope_raw),
                 ResolveResult::Ambiguous(_)
             );
             if ambiguous
@@ -2905,7 +2925,7 @@ impl KnowledgeBase {
         // reads the same shape), and `or` / `and` are the kernel disjunction /
         // conjunction RULES (`a | b` lowers to `or(a, b)`) — not builtins, so
         // `builtin_of` would miss them.
-        match self.resolve_sym(*functor) {
+        match self.local_name_of(*functor) {
             "forall_in" | "some_in" => {
                 return pos_args
                     .get(2)
@@ -2928,7 +2948,7 @@ impl KnowledgeBase {
     /// rather than dropped, so no goal escapes the walk (loud over silent).
     fn tuple_goal_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
         match self.get_term(tid) {
-            Term::Fn { functor, pos_args, .. } if self.resolve_sym(*functor) == "tuple" => {
+            Term::Fn { functor, pos_args, .. } if self.local_name_of(*functor) == "tuple" => {
                 pos_args.iter().copied().collect()
             }
             _ => SmallVec::from_elem(tid, 1),
@@ -5494,7 +5514,7 @@ impl KnowledgeBase {
 
     /// Resolve a qualified name and return its short name (if defined).
     pub fn qualified_short_name(&self, name: &str) -> Option<&str> {
-        self.symbols.by_qualified_name.get(name).map(|&sym| self.symbols.name(sym))
+        self.symbols.by_qualified_name.get(name).map(|&sym| self.symbols.local_name(sym))
     }
 
     /// Allocate a nullary functor term from an already-interned symbol.
@@ -6857,7 +6877,7 @@ impl KnowledgeBase {
     /// identically by both — harmless: it merely lets a bare goal route to
     /// `= true` rather than being flagged, never a wrong answer.
     pub(crate) fn sort_sym_is_bool(&self, s: Symbol) -> bool {
-        self.resolve_sym(s).rsplit('.').next() == Some("Bool")
+        self.local_name_of(s).rsplit('.').next() == Some("Bool")
     }
 
     /// Check if a goal term's functor is a registered builtin.
@@ -6896,7 +6916,7 @@ impl TermSource for KnowledgeBase {
         self.terms.get(id)
     }
     fn sym_name(&self, sym: Symbol) -> &str {
-        self.symbols.name(sym)
+        self.symbols.local_name(sym)
     }
     fn qualified_name(&self, sym: Symbol) -> &str {
         self.qualified_name_of(sym)

@@ -52,7 +52,7 @@ fn dump_eq_lt_rewrites() {
         let fn_desc = match kb.get_term(rewritten_tid) {
             Term::Fn { named_args, .. } => {
                 named_args.iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "fn")
+                    .find(|(s, _)| kb.local_name_of(*s) == "fn")
                     .map(|(_, v)| match kb.get_term(*v) {
                         Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
                         other => format!("{other:?}"),

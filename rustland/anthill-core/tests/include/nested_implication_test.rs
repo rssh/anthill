@@ -55,7 +55,7 @@ fn nested_impl_in_rule_body_parses_and_loads() {
     let goal = &body[1];
     match goal.as_expr() {
         Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-            assert_eq!(kb.resolve_sym(*functor), "forall_impl",
+            assert_eq!(kb.local_name_of(*functor), "forall_impl",
                 "second goal should be forall_impl");
             assert_eq!(pos_args.len(), 3, "forall_impl takes (binders, ants, cons)");
             assert!(named_args.is_empty());

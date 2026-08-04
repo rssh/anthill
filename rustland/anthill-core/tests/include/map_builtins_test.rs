@@ -27,13 +27,13 @@ fn empty_map(interp: &mut Interpreter) -> Value {
 fn unwrap_some(interp: &Interpreter, v: Value) -> Value {
     match v {
         Value::Entity { functor, named, .. } => {
-            let name = interp.kb().resolve_sym(functor);
+            let name = interp.kb().local_name_of(functor);
             assert!(
                 name == "some" || name == "anthill.prelude.Option.some",
                 "expected some, got {name}",
             );
             named.iter().find_map(|(s, v)| {
-                if interp.kb().resolve_sym(*s) == "value" { Some(v.clone()) } else { None }
+                if interp.kb().local_name_of(*s) == "value" { Some(v.clone()) } else { None }
             }).expect("some has value field")
         }
         other => panic!("expected some(...), got {:?}", other),
@@ -43,7 +43,7 @@ fn unwrap_some(interp: &Interpreter, v: Value) -> Value {
 fn is_none(interp: &Interpreter, v: &Value) -> bool {
     match v {
         Value::Entity { functor, .. } => {
-            let name = interp.kb().resolve_sym(*functor);
+            let name = interp.kb().local_name_of(*functor);
             name == "none" || name == "anthill.prelude.Option.none"
         }
         _ => false,
@@ -277,7 +277,7 @@ end
     let values = interp.call("anthill.prelude.Map.values", &[m]).unwrap();
 
     fn is_cons(interp: &Interpreter, sym: anthill_core::intern::Symbol) -> bool {
-        let name = interp.kb().resolve_sym(sym);
+        let name = interp.kb().local_name_of(sym);
         name == "cons" || name == "anthill.prelude.List.cons"
     }
     fn collect_list(interp: &Interpreter, list: Value) -> Vec<Value> {
@@ -286,9 +286,9 @@ end
         loop {
             match cur {
                 Value::Entity { functor, named, .. } if is_cons(interp, functor) => {
-                    let head = named.iter().find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+                    let head = named.iter().find(|(s, _)| interp.kb().local_name_of(*s) == "head")
                         .map(|(_, v)| v.clone()).expect("head");
-                    let tail = named.iter().find(|(s, _)| interp.kb().resolve_sym(*s) == "tail")
+                    let tail = named.iter().find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
                         .map(|(_, v)| v.clone()).expect("tail");
                     out.push(head);
                     cur = tail;

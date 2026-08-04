@@ -37,7 +37,7 @@ fn occ(expr: Expr) -> Rc<NodeOccurrence> {
 fn sort_is(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, name: &str) {
     let ms = occ.inferred_type().and_then(|t| sort_functor_of_view(kb, &t))
         .expect("occurrence should carry a declared sort");
-    let full = kb.resolve_sym(ms);
+    let full = kb.local_name_of(ms);
     assert!(
         full == name || full.ends_with(&format!(".{name}")),
         "expected min_sort {name}, got {full}",

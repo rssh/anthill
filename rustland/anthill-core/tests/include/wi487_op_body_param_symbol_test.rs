@@ -72,7 +72,7 @@ fn op_body_param_var_shares_operationinfo_symbol() {
         .expect("OperationInfo for use_peek");
     assert_eq!(rec.params.len(), 1, "use_peek has one param");
     let param_sym = rec.params[0].0;
-    assert_eq!(kb.resolve_sym(param_sym), "b");
+    assert_eq!(kb.local_name_of(param_sym), "b");
 
     // The op body's `?b` var(s) must carry that exact Symbol — by IDENTITY,
     // not merely by name. Before WI-487 this was a distinct freshly-interned
@@ -89,7 +89,7 @@ fn op_body_param_var_shares_operationinfo_symbol() {
             *n,
             param_sym,
             "op-body var '{}' (Symbol {:?}) must equal the OperationInfo param Symbol {:?}",
-            kb.resolve_sym(*n),
+            kb.local_name_of(*n),
             n,
             param_sym
         );

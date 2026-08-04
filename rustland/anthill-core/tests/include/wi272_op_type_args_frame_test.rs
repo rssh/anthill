@@ -66,7 +66,7 @@ fn fixture_interp(captured: Arc<Mutex<Option<Snapshot>>>) -> Interpreter {
             let snap_raw = interp.top_frame_type_args_for_test();
             let snap: Snapshot = snap_raw
                 .iter()
-                .map(|(s, t)| (interp.kb().resolve_sym(*s).to_string(), *t))
+                .map(|(s, t)| (interp.kb().local_name_of(*s).to_string(), *t))
                 .collect();
             *captured.lock().unwrap() = Some(snap);
             Ok(Value::Int(0))

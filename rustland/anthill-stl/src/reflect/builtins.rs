@@ -405,7 +405,7 @@ fn kb_fields(
     let mut items: Vec<Value> = Vec::new();
     if let Some(fields) = declared {
         for (field_sym, field_type) in fields {
-            let name_val = Value::Str(kb.resolve_sym(field_sym).to_string());
+            let name_val = Value::Str(kb.local_name_of(field_sym).to_string());
             let entry = vec![
                 (syms.f_name, name_val),
                 (syms.f_type_name, field_type),
@@ -605,7 +605,7 @@ impl reader::ReflectReader for ValueRepr<'_> {
             Ok(reader::ReflectShape::Fn(functor_sym, children))
         } else {
             Err(EvalError::Internal(format!(
-                "unknown TermRepr ctor: {}", kb.resolve_sym(functor))))
+                "unknown TermRepr ctor: {}", kb.local_name_of(functor))))
         }
     }
 }
@@ -662,7 +662,7 @@ fn decode_literal_repr(
         }
     } else {
         Err(EvalError::Internal(format!(
-            "unknown LiteralRepr ctor: {}", kb.resolve_sym(lit_ctor))))
+            "unknown LiteralRepr ctor: {}", kb.local_name_of(lit_ctor))))
     }
 }
 
@@ -697,7 +697,7 @@ fn collect_repr_list(
                 if f == syms.nil { break; }
                 if f != syms.cons {
                     return Err(EvalError::Internal(format!(
-                        "FnRepr.args: expected cons-list, got {}", kb.resolve_sym(f))));
+                        "FnRepr.args: expected cons-list, got {}", kb.local_name_of(f))));
                 }
                 let head = named.iter().find(|(s, _)| *s == syms.head)
                     .map(|(_, v)| v.clone())
@@ -741,7 +741,7 @@ fn qualified_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("short_name", args)?;
     let sym = expect_symbol(interp.kb(), s, "short_name")?;
-    Ok(Value::Str(interp.kb().resolve_sym(sym).to_string()))
+    Ok(Value::Str(interp.kb().local_name_of(sym).to_string()))
 }
 
 fn lookup_symbol_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -887,7 +887,7 @@ fn resolve_sort_instantiation_param(
                 .map(|(_, tid)| Value::term(*tid))
                 .ok_or_else(|| EvalError::Internal(format!(
                     "resolve_sort_instantiation_param: '{}' not bound",
-                    kb.resolve_sym(param_sym))))
+                    kb.local_name_of(param_sym))))
         }
         _ => Err(EvalError::TypeMismatch {
             expected: "SortView Term", got: "other Term".into(),
@@ -1090,12 +1090,12 @@ end
             .expect("sort_template call");
         match result {
             Value::Entity { functor, named, .. } => {
-                let name = interp.kb().resolve_sym(functor).to_string();
+                let name = interp.kb().local_name_of(functor).to_string();
                 assert_eq!(name, "sort_query");
                 assert_eq!(named.len(), 1);
                 // The `sort` payload rides as the by-reference term verbatim,
                 // its functor the SAME symbol the qualified name resolves to.
-                let field_name = interp.kb().resolve_sym(named[0].0).to_string();
+                let field_name = interp.kb().local_name_of(named[0].0).to_string();
                 assert_eq!(field_name, "sort");
                 let sort_sym = anthill_core::eval::value_functor(interp.kb(), &named[0].1)
                     .expect("sort payload names a functor");
@@ -1130,12 +1130,12 @@ end
         loop {
             match cur {
                 Value::Entity { functor, ref named, .. } => {
-                    let fname = interp.kb().resolve_sym(functor).to_string();
+                    let fname = interp.kb().local_name_of(functor).to_string();
                     if fname == "nil" { break; }
                     if fname != "cons" { panic!("expected cons, got {fname}"); }
                     count += 1;
                     cur = named.iter().find(|(s, _)|
-                        interp.kb().resolve_sym(*s) == "tail"
+                        interp.kb().local_name_of(*s) == "tail"
                     ).map(|(_, v)| v.clone()).expect("cons tail");
                 }
                 other => panic!("non-entity in list: {other:?}"),
@@ -1183,31 +1183,31 @@ end
         let mut pairs: Vec<(String, i64)> = Vec::new();
         let mut cur = result;
         while let Value::Entity { functor, named, .. } = cur {
-            let fname = interp.kb().resolve_sym(functor).to_string();
+            let fname = interp.kb().local_name_of(functor).to_string();
             if fname == "nil" {
                 break;
             }
             assert_eq!(fname, "cons", "expected cons in result list");
             let head = named
                 .iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
                 .map(|(_, v)| v.clone())
                 .expect("cons head");
             let tail = named
                 .iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "tail")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
                 .map(|(_, v)| v.clone())
                 .expect("cons tail");
             match head {
                 Value::Entity { named: dn, .. } => {
                     let content = dn
                         .iter()
-                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "content")
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "content")
                         .and_then(|(_, v)| v.as_str().map(str::to_string))
                         .expect("content field");
                     let index = dn
                         .iter()
-                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "index")
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "index")
                         .and_then(|(_, v)| v.as_int())
                         .expect("index field");
                     pairs.push((content, index));
@@ -1355,7 +1355,7 @@ end
             .expect("term_as_sort");
         match as_opt {
             Value::Entity { functor, named, .. } => {
-                let name = interp.kb().resolve_sym(functor).to_string();
+                let name = interp.kb().local_name_of(functor).to_string();
                 assert_eq!(name, "none");
                 assert!(named.is_empty());
             }
@@ -1447,7 +1447,7 @@ end
                 match v {
                     Value::Entity { named, .. } => named
                         .iter()
-                        .find(|(s, _)| interp.kb().resolve_sym(*s) == key)
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == key)
                         .map(|(_, v)| v.clone()),
                     _ => None,
                 }
@@ -1455,7 +1455,7 @@ end
             let head = field_named(&result, "head").expect("non-empty field list");
             assert!(
                 matches!(field_named(&result, "tail"), Some(Value::Entity { functor, .. })
-                    if interp.kb().resolve_sym(functor) == "nil"),
+                    if interp.kb().local_name_of(functor) == "nil"),
                 "dup has exactly one field",
             );
             match field_named(&head, "name") {
@@ -1550,7 +1550,7 @@ end
                 match pair {
                     Value::Entity { named: pair_named, .. } => {
                         pair_named.iter().find(|(s, _)|
-                            interp.kb().resolve_sym(*s) == "fst"
+                            interp.kb().local_name_of(*s) == "fst"
                         ).map(|(_, v)| v.clone()).expect("fst")
                     }
                     other => panic!("expected pair, got {other:?}"),
@@ -1564,13 +1564,13 @@ end
         // its `subst` field carries the Value::Substitution.
         match fst {
             Value::Entity { functor, named, .. } => {
-                let ctor = interp.kb().resolve_sym(functor).to_string();
+                let ctor = interp.kb().local_name_of(functor).to_string();
                 assert!(
                     ctor.ends_with("definite") || ctor.ends_with("undecided"),
                     "expected a Solution (definite/undecided), got functor {ctor}",
                 );
                 let subst = named.iter().find(|(s, _)|
-                    interp.kb().resolve_sym(*s) == "subst"
+                    interp.kb().local_name_of(*s) == "subst"
                 ).map(|(_, v)| v.clone()).expect("subst field on Solution");
                 match subst {
                     Value::Substitution(_) => { /* expected */ }
@@ -1635,7 +1635,7 @@ end
         // A cons-list with one Pair(fst: <var term>, snd: Int64(42)).
         let head = match result {
             Value::Entity { ref named, .. } => named.iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "head")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
                 .map(|(_, v)| v.clone())
                 .expect("cons.head"),
             other => panic!("expected cons list, got {other:?}"),
@@ -1643,7 +1643,7 @@ end
         match head {
             Value::Entity { named, .. } => {
                 let field = |k: &str| named.iter()
-                    .find(|(s, _)| interp.kb().resolve_sym(*s) == k)
+                    .find(|(s, _)| interp.kb().local_name_of(*s) == k)
                     .map(|(_, v)| v.clone());
                 match field("snd").expect("pair.snd") {
                     Value::Term { id: tid, .. } => assert_eq!(tid, val_term, "snd should be the bound value term"),
@@ -1776,12 +1776,12 @@ end
         loop {
             match cur {
                 Value::Entity { functor, named, .. } => {
-                    let fname = interp.kb().resolve_sym(functor).to_string();
+                    let fname = interp.kb().local_name_of(functor).to_string();
                     if fname == "nil" { break; }
                     let head = named.iter().find(|(s, _)|
-                        interp.kb().resolve_sym(*s) == "head").map(|(_, v)| v.clone());
+                        interp.kb().local_name_of(*s) == "head").map(|(_, v)| v.clone());
                     let tail = named.iter().find(|(s, _)|
-                        interp.kb().resolve_sym(*s) == "tail").map(|(_, v)| v.clone());
+                        interp.kb().local_name_of(*s) == "tail").map(|(_, v)| v.clone());
                     if let Some(Value::Str(s)) = head { names.push(s); }
                     cur = tail.expect("cons tail");
                 }
@@ -1800,12 +1800,12 @@ end
         loop {
             match cur {
                 Value::Entity { functor, named, .. } => {
-                    let fname = interp.kb().resolve_sym(functor).to_string();
+                    let fname = interp.kb().local_name_of(functor).to_string();
                     if fname.rsplit('.').next() == Some("nil") { break; }
                     let head = named.iter().find(|(s, _)|
-                        interp.kb().resolve_sym(*s) == "head").map(|(_, v)| v.clone());
+                        interp.kb().local_name_of(*s) == "head").map(|(_, v)| v.clone());
                     let tail = named.iter().find(|(s, _)|
-                        interp.kb().resolve_sym(*s) == "tail").map(|(_, v)| v.clone());
+                        interp.kb().local_name_of(*s) == "tail").map(|(_, v)| v.clone());
                     match (head, tail) {
                         (Some(h), Some(t)) => { out.push(h); cur = t; }
                         _ => break,
@@ -1821,7 +1821,7 @@ end
     fn entity_field(interp: &Interpreter, e: &Value, key: &str) -> Option<Value> {
         match e {
             Value::Entity { named, .. } => named.iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == key)
+                .find(|(s, _)| interp.kb().local_name_of(*s) == key)
                 .map(|(_, v)| v.clone()),
             _ => None,
         }
@@ -1860,7 +1860,7 @@ end
             match entity_field(interp, op, "name")? {
                 Value::Term { id: tid, .. } => match interp.kb().get_term(tid) {
                     CoreTerm::Ref(s) => {
-                        let n = interp.kb().resolve_sym(*s).to_string();
+                        let n = interp.kb().local_name_of(*s).to_string();
                         Some(n.rsplit('.').next().unwrap_or(&n).to_string())
                     }
                     _ => None,

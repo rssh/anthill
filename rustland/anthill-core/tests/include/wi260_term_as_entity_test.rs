@@ -52,7 +52,7 @@ end
     let inner = match result {
         Value::Entity { functor, named, .. } => {
             assert_eq!(functor, some_sym,
-                "expected some(...), got {}(...)", interp.kb().resolve_sym(functor));
+                "expected some(...), got {}(...)", interp.kb().local_name_of(functor));
             assert_eq!(named.len(), 1, "some(value: …) has one field");
             named.iter().next().unwrap().1.clone()
         }
@@ -64,13 +64,13 @@ end
     let kb = interp.kb();
     match inner {
         Value::Entity { functor, pos, named, .. } => {
-            assert_eq!(kb.resolve_sym(functor), "Item",
+            assert_eq!(kb.local_name_of(functor), "Item",
                 "functor short name should be Item");
             assert!(pos.is_empty(), "Item has no positional args");
             assert_eq!(named.len(), 3, "Item has three fields");
 
             let find = |key: &str| named.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == key)
+                .find(|(s, _)| kb.local_name_of(*s) == key)
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| panic!("field `{key}` missing"));
 
@@ -114,7 +114,7 @@ end
     match result {
         Value::Entity { functor, named, .. } => {
             assert_eq!(functor, none_sym,
-                "expected none(), got {}(...)", interp.kb().resolve_sym(functor));
+                "expected none(), got {}(...)", interp.kb().local_name_of(functor));
             assert!(named.is_empty(), "none() carries no fields");
         }
         other => panic!("expected none() Entity, got {other:?}"),
@@ -151,7 +151,7 @@ end
     match result {
         Value::Entity { functor, .. } => {
             assert_eq!(functor, none_sym,
-                "expected none(), got {}(...)", interp.kb().resolve_sym(functor));
+                "expected none(), got {}(...)", interp.kb().local_name_of(functor));
         }
         other => panic!("expected none() Entity, got {other:?}"),
     }
@@ -214,9 +214,9 @@ end
                 .expect("some(value: …) has one field");
             match outer_v {
                 Value::Entity { functor, named: outer_named, .. } => {
-                    assert_eq!(interp.kb().resolve_sym(*functor), "Outer");
+                    assert_eq!(interp.kb().local_name_of(*functor), "Outer");
                     let child = outer_named.iter()
-                        .find(|(s, _)| interp.kb().resolve_sym(*s) == "child")
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "child")
                         .map(|(_, v)| v.clone())
                         .expect("child field present");
                     child
@@ -229,10 +229,10 @@ end
 
     match inner_value {
         Value::Entity { functor, named, .. } => {
-            assert_eq!(interp.kb().resolve_sym(functor), "Inner",
+            assert_eq!(interp.kb().local_name_of(functor), "Inner",
                 "child must recurse to Inner entity, not stay as Value::Term");
             let tag = named.iter()
-                .find(|(s, _)| interp.kb().resolve_sym(*s) == "tag")
+                .find(|(s, _)| interp.kb().local_name_of(*s) == "tag")
                 .map(|(_, v)| v.clone())
                 .expect("tag field present on Inner");
             match tag {

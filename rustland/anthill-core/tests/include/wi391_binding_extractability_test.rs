@@ -33,7 +33,7 @@ fn spec_binding_values(kb: &KnowledgeBase, spec: TermId) -> Vec<(Symbol, TermId)
 fn binding_named(kb: &KnowledgeBase, spec: TermId, short: &str) -> Option<TermId> {
     spec_binding_values(kb, spec)
         .into_iter()
-        .find(|(p, _)| kb.resolve_sym(*p) == short)
+        .find(|(p, _)| kb.local_name_of(*p) == short)
         .map(|(_, v)| v)
 }
 
@@ -142,7 +142,7 @@ fn stdlib_spec_bindings_all_extract_non_error() {
                     "{info} binding `{}` = {:?} extracts as TypeExtractor::Error — every stored \
                      type-position value must classify into a structural TypeExtractor variant \
                      (WI-391 / WI-449 / §5.3 extractability criterion)",
-                    kb.resolve_sym(param),
+                    kb.local_name_of(param),
                     kb.get_term(val),
                 );
                 checked += 1;

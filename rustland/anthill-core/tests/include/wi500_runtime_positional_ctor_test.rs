@@ -79,7 +79,7 @@ fn alloc_from_value_desugars_positional_to_named() {
             assert!(pos_args.is_empty(), "positional args must be desugared away, got {pos_args:?}");
             assert_eq!(named_args.len(), 1, "exactly the one declared field");
             let (field, _) = named_args[0];
-            assert_eq!(kb.resolve_sym(field), "at", "positional arg fills the declared `at` field");
+            assert_eq!(kb.local_name_of(field), "at", "positional arg fills the declared `at` field");
         }
         other => panic!("expected Term::Fn, got {other:?}"),
     }

@@ -174,7 +174,7 @@ fn collect_trait_sorts_from_items(
                     Item::Operation(_) | Item::OperationBlock(_)));
                 let has_entities = s.items.iter().any(|i| matches!(i, Item::Entity(_)));
                 if !has_entities && has_ops {
-                    traits.insert(symbols.name(s.name.last()).to_owned());
+                    traits.insert(symbols.local_name(s.name.last()).to_owned());
                 }
                 // Recurse into nested items (sub-namespaces, nested sorts)
                 collect_trait_sorts_from_items(&s.items, symbols, traits);
@@ -216,7 +216,7 @@ impl<'a> SortInfo<'a> {
         for item in items {
             match item {
                 Item::AbstractSort(s) => {
-                    info.type_params.push(symbols.name(s.name.last()).to_owned());
+                    info.type_params.push(symbols.local_name(s.name.last()).to_owned());
                 }
                 Item::RequiresDecl(r) => {
                     // `effects E = ?` desugars to `requires
@@ -331,18 +331,18 @@ impl<'a> RustCodegen<'a> {
     // ── Name resolution helpers ──────────────────────────────────
 
     fn resolve(&self, name: &Name) -> String {
-        self.symbols.name(name.last()).to_owned()
+        self.symbols.local_name(name.last()).to_owned()
     }
 
     /// Find a binding by named param, falling back to positional index.
     fn find_binding<'b>(&self, bindings: &'b [SortBinding], param_name: &str, positional_index: usize) -> Option<&'b SortBinding> {
         bindings.iter()
-            .find(|b| b.param.as_ref().map(|p| self.symbols.name(p.last()) == param_name).unwrap_or(false))
+            .find(|b| b.param.as_ref().map(|p| self.symbols.local_name(p.last()) == param_name).unwrap_or(false))
             .or_else(|| bindings.iter().filter(|b| b.param.is_none()).nth(positional_index))
     }
 
-    fn resolve_sym(&self, sym: Symbol) -> String {
-        self.symbols.name(sym).to_owned()
+    fn local_name_of(&self, sym: Symbol) -> String {
+        self.symbols.local_name(sym).to_owned()
     }
 
     fn visibility_prefix(&self, vis: Option<Visibility>) -> &'static str {
@@ -1046,7 +1046,7 @@ impl<'a> RustCodegen<'a> {
             return;
         }
         let mut segments: Vec<String> = imp.path.segments.iter()
-            .map(|s| to_snake_case(&self.resolve_sym(*s)))
+            .map(|s| to_snake_case(&self.local_name_of(*s)))
             .collect();
 
         // Apply namespace_map: if the first segment matches a key, replace it
@@ -1094,7 +1094,7 @@ impl<'a> RustCodegen<'a> {
             self.line(&format!("{vis}struct {name} {{"));
             self.indent();
             for field in &entity.fields {
-                let fname = to_snake_case(&self.resolve_sym(field.name));
+                let fname = to_snake_case(&self.local_name_of(field.name));
                 let ftype = self.wrap_trait_field(&self.type_to_rust(&field.ty));
                 self.line(&format!("pub {fname}: {ftype},"));
             }
@@ -1177,7 +1177,7 @@ impl<'a> RustCodegen<'a> {
                 self.line(&format!("{ename} {{"));
                 self.indent();
                 for field in &entity.fields {
-                    let fname = to_snake_case(&self.resolve_sym(field.name));
+                    let fname = to_snake_case(&self.local_name_of(field.name));
                     let ftype = self.type_to_rust_for_enum_field(
                         &field.ty, sort_name, &info.type_params,
                     );
@@ -1339,7 +1339,7 @@ impl<'a> RustCodegen<'a> {
         // has no Rust witness — emitting it as an unconstrained generic would break
         // call-site inference — so it is erased.
         let method_type_params: Vec<String> = op.type_params.iter()
-            .map(|tp| self.resolve_sym(tp.name))
+            .map(|tp| self.local_name_of(tp.name))
             .filter(|name| {
                 op.params.iter().any(|p| self.type_mentions(&p.ty, name))
                     || self.type_mentions(&op.return_type, name)
@@ -1370,7 +1370,7 @@ impl<'a> RustCodegen<'a> {
             if !params_str.is_empty() {
                 params_str.push_str(", ");
             }
-            let pname = to_snake_case(&self.resolve_sym(param.name));
+            let pname = to_snake_case(&self.local_name_of(param.name));
             let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, collapse_self);
             let ptype = self.wrap_trait_param(&ptype, sort_name);
             params_str.push_str(&format!("{pname}: {ptype}"));
@@ -1425,7 +1425,7 @@ impl<'a> RustCodegen<'a> {
             if !params_str.is_empty() {
                 params_str.push_str(", ");
             }
-            let pname = to_snake_case(&self.resolve_sym(param.name));
+            let pname = to_snake_case(&self.local_name_of(param.name));
             let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, false);
             // Preserve the original bare-param emission when the flag is off;
             // only trait-object wrapping is opt-in (WI-540).
@@ -1479,7 +1479,7 @@ impl<'a> RustCodegen<'a> {
 
         for param in &op.params {
             params_str.push_str(", ");
-            let pname = to_snake_case(&self.resolve_sym(param.name));
+            let pname = to_snake_case(&self.local_name_of(param.name));
             let ptype = self.type_to_rust(&param.ty);
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
@@ -1515,7 +1515,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         // Check if the first param is the target of a Modifies effect
-        let first_param_name = self.resolve_sym(op.params[0].name);
+        let first_param_name = self.local_name_of(op.params[0].name);
         let is_mut = effects.modifies_targets.iter().any(|t| t == &first_param_name);
 
         (true, is_mut)
@@ -1603,11 +1603,11 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
     for effect in effects {
         match &effect.type_expr {
             TypeExpr::Parameterized { name, bindings } => {
-                let kind = symbols.name(name.last());
+                let kind = symbols.local_name(name.last());
                 // Extract target from first binding's bound value
                 let target = if let Some(b) = bindings.first() {
                     match &b.bound {
-                        TypeExpr::Simple(n) => symbols.name(n.last()).to_owned(),
+                        TypeExpr::Simple(n) => symbols.local_name(n.last()).to_owned(),
                         _ => continue,
                     }
                 } else {
@@ -1625,7 +1625,7 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
                 }
             }
             TypeExpr::Simple(name) => {
-                let kind = symbols.name(name.last());
+                let kind = symbols.local_name(name.last());
                 match kind {
                     "Error" => {
                         // Bare Error (no type param) → Result<R, Error>
@@ -1698,8 +1698,8 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
         }
 
         let first_type = match &op.params[0].ty {
-            TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
-            TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
+            TypeExpr::Simple(name) => symbols.local_name(name.last()).to_owned(),
+            TypeExpr::Parameterized { name, .. } => symbols.local_name(name.last()).to_owned(),
             TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Tuple(_) => "Tuple".to_owned(),
             TypeExpr::Arrow { .. } => "Fn".to_owned(),
@@ -1835,9 +1835,9 @@ fn escape_rust_keyword(name: String) -> String {
 /// Extract a sort name from a fact term (for fact-as-supertrait pattern).
 fn extract_fact_sort_name(symbols: &SymbolTable, terms: &SimpleTermStore, fact: &Fact) -> Option<String> {
     match terms.get(fact.term) {
-        Term::Ident(sym) => Some(symbols.name(*sym).to_owned()),
+        Term::Ident(sym) => Some(symbols.local_name(*sym).to_owned()),
         Term::Fn { functor, .. } => {
-            Some(symbols.name(*functor).to_owned())
+            Some(symbols.local_name(*functor).to_owned())
         }
         _ => None,
     }
@@ -1846,8 +1846,8 @@ fn extract_fact_sort_name(symbols: &SymbolTable, terms: &SimpleTermStore, fact: 
 /// Get the short name from a TypeExpr.
 fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
-        TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
+        TypeExpr::Simple(name) => symbols.local_name(name.last()).to_owned(),
+        TypeExpr::Parameterized { name, .. } => symbols.local_name(name.last()).to_owned(),
         TypeExpr::Variable { .. } => "T".to_owned(),
         TypeExpr::Tuple(_) => "Tuple".to_owned(),
         TypeExpr::Arrow { .. } => "Fn".to_owned(),
@@ -1872,7 +1872,7 @@ fn type_expr_qualified_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
     };
     segments
         .iter()
-        .map(|s| symbols.name(*s))
+        .map(|s| symbols.local_name(*s))
         .collect::<Vec<_>>()
         .join(".")
 }

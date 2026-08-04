@@ -72,7 +72,7 @@ end
         .try_resolve_symbol("test.wi231.classifications.Wi231Defer")
         .expect("Wi231Defer");
     assert_eq!(spec_op_sym, eq_sym, "spec_op_sym must be Eq.eq");
-    assert_eq!(kb.resolve_sym(op_short_sym), "eq");
+    assert_eq!(kb.local_name_of(op_short_sym), "eq");
     // WI-232: resolved_spec carries the matched RequiresEntry; its
     // required_sort replaces the previous parallel `spec_sort` field.
     assert_eq!(resolved_spec.required_sort, eq_sort, "resolved_spec.required_sort must be Eq");

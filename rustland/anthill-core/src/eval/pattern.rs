@@ -278,7 +278,7 @@ fn match_tuple_pattern(
         // `field_access` — see `TupleComponents::by_label_index` on why the two must
         // not each carry their own rule, and why this resolves an INDEX. A component
         // the value does not have is NO MATCH; it is not a binder quietly skipped.
-        let idx = components.by_label_index(interp.kb(), interp.kb().resolve_sym(*label))?;
+        let idx = components.by_label_index(interp.kb(), interp.kb().local_name_of(*label))?;
         if covered.contains(&idx) {
             return None;
         }
@@ -339,8 +339,8 @@ pub(crate) fn functor_matches(
     scrutinee_sym: Symbol,
 ) -> bool {
     if pattern_sym == scrutinee_sym { return true; }
-    let pattern_short = kb.resolve_sym(pattern_sym).rsplit('.').next().unwrap_or("");
-    let scrut_short = kb.resolve_sym(scrutinee_sym).rsplit('.').next().unwrap_or("");
+    let pattern_short = kb.local_name_of(pattern_sym).rsplit('.').next().unwrap_or("");
+    let scrut_short = kb.local_name_of(scrutinee_sym).rsplit('.').next().unwrap_or("");
     !pattern_short.is_empty() && pattern_short == scrut_short
 }
 

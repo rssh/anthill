@@ -92,7 +92,7 @@ end
             use anthill_core::kb::term::Term;
             if let Term::Fn { named_args, .. } = kb.get_term(rewritten_tid) {
                 let fn_arg = named_args.iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "fn")
+                    .find(|(s, _)| kb.local_name_of(*s) == "fn")
                     .map(|(_, v)| *v);
                 if let Some(fn_tid) = fn_arg {
                     if let Term::Ref(s) = kb.get_term(fn_tid) {

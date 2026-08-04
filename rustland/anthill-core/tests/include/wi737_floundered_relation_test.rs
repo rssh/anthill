@@ -144,7 +144,7 @@ fn assert_floundered(interp: &anthill_core::eval::Interpreter, err: EvalError) -
     );
     let goals = named
         .iter()
-        .find(|(k, _)| interp.kb().resolve_sym(*k) == "goals")
+        .find(|(k, _)| interp.kb().local_name_of(*k) == "goals")
         .map(|(_, v)| v)
         .unwrap_or_else(|| panic!("payload carries a `goals` field; got {payload:?}"));
     // Walk the cons/nil spine. The goals ride carrier-faithfully (WI-348): a goal
@@ -167,7 +167,7 @@ fn assert_floundered(interp: &anthill_core::eval::Interpreter, err: EvalError) -
         n += 1;
         cur = named
             .iter()
-            .find(|(k, _)| interp.kb().resolve_sym(*k) == "tail")
+            .find(|(k, _)| interp.kb().local_name_of(*k) == "tail")
             .map(|(_, v)| v)
             .expect("a cons cell has a tail");
     }

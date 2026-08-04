@@ -239,7 +239,7 @@ fn the_loader_attaches_distinct_annotations_to_distinct_lets() {
         };
         named_args
             .iter()
-            .find(|(k, _)| kb.resolve_sym(*k) == "type_ann")
+            .find(|(k, _)| kb.local_name_of(*k) == "type_ann")
             .unwrap_or_else(|| panic!("{op}: pattern twin carries no `type_ann`"))
             .1
     };
@@ -268,7 +268,7 @@ fn the_annotation_rides_the_pattern_term_not_the_let_term() {
     let let_occ = let_body(&kb, "wi819.keys.as_int");
     let keys: Vec<String> = {
         use anthill_core::kb::term_view::TermView;
-        Value::Node(let_occ).named_keys(&kb).iter().map(|s| kb.resolve_sym(*s).to_string()).collect()
+        Value::Node(let_occ).named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect()
     };
     assert_eq!(keys, ["pattern", "value", "body"], "`let_expr` gains no annotation slot");
 
@@ -278,9 +278,9 @@ fn the_annotation_rides_the_pattern_term_not_the_let_term() {
         panic!("pattern twin should be a Fn, got {:?}", kb.get_term(twin));
     };
     assert!(
-        named_args.iter().any(|(k, _)| kb.resolve_sym(*k) == "type_ann"),
+        named_args.iter().any(|(k, _)| kb.local_name_of(*k) == "type_ann"),
         "the pattern TERM must carry `type_ann`; keys were {:?}",
-        named_args.iter().map(|(k, _)| kb.resolve_sym(*k).to_string()).collect::<Vec<_>>(),
+        named_args.iter().map(|(k, _)| kb.local_name_of(*k).to_string()).collect::<Vec<_>>(),
     );
 }
 
@@ -497,7 +497,7 @@ fn tuple_pattern_labels_survive_the_term_round_trip() {
         panic!("tuple twin should be a Fn");
     };
     assert_eq!(
-        named_args.iter().map(|(k, _)| kb.resolve_sym(*k).to_string()).collect::<Vec<_>>(),
+        named_args.iter().map(|(k, _)| kb.local_name_of(*k).to_string()).collect::<Vec<_>>(),
         ["elements"],
         "an unlabelled, unannotated tuple pattern keeps its one-key term shape",
     );

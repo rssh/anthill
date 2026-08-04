@@ -193,7 +193,7 @@ pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Sy
             _ => continue,
         };
         let name_match = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .find(|(s, _)| kb.local_name_of(*s) == "name")
             .and_then(|(_, v)| match kb.get_term(*v) {
                 Term::Ref(s) => Some(*s),
                 Term::Fn { functor, .. } => Some(*functor),
@@ -201,7 +201,7 @@ pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Sy
             });
         if name_match != Some(sort_sym) { continue; }
         let ops_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "operations")
+            .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| *v)
         {
             Some(t) => t,

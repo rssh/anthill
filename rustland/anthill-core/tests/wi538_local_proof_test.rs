@@ -71,9 +71,9 @@ fn in_body_proof_short_form_loads_as_expr_proof_and_types() {
     let body = kb.op_body_node(f).expect("op body node for f");
     match body.as_expr() {
         Some(Expr::Proof { target, strategy, using, conclude, body }) => {
-            assert_eq!(kb.resolve_sym(*target), "trivial", "target is the rule name");
+            assert_eq!(kb.local_name_of(*target), "trivial", "target is the rule name");
             assert_eq!(
-                strategy.map(|s| kb.resolve_sym(s)),
+                strategy.map(|s| kb.local_name_of(s)),
                 Some("derivation"),
                 "strategy is `derivation`",
             );
@@ -107,7 +107,7 @@ fn in_body_proof_conclude_form_loads_as_expr_proof_and_types() {
     let body = kb.op_body_node(f).expect("op body node for f");
     match body.as_expr() {
         Some(Expr::Proof { target, conclude, .. }) => {
-            assert_eq!(kb.resolve_sym(*target), "handle", "target is the citation handle");
+            assert_eq!(kb.local_name_of(*target), "handle", "target is the citation handle");
             assert!(conclude.is_some(), "conclude goal present");
         }
         other => panic!("expected Expr::Proof, got {other:?}"),
@@ -139,11 +139,11 @@ fn in_body_proofs_compose_in_sequence() {
     let Some(Expr::Proof { target, body, .. }) = body.as_expr() else {
         panic!("outer node is not Expr::Proof");
     };
-    assert_eq!(kb.resolve_sym(*target), "one");
+    assert_eq!(kb.local_name_of(*target), "one");
     let Some(Expr::Proof { target: inner, .. }) = body.as_expr() else {
         panic!("inner node is not Expr::Proof");
     };
-    assert_eq!(kb.resolve_sym(*inner), "two");
+    assert_eq!(kb.local_name_of(*inner), "two");
 }
 
 #[test]
@@ -182,9 +182,9 @@ fn proof_is_transparent_to_simp_rewriting() {
     // propagated the rewrite into the stored tree.
     match cont.as_expr() {
         Some(Expr::Apply { functor, .. }) => assert_eq!(
-            kb.resolve_sym(*functor), "regular",
+            kb.local_name_of(*functor), "regular",
             "the [simp] rewrite must propagate through the proof — continuation \
-             should be `regular`, got apply:{}", kb.resolve_sym(*functor)),
+             should be `regular`, got apply:{}", kb.local_name_of(*functor)),
         Some(Expr::DotApply { .. }) => panic!(
             "the [simp] rewrite was DROPPED: the proof continuation is still \
              dot_apply (simp_rewrite::reassemble missing the Expr::Proof arm)"),

@@ -260,7 +260,7 @@ end
             let store_lookup = kb.try_resolve_symbol("anthill.todo.store.WorkItemStore.lookup");
             let mut origins = Vec::new();
             for (rewritten, spec_sym) in kb.dispatch_origin_iter() {
-                let spec_name = kb.resolve_sym(spec_sym).to_string();
+                let spec_name = kb.local_name_of(spec_sym).to_string();
                 origins.push((rewritten, spec_name));
             }
             println!("[form_c_concrete] dispatch_origin entries: {}", origins.len());

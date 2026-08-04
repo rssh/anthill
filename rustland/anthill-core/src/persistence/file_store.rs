@@ -89,7 +89,7 @@ impl FileStore {
                 // The domain IS the name — `symbols.name` is exactly what
                 // `TermPrinter` reached for on the nullary `Fn` this used to be,
                 // so the paths it produces are unchanged.
-                let domain_name = kb.symbols.name(domain);
+                let domain_name = kb.symbols.local_name(domain);
                 // Sanitize: replace dots with path separators, strip non-alphanum
                 let sanitized: String = domain_name
                     .chars()

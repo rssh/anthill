@@ -286,7 +286,7 @@ fn extract_sort_ref_from_parameterized_type() {
     // heads / fact field positions that expect Fn(name, [], [])).
     match kb.get_term(bound) {
         Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
-            assert_eq!(kb.resolve_sym(*functor), "Eq", "should extract Eq from SortView(Eq(), ...)");
+            assert_eq!(kb.local_name_of(*functor), "Eq", "should extract Eq from SortView(Eq(), ...)");
         }
         other => panic!("expected Fn(Eq, [], []), got {:?}", other),
     }
@@ -309,7 +309,7 @@ fn extract_sort_ref_from_simple_ref() {
     let bound = kb.reify(var_result, &results[0].subst).expect_term();
     match kb.get_term(bound) {
         Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
-            assert_eq!(kb.resolve_sym(*functor), "Eq");
+            assert_eq!(kb.local_name_of(*functor), "Eq");
         }
         other => panic!("expected Fn(Eq, [], []), got {:?}", other),
     }
@@ -1251,11 +1251,11 @@ fn field_access_sort_component() {
     // Should resolve to Carrier sort term (nullary Fn)
     match kb.get_term(resolved) {
         Term::Fn { functor, .. } => {
-            let name = kb.resolve_sym(*functor);
+            let name = kb.local_name_of(*functor);
             assert!(name.contains("Carrier"), "expected Carrier sort, got {}", name);
         }
         Term::Ref(sym) => {
-            let name = kb.resolve_sym(*sym);
+            let name = kb.local_name_of(*sym);
             assert!(name.contains("Carrier"), "expected Carrier ref, got {}", name);
         }
         other => panic!("expected Fn or Ref for Carrier, got {:?}", other),
@@ -1369,8 +1369,8 @@ fn wi297_occurrence_term_literal_synth_resolves() {
     let bound = kb.reify(var_t, &results[0].subst).expect_term();
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "SortRef", "synth should yield SortRef(...)");
-            let name = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
+            assert_eq!(kb.local_name_of(*functor), "SortRef", "synth should yield SortRef(...)");
+            let name = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "name")
                 .map(|(_, t)| *t)
                 .expect("sort_ref should carry a name arg");
             let name_sym = match kb.get_term(name) {
@@ -1378,7 +1378,7 @@ fn wi297_occurrence_term_literal_synth_resolves() {
                 Term::Fn { functor, .. } => *functor,
                 other => panic!("unexpected sort_ref name term: {other:?}"),
             };
-            assert_eq!(kb.resolve_sym(name_sym), "Int64", "literal 42 should synth to Int64");
+            assert_eq!(kb.local_name_of(name_sym), "Int64", "literal 42 should synth to Int64");
         }
         other => panic!("expected SortRef(name: Int64), got {other:?}"),
     }
@@ -1406,12 +1406,12 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let sort_ref_name = |kb: &KnowledgeBase, t: TermId| -> String {
         match kb.get_term(t) {
             Term::Fn { functor, named_args, .. } => {
-                assert_eq!(kb.resolve_sym(*functor), "SortRef");
-                let n = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
+                assert_eq!(kb.local_name_of(*functor), "SortRef");
+                let n = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "name")
                     .map(|(_, t)| *t).expect("SortRef name");
                 match kb.get_term(n) {
-                    Term::Ref(s) | Term::Ident(s) => kb.resolve_sym(*s).to_string(),
-                    Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
+                    Term::Ref(s) | Term::Ident(s) => kb.local_name_of(*s).to_string(),
+                    Term::Fn { functor, .. } => kb.local_name_of(*functor).to_string(),
                     other => panic!("unexpected name term {other:?}"),
                 }
             }
@@ -1452,8 +1452,8 @@ fn wi297_occurrence_span_builds_source_span() {
     let bound = kb.reify(var_s, &results[0].subst).expect_term();
     match kb.get_term(bound) {
         Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "source_span");
-            let keys: Vec<String> = named_args.iter().map(|(s, _)| kb.resolve_sym(*s).to_string()).collect();
+            assert_eq!(kb.local_name_of(*functor), "source_span");
+            let keys: Vec<String> = named_args.iter().map(|(s, _)| kb.local_name_of(*s).to_string()).collect();
             assert!(keys.contains(&"file".to_string()), "fields: {keys:?}");
             assert!(keys.contains(&"start_byte".to_string()), "fields: {keys:?}");
             assert!(keys.contains(&"end_byte".to_string()), "fields: {keys:?}");
@@ -2109,23 +2109,23 @@ end
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             // Check if this is the "id" operation
             let is_id = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                .find(|(s, _)| kb.local_name_of(*s) == "name")
                 .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
-                .map(|s| kb.resolve_sym(s) == "id")
+                .map(|s| kb.local_name_of(s) == "id")
                 .unwrap_or(false);
             if !is_id { continue; }
 
             // Extract param name symbol from FieldInfo
             if let Some(params_tid) = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "params")
+                .find(|(s, _)| kb.local_name_of(*s) == "params")
                 .map(|(_, v)| *v)
             {
                 // Walk cons-list to first FieldInfo
                 if let Term::Fn { named_args: cons_args, .. } = kb.get_term(params_tid) {
-                    if let Some((_, head_tid)) = cons_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "head") {
+                    if let Some((_, head_tid)) = cons_args.iter().find(|(s, _)| kb.local_name_of(*s) == "head") {
                         if let Term::Fn { named_args: fi_args, .. } = kb.get_term(*head_tid) {
                             param_sym = fi_args.iter()
-                                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                                .find(|(s, _)| kb.local_name_of(*s) == "name")
                                 .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None });
                         }
                     }
@@ -2150,11 +2150,11 @@ end
 
     let ps = param_sym.expect("should find param symbol for x");
     let bs = body_var_sym.expect("should find body var_ref symbol for x");
-    assert_eq!(kb.resolve_sym(ps), "x", "param symbol should resolve to x");
-    assert_eq!(kb.resolve_sym(bs), "x", "body symbol should resolve to x");
+    assert_eq!(kb.local_name_of(ps), "x", "param symbol should resolve to x");
+    assert_eq!(kb.local_name_of(bs), "x", "body symbol should resolve to x");
     assert_eq!(ps, bs,
         "param symbol ({}: {}) and body var_ref symbol ({}: {}) for 'x' should be the same KB Symbol",
-        ps.index(), kb.resolve_sym(ps), bs.index(), kb.resolve_sym(bs));
+        ps.index(), kb.local_name_of(ps), bs.index(), kb.local_name_of(bs));
 }
 
 #[test]
@@ -4052,7 +4052,7 @@ fn requires_chain_ordered_includes_eq() {
     let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
     let chain = requires_chain_flat(&kb, ordered_sym);
     let eq_name = "Eq";
-    assert!(chain.iter().any(|e| kb.resolve_sym(e.required_sort) == eq_name),
+    assert!(chain.iter().any(|e| kb.local_name_of(e.required_sort) == eq_name),
         "Ordered's requires chain should include Eq");
 }
 
@@ -4266,16 +4266,16 @@ end
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             let name = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                .find(|(s, _)| kb.local_name_of(*s) == "name")
                 .and_then(|(_, v)| match kb.get_term(*v) {
-                    Term::Ref(s) => Some(kb.resolve_sym(*s).to_string()),
+                    Term::Ref(s) => Some(kb.local_name_of(*s).to_string()),
                     _ => None,
                 });
             if name.as_deref() == Some("Color") {
                 let kind = named_args.iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "kind")
+                    .find(|(s, _)| kb.local_name_of(*s) == "kind")
                     .and_then(|(_, v)| match kb.get_term(*v) {
-                        Term::Ident(s) => Some(kb.resolve_sym(*s).to_string()),
+                        Term::Ident(s) => Some(kb.local_name_of(*s).to_string()),
                         _ => None,
                     });
                 assert_eq!(kind.as_deref(), Some("enum"), "SortInfo kind should be 'enum'");
@@ -4586,7 +4586,7 @@ rule test_induction(?P) :- ?P(nil)
     // Body goal should be ho_apply(?P, nil)
     match body[0].as_expr() {
         Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
-            let fname = kb.resolve_sym(*functor);
+            let fname = kb.local_name_of(*functor);
             assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
                 "body should be ho_apply, got: {}", fname);
             assert_eq!(pos_args.len(), 2, "ho_apply should have 2 pos args: ?P and nil");
@@ -4608,7 +4608,7 @@ rule test(?P) :- ?P(foo, bar)
     let body = kb.rule_body_nodes(facts[0]);
     match body[0].as_expr() {
         Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
-            let fname = kb.resolve_sym(*functor);
+            let fname = kb.local_name_of(*functor);
             assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
                 "body should be ho_apply, got: {}", fname);
             assert_eq!(pos_args.len(), 3, "ho_apply(?P, foo, bar) = 3 pos args");
@@ -4662,7 +4662,7 @@ rule bigint_induction(?P)
     // First goal: ho_apply(?P, 0)
     match body[0].as_expr() {
         Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
-            let fname = kb.resolve_sym(*functor);
+            let fname = kb.local_name_of(*functor);
             assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
                 "first goal should be ho_apply, got: {}", fname);
             assert_eq!(pos_args.len(), 2, "ho_apply(?P, 0)");
@@ -4678,7 +4678,7 @@ rule bigint_induction(?P)
     // `forall_impl` (for the nested-implication form).
     match body[1].as_expr() {
         Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
-            let fname = kb.resolve_sym(*functor);
+            let fname = kb.local_name_of(*functor);
             let ok = fname == "forall" || fname.ends_with(".forall")
                   || fname == "forall_impl" || fname.ends_with(".forall_impl");
             assert!(ok,
@@ -5429,8 +5429,8 @@ fact Thing(count: "oops")
     assert_eq!(errors.len(), 1, "expected one type error, got: {errors:?}");
     match &errors[0] {
         TypeError::Other { context: TypeErrorContext::EntityField { entity, field }, expected, actual, .. } => {
-            assert_eq!(kb.resolve_sym(*entity), "Thing");
-            assert_eq!(kb.resolve_sym(*field), "count");
+            assert_eq!(kb.local_name_of(*entity), "Thing");
+            assert_eq!(kb.local_name_of(*field), "count");
             assert!(expected.contains("Int64"), "expected Int64, got: {expected}");
             assert_eq!(actual, "String");
         }
@@ -5454,7 +5454,7 @@ end
     )).unwrap_or_else(|| panic!("no OperationReturn TypeMismatch in {errors:?}"));
     match return_err {
         TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { op_name }, .. } => {
-            assert_eq!(kb.resolve_sym(*op_name), "greet");
+            assert_eq!(kb.local_name_of(*op_name), "greet");
         }
         _ => unreachable!(),
     }

@@ -173,7 +173,7 @@ impl KbBridge {
         match kb.get_term(id) {
             CoreTerm::Fn { named_args, .. } => {
                 named_args.iter()
-                    .map(|&(sym, tid)| (kb.resolve_sym(sym).to_string(), tid))
+                    .map(|&(sym, tid)| (kb.local_name_of(sym).to_string(), tid))
                     .collect()
             }
             _ => vec![],
@@ -279,7 +279,7 @@ impl KbBridge {
                         let named_args_vec: Vec<(anthill_core::intern::Symbol, TermId)> = field_syms
                             .iter()
                             .map(|&field_sym| {
-                                let sym_name = format!("?_{}", kb.resolve_sym(field_sym));
+                                let sym_name = format!("?_{}", kb.local_name_of(field_sym));
                                 let var_name = kb.intern(&sym_name);
                                 let vid = kb.fresh_var(var_name);
                                 let var_term = kb.alloc(CoreTerm::Var(Var::Global(vid)));
@@ -930,7 +930,7 @@ impl Substitution for SubstBridge {
     fn lookup(&self, name: String) -> Option<Term> {
         let kb = self.kb.borrow();
         for (var, val) in self.inner.iter() {
-            let var_name = kb.resolve_sym(var.name());
+            let var_name = kb.local_name_of(var.name());
             let short = var_name.rsplit('.').next().unwrap_or(var_name);
             if short == name {
                 return Some(rterm(val.clone()));
@@ -1230,8 +1230,8 @@ end
         let alpha = bridge.fields(type_ref(&bridge, "test.wi632_bridge.Alpha.dup"));
         assert_eq!(alpha.len(), 1, "Alpha.dup has one field");
         let kb = bridge.kb.borrow();
-        assert_eq!(kb.resolve_sym(beta[0].name.symbol()), "y");
-        assert_eq!(kb.resolve_sym(alpha[0].name.symbol()), "x");
+        assert_eq!(kb.local_name_of(beta[0].name.symbol()), "y");
+        assert_eq!(kb.local_name_of(alpha[0].name.symbol()), "x");
     }
 
     #[test]
@@ -1386,7 +1386,7 @@ sort Tank {
         let ops = bridge.operations(type_ref(&bridge, "Tank"));
         let short_name = |o: &OperationInfo| {
             let kb = bridge.kb.borrow();
-            let n = kb.resolve_sym(o.name.symbol()).to_string();
+            let n = kb.local_name_of(o.name.symbol()).to_string();
             n.rsplit('.').next().unwrap_or(&n).to_string()
         };
         let fill = ops.iter().find(|o| short_name(o) == "fill").expect("fill op");
@@ -1613,7 +1613,7 @@ end
 "#);
         let short = |sym: &ReflectSymbol| {
             let kb = bridge.kb.borrow();
-            let n = kb.resolve_sym(sym.symbol()).to_string();
+            let n = kb.local_name_of(sym.symbol()).to_string();
             n.rsplit('.').next().unwrap_or(&n).to_string()
         };
 

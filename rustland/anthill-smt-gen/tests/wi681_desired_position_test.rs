@@ -95,7 +95,7 @@ fn build_kb() -> KnowledgeBase {
 
 fn desired_position_sym(kb: &KnowledgeBase) -> anthill_core::intern::Symbol {
     all_operation_params(kb).into_iter().map(|(s, _)| s)
-        .find(|s| kb.resolve_sym(*s).rsplit('.').next() == Some("desired_position"))
+        .find(|s| kb.local_name_of(*s).rsplit('.').next() == Some("desired_position"))
         .expect("desired_position op")
 }
 

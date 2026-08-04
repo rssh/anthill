@@ -77,7 +77,7 @@ end
             _ => continue,
         };
         let fn_tid = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "fn")
+            .find(|(s, _)| kb.local_name_of(*s) == "fn")
             .map(|(_, v)| *v)
         {
             Some(t) => t,
@@ -486,7 +486,7 @@ end
     let names = anthill_core::kb::typing::synth_req_names(interp.kb_mut(), multi_sym);
     let resolved: Vec<String> = names
         .iter()
-        .map(|s| interp.kb().resolve_sym(*s).to_string())
+        .map(|s| interp.kb().local_name_of(*s).to_string())
         .collect();
     assert_eq!(
         resolved,

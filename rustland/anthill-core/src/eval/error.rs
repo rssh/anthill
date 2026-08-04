@@ -321,7 +321,7 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
         Value::Bool(b) => b.to_string(),
         Value::Unit => "()".to_string(),
         Value::Entity { functor, pos, named, .. } => {
-            let name = kb.resolve_sym(*functor);
+            let name = kb.local_name_of(*functor);
             if (pos.is_empty() && named.is_empty()) || depth >= MAX_DEPTH {
                 return name.to_string();
             }
@@ -330,7 +330,7 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
             for (fname, fv) in named.iter() {
                 parts.push(format!(
                     "{}: {}",
-                    kb.resolve_sym(*fname),
+                    kb.local_name_of(*fname),
                     render_payload_at(kb, fv, depth + 1)
                 ));
             }
@@ -349,7 +349,7 @@ mod tests {
     use std::rc::Rc;
 
     /// WI-467: the `division_by_zero(op:)` entity payload an unhandled
-    /// `10 / 0` carries renders as a readable line — `resolve_sym` turns the
+    /// `10 / 0` carries renders as a readable line — `local_name_of` turns the
     /// interned functor/field symbols into names — not the `Symbol`-index
     /// debug dump the old `format!("{payload:?}")` fallback produced.
     #[test]

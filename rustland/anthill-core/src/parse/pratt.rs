@@ -310,9 +310,9 @@ mod tests {
 
     fn fmt_term(terms: &SimpleTermStore, symbols: &SymbolTable, tid: TermId) -> String {
         match terms.get(tid) {
-            Term::Ident(sym) => symbols.name(*sym).to_string(),
+            Term::Ident(sym) => symbols.local_name(*sym).to_string(),
             Term::Fn { functor, pos_args, .. } => {
-                let name = symbols.name(*functor);
+                let name = symbols.local_name(*functor);
                 let args: Vec<String> = pos_args.iter()
                     .map(|&a| fmt_term(terms, symbols, a))
                     .collect();

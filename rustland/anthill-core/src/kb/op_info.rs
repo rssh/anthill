@@ -253,7 +253,7 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// the path that already has the answer cached.
 pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) -> Option<Var> {
     let pick = |tps: &[(Symbol, Var)]| -> Option<Var> {
-        tps.iter().find(|(n, _)| kb.resolve_sym(*n) == short).map(|(_, v)| *v)
+        tps.iter().find(|(n, _)| kb.local_name_of(*n) == short).map(|(_, v)| *v)
     };
     if let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.as_ref()) {
         return pick(&sig.type_params);
@@ -421,7 +421,7 @@ fn meta_term_nonempty(kb: &KnowledgeBase, meta_tid: TermId) -> bool {
 fn head_field<'a>(kb: &'a KnowledgeBase, head: &'a Value, key: &str) -> Option<ViewItem<'a>> {
     head.named_keys(kb)
         .into_iter()
-        .find(|s| kb.resolve_sym(*s) == key)
+        .find(|s| kb.local_name_of(*s) == key)
         .and_then(|sym| head.named_arg(kb, sym))
 }
 
@@ -505,8 +505,8 @@ pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value>
     loop {
         match v {
             Value::Entity { functor, named, .. } if Some(*functor) == cons_sym => {
-                let head_el = named.iter().find(|(s, _)| kb.resolve_sym(*s) == "head").map(|(_, x)| x);
-                let tail = named.iter().find(|(s, _)| kb.resolve_sym(*s) == "tail").map(|(_, x)| x);
+                let head_el = named.iter().find(|(s, _)| kb.local_name_of(*s) == "head").map(|(_, x)| x);
+                let tail = named.iter().find(|(s, _)| kb.local_name_of(*s) == "tail").map(|(_, x)| x);
                 match (head_el, tail) {
                     (Some(h), Some(t)) => {
                         out.push(h.clone());
@@ -616,9 +616,9 @@ fn list_items_strict(kb: &KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
     let is_nil = |name: &str| name == "nil";
     match v {
         Value::Term { id, .. } => match kb.get_term(*id) {
-            Term::Ref(s) if is_nil(kb.resolve_sym(*s)) => Some(Vec::new()),
+            Term::Ref(s) if is_nil(kb.local_name_of(*s)) => Some(Vec::new()),
             Term::Fn { functor, .. } => {
-                let name = kb.resolve_sym(*functor);
+                let name = kb.local_name_of(*functor);
                 if is_nil(name) {
                     Some(Vec::new())
                 } else if name == "cons" {
@@ -630,7 +630,7 @@ fn list_items_strict(kb: &KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
             _ => None,
         },
         Value::Entity { functor, .. } => {
-            let name = kb.resolve_sym(*functor);
+            let name = kb.local_name_of(*functor);
             if is_nil(name) || Some(*functor) == nil_sym {
                 Some(Vec::new())
             } else if name == "cons" {

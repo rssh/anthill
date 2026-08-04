@@ -51,7 +51,7 @@ end
 "#;
 
 fn name_of(interp: &anthill_core::eval::Interpreter, sym: Symbol) -> String {
-    interp.kb().resolve_sym(sym).to_string()
+    interp.kb().local_name_of(sym).to_string()
 }
 
 fn entity_short_name(interp: &anthill_core::eval::Interpreter, v: &Value) -> Option<String> {

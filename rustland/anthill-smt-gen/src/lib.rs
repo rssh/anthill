@@ -617,7 +617,7 @@ impl<'kb> Emitter<'kb> {
                     Some(Expr::Var(Var::DeBruijn(i))) => *i,
                     _ => continue, // non-var slots (`field: ?` wildcards / literals)
                 };
-                let field_name = self.kb.resolve_sym(*field_sym).to_string();
+                let field_name = self.kb.local_name_of(*field_sym).to_string();
                 let const_name = sanitize_smt_id(&field_name);
                 bindings.insert(synthetic_var_name(bind_idx), const_name.clone());
                 self.field_consts.entry(const_name).or_insert(0.0); // resolved later
@@ -957,13 +957,13 @@ impl<'kb> Emitter<'kb> {
                     callee_qn, hp, cp, caller_bindings, callee_str, callee_ent, head_caller)?;
             }
             for (hs, hv) in hnamed {
-                let short = self.kb.resolve_sym(*hs).rsplit('.').next();
+                let short = self.kb.local_name_of(*hs).rsplit('.').next();
                 let Some((_, cv)) = cnamed.iter()
-                    .find(|(cs, _)| self.kb.resolve_sym(*cs).rsplit('.').next() == short)
+                    .find(|(cs, _)| self.kb.local_name_of(*cs).rsplit('.').next() == short)
                 else {
                     return Err(SmtGenError::new(format!(
                         "WI-687: constructor-shaped head field '{}' absent in call arg to \
-                         '{callee_qn}'", self.kb.resolve_sym(*hs))));
+                         '{callee_qn}'", self.kb.local_name_of(*hs))));
                 };
                 self.bind_head_arg(
                     callee_qn, hv, cv, caller_bindings, callee_str, callee_ent, head_caller)?;
@@ -1142,7 +1142,7 @@ impl<'kb> Emitter<'kb> {
             Some(Expr::Var(other)) => Err(SmtGenError::new(format!(
                 "v0: expected DeBruijn var in expression, got {other:?}"))),
             Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => {
-                Ok(sanitize_smt_id(self.kb.resolve_sym(*s)))
+                Ok(sanitize_smt_id(self.kb.local_name_of(*s)))
             }
             // Conditional in expression position (WI-680): a bodied op's `if`
             // reduces to an `Expr::If` occurrence (the WI-669 defining-equation
@@ -1450,7 +1450,7 @@ impl<'kb> Emitter<'kb> {
                 entity_occ.as_expr().map(std::mem::discriminant))));
         };
         for (sym, val_occ) in named_args.iter() {
-            if self.kb.resolve_sym(*sym) == field_name {
+            if self.kb.local_name_of(*sym) == field_name {
                 return Ok(Rc::clone(val_occ));
             }
         }
@@ -1476,7 +1476,7 @@ impl<'kb> Emitter<'kb> {
                 if !pos_args.is_empty() || !named_args.is_empty() {
                     return None;
                 }
-                Some((Rc::clone(receiver), self.kb.resolve_sym(*name).to_string()))
+                Some((Rc::clone(receiver), self.kb.local_name_of(*name).to_string()))
             }
             _ => {
                 let (functor, pos_args, _named) = occ_as_fn(occ)?;
@@ -1484,7 +1484,7 @@ impl<'kb> Emitter<'kb> {
                 if op == "anthill.reflect.field_access" || op == "field_access" {
                     if let [obj, field] = pos_args {
                         let field_name = match field.as_expr()? {
-                            Expr::Ref(s) | Expr::Ident(s) => self.kb.resolve_sym(*s).to_string(),
+                            Expr::Ref(s) | Expr::Ident(s) => self.kb.local_name_of(*s).to_string(),
                             Expr::Const(Literal::String(name)) => name.clone(),
                             _ => return None,
                         };
@@ -1583,7 +1583,7 @@ impl<'kb> Emitter<'kb> {
                     literal_as_real(self.kb.get_term(*t)).is_some());
                 if !any_concrete { continue; }
                 for (field_sym, val_term) in named_args {
-                    let field_name = self.kb.resolve_sym(*field_sym).to_string();
+                    let field_name = self.kb.local_name_of(*field_sym).to_string();
                     let const_name = sanitize_smt_id(&field_name);
                     if !self.field_consts.contains_key(&const_name) { continue; }
                     if let Some(v) = literal_as_real(self.kb.get_term(*val_term)) {
@@ -2000,7 +2000,7 @@ fn map_inequality_op(qn: &str) -> Option<&'static str> {
 fn is_eq_functor(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) -> bool {
     let qn = kb.qualified_name_of(sym);
     if qn == "=" || qn == "anthill.prelude.PartialEq.eq" || qn == "anthill.prelude.Eq.eq" { return true; }
-    let short = kb.resolve_sym(sym);
+    let short = kb.local_name_of(sym);
     short == "=" || short == "eq"
 }
 

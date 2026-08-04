@@ -958,3 +958,6 @@ mod wi968_builtin_registration_names_test;
 
 #[path = "include/wi966_loader_verdict_test.rs"]
 mod wi966_loader_verdict_test;
+
+#[path = "include/wi956_kind_gate_test.rs"]
+mod wi956_kind_gate_test;

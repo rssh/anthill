@@ -22,7 +22,7 @@ fn has_description_fact(kb: &KnowledgeBase, text: &str) -> bool {
             Term::Fn { named_args, .. } => {
                 let content = named_args
                     .iter()
-                    .find(|(field, _)| kb.resolve_sym(*field) == "content")
+                    .find(|(field, _)| kb.local_name_of(*field) == "content")
                     .map(|(_, value)| *value);
                 matches!(content.map(|value| kb.get_term(value)), Some(Term::Const(Literal::String(s))) if s == text)
             }

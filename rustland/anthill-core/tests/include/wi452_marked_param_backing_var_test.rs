@@ -9,7 +9,6 @@
 //! (WI-453). An UNMARKED `sort F { … }` stays a concrete nested sort — no param
 //! registration, no backing var.
 
-use anthill_core::kb::term::{Term, Var};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::intern::Symbol;
@@ -38,33 +37,10 @@ fn load_kb(extra: &str) -> (KnowledgeBase, Vec<String>) {
 
 /// True iff there is a `SortAlias(<sort_sym>, Var)` fact — i.e. `sort_sym` has a
 /// non-rigid backing var (the `sort T = ?` / marked-param shape). Mirrors the
-/// loader's `find_sort_alias_var` scan, read-only.
+/// loader's `find_sort_alias_var` scan, read-only; WI-956 lifted that walk into
+/// `common` so the five suites asserting it cannot drift apart.
 fn has_backing_var(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
-    let Some(alias_sym) = kb.try_resolve_symbol("SortAlias") else {
-        return false;
-    };
-    for rid in kb.rules_by_functor(alias_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(head) = kb.fact_head_term(rid) else {
-            continue;
-        };
-        // Copy out the sort-ref and target TermIds without holding the borrow.
-        let args = match kb.get_term(head) {
-            Term::Fn { pos_args, .. } if pos_args.len() >= 2 => Some((pos_args[0], pos_args[1])),
-            _ => None,
-        };
-        let Some((sref, target)) = args else {
-            continue;
-        };
-        let is_target_sort =
-            matches!(kb.get_term(sref), Term::Fn { functor, .. } if *functor == sort_sym);
-        if is_target_sort && matches!(kb.get_term(target), Term::Var(Var::Global(_))) {
-            return true;
-        }
-    }
-    false
+    crate::common::sort_alias_backing_var(kb, sort_sym).is_some()
 }
 
 /// A MARKED HK carrier `F` is a var-backed type param of the enclosing spec, with

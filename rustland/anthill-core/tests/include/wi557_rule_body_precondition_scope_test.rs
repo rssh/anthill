@@ -87,7 +87,7 @@ fn rule_bodies_apply(kb: &KnowledgeBase, functor_qn: &str, op_short: &str) -> bo
     fn occ_applies(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, op_short: &str) -> bool {
         let Some(expr) = occ.as_expr() else { return false };
         if let Expr::Apply { functor, .. } = expr {
-            if kb.resolve_sym(*functor).rsplit('.').next() == Some(op_short) {
+            if kb.local_name_of(*functor).rsplit('.').next() == Some(op_short) {
                 return true;
             }
         }

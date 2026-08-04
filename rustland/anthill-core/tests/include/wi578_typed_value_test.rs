@@ -41,7 +41,7 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
 
 /// A sort symbol resolves to `name` exactly, or to a qualified path ending in `.name`.
 fn assert_sort_named(kb: &KnowledgeBase, s: Symbol, name: &str) {
-    let full = kb.resolve_sym(s);
+    let full = kb.local_name_of(s);
     assert!(
         full == name || full.ends_with(&format!(".{name}")),
         "expected sort {name}, got {full}",
@@ -77,7 +77,7 @@ fn assert_type_param_is(kb: &KnowledgeBase, ty: &Value, name: &str) {
             let found = named_args.iter().any(|(_, p)| {
                 sort_functor_of_view(kb, &Value::term(*p))
                     .map(|s| {
-                        let full = kb.resolve_sym(s);
+                        let full = kb.local_name_of(s);
                         full == name || full.ends_with(&format!(".{name}"))
                     })
                     .unwrap_or(false)
@@ -130,8 +130,8 @@ fn value_type_term_is_carrier_agnostic() {
     let ht = sort_functor_of_view(&kb, &ty_term).expect("term sort head");
 
     assert_eq!(
-        kb.resolve_sym(he),
-        kb.resolve_sym(ht),
+        kb.local_name_of(he),
+        kb.local_name_of(ht),
         "the two carriers must type to the same sort head",
     );
     assert_sort_named(&kb, ht, "List");

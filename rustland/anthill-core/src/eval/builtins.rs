@@ -533,7 +533,7 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         Value::Entity { functor, pos, named, .. } => {
             // A field supplied by NAME — match by short name.
             for (sym, val) in named.iter() {
-                let full = interp.kb().resolve_sym(*sym);
+                let full = interp.kb().local_name_of(*sym);
                 let short = full.rsplit('.').next().unwrap_or(full);
                 if short == field_name.as_str() {
                     return Ok(val.clone());
@@ -552,12 +552,12 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 let mut pos_cursor = 0;
                 for f in &field_syms {
                     let short = {
-                        let full = interp.kb().resolve_sym(*f);
+                        let full = interp.kb().local_name_of(*f);
                         full.rsplit('.').next().unwrap_or(full).to_string()
                     };
                     // A field supplied by name (matched above) consumes no `pos` slot.
                     let supplied_by_name = named.iter().any(|(s, _)| {
-                        let nf = interp.kb().resolve_sym(*s);
+                        let nf = interp.kb().local_name_of(*s);
                         nf.rsplit('.').next().unwrap_or(nf) == short
                     });
                     if supplied_by_name {
@@ -918,7 +918,7 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                     Ok(crate::kb::resolve::BridgeEqOutcome::Undecided { truncated }) => {
                         let detail = format!(
                             "instance-fact eq over `{}` could not be decided",
-                            i.kb().resolve_sym(target),
+                            i.kb().local_name_of(target),
                         );
                         Err(if i.bridge_mode() {
                             EvalError::Suspended { detail, truncated }
@@ -945,7 +945,7 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                 crate::kb::resolve::PredicateProof::Undecided { truncated } => {
                     let detail = format!(
                         "semantic eq over `{}` could not be decided (proof truncated)",
-                        i.kb().resolve_sym(target)
+                        i.kb().local_name_of(target)
                     );
                     Err(if i.bridge_mode() {
                         EvalError::Suspended { detail, truncated }
@@ -1697,7 +1697,7 @@ fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     if !columns.is_empty() {
         let names: Vec<String> = columns
             .iter()
-            .map(|(s, _)| interp.kb.resolve_sym(*s).to_string())
+            .map(|(s, _)| interp.kb.local_name_of(*s).to_string())
             .collect();
         return Err(EvalError::TypeMismatch {
             expected: "a membership Relation (Relation[Unit]; all columns bound)",
@@ -1914,7 +1914,7 @@ fn fill_column_holes(
                 EvalError::Internal(format!(
                     "where_run: the compiled condition references column `{}`, which is not \
                      in the relation's schema",
-                    kb.resolve_sym(name)
+                    kb.local_name_of(name)
                 ))
             })?;
             Ok(Value::Var(Var::Global(*vid)))
@@ -2189,7 +2189,7 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
                 got: format!(
                     "column `{}` appears in both rows — a shared join-column name is not yet \
                      supported (rename one, or project); qualified merge is a follow-up",
-                    interp.kb.resolve_sym(*name)
+                    interp.kb.local_name_of(*name)
                 ),
             });
         }
@@ -2337,7 +2337,7 @@ fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         let vid = find_column(&columns, *col_name).ok_or_else(|| {
             EvalError::Internal(format!(
                 "fix: restricts column `{}`, which is not in the relation's schema",
-                interp.kb.resolve_sym(*col_name)
+                interp.kb.local_name_of(*col_name)
             ))
         })?;
         // The restrict guard `eq(?col, const)` — a goal atom the resolver conjoins with the
@@ -2661,14 +2661,14 @@ fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let name: Option<String> = match &arg {
         Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
             crate::kb::term::Term::Fn { functor, .. } => {
-                Some(interp.kb.resolve_sym(*functor).to_string())
+                Some(interp.kb.local_name_of(*functor).to_string())
             }
             crate::kb::term::Term::Ref(sym) | crate::kb::term::Term::Ident(sym) => {
-                Some(interp.kb.resolve_sym(*sym).to_string())
+                Some(interp.kb.local_name_of(*sym).to_string())
             }
             _ => None,
         },
-        Value::Entity { functor, .. } => Some(interp.kb.resolve_sym(*functor).to_string()),
+        Value::Entity { functor, .. } => Some(interp.kb.local_name_of(*functor).to_string()),
         _ => None,
     };
 
@@ -2875,7 +2875,7 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         crate::kb::term::Term::Fn { named_args, .. } => {
             let named = named_args.clone();
             named.iter()
-                .find(|(s, _)| interp.kb.resolve_sym(*s) == name)
+                .find(|(s, _)| interp.kb.local_name_of(*s) == name)
                 .map(|(_, t)| *t)
         }
         _ => None,
@@ -3092,7 +3092,7 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
     let canonical = if interp.kb.entity_field_types(functor).is_some() {
         functor
     } else {
-        let short_name = interp.kb.resolve_sym(functor).to_string();
+        let short_name = interp.kb.local_name_of(functor).to_string();
         interp.kb.symbols.by_qualified_name.iter()
             .find(|(qname, &sym)| {
                 qname.rsplit('.').next() == Some(short_name.as_str())
@@ -3266,18 +3266,18 @@ fn reflect_cons_to_vec<T>(
                     break;
                 }
                 if Some(functor) != cons_sym {
-                    let n = interp.kb.resolve_sym(functor);
+                    let n = interp.kb.local_name_of(functor);
                     return Err(EvalError::Internal(format!("{ctx}: expected cons/nil, got {n}")));
                 }
                 let (head, tail) = if !named.is_empty() {
                     let h = named
                         .iter()
-                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "head")
+                        .find(|(s, _)| interp.kb.local_name_of(*s) == "head")
                         .map(|(_, v)| v.clone())
                         .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing head field")))?;
                     let t = named
                         .iter()
-                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "tail")
+                        .find(|(s, _)| interp.kb.local_name_of(*s) == "tail")
                         .map(|(_, v)| v.clone())
                         .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing tail field")))?;
                     (h, t)
@@ -3518,7 +3518,7 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
         )),
     };
     for entry in named_args.iter_mut() {
-        if interp.kb.resolve_sym(entry.0) == name {
+        if interp.kb.local_name_of(entry.0) == name {
             entry.1 = new_val_tid;
         }
     }
@@ -3671,7 +3671,7 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     let arena = interp.subst_arena();
     let bound: Option<Value> = arena.with_subst(&handle, |s| {
         for (vid, val) in s.iter() {
-            if interp.kb.resolve_sym(vid.name()) == name {
+            if interp.kb.local_name_of(vid.name()) == name {
                 return Some(val.clone());
             }
         }

@@ -73,8 +73,8 @@ fn realizes(kb: &mut KnowledgeBase, lang: &str, profile: Option<&str>, effect: &
         .filter(|s| s.residual.is_empty())
         .filter_map(|s| match s.subst.resolve_as_value(vid) {
             Some(Value::Term { id, .. }) => match kb.get_term(*id) {
-                Term::Ref(s) | Term::Ident(s) => Some(kb.resolve_sym(*s).to_string()),
-                Term::Fn { functor, .. } => Some(kb.resolve_sym(*functor).to_string()),
+                Term::Ref(s) | Term::Ident(s) => Some(kb.local_name_of(*s).to_string()),
+                Term::Fn { functor, .. } => Some(kb.local_name_of(*functor).to_string()),
                 _ => None,
             },
             _ => None,

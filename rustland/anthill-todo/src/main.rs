@@ -228,8 +228,8 @@ fn is_bundle_logic_file(pf: &ParsedFile) -> bool {
         anthill_core::parse::ir::Item::Namespace(ns) => {
             let segs = &ns.name.segments;
             segs.len() >= 2
-                && pf.symbols.name(segs[0]) == "anthill"
-                && pf.symbols.name(segs[1]) == "todo"
+                && pf.symbols.local_name(segs[0]) == "anthill"
+                && pf.symbols.local_name(segs[1]) == "todo"
         }
         _ => false,
     })
@@ -267,7 +267,7 @@ fn is_bundled_domain_or_rules(pf: &ParsedFile) -> bool {
     pf.items.iter().any(|item| match item {
         Item::Namespace(ns) => {
             let segs = &ns.name.segments;
-            let seg = |i: usize| pf.symbols.name(segs[i]);
+            let seg = |i: usize| pf.symbols.local_name(segs[i]);
             let is_domain_ns = segs.len() == 2 && seg(0) == "anthill" && seg(1) == "stage0";
             let is_workflow_ns = segs.len() == 3
                 && seg(0) == "anthill"
@@ -300,7 +300,7 @@ fn extract_named_arg(kb: &KnowledgeBase, term: TermId, field: &str) -> Option<Te
     match kb.get_term(term) {
         Term::Fn { named_args, .. } => {
             named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == field)
+                .find(|(s, _)| kb.local_name_of(*s) == field)
                 .map(|(_, id)| *id)
         }
         _ => None,

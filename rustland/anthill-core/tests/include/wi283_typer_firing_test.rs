@@ -175,7 +175,7 @@ fn typer_fires_simp_rule_at_apply() {
     );
     let ms = r.node.inferred_type().and_then(|t| sort_functor_of_view(&kb, &t))
         .expect("rewritten node carries a declared sort");
-    let ty_name = kb.resolve_sym(ms);
+    let ty_name = kb.local_name_of(ms);
     assert!(ty_name == "Int64" || ty_name.ends_with(".Int64"), "result type Int64, got {ty_name}");
 }
 

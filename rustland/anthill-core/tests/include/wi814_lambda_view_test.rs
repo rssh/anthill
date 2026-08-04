@@ -315,7 +315,7 @@ fn control_flow_forms_read_as_their_loader_twins() {
         // would make `views_structurally_equal`'s key loop compare fewer
         // children than the head promises, silently over-matching.
         let got: Vec<String> =
-            o.named_keys(&kb).iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
+            o.named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect();
         assert_eq!(got, keys, "{label}: keys in the loader's builder order");
         for k in o.named_keys(&kb) {
             assert!(o.named_arg(&kb, k).is_some(), "{label}: key {k:?} has a child");
@@ -362,7 +362,7 @@ fn conditional_keys_track_the_occurrence() {
     ));
     for (label, l) in [("unannotated", &bare), ("annotated", &annotated)] {
         let got: Vec<String> =
-            l.named_keys(&kb).iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
+            l.named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect();
         assert_eq!(got, ["pattern", "value", "body"], "{label} let is arity-3");
     }
     assert!(
@@ -390,7 +390,7 @@ fn conditional_keys_track_the_occurrence() {
     ] {
         let p = mk_proof(strategy, conclude);
         let got: Vec<String> =
-            p.named_keys(&kb).iter().map(|s| kb.resolve_sym(*s).to_string()).collect();
+            p.named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect();
         assert_eq!(got, expected, "proof_stmt keys track the occurrence's optional slots");
         for k in p.named_keys(&kb) {
             assert!(p.named_arg(&kb, k).is_some(), "proof key {k:?} has a child");

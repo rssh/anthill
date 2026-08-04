@@ -117,7 +117,7 @@ fn positional_slots_reload_to_the_same_indices() {
     };
     let mut by_index: Vec<(Option<usize>, String)> = Vec::new();
     for &(sym, val) in named_args.iter() {
-        let label = reloaded.resolve_sym(sym).to_string();
+        let label = reloaded.local_name_of(sym).to_string();
         let Term::Const(Literal::String(s)) = reloaded.get_term(val) else {
             panic!("field `{label}` is not a string literal");
         };

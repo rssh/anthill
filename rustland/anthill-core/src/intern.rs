@@ -2,7 +2,7 @@
 /// with optional resolution metadata (kind, scope, qualified name).
 ///
 /// Symbols can be **Unresolved** (just a name, deduplicated) or
-/// **Resolved** (short name + qualified name + kind + parent scope).
+/// **Resolved** (local name + qualified name + kinds + parent scope).
 /// The scan-then-load pipeline defines symbols during scanning, then
 /// resolves references during loading.
 
@@ -153,7 +153,7 @@ pub enum SymbolDef {
         name: String,
     },
     Resolved {
-        short_name: String,
+        local_name: String,
         qualified_name: String,
         /// The categories this name PLAYS, in declaration order — a set, not a
         /// single value, because one written name can genuinely be more than one
@@ -296,9 +296,9 @@ impl ResolveResult {
 /// All per-scope data consolidated into one struct.
 #[derive(Debug, Default)]
 pub struct Scope {
-    /// Definitions in this scope: short_name → Symbol
+    /// Definitions in this scope: local_name → Symbol
     pub locals: HashMap<String, Symbol>,
-    /// Imported aliases: short_name → original Symbol
+    /// Imported aliases: local_name → original Symbol
     pub imports: HashMap<String, Symbol>,
     /// Names this scope exposes to the enclosing scope through a
     /// (non-enclosing) variant-exposure parent link — populated from a sort's
@@ -385,19 +385,19 @@ impl SymbolTable {
         self.intern_map.get(s).copied()
     }
 
-    /// Define a new resolved symbol in a scope. If the same short_name
+    /// Define a new resolved symbol in a scope. If the same local_name
     /// already exists in the scope, returns the existing symbol (merge
     /// behavior — e.g. `namespace X` extends an existing `sort X`).
     /// Otherwise creates a new entry and indexes it.
     pub fn define(
         &mut self,
-        short_name: &str,
+        local_name: &str,
         qualified_name: &str,
         kind: SymbolKind,
         scope_raw: u32,
     ) -> Symbol {
         let scope = self.scopes.entry(scope_raw).or_default();
-        if let Some(&existing) = scope.locals.get(short_name) {
+        if let Some(&existing) = scope.locals.get(local_name) {
             // Re-declaring a name already bound in this scope RECORDS the added
             // category instead of discarding it. The early return is unchanged —
             // one name in one scope is still one symbol — but the second
@@ -408,13 +408,13 @@ impl SymbolTable {
         }
         let sym = Symbol(self.defs.len() as u32);
         self.defs.push(SymbolDef::Resolved {
-            short_name: short_name.to_owned(),
+            local_name: local_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
             kinds: SmallVec::from_elem(kind, 1),
             scope_raw,
             arg_places: Vec::new(),
         });
-        scope.locals.insert(short_name.to_owned(), sym);
+        scope.locals.insert(local_name.to_owned(), sym);
         self.by_qualified_name
             .insert(qualified_name.to_owned(), sym);
         sym
@@ -434,7 +434,7 @@ impl SymbolTable {
     /// existing symbol if the qualified name is already taken.
     pub fn define_qualified_only(
         &mut self,
-        short_name: &str,
+        local_name: &str,
         qualified_name: &str,
         kind: SymbolKind,
         scope_raw: u32,
@@ -447,7 +447,7 @@ impl SymbolTable {
         }
         let sym = Symbol(self.defs.len() as u32);
         self.defs.push(SymbolDef::Resolved {
-            short_name: short_name.to_owned(),
+            local_name: local_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
             kinds: SmallVec::from_elem(kind, 1),
             scope_raw,
@@ -551,13 +551,13 @@ impl SymbolTable {
     }
 
     /// Record an imported name alias in a scope.
-    /// Makes `short_name` resolve to `sym` locally in the given scope.
-    pub fn add_import(&mut self, scope_raw: u32, short_name: &str, sym: Symbol) {
+    /// Makes `local_name` resolve to `sym` locally in the given scope.
+    pub fn add_import(&mut self, scope_raw: u32, local_name: &str, sym: Symbol) {
         self.scopes
             .entry(scope_raw)
             .or_default()
             .imports
-            .insert(short_name.to_owned(), sym);
+            .insert(local_name.to_owned(), sym);
     }
 
     /// Record a parent scope inclusion (from `requires` or `import`).
@@ -707,17 +707,25 @@ impl SymbolTable {
         }
     }
 
-    /// Get the display name of a symbol (short_name for Resolved, name for Unresolved).
-    pub fn name(&self, sym: Symbol) -> &str {
+    /// `sym`'s name WITHIN THE SCOPE THAT DECLARES IT — the key it is filed under in
+    /// that scope's `locals`, and the raw name for an unresolved symbol.
+    ///
+    /// LOCAL, not SHORT. It is one segment for the ordinary case (`fill` for
+    /// `Tank.fill`), but a WI-341 callback place is declared in the OPERATION's scope
+    /// under its path relative to that operation — see [`SymbolTable::define`]'s
+    /// callers in `load::register_callback_places` — so `<op>.f._1` is filed under
+    /// `f._1`. The dot is load-bearing: it is what keeps `f._1` distinct from a
+    /// sibling callback's `g._1` in one flat map. MEASURED over stdlib + anthill-stl,
+    /// 53 of 2598 symbols answer with a dotted name, all of that shape.
+    ///
+    /// Callers wanting the LAST SEGMENT must slice — `typing::short_name_of`, or the
+    /// language-level `anthill.reflect.short_name`, both of which `rsplit` for exactly
+    /// this reason. Named `name` (and aliased `resolve`) until WI-956.
+    pub fn local_name(&self, sym: Symbol) -> &str {
         match &self.defs[sym.0 as usize] {
             SymbolDef::Unresolved { name } => name,
-            SymbolDef::Resolved { short_name, .. } => short_name,
+            SymbolDef::Resolved { local_name, .. } => local_name,
         }
-    }
-
-    /// Alias for `name()` — backward compatibility.
-    pub fn resolve(&self, sym: Symbol) -> &str {
-        self.name(sym)
     }
 
     /// Get the full SymbolDef for a symbol.
@@ -843,7 +851,7 @@ mod tests {
         let a = st.intern("foo");
         let b = st.intern("foo");
         assert_eq!(a, b);
-        assert_eq!(st.name(a), "foo");
+        assert_eq!(st.local_name(a), "foo");
     }
 
     #[test]
@@ -852,8 +860,8 @@ mod tests {
         let s1 = st.define("foo", "A.foo", SymbolKind::Operation, 10);
         let s2 = st.define("foo", "B.foo", SymbolKind::Operation, 20);
         assert_ne!(s1, s2);
-        assert_eq!(st.name(s1), "foo");
-        assert_eq!(st.name(s2), "foo");
+        assert_eq!(st.local_name(s1), "foo");
+        assert_eq!(st.local_name(s2), "foo");
         assert!(st.is_resolved(s1));
         assert!(st.is_resolved(s2));
     }
@@ -863,7 +871,7 @@ mod tests {
         let mut st = SymbolTable::new();
         let s1 = st.define("Foo", "A.Foo", SymbolKind::Sort, 10);
         let s2 = st.define("Foo", "A.Foo", SymbolKind::Namespace, 10);
-        assert_eq!(s1, s2, "same short_name in same scope should reuse");
+        assert_eq!(s1, s2, "same local_name in same scope should reuse");
     }
 
     #[test]

@@ -112,7 +112,7 @@ fn binding_term(
     var_name: &str,
 ) -> TermId {
     let query_vars = kb.collect_vars(query);
-    let var = query_vars.iter().find(|v| kb.resolve_sym(v.name()) == var_name)
+    let var = query_vars.iter().find(|v| kb.local_name_of(v.name()) == var_name)
         .unwrap_or_else(|| panic!("query has no var ?{var_name}"));
     sol.subst.resolve_as_value(*var).map(|v| v.expect_term())
         .unwrap_or_else(|| panic!("?{var_name} unbound in solution"))

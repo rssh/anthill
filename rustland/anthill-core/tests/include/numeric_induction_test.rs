@@ -48,7 +48,7 @@ fn int_induction_loads_with_base_and_step() {
     let printer = TermPrinter::new(&kb);
     let step = body.iter().find(|g| {
         matches!(g.as_expr(),
-            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
+            Some(Expr::Apply { functor, .. }) if kb.local_name_of(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
         let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
         panic!("no forall_impl in Int64.induction body: {dump:?}")
@@ -71,7 +71,7 @@ fn bigint_induction_loads_with_base_and_step() {
     let printer = TermPrinter::new(&kb);
     let step = body.iter().find(|g| {
         matches!(g.as_expr(),
-            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
+            Some(Expr::Apply { functor, .. }) if kb.local_name_of(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
         let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
         panic!("no forall_impl in BigInt.induction body: {dump:?}")

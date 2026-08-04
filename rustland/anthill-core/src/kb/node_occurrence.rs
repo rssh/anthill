@@ -3046,12 +3046,12 @@ pub fn value_to_term(
                 }
                 crate::kb::resolve::PositionalPlan::OverArity { declared, unfilled } => {
                     return Err(crate::kb::execute::LowerError::OverArityConstructor {
-                        functor: kb.resolve_sym(*functor).to_string(),
+                        functor: kb.local_name_of(*functor).to_string(),
                         given: pos_args.len(),
                         unfilled,
                         declared: declared
                             .iter()
-                            .map(|s| kb.resolve_sym(*s).to_string())
+                            .map(|s| kb.local_name_of(*s).to_string())
                             .collect::<Vec<_>>()
                             .join(", "),
                     });
@@ -3365,7 +3365,7 @@ fn term_pattern_child_as_occ(
 ) -> Rc<NodeOccurrence> {
     match kb.get_term(tid) {
         Term::Fn { functor, .. } => {
-            let name = kb.resolve_sym(*functor);
+            let name = kb.local_name_of(*functor);
             if matches!(
                 name,
                 "var_pattern" | "wildcard" | "literal_pattern"
@@ -3380,7 +3380,7 @@ fn term_pattern_child_as_occ(
         // WI-511: the nullary `wildcard` pattern is the canonical `Ref(wildcard)`;
         // route it through `term_to_param_occurrence` so it surfaces as
         // Pattern::Wildcard, not an `Expr::Ref` data leaf.
-        Term::Ref(s) if kb.resolve_sym(*s) == "wildcard" => {
+        Term::Ref(s) if kb.local_name_of(*s) == "wildcard" => {
             term_to_param_occurrence(kb, tid, span)
         }
         Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(*s), span, None),
@@ -3421,7 +3421,7 @@ pub(crate) fn read_named_pattern_term(kb: &KnowledgeBase, tid: TermId) -> Option
     let field = extract_term_ref_sym(kb, named_args, "name")?;
     let pat = named_args
         .iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == "pattern")
+        .find(|(s, _)| kb.local_name_of(*s) == "pattern")
         .map(|(_, t)| *t)?;
     Some((field, pat))
 }
@@ -3431,7 +3431,7 @@ fn extract_term_ref_sym(
     named_args: &[(Symbol, TermId)],
     field: &str,
 ) -> Option<Symbol> {
-    let (_, tid) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field)?;
+    let (_, tid) = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == field)?;
     match kb.get_term(*tid) {
         Term::Ref(s) => Some(*s),
         Term::Ident(s) => Some(*s),
@@ -3443,7 +3443,7 @@ fn extract_literal_arg(
     named_args: &[(Symbol, TermId)],
     field: &str,
 ) -> Option<Literal> {
-    let (_, tid) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field)?;
+    let (_, tid) = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == field)?;
     match kb.get_term(*tid) {
         Term::Const(lit) => Some(lit.clone()),
         _ => None,
@@ -3454,7 +3454,7 @@ fn extract_named_list(
     named_args: &[(Symbol, TermId)],
     field: &str,
 ) -> Vec<TermId> {
-    let Some((_, tid)) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field) else {
+    let Some((_, tid)) = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == field) else {
         return Vec::new();
     };
     list_to_vec(kb, *tid)
@@ -4079,7 +4079,7 @@ pub(crate) fn build_expr_leaf(kb: &KnowledgeBase, t: TermId) -> Rc<NodeOccurrenc
         Term::Bottom => Expr::Bottom,
         Term::Fn { functor, named_args, .. } => {
             let qn = kb.qualified_name_of(functor);
-            let short = kb.resolve_sym(functor);
+            let short = kb.local_name_of(functor);
             match expr_form_key(qn, short) {
                 "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
                     match get_named_arg(kb, &named_args, "value").map(|v| kb.get_term(v)) {
@@ -4201,7 +4201,7 @@ fn visit_term(
         Term::Bottom => results.push(NodeOccurrence::new_expr(Expr::Bottom, span, None)),
         Term::Fn { functor, pos_args, named_args } => {
             let qn = kb.qualified_name_of(functor);
-            let short = kb.resolve_sym(functor);
+            let short = kb.local_name_of(functor);
             let key = expr_form_key(qn, short);
             visit_fn(kb, t, span, functor, &pos_args, &named_args, key, work, results);
         }
@@ -4819,7 +4819,7 @@ fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
 /// keep the two in sync.
 pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
     let qn = kb.qualified_name_of(functor);
-    let short = kb.resolve_sym(functor);
+    let short = kb.local_name_of(functor);
     matches!(
         expr_form_key(qn, short),
         "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit"

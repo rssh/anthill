@@ -147,7 +147,7 @@ fn expect_term_head(
         _ => Err(CppCodegenError {
             message: format!(
                 "realization functor `{}` has a non-term fact head; cpp-gen reads it as a term",
-                kb.resolve_sym(functor)
+                kb.local_name_of(functor)
             ),
         }),
     }
@@ -890,7 +890,7 @@ impl<'g> Drop for NamespaceGuard<'g> {
 fn named_arg(kb: &KnowledgeBase, head: TermId, name: &str) -> Option<TermId> {
     if let Term::Fn { named_args, .. } = kb.get_term(head) {
         for (sym, val) in named_args {
-            if kb.resolve_sym(*sym) == name {
+            if kb.local_name_of(*sym) == name {
                 return Some(*val);
             }
         }
@@ -992,7 +992,7 @@ fn walk_list(kb: &KnowledgeBase, list: TermId) -> Vec<TermId> {
     loop {
         let term = kb.get_term(current);
         let Term::Fn { functor, pos_args, named_args } = term else { return out };
-        match kb.resolve_sym(*functor) {
+        match kb.local_name_of(*functor) {
             "ListLiteral" => {
                 for arg in pos_args {
                     out.push(*arg);
@@ -1003,12 +1003,12 @@ fn walk_list(kb: &KnowledgeBase, list: TermId) -> Vec<TermId> {
                 // Try named args first (head:/tail:), fall back to positional.
                 let head = named_args
                     .iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                    .find(|(s, _)| kb.local_name_of(*s) == "head")
                     .map(|(_, v)| *v)
                     .or_else(|| pos_args.first().copied());
                 let tail = named_args
                     .iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                    .find(|(s, _)| kb.local_name_of(*s) == "tail")
                     .map(|(_, v)| *v)
                     .or_else(|| pos_args.get(1).copied());
                 match (head, tail) {
@@ -1144,7 +1144,7 @@ fn entity_struct_members(
     let mut fields_text = String::new();
     for (field_sym, type_tid) in &fields {
         let cpp_type = lower_type(kb, ctx, *type_tid)?;
-        let field_name = kb.resolve_sym(*field_sym);
+        let field_name = kb.local_name_of(*field_sym);
         fields_text.push_str(
             &TEMPLATE_FIELD
                 .replace("{ty}", &cpp_type)
@@ -1899,7 +1899,7 @@ fn operations_in_sort(
             continue;
         }
 
-        let name = kb.resolve_sym(op_sym).to_string();
+        let name = kb.local_name_of(op_sym).to_string();
         let rec = anthill_core::kb::op_info::lookup_operation_info(kb, op_sym)
             .ok_or_else(|| CppCodegenError {
                 message: format!("operation '{name}' missing OperationInfo"),
@@ -1917,7 +1917,7 @@ fn operations_in_sort(
         // rather than emitted as a dead template parameter. A monomorphic op
         // pushes nothing.
         let op_type_params: Vec<String> = rec.type_params.iter()
-            .map(|(sym, _)| kb.resolve_sym(*sym).to_string())
+            .map(|(sym, _)| kb.local_name_of(*sym).to_string())
             .collect();
         let mut op_param_decls: Vec<(String, String)> = Vec::new();
         let mut _op_guard = None;
@@ -1962,14 +1962,14 @@ fn operations_in_sort(
                         message: format!(
                             "operation '{name}' parameter '{}' has a denoted-bearing \
                              type unsupported by C++ codegen",
-                            kb.resolve_sym(*p_name_sym)
+                            kb.local_name_of(*p_name_sym)
                         ),
                     })
                 }
             };
             let cpp_type = lower_type(kb, ctx, p_term)?;
             params.push(ParamInfo {
-                name: kb.resolve_sym(*p_name_sym).to_string(),
+                name: kb.local_name_of(*p_name_sym).to_string(),
                 cpp_type,
                 type_term: p_term,
             });
@@ -2458,7 +2458,7 @@ fn term_references_param(
                 anthill_core::kb::term::Var::Global(vid) => vid.name(),
                 _ => return false,
             };
-            let name = kb.resolve_sym(name_sym);
+            let name = kb.local_name_of(name_sym);
             param_names.iter().any(|p| p == name)
         }
         Term::Fn { pos_args, named_args, .. } => {
@@ -3036,7 +3036,7 @@ fn lower_node(
                               during proof discharge, not codegen".into(),
                 }),
             };
-            let name = kb.resolve_sym(name_sym);
+            let name = kb.local_name_of(name_sym);
             if let Some(access) = ctx.lookup_value_binding(name) {
                 return Ok(access);
             }
@@ -3058,7 +3058,7 @@ fn lower_node(
             message: format!(
                 "unresolved method call '.{}' reached cpp-gen — the [simp] dot \
                  rules should have rewritten it",
-                kb.resolve_sym(*name),
+                kb.local_name_of(*name),
             ),
         }),
     }
@@ -3258,7 +3258,7 @@ fn node_references_name(
 /// Find a named arg in a Term::Fn's named_args slice by string key.
 fn find_named(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)], name: &str) -> Option<TermId> {
     named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == name)
+        .find(|(s, _)| kb.local_name_of(*s) == name)
         .map(|(_, v)| *v)
 }
 
@@ -3839,13 +3839,13 @@ fn lower_constructor_literal_node(
         positional.push(lower_node(kb, ctx, arg)?);
     }
     for (name_sym, arg) in named_args.iter() {
-        let n = kb.resolve_sym(*name_sym).to_string();
+        let n = kb.local_name_of(*name_sym).to_string();
         named_values.insert(n, lower_node(kb, ctx, arg)?);
     }
 
     let mut vals = Vec::with_capacity(fields.len());
     for (i, (field_sym, _)) in fields.iter().enumerate() {
-        let field_name = kb.resolve_sym(*field_sym).to_string();
+        let field_name = kb.local_name_of(*field_sym).to_string();
         if let Some(v) = named_values.remove(&field_name) {
             vals.push(v);
         } else if let Some(v) = positional.get(i) {
@@ -4014,7 +4014,7 @@ fn analyse_pattern_occ(
                     continue;
                 }
                 let bind_name = pattern_var_name_occ(kb, sub_pat)?;
-                let field_name = kb.resolve_sym(*field_sym);
+                let field_name = kb.local_name_of(*field_sym);
                 decls.push((
                     bind_name,
                     format!("std::get<{short}>({scrutinee}).{field_name}"),
@@ -4146,7 +4146,7 @@ fn lower_type(kb: &mut KnowledgeBase, ctx: &CodegenContext, type_term: TermId) -
                     message: "Rigid var in type position — only valid during proof".into(),
                 }),
             };
-            let name = kb.resolve_sym(name_sym).to_string();
+            let name = kb.local_name_of(name_sym).to_string();
             if let Some(cpp) = ctx.lookup_type_param(&name) {
                 return Ok(cpp);
             }
@@ -4332,14 +4332,14 @@ fn lower_parameterized(
             .filter_map(|pname| {
                 binding_pairs
                     .iter()
-                    .find(|(p, _)| kb.resolve_sym(*p) == pname.as_str())
+                    .find(|(p, _)| kb.local_name_of(*p) == pname.as_str())
                     .map(|(_, v)| *v)
             })
             .collect();
         // Defensive: append any binding whose param wasn't in the declared set
         // (over-application — not produced by well-formed types) so nothing is lost.
         for (p, v) in &binding_pairs {
-            if !decl_order.iter().any(|n| kb.resolve_sym(*p) == n.as_str()) {
+            if !decl_order.iter().any(|n| kb.local_name_of(*p) == n.as_str()) {
                 out.push(*v);
             }
         }

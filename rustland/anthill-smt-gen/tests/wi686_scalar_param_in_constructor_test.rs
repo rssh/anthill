@@ -79,7 +79,7 @@ fn clamp_sym(kb: &KnowledgeBase) -> Symbol {
     all_operation_params(kb)
         .into_iter()
         .map(|(s, _)| s)
-        .find(|s| kb.resolve_sym(*s).rsplit('.').next() == Some("clamp"))
+        .find(|s| kb.local_name_of(*s).rsplit('.').next() == Some("clamp"))
         .expect("clamp op")
 }
 

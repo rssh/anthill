@@ -435,7 +435,7 @@ fn shadowed_let_binders_get_distinct_symbols() {
     collect_binder_and_ref_syms(body, &mut binders, &mut refs);
 
     let x_binders: Vec<Symbol> =
-        binders.iter().copied().filter(|s| kb.resolve_sym(*s) == "x").collect();
+        binders.iter().copied().filter(|s| kb.local_name_of(*s) == "x").collect();
     assert_eq!(x_binders.len(), 2, "two `let x` binders in the body");
     assert_ne!(
         x_binders[0], x_binders[1],
@@ -443,7 +443,7 @@ fn shadowed_let_binders_get_distinct_symbols() {
     );
 
     let x_refs: Vec<Symbol> =
-        refs.iter().copied().filter(|s| kb.resolve_sym(*s) == "x").collect();
+        refs.iter().copied().filter(|s| kb.local_name_of(*s) == "x").collect();
     assert!(!x_refs.is_empty(), "the body references `x`");
     for r in &x_refs {
         assert!(

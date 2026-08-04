@@ -468,7 +468,7 @@ impl Interpreter {
             Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
             Value::Str(s) => crate::persistence::print::write_anthill_string(s, buf),
             Value::Entity { functor, pos, named, .. } => {
-                buf.push_str(self.kb.resolve_sym(*functor));
+                buf.push_str(self.kb.local_name_of(*functor));
                 if pos.is_empty() && named.is_empty() {
                     return Ok(());
                 }
@@ -481,12 +481,12 @@ impl Interpreter {
                 }
                 let mut sorted: Vec<&(Symbol, Value)> = named.iter().collect();
                 sorted.sort_by(|a, b| {
-                    self.kb.resolve_sym(a.0).cmp(self.kb.resolve_sym(b.0))
+                    self.kb.local_name_of(a.0).cmp(self.kb.local_name_of(b.0))
                 });
                 for (sym, val) in sorted {
                     if !first { buf.push_str(", "); }
                     first = false;
-                    buf.push_str(self.kb.resolve_sym(*sym));
+                    buf.push_str(self.kb.local_name_of(*sym));
                     buf.push_str(": ");
                     self.write_value_canonical(val, buf)?;
                 }
@@ -628,7 +628,7 @@ impl Interpreter {
                         detail: format!(
                             "bridge: requirement `{}` for `{}` resolved to a caller-scope \
                              slot with no caller frame",
-                            self.kb.resolve_sym(name),
+                            self.kb.local_name_of(name),
                             self.kb.qualified_name_of(sym),
                         ),
                         // A missing caller frame is a flounder, not truncation.

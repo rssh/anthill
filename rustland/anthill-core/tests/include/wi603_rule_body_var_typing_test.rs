@@ -52,7 +52,7 @@ fn occ_sort(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
 
 /// True iff `sym`'s resolved (qualified) name ends with `.short` or equals it.
 fn is_named(kb: &KnowledgeBase, sym: Symbol, short: &str) -> bool {
-    kb.resolve_sym(sym).rsplit('.').next() == Some(short)
+    kb.local_name_of(sym).rsplit('.').next() == Some(short)
 }
 
 /// Locate the first body atom applying `atom_short` in any non-fact rule under
@@ -73,7 +73,7 @@ fn find_atom_args(
             Expr::Apply { functor: f, pos_args, named_args, .. }
             | Expr::Constructor { name: f, pos_args, named_args, .. }
             | Expr::Instantiation { name: f, pos_args, named_args }
-                if kb.resolve_sym(*f).rsplit('.').next() == Some(atom_short) =>
+                if kb.local_name_of(*f).rsplit('.').next() == Some(atom_short) =>
             {
                 return Some((pos_args.clone(), named_args.clone()));
             }
@@ -130,7 +130,7 @@ fn rule_body_op_call_args_typed_from_signature() {
         assert!(
             is_named(&kb, sort, "Int64"),
             "arg {i} of f(?x, ?y) must be typed Int64 from f's signature; got {}",
-            kb.resolve_sym(sort),
+            kb.local_name_of(sort),
         );
     }
 }
@@ -160,13 +160,13 @@ fn rule_body_entity_constructor_named_args_typed() {
     assert_eq!(named.len(), 2, "point has two named args");
     for (field, arg) in &named {
         let sort = occ_sort(&kb, arg).unwrap_or_else(|| {
-            panic!("field `{}` occurrence must carry an inferred_type (WI-603)", kb.resolve_sym(*field))
+            panic!("field `{}` occurrence must carry an inferred_type (WI-603)", kb.local_name_of(*field))
         });
         assert!(
             is_named(&kb, sort, "Int64"),
             "field `{}` must be typed Int64; got {}",
-            kb.resolve_sym(*field),
-            kb.resolve_sym(sort),
+            kb.local_name_of(*field),
+            kb.local_name_of(sort),
         );
     }
 }

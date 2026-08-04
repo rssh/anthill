@@ -52,16 +52,16 @@ pub(crate) fn short_of(qualified: &str) -> &str {
 /// `Fn`, the rendering of a literal, or a sigil'd var.
 pub(crate) fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
     match kb.get_term(id) {
-        CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => kb.resolve_sym(*sym).to_string(),
-        CoreTerm::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
+        CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => kb.local_name_of(*sym).to_string(),
+        CoreTerm::Fn { functor, .. } => kb.local_name_of(*functor).to_string(),
         CoreTerm::Const(Literal::String(s)) => s.clone(),
         CoreTerm::Const(Literal::Int(n)) => n.to_string(),
         CoreTerm::Const(Literal::BigInt(n)) => n.to_string(),
         CoreTerm::Const(Literal::Float(f)) => f.to_string(),
         CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
-        CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
+        CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.local_name_of(vid.name())),
         CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
-        CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
+        CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.local_name_of(vid.name())),
         CoreTerm::Bottom => "⊥".into(),
         CoreTerm::ParseAux(_) => "<parse-aux>".into(),
     }
@@ -91,13 +91,13 @@ pub(crate) fn collect_list_terms(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Te
     loop {
         match kb.get_term(current) {
             CoreTerm::Fn { functor, named_args, .. } => {
-                let name = kb.resolve_sym(*functor);
+                let name = kb.local_name_of(*functor);
                 if name == "nil" {
                     break;
                 }
                 if name == "cons" {
-                    let head = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "head");
-                    let tail = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "tail");
+                    let head = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "head");
+                    let tail = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "tail");
                     if let Some(&(_, h)) = head {
                         results.push(h);
                     }
@@ -375,8 +375,8 @@ pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> V
 /// skolem, `_n` for a bound `DeBruijn`.
 pub(crate) fn var_repr_name(kb: &KnowledgeBase, var: Var) -> String {
     match var {
-        Var::Global(vid) => kb.resolve_sym(vid.name()).to_string(),
-        Var::Rigid(vid) => format!("!{}", kb.resolve_sym(vid.name())),
+        Var::Global(vid) => kb.local_name_of(vid.name()).to_string(),
+        Var::Rigid(vid) => format!("!{}", kb.local_name_of(vid.name())),
         Var::DeBruijn(n) => format!("_{n}"),
     }
 }

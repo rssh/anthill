@@ -64,7 +64,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             Value::Term { id, .. } => self.print_term(*id),
             Value::Node(occ) => self.print_occurrence(occ),
             Value::Entity { functor, .. } => {
-                format!("{}(…)", self.view.resolve_sym(*functor))
+                format!("{}(…)", self.view.local_name_of(*functor))
             }
             other => format!("<{} head>", other.type_name()),
         };

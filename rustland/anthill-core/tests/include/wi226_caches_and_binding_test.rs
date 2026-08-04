@@ -211,7 +211,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
 
     let impl_tid = named_args
         .iter()
-        .find(|(k, _)| kb.resolve_sym(*k) == "impl_functor")
+        .find(|(k, _)| kb.local_name_of(*k) == "impl_functor")
         .map(|(_, v)| *v)
         .expect("impl_functor arg");
     let impl_sym = match kb.get_term(impl_tid) {

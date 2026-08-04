@@ -24,7 +24,7 @@ fn find_sort<'a>(items: &'a [Item], syms: &SymbolTable, name: &str) -> Option<&'
     for item in items {
         match item {
             Item::SortWithBody(s) => {
-                if s.name.segments.last().is_some_and(|sym| syms.name(*sym) == name) {
+                if s.name.segments.last().is_some_and(|sym| syms.local_name(*sym) == name) {
                     return Some(s);
                 }
                 if let Some(f) = find_sort(&s.items, syms, name) {
@@ -49,7 +49,7 @@ fn abstract_named<'a>(
     name: &str,
 ) -> Option<&'a AbstractSort> {
     items.iter().find_map(|i| match i {
-        Item::AbstractSort(a) if a.name.segments.last().is_some_and(|s| syms.name(*s) == name) => {
+        Item::AbstractSort(a) if a.name.segments.last().is_some_and(|s| syms.local_name(*s) == name) => {
             Some(a)
         }
         _ => None,

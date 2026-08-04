@@ -138,7 +138,7 @@ fn recursive_field_emits_inductive_hypothesis() {
     let printer = TermPrinter::new(&kb);
     let cons_goal = body.iter().find(|g| {
         matches!(g.as_expr(),
-            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
+            Some(Expr::Apply { functor, .. }) if kb.local_name_of(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
         let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
         panic!("no forall_impl in body: {dump:?}")
@@ -153,11 +153,11 @@ fn recursive_field_emits_inductive_hypothesis() {
     // The other goal (nil base case) must be a flat ho_apply, not forall_impl.
     let nil_goal = body.iter().find(|g| {
         !matches!(g.as_expr(),
-            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
+            Some(Expr::Apply { functor, .. }) if kb.local_name_of(*functor) == "forall_impl")
     }).unwrap();
     match nil_goal.as_expr() {
         Some(Expr::Apply { functor, .. }) => {
-            assert_eq!(kb.resolve_sym(*functor), "ho_apply",
+            assert_eq!(kb.local_name_of(*functor), "ho_apply",
                 "nil case should be flat ho_apply");
         }
         other => panic!("unexpected nil goal: {other:?}"),

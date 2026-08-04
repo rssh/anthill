@@ -32,7 +32,7 @@ fn named_field(kb: &KnowledgeBase, term: TermId, key: &str) -> Option<TermId> {
     match kb.get_term(term) {
         Term::Fn { named_args, .. } => named_args
             .iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == key)
+            .find(|(s, _)| kb.local_name_of(*s) == key)
             .map(|(_, v)| *v),
         _ => None,
     }
