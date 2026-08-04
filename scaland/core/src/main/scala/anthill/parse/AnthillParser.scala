@@ -1134,28 +1134,46 @@ private class AnthillParserImpl(
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
     P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
-  /** The span to give a node LOWERED from `te` (WI-961). A structural lowering —
-    * `TypeExtractor.Arrow`, `NamedTuple`, an `EffectExpression` chain — has no token
-    * of its own: it stands for the whole written type, so it takes the first position
-    * that type can offer. Recursive rather than "the outermost name", because an
-    * arrow's leftmost leaf is what a reader looks at first.
-    *
-    * DERIVED, and that is honest: the node covers text the reader can see. What it
-    * must never be is [[Span.empty]] while the term carries a resolvable name — see
-    * `SimpleTermStore.alloc`. */
-  private def typeExprSpan(te: TypeExpr): Span = te match
-    case TypeExpr.Simple(n)           => n.span
-    case TypeExpr.Parameterized(n, _) => n.span
-    case TypeExpr.Variable(tid, _)    => terms.spanOf(tid)
-    case TypeExpr.Denoted(v)          => terms.spanOf(v)
-    case TypeExpr.TupleType(fields)   => firstLocated(fields.map((_, t) => typeExprSpan(t)))
-    case TypeExpr.Arrow(ps, ret, eff) => firstLocated(((ps :+ ret) ++ eff).map(typeExprSpan))
-    case TypeExpr.EffectRow(eff)      => firstLocated(eff.map(typeExprSpan))
-    case TypeExpr.EffectGuarded(l, _) => typeExprSpan(l)
-
   private def firstLocated(spans: Iterable[Span]): Span =
     spans.find(_.hasLocation).getOrElse(Span.empty)
 
+  /** The two-span case: `own` if it has a position, else the enclosing `fallback`.
+    *
+    * Not sugar for `firstLocated(Seq(own, fallback))` — it is the SAME function.
+    * [[Span.empty]] is the only unlocated span (`Span.render`'s "TWO cases, not four"),
+    * so an unlocated `fallback` IS the `getOrElse(Span.empty)` the general form ends in.
+    * Worth its own name because it is the shape every "a built node inherits its
+    * parent's position" site wants, and it allocates neither the `Seq` nor the `Option`
+    * — `typeListTerm` runs it once per list element. */
+  private def firstLocated(own: Span, fallback: Span): Span =
+    if own.hasLocation then own else fallback
+
+  /** Lower a written type to a term.
+    *
+    * THE SPAN OF A LOWERED NODE (WI-961). A structural lowering —
+    * `TypeExtractor.Arrow`, `NamedTuple`, an `EffectExpression` chain — has no token
+    * of its own: it stands for the whole written type, so it takes the first position
+    * that type can offer, recursively, because an arrow's leftmost leaf is what a
+    * reader looks at first. DERIVED, and that is honest: the node covers text the
+    * reader can see. What it must never be is [[Span.empty]] while the term carries a
+    * resolvable name — see `SimpleTermStore.alloc` and `ParseSpanCoverageTest`.
+    *
+    * READ BACK, NOT RE-DERIVED (WI-964). Every arm below allocates its node AT the
+    * span it derived, so `terms.spanOf(childTerm)` IS the span a walk of the child's
+    * `TypeExpr` would produce — by induction over these same arms, and available in
+    * O(1). Each arm therefore BUILDS its children first and reads their spans back,
+    * instead of walking the raw `TypeExpr` for a span and then walking it again to
+    * build. The walking form (a recursive `typeExprSpan`) re-derived its answer at
+    * every level, costing O(n) + O(n-1) + … down a curried `(A) -> (B) -> (C) -> D`;
+    * `ParseSpanGrowthTest` pins the difference, which is invisible in the RESULT —
+    * both forms produce identical spans.
+    *
+    * READ BACK rather than RETURNED — i.e. this stays `TypeExpr => TermId` and does not
+    * become `TypeExpr => (TermId, Span)`, which would also kill the quadratic. A
+    * returned span is a SECOND copy of a node's position, free to disagree with the one
+    * in the store; the store is where a node's position lives, so reading it back is the
+    * form in which the two CANNOT disagree. It is also what the neighbouring builders
+    * already do (`typeListTerm`, `effectExpression*`), for the same reason. */
   private def typeExprToRef(te: TypeExpr): TermId = te match
     // WI-957: a WRITTEN type name locates at the name it was written as; the
     // structural lowerings below (arrow, tuple, effect row) mint `TypeExtractor`
@@ -1176,26 +1194,31 @@ private class AnthillParserImpl(
     // `TypeExtractor` entities (`anthill.prelude.TypeExtractor.Arrow` /
     // `NamedTuple`), mirroring rustland's `type_expr_to_term`. Previously both
     // fell through to a `Ref("_")` sentinel, silently discarding the structure.
-    case arrow @ TypeExpr.Arrow(params, ret, effects) =>
-      val span = typeExprSpan(arrow)
-      // Single param stays bare; a multi-param list collapses to a
-      // positional named-tuple `_0, _1, …`, exactly as rustland does.
-      val paramTerm =
-        if params.length == 1 then typeExprToRef(params.head)
-        else namedTupleTypeTerm(params.zipWithIndex.map((p, i) => (intern(s"_$i"), p)), span)
+    case TypeExpr.Arrow(params, ret, effects) =>
+      val paramTerms = params.map(typeExprToRef)
       val resultTerm = typeExprToRef(ret)
       // WI-340: the arrow's `effects` field is the canonical
       // `effects_rows(EffectExpression)` row — a right-folded `merge` chain —
       // NOT a prelude cons-list (the pre-WI-340 shape). This matches rustland's
       // post-WI-307/WI-331 loader (`KnowledgeBase::build_canonical_effects_rows`)
       // and the stdlib schema. See `buildCanonicalEffectsRows`.
-      val effectsRows = buildCanonicalEffectsRows(effects.map(typeExprToRef), span)
+      val effectTerms = effects.map(typeExprToRef)
+      // Source order — params, result, effects — so the arrow reports at the
+      // leftmost position it was written at.
+      val span = firstLocated(((paramTerms :+ resultTerm) ++ effectTerms).map(terms.spanOf))
+      // Single param stays bare; a multi-param list collapses to a
+      // positional named-tuple `_0, _1, …`, exactly as rustland does.
+      val paramTerm =
+        if paramTerms.length == 1 then paramTerms.head
+        else namedTupleTypeTerm(paramTerms.zipWithIndex.map((p, i) => (intern(s"_$i"), p)), span)
+      val effectsRows = buildCanonicalEffectsRows(effectTerms, span)
       // Named args in canonical (alphabetical) order: effects, param, result.
       terms.allocAt(Term.Fn(intern("anthill.prelude.TypeExtractor.Arrow"), IArray.empty,
         IArray((intern("effects"), effectsRows), (intern("param"), paramTerm),
                (intern("result"), resultTerm))), span)
-    case tup @ TypeExpr.TupleType(fields) =>
-      namedTupleTypeTerm(fields, typeExprSpan(tup))
+    case TypeExpr.TupleType(fields) =>
+      val fieldTerms = fields.map((n, ty) => (n, typeExprToRef(ty)))
+      namedTupleTypeTerm(fieldTerms, firstLocated(fieldTerms.map((_, t) => terms.spanOf(t))))
     // WI-302: a denoted value-in-type rides as the raw literal term (rustland
     // retired the `make_denoted` wrapper in WI-366 — the value rides as a Node).
     case TypeExpr.Denoted(value) => value
@@ -1203,28 +1226,33 @@ private class AnthillParserImpl(
     // term (rustland builds an EffectExpression; scaland has no effect
     // machinery, so the row rides as a plain functor term — this also subsumes
     // the retired `setType`'s `SetLiteral` lowering for binding-value `{}`).
-    case row @ TypeExpr.EffectRow(effects) =>
+    case TypeExpr.EffectRow(effects) =>
+      val effectTerms = effects.map(typeExprToRef)
       terms.allocAt(Term.Fn(intern("effects_rows"),
-        IArray.from(effects.map(typeExprToRef)), IArray.empty), typeExprSpan(row))
+        IArray.from(effectTerms), IArray.empty), firstLocated(effectTerms.map(terms.spanOf)))
     // WI-478: a guarded effect `E :- guard` lowers to an opaque
     // `guarded(label, guardList)` term — rustland builds an
     // `EffectExpression.guarded(label, guard: List[reflect.Term])`; scaland has
     // no effect machinery, so the element rides as a plain functor with the
     // guard goals as a prelude cons-list (carrier-faithful round-trip only).
-    case g @ TypeExpr.EffectGuarded(label, guard) =>
-      val span = typeExprSpan(g)
+    case TypeExpr.EffectGuarded(label, guard) =>
+      val labelTerm = typeExprToRef(label)
+      val span = terms.spanOf(labelTerm)
       terms.allocAt(Term.Fn(intern("guarded"),
-        IArray(typeExprToRef(label), typeListTerm(guard, span)), IArray.empty), span)
+        IArray(labelTerm, typeListTerm(guard, span)), IArray.empty), span)
 
   /** Build `anthill.prelude.TypeExtractor.NamedTuple(fields: List[NamedTupleElement])`
-    * from `(name, type)` field pairs. Shared by tuple types and multi-parameter
-    * arrow parameter lists. Mirrors rustland's `make_named_tuple_type`. */
-  private def namedTupleTypeTerm(fields: IndexedSeq[(TermSymbol, TypeExpr)], span: Span): TermId =
-    val fieldTerms = fields.map { (nameSym, ty) =>
+    * from ALREADY-LOWERED `(name, type)` field pairs. Shared by tuple types and
+    * multi-parameter arrow parameter lists. Mirrors rustland's
+    * `make_named_tuple_type`.
+    *
+    * WI-964: takes the field TYPES as BUILT terms — both callers lower them anyway to
+    * derive their own `span`, and the built term answers "where is this field" in O(1). */
+  private def namedTupleTypeTerm(fields: IndexedSeq[(TermSymbol, TermId)], span: Span): TermId =
+    val fieldTerms = fields.map { (nameSym, typeTerm) =>
       // The label rides at its own field's position where the field has one.
-      val fieldSpan = firstLocated(Seq(typeExprSpan(ty), span))
+      val fieldSpan = firstLocated(terms.spanOf(typeTerm), span)
       val nameRef = terms.allocAt(Term.Ref(nameSym), fieldSpan)
-      val typeTerm = typeExprToRef(ty)
       terms.allocAt(Term.Fn(intern("anthill.prelude.NamedTupleElement"), IArray.empty,
         IArray((intern("name"), nameRef), (intern("type"), typeTerm))), fieldSpan)
     }
@@ -1238,7 +1266,7 @@ private class AnthillParserImpl(
       Term.Fn(intern("anthill.prelude.List.nil"), IArray.empty, IArray.empty), span)
     elems.foldRight(nilTerm)((h, t) =>
       terms.allocAt(Term.Fn(intern("anthill.prelude.List.cons"), IArray(h, t), IArray.empty),
-        firstLocated(Seq(terms.spanOf(h), span))))
+        firstLocated(terms.spanOf(h), span)))
 
   // ── EffectExpression / EffectsRows builders (WI-340) ──────────────
   // The Scala port of rustland's `make_effect_expression_*` /
@@ -1254,18 +1282,18 @@ private class AnthillParserImpl(
   /** `EffectExpression.present(label: Type)` — a single present effect. */
   private def effectExpressionPresent(label: TermId, span: Span): TermId =
     terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.present"),
-      IArray.empty, IArray((intern("label"), label))), firstLocated(Seq(terms.spanOf(label), span)))
+      IArray.empty, IArray((intern("label"), label))), firstLocated(terms.spanOf(label), span))
 
   /** `EffectExpression.open(tail: Type)` — a row-variable tail. */
   private def effectExpressionOpen(tail: TermId, span: Span): TermId =
     terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.open"),
-      IArray.empty, IArray((intern("tail"), tail))), firstLocated(Seq(terms.spanOf(tail), span)))
+      IArray.empty, IArray((intern("tail"), tail))), firstLocated(terms.spanOf(tail), span))
 
   /** `EffectExpression.merge(left, right)` — union of two expressions. */
   private def effectExpressionMerge(left: TermId, right: TermId, span: Span): TermId =
     terms.allocAt(Term.Fn(intern("anthill.prelude.EffectExpression.merge"),
       IArray.empty, IArray((intern("left"), left), (intern("right"), right))),
-      firstLocated(Seq(terms.spanOf(left), span)))
+      firstLocated(terms.spanOf(left), span))
 
   /** Wrap an EffectExpression in the `TypeExtractor.EffectsRows(effects_expr: …)`
     * Type entity — the bridge from EffectExpression to Type position. */
@@ -1301,11 +1329,12 @@ private class AnthillParserImpl(
     // The key is fully structural (see `canonicalAtomKey`) so this drops only
     // genuinely-identical atoms — matching rustland's hash-consed-TermId
     // `atoms.dedup()`, NOT collapsing distinct effects that share a base.
-    val ordered = atoms.sortBy(canonicalAtomKey)
-    val deduped = ArrayBuffer.empty[TermId]
-    ordered.foreach { a =>
-      if deduped.isEmpty || canonicalAtomKey(deduped.last) != canonicalAtomKey(a) then deduped += a
-    }
+    // WI-964, the same principle one function up: `canonicalAtomKey` is a full
+    // structural walk, so it is derived ONCE PER ATOM and carried. `sortBy(f)` is
+    // `sorted(Ordering.by(f))` — it re-ran the walk per COMPARISON, and the dedup then
+    // re-ran it twice more per element. `distinctBy` is the consecutive dedup exactly
+    // because the list is sorted by that same key.
+    val deduped = atoms.map(a => (canonicalAtomKey(a), a)).sortBy(_._1).distinctBy(_._1).map(_._2)
     // Seed: innermost tail — `open(?ρ)` when a row var was present, else the
     // closed `empty_row`; any extra tails fold in as `open(…)` merges. Then
     // right-fold `merge(atom, …)` back through the sorted atoms.

@@ -38,9 +38,11 @@ class SimpleTermStore:
     * A name-bearing term cannot make that claim by accident — [[alloc]] does not
     * accept one, and its doc carries the argument for why the exception set is empty.
     * A structural lowering with no token of its own (a `TypeExtractor.*` chain) takes
-    * a DERIVED span — see `AnthillParser.typeExprSpan`. Derived is honest; empty is
+    * a DERIVED span — see `AnthillParser.typeExprToRef`. Derived is honest; empty is
     * what is forbidden, and [[nameBearingWithoutSpan]] is the audit for it. */
   private val spans = ArrayBuffer.empty[Span]
+  /** WI-964 — see [[spanReads]], the accessor that gives this its reason to exist. */
+  private var reads = 0
   val descriptions: HashMap[TermId, ArrayBuffer[String]] = HashMap.empty
 
   /** Allocate a term with NO NAME to resolve — a `Const`, a `Var`, `Bottom`.
@@ -91,16 +93,35 @@ class SimpleTermStore:
   def isMinted(id: TermId): Boolean = minted.contains(id)
 
   /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957). */
-  def spanOf(id: TermId): Span = spans(id.index)
+  def spanOf(id: TermId): Span =
+    reads += 1
+    spans(id.index)
+
+  /** WI-964: how many times [[spanOf]] has been asked, over this store's whole life.
+    *
+    * THE ONE OBSERVABLE of how the type lowerings DERIVE a span. `AnthillParser`'s
+    * `typeExprToRef` gives a structural lowering the first located position among its
+    * children; deriving that by re-walking the raw `TypeExpr` at every level produces
+    * the IDENTICAL term with the IDENTICAL span, so no query over the finished store can
+    * tell the linear form from the quadratic one — only the work differs, and a
+    * read-back derivation's work lands here, one read per child edge.
+    *
+    * UNLIKE its two neighbouring audits, which are pure queries over state the store
+    * keeps anyway: this is a counter, so it costs a write on a path production code
+    * takes (the loader reads spans per term). One non-volatile increment, for the only
+    * handle a test has on the property — `SimpleTermStore` is built inside
+    * `Parser.parse`, so a counting subclass cannot be injected from outside.
+    * `ParseSpanGrowthTest` is the reader, and argues the measurement there. */
+  def spanReads: Int = reads
 
   /** WI-961: the name-bearing terms in this store that carry NO location.
     *
     * The audit `alloc`'s refusal cannot perform. That refusal catches the slip of
     * calling the spanless entry point; it cannot catch a span that was supplied but
     * came out EMPTY — which the type lowerings can do, because their span is DERIVED
-    * (`typeExprSpan` walks to the first located leaf and falls back to
-    * [[Span.empty]] when a whole subtree has none). Silent there, and the symptom is
-    * the same locationless diagnostic.
+    * (`typeExprToRef` takes the first located position among a node's children and
+    * falls back to [[Span.empty]] when a whole subtree has none). Silent there, and the
+    * symptom is the same locationless diagnostic.
     *
     * EMPTY for every parser-built store, pinned over the whole stdlib by
     * `ParseSpanCoverageTest`. A HAND-BUILT store is expected to be non-empty — the

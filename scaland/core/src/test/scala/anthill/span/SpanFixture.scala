@@ -1,6 +1,7 @@
 package anthill.span
 
 import anthill.parse.{Item, Parser, ParsedFile}
+import anthill.term.{Term, TermId}
 
 /** What every span test in this package does before it can assert anything: parse a
   * fixture, walk the items it produced, find the one it is about, and compare a span
@@ -46,6 +47,25 @@ private[span] object SpanFixture:
   def pick[A](pf: ParsedFile, what: String)(f: PartialFunction[Item, A])(using munit.Location): A =
     allItems(pf.items).collectFirst(f)
       .getOrElse(munit.Assertions.fail(s"fixture drift: no $what in the parsed file"))
+
+  /** The spans of every `Term.Fn` built with `functor`, in store order.
+    *
+    * Parse-time terms carry their span in the STORE, not in an IR node (WI-957), so a
+    * term-level production is reached this way rather than by field — which is what
+    * makes this different from [[spanOf]] above, and why both live here.
+    *
+    * WI-964 made it the second reader: `SpanEndTest` wants one shape's span, and
+    * `ParseSpanGrowthTest` wants every arrow a deep type lowered to. Same reason
+    * [[allItems]] moved here.
+    *
+    * A caller that also reads `SimpleTermStore.spanReads` must note that this WALK reads
+    * spans: take the count from a file nothing has walked yet. */
+  def fnSpans(pf: ParsedFile, functor: String): IndexedSeq[Span] =
+    (0 until pf.terms.size).map(TermId.fromRaw).flatMap { id =>
+      pf.terms.get(id) match
+        case f: Term.Fn if pf.symbols.name(f.functor) == functor => Some(pf.terms.spanOf(id))
+        case _                                                   => None
+    }
 
   /** THE INVARIANT every test in this package is about: the source text the span
     * brackets IS the construct, with nothing of the trivia around it.

@@ -19,7 +19,7 @@ import java.nio.file.Paths
   *      for the mistake to surface.
   *   2. This test. A type cannot express "the span you passed is not `Span.empty`", so
   *      mechanism 1 is blind to a span that WAS supplied and came out empty — which
-  *      the type lowerings can do, deriving theirs from `typeExprSpan`, which falls
+  *      the type lowerings can do, deriving theirs in `typeExprToRef`, which falls
   *      back to `Span.empty` when a whole subtree has no located leaf. That
   *      degradation is silent and its symptom is the original bug.
   *
@@ -35,12 +35,12 @@ import java.nio.file.Paths
   *   * revert ONE `allocAt` in the parser (`fnOrInstOrIdent`'s bare-name arm) to
   *     `alloc`: the build FAILS — `Found: Term.Ident / Required: Term.Nameless`. There
   *     is no test to run and no coverage question to ask.
-  *   * make `typeExprSpan` return `Span.empty`, i.e. supply a span that is present but
-  *     useless: mechanism 1 sees NOTHING (a span was passed), and exactly ONE test
-  *     fails — the corpus case below. The stdlib case stays GREEN, which is the point
-  *     of having both: the stdlib never writes an arrow or tuple type in a term
-  *     position, so it exercises none of `typeExprToRef`'s lowerings. An audit over
-  *     the corpus we happen to ship would have missed this entirely.
+  *   * blank the span `typeExprToRef` derives for its structural lowerings, i.e. supply
+  *     a span that is present but useless: mechanism 1 sees NOTHING (a span was passed),
+  *     and exactly ONE test fails — the corpus case below. The stdlib case stays GREEN,
+  *     which is the point of having both: the stdlib never writes an arrow or tuple type
+  *     in a term position, so it exercises none of `typeExprToRef`'s lowerings. An audit
+  *     over the corpus we happen to ship would have missed this entirely.
   */
 class ParseSpanCoverageTest extends munit.FunSuite:
 
@@ -106,7 +106,7 @@ class ParseSpanCoverageTest extends munit.FunSuite:
       // `let` annotation) — an operation PARAMETER type is kept as IR and never
       // lowered by the parser, so a corpus that only declares parameters exercises
       // none of `typeExprToRef` and the derived-span path goes untested. Measured:
-      // with parameters alone, blanking `typeExprSpan` failed nothing.
+      // with parameters alone, blanking the derived span failed nothing.
       "arrow + tuple + effect types, lowered" ->
         """namespace d
           |  rule a(?f) :- p(?f: (S, S) -> S @ {E})

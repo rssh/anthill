@@ -1,7 +1,6 @@
 package anthill.span
 
 import anthill.parse.{Item, Parser, ParsedFile}
-import anthill.term.{Term, TermId}
 // WI-971: `assertSpans` (the invariant this file is about) and `pick` (find-or-fail)
 // moved to `SpanFixture` when `DeclarationSpanTest` became their second reader.
 import SpanFixture.{assertSpans, pick}
@@ -69,14 +68,11 @@ class SpanEndTest extends munit.FunSuite:
   private def parse(src: String): ParsedFile = SpanFixture.parse(src, "spans.anthill")
 
   /** The span of the first `Term.Fn` built with `functor`, or a loud fixture-drift
-    * failure. Parse-time terms carry their span in the store, not in an IR node
-    * (WI-957), so a term-level production is reached this way rather than by field. */
+    * failure — a `find` that finds nothing would otherwise leave the test asserting over
+    * `Span.empty`. The walk itself is `SpanFixture.fnSpans` (WI-964 gave it a second
+    * reader). */
   private def termSpan(pf: ParsedFile, functor: String)(using munit.Location): Span =
-    (0 until pf.terms.size).view.map(TermId.fromRaw)
-      .find(id => pf.terms.get(id) match
-        case f: Term.Fn => pf.symbols.name(f.functor) == functor
-        case _ => false)
-      .map(pf.terms.spanOf)
+    SpanFixture.fnSpans(pf, functor).headOption
       .getOrElse(fail(s"fixture drift: no `$functor` term in the parsed file"))
 
   // ── The five that stretched over trailing trivia ──────────────
