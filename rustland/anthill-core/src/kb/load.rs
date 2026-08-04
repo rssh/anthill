@@ -2702,6 +2702,20 @@ fn scan_items_pass1(
                 } else {
                     (kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw()), true)
                 };
+                // WI-979 — recorded from the DECLARATION, not from which arm above
+                // produced the symbol. `define` accumulates categories (WI-926), but
+                // the reuse arm never calls it, so the `sort` keyword's own category
+                // was lost whenever the name already existed — which `namespace X`
+                // written before `sort X` makes routine, and proposal 059 R2 blesses
+                // that pair as the way to add members to a type. Losing `Sort` makes
+                // `is_sort_scope` false for the body scanned below, so the eponymous
+                // constructor never collapses (§6.3 / WI-926): a phantom nested `X.X`
+                // is defined and `X(…)` stops being a construction. Idempotent, so
+                // the prelude-bootstrap path (`register_prelude` defines
+                // `anthill.prelude.List` with `Sort` before stdlib's `sort List … end`
+                // reuses it) is unaffected. Exactly the fix the `Item::Entity` arm
+                // below already carries, for exactly the same two-arm shape.
+                kb.symbols.add_kind(sym, SymbolKind::Sort);
                 record_internal(kb, sym, s.visibility);
                 let sort_term = kb.alloc(Term::Fn {
                     functor: sym,
@@ -2742,6 +2756,20 @@ fn scan_items_pass1(
                         has_variant = true;
                     }
                 }
+                // WI-979 — STILL `is_new`-gated, and that is a KNOWN DEFECT, not a
+                // reading of the declaration. Un-gating it is the obvious sibling of
+                // the `add_kind` above (measured: `namespace Colour … end` before
+                // `sort Colour { entity Red }` leaves bare `Red` unresolvable, while
+                // the same two declarations swapped resolve it), but it was tried and
+                // REVERTED: `is_new` is false for the whole PRE-REGISTERED population
+                // too, so un-gating hands 7 bootstrap sorts an exposure link they
+                // never had — driven, `guarded` under a wildcard import goes from
+                // resolving uniquely to `LogicalQuery.guarded` to AMBIGUOUS against
+                // `EffectExpression.guarded`. It also silently half-wires the shape
+                // 059 R1 refuses (`entity X` then `sort X`): variants leak OUT while
+                // the body still cannot see IN, since the enclosing link above stays
+                // gated. A correct fix has to tell declaration-reuse from
+                // bootstrap-reuse, which `is_new` alone cannot. See WI-985.
                 if is_new && has_variant {
                     kb.symbols.add_parent(actual_scope.raw(), ScopeInclusion {
                         parent_scope_raw: sort_term.raw(),
@@ -12133,6 +12161,16 @@ impl<'a> Loader<'a> {
     /// also ends in `short` AND maps to a Sort-kind symbol (so a sort merely sharing
     /// its namespace's last segment — `namespace app.Config` containing `sort Config`,
     /// qn `app.Config.Config` — is NOT stripped: `app.Config` is a Namespace).
+    ///
+    /// WI-979 WEAKENED THAT SECOND CLAUSE, and the doc above is kept as written
+    /// because it still describes the INTENT. "`app.Config` is a Namespace" is no
+    /// longer exclusive: a category is a SET, and since WI-979 a `sort X` reusing an
+    /// existing symbol records `Sort` on it — so one symbol beside a namespace of the
+    /// same name now carries BOTH, and this guard passes where it used to fail. It
+    /// takes three same-named declarations to reach (`namespace app.Config` holding
+    /// `sort Config`, plus a `sort Config` beside it), and no such shape exists in the
+    /// corpus, so this is a NOTED premise rather than a measured wrong answer — but if
+    /// a `Config.K` projection ever stops forming, this strip is where to look.
     fn logical_sort_qn<'q>(&self, qn: &'q str, short: &str) -> &'q str {
         if let Some((outer, last)) = qn.rsplit_once('.') {
             if last == short && outer.rsplit('.').next() == Some(short) {
