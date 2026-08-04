@@ -202,22 +202,28 @@ private class AnthillParserImpl(
     * `mkSpan(s, e)` that had accreted at ~30 productions, each spelling the same
     * three-step bracket-and-resolve by hand and each free to get the `~~` wrong.
     *
-    * "MULTI-TOKEN" IS NOT WHY A PRODUCTION STAYS HAND-WRITTEN, though WI-965 said it
-    * was and WI-970 corrected it: [[located]] is generic in its payload, so a dotted
-    * `name` or a `.(…)` projection rides it, at the cost of one nesting level in the
-    * destructuring. Six productions genuinely cannot — their start does not come from
-    * an `Index` at their own entry: the four `sortDecl` branches take theirs handed
-    * down as an `Int` (the WI-947 note at `namespaceDecl`), `sortTypeParam` reads its
-    * back off `nameSpan.start`, and `proofStep` takes two different ends off one
-    * start. The other ~20 self-bracketing declaration productions are mechanically
-    * convertible and simply are not converted (WI-971) — which is a backlog, not a
-    * design line, and the difference matters to whoever writes the next one.
+    * NO PRODUCTION STAYS HAND-WRITTEN — WI-971 finished the conversion the two earlier
+    * WIs each thought had a remainder, and [[Index]] below now makes the hand-written
+    * spelling a compile error. Both remainders were misreadings, and the shape of each
+    * is worth keeping, because the next production to look unconvertible will look
+    * unconvertible in one of these two ways:
+    *
+    *   * WI-965 said "multi-token"; WI-970 disproved it by conversion. [[located]] is
+    *     generic in its payload, so a dotted `name` or a `.(…)` projection rides it at
+    *     the cost of one nesting level in the destructuring.
+    *   * WI-970 then said "its start is not an `Index` at its own entry", and named six.
+    *     Every one of them WAS bracketable — the start was simply being carried in a
+    *     shape other than a `Span`. The four `sort` shapes read a start handed down from
+    *     `sortDecl` as an `Int`, and now take a `Span` from a `located` around the
+    *     dispatcher; `sortTypeParam` recovered its start from `nameSpan.start`, and
+    *     `proofStep` took two ends off one start — both are [[located]] NESTED inside
+    *     [[located]], the inner bracket closing early.
     *
     * `~~` for the trailing `Index`, always: fastparse's plain `~` skips the trivia
     * after the token FIRST, which stretches the span over it — the [[Span]] invariant,
-    * and what WI-970 measured at six productions that had it wrong. Having two places
-    * that spell it is the point — the trailing `~` was a per-site decision at every
-    * one of the ~30.
+    * and what WI-970 measured wrong at five productions (the census is at [[Index]],
+    * stated once). Having two places that spell it is the point — the trailing `~` was
+    * a per-site decision at every one of the ~30.
     *
     * TWO and not one, deliberately: `spanOfToken(p) = located(p).map(_._2)` does
     * compile (checked, not assumed — a `P[Unit]` rides `located` as `A = Unit`), and
@@ -251,19 +257,69 @@ private class AnthillParserImpl(
     *
     * WI-970 CLOSED THE HOLE IN THAT CONTROL. When WI-965 wrote it, swapping the `~~`
     * below back to a whitespace-skipping `~` — the exact mistake these two exist to
-    * make unrepeatable — failed NOTHING, because no test read `end`. Breaking
-    * [[located]] alone now fails EIGHT, all in `SpanEndTest`: every production WI-970
-    * routed through it (`simpleName`, `operationTypeParam`, `name`, `importPath`,
-    * `distributiveProjectionSeg`, `proofStrategy`, the visibility refusal) plus the
-    * combinator case itself. */
+    * make unrepeatable — failed NOTHING, because no test read `end`. It failed EIGHT
+    * after WI-970 and FIFTEEN after WI-971 (measured, 327 tests): ten in `SpanEndTest`,
+    * three in `DeclarationSpanTest`, two in `ParseSpanCoverageTest`. The jump is not the
+    * six new tests — it is that the whole declaration family rides this one `~~` now
+    * that WI-971 removed the per-site copies, so a single mistake here is no longer a
+    * single production's mistake. */
   private def spanOfToken[$: P](p: => P[Unit]): P[Span] =
-    P(Index ~ p ~~ Index).map { case (s, e) => mkSpan(s, e) }
+    P(fastparse.Index ~ p ~~ fastparse.Index).map { case (s, e) => mkSpan(s, e) }
 
   /** [[spanOfToken]] for a token that CARRIES a value: `located(ident)` is
     * `(TermSymbol, Span)`. The pair flattens into the enclosing sequence, so a caller
     * destructures it as two adjacent slots — `case (sym, span, …)`. */
   private def located[A, $: P](p: => P[A]): P[(A, Span)] =
-    P(Index ~ p ~~ Index).map { case (s, a, e) => (a, mkSpan(s, e)) }
+    P(fastparse.Index ~ p ~~ fastparse.Index).map { case (s, a, e) => (a, mkSpan(s, e)) }
+
+  /** THE TYPE IS THE ERROR MESSAGE. A hand-written bracket reports either `value ~ is
+    * not a member of … BracketSpansWithLocatedOrSpanOfToken` (a LEADING `Index`) or
+    * that type against `ParsingRun` (a TRAILING one) — so the rule reaches the author in
+    * the compiler output, not only in the doc on [[Index]] below.
+    *
+    * The name carries the message because nothing else could. Both idiomatic spellings
+    * were tried and neither reports: `@compileTimeOnly` loses to the type error it
+    * exists to explain, and `inline def Index: Nothing = compiletime.error(…)` fires
+    * NOTHING — `Nothing` conforms to `ParsingRun`, so the hand-written bracket
+    * type-checks and the message never surfaces from inside fastparse's `P` macro. A
+    * type mismatch is the one signal that survives, which makes the type's NAME the
+    * only place a sentence fits. */
+  private class BracketSpansWithLocatedOrSpanOfToken
+
+  /** `Index`, SHADOWING `fastparse.Index` for every production in this class: a
+    * hand-written span bracket is a COMPILE error, so [[spanOfToken]] and [[located]]
+    * above are the only way to capture one.
+    *
+    * WI-971, and the reason it is a shadow rather than a convention: WI-965 introduced
+    * the two combinators and left ~30 productions still spelling the bracket by hand,
+    * and WI-970 then measured EIGHT of them wrong. THE CENSUS, stated once and here
+    * because this is the enforcement site: five stretched over trailing trivia (a
+    * whitespace-skipping `~` before the trailing `Index`), two captured zero width, and
+    * one — the `flatMap` case below — had no `Index` at all. Repairing the sites someone
+    * happened to grep leaves the next author free to write the ninth. Removing the
+    * spelling from the vocabulary this file is written in does not.
+    *
+    * THE ESCAPE IS `fastparse.Index`, written out — the same shape `sourceFile` uses to
+    * opt out of the `P` shadow above, and greppable for exactly that reason. Only the
+    * two combinators use it today: every declaration production, INCLUDING the `sort`
+    * shapes whose start used to be handed down from `sortDecl` as a bare `Int`, now
+    * brackets itself through [[located]]. A production that genuinely cannot must write
+    * the qualified name and say why, rather than reach for a short alias that would read
+    * like ordinary vocabulary again.
+    *
+    * SCOPE, since the `P` shadow above names its own exception: this covers the class,
+    * not the file — `object Tokens` keeps `fastparse.Index`. That is not a hole, because
+    * `Tokens` cannot produce a span whatever it captures: [[mkSpan]] and both combinators
+    * are private members of this class, and `Tokens` returns `String`s.
+    *
+    * WHAT THIS DOES NOT CATCH, so it is not mistaken for a total guard: the eighth site
+    * had no `Index` of its own at all — `ruleArrowChoice` leaked trivia into every `:-`
+    * rule's span through fastparse's `flatMap`, which runs the whitespace skipper before
+    * its continuation (`flatMapX` does not). No lint over this name would have seen it.
+    * Guarding the NAME is one mechanism; the property that no span ends on whitespace is
+    * the other, and it is checked over the corpus by `ParseSpanCoverageTest` — the same
+    * two-mechanism split WI-961 documents there, for the same reason. */
+  private val Index = new BracketSpansWithLocatedOrSpanOfToken
 
   // ── Custom whitespace ────────────────────────────────────────
 
@@ -1534,8 +1590,8 @@ private class AnthillParserImpl(
   private def param[$: P]: P[Param] =
     // WI-947: the span starts at the `...` when there is one — the marker IS what the
     // loader's placement refusal is about, so it is what the diagnostic must point at.
-    P(Index ~ "...".!.? ~ ident ~ ":" ~ typeExpr ~~ Index).map {
-      case (s, rest, n, t, e) => Param(n, t, rest.isDefined, mkSpan(s, e))
+    P(located("...".!.? ~ ident ~ ":" ~ typeExpr)).map {
+      case ((rest, n, t), span) => Param(n, t, rest.isDefined, span)
     }
 
   // ── Visibility ───────────────────────────────────────────────
@@ -1622,79 +1678,93 @@ private class AnthillParserImpl(
 
   // ── Declarations ─────────────────────────────────────────────
 
-  // WI-947: every declaration production brackets itself with `Index ~ … ~~ Index`,
-  // so its IR node carries the range it was written over instead of the `mkSpan(0, 0)`
-  // the whole family used to pass. The LEADING `Index` is read before any input is
+  // WI-947: every declaration production brackets itself with [[located]], so its IR
+  // node carries the range it was written over instead of the `mkSpan(0, 0)` the whole
+  // family used to pass. `located`'s leading `Index` is read before any input is
   // consumed, and a production is always entered at a non-trivia position (the caller's
   // `~` did the skipping), so it lands on the first token — measured for WI-850's
-  // refusal across three whitespace shapes. The trailing one uses `~~`, fastparse's
-  // NO-WHITESPACE sequence: a plain `~` there would skip trailing trivia first and
-  // stretch the span over it.
+  // refusal across three whitespace shapes.
+  //
+  // WI-971: `located` and NOT a hand-written `Index ~ … ~~ Index`, which is now a
+  // compile error (see [[Index]]) — the trailing `~~` is the whole difference between a
+  // span that stops at the construct and one that runs into the next declaration, and
+  // it was decided per-site at ~30 productions until WI-970 measured a census of them
+  // wrong (stated once, at [[Index]]).
   //
   // A declaration's span begins at its OWN first token — the `visibility` if written,
-  // otherwise the keyword — for every shape, WITH NO EXCEPTIONS. `sort` and
-  // `operation` cost extra for that: their keyword is consumed by a dispatching
-  // production before the branch that builds the node runs, so the branch is handed
-  // the start rather than reading its own (`sortDecl`, `operationDecl` below). The
-  // alternative — let those two start at the name — was written first and rejected on
-  // review: the same operation then reported a different column depending on whether
-  // it was spelled singly or inside a braced block, which is exactly the kind of
-  // difference a reader would read as meaning something.
+  // otherwise the keyword — for every shape, WITH NO EXCEPTIONS. The alternative — let
+  // the dispatched shapes start at their name — was written first and rejected on
+  // review: the same operation then reported a different column depending on whether it
+  // was spelled singly or inside a braced block, which is exactly the kind of difference
+  // a reader would read as meaning something. `sort`, `rule` and `operation` are the
+  // shapes that cost something for it, because a dispatching production consumes their
+  // keyword before the branch that builds the node runs: each wraps its dispatcher in
+  // `located` and hands the finished span down (`ruleDecl` / `operationDecl` re-stamp
+  // the node they were handed, `sortDecl` passes the span to a builder function).
   //
   // `DeclarationSpanTest` pins one span per shape, and is where a new declaration
   // production adds its case. That is deliberate: the spans here reach a user only
   // through whichever diagnostic happens to cite them, so testing them THROUGH
   // diagnostics leaves most of the family unpinned (it did, until review said so).
   private def namespaceDecl[$: P]: P[Item] =
-    P(Index ~ keyword("namespace") ~/ name ~ body ~~ Index).map { case (s, n, (imports, items), e) =>
-      Item.NamespaceItem(Namespace(n, imports, items, mkSpan(s, e)))
+    P(located(keyword("namespace") ~/ name ~ body)).map { case ((n, (imports, items)), span) =>
+      Item.NamespaceItem(Namespace(n, imports, items, span))
     }
 
   /** `sort …` — three shapes, disambiguated by the token after `sort`:
     *   - a plain `name` → `abstract_sort` (`= type`) or `sort_with_body`;
-    *   - a `?X` marker → `sort_var_binder` (WI-454);
-    *   - a leading `[` → `sort_bracket_binder` (WI-454).
+    *   - a `?X` marker or a leading `[` → a type-param binder (WI-454), the two
+    *     spellings of one `binderName`.
     * The binder forms (`sort ?X` / `sort [X]`, optionally `{ sort ?T … }`) are
     * per-statement synonyms of a WI-451 enclosing type-param; they desugar to
-    * the SAME IR (`desugarSortTypeParam`). The branches return a
-    * `(vis, declStart) => Item` so the `visibility.?` parsed before `sort` is applied
-    * once and the WI-947 span can begin at the declaration's own first token, which
-    * this production has already consumed by the time a branch runs; the binder forms
-    * drop both the visibility and any trailing meta block — a type-param binder
-    * carries neither (the desugar has no slot for them), so `public sort ?X [simp]`
-    * parses but silently ignores `public`/`[simp]`. */
-  private type SortDeclBuilder = (Option[Visibility], Int) => Item
+    * the SAME IR (`desugarSortTypeParam`). The branches return a `(vis, span) => Item`
+    * so the `visibility.?` parsed before `sort` is applied once and the WI-947 span can
+    * begin at the declaration's own first token, which this production has already
+    * consumed by the time a branch runs; the binder forms drop both the visibility and
+    * any trailing meta block — a type-param binder carries neither (the desugar has no
+    * slot for them), so `public sort ?X [simp]` parses but silently ignores
+    * `public`/`[simp]`.
+    *
+    * WI-971: a `Span` is handed down, not the raw start offset it used to be. The four
+    * shapes were the reason this family looked unable to use [[located]] — each branch
+    * captured its own trailing `Index` and paired it with an `Int` from the dispatcher.
+    * But a branch is the LAST thing in the dispatcher's sequence, so the dispatcher's
+    * own trailing capture lands on exactly the offset the branch was reading: one
+    * `located` here spans all three, and the branches now bracket nothing at all. */
+  private type SortDeclBuilder = (Option[Visibility], Span) => Item
 
   private def sortDecl[$: P]: P[Item] =
-    P(Index ~ visibility.? ~ keyword("sort") ~/ (sortVarBinderDecl | sortBracketBinderDecl | sortNamedDecl)).map {
-      case (s, vis, mk) => mk(vis, s)
+    P(located(visibility.? ~ keyword("sort") ~/ (sortBinderDecl | sortNamedDecl))).map {
+      case ((vis, mk), span) => mk(vis, span)
     }
 
   private def sortNamedDecl[$: P]: P[SortDeclBuilder] =
-    P(name ~ (abstractSortRest | sortWithBodyRest) ~~ Index).map {
-      case (n, Left((defn, meta)), e) =>
-        (vis: Option[Visibility], s: Int) =>
-          Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(s, e)))
-      case (n, Right((imports, items, meta)), e) =>
-        (vis: Option[Visibility], s: Int) =>
-          Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, mkSpan(s, e), SortDeclKind.Sort))
+    P(name ~ (abstractSortRest | sortWithBodyRest)).map { case (n, rest) =>
+      (vis, span) => rest match
+        case Left((defn, meta)) =>
+          Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span))
+        case Right((imports, items, meta)) =>
+          Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, span, SortDeclKind.Sort))
     }
 
-  /** WI-454: `sort ?X [ { sort ?T … } ]` — `?X` reuses the logical-var marker as
-    * the binder name. Desugars to the SAME IR the enclosing-list form produces. */
-  private def sortVarBinderDecl[$: P]: P[SortDeclBuilder] =
-    P(located(Tokens.variableToken) ~ sortBinderBody.? ~ metaBlock.? ~~ Index).map {
-      case (nm, nameSpan, members, _, e) =>
-        (_: Option[Visibility], s: Int) =>
-          desugarSortTypeParam(SortTypeParam(intern(nm), members, nameSpan, mkSpan(s, e)))
-    }
+  /** WI-454: the binder NAME, in either spelling — `?X` reuses the logical-var marker,
+    * `[X]` brackets a plain identifier. The two are alternatives of ONE production
+    * because both positions that accept a binder accept both spellings: the standalone
+    * declaration (`sortBinderDecl`) and the structured-body member
+    * (`sortBinderMember`). Written out per position, that is the same two-branch
+    * grammar four times — and WI-971 is what exposed it, by deleting the per-branch
+    * span capture that had been the only difference between two of the four. */
+  private def binderName[$: P]: P[(TermSymbol, Span)] =
+    P(
+      located(Tokens.variableToken).map { case (nm, span) => (intern(nm), span) } |
+      ("[" ~/ located(ident) ~ "]")
+    )
 
-  /** WI-454: `sort [X] [ { sort [T] … } ]` — the standalone bracket binder. */
-  private def sortBracketBinderDecl[$: P]: P[SortDeclBuilder] =
-    P("[" ~/ located(ident) ~ "]" ~ sortBinderBody.? ~ metaBlock.? ~~ Index).map {
-      case (nameSym, nameSpan, members, _, e) =>
-        (_: Option[Visibility], s: Int) =>
-          desugarSortTypeParam(SortTypeParam(nameSym, members, nameSpan, mkSpan(s, e)))
+  /** WI-454: `sort ?X { sort ?T … }` / `sort [X] { … }` as a DECLARATION. Desugars to
+    * the SAME IR the enclosing-list form produces. */
+  private def sortBinderDecl[$: P]: P[SortDeclBuilder] =
+    P(binderName ~ sortBinderBody.? ~ metaBlock.?).map { case (nm, nameSpan, members, _) =>
+      (_, span) => desugarSortTypeParam(SortTypeParam(nm, members, nameSpan, span))
     }
 
   /** A structured binder's brace body — members are themselves type-variable
@@ -1704,12 +1774,9 @@ private class AnthillParserImpl(
     P("{" ~/ sortBinderMember.rep(1) ~ "}").map(_.toIndexedSeq)
 
   private def sortBinderMember[$: P]: P[SortTypeParam] =
-    P(Index ~ keyword("sort") ~/ (
-      (located(Tokens.variableToken) ~ sortBinderBody.? ~~ Index)
-        .map { case (nm, nameSpan, ms, e) => (intern(nm), ms, nameSpan, e) } |
-      ("[" ~/ located(ident) ~ "]" ~ sortBinderBody.? ~~ Index)
-        .map { case (nm, nameSpan, ms, e) => (nm, ms, nameSpan, e) }
-    )).map { case (s, (nm, ms, nameSpan, e)) => SortTypeParam(nm, ms, nameSpan, mkSpan(s, e)) }
+    P(located(keyword("sort") ~/ binderName ~ sortBinderBody.?)).map {
+      case ((nm, nameSpan, ms), span) => SortTypeParam(nm, ms, nameSpan, span)
+    }
 
   /** `effects E = ?` (or `= X`) at sort-item position (WI-320 / proposal
     * 045). Rustland (`effects_sort_item`) desugars this to the pair
@@ -1720,17 +1787,17 @@ private class AnthillParserImpl(
     * so it would be inert load. The mandatory `=` disambiguates from the
     * operation-clause `effects E` (which never appears at body level). */
   private def effectsSortItem[$: P]: P[Item] =
-    P(Index ~ visibility.? ~ keyword("effects") ~ name ~ "=" ~/ typeExpr ~ metaBlock.? ~~ Index).map {
-      case (s, vis, n, defn, meta, e) =>
-        Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(s, e)))
+    P(located(visibility.? ~ keyword("effects") ~ name ~ "=" ~/ typeExpr ~ metaBlock.?)).map {
+      case ((vis, n, defn, meta), span) =>
+        Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span))
     }
 
   /** `enum NAME ... end` — same body shape as `sort NAME ... end` but the
     * declaration kind is recorded as `Enum` (proposal 025). */
   private def enumDecl[$: P]: P[Item] =
-    P(Index ~ visibility.? ~ keyword("enum") ~/ name ~ body ~ metaBlock.? ~~ Index).map {
-      case (s, vis, n, (imports, items), meta, e) =>
-        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, mkSpan(s, e), SortDeclKind.Enum))
+    P(located(visibility.? ~ keyword("enum") ~/ name ~ body ~ metaBlock.?)).map {
+      case ((vis, n, (imports, items), meta), span) =>
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, span, SortDeclKind.Enum))
     }
 
   private def abstractSortRest[$: P]: P[Left[(TypeExpr, Option[MetaBlock]), Nothing]] =
@@ -1767,15 +1834,17 @@ private class AnthillParserImpl(
     P("[" ~ sortTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
   private def sortTypeParam[$: P]: P[SortTypeParam] =
-    // The declaration span starts where the NAME does, so it is read back off the
-    // name's span rather than captured a second time. THE ONE SITE THAT RECONSTRUCTS
-    // AN OFFSET instead of using a captured one, so it names its dependency: this
-    // holds because [[Span.at]] stores the `start` it was handed VERBATIM. A `Span.at`
-    // that ever normalised `start` would break this and nothing else — no other
-    // production reads an offset back out of a span.
-    P(located(ident) ~ sortTypeParamList.? ~~ Index).map {
-      case (n, nameSpan, members, e) =>
-        SortTypeParam(n, members, nameSpan, mkSpan(nameSpan.start, e))
+    // TWO spans, nested: the inner [[located]] brackets the NAME, the outer one the
+    // whole binder including any member list. They start at the same offset — a
+    // production is entered at a non-trivia position, and the name is its first token —
+    // which is why this used to reconstruct the declaration's start by reading
+    // `nameSpan.start` back out. That was the one site in the parser that recovered an
+    // offset from a span rather than capturing it, and it depended on [[Span.at]]
+    // storing `start` verbatim; WI-971 removed the dependency along with the
+    // hand-written bracket.
+    P(located(located(ident) ~ sortTypeParamList.?)).map {
+      case ((n, nameSpan, members), span) =>
+        SortTypeParam(n, members, nameSpan, span)
     }
 
   /** Desugar one enclosing type-param binder to the SAME IR rustland's
@@ -1802,23 +1871,28 @@ private class AnthillParserImpl(
   // Same shape as `operationDecl`: the dispatcher consumed the `rule` keyword, so it
   // is the one that can span from it (WI-947).
   private def ruleDecl[$: P]: P[Item] =
-    P(Index ~ keyword("rule") ~/ (
+    P(located(keyword("rule") ~/ (
       bracedRuleBlock.map(Left(_)) |
       ruleEntry.map(Right(_))
-    ) ~~ Index).map {
-      case (s, Right(rule), e) => Item.RuleItem(rule.copy(span = mkSpan(s, e)))
-      case (s, Left(entries), e) => Item.RuleBlockItem(RuleBlock(entries, mkSpan(s, e)))
+    ))).map {
+      case (Right(rule), span) => Item.RuleItem(rule.copy(span = span))
+      case (Left(entries), span) => Item.RuleBlockItem(RuleBlock(entries, span))
     }
 
   private def bracedRuleBlock[$: P]: P[IndexedSeq[Rule]] =
     P("{" ~/ ruleEntry.rep ~ "}").map(_.toIndexedSeq)
 
-  private def ruleEntry[$: P]: P[Rule] =
-    P(Index ~ (simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.? ~~ Index).map {
-      case (s, label, (heads, body), meta, e) =>
-        resetVarScope()
-        Rule(label, heads, body, meta, mkSpan(s, e))
+  /** One rule, spanning its own text — WITHOUT closing the variable scope, because a
+    * rule is not always the whole construct its `?x`s belong to: a `proofStep` carries
+    * the same scope on into its `using …/by …` tail. The two callers each say where
+    * their scope ends by calling `resetVarScope` themselves. */
+  private def ruleWithSpan[$: P]: P[Rule] =
+    P(located((simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.?)).map {
+      case ((label, (heads, body), meta), span) => Rule(label, heads, body, meta, span)
     }
+
+  private def ruleEntry[$: P]: P[Rule] =
+    P(ruleWithSpan).map { rule => resetVarScope(); rule }
 
   /** Proposal 032: choice over (heads :- body | body -: heads | heads).
     * `:-` and `-:` are mirror surface forms of the same implication arrow;
@@ -1835,7 +1909,7 @@ private class AnthillParserImpl(
       // skipper between the first parser and the continuation — and the continuation
       // for a rule that HAS a `:-` body is `Pass`, which consumes nothing, so the parse
       // index was left sitting past the rule's own text. `ruleEntry` and `ruleDecl`
-      // both read their `~~ Index` from there, so every `:-` rule's declaration span
+      // both take their `located` end from there, so every `:-` rule's declaration span
       // ran to the start of whatever followed it. `flatMapX` is the no-whitespace twin;
       // the `-:` branch below, which genuinely needs the trivia skipped, asks for it.
       (ruleHeads ~ (":-" ~/ goalTerm.rep(1, sep = ",")).?).flatMapX { case (hs, body) =>
@@ -1880,13 +1954,13 @@ private class AnthillParserImpl(
     // `mkSpan(s, s)`, the declaration's start, which is the right column (the modifier
     // IS the first token when present) but zero characters wide. The modifier is what
     // the message is about, so it is what the span brackets.
-    P(Index ~ located(visibility).? ~ keyword("operation") ~/ (
+    P(located(located(visibility).? ~ keyword("operation") ~/ (
       bracedOperationBlock.map(Left(_)) |
       operationEntry.map(Right(_))
-    ) ~~ Index).map {
-      case (s, vis, Right(op), e) =>
-        Item.OperationItem(op.copy(visibility = op.visibility.orElse(vis.map(_._1)), span = mkSpan(s, e)))
-      case (s, vis, Left(entries), e) =>
+    ))).map {
+      case ((vis, Right(op)), span) =>
+        Item.OperationItem(op.copy(visibility = op.visibility.orElse(vis.map(_._1)), span = span))
+      case ((vis, Left(entries)), span) =>
         // A leading visibility on a braced `operation { … }` block has no meaning
         // (rustland has no such form — visibility is per-entry). Reject it loudly
         // rather than silently dropping it (CLAUDE.md: loud error over silent skip).
@@ -1894,7 +1968,7 @@ private class AnthillParserImpl(
           errors += ParseError(
             "a visibility modifier cannot precede a braced `operation { … }` block; " +
             "put the visibility on each entry", visSpan)
-        Item.OperationBlockItem(OperationBlock(entries, mkSpan(s, e)))
+        Item.OperationBlockItem(OperationBlock(entries, span))
     }
 
   private def bracedOperationBlock[$: P]: P[IndexedSeq[Operation]] =
@@ -1905,13 +1979,13 @@ private class AnthillParserImpl(
     * `operationDecl` to start at the `operation` keyword it consumed. The two differ
     * by exactly the text the two surface forms differ by. */
   private def operationEntry[$: P]: P[Operation] =
-    P(Index ~ visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
-      operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.? ~~ Index
-    ).map { case (s, vis, n, tps, params, retType, clauses, opBody, trailingMeta, e) =>
+    P(located(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
+      operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
+    )).map { case ((vis, n, tps, params, retType, clauses, opBody, trailingMeta), span) =>
       Operation(vis, n,
         refuseTypeParamDefaults(n, tps.getOrElse(IndexedSeq.empty)) ++ clauses.slotBinders,
         params.toIndexedSeq, retType, clauses.requires, clauses.ensures, clauses.effects,
-        opBody, combineMeta(clauses.meta, trailingMeta), mkSpan(s, e))
+        opBody, combineMeta(clauses.meta, trailingMeta), span)
     }
 
   /** Operation type-parameter list `[T, U = Int]` (WI-269). A distinct
@@ -2123,9 +2197,9 @@ private class AnthillParserImpl(
     * shape). scaland defines only the symbol (load.rs `Item::Const` arm); the
     * value body is not lowered (scaland has no typer/eval to consume it). */
   private def constDecl[$: P]: P[Item] =
-    P(Index ~ visibility.? ~ keyword("const") ~/ name ~ ":" ~ typeExpr ~ ("=" ~/ exprBody).? ~ metaBlock.? ~~ Index).map {
-      case (s, vis, n, ty, value, meta, e) =>
-        Item.ConstItem(Const(vis, n, ty, value, meta, mkSpan(s, e)))
+    P(located(visibility.? ~ keyword("const") ~/ name ~ ":" ~ typeExpr ~ ("=" ~/ exprBody).? ~ metaBlock.?)).map {
+      case ((vis, n, ty, value, meta), span) =>
+        Item.ConstItem(Const(vis, n, ty, value, meta, span))
     }
 
   /** `requires [<name> :] <type>` at sort / namespace level.
@@ -2138,33 +2212,33 @@ private class AnthillParserImpl(
     * `name`: it DECLARES a parameter rather than referencing one, so a dotted
     * spelling would have no meaning. */
   private def requiresDeclItem[$: P]: P[Item] =
-    P(Index ~ keyword("requires") ~/ (located(ident) ~ ":").? ~ typeExpr ~~ Index).map {
-      case (s, binder, te, e) =>
+    P(located(keyword("requires") ~/ (located(ident) ~ ":").? ~ typeExpr)).map {
+      case ((binder, te), span) =>
         val binderName = binder.map { case (b, bSpan) => Name(IndexedSeq(b), bSpan) }
-        Item.RequiresDeclItem(RequiresDecl(binderName, te, mkSpan(s, e)))
+        Item.RequiresDeclItem(RequiresDecl(binderName, te, span))
     }
 
   private def entityDecl[$: P]: P[Item] =
     // `name` (not `simpleName`): rustland allows a qualified entity name
     // (`entity anthill.prelude.TypeBinding(...)`, stdlib sort.anthill).
-    P(Index ~ visibility.? ~ keyword("entity") ~/ name ~ ("(" ~ fieldDecl.rep(1, sep = ",") ~ ")").? ~ metaBlock.? ~~ Index
-    ).map { case (s, vis, n, fields, meta, e) =>
-      Item.EntityItem(Entity(vis, n, fields.map(_.toIndexedSeq).getOrElse(IndexedSeq.empty), meta, mkSpan(s, e)))
+    P(located(visibility.? ~ keyword("entity") ~/ name ~ ("(" ~ fieldDecl.rep(1, sep = ",") ~ ")").? ~ metaBlock.?)
+    ).map { case ((vis, n, fields, meta), span) =>
+      Item.EntityItem(Entity(vis, n, fields.map(_.toIndexedSeq).getOrElse(IndexedSeq.empty), meta, span))
     }
 
   private def factDeclInner[$: P]: P[Fact] =
-    P(Index ~ keyword("fact") ~/ term ~ metaBlock.? ~~ Index).map { case (s, t, meta, e) =>
-      Fact(t, meta, mkSpan(s, e))
+    P(located(keyword("fact") ~/ term ~ metaBlock.?)).map { case ((t, meta), span) =>
+      Fact(t, meta, span)
     }
 
   private def factDecl[$: P]: P[Item] = P(factDeclInner).map(Item.FactItem(_))
 
   private def constraintDecl[$: P]: P[Item] =
-    P(Index ~ keyword("constraint") ~/ (simpleName ~ ":").? ~ term.rep(1, sep = ",") ~
-      (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.? ~~ Index
-    ).map { case (s, label, head, guard, meta, e) =>
+    P(located(keyword("constraint") ~/ (simpleName ~ ":").? ~ term.rep(1, sep = ",") ~
+      (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.?)
+    ).map { case ((label, head, guard, meta), span) =>
       resetVarScope()
-      Item.ConstraintItem(Constraint(label, head.toIndexedSeq, guard.map(_.toIndexedSeq), meta, mkSpan(s, e)))
+      Item.ConstraintItem(Constraint(label, head.toIndexedSeq, guard.map(_.toIndexedSeq), meta, span))
     }
 
   // describe is not needed for test cases — omitted from declaration dispatch
@@ -2201,10 +2275,10 @@ private class AnthillParserImpl(
     // The grammar allows an optional trailing `end <name>`, dropped here:
     // `name.?` after `end` would greedily consume an outer scope's `end`
     // keyword (parsed as an ident). The trailing name is decorative.
-    P(Index ~ keyword("proof") ~/ name ~ proofBodyForm ~ keyword("end") ~~ Index).map {
-      case (s, target, (using0, strategy, body), e) =>
+    P(located(keyword("proof") ~/ name ~ proofBodyForm ~ keyword("end"))).map {
+      case ((target, (using0, strategy, body)), span) =>
         resetVarScope()
-        ProofDecl(target, strategy, body, using0, mkSpan(s, e))
+        ProofDecl(target, strategy, body, using0, span)
     }
 
   private def proofDecl[$: P]: P[Item] = P(proofDeclInner).map(Item.ProofItem(_))
@@ -2258,12 +2332,16 @@ private class AnthillParserImpl(
   private def proofStep[$: P]: P[ProofStep] =
     // The step's rule spans only its rule text; the STEP spans that plus its
     // `using …/by …` tail, so a diagnostic about either points at the right half.
-    P(Index ~ (simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.? ~~ Index ~
-      (keyword("using") ~/ proofUsingList).? ~ keyword("by") ~/ proofStrategy ~~ Index)
-      .map { case (s, label, (heads, bodyTerms), meta, ruleEnd, using0, strat, e) =>
-        val rule = Rule(label, heads, bodyTerms, meta, mkSpan(s, ruleEnd))
+    // TWO ends off one start, which is why this reads as [[located]] NESTED inside
+    // [[located]] rather than one bracket with a second `Index` in the middle: the
+    // inner one — [[ruleWithSpan]], the same production `ruleEntry` wraps — closes on
+    // the rule, the outer one on the step, and both open at the same offset because no
+    // input is consumed before the inner one (WI-971).
+    P(located(ruleWithSpan ~ (keyword("using") ~/ proofUsingList).? ~
+      keyword("by") ~/ proofStrategy))
+      .map { case ((rule, using0, strat), stepSpan) =>
         resetVarScope()
-        ProofStep(rule, using0.getOrElse(IndexedSeq.empty), strat, mkSpan(s, e))
+        ProofStep(rule, using0.getOrElse(IndexedSeq.empty), strat, stepSpan)
       }
 
   /** `rule <step>` — strips the `rule` keyword before delegating to
@@ -2273,19 +2351,19 @@ private class AnthillParserImpl(
     P(keyword("rule") ~/ proofStep)
 
   private def proofConcludingClause[$: P]: P[ConcludeClause] =
-    P(Index ~ (keyword("using") ~/ proofUsingList).? ~ keyword("by") ~/ proofStrategy ~~ Index).map {
-      case (s, using0, strat, e) =>
-        ConcludeClause(using0.getOrElse(IndexedSeq.empty), strat, mkSpan(s, e))
+    P(located((keyword("using") ~/ proofUsingList).? ~ keyword("by") ~/ proofStrategy)).map {
+      case ((using0, strat), span) =>
+        ConcludeClause(using0.getOrElse(IndexedSeq.empty), strat, span)
     }
 
   /** `provides Spec` (clause) or `provides Spec language X ... end` (block).
     * Disambiguated by checking for the `language` keyword after the spec. */
   private def providesDecl[$: P]: P[Item] =
-    P(Index ~ keyword("provides") ~/ typeExpr ~ providesRest ~~ Index).map {
-      case (s, spec, Left(()), e) =>
-        Item.ProvidesClauseItem(ProvidesClause(spec, mkSpan(s, e)))
-      case (s, spec, Right((lang, items)), e) =>
-        Item.ProvidesBlockItem(ProvidesBlock(spec, lang, items, mkSpan(s, e)))
+    P(located(keyword("provides") ~/ typeExpr ~ providesRest)).map {
+      case ((spec, Left(())), span) =>
+        Item.ProvidesClauseItem(ProvidesClause(spec, span))
+      case ((spec, Right((lang, items))), span) =>
+        Item.ProvidesBlockItem(ProvidesBlock(spec, lang, items, span))
     }
 
   private def providesRest[$: P]: P[Either[Unit, (TermSymbol, IndexedSeq[ProvidesItem])]] =

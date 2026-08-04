@@ -2,6 +2,9 @@ package anthill.span
 
 import anthill.parse.{Item, Parser, ParsedFile}
 import anthill.term.{Term, TermId}
+// WI-971: `assertSpans` (the invariant this file is about) and `pick` (find-or-fail)
+// moved to `SpanFixture` when `DeclarationSpanTest` became their second reader.
+import SpanFixture.{assertSpans, pick}
 
 /** WI-970 — A SPAN ENDS WHERE ITS CONSTRUCT ENDS. The first reader of `end`.
   *
@@ -31,7 +34,7 @@ import anthill.term.{Term, TermId}
   * WHY IT NEEDED A TEST AND NOT JUST A FIX: nothing in the suite read `end`. The
   * WI-965 control measured it — swap the two span combinators' `~~` for `~`, inflicting
   * this defect on ~30 sites at once, and all 311 tests stayed GREEN. `DeclarationSpan
-  * Test`'s one width assertion (the `F` of `sort Parameterized[A, F[T]]`) sits where no
+  * Test`'s one width assertion (the `F` of its parameterized sort) sat where no
   * trivia follows the token, so it cannot see the difference either. Every fixture here
   * therefore writes DELIBERATE trivia after the construct — spaces, a line break, a
   * blank line, a block comment — because a fixture without it measures nothing.
@@ -47,23 +50,18 @@ import anthill.term.{Term, TermId}
   *     except the rule case, whose end comes from `ruleDecl`'s own capture. Before this
   *     WI that same break failed NOTHING (WI-965's measured control), which is the hole
   *     these assertions exist to close.
+  *
+  * WI-971 RE-MEASURED THE SECOND HALF AT FIFTEEN (of 327), including the rule case: the
+  * exception above was that `ruleDecl` bracketed itself, and no production does any more
+  * — a hand-written `Index ~ … ~~ Index` is now a compile error, so every span this file
+  * reads comes through `located`. Six tests were added: one here (the proof step's two
+  * ends), three to `DeclarationSpanTest`, and two corpus audits in
+  * `ParseSpanCoverageTest` that check the same invariant WITHOUT a fixture — which is
+  * how they found WI-972, a ninth site none of these per-shape cases could reach.
   */
 class SpanEndTest extends munit.FunSuite:
 
   private def parse(src: String): ParsedFile = SpanFixture.parse(src, "spans.anthill")
-
-  /** THE INVARIANT: the source text the span brackets IS the construct, with nothing
-    * of the trivia around it. Asserted as the TEXT rather than a width so a failure
-    * shows what leaked in (`'auto   {- t -}\n'` reads as its own diagnosis, where
-    * `17 != 4` does not), and so the assertion pins `start` at the same time. */
-  private def assertSpans(src: String, span: Span, expected: String)(using munit.Location): Unit =
-    assertEquals(src.slice(span.start, span.end), expected)
-
-  /** The first item matching `f`, or a loud fixture-drift failure — a `collect` that
-    * finds nothing would otherwise leave the test asserting over an empty list. */
-  private def pick[A](pf: ParsedFile, what: String)(f: PartialFunction[Item, A])(using munit.Location): A =
-    SpanFixture.allItems(pf.items).collectFirst(f)
-      .getOrElse(fail(s"fixture drift: no $what in the parsed file"))
 
   /** The span of the first `Term.Fn` built with `functor`, or a loud fixture-drift
     * failure. Parse-time terms carry their span in the store, not in an IR node
@@ -172,6 +170,38 @@ class SpanEndTest extends munit.FunSuite:
     assertEquals(rules.length, 2, "fixture drift: expected exactly two rules")
     assertSpans(src, rules.head.span, "rule a(?x) :- p(?x)")
     assertSpans(src, rules(1).span, "rule q(?x)\n    -: r(?x)")
+  }
+
+  test("WI-971: a proof step's rule ends before its `by` tail, and the step after it") {
+    // TWO ENDS OFF ONE START — the shape WI-970 listed as unable to use `located` and
+    // WI-971 wrote as `located` NESTED inside `located`, the inner bracket closing on
+    // the rule. Nothing read either span before this: the rule's end had to be measured
+    // separately from the step's, and a single-bracket rewrite that dropped the inner
+    // one would give the rule the whole step's range and still parse, load and pass.
+    //
+    // The trivia is placed between the two ends on purpose — that gap is the only text
+    // that tells the two spans apart, so a fixture writing `p(?x) by auto` tight would
+    // pass with the inner bracket closing anywhere in it.
+    //
+    // CONTROL, measured: give the rule the STEP's span (which is what collapsing the
+    // two brackets into one leaves) and THIS CASE ALONE fails out of 327. Breaking
+    // `located`'s `~~` fails it too, along with fourteen others.
+    val src =
+      """namespace demo
+        |  fact p(x: 1)
+        |  proof p
+        |    rule h(?x) :- p(?x)   {- t -}
+        |      by auto
+        |  end
+        |end""".stripMargin
+    val pf = parse(src)
+    val proof = pick(pf, "proof") { case Item.ProofItem(p) => p }
+    val steps = proof.body match
+      case Some(anthill.parse.ProofBody.Structured(ss, _)) => ss
+      case other => fail(s"fixture drift: expected a structured proof body, got $other")
+    assertEquals(steps.length, 1, "fixture drift: expected exactly one step")
+    assertSpans(src, steps.head.rule.span, "h(?x) :- p(?x)")
+    assertSpans(src, steps.head.span, "h(?x) :- p(?x)   {- t -}\n      by auto")
   }
 
   // ── The one that was zero-width ───────────────────────────────

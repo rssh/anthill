@@ -1,6 +1,7 @@
 package anthill.span
 
 import anthill.parse.{Item, ParsedFile}
+import SpanFixture.{assertSpans, pick}
 
 /** WI-947 — one span assertion per DECLARATION SHAPE, at the IR.
   *
@@ -17,12 +18,22 @@ import anthill.parse.{Item, ParsedFile}
   * THE RULE BEING PINNED: a declaration's span begins at its OWN first token — the
   * `visibility` when written, otherwise the keyword — for every shape, with no
   * exceptions. Two shapes have to work for that (`sort` and `operation` have their
-  * keyword eaten by a dispatching production, which hands the start back down); the
+  * keyword eaten by a dispatching production, which hands the span back down); the
   * point of testing all of them together is that the exceptions cannot creep back.
   *
+  * WI-971 CLOSED THE LIST — `sortTypeParam` and `sortBinderMember` each have a case
+  * now, because the WI moved where their span comes from, and `proofDeclInner` got the
+  * `proof` line the fixture never had. The first two are not reachable by the
+  * line-anchored helpers below (a type param is not written on its own line, and a
+  * binder member is not a `sort` declaration), which is why they stayed unpinned while
+  * the ten around them were being covered.
+  *
   * CONTROL: every assertion is a specific (row, col) checked against the source text
-  * at that column, so none can pass with a zeroed or stale span. Revert any single
-  * production's `Index` capture and exactly its case here fails.
+  * at that column, or the exact source slice, so none can pass with a zeroed or stale
+  * span. Revert any single production's span capture and exactly its case here fails —
+  * except where the whole family now shares one bracket, and breaking `located`'s `~~`
+  * fails three of these at once (measured; the other twelve are in `SpanEndTest` and
+  * `ParseSpanCoverageTest`).
   */
 class DeclarationSpanTest extends munit.FunSuite:
 
@@ -30,23 +41,9 @@ class DeclarationSpanTest extends munit.FunSuite:
 
   private def allItems(items: Iterable[Item]): Vector[Item] = SpanFixture.allItems(items)
 
-  private def spanOf(item: Item): Span = item match
-    case Item.NamespaceItem(x)     => x.span
-    case Item.SortWithBodyItem(x)  => x.span
-    case Item.AbstractSortItem(x)  => x.span
-    case Item.EntityItem(x)        => x.span
-    case Item.FactItem(x)          => x.span
-    case Item.ConstItem(x)         => x.span
-    case Item.ConstraintItem(x)    => x.span
-    case Item.RuleItem(x)          => x.span
-    case Item.RuleBlockItem(x)     => x.span
-    case Item.OperationItem(x)     => x.span
-    case Item.OperationBlockItem(x) => x.span
-    case Item.RequiresDeclItem(x)  => x.span
-    case Item.ProvidesClauseItem(x) => x.span
-    case Item.ProvidesBlockItem(x) => x.span
-    case Item.ProofItem(x)         => x.span
-    case other => fail(s"no span reader for $other — add one when the shape is added")
+  // WI-971: `spanOf` moved to `SpanFixture` when the corpus audit in
+  // `ParseSpanCoverageTest` became its second reader.
+  private def spanOf(item: Item): Span = SpanFixture.spanOf(item)
 
   /** Assert that SOME item of the file starts exactly at the first non-space
     * character of `line` (1-based), and that the line begins with `expectedToken`.
@@ -92,7 +89,17 @@ class DeclarationSpanTest extends munit.FunSuite:
   // One declaration per line, so a line number IS a shape. Line numbers are read
   // off this literal, and `assertDeclStartsAtLine` re-derives the column from the
   // text — so adding a line above an existing case fails loudly on the token check
-  // rather than silently testing the wrong construct.
+  // rather than silently testing the wrong construct. Which is also why WI-971's lines
+  // were APPENDED (23, 24, the `proof` at 25–26) or widened in place (21), rather than
+  // grouped with the shapes they belong beside.
+  //
+  // Two constructs DO share a line, and neither is reached by line: the `F[T]` type
+  // param inside line 21 and the `sort ?U` member inside line 24. They are addressed by
+  // name in their own cases below, because a type param and a binder member are not
+  // declarations a reader writes on a line of their own — which is exactly why they had
+  // no case at all until WI-971. The spacing inside `F[T]   ]` is load-bearing: it is
+  // the only trailing trivia the type param has, and without it the assertion cannot
+  // tell a tight bracket from a whitespace-skipping one.
   //
   //                                                                      line
   private val src =
@@ -116,7 +123,11 @@ class DeclarationSpanTest extends munit.FunSuite:
       |  end
       |  sort ?Binder
       |  sort [Bracketed]
-      |  sort Parameterized[A, F[T]]
+      |  sort Parameterized[A, F[T]   ]
+      |  end
+      |  sort Alias = Marker
+      |  sort ?Structured { sort ?U }
+      |  proof Point by auto
       |  end
       |end""".stripMargin
 
@@ -162,6 +173,13 @@ class DeclarationSpanTest extends munit.FunSuite:
     assertDeclStartsAtLine(pf, src, 20, "sort")
   }
 
+  test("WI-971: a `proof` spans from its keyword") {
+    // `proofDeclInner` was the last name on the header's list still pinned by nothing —
+    // the fixture had no `proof` at all. Its end is on the `end` line, so only the start
+    // is reachable here, which is the same coverage every other multi-line shape gets.
+    assertDeclStartsAtLine(pf, src, 25, "proof")
+  }
+
   test("WI-970: a one-line declaration ends at its own last character") {
     // The END half of the same rule, for every shape in this fixture that fits on one
     // line. The multi-line shapes (`namespace`, `sort`/`enum` with a body) are absent
@@ -176,7 +194,13 @@ class DeclarationSpanTest extends munit.FunSuite:
       4 -> "entity", 5 -> "fact", 6 -> "const", 7 -> "constraint",
       8 -> "rule", 9 -> "rule", 10 -> "internal", 11 -> "operation",
       15 -> "requires", 16 -> "effects", 17 -> "provides",
-      19 -> "sort", 20 -> "sort",
+      // WI-971 added lines 23 and 24 and the three `sort` shapes now share ONE bracket,
+      // in the `sortDecl` dispatcher, where each branch used to close its own. 19/20 are
+      // the binder forms; 23 is the abstract `sort X = T`, whose end no case reached
+      // before (every other named sort in this fixture opens a body, so its end is on a
+      // later line); 24 is the with-body binder, whose own span is separate from the
+      // member span asserted further down.
+      19 -> "sort", 20 -> "sort", 23 -> "sort", 24 -> "sort",
     ) do assertDeclSpansLine(pf, src, line, token)
   }
 
@@ -185,8 +209,8 @@ class DeclarationSpanTest extends munit.FunSuite:
     // what `Loader.lookupScope` reports through. A `Name` must span its identifier
     // token like every other one — stamping the whole binder's range on it would be a
     // plausible-looking range that is wrong, which is worse than the `mkSpan(0, 0)` it
-    // replaced. `sort Parameterized[A, F[T]]` on line 21 is the sharp case: `F` has a
-    // member list, so its declaration range and its name range genuinely differ.
+    // replaced. `F` on line 21 is the sharp case: it has a member list, so its
+    // declaration range and its name range genuinely differ.
     val names = allItems(pf.items).collect {
       case Item.AbstractSortItem(s) => s.name
       case Item.SortWithBodyItem(s) => s.name
@@ -198,6 +222,46 @@ class DeclarationSpanTest extends munit.FunSuite:
     assertEquals(f.span.startCol, line21.indexOf("F[T]") + 1)
     // The NAME is one character long. Before this was split out it covered `F[T]`.
     assertEquals(f.span.end - f.span.start, 1)
+  }
+
+  test("WI-971: a type param's DECLARATION span covers its member list") {
+    // The OTHER half of the pair above, and the case that pins `sortTypeParam`'s own
+    // bracket: `F[T]` is the one shape where the name's range and the declaration's
+    // genuinely differ, so asserting the name alone leaves the declaration free to be
+    // anything. It was: until WI-971 this span was rebuilt as `mkSpan(nameSpan.start,
+    // e)` — the one site in the parser that recovered an offset from a span instead of
+    // capturing it — and no test read it. Both ends are live here: an outer `located`
+    // that opened after the name would start at `[`, and the fixture's line 21 writes
+    // `F[T]   ]` with the spaces there for the other end — a `F[T]` written tight
+    // against the closing bracket sits where a whitespace-skipping `~` has nothing to
+    // skip, which is exactly why the name assertion above could not see one.
+    //
+    // CONTROL, measured: hand the declaration `nameSpan` (which is what dropping the
+    // outer bracket leaves) and THIS CASE ALONE fails out of 327. The name assertion
+    // above stays green — it reads the inner bracket, which the mutation does not
+    // touch, and that is the point of splitting the two.
+    val fDecl = pick(pf, "`F` type-param declaration") {
+      case Item.SortWithBodyItem(s) if pf.symbols.name(s.name.last) == "F" => s.span
+    }
+    assertSpans(src, fDecl, "F[T]")
+  }
+
+  test("WI-971: a structured binder's MEMBER spans its own `sort ?U`") {
+    // `sortBinderMember` — the `{ sort ?U }` member form, which this file's header
+    // names among the productions reverting left the whole suite green, and which is
+    // still not a `sort` DECLARATION, so the line-anchored helpers above cannot reach
+    // it (line 24 anchors the enclosing `?Structured`, not the member).
+    //
+    // It earns a case now because WI-971 MOVED its capture: the trailing `~~ Index`
+    // used to sit inside each of the two branches, and the branches now bracket
+    // nothing — one `located` wraps the whole `keyword("sort") ~/ (a | b)`. That the
+    // alternation's end is the selected branch's end is obviously true and was the same
+    // kind of obviously-true claim WI-970 found wrong about `flatMap`.
+    val u = pick(pf, "`U` binder member") {
+      case Item.AbstractSortItem(s) if pf.symbols.name(s.name.last) == "U" => s.span
+    }
+    // The ` }` after it is what a whitespace-skipping `~` would swallow.
+    assertSpans(src, u, "sort ?U")
   }
 
 end DeclarationSpanTest

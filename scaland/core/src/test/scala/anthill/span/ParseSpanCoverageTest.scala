@@ -1,6 +1,6 @@
 package anthill.span
 
-import anthill.load.EmbeddedStdlib
+import anthill.load.{EmbeddedStdlib, FileSourceResolver}
 import anthill.parse.{ParsedFile, Parser}
 import anthill.term.Term
 import java.nio.file.Paths
@@ -66,13 +66,15 @@ class ParseSpanCoverageTest extends munit.FunSuite:
       s"${bad.length} locationless name-bearing terms across ${files.length} stdlib files")
   }
 
-  test("WI-961: the surface forms the stdlib does not exercise are covered too") {
-    // The stdlib is a corpus, not a grammar tour — the audit above is blind to any
-    // production it happens not to use. These are the shapes whose markers were
-    // MEASURED to reach `resolveName` (WI-957) plus the binder and type forms whose
-    // spans are derived rather than captured, so each one exercises a different way
-    // the invariant could break.
-    val sources = Seq(
+  /** THE GRAMMAR TOUR. The stdlib is a corpus, not a grammar tour — an audit over it is
+    * blind to any production it happens not to use. These are the shapes whose markers
+    * were MEASURED to reach `resolveName` (WI-957) plus the binder and type forms whose
+    * spans are derived rather than captured, so each one exercises a different way the
+    * invariant could break.
+    *
+    * WI-971 lifted this out of the test below when the span-tightness audit became its
+    * second reader — the two audits ask different questions of the same shapes. */
+  private val sources: Seq[(String, String)] = Seq(
       // The cut sits mid-body on purpose: a TRAILING `!` is the documented `! atom`
       // ambiguity (`term` is tried before `cutGoal`, so `!` + the next line's keyword
       // parses as `not(...)`), which is a grammar quirk, not what this test is about.
@@ -117,12 +119,99 @@ class ParseSpanCoverageTest extends munit.FunSuite:
         """namespace d
           |  rule a(?xs) :- (forall ?x in ?xs: p(?x)), (some ?y in ?xs: q(?y))
           |end""".stripMargin,
-    )
+  )
+
+  test("WI-961: the surface forms the stdlib does not exercise are covered too") {
     for (label, src) <- sources do
       Parser.parse(src, s"$label.anthill") match
         case Left(errs) => fail(s"$label: parse failed: ${errs.map(_.render).mkString("; ")}")
         case Right(pf) =>
           assertEquals(offenders(pf).distinct.sorted, Nil, s"$label left names unlocated")
+  }
+
+  // ── WI-971: no span ends in trivia ───────────────────────────
+
+  /** Every span the parse produced that ends on a whitespace character, rendered as the
+    * text it brackets — declaration spans (walked through `SpanFixture`) and term spans
+    * (from the store) together, because the two are captured by different code and have
+    * failed differently.
+    *
+    * A ZERO-WIDTH span passes: it brackets no text, so it has no last character to be
+    * wrong about, and `Span`'s doc lists the point diagnostics that are deliberately
+    * empty.
+    *
+    * THE FILE'S LAST TOP-LEVEL DECLARATION IS EXCLUDED, and it is the only exclusion.
+    * It is not tight, and that is a REAL DEFECT — WI-972, a ninth site of the class
+    * WI-970 repaired, which this audit is what found. Measured with a probe: a trailing
+    * optional or `rep` that runs its whitespace skip at END OF INPUT keeps the trivia
+    * instead of resetting over it, so `fact p(x: 1)\n` spans the newline too and
+    * `fact p(x: 1)\n-- done\n` spans the comment. It reproduces UNCHANGED on `HEAD`
+    * (checked out and re-run), so it is not this WI's, and the fix is not a `~`-vs-`~~`
+    * decision anywhere — which is why it is filed rather than patched here.
+    *
+    * The exclusion is one item per file and costs almost no coverage: a construct that
+    * ends in a keyword (`end`) or a `}` is tight at EOF anyway, and most stdlib files
+    * are a single `namespace … end`. `primitives.anthill`, which closes with a braced
+    * top-level `sort`, is the file that fails without it. */
+  private def looseEnds(pf: ParsedFile, src: String): List[String] =
+    val audited = SpanFixture.allItems(pf.items).filterNot(_ == pf.items.last)
+    val decls = audited.map(SpanFixture.spanOf)
+      .filter(sp => sp.hasLocation && sp.end > sp.start && sp.end <= src.length)
+      .filter(sp => src.charAt(sp.end - 1).isWhitespace)
+      .map(sp => src.slice(sp.start, sp.end))
+    decls.toList ++ pf.terms.spansEndingInWhitespace(src).map(_._2)
+
+  test("WI-971: no stdlib file parses to a span that ends in trivia") {
+    // THE SECOND MECHANISM, and the reason this file already argues for having two: the
+    // `Index` shadow in `AnthillParserImpl` bans a SPELLING, so it is blind to any span
+    // that ran long without mentioning `Index`. WI-970's eighth defect was exactly that
+    // — fastparse's `flatMap` ran the whitespace skipper before a `Pass` continuation,
+    // so EVERY `:-` rule's declaration span ended in the newline before the next
+    // declaration. Three greps missed it. This assertion is spelling-blind and would
+    // have failed on the first stdlib file that writes a `:-` rule, which is most of
+    // them.
+    //
+    // CONTROL, measured both ways:
+    //   * put fastparse's `flatMap` back in `ruleArrowChoice` — the WI-970 defect — and
+    //     BOTH cases here fail; the first stdlib file to report is `int64`, with 5 loose
+    //     spans (the audit stops at the first bad file, so that is a floor, not a total).
+    //     `SpanEndTest`'s rule case catches it too, but only because someone wrote a
+    //     fixture for it after the fact; this one needed no fixture at all.
+    //   * IT ALREADY EARNED ITS KEEP: on its FIRST run it found WI-972 (see `looseEnds`)
+    //     — a ninth site of the same class, present on `HEAD`, that no `~`-vs-`~~`
+    //     reading of the productions could reach, because every capture is at the right
+    //     offset and only end-of-input behaves differently.
+    //
+    // THE CORPUS IS THE POINT. `DeclarationSpanTest` and `SpanEndTest` pin one span per
+    // shape against a fixture someone wrote on purpose; this reads 69 files nobody wrote
+    // for a span test, so it covers the combinations a fixture author would not think
+    // to write — a declaration followed by a comment, by a blank line, by end-of-file.
+    val resolver = FileSourceResolver(IndexedSeq(Paths.get(stdlibDir)))
+    var checked = 0
+    for modId <- EmbeddedStdlib.stdlibPaths do
+      val src = resolver.resolve(modId).getOrElse(fail(s"cannot read stdlib $modId"))
+      Parser.parse(src, modId.replace('.', '/') + ".anthill") match
+        case Left(errs) => fail(s"$modId: parse failed: ${errs.map(_.render).mkString("; ")}")
+        case Right(pf) =>
+          checked += 1
+          val loose = looseEnds(pf, src)
+          assertEquals(loose, Nil, s"$modId: ${loose.length} spans end in trivia")
+    // A resolver that silently found nothing would make the loop above assert over an
+    // empty corpus and pass — the "it loads clean" failure this file's header names.
+    assertEquals(checked, EmbeddedStdlib.stdlibPaths.length)
+  }
+
+  test("WI-971: the surface forms the stdlib does not exercise end tight too") {
+    // The same audit over the grammar tour above, for the same reason it exists there:
+    // the stdlib is a corpus, not a grammar tour, and a production it happens not to use
+    // is unmeasured. Trailing trivia is appended to each so the check has something to
+    // catch — a source that ends at its last token would pass whatever the parser did.
+    for (label, src) <- sources do
+      val withTrivia = src + "\n\n{- trailing -}\n"
+      Parser.parse(withTrivia, s"$label.anthill") match
+        case Left(errs) => fail(s"$label: parse failed: ${errs.map(_.render).mkString("; ")}")
+        case Right(pf) =>
+          assertEquals(looseEnds(pf, withTrivia), Nil, s"$label left a span ending in trivia")
   }
 
 end ParseSpanCoverageTest

@@ -115,6 +115,30 @@ class SimpleTermStore:
         case _                                        => false)
       .toIndexedSeq
 
+  /** WI-971: the located terms in this store whose span ENDS on whitespace, paired with
+    * the text each brackets — every one is a span that ran past its own construct.
+    *
+    * The audit the [[AnthillParserImpl.Index]] shadow cannot perform. That shadow bans a
+    * SPELLING (`Index ~ p ~~ Index`); this checks a PROPERTY, so it is blind to how the
+    * offsets were obtained. WI-970's eighth defect is why the difference matters: it
+    * came from fastparse's `flatMap` running the whitespace skipper before a `Pass`
+    * continuation, mentioned no `Index`, and survived three greps — but it would have
+    * failed this on the first stdlib file, because the span it produced ended in the
+    * newline before the next declaration.
+    *
+    * A ZERO-WIDTH span passes: `Span.empty` and the deliberate point diagnostics
+    * (`Span`'s doc lists them) bracket no text, so they have no last character to be
+    * wrong about. `source` is the text the store was built from — a hand-built store has
+    * none, which is why this takes it rather than holding it. */
+  def spansEndingInWhitespace(source: String): IndexedSeq[(TermId, String)] =
+    (0 until terms.length).view
+      .map(TermId.fromRaw)
+      .map(id => (id, spans(id.index)))
+      .filter((_, sp) => sp.hasLocation && sp.end > sp.start && sp.end <= source.length)
+      .filter((_, sp) => source.charAt(sp.end - 1).isWhitespace)
+      .map((id, sp) => (id, source.slice(sp.start, sp.end)))
+      .toIndexedSeq
+
   def get(id: TermId): Term = terms(id.index)
   def size: Int = terms.length
   def isEmpty: Boolean = terms.isEmpty

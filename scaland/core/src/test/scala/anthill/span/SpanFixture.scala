@@ -2,8 +2,9 @@ package anthill.span
 
 import anthill.parse.{Item, Parser, ParsedFile}
 
-/** The two things every span test in this package does before it can assert anything:
-  * parse a fixture, and walk the items it produced.
+/** What every span test in this package does before it can assert anything: parse a
+  * fixture, walk the items it produced, find the one it is about, and compare a span
+  * against the source text.
   *
   * WI-970: extracted when `SpanEndTest` became the SECOND copy of both. `allItems` is
   * the one that had to move — it enumerates the scope-opening `Item` shapes, so a third
@@ -35,5 +36,55 @@ private[span] object SpanFixture:
         case Item.SortWithBodyItem(s) => allItems(s.items)
         case _ => Vector.empty)
     }
+
+  /** The first item matching `f`, or a loud fixture-drift failure — a `collect` that
+    * finds nothing would otherwise leave the test asserting over an empty list.
+    *
+    * WI-971 moved this here from `SpanEndTest` for the reason the header gives: it
+    * became the THIRD and FOURTH copy when `DeclarationSpanTest` grew cases for the two
+    * shapes the line-anchored helpers cannot reach. */
+  def pick[A](pf: ParsedFile, what: String)(f: PartialFunction[Item, A])(using munit.Location): A =
+    allItems(pf.items).collectFirst(f)
+      .getOrElse(munit.Assertions.fail(s"fixture drift: no $what in the parsed file"))
+
+  /** THE INVARIANT every test in this package is about: the source text the span
+    * brackets IS the construct, with nothing of the trivia around it.
+    *
+    * Asserted as the TEXT rather than a width so a failure shows what leaked in
+    * (`'auto   {- t -}\n'` reads as its own diagnosis, where `17 != 4` does not), and so
+    * the assertion pins `start` at the same time. */
+  def assertSpans(src: String, span: Span, expected: String)(using munit.Location): Unit =
+    munit.Assertions.assertEquals(src.slice(span.start, span.end), expected)
+
+  /** The span an `Item` was written over.
+    *
+    * EXHAUSTIVE, and a shape it does not know FAILS — because its second caller is an
+    * audit (`ParseSpanCoverageTest`) that walks a whole corpus rather than naming one
+    * construct. A `case _ => Span.empty` default would let a new declaration shape opt
+    * itself out of that audit silently, which is the failure mode the audit exists for.
+    * The shapes below are exactly those `AnthillParserImpl.declaration` can yield; the
+    * rest of the `Item` enum belongs to the todo-domain IR this parser does not build.
+    *
+    * `ImportItem` is the one shape with no span of its own — `Import` carries only its
+    * path — so it answers with the path's, which is the span `importPath` captures and
+    * WI-970 repaired. */
+  def spanOf(item: Item)(using munit.Location): Span = item match
+    case Item.NamespaceItem(x)      => x.span
+    case Item.SortWithBodyItem(x)   => x.span
+    case Item.AbstractSortItem(x)   => x.span
+    case Item.EntityItem(x)         => x.span
+    case Item.FactItem(x)           => x.span
+    case Item.ConstItem(x)          => x.span
+    case Item.ConstraintItem(x)     => x.span
+    case Item.RuleItem(x)           => x.span
+    case Item.RuleBlockItem(x)      => x.span
+    case Item.OperationItem(x)      => x.span
+    case Item.OperationBlockItem(x) => x.span
+    case Item.RequiresDeclItem(x)   => x.span
+    case Item.ProvidesClauseItem(x) => x.span
+    case Item.ProvidesBlockItem(x)  => x.span
+    case Item.ProofItem(x)          => x.span
+    case Item.ImportItem(x)         => x.path.span
+    case other => munit.Assertions.fail(s"no span reader for $other — add one when the shape is added")
 
 end SpanFixture
