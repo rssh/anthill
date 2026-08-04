@@ -157,13 +157,16 @@ end
     );
 }
 
-/// THE HALF DELIBERATELY NOT FIXED, pinned so the decision is visible and a silent
-/// change is caught. `entity X(…)` then `sort X … end` also takes the reuse arm, and
-/// there the skipped link is the ENCLOSING one — the sort body resolves nothing from
-/// outside itself. It is left alone: proposal 059 R1 refuses two type declarations at
-/// one address outright, so making this shape work would build a capability R1
-/// removes. It fails LOUDLY today, which is the right behaviour to hold pending R1 —
-/// un-gating the link would instead make it silently succeed.
+/// THE HALF DELIBERATELY NOT FIXED — and WI-997 is why it stays that way. `entity
+/// X(…)` then `sort X … end` also takes the reuse arm, and there the skipped link is
+/// the ENCLOSING one, so the sort body resolves nothing from outside itself. Supplying
+/// that link would have built exactly the capability 059 R1 removes; R1 has now landed
+/// (WI-997), and this shape is REFUSED as two declarations of one type.
+///
+/// SO THIS TEST NOW PINS BOTH ENDS AT ONCE: the R1 refusal names the pair, and the
+/// three pre-existing errors below it are still present and unchanged — the missing
+/// link was never repaired, which is what keeps the decision visible. If a later
+/// change un-gates it, those three disappear and this fails.
 ///
 /// THE FIXTURE CARRIES A VARIANT ON PURPOSE. Without one, `has_variant` is false and
 /// this test cannot see the variant-exposure gate at all — it passed unchanged while
@@ -171,7 +174,7 @@ end
 /// of this very shape, half-wiring the scope (variants leaking out while the body
 /// still could not see in). A pinning test blind to the change it pins is not a pin.
 #[test]
-fn entity_then_sort_body_still_fails_loudly_pending_059_r1() {
+fn entity_then_sort_body_is_refused_by_059_r1_and_still_unwired() {
     common::expect_load_errors(
         common::try_load_kb_with(r#"
 namespace wi979.es
@@ -184,6 +187,10 @@ namespace wi979.es
 end
 "#),
         &[
+            // WI-997 / 059 R1 — the pair itself, named with both keywords and lines.
+            "type 'Rec' is declared more than once in scope 'wi979.es': \
+             `entity` at 4:3, `sort` at 5:3",
+            // …and the shape is STILL unwired, which R1 does not repair and must not.
             "unresolved name 'Int64' in scope 'twice'",
             "unresolved name 'Rec' in scope 'twice'",
             // …and the knock-on: with the param type unresolved, `r.n` has no

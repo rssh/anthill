@@ -230,19 +230,24 @@ fn both_spellings_record_the_same_set_of_categories() {
     }
 }
 
-/// Membership does not depend on WHICH DECLARATION CAME FIRST — the property a
-/// set exists to provide, driven on the shape WI-926 measured the flip on: a sort
-/// and a same-named namespace-level entity.
+/// THE SHAPE THIS TEST WAS WRITTEN ON IS NOW REFUSED — 059 R1 / WI-997. A sort and
+/// a same-named namespace-level `entity` are two declarations of one type, which
+/// §6.3 already called two spellings of one declaration, so R1 names both spans and
+/// refuses. Pinned here rather than deleted, because this file is where the shape
+/// was introduced and a silent disappearance would read as coverage that moved.
 ///
-/// This is the case the categories are easy to lose in: of the three arms that can
-/// produce the entity's symbol, TWO reuse an existing one and never reach `define`,
-/// so leaving `define` to carry the category dropped it. Measured before the fix,
-/// with the sort written first: `has_kind(Colour, Entity)` was FALSE although
-/// `entity Colour(x)` was written and its field schema registered — and TRUE with
-/// the two declarations swapped.
+/// WHAT THE ORIGINAL TEST MEASURED, AND WHERE IT LIVES NOW. It drove the property a
+/// category SET exists to provide — membership does not depend on which declaration
+/// came first — on the one pair that could then exhibit it. That pair is illegal;
+/// the pair that remains is 059 R2's `namespace X` beside `sort X`, and
+/// `wi979_declaration_order_test::both_orders_record_the_same_categories` drives it
+/// in BOTH orders. The underlying hazard is still covered here too: of the three
+/// arms that can produce an entity's symbol, TWO reuse an existing one and never
+/// reach `define`, and the EPONYMOUS reuse arm is exercised by
+/// `sugar_and_desugaring_agree_on_categories` above, whose `DESUGARED` spelling
+/// takes exactly that arm.
 #[test]
-fn membership_is_independent_of_declaration_order() {
-    use anthill_core::intern::SymbolKind;
+fn a_sort_and_a_same_named_entity_are_refused_by_059_r1() {
     const SORT_FIRST: &str = r#"
 namespace test.wi925ord
   import anthill.prelude.{String}
@@ -252,10 +257,20 @@ namespace test.wi925ord
   entity Colour(x: String)
 end
 "#;
-    let kb = load_src(SORT_FIRST);
-    let colour = kb.try_resolve_symbol("test.wi925ord.Colour").expect("Colour resolves");
-    assert!(kb.has_kind(colour, SymbolKind::Sort), "`sort Colour` was written");
-    assert!(kb.has_kind(colour, SymbolKind::Entity), "`entity Colour(x)` was written too");
+    let parsed = parse::parse(SORT_FIRST).expect("test source should parse");
+    let mut kb = KnowledgeBase::new();
+    let resolver = FileSourceResolver::new(vec![std::path::PathBuf::from("../../stdlib")]);
+    let errs = match load::load_all(&mut kb, &[&parsed], &resolver) {
+        Err(e) => e,
+        Ok(_) => panic!("059 R1 must refuse a sort and a same-named entity in one scope"),
+    };
+    let joined = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(
+        joined.contains("type 'Colour' is declared more than once")
+            && joined.contains("`sort` at")
+            && joined.contains("`entity` at"),
+        "the refusal must name BOTH declarations; got:\n{joined}",
+    );
 }
 
 /// CONTROL — the ORDER within the set still records which keyword was written,

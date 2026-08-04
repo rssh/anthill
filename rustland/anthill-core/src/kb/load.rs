@@ -510,6 +510,27 @@ pub enum LoadError {
         declared: String,
         span: Span,
     },
+    /// WI-997 / proposal 059 R1 — A TYPE IS DEFINED ONCE. Two type declarations
+    /// share one `(scope, local name)`: `sort X` + `sort X`, `enum X` + `enum X`,
+    /// or — as SIBLINGS in one scope — `entity X` + `sort X`, which §6.3 makes two
+    /// spellings of one declaration. The harm is REOPENING A CLOSED ADT: before
+    /// this refusal a second `sort C { … }` body beside `sort C { entity Red }`
+    /// silently added variants, both constructing and the second body's members
+    /// dispatching.
+    ///
+    /// Carries no `span` of its own and is NOT wrapped in [`LoadError::Located`]:
+    /// the two declarations may sit in DIFFERENT FILES, and one file prefix cannot
+    /// name both. `sites` is therefore pre-rendered — each entry already
+    /// `path:line:col` (or bare `line:col` for a pathless source) — built where
+    /// the `&ParsedFile`s are still in scope.
+    DuplicateTypeDeclaration {
+        /// The local name declared twice, as written.
+        name: String,
+        /// The scope both declarations land in, qualified.
+        scope_name: String,
+        /// One `(keyword, rendered location)` per declaration, in source order.
+        sites: Vec<(&'static str, String)>,
+    },
     /// WI-582 / WI-903 — a typed rule pattern (`?x: T`) written on a rule shape
     /// whose firing site never consults it. The bound has exactly ONE enforcer:
     /// the resolver's `apply_eq_rules`, via [`super::typing::typed_pattern_bounds_hold`],
@@ -1388,6 +1409,9 @@ impl LoadError {
                     loc.format_start(*span), entity, field, declared,
                 )
             }
+            LoadError::DuplicateTypeDeclaration { name, scope_name, sites } => {
+                duplicate_type_message(name, scope_name, sites)
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -1567,6 +1591,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::UnresolvedName { name, span, scope_name } => {
                 write!(f, "unresolved name '{}' in scope '{}' at {}..{}", name, scope_name, span.start, span.end)
+            }
+            LoadError::DuplicateTypeDeclaration { name, scope_name, sites } => {
+                write!(f, "{}", duplicate_type_message(name, scope_name, sites))
             }
             LoadError::UnresolvedImport { path, span } => {
                 write!(f, "unresolved import '{}' at {}..{}", path, span.start, span.end)
@@ -1896,15 +1923,26 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     let global = kb.make_name_term("_global");
 
     // Sub-pass 1: define all names
-    for file in files {
-        scan_items_pass1(kb, &file.items, &file.symbols, &file.terms, global, "");
+    //
+    // WI-997 — the ledger spans EVERY file, not one: 059 R1 is keyed on
+    // `(scope, local name)` and two declarations of one type routinely sit in
+    // different files (that is what makes the rule worth having), so it is built
+    // once here and read after the whole loop rather than per file.
+    let mut ledger = DeclLedger::default();
+    for (file_idx, file) in files.iter().enumerate() {
+        scan_items_pass1(kb, &file.items, &file.symbols, &file.terms, global, "", file_idx, &mut ledger);
     }
 
     // Sub-pass 2: process requires and imports (all sorts exist now). A
     // Selective import of a rule-defined predicate can't resolve here — its
     // head-functor Goal isn't registered until sub-pass 3 — so such names are
     // deferred into `pending` and retried below (WI-295).
-    let mut errors = Vec::new();
+    // WI-997 / 059 R1 — reported before pass 2 runs, so the duplicate is named as
+    // itself rather than through the cascade it causes downstream. Loading
+    // CONTINUES (the pass-2/3/4 errors below are still collected), matching how
+    // every other pass here accumulates: one bad declaration must not hide the
+    // rest of the file's diagnostics.
+    let mut errors = ledger.duplicate_type_errors(kb, files);
     let mut pending: Vec<PendingImport> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         // WI-745: collect this file's pass-2 errors on their own so each is
@@ -2682,6 +2720,143 @@ fn record_internal(kb: &mut KnowledgeBase, sym: Symbol, vis: Option<Visibility>)
     }
 }
 
+/// WI-997 — THE R1 SENTENCE, one owner. `LoadError` has two rendering paths (the
+/// span-resolving one used by `Located`, and the bare `Display`), and this
+/// diagnostic carries no span for either to resolve — its locations are already
+/// baked into `sites`. Two hand-kept copies of one message would drift, and only
+/// one of them is under test.
+fn duplicate_type_message(name: &str, scope_name: &str, sites: &[(&'static str, String)]) -> String {
+    let rendered = sites
+        .iter()
+        .map(|(kw, at)| format!("`{kw}` at {at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "type '{name}' is declared more than once in scope '{scope_name}': {rendered} \
+         — a type is defined once. A second declaration REOPENS it: its variants and \
+         members join the first's, silently. Rename one, or move the members into a \
+         `namespace {name} … end` at the same address, which adds to the type without \
+         redefining it."
+    )
+}
+
+/// WI-997 — the QUALIFIED name of a scope, given the raw scope id the ledger keys
+/// on. A scope id is a `TermId` of the `Fn{sym, [], []}` the scope's own symbol
+/// hash-conses to, so this is a functor read. Qualified rather than local because
+/// R1's key is `(scope, local name)` and a bare `Rec` in the message would not say
+/// WHICH `Rec` — the whole point of the pair.
+fn scope_qualified_name(kb: &KnowledgeBase, scope_raw: u32) -> String {
+    match kb.get_term(TermId::from_raw(scope_raw)) {
+        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+            kb.qualified_name_of(*functor).to_string()
+        }
+        // Not reachable from pass 1 — every scope it threads is the `Fn{sym,[],[]}`
+        // a `namespace`/`sort` allocates, and the top level is `_global`'s own such
+        // term. Named `_unknown` rather than guessed as `_global` (the convention
+        // `Loader::scope_display_name` already uses): a label that names the wrong
+        // scope is worse than one that admits it does not know.
+        _ => "_unknown".to_owned(),
+    }
+}
+
+/// WI-997 / proposal 059 — ONE TYPE DECLARATION, AS PASS 1 MADE IT.
+///
+/// `keyword` is the one actually written, not a category derived afterwards:
+/// §6.3 makes `entity X` and `sort X { entity X }` two spellings of one
+/// declaration and WI-926 collapses them onto one symbol, so by the time
+/// categories exist the keyword is gone — and the keyword is what the R1 message
+/// has to name for the author to find the two lines.
+struct TypeDecl {
+    keyword: &'static str,
+    span: Span,
+    /// Index into `scan_definitions`' `files` slice — the ledger's FILE identity,
+    /// and the only one available in pass 1: a declaration carries a bare `Span`
+    /// (no `SourceId`), and sources are not registered until the LOAD phase
+    /// (`Loader::new`), which runs after every pass here.
+    file_idx: usize,
+}
+
+/// WI-997 / proposal 059 R1 + R4 — THE PASS-1 DECLARATION LEDGER.
+///
+/// WHY A LEDGER AND NOT A SYMBOL WALK. `SymbolTable::define` MERGES two
+/// same-named declarations in one scope into ONE symbol (and two of pass 1's
+/// three type arms deliberately REUSE an existing symbol rather than defining),
+/// so by the time symbols exist the duplication has already been absorbed and no
+/// post-hoc walk can find it. The duplication is only visible while pass 1 is
+/// making it, which is why this records each declaration as it goes.
+///
+/// THE KEY IS `(scope_raw, local name)` — THE DECLARATION AS WRITTEN, NOT THE
+/// ADDRESS IT ENDS AT, and §6.3's eponymous constructor is why. `sort Vec3 {
+/// entity Vec3(…) }` collapses the constructor onto the sort's own symbol
+/// (WI-926), so BOTH declarations end at address `ns.Vec3`; keyed by address
+/// that is indistinguishable from the sibling pair `entity Vec3` + `sort Vec3`
+/// that R1 refuses, and a legal — and load-bearing — shape gets rejected.
+/// Written-keyed they differ: the sort is `(ns, "Vec3")` while the nested entity,
+/// scanned with the sort's own scope, is `(ns.Vec3, "Vec3")`. The sibling pair is
+/// `(ns, "Vec3")` twice and stays caught. Measured, 4 eponymous sites (`Vec3`,
+/// `TotalFloat`, `Duration`, `Timestamp`) among 140 `sort`/`enum` headers depend
+/// on that distinction.
+///
+/// WHAT IS DELIBERATELY NOT RECORDED, so the gap is stated rather than silent:
+/// `Item::AbstractSort` — both `sort T = ?` (a type PARAMETER of the enclosing
+/// sort, not a type declared here) and `sort Alias = Int64` (a bodyless type
+/// ALIAS). The parameter is not a type declaration at all. The alias is one of the
+/// THREE PRODUCTIONS 059 leaves unclassified: measured, `sort Path = String`
+/// beside `namespace Path { operation len(…) }` loads and `Path.len("x")` answers,
+/// with the loader's own diagnostic calling `len` "a member of sort Path" — so an
+/// alias behaves as a main entry today, and whether it IS one is R3's question
+/// (WI-1000), not R1's. Until that is settled, `sort Alias = X` beside `sort Alias
+/// { … }` is NOT caught here.
+///
+/// SCOPE OF THIS TICKET: TYPE declarations only. 059's R4 clauses 1 and 2 key
+/// MEMBER declarations (operations, consts) on the very same key, and this is the
+/// machinery they take — but recording them here, with nothing yet reading them,
+/// would be untested state. WI-998 adds the member table and its first reader
+/// together. When it does, note that clause 2 also needs a POST-pass-2 read (a
+/// host `operation_map` may implement a member from another crate), so the ledger
+/// will have to outlive `scan_definitions` — it is a local here because R1
+/// consumes it inside the pass.
+#[derive(Default)]
+struct DeclLedger {
+    types: HashMap<(u32, String), Vec<TypeDecl>>,
+}
+
+impl DeclLedger {
+    fn record_type(&mut self, scope_raw: u32, local: &str, keyword: &'static str, span: Span, file_idx: usize) {
+        self.types
+            .entry((scope_raw, local.to_string()))
+            .or_default()
+            .push(TypeDecl { keyword, span, file_idx });
+    }
+
+    /// R1's refusals. Rendered HERE, where the `&ParsedFile`s are still in scope,
+    /// because the two declarations may live in different files and
+    /// [`LoadError::Located`] can only name one.
+    fn duplicate_type_errors(&self, kb: &KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
+        // Sorted so the diagnostic order is the ledger's content, not HashMap
+        // iteration order — two runs over one corpus must report identically.
+        let mut keys: Vec<_> = self.types.iter().filter(|(_, v)| v.len() > 1).collect();
+        keys.sort_by(|(a, _), (b, _)| a.cmp(b));
+        keys.into_iter()
+            .map(|((scope_raw, local), decls)| {
+                let sites = decls
+                    .iter()
+                    .map(|d| {
+                        let file = files[d.file_idx];
+                        let at = LineIndex::new(&file.source).format_start(d.span);
+                        (d.keyword, crate::span::render_located(file.path.as_deref(), at, true))
+                    })
+                    .collect();
+                LoadError::DuplicateTypeDeclaration {
+                    name: local.clone(),
+                    scope_name: scope_qualified_name(kb, *scope_raw),
+                    sites,
+                }
+            })
+            .collect()
+    }
+}
+
 fn scan_items_pass1(
     kb: &mut KnowledgeBase,
     items: &[Item],
@@ -2689,6 +2864,8 @@ fn scan_items_pass1(
     parse_terms: &SimpleTermStore,
     scope: TermId,
     prefix: &str,
+    file_idx: usize,
+    ledger: &mut DeclLedger,
 ) {
     for item in items {
         match item {
@@ -2696,6 +2873,22 @@ fn scan_items_pass1(
                 let name = join_segments(parse_sym, &s.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
+                // WI-997 / 059 R1 — recorded BEFORE the reuse-or-define split below,
+                // because that split is exactly what erases the duplication: the
+                // `by_qualified_name` arm hands back the FIRST declaration's symbol,
+                // so a second `sort X … end` is indistinguishable from the first
+                // afterwards. `is_type_param` marks `sort [F] { … }`, a type PARAMETER
+                // of the enclosing sort rather than a type declared here, so it is not
+                // a declaration R1 governs.
+                if !s.is_type_param {
+                    ledger.record_type(
+                        actual_scope.raw(),
+                        &short,
+                        s.kind.keyword(),
+                        s.span,
+                        file_idx,
+                    );
+                }
                 // Reuse existing sort symbol if already defined (e.g. by register_prelude)
                 let (sym, is_new) = if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
                     (existing, false)
@@ -2787,7 +2980,7 @@ fn scan_items_pass1(
                     kb.symbols.add_type_param(scope.raw(), &short);
                 }
                 // Recurse into sort body with the sort's qualified name as prefix
-                scan_items_pass1(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified);
+                scan_items_pass1(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified, file_idx, ledger);
             }
             Item::AbstractSort(s) => {
                 let name = join_segments(parse_sym, &s.name.segments);
@@ -2839,12 +3032,22 @@ fn scan_items_pass1(
                 // Model C / job 2 (proposal 044): namespace members are visible
                 // by default; the `export` statement was removed (WI-291).
                 // Recurse into namespace body with the namespace's qualified name as prefix
-                scan_items_pass1(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified);
+                scan_items_pass1(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified, file_idx, ledger);
             }
             Item::Entity(e) => {
                 let name = join_segments(parse_sym, &e.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
+                // WI-997 / 059 R1 — an `entity` is a TYPE declaration (§6.3: a
+                // free-standing one IS a single-constructor sort), so it shares the
+                // ledger with `sort`/`enum` and the sibling pair `entity X` + `sort X`
+                // collides. An EPONYMOUS constructor does NOT: written inside
+                // `sort X … end` it is scanned with the sort's own scope, so its key is
+                // `(ns.X, "X")` against the sort's `(ns, "X")` — the distinction the
+                // ledger's key exists to preserve, and the reason it is keyed on the
+                // declaration as written rather than on the address the two share
+                // after WI-926's collapse.
+                ledger.record_type(actual_scope.raw(), &short, "entity", e.span, file_idx);
                 // §6.3 (WI-926): an eponymous constructor IS its sort — reuse the
                 // sort's symbol rather than minting a nested `…Project.Project`.
                 // Checked BEFORE the by-qualified-name reuse below so the nested

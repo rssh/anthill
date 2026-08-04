@@ -41814,26 +41814,33 @@ mod wi956_kind_gate_tests {
     use crate::kb::test_support::load_stdlib_and_stl;
     use crate::kb::{KnowledgeBase, Symbol};
 
-    /// `Rec` is declared TWICE: once by the §6.3 top-level `entity` sugar (which
-    /// registers the Entity role, then the Sort role it desugars to) and once with a
-    /// body carrying a type parameter and an operation. It loads clean, and `Rec` comes
-    /// out `kinds == [Entity, Sort]`.
+    /// `Rec` is a sort whose symbol was registered under ANOTHER KIND FIRST, so
+    /// `kind_of` reports something that is not `Sort` while `has_kind(Sort)` holds.
+    /// That asymmetry is the whole subject of this module — the gates below must read
+    /// membership, not the display head.
     ///
-    /// That the loader ACCEPTS the re-declaration at all is a separate open question —
-    /// WI-975, filed from here: the second body does not resolve names from its
-    /// namespace, so the shape is half-wired. Whichever way WI-975 goes, these gates
-    /// were asking a display question (`kind_of`) at a membership site and are wrong
-    /// independently of it; if WI-975 refuses the shape, this fixture needs replacing,
-    /// not the fix.
+    /// THE FIXTURE WAS REPLACED WHEN 059 R1 LANDED (WI-997), exactly as the original
+    /// note here anticipated. It used to write `entity Rec(n)` beside `sort Rec … end`,
+    /// which is now refused as two declarations of one type. The shape that survives is
+    /// 059 R2's SECONDARY ENTRY — `namespace Rec` at the address of `sort Rec` — and it
+    /// poses the identical question: the namespace declaration lands first, so the
+    /// symbol carries `Namespace` at its head and gains `Sort` from the reuse arm
+    /// (WI-979). It is also the better fixture, being the pair the language blesses
+    /// rather than one it was about to refuse.
     ///
-    /// `Ord` is the control: the SAME sort written the other way round. Nothing about
-    /// it differs except which declaration the loader saw first.
+    /// `peek` reads `Rec`'s own type parameter `T` from inside the secondary entry —
+    /// 059 R2's measured symmetry, and what makes the type-param row below live.
+    ///
+    /// `Ord` is the control: the same sort with nothing declared ahead of it, so its
+    /// head IS `Sort`. Nothing else about it differs.
     const SRC: &str = r#"
 namespace test.wi956
-  entity Rec(n: Int64)
+  namespace Rec
+    operation peek(x: T) -> T
+  end
   sort Rec
     sort T = ?
-    operation peek(x: T) -> T
+    entity Rec(n: Int64)
   end
 
   sort Ord
@@ -41860,8 +41867,9 @@ end
         let rec = sym(&kb, "test.wi956.Rec");
         assert_eq!(
             kb.symbols.get(rec).kinds(),
-            &[SymbolKind::Entity, SymbolKind::Sort],
-            "the `entity` sugar registers Entity first, and the body adds Sort",
+            &[SymbolKind::Namespace, SymbolKind::Sort, SymbolKind::Entity],
+            "the secondary entry registers Namespace first; `sort Rec` adds Sort \
+             through the reuse arm, and its eponymous constructor adds Entity",
         );
         assert!(kb.has_kind(rec, SymbolKind::Sort), "`Rec` PLAYS the sort role");
         assert_ne!(

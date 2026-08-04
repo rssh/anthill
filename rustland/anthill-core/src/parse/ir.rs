@@ -476,6 +476,18 @@ pub enum SortDeclKind {
     Enum,
 }
 
+impl SortDeclKind {
+    /// The keyword as WRITTEN. A diagnostic that names a declaration has to spell
+    /// it the way the author did — `sort` and `enum` load identically, so nothing
+    /// downstream of the parse can recover which one is on the line.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            SortDeclKind::Sort => "sort",
+            SortDeclKind::Enum => "enum",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SortWithBody {
     pub kind: SortDeclKind,
