@@ -195,6 +195,40 @@ private class AnthillParserImpl(
   private def mkSpan(s: Int, e: Int): Span = Span.at(fileName, lines, s, e)
   private def intern(s: String): TermSymbol = symbols.intern(s)
 
+  /** [[mkSpan]] with the end held at [[contentEnd]] — the WI-972 repair, and the only
+    * difference between what the two combinators below bracket and the index pair they
+    * were handed.
+    *
+    * WHAT IT REPAIRS, root cause first: fastparse rewinds the trivia a `~` skipped when
+    * the right-hand side then matches nothing —
+    * `if (!rhsMadeProgress && input.isReachable(postRhsIndex)) postLhsIndex`
+    * (`internal.MacroInlineImpls.parsedSequence0`, 3.1.1) — and `isReachable(i)` is
+    * `i < length`. AT END OF INPUT THE REWIND DOES NOT HAPPEN, so a production whose
+    * last element matched nothing — an optional (`metaBlock.?`) or an empty `rep` — keeps
+    * the trivia its own `~` had skipped past it. The file's LAST top-level declaration is
+    * the one construct that can be in that position, and it spanned every trailing
+    * newline, blank line and COMMENT after it. Nothing about the `~`-vs-`~~` decision the
+    * combinators own is wrong at any of those sites, which is why neither the WI-970
+    * sweep nor the WI-971 [[Index]] shadow could see this: it is not a spelling.
+    *
+    * A BAD END IS ALWAYS EXACTLY `source.length`, by that same code — the rewind is
+    * skipped only when `postRhsIndex == length`, so the index the construct carries away
+    * is the end of input itself, never some interior point of the trivia. A `min` with
+    * the end of content is therefore the whole repair; it cannot move a span that was
+    * already tight, because no construct ends inside the trailing trivia.
+    *
+    * NOT A BACKWARD SCAN. Trimming whitespace off the end (the obvious move) is
+    * insufficient — `fact p(x: 1)\n-- done\n` ends its span on the `\n` AFTER a comment,
+    * and a scan that steps back over the newline stops on `e`. Re-deriving where the
+    * comment began means running the trivia grammar backwards, which is a second
+    * implementation of [[ws]] and would have to agree with it forever. The skipper
+    * instead reports the one position it already knows.
+    *
+    * `max(s, …)`: a zero-width capture at end of input (`located` around a production
+    * that matched empty there) must stay zero-width rather than invert. */
+  private def mkSpanToContent(s: Int, e: Int): Span =
+    mkSpan(s, math.max(s, math.min(e, contentEnd)))
+
   /** The span of the ONE token `p` matches, discarding its value — what a
     * keyword-led production wants (`spanOfToken(keyword("if"))`, `spanOfToken("[")`).
     *
@@ -264,13 +298,13 @@ private class AnthillParserImpl(
     * that WI-971 removed the per-site copies, so a single mistake here is no longer a
     * single production's mistake. */
   private def spanOfToken[$: P](p: => P[Unit]): P[Span] =
-    P(fastparse.Index ~ p ~~ fastparse.Index).map { case (s, e) => mkSpan(s, e) }
+    P(fastparse.Index ~ p ~~ fastparse.Index).map { case (s, e) => mkSpanToContent(s, e) }
 
   /** [[spanOfToken]] for a token that CARRIES a value: `located(ident)` is
     * `(TermSymbol, Span)`. The pair flattens into the enclosing sequence, so a caller
     * destructures it as two adjacent slots — `case (sym, span, …)`. */
   private def located[A, $: P](p: => P[A]): P[(A, Span)] =
-    P(fastparse.Index ~ p ~~ fastparse.Index).map { case (s, a, e) => (a, mkSpan(s, e)) }
+    P(fastparse.Index ~ p ~~ fastparse.Index).map { case (s, a, e) => (a, mkSpanToContent(s, e)) }
 
   /** THE TYPE IS THE ERROR MESSAGE. A hand-written bracket reports either `value ~ is
     * not a member of … BracketSpansWithLocatedOrSpanOfToken` (a LEADING `Index`) or
@@ -338,6 +372,30 @@ private class AnthillParserImpl(
 
   def unterminatedComment: Option[ParseError] = unterminated
 
+  /** WI-972: where this file's CONTENT stops and its trailing trivia begins — the end
+    * every span is held to by [[mkSpanToContent]], which is where the defect and the
+    * `min` are argued.
+    *
+    * MEASURED FORWARD, NOT SCANNED BACKWARD, and by the skipper itself because it is the
+    * one thing that knows what trivia is. Every position the skipper is entered at is a
+    * TOKEN BOUNDARY (a string literal's insides are parsed under `NoWhitespace`, so no
+    * entry lands inside one), and it consumes to end of input from exactly those
+    * boundaries that have nothing but trivia after them. The EARLIEST such boundary is
+    * the end of content: a boundary before it has content after it by definition, and
+    * the boundary that ends the last token is one the grammar always enters the skipper
+    * at — that entry is what swallows the trailing trivia in the first place, so the
+    * position is recorded strictly before any span that needs it is built.
+    *
+    * OUTSIDE THE WI-950 REFUSAL SCOPING, like [[unterminated]] above and for the same
+    * reason: it is a fact about the SOURCE, not about any production. Backtracking can
+    * enter the skipper at the same boundary by several routes and reach the same answer,
+    * and an alternative that is discarded does not make the text after it stop being
+    * trivia — so `min`, never a reset.
+    *
+    * The initial value is the file's own end: a file with NO trailing trivia has its
+    * content run to there, and the `min` in [[mkSpanToContent]] is then a no-op. */
+  private var contentEnd: Int = source.length
+
   private def noteUnterminatedComment(open: Int, opener: String, closer: String): Unit =
     if unterminated.forall(_.span.start > open) then
       // WI-947: the message no longer spells `opened at $open`. The span carries the
@@ -391,6 +449,8 @@ private class AnthillParserImpl(
             index = length
         else
           continue = false
+      // WI-972: nothing but trivia from here to end of input — see [[contentEnd]].
+      if index >= length && ctx.index < contentEnd then contentEnd = ctx.index
       ctx.freshSuccessUnit(index)
 
   // ── Lexical ──────────────────────────────────────────────────

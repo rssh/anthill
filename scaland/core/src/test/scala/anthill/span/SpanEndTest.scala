@@ -58,6 +58,11 @@ import SpanFixture.{assertSpans, pick}
   * ends), three to `DeclarationSpanTest`, and two corpus audits in
   * `ParseSpanCoverageTest` that check the same invariant WITHOUT a fixture — which is
   * how they found WI-972, a ninth site none of these per-shape cases could reach.
+  *
+  * WI-972 IS NOW PINNED HERE TOO, in the two cases below it. It belongs in this file
+  * because it is the same invariant, and it needed the audit to find it because it is
+  * the one site of the nine that is not a spelling: the trivia gets in through
+  * fastparse's own end-of-input behaviour, at a `~` that is written correctly.
   */
 class SpanEndTest extends munit.FunSuite:
 
@@ -202,6 +207,47 @@ class SpanEndTest extends munit.FunSuite:
     assertEquals(steps.length, 1, "fixture drift: expected exactly one step")
     assertSpans(src, steps.head.rule.span, "h(?x) :- p(?x)")
     assertSpans(src, steps.head.span, "h(?x) :- p(?x)   {- t -}\n      by auto")
+  }
+
+  test("WI-972: the file's last declaration ends at its own text, not at end-of-input") {
+    // THE NINTH SITE, and the first one no reading of the productions could have found:
+    // every capture is at the right offset, and the trivia gets in through fastparse
+    // itself. A `~` that skips trivia rewinds over it when the right-hand side then
+    // matches nothing — `if (!rhsMadeProgress && input.isReachable(postRhsIndex))` — and
+    // at end of input nothing is reachable, so the rewind is skipped and `fact`'s
+    // trailing `metaBlock.?` leaves the index at the end of the FILE.
+    //
+    // TOP LEVEL AND LAST, both load-bearing: put this fact inside a `namespace … end`
+    // and the enclosing construct closes on a keyword, which is tight at end of input
+    // whatever the optional did; put another declaration after it and the input is
+    // reachable again and fastparse rewinds. This shape is the only one that shows it,
+    // which is why `SpanEndTest`'s eight per-shape fixtures and `DeclarationSpanTest`'s
+    // all passed while it was broken.
+    //
+    // A COMMENT and not just a newline, because trimming trailing WHITESPACE off a span
+    // end is the obvious repair and passes the newline case while leaving this one
+    // wrong: the last character here is the `\n` after `-- done`, so a scan that steps
+    // back over whitespace stops on the `e` of `done` and calls it content.
+    //
+    // CONTROL, measured: with WI-972 backed out this reports
+    // `'fact p(x: 1)\n-- done\n' != 'fact p(x: 1)'`, and `ParseSpanCoverageTest`'s
+    // stdlib audit fails on `primitives.anthill`. Nothing else in the suite moves —
+    // that audit is what found the defect, and this is the fixture it lacked.
+    val src = "fact p(x: 1)\n-- done\n"
+    val pf = parse(src)
+    val fact = pick(pf, "fact") { case Item.FactItem(f) => f }
+    assertSpans(src, fact.span, "fact p(x: 1)")
+  }
+
+  test("WI-972: end-of-input does not move a declaration that ends where the file does") {
+    // The other side of the `min`: a file with NO trailing trivia has its content run to
+    // its own end, and holding spans to that end must be a no-op. A repair that trimmed
+    // one character too many, or that let `contentEnd` keep a stale earlier position,
+    // passes the case above and truncates this one.
+    val src = "fact p(x: 1)"
+    val pf = parse(src)
+    val fact = pick(pf, "fact") { case Item.FactItem(f) => f }
+    assertSpans(src, fact.span, "fact p(x: 1)")
   }
 
   // ── The one that was zero-width ───────────────────────────────

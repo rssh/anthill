@@ -140,22 +140,17 @@ class ParseSpanCoverageTest extends munit.FunSuite:
     * wrong about, and `Span`'s doc lists the point diagnostics that are deliberately
     * empty.
     *
-    * THE FILE'S LAST TOP-LEVEL DECLARATION IS EXCLUDED, and it is the only exclusion.
-    * It is not tight, and that is a REAL DEFECT — WI-972, a ninth site of the class
-    * WI-970 repaired, which this audit is what found. Measured with a probe: a trailing
-    * optional or `rep` that runs its whitespace skip at END OF INPUT keeps the trivia
-    * instead of resetting over it, so `fact p(x: 1)\n` spans the newline too and
-    * `fact p(x: 1)\n-- done\n` spans the comment. It reproduces UNCHANGED on `HEAD`
-    * (checked out and re-run), so it is not this WI's, and the fix is not a `~`-vs-`~~`
-    * decision anywhere — which is why it is filed rather than patched here.
-    *
-    * The exclusion is one item per file and costs almost no coverage: a construct that
-    * ends in a keyword (`end`) or a `}` is tight at EOF anyway, and most stdlib files
-    * are a single `namespace … end`. `primitives.anthill`, which closes with a braced
-    * top-level `sort`, is the file that fails without it. */
+    * THERE IS NO EXCLUSION. There was exactly one — the file's LAST top-level
+    * declaration, which this audit found running to end of input on its first run and
+    * which WI-972 then repaired at `AnthillParserImpl.mkSpanToContent` (fastparse does
+    * not rewind a skipped-trivia `~` when the input has nothing left to be reachable).
+    * Deleting it is that WI's acceptance, and it is worth noting what the exclusion cost
+    * while it stood: `primitives.anthill`, whose top-level braced `sort`s are the one
+    * stdlib file whose last declaration does not end in a keyword, was the only file it
+    * silenced — one item per file reads like nothing until it is the item that is
+    * wrong. */
   private def looseEnds(pf: ParsedFile, src: String): List[String] =
-    val audited = SpanFixture.allItems(pf.items).filterNot(_ == pf.items.last)
-    val decls = audited.map(SpanFixture.spanOf)
+    val decls = SpanFixture.allItems(pf.items).map(SpanFixture.spanOf)
       .filter(sp => sp.hasLocation && sp.end > sp.start && sp.end <= src.length)
       .filter(sp => src.charAt(sp.end - 1).isWhitespace)
       .map(sp => src.slice(sp.start, sp.end))
@@ -180,7 +175,12 @@ class ParseSpanCoverageTest extends munit.FunSuite:
     //   * IT ALREADY EARNED ITS KEEP: on its FIRST run it found WI-972 (see `looseEnds`)
     //     — a ninth site of the same class, present on `HEAD`, that no `~`-vs-`~~`
     //     reading of the productions could reach, because every capture is at the right
-    //     offset and only end-of-input behaves differently.
+    //     offset and only end-of-input behaves differently. Back WI-972's `min` out and
+    //     THIS case fails again, on `primitives.anthill`. The grammar-tour case below
+    //     does NOT — every entry in `sources` is one `namespace … end`, and a
+    //     construct closing on a keyword is tight at end of input anyway. That is the
+    //     asymmetry: only a corpus contains a file whose last declaration ends in an
+    //     optional, and `SpanEndTest` pins the shape once someone knows to look for it.
     //
     // THE CORPUS IS THE POINT. `DeclarationSpanTest` and `SpanEndTest` pin one span per
     // shape against a fixture someone wrote on purpose; this reads 69 files nobody wrote
