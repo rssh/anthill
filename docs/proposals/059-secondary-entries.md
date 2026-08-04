@@ -49,12 +49,17 @@ Unbounded today, each silent:
 
 ## Definitions
 
-A sort's scope has one or more **entries** — texts that declare into it.
+A sort's scope has one or more **entries** — texts that declare into it. An address without a sort has no entries in this sense at all; it is an ordinary namespace, and this proposal says nothing about it.
 
-- **Main entry.** The `sort X … end` or `entity X(…)` that *defines* the type: its constructors, type parameters and requirements. Exactly one exists (R1).
-- **Secondary entry.** A `namespace X` at the same qualified address. It *adds to* `X`'s scope and defines nothing about the type. Any number may exist. Attachment is by address, never by import.
+- **Main entry.** The `sort X … end` or `entity X(…)` that *defines* the type: its constructors, type parameters and requirements. **At most one** exists (R1) — an address may have none, and then there is no type there.
+- **Secondary entry.** A `namespace X` at an address that **has a main entry**. It *adds to* `X`'s scope and defines nothing about the type. Any number may exist. Attachment is by address, never by import.
+- **Ordinary namespace.** A `namespace X` at an address with **no** main entry — the overwhelmingly common case, and every namespace in the language until a sort shares its address. It declares a module, not members of a type, and **nothing in R3 or R4 reaches it**: a rule, an entity, a nested sort are all as legal there as they have ever been. Only the presence of a main entry turns the same text into a secondary entry.
 - **Member of `X`.** A name declared in `X`'s scope, by any entry. Reachable bare from within that scope, and from outside through `import X.{…}`.
 - **Dispatch surface of `X`.** The members reachable as `receiver.name(…)`. Its elements are exactly the **operations**: a const is a member and is not on the surface (measured above), in the main entry as much as in a secondary one.
+
+**The two are told apart by the address, not by the text.** `namespace X` is written identically either way; what decides is whether a sort exists at `X` — measured, a plain namespace's symbol is `Namespace` alone, and one beside a main entry carries `Sort` too, so the question an implementation asks is `has_kind(X, Sort)`, the same `has_kind`-not-`kind_of` reading WI-956 settled for the gates.
+
+One consequence is uncomfortable and belongs on the record: **a namespace becomes a secondary entry because someone else declared a sort at its address.** Written alone, `namespace Utils { rule p(1) }` is an ordinary namespace and its rule is legal; let another file declare `sort Utils` there and the same text is a secondary entry whose rule R3 refuses. Nothing local to the namespace changed. This is the whole-program property again, in the classification itself rather than in dispatch — see "Where this leads".
 
 **"Main" and "secondary" name roles, not order.** A secondary entry may be written first, in the same file or another, and read first by the loader; which text the loader happens to reach first decides nothing. Today that is not quite true — a secondary entry read before the main one breaks the sort (WI-979) — which is a defect against this definition, not a distinction it recognises.
 
@@ -182,7 +187,7 @@ Each of the three becomes a real question the moment there is one:
 
 - a `requires` added by a downstream unit changes an upstream type's dictionary layout — which is why R3 refuses it outright rather than pricing it;
 - a provision for a foreign carrier is an **orphan instance**. Within one KB, 058 already decides it (`one_default`, nameability). What no whole-program rule can reach is two units that each declare one and are **never loaded together** — neither `one_default` nor R4 ever sees the pair;
-- global attachment means a unit's member set depends on which other units happen to be loaded.
+- global attachment means a unit's member set depends on which other units happen to be loaded — and, per the Definitions, so does whether a unit's `namespace X` is an ordinary namespace or a secondary entry at all.
 
 These are the classic separate-compilation constraints (Haskell's orphan rule, Rust's coherence), and Anthill meets them through this one mechanism. **This proposal deliberately does not invent a module system to answer them.** It records that R3's line and R4's KB-wide arbitration are *whole-program* answers, correct exactly as long as the program is whole — and that a compilation-module design is what would revisit them, together, as one decision rather than three.
 
