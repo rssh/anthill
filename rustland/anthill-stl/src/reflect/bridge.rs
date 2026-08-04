@@ -619,24 +619,15 @@ impl KB for KbBridge {
         }
     }
 
-    fn nonvar(&self, x: Term) -> bool {
-        match x.value() {
-            Value::Var(_) => false,
-            Value::Term { id: t, .. } => !matches!(self.kb.borrow().get_term(*t), CoreTerm::Var(_)),
-            _ => true,
-        }
-    }
-
-    fn ground(&self, x: Term) -> bool {
-        // Mirrors the core resolver's `value_is_ground`.
-        match x.value() {
-            Value::Var(_) => false,
-            Value::Term { id: t, .. } => self.kb.borrow().collect_vars(*t).is_empty(),
-            Value::Node(occ) =>
-                !anthill_core::kb::node_occurrence::occurrence_has_unbound_var(occ),
-            _ => true,
-        }
-    }
+    // WI-982 — NO `nonvar` / `ground` here. They were a THIRD derivation of two
+    // questions the resolver already owns, and "mirrors the core resolver's
+    // `value_is_ground`" was the comment on the one that had drifted: it was
+    // missing the WI-629 `Entity`/`Tuple` arm, so a compound carrying unbound
+    // children fell to `_ => true` and read as GROUND; `nonvar` was missing the
+    // `Value::Node` var-occurrence arm the same way. Both are now namespace-level
+    // reflect operations answered by `KnowledgeBase::value_is_unbound_var` /
+    // `value_is_ground_no_subst`, and the generated `KB` trait no longer declares
+    // them — so this file cannot grow a fourth copy without the compiler saying so.
 
     fn sorts(&self, namespace: Option<String>) -> Vec<SortInfo> {
         let records = reader::read_sort_infos(&mut self.kb.borrow_mut(), namespace.as_deref());
@@ -1131,14 +1122,11 @@ sort Store {
                 "{label} var carrier should reify to VarRepr",
             );
         }
-        let var_value = {
-            let mut kb = bridge.kb.borrow_mut();
-            let s = kb.intern("y");
-            let vid = kb.fresh_var(s);
-            ReflectTerm::new(Value::Var(Var::Global(vid)))
-        };
-        assert!(!bridge.nonvar(var_value.clone()), "Value::Var is a variable");
-        assert!(!bridge.ground(var_value), "Value::Var is not ground");
+        // WI-982: the `Value::Var` rows this test used to carry
+        // (`bridge.nonvar` / `bridge.ground`) moved to
+        // `builtins::tests::nonvar_and_ground_answer_by_content_not_carrier`,
+        // which drives the ONE owner through the registered host op. The bridge
+        // no longer answers those two questions at all.
     }
 
     #[test]

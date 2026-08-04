@@ -3453,7 +3453,17 @@ impl KnowledgeBase {
     /// Whether a σ-walked `Value` is still *any* unbound logic variable —
     /// `Term::Var(_)` (flex/rigid/DeBruijn) or an `Expr::Var(_)` occurrence
     /// leaf. The delay test for `nonvar`/`cmp`/`arith`.
-    fn value_is_unbound_var(&self, v: &Value) -> bool {
+    ///
+    /// WI-982 — THE ONE OWNER of "is this a variable?", for every phase. The
+    /// reflect host op `anthill.reflect.nonvar` (anthill-stl `nonvar_op`) is its
+    /// eval-time reading, so `pub`. It had a second, TermId-only derivation
+    /// (`matches!(get_term(tid), Term::Var(_))` behind an `expect_term` that hard-
+    /// rejected every other carrier), which answered BY CARRIER rather than by
+    /// content: a `Value::Node` var occurrence — what compile-time macro expansion
+    /// (WI-722) binds a param to — read as a `TypeMismatch` there and as a variable
+    /// here. No σ is taken because none is needed: a caller that HAS one walks
+    /// first ([`Self::walk_arg`]), and the answer is about the walked value.
+    pub fn value_is_unbound_var(&self, v: &Value) -> bool {
         match v {
             Value::Term { id: t, .. } => matches!(self.terms.get(*t), Term::Var(_)),
             Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Var(_))),
@@ -3496,7 +3506,18 @@ impl KnowledgeBase {
     /// ground; any other scalar is. The shared core of the `ground(?x)` builtin
     /// and the NAF groundness gate, so neither materializes the goal to a
     /// `TermId` just to ask "is it ground".
-    fn value_is_ground(&self, v: &Value, subst: &Substitution) -> bool {
+    ///
+    /// WI-982 — THE ONE OWNER of "is this ground?", for every phase; the reflect
+    /// host op `anthill.reflect.ground` reads it through
+    /// [`Self::value_is_ground_no_subst`], so `pub`. See
+    /// [`Self::value_is_unbound_var`] for the sibling question and the
+    /// second-derivation this replaced.
+    ///
+    /// CARRIER-NEUTRAL IS NOT STORE-FREE: the `Value::Term` arm still needs the
+    /// store, because a `TermId` is not self-describing. The rule is that no
+    /// carrier is FORCED — the store is consulted for the one carrier that needs
+    /// it, and `Value::Node` answers from the occurrence itself.
+    pub fn value_is_ground(&self, v: &Value, subst: &Substitution) -> bool {
         match v {
             Value::Term { id: t, .. } => matches!(self.is_ground(*t, subst), GroundCheck::Ground),
             Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(occ),
@@ -3517,6 +3538,23 @@ impl KnowledgeBase {
             Value::Var(_) => false,
             _ => true,
         }
+    }
+
+    /// [`Self::value_is_ground`] asked at a phase that has NO substitution —
+    /// eval, compile-time macro expansion, the reflect host bridge. WI-982.
+    ///
+    /// The EMPTY substitution is the truth here, not a stand-in for a missing
+    /// one: an [`crate::eval::Interpreter`] carries no ambient σ (its
+    /// `SubstArena` holds first-class `Value::Substitution` data, not a pending
+    /// resolution state), so nothing is pending and the question is about the
+    /// value AS GIVEN. Threading a σ that does not exist is what this exists to
+    /// avoid — the alternative was a SECOND predicate, which is how the two
+    /// owners this consolidates drifted apart.
+    ///
+    /// Only the `Value::Term` arm consults σ at all; `Value::Node` answers from
+    /// the occurrence (`occurrence_has_unbound_var`) and needs none either way.
+    pub fn value_is_ground_no_subst(&self, v: &Value) -> bool {
+        self.value_is_ground(v, &Substitution::new())
     }
 
     /// WI-067 / proposal 050: does a goal value reference an OPEN-WORLD binder /

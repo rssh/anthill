@@ -306,6 +306,21 @@ namespace anthill.reflect
   -- Delays if query contains unbound variables (floundering prevention).
   operation not(query: Term) -> Bool
 
+  -- Meta-level primitives: inspect a value's instantiation state. One name and
+  -- one arity in both phases (WI-982).
+  --
+  -- IN A RULE BODY they are the resolver builtins, three-valued: `nonvar(?x)`
+  -- succeeds once ?x is bound to a non-variable and DELAYS while it is unbound;
+  -- `ground(?x)` succeeds once ?x has no unbound variable anywhere, and delays
+  -- otherwise.
+  --
+  -- IN A VALUE POSITION — an operation body, a compile-time macro body — there is
+  -- no substitution and nothing will bind later, so there is nothing to re-ask:
+  -- the same question answers `Bool`, and the delayed reading is `false`. The
+  -- answer is by CONTENT and holds for every carrier, not only for a term.
+  operation nonvar(x: Term) -> Bool
+  operation ground(x: Term) -> Bool
+
   -- Extract a named binding from a SortView instantiation term.
   -- Given spec = SortView(Monoid(), T=Int64(), combine=Ref(add)),
   -- resolve_sort_instantiation_param(spec, Ref(T), ?val) binds ?val to Int64().
@@ -366,15 +381,9 @@ namespace anthill.reflect
     operation rules(kb: KB, sort: Type) -> List[T = TermRepr]
     operation descriptions(kb: KB, target: Option[T = String]) -> List[T = DescriptionInfo]
 
-    -- Meta-level primitives (inspect variable state)
-
-    -- Succeeds if ?x is bound to a non-variable term (functor visible).
-    -- Returns DELAY during SLD resolution if ?x is unbound.
-    operation nonvar(kb: KB, x: Term) -> Bool
-
-    -- Succeeds if ?x is fully ground (no variables anywhere in the term).
-    -- Returns DELAY during SLD resolution if ?x contains variables.
-    operation ground(kb: KB, x: Term) -> Bool
+    -- `nonvar` / `ground` are NOT members: their question is about a value, not
+    -- about a KB, so they are namespace-level (above). A receiver no answer
+    -- depends on is dispatch ceremony, and it captures the free name (WI-982).
 
     -- Query execution.
     -- Returns a stream of `Solution`s — each pull is either `definite(subst)`

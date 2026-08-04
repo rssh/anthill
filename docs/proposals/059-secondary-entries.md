@@ -161,16 +161,16 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
 - **A secondary entry may not redeclare a member the main entry declares** — 058 §3.6's *no-displacement*, in its own words: **fill silence, never overwrite speech**, so that no one line flips what every linked library's bracket-less dispatch already means.
 - **A member operation may not capture an operation it does not override.** The two clauses above are keyed on *members colliding*, and that is not enough: a name can already mean something without being a member. Measured — a main entry calls a bare `f(…)` that resolves through `import lib.f` and answers `1`; add a secondary entry declaring `f` and the *same unedited body* answers `2`. Nothing named `f` was a member, so the clauses above admit it, and existing code silently changed meaning.
 
-  The qualifier "it does not override" is not a hedge; it is what the corpus forced. Counting every declaration whose short name already resolves in its declaring scope gives **63 sites** across stdlib, `anthill-stl`, examples and `anthill-todo` — so the unqualified clause is unimplementable. The breakdown says why, and each exclusion is principled rather than a carve-out for convenience:
+  The qualifier "it does not override" is not a hedge; it is what the corpus forced. Counting every declaration whose short name already resolves in its declaring scope gives **61 sites** across stdlib, `anthill-stl`, examples and `anthill-todo` — so the unqualified clause is unimplementable. The breakdown says why, and each exclusion is principled rather than a carve-out for convenience:
 
   | class | count | why it is not a capture |
   |---|---|---|
-  | a **parameter** shadowing an operation (`Float.pow.exp`, `KB.assert.kb`) | many of 40 | a binder is not a declaration |
-  | a **type name** shadowing a type (`IndexedSeq.Effect`, `TypeExtractor.Error`) | rest of 40 | dot dispatch never routes through it |
+  | a **parameter** shadowing an operation (`Float.pow.exp`, `KB.assert.kb`) | many of 38 | a binder is not a declaration |
+  | a **type name** shadowing a type (`IndexedSeq.Effect`, `TypeExtractor.Error`) | rest of 38 | dot dispatch never routes through it |
   | a member **overriding a spec operation** (`List.length` over `IndexedSeq.length`) | 19 + 4 | this is how a sort implements what it provides — reached through the `requires` link, or through an import of the spec's member |
-  | **no override relationship** | **2** | the hazard: `reflect.KB.nonvar` and `reflect.KB.ground` over the namespace-level operations of those names |
+  | **no override relationship** | **0** | the hazard, and the corpus no longer contains one |
 
-  So the clause bites **2 sites in the whole corpus**, both in `anthill.reflect`, and both need a verdict — rename, or exempt as intentional — before it lands. At that size, whether the instrument should be a refusal or a **warning** is a live question: WI-346 already warns for the neighbouring requires-shadow case, and this is its sibling. Measurement and site list: WI-981.
+  So the clause bites **nothing in the corpus** and lands with no migration. It had two sites, `reflect.KB.nonvar` and `reflect.KB.ground` over the namespace-level operations of those names, and the verdict was neither of the two the count anticipated (rename, or exempt): the captured names were the ones worth keeping, so the *members* went. Their receiver was never read, and one question had two answers — see WI-982. Whether the instrument should still be a refusal or a **warning** stays a live question at zero sites: WI-346 already warns for the neighbouring requires-shadow case, and this is its sibling. Census and site list: WI-981, less the two WI-982 removed.
 
   Like the two clauses above it, this one is stated over the **scope**, not over secondary entries: measured, the same flip happens when the capturing operation is written in the main entry, so an entry-local rule would patch the wrong object and would split the one scope R2 rests on. §6.3 records the hazard for the long form as a caution already (WI-935); this makes it a check, for both spellings at once.
 
@@ -180,7 +180,7 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
 |---|---|---|
 | 1 — two suppliers of one member name | **0** | a pass-1 declaration ledger |
 | 2 — a secondary entry redeclaring a main-entry member | **0** (a sub-case of 1) | the same ledger |
-| 3 — capturing an operation it does not override | **2** | the override relation, after pass 2 |
+| 3 — capturing an operation it does not override | **0** (was 2, removed by WI-982) | the override relation, after pass 2 |
 
 Clauses 1 and 2 cannot be checked by walking symbols: `define` **merges** two same-named declarations in one scope into one symbol, so by the time symbols exist the duplication is gone. They need each *declaration* recorded as pass 1 makes it, keyed on (scope, local name) — the same ledger R1 needs for duplicate type declarations, so it is one piece of machinery for both. Measured that way over 427 operation/const declarations in stdlib, `anthill-stl`, examples and `anthill-todo`: **no name is declared twice in one scope**, so both clauses land with no migration. (The zero is honest but easy: the corpus contains no secondary entries at all, so clause 2 has nothing to bite on yet. Clause 1 also covers two same-named operations in one *main* entry, and that is genuinely zero.)
 

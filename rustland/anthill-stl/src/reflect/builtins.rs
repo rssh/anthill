@@ -6,6 +6,15 @@
 //! facts, extracting named args, collecting cons-lists — is inline here over
 //! `&mut KnowledgeBase`. The sibling `bridge.rs` does the same for host-Rust
 //! callers; consolidating the two paths is tracked separately.
+//!
+//! A HANDFUL ARE NOT `KB` MEMBERS, and the difference is not cosmetic: an
+//! operation whose question is about a KB (`sorts`, `rules`, `facts_of`) takes
+//! it as a receiver, while one whose question is about a VALUE — `nonvar`,
+//! `ground`, `qualified_name`, `kind` — is namespace-level, because a receiver
+//! it never reads is dispatch ceremony that also captures the free name
+//! (WI-982; proposal 059 R4). Where the resolver answers the same question as a
+//! goal, this module must not re-derive it: it calls the resolver's own
+//! predicate, so the two phases cannot drift.
 
 use std::rc::Rc;
 
@@ -177,8 +186,11 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
     register_if_present(interp, "anthill.reflect.scope", scope_op)?;
     register_if_present(interp, "anthill.reflect.kind", kind_op)?;
 
-    register_if_present(interp, "anthill.reflect.KB.nonvar", kb_nonvar)?;
-    register_if_present(interp, "anthill.reflect.KB.ground", kb_ground)?;
+    // WI-982 — namespace-level and 1-ary, the SAME name and arity the resolver
+    // dispatches as a goal. The `KB.nonvar(kb, x)` / `KB.ground(kb, x)` members
+    // these replace took a receiver the implementation discarded.
+    register_if_present(interp, "anthill.reflect.nonvar", nonvar_op)?;
+    register_if_present(interp, "anthill.reflect.ground", ground_op)?;
 
     register_if_present(interp, "anthill.reflect.sort_as_term", sort_as_term)?;
     register_if_present(interp, "anthill.reflect.can_be_sort", can_be_sort)?;
@@ -798,20 +810,30 @@ fn expect_term(v: Value, op: &'static str) -> Result<TermId, EvalError> {
     }
 }
 
-/// `KB.nonvar(kb, x: Term) -> Bool` — true if `x` is not a variable term.
-/// Eval-time runs after SLD, so arguments are already grounded where they
-/// will be; no DELAY semantics needed here.
-fn kb_nonvar(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [_kb, x] = expect_args::<2>("KB.nonvar", args)?;
-    let tid = expect_term(x, "KB.nonvar")?;
-    Ok(Value::Bool(!matches!(interp.kb().get_term(tid), CoreTerm::Var(_))))
+/// `nonvar(x: Term) -> Bool` — the EVAL-time reading of the resolver's
+/// `nonvar(?x)` builtin, answered by the same predicate
+/// ([`KnowledgeBase::value_is_unbound_var`]) rather than re-derived. WI-982.
+///
+/// TWO-VALUED BECAUSE IT SEES EVERY CARRIER, not because it cannot see one.
+/// That distinction is the whole point: this used to be
+/// `!matches!(get_term(tid), Var(_))` behind an `expect_term` that hard-rejected
+/// every carrier but `Value::Term`, so it answered by CARRIER — a `Value::Node`
+/// var occurrence (what WI-722 macro expansion binds a param to) was a
+/// `TypeMismatch` here and a variable to the resolver. The delay the resolver
+/// adds is a RESOLUTION concern — a goal can be re-asked once something binds it
+/// — and there is nothing to re-ask at eval time, so `Bool` is the whole answer.
+fn nonvar_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [x] = expect_args::<1>("nonvar", args)?;
+    Ok(Value::Bool(!interp.kb().value_is_unbound_var(&x)))
 }
 
-/// `KB.ground(kb, x: Term) -> Bool` — true if `x` contains no variables.
-fn kb_ground(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [_kb, x] = expect_args::<2>("KB.ground", args)?;
-    let tid = expect_term(x, "KB.ground")?;
-    Ok(Value::Bool(interp.kb().collect_vars(tid).is_empty()))
+/// `ground(x: Term) -> Bool` — the eval-time reading of the resolver's
+/// `ground(?x)` builtin, answered by [`KnowledgeBase::value_is_ground_no_subst`].
+/// See [`nonvar_op`] for why it is two-valued and what the TermId-only
+/// derivation it replaces got wrong.
+fn ground_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [x] = expect_args::<1>("ground", args)?;
+    Ok(Value::Bool(interp.kb().value_is_ground_no_subst(&x)))
 }
 
 // ── Sort ↔ Term (identity passthroughs — Types ARE Terms) ────────
@@ -1257,36 +1279,161 @@ end
         }
     }
 
+    // `kb_nonvar_and_ground_classify_terms` (a `Ref` term is nonvar+ground, a
+    // `Var` term is neither) is not deleted, it is the first two rows of the test
+    // below — where they are labelled CONTROL, because those are exactly the two
+    // carriers both owners always agreed on.
+
+    /// WI-982 — the two owners of "is this a variable?" / "is this ground?" answer
+    /// by CONTENT, on every carrier, not by whether the carrier happens to be a
+    /// hash-consed `Value::Term`.
+    ///
+    /// WHAT FAILS WITHOUT THE CHANGE, and each of these was driven by putting the
+    /// old body back:
+    ///   * against the `expect_term` + raw-`TermId` host op — EVERY row but the
+    ///     two controls, all with `Err(TypeMismatch { expected: "Term" })`, so
+    ///     `host_says` panics on its `expect`. It could not see the carrier at all.
+    ///   * against the third copy, `KbBridge::ground` (deleted here) — the
+    ///     `Value::Entity` row, and only that one: no `Entity` arm, so a compound
+    ///     with unbound children fell to `_ => true` and answered GROUND where the
+    ///     resolver answers not-ground. Its `nonvar` twin had the same hole one
+    ///     variant over — no `Value::Node` arm — so a var occurrence read as
+    ///     nonvar. A wrong answer, not an error: nothing would have reported it.
+    ///
+    /// WHAT PASSES EITHER WAY, BY DESIGN — the CONTROLS, and the reason they are
+    /// here: the two plain-`Value::Term` rows (`Ref` and `Var`). They agreed
+    /// before this change and agree after. That is the finding this test pins:
+    /// the owners agreed exactly on the one carrier the host could see, which is
+    /// what "answers by carrier" means.
+    ///
+    /// WHAT THE RESOLVER ROWS ARE WORTH, stated so they are not over-read. After
+    /// the change both doors reach ONE predicate, so `resolver_says` is not an
+    /// independent second opinion — it is the assertion that the two doors are
+    /// still wired to the same owner, and it fails the moment either grows its own
+    /// derivation again. Before the change it WAS independent, which is how the
+    /// divergence was found.
     #[test]
-    fn kb_nonvar_and_ground_classify_terms() {
+    fn nonvar_and_ground_answer_by_content_not_carrier() {
+        use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
+        use anthill_core::span::{SourceId, SourceSpan};
+
         let mut interp = load_stdlib_and_source(r#"
-namespace test.reflect_nonvar
+namespace test.wi982_carrier
   sort Color
     entity red
   end
 end
 "#);
-        // A Ref term is nonvar + ground.
-        let sym = interp.kb().try_resolve_symbol("test.reflect_nonvar.Color.red")
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let red = interp.kb().try_resolve_symbol("test.wi982_carrier.Color.red")
             .expect("red symbol");
-        let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
-        let nv = interp.call("anthill.reflect.KB.nonvar",
-            &[Value::Unit, Value::term(ref_tid)]).expect("nonvar");
-        assert!(matches!(nv, Value::Bool(true)));
-        let g = interp.call("anthill.reflect.KB.ground",
-            &[Value::Unit, Value::term(ref_tid)]).expect("ground");
-        assert!(matches!(g, Value::Bool(true)));
-
-        // A fresh Var term is neither nonvar nor ground.
+        let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(red));
         let vsym = interp.kb_mut().intern("x");
         let vid = interp.kb_mut().fresh_var(vsym);
         let var_tid = interp.kb_mut().alloc(CoreTerm::Var(Var::Global(vid)));
-        let nv = interp.call("anthill.reflect.KB.nonvar",
-            &[Value::Unit, Value::term(var_tid)]).expect("nonvar");
-        assert!(matches!(nv, Value::Bool(false)));
-        let g = interp.call("anthill.reflect.KB.ground",
-            &[Value::Unit, Value::term(var_tid)]).expect("ground");
-        assert!(matches!(g, Value::Bool(false)));
+
+        // The resolver's reading of the same question, over the same carrier: a
+        // `Value::Entity` goal with the builtin's functor. Its answer is
+        // THREE-valued, so collapse it the way the eval phase must — a delayed
+        // goal survives as a residual, and nothing at eval time will ever bind it,
+        // so "delayed" reads as "no".
+        fn resolver_says(interp: &mut Interpreter, qn: &str, arg: &Value) -> bool {
+            let sym = interp.kb().try_resolve_symbol(qn).expect("builtin symbol");
+            let goal = Value::Entity {
+                functor: sym,
+                pos: vec![arg.clone()].into(),
+                named: Vec::new().into(),
+            };
+            let sols = interp.kb_mut().resolve(&[goal], &ResolveConfig::default());
+            sols.len() == 1 && sols[0].residual.is_empty()
+        }
+        fn host_says(interp: &mut Interpreter, qn: &str, arg: &Value) -> bool {
+            match interp.call(qn, &[arg.clone()]).unwrap_or_else(|e| {
+                panic!("{qn} must ANSWER for this carrier, got {e:?}")
+            }) {
+                Value::Bool(b) => b,
+                other => panic!("{qn} must return Bool, got {other:?}"),
+            }
+        }
+
+        // (label, value, is_nonvar, is_ground)
+        let rows: Vec<(&str, Value, bool, bool)> = vec![
+            ("CONTROL Value::Term(Ref)", Value::term(ref_tid), true, true),
+            ("CONTROL Value::Term(Var)", Value::term(var_tid), false, false),
+            ("Value::Int scalar", Value::Int(5), true, true),
+            ("Value::Str scalar", Value::Str("hi".into()), true, true),
+            ("Value::Bool scalar", Value::Bool(true), true, true),
+            ("Value::Var (value-level logic var)", Value::Var(Var::Global(vid)), false, false),
+            (
+                "Value::Node var occurrence",
+                Value::Node(NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, None)),
+                false,
+                false,
+            ),
+            (
+                "Value::Node literal occurrence",
+                Value::Node(NodeOccurrence::new_expr(
+                    Expr::Const(anthill_core::kb::term::Literal::Int(7)), span, None)),
+                true,
+                true,
+            ),
+            (
+                "Value::Entity with an unbound child",
+                Value::Entity {
+                    functor: red,
+                    pos: vec![Value::Var(Var::Global(vid))].into(),
+                    named: Vec::new().into(),
+                },
+                true,
+                false,
+            ),
+        ];
+
+        for (label, v, want_nonvar, want_ground) in rows {
+            assert_eq!(host_says(&mut interp, "anthill.reflect.nonvar", &v), want_nonvar,
+                "host nonvar disagrees for {label}");
+            assert_eq!(host_says(&mut interp, "anthill.reflect.ground", &v), want_ground,
+                "host ground disagrees for {label}");
+            assert_eq!(resolver_says(&mut interp, "anthill.reflect.nonvar", &v), want_nonvar,
+                "resolver nonvar disagrees for {label}");
+            assert_eq!(resolver_says(&mut interp, "anthill.reflect.ground", &v), want_ground,
+                "resolver ground disagrees for {label}");
+        }
+    }
+
+    /// WI-982 — `nonvar` / `ground` are reachable FROM ANTHILL, in an operation
+    /// body, under the same name and arity a rule body uses as a goal.
+    ///
+    /// This is the row the ticket found unreachable and mis-diagnosed. Before the
+    /// change the name existed only as a resolver builtin TAG — declared nowhere —
+    /// so a body-position call had no operation to type against and the loader
+    /// refused it, with a message that named `KB.nonvar` (the WI-565 hint keys on
+    /// the SHORT name, and the member had the same one). Both spellings the ticket
+    /// measured are driven here: the imported bare name and the fully-qualified
+    /// one. A load-only assertion would not be evidence — the operations are
+    /// CALLED and their values asserted, so a name that resolved to nothing would
+    /// fail here rather than pass quietly.
+    #[test]
+    fn nonvar_and_ground_are_callable_from_an_operation_body() {
+        let mut interp = load_stdlib_and_source(r#"
+namespace test.wi982_body
+  import anthill.reflect.nonvar
+  import anthill.reflect.ground
+
+  -- bare, via import
+  operation lit_is_nonvar() -> Bool = nonvar(42)
+  -- fully qualified
+  operation lit_is_ground() -> Bool = anthill.reflect.ground(42)
+end
+"#);
+        assert!(
+            matches!(interp.call("test.wi982_body.lit_is_nonvar", &[]), Ok(Value::Bool(true))),
+            "a bare imported `nonvar(42)` in an operation body must answer true",
+        );
+        assert!(
+            matches!(interp.call("test.wi982_body.lit_is_ground", &[]), Ok(Value::Bool(true))),
+            "a fully-qualified `anthill.reflect.ground(42)` in an operation body must answer true",
+        );
     }
 
     /// WI-759 — this module must NOT re-register `anthill.reflect.field_access`.
