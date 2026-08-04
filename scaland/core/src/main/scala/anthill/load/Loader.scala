@@ -271,7 +271,19 @@ object Loader:
           val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, scope)
           val entityTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(entityTerm, SortKind.Constructor)
-          kb.registerEntityOf(entityTerm, kb.scopeTerm(scope))
+          // WI-985: the entity→parent edge is a SORT-BODY edge and ONLY that. This used
+          // to record the enclosing scope whatever it was, so an `entity` written
+          // directly under a namespace — which §4 of the spec permits — got that
+          // NAMESPACE as its parent sort, and `is_entity_of` then answered true of a
+          // namespace. The stdlib depends on the opposite: `reflect/typing.anthill`'s
+          // `entity_of` rule guards `scope(?x, ?sort)` with the `is_entity_of` builtin
+          // precisely so a namespace-level entity yields NO parent, and rustland
+          // registers the edge only from inside its sort-body loop (`kb/load.rs`) —
+          // `load_entity` emits the metadata fact and no edge. An entity outside a sort
+          // body is still an entity and still a constructor; it just has no parent sort
+          // to name, so nothing is recorded rather than something false.
+          if isSortScope(kb, scope) then
+            kb.registerEntityOf(entityTerm, kb.scopeTerm(scope))
           // Register entity fields
           val fields = entity.fields.map(f => fileSym.name(f.name)).map(kb.intern)
           kb.registerEntityFields(sym, fields)
@@ -712,7 +724,13 @@ object Loader:
           // fact — silently, before the miss got a diagnostic.
           val defined = lookupDefined(
             kb, qualName, entity.name.span, "its `entity_of` fact cannot be asserted", errors)
-          defined.foreach { sym =>
+          // Gated exactly as the parent EDGE is in pass 1 (WI-985), and for the same
+          // reason: the fact makes the same claim in the other spelling, so an ungated
+          // fact would be the second source that outlives the fix — `entity_of(Foo,
+          // demo)` naming a namespace, with the index correctly saying Foo has no
+          // parent. The lookup above stays UNGATED: "pass 1 defined every entity" is an
+          // invariant of every entity, not only of the ones that get a fact.
+          if isSortScope(kb, scope) then defined.foreach { sym =>
             val entityTerm = kb.makeNameTermFromSym(sym)
             val entityOfSort = findSortTerm(kb, "anthill.reflect.EntityOf")
             val entityOfSym = kb.intern("entity_of")

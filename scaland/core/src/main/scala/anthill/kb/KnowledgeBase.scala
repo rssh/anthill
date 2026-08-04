@@ -90,11 +90,11 @@ class KnowledgeBase:
     * and is one no longer — it is a [[ScopeId]] (WI-983), which is what leaves the
     * remaining four all genuine.
     *
-    * `registerEntityOf`'s is the one to read carefully: it records the ENCLOSING scope,
-    * which is the entity's parent SORT only when the entity sits inside a `sort … end`.
-    * An `entity` written directly under a namespace gets that namespace as its parent, so
-    * `is_entity_of` answers of a namespace — see WI-985, and the same hazard stated for
-    * the rule form at `stdlib/anthill/reflect/typing.anthill`.
+    * `registerEntityOf`'s reads as the enclosing scope and IS the parent sort, because
+    * WI-985 gated its one caller on the scope being a sort. An `entity` written directly
+    * under a namespace — which the spec permits — records no parent at all rather than
+    * recording the namespace as one; the same rule for the rule form is stated at
+    * `stdlib/anthill/reflect/typing.anthill`, whose `entity_of` guard depends on it.
     *
     * THE direction that is a function (WI-976): it goes through [[makeNameTermFromSym]],
     * the one name-term producer, so scope-as-term stays the nullary shape [[ScopeId]]

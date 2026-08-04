@@ -321,6 +321,47 @@ class LoaderTest extends munit.FunSuite:
     assert(kb.isEquation(unifyRules(0)), "the loaded `<=>` rule is an equation")
   }
 
+  /** WI-985 — AN ENTITY'S PARENT IS ITS ENCLOSING SORT, AND A NAMESPACE IS NOT ONE.
+    *
+    * Driven through the `is_entity_of` BUILTIN rather than `kb.isEntityOf`, because the
+    * builtin is what the stdlib actually consults: `reflect/typing.anthill`'s `entity_of`
+    * rule guards `scope(?x, ?sort)` with it precisely so a namespace-level entity yields
+    * no parent, and before this WI it yielded the namespace.
+    *
+    * CONTROL, and it takes both halves. MEASURED by deleting both `isSortScope` gates:
+    * the SECOND assertion fails — `Loose` answers 1 solution where 0 is right — and it is
+    * the only failure in the suite, 337 of 338 still passing. The FIRST passes either way
+    * BY DESIGN: it is the sort-body case the gate must not touch, and it is here because
+    * a gate that answered 0 for everything would satisfy the second assertion alone. */
+  test("WI-985: a namespace-level entity has no parent sort; a sort-body one does") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse(
+      """namespace demo
+        |  entity Loose(x: Nat)
+        |  sort Holder
+        |    entity Tight(y: Nat)
+        |  end
+        |end""".stripMargin, "<wi985>")
+      .toOption.getOrElse(fail("parse failed"))
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    def solutionsOf(child: String, parent: String): Int =
+      val goal = kb.alloc(Term.Fn(
+        kb.resolveSymbol("anthill.reflect.typing.is_entity_of"),
+        IArray(
+          kb.makeNameTermFromSym(kb.resolveSymbol(child)),
+          kb.makeNameTermFromSym(kb.resolveSymbol(parent))),
+        IArray.empty))
+      SearchStream.resolve(kb, goal).allSolutions(kb).length
+
+    assertEquals(solutionsOf("demo.Holder.Tight", "demo.Holder"), 1,
+      "a sort-body entity IS an entity of its sort")
+    assertEquals(solutionsOf("demo.Loose", "demo"), 0,
+      "a namespace-level entity is NOT an entity of the namespace enclosing it")
+  }
+
   // WI-582: a typed rule pattern `?x: T` parses to a `typed_var(?x, type: T)`
   // marker; the loader STRIPS it back to the bare `?x` (scaland has no typer, so
   // the bound is dropped, not enforced), keeping the head matchable as `p(?x)`.
