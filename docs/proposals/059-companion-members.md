@@ -34,6 +34,7 @@ The visibility is **symmetric in every direction measured**. It is not an attach
 | companion holds `fact S[T = X]` or a host `provides … language … end` block | loads (the obligation check for that placement is WI-978) |
 | companion on a **stdlib** sort: `namespace anthill.prelude.Int64 { operation twice(x: Int64) = x + x }` | `7.twice()` ⇒ `14` |
 | companion at a *different* address (`ns.ext.Rec`, not `ns.data.Rec`) | not attached — attachment is by qualified **address**, never by import |
+| a companion **const**, against an operation declared beside it: symbol in scope / bare inside / `import X.{…}` then bare / `receiver.…` | yes·yes·`5`·**refused** — against the operation's yes·yes·`6`·`6` |
 
 So the three questions this proposal was asked have one answer: **yes, in both directions.** `requires`/`provides` written in a companion are the *sort's*; the sort's members (type parameters included) are in scope in a companion; and the sort body sees companion members. What is missing is not wiring — it is **bounds**.
 
@@ -46,31 +47,25 @@ Unbounded today, each silent:
 | `entity` inside a companion | loads and constructs, but is **not** a variant — surfaces later as `expected C, got Blue` |
 | a second `sort C { … }` body beside `sort C { entity Red }` | **silently reopens** — both variants construct, the second body's members dispatch |
 
+## Definitions
+
+- **Second entry.** A `namespace X` declaration at the qualified address of a sort `X`. Attachment is by address, never by import.
+- **Member of `X`.** A name declared in `X`'s scope. Reachable bare from within that scope, and from outside through `import X.{…}`.
+- **Dispatch surface of `X`.** The members reachable as `receiver.name(…)`. Its elements are exactly the **operations**: a const is a member and is not on the surface (measured above), and this holds in the sort's own body as much as in a second entry.
+- **Definition.** The `sort X … end` or `entity X(…)` that declares the type. Distinct from an entry, which adds to its scope.
+
 ## The rules
 
 **R1 — A type is defined once.** Two *type* declarations at one address are a load error naming both spans: `sort X` + `sort X`, `enum X` + `enum X`, and `entity X` + `sort X` (§6.3 makes that pair two spellings of one declaration, so it is the same error). Reopening a closed ADT is the harm — today a second body silently adds variants.
 
-**R2 — A `namespace` at a sort's address is a second entry to that sort's scope.** Legal before, beside, or after the definition — the *before* order is a load-order accident today, not a language distinction (WI-979). The **operations** it declares are **members of `X`** — dot-dispatchable, backing provisions, scoped by `X`'s type parameters. Rules are not members and R3 refuses them there. One symbol, as everywhere else (WI-926).
-
-"Member" needs its object and its criterion, so both are stated here: **a member of `X`** is a name declared in `X`'s scope, and the *dispatch surface* of `X` is the subset of those reachable as `receiver.name(…)`.
-
-A **const declared in a second entry is a member of `X`'s scope, and is not on `X`'s dispatch surface.** Measured against an operation declared beside it, the two agree on every axis but one:
-
-| | operation `m` | const `K` |
-|---|---|---|
-| the symbol `X.m` / `X.K` exists in `X`'s scope | yes | yes |
-| bare, from inside that scope — body ↔ entry, either direction | yes | yes (`5`) |
-| `import X.{…}` then bare, from outside | `6` | `5` |
-| `receiver.…` | `6` | refused — *no such member (dot dispatch)* |
-
-So the correction R2 needs is narrow: a const is **not dot-dispatchable**, which is where the earlier draft was wrong to lump it with operations. It is otherwise in the scope exactly as an operation is — hence subject to R4's capture clause — and none of this is a companion property: the same holds in the sort's own body. (The `X.K` *path* read is refused as well, but that is not about sorts at all — a namespace-level `kt.K` is refused identically, so how a const reads by path is proposal 039's question, not this one's.) This is the only route to a member of a type whose declaration one does not own, and it is 001's deferred `companion` spelled by address rather than keyword.
+**R2 — A second entry declares members of `X`.** What it declares enters `X`'s scope, is scoped by `X`'s type parameters, and may back `X`'s provisions — one symbol, as everywhere else (WI-926). Legal before, beside, or after the definition; the *before* order is a load-order accident today, not a language distinction (WI-979). This is the only route to a member of a type whose declaration one does not own, and it is 001's deferred `companion` spelled by address rather than keyword.
 
 **R3 — A second entry may add members and provisions, never identity.** The lists below are **exhaustive over an entry's direct content** — every production the grammar admits there is classified, and anything unlisted is refused pending classification rather than silently allowed. A **nested namespace** written inside an entry is not a second entry to `X`: it is an ordinary namespace at its own address (`X.Inner`), and these restrictions do not recurse into it. A **description block** is inert and always allowed.
 
 **Allowed — stated explicitly, because it is the point of the mechanism:**
 
-- **operations** — the members that are also on the dispatch surface; an `operation` block is sugar for them and follows them;
-- **consts** — members of the scope, not of the dispatch surface (R2);
+- **operations** — the dispatch surface; an `operation` block is sugar for them and follows them;
+- **consts** — members, not on the dispatch surface;
 - **`fact Spec[X]` provisions, and host `provides Spec language L … end` blocks.** A provision *is a fact*, and a second entry is the sort's own scope, so there is nothing to refuse: the same declaration one level out is uncontroversial, and moving it next to the member that backs it is what §6.3/038 already asks for — **a satisfaction fact belongs in the closure where its backing exists**. A companion that may not carry the provision for the members it supplies could never make a foreign carrier satisfy a spec, which is most of why one writes a companion at all. The backing obligation must hold for a provision placed there exactly as it does one level out (WI-978 — today it does not run at all).
 **Refused, each naming the sort:**
 
