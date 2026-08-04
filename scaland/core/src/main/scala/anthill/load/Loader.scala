@@ -14,7 +14,19 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
   * diagnostics that use it — the WI-727 variadic-capture refusals, the multi-head
   * rule refusals, the WI-949 missing-scope report — could not point anywhere even
   * in principle. A span may still be [[Span.empty]], but that is now a CLAIM the
-  * raise site makes ("this has nowhere to point"), not the absence of a field. */
+  * raise site makes ("this has nowhere to point"), not the absence of a field.
+  *
+  * `scopeName` (on the two name-resolution variants) has ONE meaning, stated here because
+  * three raise sites fill it and for a while they disagreed (WI-962): it is the scope the
+  * name was RESOLVED AGAINST — what the reader must inspect to fix the error. All three
+  * now derive it from a SYMBOL, via [[anthill.kb.KnowledgeBase.scopeDisplayName]] or
+  * `qualifiedNameOf`; none composes it from a spelling, and none writes a literal. The one
+  * reading a reader could misjudge, so said out loud: for a selective `import P.{n}` it is
+  * `P`, the scope searched INTO, and not the importing scope, because `n` IS resolved
+  * against `P` ([[Loader.resolveSelectiveImport]]) — a distinct scope, not a distinct
+  * meaning. The third site filled it with the literal string `"requires"`, which named no
+  * scope at all. A `String` field cannot enforce any of this; typing scope-hood so it
+  * could is WI-976. */
 enum LoadError:
   case UnresolvedName(name: String, span: Span, scopeName: String)
   case UnresolvedImport(path: String, span: Span)
@@ -86,9 +98,16 @@ object Loader:
     // symbols are in `byQualifiedName` now, so a cross-namespace rule-predicate
     // import resolves like any declared name — erroring only if it is still unbound.
     for p <- pending do
-      resolveSelectiveImport(kb, p.target, p.scopeName, p.short) match
+      resolveSelectiveImport(kb, p.target, p.path, p.short) match
         case Some(sym) => kb.symbols.addImport(p.scopeRaw, p.short, sym)
-        case None => errors += LoadError.UnresolvedName(p.short, p.span, p.scopeName)
+        // WI-962: the scope name comes off the SYMBOL, like the other two raise sites, and
+        // not off `p.path` — the written import spelling. The two agree (a `define` writes
+        // one qualified name into both the `byQualifiedName` key and the `SymbolDef`, and
+        // that lookup is where `target` came from), but agreeing is not deriving: with the
+        // spelling the field had a second source that could drift, which is the whole
+        // failure this WI is about. `path` is a resolution INPUT here, nothing else.
+        case None =>
+          errors += LoadError.UnresolvedName(p.short, p.span, kb.qualifiedNameOf(p.target))
 
     errors
 
@@ -532,10 +551,15 @@ object Loader:
 
   /** WI-295: a `Selective` import name that did not resolve in pass 2. The
     * head-functor symbol of a rule-introduced predicate is not registered until pass
-    * 3, so such names are deferred and retried after it. `scopeName` is the imported
-    * path, kept for the diagnostic if the retry also fails. */
+    * 3, so such names are deferred and retried after it.
+    *
+    * `path` is the import's written spelling, and it is a RESOLUTION INPUT only (WI-962):
+    * [[resolveSelectiveImport]]'s fully-qualified and nested-scope rungs build lookup keys
+    * out of it. It used to double as the retry's diagnostic scope name, which is a second
+    * source for a field [[LoadError]] says is derived from a scope; the retry now reads
+    * that off `target` instead. */
   private case class PendingImport(
-    scopeRaw: Int, short: String, target: TermSymbol, span: Span, scopeName: String)
+    scopeRaw: Int, short: String, target: TermSymbol, span: Span, path: String)
 
   /** Resolve one name of a `Selective` import against the imported symbol `target`
     * (whose qualified name is `pathStr`). THE one resolution both pass 2 and the
@@ -637,7 +661,13 @@ object Loader:
             kb.symbols.addParent(scopeTerm.raw,
               ScopeInclusion(parentTerm.raw, 0, isEnclosing = false))
           case None =>
-            errors += LoadError.UnresolvedName(nameStr, name.span, "requires")
+            // WI-962: the scope that DECLARED the requirement. Note the lookup just above
+            // is by fully-qualified name and walks no scope chain — which is also why a
+            // `requires` must be written qualified — so [[LoadError]]'s "resolved against"
+            // is read here as the scope the resolution was ON BEHALF OF. That is the
+            // declaration the reader has to go fix, and it is the closest this site has to
+            // a scope; the literal `"requires"` it used to pass named none at all.
+            errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scopeTerm))
       case _ => // Parameterized requires — TODO
 
   // ── Phase 2: Load items into KB ─────────────────────────────
@@ -940,28 +970,10 @@ object Loader:
             // read off `scopeTerm` rather than passed down a second channel that could
             // disagree with the scope actually searched.
             errors += LoadError.AmbiguousSymbol(
-              name, qualNames, span, scopeDisplayName(kb, scopeTerm))
+              name, qualNames, span, kb.scopeDisplayName(scopeTerm))
             kb.intern(name)
           case ResolveResult.NotFound =>
             kb.intern(name)
-
-  /** The name to call `scopeTerm` in a diagnostic (WI-957) — its QUALIFIED name where
-    * the scope is a declared one, and the interned spelling (`_global`) for the
-    * synthetic global scope, which is not a declaration and has no qualified name.
-    *
-    * THROWS on a non-`Fn` scope term, rather than degrading to `""`. Every scope term
-    * is a nullary name term from `makeNameTerm`/`makeNameTermFromSym`, so this is the
-    * same "the producer cannot emit this" shape `reallocTerm`'s non-`Global` var arm
-    * refuses — and the empty string is the WORSE answer of the two here, because a
-    * scopeless `ambiguous symbol 'x' in scope ''` is byte-for-byte what this WI exists
-    * to retire: the regression would reappear wearing the fixed version's face. */
-  private def scopeDisplayName(kb: KnowledgeBase, scopeTerm: TermId): String =
-    kb.getTerm(scopeTerm) match
-      case f: Term.Fn => kb.qualifiedNameOf(f.functor)
-      case other =>
-        throw new IllegalStateException(
-          s"scopeDisplayName: scope term is not a name term ($other); " +
-          "scopes come from makeNameTerm/makeNameTermFromSym, which build only Term.Fn")
 
   /** Auto-import prelude sort contents into global scope.
     * Adds each sort defined directly under anthill.prelude as a parent of _global,
@@ -1003,13 +1015,15 @@ object Loader:
   private def joinSegments(symbols: SymbolTable, segments: IndexedSeq[TermSymbol]): String =
     segments.map(symbols.name).mkString(".")
 
+  /** WI-962: `false` rather than [[KnowledgeBase.scopeDisplayName]]'s refusal, because pass
+    * 1 asks this of an `enclosing` that may be `_global` — "is this a sort scope" has an
+    * answer for a term that is no scope at all. */
   private def isSortScope(kb: KnowledgeBase, scope: TermId): Boolean =
-    kb.getTerm(scope) match
-      case f: Term.Fn if f.posArgs.isEmpty && f.namedArgs.isEmpty =>
-        kb.symbols.get(f.functor) match
-          case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
-          case _ => false
-      case _ => false
+    kb.scopeFunctor(scope).exists { functor =>
+      kb.symbols.get(functor) match
+        case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
+        case _ => false
+    }
 
   private def makeQualified(prefix: String, name: String): String =
     if prefix.isEmpty then name else s"$prefix.$name"

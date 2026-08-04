@@ -47,6 +47,37 @@ class KnowledgeBase:
       case SymbolDef.Resolved(_, qualifiedName, _, _) => qualifiedName
       case SymbolDef.Unresolved(name) => name
 
+  /** The functor of a SCOPE term, and THE one place that unwraps one (WI-962): a scope is
+    * a nullary name term, because [[makeNameTermFromSym]] is the sole producer of one.
+    * Both of its callers had open-coded this match. `None` says "not a scope term"; whether
+    * that is a `false` or a refusal is the caller's call, and the two callers differ. */
+  def scopeFunctor(scopeTerm: TermId): Option[TermSymbol] =
+    terms.get(scopeTerm) match
+      case f: Term.Fn if f.posArgs.isEmpty && f.namedArgs.isEmpty => Some(f.functor)
+      case _ => None
+
+  /** The name to call `scopeTerm` in a diagnostic (WI-957) — its QUALIFIED name where the
+    * scope is a declared one, and the interned spelling (`_global`) for the synthetic
+    * global scope, which is not a declaration and has no qualified name.
+    *
+    * It lives HERE, next to [[qualifiedNameOf]], and not in the loader that first needed
+    * it (WI-962): "what do we call this scope in a diagnostic" gets ONE answer for every
+    * raise site, rather than a helper per site — which is how the `requires` site came to
+    * name no scope at all.
+    *
+    * THROWS on a term [[scopeFunctor]] rejects, rather than degrading to `""` — the same
+    * "the producer cannot emit this" shape `Loader.reallocTerm`'s non-`Global` var arm
+    * refuses. The empty string is the WORSE answer of the two here, because a scopeless
+    * `ambiguous symbol 'x' in scope ''` is byte-for-byte what WI-957 exists to retire: the
+    * regression would reappear wearing the fixed version's face. */
+  def scopeDisplayName(scopeTerm: TermId): String =
+    scopeFunctor(scopeTerm) match
+      case Some(functor) => qualifiedNameOf(functor)
+      case None =>
+        throw new IllegalStateException(
+          s"scopeDisplayName: not a scope term (${terms.get(scopeTerm)}); every scope comes " +
+          "from makeNameTermFromSym, which builds only a nullary Term.Fn")
+
   def getTerm(id: TermId): Term = terms.get(id)
 
   // ── Rule assertion / retraction ─────────────────────────────
@@ -382,16 +413,20 @@ class KnowledgeBase:
 
   // ── Helpers ─────────────────────────────────────────────────
 
-  def makeNameTerm(name: String): TermId =
-    val sym = symbols.intern(name)
-    terms.alloc(Term.Fn(sym, IArray.empty, IArray.empty))
-
+  /** THE producer of a name term, and so of every SCOPE term (WI-962) — the other two
+    * differ only in how they get the symbol, and both go through here. That is what makes
+    * [[scopeFunctor]]'s "a scope is a nullary `Term.Fn`" structural: it was an enumeration
+    * of producers in prose, and the prose was already missing `resolveQualifiedNameTerm`
+    * (whose results `Prelude` passes as `preludeScope` / `reflectScope`) on the day it was
+    * written. One producer is one thing to keep true. */
   def makeNameTermFromSym(sym: TermSymbol): TermId =
     terms.alloc(Term.Fn(sym, IArray.empty, IArray.empty))
 
+  def makeNameTerm(name: String): TermId =
+    makeNameTermFromSym(symbols.intern(name))
+
   def resolveQualifiedNameTerm(name: String): TermId =
-    val sym = symbols.byQualifiedName.get(name).getOrElse(symbols.intern(name))
-    terms.alloc(Term.Fn(sym, IArray.empty, IArray.empty))
+    makeNameTermFromSym(symbols.byQualifiedName.get(name).getOrElse(symbols.intern(name)))
 
   def resolveSymbol(name: String): TermSymbol =
     tryResolveSymbol(name).getOrElse(

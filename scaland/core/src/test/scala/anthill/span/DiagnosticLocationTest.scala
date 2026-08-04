@@ -209,6 +209,11 @@ class DiagnosticLocationTest extends munit.FunSuite:
   private def ambiguities(errs: IndexedSeq[LoadError]): IndexedSeq[LoadError.AmbiguousSymbol] =
     errs.collect { case e: LoadError.AmbiguousSymbol => e }
 
+  private def unresolved(errs: IndexedSeq[LoadError], name: String): LoadError.UnresolvedName =
+    errs.collectFirst { case e @ LoadError.UnresolvedName(`name`, _, _) => e }
+      .getOrElse(fail(
+        s"expected an unresolved-name error for '$name', got: ${errs.map(_.render).mkString("; ")}"))
+
   test("WI-957: an ambiguous symbol is located at the occurrence, in a named scope") {
     // The last locationless load diagnostic. It reported `ambiguous symbol 'dup' in
     // scope ''` — no position, and a scope name that was never filled in.
@@ -331,18 +336,50 @@ class DiagnosticLocationTest extends munit.FunSuite:
       assertEquals(found.head.scopeName, "demo.C", s"$marker scope wrong")
   }
 
-  test("an unresolved name is located at the name") {
+  test("an unresolved name is located at the name, and names the scope that declared it") {
+    // WI-962: the scope half. Asserting only the SPAN is what let this site hard-code the
+    // literal `"requires"` through a green suite. The scope is `demo.S`, the sort whose
+    // `requires` this is.
+    //
+    // CONTROL, measured: back the raise site out to `"requires"` and this ONE test fails
+    // (330 pass). The two `scopeName` assertions in the WI-957 family above pass either
+    // way BY DESIGN — they go through `resolveName`, a different raise site, which is
+    // exactly how the requires site drifted unnoticed. Backing out the `scopeDisplayName`
+    // move alone is not a behaviour change and fails nothing; it is a one-answer change.
     val src =
       """namespace demo
         |  sort S
         |    requires nosuchspec
         |  end
         |end""".stripMargin
-    val errs = loadErrors(src)
-    val span = errs.collectFirst { case LoadError.UnresolvedName("nosuchspec", s, _) => s }
-      .getOrElse(fail(s"expected an unresolved-name error, got: ${errs.map(_.render).mkString("; ")}"))
-    assertEquals(at(span), (3, 14))
+    val e = unresolved(loadErrors(src), "nosuchspec")
+    assertEquals(at(e.span), (3, 14))
     assertEquals(src.split("\n")(2).substring(13, 23), "nosuchspec")
+    assertEquals(e.scopeName, "demo.S")
+    assertEquals(e.render, "demo.anthill:3:14: unresolved name 'nosuchspec' in scope 'demo.S'")
+  }
+
+  test("WI-962: an unresolved import NAME names the scope it was searched for in") {
+    // The third filler of `scopeName` — the WI-295 pass-4 retry — pinned on the reading a
+    // reader could misjudge: the scope is `demo.A`, the IMPORTED one, not `demo.B` where
+    // the import is written (see `LoadError`'s field doc). Untested until now, which is why
+    // "is this even the same meaning?" was open rather than settled. It also holds the
+    // retry to deriving the name from its symbol: pass `p.path` here instead of
+    // `qualifiedNameOf(p.target)` and this test still passes — the two agree today — so
+    // what it pins is the VALUE, and the single-source rule is the comment's job.
+    val src =
+      """namespace demo
+        |  sort A
+        |    operation real(x: A) -> A
+        |  end
+        |  sort B
+        |    import demo.A.{nosuchname}
+        |  end
+        |end""".stripMargin
+    val e = unresolved(loadErrors(src), "nosuchname")
+    assertEquals(e.scopeName, "demo.A")
+    assertEquals(at(e.span), (6, 20))
+    assertEquals(src.split("\n")(5).substring(19, 30), "nosuchname}")
   }
 
   // ── The shared rendering ─────────────────────────────────────
