@@ -672,18 +672,23 @@ object Loader:
     req.typeExpr match
       case TypeExpr.Simple(name) =>
         val nameStr = joinSegments(fileSym, name.segments)
-        kb.symbols.byQualifiedName.get(nameStr) match
-          case Some(sym) =>
+        // WI-986: through [[lookupWritten]], the ONE rung order — so the scope this
+        // reports is the scope it SEARCHED, and `LoadError`'s "resolved against" is
+        // literally that rather than a stand-in for it. This site used to ask
+        // `byQualifiedName` alone, which a short name is never answered by, and a
+        // requirement naming an imported spec (§5.1: an import makes a name visible in
+        // the current scope as a local alias) was then refused with a message asserting
+        // it did not resolve in a scope where it did.
+        lookupWritten(kb, nameStr, scope) match
+          case ResolveResult.Found(sym) =>
             kb.symbols.addParent(scope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
-          case None =>
-            // WI-962: the scope that DECLARED the requirement. Note the lookup just above
-            // is by fully-qualified name and walks no scope chain — which is also why a
-            // `requires` must be written qualified — so [[LoadError]]'s "resolved against"
-            // is read here as the scope the resolution was ON BEHALF OF. That is the
-            // declaration the reader has to go fix, and it is the closest this site has to
-            // a scope; the literal `"requires"` it used to pass named none at all.
+          case ResolveResult.Ambiguous(candidates) =>
+            errors += LoadError.AmbiguousSymbol(
+              nameStr, candidates.map(kb.qualifiedNameOf).toIndexedSeq,
+              name.span, kb.scopeDisplayName(scope))
+          case ResolveResult.NotFound =>
             errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scope))
-      case _ => // Parameterized requires — TODO
+      case _ => // Parameterized requires — TODO (WI-988: a silent drop)
 
   // ── Phase 2: Load items into KB ─────────────────────────────
 
@@ -964,7 +969,7 @@ object Loader:
         kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
 
-  /** Resolve a name in scope, falling back to intern for user-defined predicates.
+  /** THE rung order a WRITTEN name resolves in, and the one place it is spelled.
     *
     * The `byQualifiedName` rung fires only for a DOTTED spelling — a name with no dot
     * is a SHORT name, and a short name is answered by scope, never by the global
@@ -973,9 +978,26 @@ object Loader:
     * UNQUALIFIED entry for every top-level rule head, and taking that rung for a short
     * name then let a top-level `rule p(?y) :- q(?y)` capture an unrelated `sort S`'s
     * own `rule p(?x) :- q(?x)` — S's law was indexed under the global `p` and `S.p`
-    * got no clauses at all, with no diagnostic. The mint guard in `scanRuleGoal` asks
-    * `resolveInScope`, so this is also what keeps the two ladders answering alike:
-    * rustland has ONE ladder (`resolve_name_in_kb`) that both callers share.
+    * got no clauses at all, with no diagnostic.
+    *
+    * Callers differ ONLY in what they make of a miss, which is why the order lives here
+    * and in neither of them: [[resolveName]] interns and carries on, [[processRequires]]
+    * reports. WI-986 — `processRequires` used to ask `byQualifiedName` ALONE, the rung a
+    * short name is never answered by, and then render `in scope '<the declaring scope>'`:
+    * a claim about a search it had not performed, and false whenever the name really did
+    * resolve there (an imported spec). One order is one thing to keep true; rustland has
+    * had one (`resolve_name_in_kb`) all along. */
+  private def lookupWritten(kb: KnowledgeBase, name: String, scope: ScopeId): ResolveResult =
+    if name.contains('.') then
+      kb.symbols.byQualifiedName.get(name) match
+        case Some(sym) => ResolveResult.Found(sym)
+        case None => kb.symbols.resolveInScope(name, scope)
+    else kb.symbols.resolveInScope(name, scope)
+
+  /** Resolve a name in scope, falling back to intern for user-defined predicates.
+    *
+    * The rung order is [[lookupWritten]]'s; the mint guard in `scanRuleGoal` asks
+    * `resolveInScope` directly, which is what keeps those two answering alike.
     *
     * WI-957: `span` is the OCCURRENCE's — the parse term this name was lifted out of,
     * carried by [[anthill.parse.SimpleTermStore.spanOf]]. It is a parameter and not a
@@ -986,23 +1008,20 @@ object Loader:
     kb: KnowledgeBase, name: String, scope: ScopeId,
     errors: ArrayBuffer[LoadError], span: Span
   ): TermSymbol =
-    (if name.contains('.') then kb.symbols.byQualifiedName.get(name) else None) match
-      case Some(sym) => sym
-      case None =>
-        kb.symbols.resolveInScope(name, scope) match
-          case ResolveResult.Found(sym) => sym
-          case ResolveResult.Ambiguous(candidates) =>
-            val qualNames = candidates.map(kb.qualifiedNameOf).toIndexedSeq
-            // WI-957: the last locationless load diagnostic, closed. `scopeName` was
-            // `""` for the same reason the span was empty — nothing was threaded here
-            // — and it is the scope this very resolution was attempted in, so it is
-            // read off `scope` rather than passed down a second channel that could
-            // disagree with the scope actually searched.
-            errors += LoadError.AmbiguousSymbol(
-              name, qualNames, span, kb.scopeDisplayName(scope))
-            kb.intern(name)
-          case ResolveResult.NotFound =>
-            kb.intern(name)
+    lookupWritten(kb, name, scope) match
+      case ResolveResult.Found(sym) => sym
+      case ResolveResult.Ambiguous(candidates) =>
+        val qualNames = candidates.map(kb.qualifiedNameOf).toIndexedSeq
+        // WI-957: the last locationless load diagnostic, closed. `scopeName` was
+        // `""` for the same reason the span was empty — nothing was threaded here
+        // — and it is the scope this very resolution was attempted in, so it is
+        // read off `scope` rather than passed down a second channel that could
+        // disagree with the scope actually searched.
+        errors += LoadError.AmbiguousSymbol(
+          name, qualNames, span, kb.scopeDisplayName(scope))
+        kb.intern(name)
+      case ResolveResult.NotFound =>
+        kb.intern(name)
 
   /** Auto-import prelude sort contents into global scope.
     * Adds each sort defined directly under anthill.prelude as a parent of _global,

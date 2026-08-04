@@ -1,6 +1,7 @@
 package anthill.span
 
 import anthill.kb.KnowledgeBase
+import anthill.intern.{ResolveResult, ScopeId}
 import anthill.load.{LoadError, Loader, Prelude}
 import anthill.parse.{ParseError, ParsedFile, Parser}
 
@@ -34,13 +35,19 @@ class DiagnosticLocationTest extends munit.FunSuite:
       case Right(_) => fail("expected the parse to report an error")
       case Left(errs) => errs
 
-  private def loadErrors(src: String, file: String = "demo.anthill"): IndexedSeq[LoadError] =
+  /** The KB alongside the errors — for assertions that check a diagnostic's CLAIM against
+    * the tree it describes (WI-986), rather than against a fixed string. */
+  private def loadInto(src: String, file: String = "demo.anthill")
+      : (KnowledgeBase, IndexedSeq[LoadError]) =
     val pf: ParsedFile = Parser.parse(src, file) match
       case Right(p) => p
       case Left(errs) => fail(s"parse failed: ${errs.map(_.render).mkString("; ")}")
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    Loader.loadAll(kb, IndexedSeq(pf)).toIndexedSeq
+    (kb, Loader.loadAll(kb, IndexedSeq(pf)).toIndexedSeq)
+
+  private def loadErrors(src: String, file: String = "demo.anthill"): IndexedSeq[LoadError] =
+    loadInto(src, file)._2
 
   private def at(span: Span): (Int, Int) = (span.startRow, span.startCol)
 
@@ -357,6 +364,81 @@ class DiagnosticLocationTest extends munit.FunSuite:
     assertEquals(src.split("\n")(2).substring(13, 23), "nosuchspec")
     assertEquals(e.scopeName, "demo.S")
     assertEquals(e.render, "demo.anthill:3:14: unresolved name 'nosuchspec' in scope 'demo.S'")
+  }
+
+  /** WI-986 — `in scope 'X'` is a claim about a SEARCH, so the search has to be the one
+    * the message describes. `processRequires` asked `byQualifiedName` alone — the rung a
+    * SHORT name is never answered by — and then named the declaring scope anyway.
+    *
+    * MEASURED before the fix, on the first case below: `demo.anthill:7:14: unresolved
+    * name 'Widget' in scope 'demo.S'`, while `Widget` resolves in `demo.S` perfectly
+    * well, having been imported there one line up. The reader was sent to inspect a
+    * scope in which the name is present, and the real rule — write it qualified — was
+    * never stated. The fix makes the claim true by making it accurate: the requirement
+    * now resolves the way every other written name does.
+    *
+    * CONTROL, MEASURED by restoring the `byQualifiedName`-only lookup: exactly ONE of
+    * the two fails, the first, 339 of 340 still passing. The second passes EITHER WAY,
+    * and so does the `nosuchspec` test above, for the same reason in both cases — their
+    * names miss on both ladders, so both ladders tell the truth about them. That is not
+    * a defect in the second case, it is its job: it asserts the claim against the TREE
+    * rather than against a fixed string, so it still holds a future filler of
+    * `scopeName` to account without being rewritten. Only a name that RESOLVES in the
+    * named scope can discriminate the two ladders, and that is the first case. */
+  test("WI-986: a `requires` resolves in the scope its diagnostic names") {
+    val src =
+      """namespace demo
+        |  sort Widget
+        |    operation spin() -> Widget
+        |  end
+        |  sort S
+        |    import demo.Widget
+        |    requires Widget
+        |  end
+        |end""".stripMargin
+    val (kb, errs) = loadInto(src)
+    assertEquals(errs.map(_.render), IndexedSeq.empty,
+      "an imported spec is a legal requirement — §5.1, an import is a local alias")
+
+    // DRIVEN, not "it loaded clean": §5.1 — a `requires` gives the requiring scope
+    // access to the required sort's contents, so `spin` must now resolve in `demo.S`.
+    // Without this the test would pass on a `requires` that resolved and then linked
+    // nothing.
+    val inS = kb.symbols.resolveInScope(
+      "spin", ScopeId.of(kb.resolveSymbol("demo.S")))
+    assertEquals(
+      inS match
+        case ResolveResult.Found(sym) => kb.qualifiedNameOf(sym)
+        case other => s"not found: $other",
+      "demo.Widget.spin")
+  }
+
+  test("WI-986: the scope an unresolved-name diagnostic names really does not resolve it") {
+    // The general property, asserted against the tree rather than against a fixed string:
+    // whatever scope the message names, ASK that scope. This is the assertion the old
+    // site could not have satisfied for an in-scope name, and it holds for any future
+    // filler of `scopeName` without being rewritten.
+    // `Widget` EXISTS — as `other.Widget` — and is simply not in scope here, which is
+    // the case worth pinning: a name absent from the whole KB (the `nosuchspec` test
+    // above) makes the claim true for free. A SIBLING sort would not do either; it
+    // resolves through the enclosing namespace, and correctly so.
+    val src =
+      """namespace other
+        |  sort Widget
+        |  end
+        |end
+        |namespace demo
+        |  sort S
+        |    requires Widget
+        |  end
+        |end""".stripMargin
+    val (kb, errs) = loadInto(src)
+    val e = unresolved(errs, "Widget")
+    assertEquals(e.scopeName, "demo.S")
+    assertEquals(
+      kb.symbols.resolveInScope(e.name, ScopeId.of(kb.resolveSymbol(e.scopeName))),
+      ResolveResult.NotFound,
+      s"'${e.name}' must really be unresolvable in '${e.scopeName}' for the message to be true")
   }
 
   test("WI-962: an unresolved import NAME names the scope it was searched for in") {
