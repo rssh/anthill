@@ -11882,11 +11882,52 @@ pub(crate) fn short_name_of(qn: &str) -> &str {
     qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(qn)
 }
 
-/// Resolve `op_sym`'s parent sort by stripping the last qualified-name
-/// segment. The parent owns the op's `requires_chain` — the right
-/// `callee_spec_sort` to feed into `build_projected_requirements_list`
-/// (WI-228 fix: the previous Pin-now path passed the spec sort instead
-/// of the impl's parent, so projections walked an empty chain).
+/// WI-958 — THE one reader of "which symbol declares this operation". Every other
+/// site that wants an op's owner goes through this, so the answer cannot be spelled
+/// two ways: [`spec_op_parent_sort`] layers the spec-sort gates on it, and callers
+/// wanting a member's SORT layer `kind_of(..) == Sort` (see `call_bracket_scopes`,
+/// `rigidify_op_type_params`, the WI-374 member tie) — because this deliberately
+/// returns the NAMESPACE for a free op, which declares no type parameters.
+///
+/// The parent owns the op's `requires_chain` — the right `callee_spec_sort` to feed
+/// into `build_projected_requirements_list` (WI-228 fix: the previous Pin-now path
+/// passed the spec sort instead of the impl's parent, so projections walked an
+/// empty chain).
+///
+/// NOT [`KnowledgeBase::declaring_scope_symbol`], which answers the same question
+/// from the symbol table and which [`op_declared_type_param_var`] rightly prefers.
+/// That reader's subject is a type param at depth 2 (`<ns>.<Sort>.<op>.<T>`, TWO
+/// plausible owners); this one's is always a DIRECT child of the scope it wants, so
+/// the split has nothing to decide. What separates them is the symbols that are
+/// NOT operations — this is called with any apply functor. MEASURED over
+/// stdlib + anthill-stl (2598 distinct symbols): the two agree for all 373
+/// operations and all 246 entity constructors, and disagree for 293 others — 227
+/// entity FIELDS and 53 callback param/result slots, where the scope link is absent
+/// or points a level up, and the 13 DOT-LESS names (the kernel vocabulary `Fact` /
+/// `Sort` / `Rule` / `meta` / …, and the `anthill` namespace root), where the split
+/// correctly finds NO parent and the scope link answers the `_global` pseudo-scope.
+///
+/// That last group decides it — and say the strength of it plainly: a LATENT trap,
+/// not a live bug. A caller like [`own_eq_op_carrier`] does
+/// `impl_parent_of_op(functor)?` to reach a CARRIER SORT, so the scope link would
+/// hand it `_global` where the split stops: a `?` meaning "no owner, give up" turned
+/// into a wrong answer that reads as a real one. But nothing in the tested surface
+/// can tell the two apart — MEASURED, with this body replaced by
+/// `declaring_scope_symbol` the whole workspace ran 4084 tests with exactly ONE
+/// failure, the WI-958 test written against this paragraph. So it is a judgement
+/// between two spellings that both work today, settled on failure mode: the split's
+/// domain is exactly its readers' — it cannot answer a scope that is not a
+/// declaration.
+///
+/// (The `kind_of` in those caller-side gates vs the `has_kind` in
+/// [`spec_op_parent_sort`] is a real asymmetry, but not one this touches: MEASURED,
+/// all 52 parametric sorts have `kind_of == Some(Sort)`, so it is inert. It belongs
+/// to WI-956's `kind_of`-vs-`has_kind` sweep.)
+///
+/// Note the qualified name is read via `qualified_name_of`, NOT by walking
+/// `by_qualified_name` — one symbol can be registered under several keys (`BigInt`
+/// alongside `anthill.prelude.BigInt`), and only the canonical name is the one this
+/// splits.
 pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let qn = kb.qualified_name_of(op_sym);
     let (parent_qn, _) = qn.rsplit_once('.')?;
@@ -15159,16 +15200,29 @@ fn check_unconstrained_type_params(
 /// not a body-less dispatch target but is still a spec op whose carrier may
 /// OVERRIDE it (typeclass default-method semantics — defaults fill gaps, they
 /// do not shadow), so the override paths gate on this instead.
+///
+/// WI-958 — and THE one reader of "the parametric sort that declares this op":
+/// [`self_receiver_spec_sort`] is this plus a self-receiver gate, so the two cannot
+/// disagree about which sorts are spec sorts. The owner itself comes from
+/// [`impl_parent_of_op`]; only the two gates are stated here.
+///
+/// `has_kind`, not `kind_of`: a symbol's categories are a SET (§6.3 — an eponymous
+/// constructor IS its sort), and the question is whether the parent PLAYS the sort
+/// role, not which keyword registered first.
+///
+/// The kind gate is NOT subsumed by the parametric one, though on today's surface
+/// it never fires: `add_type_param`'s two surface sites are gated on
+/// `is_sort_scope`, so a NAMESPACE never accumulates params (MEASURED: 0 of the 30
+/// namespaces in stdlib + anthill-stl report any), and 0 of 373 operations have a
+/// non-`Sort` parent with a non-empty param list. But an OPERATION scope does take
+/// params — `operation outer[U](…)` gives `type_params_of_sort(outer) == ["U"]` —
+/// so the parametric gate alone states "some scope with brackets", which is not the
+/// question either caller asks.
 pub(crate) fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     use crate::intern::SymbolKind;
 
-    // The parent sort's qualified name is the op's qualified name
-    // with the last segment stripped off.
-    let op_qn = kb.qualified_name_of(op_sym);
-    let (parent_qn, _short) = op_qn.rsplit_once('.')?;
-
-    let parent_sym = kb.try_resolve_symbol(parent_qn)?;
-    if !kb.symbols.get(parent_sym).has_kind(SymbolKind::Sort) {
+    let parent_sym = impl_parent_of_op(kb, op_sym)?;
+    if !kb.has_kind(parent_sym, SymbolKind::Sort) {
         return None;
     }
     if kb.type_params_of_sort(parent_sym).is_empty() {
@@ -20721,17 +20775,25 @@ pub(crate) fn carrier_param_receiver_for_values(
 /// the op is consumed on a concrete provider. `None` unless the parent is a
 /// parametric sort AND the op has a self-receiver parameter (one typed as the
 /// sort itself, e.g. `s: Stream`) — the same shape [`receiver_carrier`] keys on.
+///
+/// WI-958 — "parametric sort that declares `fn_sym`" is [`spec_op_parent_sort`]'s
+/// question, so this asks it rather than re-deriving it; the self-receiver gate is
+/// the ONLY thing this adds, and the callers that consult both readers in one pass
+/// (`check_apply`'s WI-357 and WI-444 blocks) now agree on the spec sort by
+/// construction. That merge also ADDS the `has_kind(Sort)` gate here, which this copy
+/// lacked. Behaviour-identical, and MEASURED twice over: the only non-`Sort` scope
+/// that can carry type params is an OPERATION (`add_type_param`'s sites are sort
+/// scopes and op scopes), and across stdlib + anthill-stl every one of the 373
+/// operations has a `Namespace` (70) or `Sort` (303) parent — none has an operation
+/// for a parent, and `fn_sym` here is always an operation, since the caller holds its
+/// `OperationInfoFull`. Added anyway: a reader should not owe its correctness to the
+/// NEXT gate catching what its own is missing.
 fn self_receiver_spec_sort(
     kb: &KnowledgeBase,
     op: &OperationInfoFull,
     fn_sym: Symbol,
 ) -> Option<Symbol> {
-    let op_qn = kb.qualified_name_of(fn_sym);
-    let (parent_qn, _short) = op_qn.rsplit_once('.')?;
-    let parent_sym = kb.try_resolve_symbol(parent_qn)?;
-    if kb.type_params_of_sort(parent_sym).is_empty() {
-        return None;
-    }
+    let parent_sym = spec_op_parent_sort(kb, fn_sym)?;
     self_receiver_param_index(kb, &op.params, parent_sym)?;
     Some(parent_sym)
 }
@@ -26445,12 +26507,11 @@ fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Sy
     if let Some(cached) = kb.sort_param_pairs_cache.borrow().get(&sort_sym) {
         return cached.clone();
     }
-    let qn = kb.qualified_name_of(sort_sym).to_string();
     let pairs: Vec<(Symbol, TermId)> = kb
         .type_params_of_sort(sort_sym)
         .iter()
         .filter_map(|name| {
-            let qualified_sym = kb.try_resolve_symbol(&format!("{qn}.{name}"))?;
+            let qualified_sym = qualified_type_param_sym(kb, sort_sym, name)?;
             let target = resolve_sort_alias(kb, qualified_sym)?;
             matches!(kb.get_term(target), Term::Var(Var::Global(_)))
                 .then_some((qualified_sym, target))
@@ -26461,22 +26522,32 @@ fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Sy
     rc
 }
 
-/// The canonical `Var::Global` registered for `<parent_sort>.<param_sym>`. Qualifying
-/// the short param name first is what ANCHORS the lookup: `sort T = ?` recurs across
-/// List, Option, Stream …, so the short name alone would be ambiguous. The resolution
-/// itself is [`type_param_global_var`] — the same one the σ-class side uses, so a
-/// carrier grounded here and a requirement attributed there speak of one variable.
+/// WI-958 — the symbol a sort's declared type parameter is registered under,
+/// `<sort qualified name>.<short>`. The INVERSE of [`impl_parent_of_op`]'s question,
+/// and like it written once: its two readers ([`sort_type_params_as_pairs`] and
+/// [`type_param_vid_in_sort`]) had the same `format!` + `try_resolve_symbol` each.
+///
+/// Qualifying the short name is what ANCHORS the lookup: `sort T = ?` recurs across
+/// List, Option, Stream …, so the short name alone would be ambiguous.
+///
+/// Still a round-trip THROUGH STRINGS for an identity the loader already computed and
+/// dropped — WI-954's subject, which is where it goes away rather than gets shortened.
+/// Until then, one spelling.
+fn qualified_type_param_sym(kb: &KnowledgeBase, sort_sym: Symbol, short: &str) -> Option<Symbol> {
+    kb.try_resolve_symbol(&format!("{}.{}", kb.qualified_name_of(sort_sym), short))
+}
+
+/// The canonical `Var::Global` registered for `<parent_sort>.<param_sym>`. The
+/// resolution itself is [`type_param_global_var`] — the same one the σ-class side
+/// uses, so a carrier grounded here and a requirement attributed there speak of one
+/// variable.
 fn type_param_vid_in_sort(
     kb: &KnowledgeBase,
     parent_sort: Symbol,
     param_sym: Symbol,
 ) -> Option<crate::kb::term::VarId> {
-    let qualified = format!(
-        "{}.{}",
-        kb.qualified_name_of(parent_sort),
-        kb.resolve_sym(param_sym),
-    );
-    let qualified_sym = kb.try_resolve_symbol(&qualified)?;
+    let qualified_sym =
+        qualified_type_param_sym(kb, parent_sort, kb.resolve_sym(param_sym))?;
     type_param_global_var(kb, qualified_sym)
 }
 
@@ -41470,5 +41541,194 @@ mod wi963_type_var_representation_tests {
             "two logic vars of the SAME name are distinct terms — the contrast: as \
              logic vars, two undetermined types would never be structurally equal",
         );
+    }
+}
+
+/// WI-958 — "which symbol declares this operation" now has ONE owner
+/// ([`impl_parent_of_op`]), and "the parametric sort that declares it" has one more
+/// on top of it ([`spec_op_parent_sort`]), which [`self_receiver_spec_sort`] narrows
+/// rather than re-derives. Three qualified-name splits became one.
+///
+/// CONTROL, stated plainly: **no test here fails when the merge is backed out.** The
+/// merge is behaviour-preserving by construction — each of the three sites computed
+/// the same parent already, and the one gate it ADDS (`has_kind(Sort)` on
+/// `self_receiver_spec_sort`) is unreachable, as [`spec_op_parent_sort`]'s doc records.
+/// The ticket said as much: the value is that three copies cannot DRIFT.
+///
+/// So these are drift guards, and each test's own doc names the edit it catches and
+/// what that edit actually does when MEASURED — which in two cases is not what this
+/// module's first draft predicted. Read those, not a summary here.
+#[cfg(test)]
+mod wi958_one_op_parent_tests {
+    use super::{
+        impl_parent_of_op, lookup_operation_info_full, self_receiver_spec_sort,
+        spec_op_parent_sort,
+    };
+    use crate::intern::SymbolKind;
+    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::{KnowledgeBase, Symbol};
+
+    /// The four shapes the three readers must tell apart, in one namespace:
+    /// a parametric sort's op WITH a self-receiver (`take`) and WITHOUT one (`make`),
+    /// a NON-parametric sort's op (`describe`), and a FREE op (`loose`).
+    const SRC: &str = r#"
+namespace test.wi958
+  sort Spec
+    sort T = ?
+    operation take(s: Spec) -> T
+    operation make(x: T) -> Spec
+  end
+
+  sort Plain
+    entity plain(n: Int64)
+    operation describe(p: Plain) -> Int64
+  end
+
+  operation loose(n: Int64) -> Int64
+end
+"#;
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// All three readers on one op, as qualified names — `None` renders as `-`.
+    fn readers(kb: &KnowledgeBase, op_qn: &str) -> (String, String, String) {
+        let op_sym = sym(kb, op_qn);
+        let info = lookup_operation_info_full(kb, op_sym)
+            .unwrap_or_else(|| panic!("{op_qn} has no OperationInfo"));
+        let name = |s: Option<Symbol>| {
+            s.map(|s| kb.qualified_name_of(s).to_string()).unwrap_or_else(|| "-".into())
+        };
+        (
+            name(impl_parent_of_op(kb, op_sym)),
+            name(spec_op_parent_sort(kb, op_sym)),
+            name(self_receiver_spec_sort(kb, &info, op_sym)),
+        )
+    }
+
+    /// DRIVES each reader's own gate, on the shape that gate exists to reject.
+    ///
+    /// CONTROLS, each MEASURED by making the edit and re-running:
+    ///  - collapse `self_receiver_spec_sort` into `spec_op_parent_sort`: BOTH tests
+    ///    fail, and not on an assertion — THE STDLIB STOPS LOADING (`collect.effects`
+    ///    undeclared, `FiniteCollection.collect.requires` missing, `Stream` vs
+    ///    `MappedStream` rule mismatch). The self-receiver gate is what keeps the
+    ///    WI-357 carrier bind and effect-close off a non-receiver op. Any test using
+    ///    the stdlib fixture catches this; it is here to say WHICH gate did it.
+    ///  - drop the parametric gate from `spec_op_parent_sort`: row 3 fails (`Plain`,
+    ///    a sort with no `sort <P> = ?`, would report as a spec sort).
+    ///  - drop the `has_kind(Sort)` gate: NOTHING fails, here or in the workspace.
+    ///    Expected — that gate is unreachable, exactly as its own doc says. It is not
+    ///    dead code but an unmet precondition stated where it belongs; no test can
+    ///    justify it, so this comment does.
+    ///
+    /// The merge itself is not controlled by this test: it passed before the merge too,
+    /// since all three copies of the split agreed.
+    #[test]
+    fn each_reader_narrows_the_one_before_it() {
+        let kb = load_stdlib_and_stl(Some(SRC));
+        let spec = "test.wi958.Spec";
+
+        assert_eq!(
+            readers(&kb, "test.wi958.Spec.take"),
+            (spec.into(), spec.into(), spec.into()),
+            "a parametric sort's op with a self-receiver param: all three answer the sort",
+        );
+        assert_eq!(
+            readers(&kb, "test.wi958.Spec.make"),
+            (spec.into(), spec.into(), "-".into()),
+            "still a spec op — but no param is typed `Spec`, so it has no self-receiver",
+        );
+        assert_eq!(
+            readers(&kb, "test.wi958.Plain.describe"),
+            ("test.wi958.Plain".into(), "-".into(), "-".into()),
+            "`Plain` declares no `sort <P> = ?`: the owner is a sort, but not a SPEC sort",
+        );
+        assert_eq!(
+            readers(&kb, "test.wi958.loose"),
+            ("test.wi958".into(), "-".into(), "-".into()),
+            "a free op's owner is its NAMESPACE — deliberately returned, and gated off \
+             by both spec readers",
+        );
+    }
+
+    /// The evidence [`impl_parent_of_op`]'s doc rests on, re-measured rather than
+    /// re-argued: the qualified-name split and the symbol table's scope link agree for
+    /// every OPERATION — and disagree for the dot-less kernel-vocab names, where the
+    /// split correctly finds no parent and the scope link offers `_global`.
+    ///
+    /// CONTROL, MEASURED — point `impl_parent_of_op` at `declaring_scope_symbol` and
+    /// the second half fails (`` `Rule` has no parent to strip; declaring_scope_symbol
+    /// answers Some("_global") ``). It is the ONLY thing that fails: the whole
+    /// workspace ran 4084 tests under that edit, 4083 of them green. That is the point
+    /// of writing it — the reason `impl_parent_of_op` keeps the split is a domain
+    /// argument no other test can hear, so without this the next reader would make the
+    /// swap, see green, and land it.
+    ///
+    /// The first half (operations agree) is what makes the split legitimate at all,
+    /// and passes either way by design.
+    #[test]
+    fn the_split_and_the_scope_link_agree_on_operations_only() {
+        let kb = load_stdlib_and_stl(None);
+        // By SYMBOL, read through `qualified_name_of` — the same string
+        // `impl_parent_of_op` splits. Walking `by_qualified_name`'s KEYS instead would
+        // measure the wrong thing: one symbol can be registered under several (`BigInt`
+        // and `anthill.prelude.BigInt` are one `Symbol`), and only the canonical name
+        // is the one that gets split.
+        let mut seen: std::collections::HashSet<Symbol> = Default::default();
+        let mut names: Vec<(String, Symbol)> = Vec::new();
+        for &s in kb.symbols.by_qualified_name.values() {
+            if seen.insert(s) {
+                names.push((kb.qualified_name_of(s).to_string(), s));
+            }
+        }
+
+        let mut ops = 0usize;
+        let mut disagreeing_ops: Vec<String> = Vec::new();
+        // Dot-less names live directly in the `_global` pseudo-scope: the split sees no
+        // parent at all, the scope link sees `_global`.
+        let mut dotless_global: Vec<String> = Vec::new();
+        for (qn, sym) in &names {
+            let split = qn.rsplit_once('.').and_then(|(p, _)| kb.try_resolve_symbol(p));
+            let scope = kb.declaring_scope_symbol(*sym);
+            if kb.has_kind(*sym, SymbolKind::Operation) {
+                ops += 1;
+                if split != scope {
+                    disagreeing_ops.push(format!(
+                        "{qn}: split={:?} scope={:?}",
+                        split.map(|s| kb.qualified_name_of(s).to_string()),
+                        scope.map(|s| kb.qualified_name_of(s).to_string()),
+                    ));
+                }
+            }
+            if !qn.contains('.') && split.is_none() && scope.is_some() {
+                dotless_global.push(qn.clone());
+            }
+        }
+
+        assert!(ops > 300, "the stdlib fixture must actually carry operations; got {ops}");
+        assert_eq!(
+            disagreeing_ops,
+            Vec::<String>::new(),
+            "for an OPERATION the two answers are the same — the subject is a direct \
+             child of the scope it wants, so the split has nothing to decide",
+        );
+        assert!(
+            dotless_global.contains(&"Fact".to_string()),
+            "the kernel vocabulary must still hold dot-less names — they are why \
+             `impl_parent_of_op` cannot become `declaring_scope_symbol`; got \
+             {dotless_global:?}",
+        );
+        for qn in &dotless_global {
+            let s = sym(&kb, qn);
+            assert_eq!(
+                impl_parent_of_op(&kb, s),
+                None,
+                "`{qn}` has no parent to strip; `declaring_scope_symbol` answers \
+                 {:?} instead, which a carrier-sort caller would take at face value",
+                kb.declaring_scope_symbol(s).map(|p| kb.qualified_name_of(p).to_string()),
+            );
+        }
     }
 }
