@@ -49,15 +49,17 @@ Unbounded today, each silent:
 
 ## Definitions
 
-A sort's scope has one or more **entries** — texts that declare into it. An address without a sort has no entries in this sense at all; it is an ordinary namespace, and this proposal says nothing about it.
+A sort's scope has one or more **entries** — texts that declare into it. Syntactically an entry is a **`namespace`, `sort`, `enum` or `entity` declaration with definitions inside**; those four are what declare into a scope, and nothing else does. An address without a sort has no entries in this sense at all; it is an ordinary namespace, and this proposal says nothing about it.
 
-- **Main entry.** The `sort X … end` or `entity X(…)` that *defines* the type: its constructors, type parameters and requirements. **At most one** exists (R1) — an address may have none, and then there is no type there.
+- **Main entry.** The `sort X … end`, `enum X … end` or `entity X(…)` that *defines* the type: its constructors, type parameters and requirements. **At most one** exists (R1) — an address may have none, and then there is no type there.
 - **Secondary entry.** A `namespace X` at an address that **has a main entry**. It *adds to* `X`'s scope and defines nothing about the type. Any number may exist. Attachment is by address, never by import.
 - **One entry, individuated.** The **main entry** is the single `sort`/`entity` declaration, wherever it sits. A **secondary entry** is all `namespace X` text at that address **within one file**: two `namespace X … end` blocks in the same file are ONE secondary entry, and the same text in a second file is a second one. A file holding both the declaration and a `namespace X` block therefore holds two entries — main and secondary — which is what keeps R4's main-vs-secondary asymmetry meaningful.
 
   The **file** is the unit for two reasons. What the entry-keyed rules guard against is a predicate "assembled by two parties that never agreed on it", and two blocks in one file are one author making one edit — a file boundary is the smallest place where *two parties* is real. And it is the unit this proposal already uses: an import resolves only in the file it is written in. One notion of locality, not two.
 
   It is also the only one that is checkable. Every declaration carries a `SourceSpan` with its `SourceId`, and `file_idx` is threaded through both scan passes — but two `namespace X … end` blocks at one address compute the same qualified name, reuse the same symbol, and alloc the same hash-consed scope term, so no per-block identity exists to group by. "Entry = one block" would have to mint one first.
+
+  **What "with definitions inside" leaves open: a type alias.** `sort X = T` puts its definition after the `=`, not inside, so it is not an entry by that reading. But measured, `sort Path = String` beside `namespace Path { operation len(p: Path) -> Int64 }` loads, `Path.len("x")` answers, and the loader's own diagnostic calls `len` "a member of sort Path" — the alias behaves as a main entry. Either an alias is one, with its definition written outside its body, or that attachment is a divergence. A bare `entity Foo` with no fields asks the same question. (`enum` needs no such call: it is named above, and measured — `enum Colour { entity red }` beside `namespace Colour { operation code }` dispatches `Colour.code(red)`.)
 
 - **Ordinary namespace.** A `namespace X` at an address with **no** main entry — the overwhelmingly common case, and every namespace in the language until a sort shares its address. It declares a module, not members of a type, and **nothing in R3 or R4 reaches it**: a rule, an entity, a nested sort are all as legal there as they have ever been. Only the presence of a main entry turns the same text into a secondary entry.
 - **Member of `X`.** A name declared in `X`'s scope, by any entry. Reachable bare from within that scope, and from outside through `import X.{…}`.
