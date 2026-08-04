@@ -7,7 +7,15 @@ import scala.collection.mutable.{ArrayBuffer, HashMap}
 
 // ── Simple term store (parse-time only, no hash-consing) ────────
 
-class SimpleTermStore:
+/** OPEN for ONE override, [[SimpleTermStore.spanOf]] — see its doc (WI-991). Everything
+  * else is `final` on purpose: [[SimpleTermStore.allocAt]] is the store's single append
+  * point, which is what keeps `terms` and `spans` parallel and therefore what
+  * [[SimpleTermStore.nameBearingWithoutSpan]] and
+  * [[SimpleTermStore.spansEndingInWhitespace]] read. A subclass overriding an allocator
+  * without calling `super` desynchronizes the two silently, and the obvious next
+  * instrumenting store is an alloc counter. `open` also states the intent the compiler
+  * otherwise only mentions under `-source:future` (`adhocExtensions`). */
+open class SimpleTermStore:
   private val terms = ArrayBuffer.empty[Term]
   /** WI-618: the `Term.Fn` nodes the parse pipeline MINTED — infix/prefix operator
     * desugars (`?a + ?b` → `add`) and accessor builds (`?x.f` → `field_access`,
@@ -41,8 +49,6 @@ class SimpleTermStore:
     * a DERIVED span — see `AnthillParser.typeExprToRef`. Derived is honest; empty is
     * what is forbidden, and [[nameBearingWithoutSpan]] is the audit for it. */
   private val spans = ArrayBuffer.empty[Span]
-  /** WI-964 — see [[spanReads]], the accessor that gives this its reason to exist. */
-  private var reads = 0
   val descriptions: HashMap[TermId, ArrayBuffer[String]] = HashMap.empty
 
   /** Allocate a term with NO NAME to resolve — a `Const`, a `Var`, `Bottom`.
@@ -66,13 +72,13 @@ class SimpleTermStore:
     *
     * A name-bearing term genuinely built from no source — a hand-assembled test
     * fixture — says so at the site: `allocAt(term, Span.empty)`. */
-  def alloc(term: Term.Nameless): TermId = allocAt(term, Span.empty)
+  final def alloc(term: Term.Nameless): TermId = allocAt(term, Span.empty)
 
   /** Allocate a term built from the source text at `span` (WI-957). Use this wherever
     * the term's own functor / ref / ident symbol comes from written text: that symbol
     * is what the loader resolves, so `span` is where a name error about it belongs.
     * THE single append point — keep it that way. */
-  def allocAt(term: Term, span: Span): TermId =
+  final def allocAt(term: Term, span: Span): TermId =
     val id = TermId.fromRaw(terms.length)
     terms += term
     spans += span
@@ -85,34 +91,22 @@ class SimpleTermStore:
     * called with a name-bearing term and [[alloc]] no longer accepts one. The span is
     * the token the desugar came FROM — `?a + ?b` mints `add(?a, ?b)`, whose functor is
     * written nowhere, so it rides at the `+`. */
-  def allocMintedAt(term: Term, span: Span): TermId =
+  final def allocMintedAt(term: Term, span: Span): TermId =
     val id = allocAt(term, span)
     minted += id
     id
 
   def isMinted(id: TermId): Boolean = minted.contains(id)
 
-  /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957). */
+  /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957).
+    *
+    * OVERRIDABLE ON PURPOSE, and the ONLY override this class admits (WI-991). How the
+    * type lowerings DERIVE a span is observable only as WORK — see
+    * `AnthillParser.parseInto`, which owns that argument and the seam that follows from
+    * it. WI-964 counted the reads with a counter HERE instead, summed over the store's
+    * whole life; a count is now taken per PARSE, by a subclass, in the test tree. */
   def spanOf(id: TermId): Span =
-    reads += 1
     spans(id.index)
-
-  /** WI-964: how many times [[spanOf]] has been asked, over this store's whole life.
-    *
-    * THE ONE OBSERVABLE of how the type lowerings DERIVE a span. `AnthillParser`'s
-    * `typeExprToRef` gives a structural lowering the first located position among its
-    * children; deriving that by re-walking the raw `TypeExpr` at every level produces
-    * the IDENTICAL term with the IDENTICAL span, so no query over the finished store can
-    * tell the linear form from the quadratic one — only the work differs, and a
-    * read-back derivation's work lands here, one read per child edge.
-    *
-    * UNLIKE its two neighbouring audits, which are pure queries over state the store
-    * keeps anyway: this is a counter, so it costs a write on a path production code
-    * takes (the loader reads spans per term). One non-volatile increment, for the only
-    * handle a test has on the property — `SimpleTermStore` is built inside
-    * `Parser.parse`, so a counting subclass cannot be injected from outside.
-    * `ParseSpanGrowthTest` is the reader, and argues the measurement there. */
-  def spanReads: Int = reads
 
   /** WI-961: the name-bearing terms in this store that carry NO location.
     *

@@ -1600,3 +1600,43 @@ end
     probeOk("closer-at-eof", "sort Demo end {- done -}")
     probeOk("doc-closer-at-eof", "sort Demo end {< done >}")
   }
+
+  /** WI-991 made the store a parse builds into an argument of a `private[anthill]` seam,
+    * so that a test can count `spanOf` with a subclass instead of the production store
+    * carrying a counter. THE ACCEPTANCE HALF: the store handed in is the store the
+    * returned `ParsedFile` carries. Nothing else at this layer says so, and the way it
+    * breaks is quiet — restore `val terms = SimpleTermStore()` inside the body (a
+    * plausible merge or revert) and the parameter is silently shadowed: every other parse
+    * test still passes, and the only failure is `ParseSpanGrowthTest`'s count assertion in
+    * another package, whose message talks about counting rather than about a discarded
+    * argument.
+    *
+    * BOTH LAYERS, because `Parser.parseInto` has an empty-source arm that returns without
+    * ever reaching `AnthillParser` — a seam on the delegate alone would leave that input
+    * building into a store the caller never sees.
+    *
+    * There is no freshness CHECK to drive: the public `parse` mints its own store, so a
+    * fresh one per parse holds by construction. The first shape of this WAS a check —
+    * `require(terms.size == 0)` on a public parameter — and it was measurably wrong:
+    * `namespace d end` allocates no terms, so a store that had already backed a
+    * declaration-only parse passed the guard and two files ended up sharing one store. */
+  test("WI-991: a parse builds into the store it was given") {
+    val store = SimpleTermStore()
+    val pf = Parser.parseInto("fact p(1)", "<given>", store) match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.render).mkString("; ")}")
+    assert(pf.terms eq store, "the ParsedFile carries a different store than the one supplied")
+    assert(store.size > 0, "the parse built no terms into the supplied store")
+
+    // The empty-source arm reaches neither the delegate nor any allocation, so identity
+    // is the whole of what it can promise — and the whole of what it dropped before.
+    val emptyStore = SimpleTermStore()
+    val empty = Parser.parseInto("", "<empty>", emptyStore).toOption
+      .getOrElse(fail("an empty source should parse"))
+    assert(empty.terms eq emptyStore)
+
+    val direct = SimpleTermStore()
+    val viaDelegate = AnthillParser.parseInto("fact q(2)", "<direct>", direct).toOption
+      .getOrElse(fail("the delegate should parse"))
+    assert(viaDelegate.terms eq direct)
+  }

@@ -9,8 +9,35 @@ import scala.collection.mutable.{ArrayBuffer, HashMap}
 object AnthillParser:
 
   def parse(source: String, fileName: String = "<input>"): Either[IndexedSeq[ParseError], ParsedFile] =
+    parseInto(source, fileName, SimpleTermStore())
+
+  /** THE parse, with the store it builds into supplied — the WI-991 seam, and the ONE
+    * place the argument for it lives.
+    *
+    * [[SimpleTermStore.spanOf]] is the only observable of how `typeExprToRef` derives a
+    * span (both forms produce identical terms and identical spans, so only the WORK
+    * differs). Counting it used to mean a counter ON the store, written on a path
+    * production code takes and summed over that store's whole life; the count a test
+    * asserted then depended on which other readers of THE SAME STORE had run first —
+    * `ParseSpanGrowthTest`'s own `SpanFixture.fnSpans` walk, +100 on a 700-read parse,
+    * moved simply by being hoisted above the snapshot. The counter is gone and the
+    * subclass does the counting: `SpanFixture.parseCountingSpanReads` is the sole
+    * injector.
+    *
+    * `private[anthill]`, and the public [[parse]] mints its own store — so a FRESH store
+    * per parse holds BY CONSTRUCTION on every production path rather than by a check.
+    * It has to: `TermId`s index the store positionally, so a second parse into one would
+    * hand its `ParsedFile` ids into a file it knows nothing about, and the whole-store
+    * audits (`nameBearingWithoutSpan`, `spansEndingInWhitespace`) would report one file's
+    * terms as the other's. A public `terms` parameter guarded by `require(size == 0)` was
+    * the first shape of this and was WRONG twice over: `size` is a proxy for freshness,
+    * not freshness — MEASURED, `namespace d end` allocates no terms, so a store that had
+    * already backed a declaration-only parse passed the guard and aliased two files —
+    * and the guard raised from a path whose declared error channel is `Either`. */
+  private[anthill] def parseInto(
+    source: String, fileName: String, terms: SimpleTermStore
+  ): Either[IndexedSeq[ParseError], ParsedFile] =
     val symbols = SymbolTable()
-    val terms = SimpleTermStore()
     val errors = ArrayBuffer.empty[ParseError]
     // WI-947: ONE index per source, built here and threaded into the parser, so
     // every span this parse produces resolves its `line:col` against the same

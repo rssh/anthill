@@ -1,6 +1,6 @@
 package anthill.span
 
-import anthill.parse.{Item, Parser, ParsedFile}
+import anthill.parse.{Item, Parser, ParsedFile, SimpleTermStore}
 import anthill.term.{Term, TermId}
 
 /** What every span test in this package does before it can assert anything: parse a
@@ -24,10 +24,46 @@ private[span] object SpanFixture:
   /** Parse or fail with the rendered errors — a fixture that stopped parsing must say
     * so as a test failure, not as a `None` the caller then asserts over. */
   def parse(src: String, file: String)(using munit.Location): ParsedFile =
-    Parser.parse(src, file) match
+    parseInto(src, file, SimpleTermStore())
+
+  private def parseInto(src: String, file: String, terms: SimpleTermStore)
+                       (using munit.Location): ParsedFile =
+    Parser.parseInto(src, file, terms) match
       case Right(pf) => pf
       case Left(errs) =>
         munit.Assertions.fail(s"parse failed: ${errs.map(_.render).mkString("; ")}")
+
+  /** A store that counts what [[SimpleTermStore.spanOf]] is asked — the observable
+    * `ParseSpanGrowthTest` measures, living in the test tree where it belongs (WI-991).
+    * The production store keeps no counter, so nothing on the loader's path writes one. */
+  private final class CountingTermStore extends SimpleTermStore:
+    var spanReads = 0
+    override def spanOf(id: TermId): Span =
+      spanReads += 1
+      super.spanOf(id)
+
+  /** A parse, and the number of span reads THE PARSE did (WI-991).
+    *
+    * The count is taken HERE, at the one moment it means "the parse's work", and handed
+    * back with the file — so no later reader can move it and no statement order in a
+    * caller can change what it measures. That is the whole point: the caller is free to
+    * walk the file first (this fixture's own [[fnSpans]] reads spans, and so does the
+    * loader), and the number it was given still describes the parse.
+    *
+    * Before this, the counter lived on `SimpleTermStore` over its whole life and the
+    * caller snapshotted it by hand. MEASURED on that shape: hoisting the `fnSpans` walk
+    * above the snapshot — an ordinary readability edit — left `ParseSpanGrowthTest` green
+    * while its `a` moved from 700 to 800, the extra 100 being the walk's own reads.
+    *
+    * ONLY a reader of THE SAME STORE can do that, which is the rule worth carrying away:
+    * the loader reads spans too, but it never touched this test's stores — the growth
+    * fixture loads nothing. (For scale, a counting store over the whole stdlib measures
+    * 912 loader reads across all 58 files, 97 in the largest single one, and ZERO at
+    * parse time — the corpus writes no lowered type in term position.) */
+  def parseCountingSpanReads(src: String, file: String)(using munit.Location): (ParsedFile, Int) =
+    val terms = CountingTermStore()
+    val pf = parseInto(src, file, terms)
+    (pf, terms.spanReads)
 
   /** Every item in the file, flattened through the two scope-opening shapes. */
   def allItems(items: Iterable[Item]): Vector[Item] =
@@ -58,8 +94,11 @@ private[span] object SpanFixture:
     * `ParseSpanGrowthTest` wants every arrow a deep type lowered to. Same reason
     * [[allItems]] moved here.
     *
-    * A caller that also reads `SimpleTermStore.spanReads` must note that this WALK reads
-    * spans: take the count from a file nothing has walked yet. */
+    * This WALK READS SPANS, and since WI-991 that is no longer a caller's problem: a
+    * count from [[parseCountingSpanReads]] was taken when its parse returned, so walking
+    * the file here cannot reach it. The warning this doc used to carry — take the count
+    * from a file nothing has walked yet — was an instruction the compiler could not
+    * enforce, and `ParseSpanGrowthTest` now walks BEFORE it asserts, on purpose. */
   def fnSpans(pf: ParsedFile, functor: String): IndexedSeq[Span] =
     (0 until pf.terms.size).map(TermId.fromRaw).flatMap { id =>
       pf.terms.get(id) match
