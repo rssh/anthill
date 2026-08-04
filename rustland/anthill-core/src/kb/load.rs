@@ -2949,21 +2949,32 @@ fn scan_items_pass1(
                         has_variant = true;
                     }
                 }
-                // WI-979 — STILL `is_new`-gated, and that is a KNOWN DEFECT, not a
-                // reading of the declaration. Un-gating it is the obvious sibling of
-                // the `add_kind` above (measured: `namespace Colour … end` before
-                // `sort Colour { entity Red }` leaves bare `Red` unresolvable, while
-                // the same two declarations swapped resolve it), but it was tried and
-                // REVERTED: `is_new` is false for the whole PRE-REGISTERED population
-                // too, so un-gating hands 7 bootstrap sorts an exposure link they
-                // never had — driven, `guarded` under a wildcard import goes from
-                // resolving uniquely to `LogicalQuery.guarded` to AMBIGUOUS against
-                // `EffectExpression.guarded`. It also silently half-wires the shape
-                // 059 R1 refuses (`entity X` then `sort X`): variants leak OUT while
-                // the body still cannot see IN, since the enclosing link above stays
-                // gated. A correct fix has to tell declaration-reuse from
-                // bootstrap-reuse, which `is_new` alone cannot. See WI-994.
-                if is_new && has_variant {
+                // WI-994 — the same reading as the `add_kind` above, one gate over.
+                // §8.6 gives this link to any sort that DECLARES entity constructors,
+                // so `is_new` — was the SYMBOL fresh — was the wrong question. It is
+                // false for declaration-reuse (`namespace Colour … end` before
+                // `sort Colour { entity Red }`, 059 R2's own shape) AND for the 7
+                // stdlib sorts `register_stdlib_scopes` pre-registers before source
+                // re-declares them with variants. WI-979 kept the gate for the second,
+                // reading it as a population that "never had the link";
+                // `wi994_variant_exposure_test` refutes that with the control WI-979
+                // lacked, and drives the `guarded` row it read as the regression —
+                // which is the ambiguity §8.6 requires, not a loss.
+                //
+                // THE ENCLOSING LINK ABOVE STAYS GATED, and not merely by asymmetry:
+                // for both populations here it is ALREADY on the scope by the time this
+                // arm reuses the symbol — the `Item::Namespace` arm below adds it on the
+                // same hash-consed nullary term, and `register_stdlib_scopes` adds one
+                // per pre-registered sort — so un-gating it would re-offer a link that
+                // is present, not supply a missing one. The single shape it genuinely
+                // gates out is `entity X` + `sort X`, where a free-standing `entity`
+                // built no scope at all; that is the wiring 059 R1 refuses (WI-997).
+                // Pinned in `wi979_declaration_order_test`.
+                //
+                // `add_parent` is idempotent (WI-994) — required here, not incidental:
+                // `load_incremental` re-scans files already in the KB, so an un-gated
+                // link is re-offered on every reload.
+                if has_variant {
                     kb.symbols.add_parent(actual_scope.raw(), ScopeInclusion {
                         parent_scope_raw: sort_term.raw(),
                         instantiation_term_raw: sort_term.raw(),

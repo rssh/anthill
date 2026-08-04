@@ -250,7 +250,10 @@ impl SymbolDef {
     }
 }
 
-#[derive(Clone, Debug)]
+/// WI-994: `PartialEq` is what makes [`SymbolTable::add_parent`] idempotent — a
+/// scope's parents are a SET, and two links differing in `instantiation_term_raw`
+/// (the same spec `requires`d at two instantiations) are genuinely two.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopeInclusion {
     pub parent_scope_raw: u32,
     pub instantiation_term_raw: u32,
@@ -561,12 +564,28 @@ impl SymbolTable {
     }
 
     /// Record a parent scope inclusion (from `requires` or `import`).
+    ///
+    /// IDEMPOTENT (WI-994) — a scope's parents are a SET, and an exact repeat adds
+    /// nothing that [`Self::resolve_in_scope_recursive`] can observe: it walks under
+    /// a `visited` set and dedups matches by symbol, so a second copy of one link
+    /// only lengthens the list every failed local lookup scans.
+    ///
+    /// Load-bearing since the variant-exposure link stopped being gated on the
+    /// symbol being FRESH: `load_incremental` re-scanning files already in the KB
+    /// re-runs every declaration, so without this each reload would push another
+    /// copy of every such link — `anthill.prelude` 28 → 56 exposure parents on the
+    /// second load, and unbounded in the number of loads. `is_new` had been
+    /// suppressing that as a side effect of answering a different question.
+    ///
+    /// The dedup is on the WHOLE inclusion, so two links differing only in
+    /// `instantiation_term_raw` — one spec `requires`d at two instantiations — both
+    /// stand. O(P) per push against P in the tens, paid at load, against an O(P)
+    /// every lookup pays forever.
     pub fn add_parent(&mut self, scope_raw: u32, inclusion: ScopeInclusion) {
-        self.scopes
-            .entry(scope_raw)
-            .or_default()
-            .parents
-            .push(inclusion);
+        let parents = &mut self.scopes.entry(scope_raw).or_default().parents;
+        if !parents.contains(&inclusion) {
+            parents.push(inclusion);
+        }
     }
 
     /// Get a scope by its raw id.
@@ -1031,5 +1050,32 @@ mod tests {
         assert!(!is_positional_label_at("_1", 1), "`_1` in slot 1 is a user label");
         assert!(!is_positional_label_at("_01", 0), "leading zero is a user label");
         assert!(!is_positional_label_at("_b", 0));
+    }
+
+    /// WI-994 — a scope's parents are a SET. Re-declaring one link must not grow
+    /// the list: `load_incremental` re-scans files already in the KB, and the
+    /// variant-exposure link is no longer gated on the symbol being fresh, so
+    /// every reload re-offers every such link. Measured control: delete the
+    /// `contains` guard in `add_parent` and the first assertion below reads 3.
+    #[test]
+    fn add_parent_is_idempotent_per_distinct_inclusion() {
+        let mut syms = SymbolTable::new();
+        let link = ScopeInclusion {
+            parent_scope_raw: 7,
+            instantiation_term_raw: 7,
+            is_enclosing: false,
+        };
+        syms.add_parent(1, link.clone());
+        syms.add_parent(1, link.clone());
+        syms.add_parent(1, link.clone());
+        assert_eq!(syms.scope(1).unwrap().parents.len(), 1, "one link, offered thrice");
+
+        // …and the dedup is on the WHOLE inclusion, so a second instantiation of
+        // one parent scope is a SECOND link, not a repeat of the first. Without
+        // this row the guard could be narrowed to `parent_scope_raw` and nothing
+        // here would notice.
+        syms.add_parent(1, ScopeInclusion { instantiation_term_raw: 9, ..link.clone() });
+        syms.add_parent(1, ScopeInclusion { is_enclosing: true, ..link });
+        assert_eq!(syms.scope(1).unwrap().parents.len(), 3, "three DISTINCT links");
     }
 }

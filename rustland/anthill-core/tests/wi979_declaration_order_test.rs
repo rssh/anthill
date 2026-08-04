@@ -11,11 +11,11 @@
 //! fixture.
 //!
 //! SCOPE, STATED SO IT IS NOT READ WIDER THAN IT IS. This ticket fixes the
-//! CATEGORY. It does NOT make the reuse arm wire the sort's scope the way the
-//! fresh arm does — two `is_new`-gated links remain, each pinned by a test here:
-//! the enclosing link (`entity X` then `sort X`, left refused pending 059 R1) and
-//! the variant-exposure link (WI-994, open, with a measured reason for not taking
-//! the obvious fix). Nor does it reach a pass-1 reader that runs BEFORE the
+//! CATEGORY. It did NOT make the reuse arm wire the sort's scope the way the fresh
+//! arm does; of the two `is_new`-gated links it left behind, the variant-exposure
+//! one has since been un-gated (WI-994, flipped below) and the ENCLOSING one is
+//! still gated — `entity X` then `sort X`, refused outright by 059 R1 / WI-997,
+//! and pinned here. Nor does it reach a pass-1 reader that runs BEFORE the
 //! `sort X` item: `is_sort_scope` is consulted during the same pass, so a reader
 //! reached earlier still sees the pre-fix answer.
 
@@ -97,26 +97,24 @@ fn neither_order_defines_a_phantom_nested_constructor() {
     }
 }
 
-/// THE SAME DEFECT ONE GATE OVER, STILL OPEN — pinned in both directions so the
-/// asymmetry is a stated invariant rather than a silence. Whether a sort's variants
-/// are visible to its enclosing scope is ALSO gated on `is_new`, so `namespace
-/// Colour … end` written before `sort Colour { entity Red }` leaves bare `Red`
-/// unresolvable, while the same two declarations swapped resolve it.
+/// THE SAME DEFECT ONE GATE OVER, NOW CLOSED (WI-994). Whether a sort's variants
+/// are visible to its enclosing scope was ALSO gated on `is_new`, so `namespace
+/// Colour … end` written before `sort Colour { entity Red }` left bare `Red`
+/// unresolvable, while the same two declarations swapped resolved it. Both orders
+/// now resolve it — 059's "main and secondary name roles, not order", and §8.6's
+/// exposure read off the declaration.
 ///
-/// WHY IT IS NOT FIXED HERE, measured. Un-gating it is the obvious sibling of the
-/// `add_kind` fix, and it was tried and reverted: `is_new` is false for the whole
-/// PRE-REGISTERED population too, so un-gating hands 7 bootstrap sorts an exposure
-/// link they never had — driven, bare `guarded` under a wildcard import goes from
-/// resolving uniquely to `LogicalQuery.guarded` to AMBIGUOUS against
-/// `EffectExpression.guarded`. Nothing in the tree has a wildcard import, so the
-/// suite stayed green through it; the green suite was not evidence. A correct fix
-/// must tell declaration-reuse from bootstrap-reuse, which `is_new` cannot. WI-994.
+/// The fix is a plain un-gate after all. This file used to record a reason not to
+/// take it — `is_new` is false for the PRE-REGISTERED stdlib sorts too, so
+/// un-gating "hands 7 bootstrap sorts an exposure link they never had". That
+/// population is the same defect, not a second one, and `wi994_variant_exposure_test`
+/// drives both it and the `guarded` row cited as the regression.
 ///
 /// A NON-eponymous sort is what exposes this at all: with `entity Rec` inside
 /// `sort Rec` the bare name resolves as the sort itself, so the exposure link is
 /// never consulted and the eponymous fixtures above cannot see it either way.
 #[test]
-fn variant_exposure_is_still_order_dependent_wi994() {
+fn variant_exposure_is_order_independent_wi994() {
     const V_SORT_FIRST: &str = r#"
 namespace wi979.vsf
   import anthill.prelude.Int64
@@ -141,20 +139,20 @@ namespace wi979.vnf
   operation drive() -> Int64 = Red(v: 5).twice()
 end
 "#;
-    // sort-first WORKS — and passes with or without the `add_kind` fix, so it is
-    // the control for the pinned row below rather than a measure of this ticket.
-    let mut interp = common::interp_for(V_SORT_FIRST);
-    assert!(
-        matches!(interp.call("wi979.vsf.drive", &[]), Ok(Value::Int(2))),
-        "sort-first: bare `Red(…)` must resolve through the variant-exposure link",
-    );
-    // ns-first is the OPEN defect. When WI-994 lands this call starts succeeding
-    // and `expect_load_errors` fails — which is the point: the fix has to come
-    // here and flip it, not land silently.
-    common::expect_load_errors(
-        common::try_load_kb_with(V_NS_FIRST),
-        &["type mismatch in Red.apply: expected known operation or arrow-typed variable"],
-    );
+    // Same two rows as `cases()` above, over the non-eponymous fixtures: the
+    // sort-first CONTROL passes either way, and ns-first is the row WI-994 fixed —
+    // back the un-gate out and it fails at LOAD, `type mismatch in Red.apply: …
+    // got unknown functor`.
+    for (label, src, ns) in [
+        ("sort-first (CONTROL)", V_SORT_FIRST, "wi979.vsf"),
+        ("ns-first", V_NS_FIRST, "wi979.vnf"),
+    ] {
+        let mut interp = common::interp_for(src);
+        assert!(
+            matches!(interp.call(&format!("{ns}.drive"), &[]), Ok(Value::Int(2))),
+            "{label}: bare `Red(…)` must resolve through the variant-exposure link",
+        );
+    }
 }
 
 /// THE HALF DELIBERATELY NOT FIXED — and WI-997 is why it stays that way. `entity
@@ -168,11 +166,12 @@ end
 /// link was never repaired, which is what keeps the decision visible. If a later
 /// change un-gates it, those three disappear and this fails.
 ///
-/// THE FIXTURE CARRIES A VARIANT ON PURPOSE. Without one, `has_variant` is false and
-/// this test cannot see the variant-exposure gate at all — it passed unchanged while
-/// an earlier attempt at WI-994 un-gated that link and made bare `Inner` resolve out
-/// of this very shape, half-wiring the scope (variants leaking out while the body
-/// still could not see in). A pinning test blind to the change it pins is not a pin.
+/// THE FIXTURE CARRIES A VARIANT ON PURPOSE. Without one `has_variant` is false
+/// and this test cannot see the exposure gate at all — the pre-WI-994 version had
+/// none and passed unchanged through a change to it. With WI-994 landed, bare
+/// `Inner` now DOES resolve out of this shape while the body still cannot see in;
+/// that is not a half-fix left lying around, because R1 refuses the pair outright
+/// and no program reaches a KB built from it.
 #[test]
 fn entity_then_sort_body_is_refused_by_059_r1_and_still_unwired() {
     common::expect_load_errors(
