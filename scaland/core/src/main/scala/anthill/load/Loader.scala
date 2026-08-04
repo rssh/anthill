@@ -630,7 +630,11 @@ object Loader:
                   case None =>
                     pending += PendingImport(scope, name, sym, n.span, pathStr)
             case ImportKind.Wildcard =>
-              kb.symbols.addParent(scope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
+              // WI-988: a wildcard brings a scope's CONTENTS in, so the path has to name
+              // something with contents — a namespace, or a sort (§5.1 names both).
+              parentScopeOf(kb, sym, Set(SymbolKind.Namespace, SymbolKind.Sort),
+                s"the wildcard import `$pathStr.*`", imp.path.span, errors)
+                .foreach(p => kb.symbols.addParent(scope, ScopeInclusion(p, isEnclosing = false)))
         case None =>
           errors += LoadError.UnresolvedImport(pathStr, imp.path.span)
 
@@ -662,6 +666,36 @@ object Loader:
     }.toSet
     if matches.size == 1 then Some(matches.head) else None
 
+  /** The scope a symbol names, when its KIND is one that has contents (WI-988).
+    *
+    * `ScopeId.of` is total over a symbol, deliberately — the scope graph is open, so the
+    * MINT has no predicate to check. That leaves "can this name hold contents at all" to
+    * the sites that link a parent, and both of them used to skip it. An `import X.*` or a
+    * `requires X` naming an OPERATION minted a scope that no `define` had ever filled;
+    * `addParent` created the importing side's record and never the parent's, and
+    * `resolveRecursive` then treated the missing parent as eligible and answered
+    * `NotFound`. The user's import contributed nothing, and said nothing.
+    *
+    * Reports rather than degrading, and names the kind it got — "did nothing" is not a
+    * diagnosis a reader can act on. */
+  private def parentScopeOf(
+    kb: KnowledgeBase, sym: TermSymbol, allowed: Set[SymbolKind],
+    clause: String, span: Span, errors: ArrayBuffer[LoadError]
+  ): Option[ScopeId] =
+    val actual = kb.symbols.get(sym) match
+      case SymbolDef.Resolved(_, _, kind, _) => Some(kind)
+      case SymbolDef.Unresolved(_) => None
+    if actual.exists(allowed.contains) then Some(ScopeId.of(sym))
+    else
+      val got = actual
+        .map(k => s"names a ${k.toString.toLowerCase}")
+        .getOrElse("names nothing declared")
+      val wanted = allowed.toIndexedSeq.map(_.toString.toLowerCase).sorted.mkString(" or a ")
+      errors += LoadError.Other(
+        s"$clause $got, '${kb.qualifiedNameOf(sym)}' — only a $wanted has contents to " +
+        "bring into scope, so this would resolve nothing", span)
+      None
+
   private def processRequires(
     kb: KnowledgeBase,
     req: RequiresDecl,
@@ -669,8 +703,23 @@ object Loader:
     scope: ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
-    req.typeExpr match
-      case TypeExpr.Simple(name) =>
+    // WI-988 — the PARAMETERIZED form is still dropped here, and that is a deferral with
+    // a reason rather than the silence this WI removed elsewhere. Measured: `requires
+    // Ord[T]` is 24 of the stdlib's 26 requirements, and routing it through the
+    // resolution below makes 8 tests fail — every one of them a base name that does not
+    // resolve, e.g. `anthill/prelude/eq.anthill:35` `requires PartialEq[T]` inside `sort
+    // anthill.prelude.Eq`. The cause is NOT here: a top-level DOTTED declaration is
+    // defined in `_global` keyed by its whole dotted spelling, so a sibling's SHORT name
+    // is unreachable from it — which is also why the only two requirements the stdlib
+    // writes bare are written fully qualified. Fixing that is WI-992, and it belongs to
+    // the scope graph, not to this clause; a local "also try my own namespace prefix"
+    // rung here would be exactly the second ladder WI-986 removed.
+    (req.typeExpr match
+      case TypeExpr.Simple(name) => Some(name)
+      case TypeExpr.Parameterized(_, _) => None   // WI-992
+      case _ => None
+    ) match
+      case Some(name) =>
         val nameStr = joinSegments(fileSym, name.segments)
         // WI-986: through [[lookupWritten]], the ONE rung order — so the scope this
         // reports is the scope it SEARCHED, and `LoadError`'s "resolved against" is
@@ -681,14 +730,20 @@ object Loader:
         // it did not resolve in a scope where it did.
         lookupWritten(kb, nameStr, scope) match
           case ResolveResult.Found(sym) =>
-            kb.symbols.addParent(scope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
+            // A requirement names an algebraic SPEC (§5.2), and a spec is a sort.
+            parentScopeOf(kb, sym, Set(SymbolKind.Sort),
+              s"`requires $nameStr`", name.span, errors)
+              .foreach(p => kb.symbols.addParent(scope, ScopeInclusion(p, isEnclosing = false)))
           case ResolveResult.Ambiguous(candidates) =>
             errors += LoadError.AmbiguousSymbol(
               nameStr, candidates.map(kb.qualifiedNameOf).toIndexedSeq,
               name.span, kb.scopeDisplayName(scope))
           case ResolveResult.NotFound =>
             errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scope))
-      case _ => // Parameterized requires — TODO (WI-988: a silent drop)
+      case None => // parameterized: deferred to WI-992, see above. Every other
+                   // `TypeExpr` — an arrow, a tuple, a bare `?T` — is a type and not a
+                   // spec; those are refused by the parser's `requires` production, so
+                   // there is no reachable arm here to raise from.
 
   // ── Phase 2: Load items into KB ─────────────────────────────
 

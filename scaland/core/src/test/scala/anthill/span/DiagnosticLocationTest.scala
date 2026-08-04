@@ -413,6 +413,61 @@ class DiagnosticLocationTest extends munit.FunSuite:
       "demo.Widget.spin")
   }
 
+  /** WI-988 — LINKING A PARENT THAT CANNOT HOLD CONTENTS IS A NO-OP, AND IT USED TO BE
+    * A SILENT ONE. `ScopeId.of` is total over a symbol, so "can this name hold contents"
+    * is the linking site's question; neither site asked it. `addParent` then created the
+    * importing side's record and never the parent's, `resolveRecursive` treated the
+    * missing parent as eligible, and the answer was `NotFound` — a name the user wrote
+    * doing nothing at all.
+    *
+    * CONTROL, measured by deleting the `parentScopeOf` gate at both sites: each of these
+    * two loads clean, 0 errors, and the probe below shows the import contributing
+    * nothing — which is the pre-WI-988 behaviour exactly. Both fail with the gate gone;
+    * no other test moves. */
+  test("WI-988: a wildcard import of a non-scope is refused, naming what it got") {
+    val src =
+      """namespace demo
+        |  sort Host
+        |    operation op1() -> Host
+        |  end
+        |  sort User
+        |    import demo.Host.op1.*
+        |  end
+        |end""".stripMargin
+    val (kb, errs) = loadInto(src)
+    val e = errs.collectFirst { case o @ LoadError.Other(m, _) if m.contains("wildcard") => o }
+      .getOrElse(fail(s"expected a wildcard-import refusal, got: ${errs.map(_.render).mkString("; ")}"))
+    assert(e.message.contains("operation"), s"must name the kind it got: ${e.message}")
+    assert(e.message.contains("demo.Host.op1"), s"must name the symbol: ${e.message}")
+
+    // The reason it is worth a diagnostic rather than a shrug: the import contributed
+    // NOTHING, which is what the user cannot see. This probe is the pre-fix behaviour
+    // and stays true after — the gate refuses the link, it does not repair it.
+    assertEquals(
+      kb.symbols.resolveInScope("op1", ScopeId.of(kb.resolveSymbol("demo.User"))),
+      ResolveResult.NotFound)
+  }
+
+  test("WI-988: a `requires` naming a non-sort is refused, naming what it got") {
+    // A requirement names an algebraic spec, and a spec is a sort (§5.2). `op1` resolves
+    // here — it is a sibling in the enclosing namespace — so this is the kind gate
+    // firing, not the WI-986 resolution failing.
+    val src =
+      """namespace demo
+        |  sort Thing
+        |  end
+        |  operation op1() -> Thing
+        |  sort User
+        |    requires op1
+        |  end
+        |end""".stripMargin
+    val errs = loadErrors(src)
+    val e = errs.collectFirst { case o @ LoadError.Other(m, _) if m.contains("requires") => o }
+      .getOrElse(fail(s"expected a `requires` refusal, got: ${errs.map(_.render).mkString("; ")}"))
+    assert(e.message.contains("operation"), s"must name the kind it got: ${e.message}")
+    assert(e.message.contains("sort"), s"must say what it wanted: ${e.message}")
+  }
+
   test("WI-986: the scope an unresolved-name diagnostic names really does not resolve it") {
     // The general property, asserted against the tree rather than against a fixed string:
     // whatever scope the message names, ASK that scope. This is the assertion the old
