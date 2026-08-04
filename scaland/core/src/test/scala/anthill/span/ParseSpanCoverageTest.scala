@@ -18,10 +18,13 @@ import java.nio.file.Paths
   *      without a span DOES NOT COMPILE. No test has to exercise the new production
   *      for the mistake to surface.
   *   2. This test. A type cannot express "the span you passed is not `Span.empty`", so
-  *      mechanism 1 is blind to a span that WAS supplied and came out empty — which
-  *      the type lowerings can do, deriving theirs in `typeExprToRef`, which falls
-  *      back to `Span.empty` when a whole subtree has no located leaf. That
-  *      degradation is silent and its symptom is the original bug.
+  *      mechanism 1 is blind to a span that WAS supplied and came out empty — which any
+  *      DERIVED span can do, a builder that takes its position from its children having
+  *      no answer when no child has one. That degradation is silent and its symptom is
+  *      the original bug. WI-989 removed the two ways it could happen (`typeExprToRef`
+  *      and `allocNamedArg` take the enclosing construct's span; `?var` and literal
+  *      leaves are located), but neither repair is a type either — the next builder to
+  *      derive a span is free to derive it from nothing, and this is what would say so.
   *
   * There is NO exemption list. An earlier draft tried to enumerate the "synthesized
   * markers that never resolve"; it was wrong (`unify`, `ho_apply`, `ListLiteral`,
@@ -41,6 +44,16 @@ import java.nio.file.Paths
   *     which is the point of having both: the stdlib never writes an arrow or tuple type
   *     in a term position, so it exercises none of `typeExprToRef`'s lowerings. An audit
   *     over the corpus we happen to ship would have missed this entirely.
+  *   * WI-989: revert `firstLocated(spans, fallback)` to `getOrElse(Span.empty)` and the
+  *     grammar-tour case below fails on its childless types, alongside one case in
+  *     `DerivedSpanTest`. The stdlib case stays green again, for the same reason.
+  *
+  * AND THE MECHANISM THIS ONE DOES NOT HAVE, which WI-989 is the evidence for: a span
+  * that is WRONG rather than empty. Revert `varTermAt` and the literal productions to the
+  * spanless `alloc` and every derivation that bottoms out on a `?var` or a literal is at its
+  * enclosing construct instead of at the leaf — measured, THIS ENTIRE SUITE STAYS GREEN,
+  * because the fallback keeps every offender list empty. `DerivedSpanTest` is the third
+  * mechanism, and it asks where a derived span LANDS.
   */
 class ParseSpanCoverageTest extends munit.FunSuite:
 
@@ -114,6 +127,40 @@ class ParseSpanCoverageTest extends munit.FunSuite:
           |  rule c(?k) :- p(?k: (S) -> S @ {+E, -E})
           |  rule d(?g) :- p(?g: (S) -> S @ {E :- q(?g)})
           |  rule e(?x) :- p(Foo[F = (S) -> S])
+          |end""".stripMargin,
+      // WI-989. THE ENTRY ABOVE IS ITS OWN CONTROL, and that is why it passed for two
+      // WIs while the invariant it pins was false: every type leaf it writes is `S`, a
+      // `simple_type`, which locates at the name it was written as, so a derivation that
+      // reads its children back always found one. The leaves BELOW are the ones a
+      // derivation can bottom out on — a `?var` (a `Term.Var`, so nameless, so
+      // `nameBearingWithoutSpan` never looked at it and nothing made it carry a span
+      // either) and, in rule `d`, no leaf at all.
+      //
+      // MEASURED per rule on the WI-990 HEAD, before either half of the fix — 11, 3, 2, 1
+      // locationless name-bearing terms, against 0 for each `S`-leaf rule above. Only
+      // `c` and `d` (childless: no field, no effect) fire the fallback half's control on
+      // their own; `a` and `b` are the leaf half's, which this suite cannot see.
+      "type leaves that are ?vars, lowered" ->
+        """namespace d
+          |  rule a(?f) :- p(?f: (?a, ?b) -> ?c)
+          |  rule b(?x) :- p(Foo[F = (?a) -> ?b])
+          |  rule c(?u) :- p(?u: ())
+          |  rule d(?x) :- p(Foo[E = {}])
+          |end""".stripMargin,
+      // WI-989: the same read-a-spanless-child defect in a builder that has nothing to do
+      // with types (`allocNamedArg`), so it earns its own entry. Measured in `DerivedSpanTest`.
+      "derived spans outside the type lowerings" ->
+        """namespace d
+          |  proof a
+          |    by tac(k: 3, j: ?x, i: foo)
+          |  end
+          |end""".stripMargin,
+      // WI-989: every leaf of a WI-763 keep spec is a STRING, so the whole lowering
+      // derived from spanless leaves — including two USER-WRITTEN names the loader
+      // resolves. Measured in `DerivedSpanTest`, which is where the shape is argued.
+      "WI-763 keep spec, whose leaves are all literals" ->
+        """namespace d
+          |  rule a(?x) :- p(Project[T = S, Keep = (person: "name", years: "age")])
           |end""".stripMargin,
       "bounded quantification" ->
         """namespace d

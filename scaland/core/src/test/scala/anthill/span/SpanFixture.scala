@@ -100,11 +100,33 @@ private[span] object SpanFixture:
     * from a file nothing has walked yet — was an instruction the compiler could not
     * enforce, and `ParseSpanGrowthTest` now walks BEFORE it asserts, on purpose. */
   def fnSpans(pf: ParsedFile, functor: String): IndexedSeq[Span] =
-    (0 until pf.terms.size).map(TermId.fromRaw).flatMap { id =>
-      pf.terms.get(id) match
-        case f: Term.Fn if pf.symbols.name(f.functor) == functor => Some(pf.terms.spanOf(id))
-        case _                                                   => None
+    termSpans(pf) {
+      case f: Term.Fn => pf.symbols.name(f.functor) == functor
+      case _          => false
     }
+
+  /** [[fnSpans]] for the ONE `Term.Ref` named `name` — the shape a written type NAME
+    * lowers to, and the shape a named-tuple LABEL is built as. WI-989's second reader: a
+    * label's span is derived from its field's type, so `Ref` is where "the derivation
+    * reached the leaf" is visible at all (`DerivedSpanTest`).
+    *
+    * SINGULAR AND LOUD, unlike [[fnSpans]], because every caller wants exactly one and
+    * would otherwise write `.head` — which on fixture drift throws a bare
+    * `NoSuchElementException` pointing nowhere. Same reason [[pick]] exists for `Item`s. */
+  def refSpan(pf: ParsedFile, name: String)(using munit.Location): Span =
+    val found = termSpans(pf) {
+      case Term.Ref(s) => pf.symbols.name(s) == name
+      case _           => false
+    }
+    if found.length == 1 then found.head
+    else munit.Assertions.fail(s"fixture drift: expected exactly one Ref:$name, got ${found.length}")
+
+  private def termSpans(pf: ParsedFile)(p: Term => Boolean): IndexedSeq[Span] =
+    (0 until pf.terms.size).view
+      .map(TermId.fromRaw)
+      .filter(id => p(pf.terms.get(id)))
+      .map(pf.terms.spanOf)
+      .toIndexedSeq
 
   /** THE INVARIANT every test in this package is about: the source text the span
     * brackets IS the construct, with nothing of the trivia around it.

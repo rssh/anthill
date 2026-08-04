@@ -60,13 +60,14 @@ class ParseSpanGrowthTest extends munit.FunSuite:
     * is kept as IR and never lowered — a declaration corpus reaches no lowering at all
     * (`ParseSpanCoverageTest` records the same trap).
     *
-    * The leaves are `?vars` DELIBERATELY: `variableType` allocates its term through the
-    * spanless `alloc`, so a var's span can only be had by ASKING the store, which is
-    * what the counter sees. A `Simple` leaf carries its span on the `Name` and is read
-    * without touching the store, so a chain of those would count zero either way and the
-    * control would not fire. The chain still ends in the located `S` so every lowered
-    * node comes out with a real position — the `arrows` assertion checks that, and it is
-    * what keeps this from measuring the speed of producing garbage.
+    * The leaves are `?vars` DELIBERATELY: a `TypeExpr.Variable` carries a `TermId`, so
+    * its span can only be had by ASKING the store, which is what the counter sees. A
+    * `Simple` leaf carries its span on the `Name` and is read without touching the store,
+    * so a chain of those would count zero either way and the control would not fire.
+    * (WI-989 gave those `?var` terms a real span; it did not change WHERE the span is
+    * kept, so the counter reads the same `7 * depth` — verified, not assumed.) The chain
+    * still ends in the located `S`, and the `arrows` assertion checks every lowered node
+    * came out positioned, which keeps this from measuring the speed of producing garbage.
     *
     * TWO params per level, so each level also exercises the multi-parameter
     * `namedTupleTypeTerm` path, which had the same defect with a further constant on top

@@ -205,13 +205,20 @@ private class AnthillParserImpl(
     val anonSym = symbols.intern("?")
     val id = nextVar; nextVar += 1; VarId(id, anonSym)
 
-  /** A fresh anonymous type variable — the `?` an unspecified `sort X = ?`
-    * carries. Mirrors rustland's shared `fresh_anon_type_var` (convert.rs),
-    * reused by `variableType`'s anonymous branch and the WI-451 type-param
-    * desugar so the `?`-var IR cannot drift (the loader's `sort T = ?`
-    * type-param arm matches on exactly this `TypeExpr.Variable` shape). */
-  private def freshAnonTypeVar(): TypeExpr.Variable =
-    TypeExpr.Variable(terms.alloc(Term.Var(Var.Global(freshAnonymousVar()))), IndexedSeq.empty)
+  /** THE ONE construction of the `?var`-in-TYPE-position IR, because the loader's
+    * `sort T = ?` type-param arm matches on exactly this `TypeExpr.Variable` shape and
+    * must not drift. `variableType` parses it; the WI-451 type-param desugar synthesizes
+    * it through [[freshAnonTypeVar]]. */
+  private def typeVarAt(name: String, span: Span): TypeExpr.Variable =
+    TypeExpr.Variable(varTermAt(name, span), IndexedSeq.empty)
+
+  /** A fresh anonymous type variable — the `?` an unspecified `sort X = ?` carries.
+    * Mirrors rustland's shared `fresh_anon_type_var` (convert.rs).
+    *
+    * WI-989: `span` is the DECLARATION it stands for — this desugar writes no `?` at
+    * all, so pointing at the parameter it belongs to is the truthful answer. Only the
+    * shape is matched on, never the span, so locating it changes nothing for the loader. */
+  private def freshAnonTypeVar(span: Span): TypeExpr.Variable = typeVarAt("", span)
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -501,28 +508,52 @@ private class AnthillParserImpl(
 
   // ── Literals ─────────────────────────────────────────────────
 
+  // ALL FOUR ARE `located` (WI-989). A `Term.Const` is `Term.Nameless`, so `alloc`
+  // accepts it and `nameBearingWithoutSpan` never looks at it — which is why these went
+  // spanless for years. But `typeExprToRef`/`allocNamedArg` read their children's spans
+  // back, so a spanless leaf drags a NAME-BEARING parent to `Span.empty`. Measured in
+  // `DerivedSpanTest`.
+  //
+  // FOUR COPIES OF ONE LINE, not a shared `literalAt(token)(lit)` combinator: the
+  // shadowed `P` (WI-950) takes its name from the enclosing def, so one wrapped helper
+  // would relabel every literal's refusal scope and fastparse failure name. Same trade
+  // `spanOfToken`/`located` make for being two functions.
+
   private def stringLiteral[$: P]: P[TermId] =
-    P(Tokens.stringToken).map(s => terms.alloc(Term.Const(Literal.StringLit(s))))
+    P(located(Tokens.stringToken)).map { case (s, span) =>
+      terms.allocAt(Term.Const(Literal.StringLit(s)), span) }
 
   private def floatLiteral[$: P]: P[TermId] =
-    P(Tokens.floatToken).map(s => terms.alloc(Term.Const(Literal.FloatLit(OrderedDouble(s.toDouble)))))
+    P(located(Tokens.floatToken)).map { case (s, span) =>
+      terms.allocAt(Term.Const(Literal.FloatLit(OrderedDouble(s.toDouble))), span) }
 
   private def integerLiteral[$: P]: P[TermId] =
-    P(Tokens.intToken).map(s => terms.alloc(Term.Const(Literal.IntLit(s.toLong))))
+    P(located(Tokens.intToken)).map { case (s, span) =>
+      terms.allocAt(Term.Const(Literal.IntLit(s.toLong)), span) }
 
   private def boolLiteral[$: P]: P[TermId] =
-    P(Tokens.boolToken).map(s => terms.alloc(Term.Const(Literal.BoolLit(s == "true"))))
+    P(located(Tokens.boolToken)).map { case (s, span) =>
+      terms.allocAt(Term.Const(Literal.BoolLit(s == "true")), span) }
 
   private def literal[$: P]: P[TermId] =
     P(stringLiteral | floatLiteral | integerLiteral | boolLiteral)
 
   // ── Variables ────────────────────────────────────────────────
 
+  /** The `?var` a `variableToken` names, allocated AT the token — located for the same
+    * reason the literals above are (WI-989), and this is the leaf a written type actually
+    * bottoms out in: `(?a, ?b) -> ?c` has no other.
+    *
+    * An EMPTY name is the anonymous `?`: a fresh [[VarId]] per occurrence, never shared
+    * (`?` is distinct at each site), which is why this cannot be a `getOrCreateVar` on
+    * the empty string. */
+  private def varTermAt(name: String, span: Span): TermId =
+    val v = if name.isEmpty then freshAnonymousVar() else getOrCreateVar(intern(name))
+    terms.allocAt(Term.Var(Var.Global(v)), span)
+
   private def variable[$: P]: P[TermId] =
     P(located(Tokens.variableToken) ~ fnArgsList.?).map { case (varName, span, args) =>
-      val varTid =
-        if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
-        else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
+      val varTid = varTermAt(varName, span)
       args match
         case None => varTid
         case Some(rawArgs) =>
@@ -584,9 +615,10 @@ private class AnthillParserImpl(
     P("{" ~/ effectType.rep(sep = ",") ~ "}").map(es => TypeExpr.EffectRow(es.toIndexedSeq))
 
   private def variableType[$: P]: P[TypeExpr] =
-    P(Tokens.variableToken).map { varName =>
-      if varName.isEmpty then freshAnonTypeVar()
-      else TypeExpr.Variable(terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName))))), IndexedSeq.empty)
+    P(located(Tokens.variableToken)).map { case (varName, span) =>
+      // No anonymous branch: `varTermAt` already mints a fresh `VarId` for an empty
+      // name, so `?` and `?x` differ only in what it does with the name.
+      typeVarAt(varName, span)
     }
 
   private def arrowType[$: P]: P[TypeExpr] =
@@ -661,7 +693,7 @@ private class AnthillParserImpl(
   /** WI-961: located at the `+` / `-`, the token that chose the wrapper — the
     * `present`/`absent` functor is written nowhere, exactly as `add` is not. */
   private def wrapEffectOp(op: String, span: Span)(e: TypeExpr): TypeExpr =
-    val inner = typeExprToRef(e)
+    val inner = typeExprToRef(e, span)
     TypeExpr.Variable(
       terms.allocAt(Term.Fn(intern(op), IArray(inner), IArray.empty), span), IndexedSeq.empty)
 
@@ -1016,8 +1048,8 @@ private class AnthillParserImpl(
     * (`convert_bounded_quantification`) over silently iterating an unbound body.
     * Shares the binder's `VarId` with its body uses via `getOrCreateVar`. */
   private def boundedBinderVar[$: P]: P[TermId] =
-    P(Tokens.variableToken.filter(_.nonEmpty))
-      .map(n => terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(n))))))
+    P(located(Tokens.variableToken.filter(_.nonEmpty)))
+      .map { case (n, span) => varTermAt(n, span) }
 
   // ── Name suffix ADT ──────────────────────────────────────────
 
@@ -1053,15 +1085,8 @@ private class AnthillParserImpl(
 
         case NameSuffix.InstArgs(bindings) =>
           val funcStr = n.segments.map(symbols.name).mkString(".")
-          val posArgs = ArrayBuffer.empty[TermId]
-          val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
-          bindings.foreach { sb =>
-            val bt = typeExprToRef(sb.bound)
-            sb.param match
-              case Some(p) => namedArgs += ((p.last, bt))
-              case None => posArgs += bt
-          }
-          terms.allocAt(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)), n.span)
+          val (posArgs, namedArgs) = lowerBindings(bindings, n.span)
+          terms.allocAt(Term.Fn(intern(funcStr), posArgs, namedArgs), n.span)
 
         case NameSuffix.InstThenFn(bindings, args) =>
           val funcStr = n.segments.map(symbols.name).mkString(".")
@@ -1076,16 +1101,8 @@ private class AnthillParserImpl(
           // Positional bindings stay positional, `p = T` stays named,
           // matching the InstArgs lowering above.
           if bindings.nonEmpty then
-            val bPos = ArrayBuffer.empty[TermId]
-            val bNamed = ArrayBuffer.empty[(TermSymbol, TermId)]
-            bindings.foreach { sb =>
-              val bt = typeExprToRef(sb.bound)
-              sb.param match
-                case Some(p) => bNamed += ((p.last, bt))
-                case None => bPos += bt
-            }
-            val aux = terms.allocAt(
-              Term.Fn(intern("type_args"), IArray.from(bPos), IArray.from(bNamed)), n.span)
+            val (bPos, bNamed) = lowerBindings(bindings, n.span)
+            val aux = terms.allocAt(Term.Fn(intern("type_args"), bPos, bNamed), n.span)
             namedArgs += ((intern("type_args"), aux))
           terms.allocAt(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)), n.span)
 
@@ -1151,27 +1168,48 @@ private class AnthillParserImpl(
     * (no colon) fails this alt cleanly and falls through to `exprBody`. */
   private def typedVarArg[$: P]: P[TermId] =
     P(located(Tokens.variableToken) ~ ":" ~/ typeExpr).map { case (varName, span, ty) =>
-      val varTid =
-        if varName.isEmpty then terms.alloc(Term.Var(Var.Global(freshAnonymousVar())))
-        else terms.alloc(Term.Var(Var.Global(getOrCreateVar(intern(varName)))))
+      val varTid = varTermAt(varName, span)
       terms.allocAt(Term.Fn(intern("typed_var"), IArray(varTid),
-        IArray((intern("type"), typeExprToRef(ty)))), span)
+        IArray((intern("type"), typeExprToRef(ty, span)))), span)
     }
 
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
     P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
-  private def firstLocated(spans: Iterable[Span]): Span =
-    spans.find(_.hasLocation).getOrElse(Span.empty)
-
-  /** The two-span case: `own` if it has a position, else the enclosing `fallback`.
+  /** Lower a `[A = T, U, …]` binding list to its (positional, named) argument arrays.
     *
-    * Not sugar for `firstLocated(Seq(own, fallback))` — it is the SAME function.
-    * [[Span.empty]] is the only unlocated span (`Span.render`'s "TWO cases, not four"),
-    * so an unlocated `fallback` IS the `getOrElse(Span.empty)` the general form ends in.
-    * Worth its own name because it is the shape every "a built node inherits its
-    * parent's position" site wants, and it allocates neither the `Seq` nor the `Option`
-    * — `typeListTerm` runs it once per list element. */
+    * ONE fold for the three sites that had built it by hand — the two instantiation arms
+    * of `fnOrInstOrIdent` and `typeExprToRef`'s `Parameterized`. `at` is the NAME being
+    * parameterized, which is the enclosing construct each binding's own type belongs to:
+    * `Foo[E = {}]`'s childless row lands at `Foo` (WI-989). Sharing the fold is what
+    * makes that one decision instead of three that agree today. */
+  private def lowerBindings(bindings: IndexedSeq[SortBinding], at: Span)
+      : (IArray[TermId], IArray[(TermSymbol, TermId)]) =
+    val pos = ArrayBuffer.empty[TermId]
+    val named = ArrayBuffer.empty[(TermSymbol, TermId)]
+    bindings.foreach { sb =>
+      val bt = typeExprToRef(sb.bound, at)
+      sb.param match
+        case Some(p) => named += ((p.last, bt))
+        case None => pos += bt
+    }
+    (IArray.from(pos), IArray.from(named))
+
+  /** The first located span among `spans`, else the enclosing construct's `fallback`.
+    *
+    * WI-989: THE FALLBACK IS A PARAMETER, not [[Span.empty]]. It used to end in
+    * `getOrElse(Span.empty)`, which made the whole derivation a silent degrade — an
+    * all-`?var` type (`(?a, ?b) -> ?c`) offered no located child, and every node of its
+    * lowering came out locationless, `nameBearingWithoutSpan` and all. `?var` leaves are
+    * located now, so `spans` is normally non-empty AND located; this parameter is what
+    * makes that STRUCTURAL rather than a property of which leaves happen to be located,
+    * and it is the only answer for the arms with NO children at all — `Foo[E = {}]` and
+    * the unit type `()`, both of which measured as offenders. */
+  private def firstLocated(spans: Iterable[Span], fallback: Span): Span =
+    spans.find(_.hasLocation).getOrElse(fallback)
+
+  /** The one-span case — an allocation-free `firstLocated(Seq(own), fallback)`: no `Seq`,
+    * no `Option`, and `typeListTerm` runs it once per list element. */
   private def firstLocated(own: Span, fallback: Span): Span =
     if own.hasLocation then own else fallback
 
@@ -1200,39 +1238,37 @@ private class AnthillParserImpl(
     * returned span is a SECOND copy of a node's position, free to disagree with the one
     * in the store; the store is where a node's position lives, so reading it back is the
     * form in which the two CANNOT disagree. It is also what the neighbouring builders
-    * already do (`typeListTerm`, `effectExpression*`), for the same reason. */
-  private def typeExprToRef(te: TypeExpr): TermId = te match
+    * already do (`typeListTerm`, `effectExpression*`), for the same reason.
+    *
+    * `enclosing` is the fallback a node with no located child takes (WI-989) — see
+    * [[firstLocated]], which holds the argument for why it is a parameter. Every caller
+    * has it in hand already: the typed binder's name, the instantiated functor's name,
+    * the `let`'s keyword. */
+  private def typeExprToRef(te: TypeExpr, enclosing: Span): TermId = te match
     // WI-957: a WRITTEN type name locates at the name it was written as; the
     // structural lowerings below (arrow, tuple, effect row) mint `TypeExtractor`
-    // functors that appear nowhere in the source and stay locationless.
+    // functors that appear nowhere in the source and take a derived span.
     case TypeExpr.Simple(n) => terms.allocAt(Term.Ref(n.last), n.span)
     case TypeExpr.Parameterized(n, bindings) =>
-      val posArgs = ArrayBuffer.empty[TermId]
-      val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
-      bindings.foreach { sb =>
-        val bt = typeExprToRef(sb.bound)
-        sb.param match
-          case Some(p) => namedArgs += ((p.last, bt))
-          case None => posArgs += bt
-      }
-      terms.allocAt(Term.Fn(n.last, IArray.from(posArgs), IArray.from(namedArgs)), n.span)
+      val (posArgs, namedArgs) = lowerBindings(bindings, n.span)
+      terms.allocAt(Term.Fn(n.last, posArgs, namedArgs), n.span)
     case TypeExpr.Variable(tid, _) => tid
     // WI-288 / WI-361: arrow and tuple types lower to the structural
     // `TypeExtractor` entities (`anthill.prelude.TypeExtractor.Arrow` /
     // `NamedTuple`), mirroring rustland's `type_expr_to_term`. Previously both
     // fell through to a `Ref("_")` sentinel, silently discarding the structure.
     case TypeExpr.Arrow(params, ret, effects) =>
-      val paramTerms = params.map(typeExprToRef)
-      val resultTerm = typeExprToRef(ret)
+      val paramTerms = params.map(typeExprToRef(_, enclosing))
+      val resultTerm = typeExprToRef(ret, enclosing)
       // WI-340: the arrow's `effects` field is the canonical
       // `effects_rows(EffectExpression)` row — a right-folded `merge` chain —
       // NOT a prelude cons-list (the pre-WI-340 shape). This matches rustland's
       // post-WI-307/WI-331 loader (`KnowledgeBase::build_canonical_effects_rows`)
       // and the stdlib schema. See `buildCanonicalEffectsRows`.
-      val effectTerms = effects.map(typeExprToRef)
+      val effectTerms = effects.map(typeExprToRef(_, enclosing))
       // Source order — params, result, effects — so the arrow reports at the
       // leftmost position it was written at.
-      val span = firstLocated(((paramTerms :+ resultTerm) ++ effectTerms).map(terms.spanOf))
+      val span = firstLocated(((paramTerms :+ resultTerm) ++ effectTerms).map(terms.spanOf), enclosing)
       // Single param stays bare; a multi-param list collapses to a
       // positional named-tuple `_0, _1, …`, exactly as rustland does.
       val paramTerm =
@@ -1244,8 +1280,9 @@ private class AnthillParserImpl(
         IArray((intern("effects"), effectsRows), (intern("param"), paramTerm),
                (intern("result"), resultTerm))), span)
     case TypeExpr.TupleType(fields) =>
-      val fieldTerms = fields.map((n, ty) => (n, typeExprToRef(ty)))
-      namedTupleTypeTerm(fieldTerms, firstLocated(fieldTerms.map((_, t) => terms.spanOf(t))))
+      val fieldTerms = fields.map((n, ty) => (n, typeExprToRef(ty, enclosing)))
+      namedTupleTypeTerm(fieldTerms,
+        firstLocated(fieldTerms.map((_, t) => terms.spanOf(t)), enclosing))
     // WI-302: a denoted value-in-type rides as the raw literal term (rustland
     // retired the `make_denoted` wrapper in WI-366 — the value rides as a Node).
     case TypeExpr.Denoted(value) => value
@@ -1254,17 +1291,17 @@ private class AnthillParserImpl(
     // machinery, so the row rides as a plain functor term — this also subsumes
     // the retired `setType`'s `SetLiteral` lowering for binding-value `{}`).
     case TypeExpr.EffectRow(effects) =>
-      val effectTerms = effects.map(typeExprToRef)
-      terms.allocAt(Term.Fn(intern("effects_rows"),
-        IArray.from(effectTerms), IArray.empty), firstLocated(effectTerms.map(terms.spanOf)))
+      val effectTerms = effects.map(typeExprToRef(_, enclosing))
+      terms.allocAt(Term.Fn(intern("effects_rows"), IArray.from(effectTerms), IArray.empty),
+        firstLocated(effectTerms.map(terms.spanOf), enclosing))
     // WI-478: a guarded effect `E :- guard` lowers to an opaque
     // `guarded(label, guardList)` term — rustland builds an
     // `EffectExpression.guarded(label, guard: List[reflect.Term])`; scaland has
     // no effect machinery, so the element rides as a plain functor with the
     // guard goals as a prelude cons-list (carrier-faithful round-trip only).
     case TypeExpr.EffectGuarded(label, guard) =>
-      val labelTerm = typeExprToRef(label)
-      val span = terms.spanOf(labelTerm)
+      val labelTerm = typeExprToRef(label, enclosing)
+      val span = firstLocated(terms.spanOf(labelTerm), enclosing)
       terms.allocAt(Term.Fn(intern("guarded"),
         IArray(labelTerm, typeListTerm(guard, span)), IArray.empty), span)
 
@@ -1568,8 +1605,10 @@ private class AnthillParserImpl(
       (keyword("by") ~/ proofStrategy).? ~ (keyword("conclude") ~/ term).? ~
       keyword("end") ~ exprBody).map {
       case (kwSpan, target, _using, _strategy, conclude, body) =>
-        val targetStr = terms.alloc(Term.Const(
-          Literal.StringLit(target.segments.map(symbols.name).mkString("."))))
+        // WI-989: the string is BUILT — it quotes the dotted name — so it rides at the
+        // name it quotes, like `allocNamedArg`'s key.
+        val targetStr = terms.allocAt(Term.Const(
+          Literal.StringLit(target.segments.map(symbols.name).mkString("."))), target.span)
         val named = ArrayBuffer((intern("target"), targetStr))
         conclude.foreach(c => named += ((intern("conclude"), c)))
         terms.allocAt(Term.Fn(intern("proof_stmt"), IArray(body), IArray.from(named)), kwSpan)
@@ -1609,7 +1648,7 @@ private class AnthillParserImpl(
       keyword("in").? ~ exprBody).map {
       case (span, pat, tyAnno, value, body) =>
         val named = tyAnno match
-          case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty)))
+          case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty, span)))
           case None     => IArray.empty[(TermSymbol, TermId)]
         // WI-618: binder-form provenance.
         terms.allocMintedAt(Term.Fn(intern("let_expr"), IArray(pat, value, body), named), span)
@@ -1647,7 +1686,7 @@ private class AnthillParserImpl(
     P(located(ident) ~ ":" ~ typeExpr).map { case (nameSym, span, ty) =>
       val idTerm = terms.allocAt(Term.Ident(nameSym), span)
       terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm),
-        IArray((intern("type"), typeExprToRef(ty)))), span)
+        IArray((intern("type"), typeExprToRef(ty, span)))), span)
     }
 
   /** WI-517: a parenthesized single typed binder `(x: T)` (e.g.
@@ -1987,7 +2026,10 @@ private class AnthillParserImpl(
           members.map(desugarSortTypeParam), None, p.span,
           SortDeclKind.Sort, isTypeParam = true))
       case None =>
-        Item.AbstractSortItem(AbstractSort(None, nm, freshAnonTypeVar(), IndexedSeq.empty, None, p.span))
+        // WI-989: `nameSpan`, not `span` — the `?` this synthesizes stands for the
+        // parameter's own unspecified bound, so it points at the parameter's name.
+        Item.AbstractSortItem(
+          AbstractSort(None, nm, freshAnonTypeVar(p.nameSpan), IndexedSeq.empty, None, p.span))
 
   // Same shape as `operationDecl`: the dispatcher consumed the `rule` keyword, so it
   // is the one that can span from it (WI-947).
@@ -2375,12 +2417,20 @@ private class AnthillParserImpl(
   /** Allocate a synthetic `named_arg(name: "k", value: v)` term so a
     * `key: value` shape survives parse-IR round-tripping alongside the
     * raw values (mirrors rustland's `convert_named_arg`). */
-  private def allocNamedArg(k: TermSymbol, v: TermId): TermId =
-    val keyStr = terms.alloc(Term.Const(Literal.StringLit(symbols.name(k))))
+  private def allocNamedArg(k: TermSymbol, v: TermId, enclosing: Span): TermId =
+    // The key string is BUILT here, not written — the source writes a bare identifier,
+    // and this quotes it. It rides at the pair's position for the same reason the
+    // marker does.
+    val span = firstLocated(terms.spanOf(v), enclosing)
+    val keyStr = terms.allocAt(Term.Const(Literal.StringLit(symbols.name(k))), span)
     // WI-961: the marker stands for the `key: value` pair, so it rides at the value's
     // position — the key is a bare `TermSymbol` here and carries none of its own.
+    // WI-989: `enclosing` is UNEXERCISED — every value `fnArg` can yield now carries a
+    // span. It stays so that remains a property of this line rather than of that survey;
+    // `DerivedSpanTest`'s header measures it, and the same holds at `wrapEffectOp` and
+    // the `EffectGuarded` arm.
     terms.allocAt(Term.Fn(namedArgFunctorSym, IArray.empty,
-      IArray((namedArgNameSym, keyStr), (namedArgValueSym, v))), terms.spanOf(v))
+      IArray((namedArgNameSym, keyStr), (namedArgValueSym, v))), span)
 
   /** `proof TARGET ... end`. Two body shapes (proposal 031):
     *
@@ -2427,7 +2477,7 @@ private class AnthillParserImpl(
       case ((n, args), span) =>
         val rawArgs: IndexedSeq[TermId] = args.getOrElse(Seq.empty).toIndexedSeq.map {
           case Left(tid) => tid
-          case Right((k, v)) => allocNamedArg(k, v)
+          case Right((k, v)) => allocNamedArg(k, v, span)
         }
         ProofStrategy(n, rawArgs, span)
     }

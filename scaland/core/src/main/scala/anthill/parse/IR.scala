@@ -53,6 +53,14 @@ open class SimpleTermStore:
 
   /** Allocate a term with NO NAME to resolve — a `Const`, a `Var`, `Bottom`.
     *
+    * NAMELESS IS NOT THE SAME AS SPANLESS (WI-989). This is the entry point for a node
+    * that stands behind NO SOURCE TEXT, and the parser is down to one such node: the
+    * `Bottom` a valueless meta entry carries, where the absent value is the point. A
+    * written `?var` or literal is nameless and this looks like its entry point, which is
+    * how they went spanless for years — and their spans turned out to be load-bearing,
+    * because [[nameBearingWithoutSpan]]'s derived-span readers read them. Ask whether the
+    * node HAS source text, not whether it has a name.
+    *
     * THE SIGNATURE IS THE ENFORCEMENT (WI-961). `Loader.reallocTerm` resolves the
     * functor / symbol of every `Fn` / `Ref` / `Ident` it walks, so one of those
     * arriving without a span is precisely the WI-947/957 defect: a diagnostic about
@@ -111,16 +119,21 @@ open class SimpleTermStore:
   /** WI-961: the name-bearing terms in this store that carry NO location.
     *
     * The audit `alloc`'s refusal cannot perform. That refusal catches the slip of
-    * calling the spanless entry point; it cannot catch a span that was supplied but
-    * came out EMPTY — which the type lowerings can do, because their span is DERIVED
-    * (`typeExprToRef` takes the first located position among a node's children and
-    * falls back to [[Span.empty]] when a whole subtree has none). Silent there, and the
-    * symptom is the same locationless diagnostic.
+    * calling the spanless entry point; it cannot catch a span that was supplied but came
+    * out EMPTY — which a DERIVED span can do, because a builder that takes its position
+    * from its children has no answer when no child has one.
     *
-    * EMPTY for every parser-built store, pinned over the whole stdlib by
-    * `ParseSpanCoverageTest`. A HAND-BUILT store is expected to be non-empty — the
-    * fixture declared `Span.empty` on purpose — which is why this reports rather than
-    * throws: only the caller knows which kind of store it holds. */
+    * WI-989 closed both ways that could happen — an enclosing-span fallback in the
+    * derivers, and located `?var`/literal leaves for them to read (see
+    * `AnthillParser.firstLocated`). THIS AUDIT STAYS, because neither repair is a TYPE:
+    * a new builder is free to derive a span from nothing again, and it would fail here
+    * rather than at a diagnostic.
+    *
+    * EMPTY for every parser-built store, pinned over the whole stdlib AND over a grammar
+    * tour by `ParseSpanCoverageTest` — the tour is the half that matters, since the
+    * stdlib exercises no type lowering at all. A HAND-BUILT store is expected to be
+    * non-empty — the fixture declared `Span.empty` on purpose — which is why this
+    * reports rather than throws: only the caller knows which kind of store it holds. */
   def nameBearingWithoutSpan: IndexedSeq[TermId] =
     (0 until terms.length).view
       .map(TermId.fromRaw)
