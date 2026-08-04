@@ -2769,7 +2769,7 @@ fn scan_items_pass1(
                 // 059 R1 refuses (`entity X` then `sort X`): variants leak OUT while
                 // the body still cannot see IN, since the enclosing link above stays
                 // gated. A correct fix has to tell declaration-reuse from
-                // bootstrap-reuse, which `is_new` alone cannot. See WI-985.
+                // bootstrap-reuse, which `is_new` alone cannot. See WI-994.
                 if is_new && has_variant {
                     kb.symbols.add_parent(actual_scope.raw(), ScopeInclusion {
                         parent_scope_raw: sort_term.raw(),

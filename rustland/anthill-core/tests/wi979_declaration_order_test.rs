@@ -14,7 +14,7 @@
 //! CATEGORY. It does NOT make the reuse arm wire the sort's scope the way the
 //! fresh arm does — two `is_new`-gated links remain, each pinned by a test here:
 //! the enclosing link (`entity X` then `sort X`, left refused pending 059 R1) and
-//! the variant-exposure link (WI-985, open, with a measured reason for not taking
+//! the variant-exposure link (WI-994, open, with a measured reason for not taking
 //! the obvious fix). Nor does it reach a pass-1 reader that runs BEFORE the
 //! `sort X` item: `is_sort_scope` is consulted during the same pass, so a reader
 //! reached earlier still sees the pre-fix answer.
@@ -110,13 +110,13 @@ fn neither_order_defines_a_phantom_nested_constructor() {
 /// resolving uniquely to `LogicalQuery.guarded` to AMBIGUOUS against
 /// `EffectExpression.guarded`. Nothing in the tree has a wildcard import, so the
 /// suite stayed green through it; the green suite was not evidence. A correct fix
-/// must tell declaration-reuse from bootstrap-reuse, which `is_new` cannot. WI-985.
+/// must tell declaration-reuse from bootstrap-reuse, which `is_new` cannot. WI-994.
 ///
 /// A NON-eponymous sort is what exposes this at all: with `entity Rec` inside
 /// `sort Rec` the bare name resolves as the sort itself, so the exposure link is
 /// never consulted and the eponymous fixtures above cannot see it either way.
 #[test]
-fn variant_exposure_is_still_order_dependent_wi985() {
+fn variant_exposure_is_still_order_dependent_wi994() {
     const V_SORT_FIRST: &str = r#"
 namespace wi979.vsf
   import anthill.prelude.Int64
@@ -148,7 +148,7 @@ end
         matches!(interp.call("wi979.vsf.drive", &[]), Ok(Value::Int(2))),
         "sort-first: bare `Red(…)` must resolve through the variant-exposure link",
     );
-    // ns-first is the OPEN defect. When WI-985 lands this call starts succeeding
+    // ns-first is the OPEN defect. When WI-994 lands this call starts succeeding
     // and `expect_load_errors` fails — which is the point: the fix has to come
     // here and flip it, not land silently.
     common::expect_load_errors(
@@ -167,7 +167,7 @@ end
 ///
 /// THE FIXTURE CARRIES A VARIANT ON PURPOSE. Without one, `has_variant` is false and
 /// this test cannot see the variant-exposure gate at all — it passed unchanged while
-/// an earlier attempt at WI-985 un-gated that link and made bare `Inner` resolve out
+/// an earlier attempt at WI-994 un-gated that link and made bare `Inner` resolve out
 /// of this very shape, half-wiring the scope (variants leaking out while the body
 /// still could not see in). A pinning test blind to the change it pins is not a pin.
 #[test]
