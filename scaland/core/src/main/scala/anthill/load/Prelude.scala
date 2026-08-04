@@ -19,13 +19,27 @@ object Prelude:
     registerBuiltinTags(kb)
     registerGlobalParents(kb)
 
+  /** The stdlib's namespace spine, created before any file is scanned.
+    *
+    * WI-992: these are the scopes a dotted declaration (`sort anthill.prelude.Eq`) now
+    * lands in — `Loader.ensureNamespacePath` reuses them rather than synthesizing its
+    * own — so they must have the SHAPE the loader gives a namespace it creates, and one
+    * half was missing: the ENCLOSING parent. Without it nothing declared inside
+    * `anthill.prelude` could see `_global`, and a miss there is silent (`resolveName`
+    * interns and carries on). It never bit before because these scopes were only ever
+    * searched INTO, through the `_global` parent links `registerGlobalParents` adds —
+    * a file writing `namespace anthill.reflect` minted a SECOND symbol, keyed by the
+    * dotted spelling in `_global`, and put its declarations there instead. */
   private def registerStdlibScopes(kb: KnowledgeBase): Unit =
-    val anthillScope =
-      ScopeId.of(kb.symbols.define("anthill", "anthill", SymbolKind.Namespace, kb.globalScope))
-    kb.symbols.define("prelude", "anthill.prelude", SymbolKind.Namespace, anthillScope)
-    val reflectScope =
-      ScopeId.of(kb.symbols.define("reflect", "anthill.reflect", SymbolKind.Namespace, anthillScope))
-    kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind.Namespace, reflectScope)
+    def defineNamespace(short: String, qualName: String, enclosing: ScopeId): ScopeId =
+      val scope = ScopeId.of(kb.symbols.define(short, qualName, SymbolKind.Namespace, enclosing))
+      kb.symbols.addParent(scope, ScopeInclusion(enclosing, isEnclosing = true))
+      scope
+
+    val anthillScope = defineNamespace("anthill", "anthill", kb.globalScope)
+    defineNamespace("prelude", "anthill.prelude", anthillScope)
+    val reflectScope = defineNamespace("reflect", "anthill.reflect", anthillScope)
+    defineNamespace("typing", "anthill.reflect.typing", reflectScope)
 
   private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
     val preludeScope = kb.scopeByQualifiedName("anthill.prelude")

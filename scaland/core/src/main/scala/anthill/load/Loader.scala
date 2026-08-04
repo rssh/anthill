@@ -156,8 +156,17 @@ object Loader:
     def fileSym: SymbolTable
 
     /** The child scope to recurse into, or `None` to abandon the subtree (only ever
-      * because the scope could not be found, which `lookupScope` has already reported). */
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId]
+      * because the scope could not be found, which `lookupScope` has already reported).
+      *
+      * `writtenName` is the name AS WRITTEN, which is the short name only when it has no
+      * dot; `prefix` is the enclosing scope's qualified path, the same one `atItem` gets.
+      * Only [[DefinePass]] reads either — a WRITTEN name may be DOTTED, and then the segments
+      * before the last are namespaces the declaration goes INTO ([[ensureNamespacePath]],
+      * WI-992), each qualified against this prefix in turn. The three lookup passes need
+      * only `qualName`, which is where that walk ends up either way. */
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: ScopeId
+    ): Option[ScopeId]
 
     /** Every item that does not open a scope, with the scope and prefix enclosing it. */
     def atItem(item: Item, scope: ScopeId, prefix: String): Unit
@@ -175,9 +184,9 @@ object Loader:
         case _ => None
       opened match
         case Some(decl) =>
-          val shortName = joinSegments(pass.fileSym, decl.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          pass.enterScope(decl, shortName, qualName, scope).foreach { child =>
+          val writtenName = joinSegments(pass.fileSym, decl.name.segments)
+          val qualName = makeQualified(prefix, writtenName)
+          pass.enterScope(decl, writtenName, qualName, prefix, scope).foreach { child =>
             walkScopes(decl.items, child, qualName, pass)
           }
         case None => pass.atItem(item, scope, prefix)
@@ -220,21 +229,27 @@ object Loader:
     * so its `enterScope` defines rather than resolving, and can never miss. */
   private final class DefinePass(kb: KnowledgeBase, val fileSym: SymbolTable) extends ScopePass:
 
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: ScopeId
+    ): Option[ScopeId] =
+      // WI-992: a DOTTED name declares into the namespace it names, not into `enclosing`
+      // under its whole spelling. `enclosing` stays the scope the TYPE-PARAM marker is
+      // added to below — that is a property of the syntactic nesting, not of the name.
+      val (short, target) = ensureNamespacePath(kb, writtenName, enclosing, prefix)
       decl match
         case ScopeDecl.Ns(_) =>
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, enclosing)
+          val sym = kb.symbols.define(short, qualName, SymbolKind.Namespace, target)
           val nsScope = ScopeId.of(sym)
           // Enclosing scope. (Model C / proposal 044: names visible by default;
           // the `export` statement was removed in WI-291.)
-          kb.symbols.addParent(nsScope, ScopeInclusion(enclosing, isEnclosing = true))
+          kb.symbols.addParent(nsScope, ScopeInclusion(target, isEnclosing = true))
           Some(nsScope)
 
         case ScopeDecl.SortBody(sort) =>
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, enclosing)
+          val sym = kb.symbols.define(short, qualName, SymbolKind.Sort, target)
           val sortScope = ScopeId.of(sym)
           kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
-          kb.symbols.addParent(sortScope, ScopeInclusion(enclosing, isEnclosing = true))
+          kb.symbols.addParent(sortScope, ScopeInclusion(target, isEnclosing = true))
           // Variant exposure (proposal 044 job 2): a sort exposes ONLY its
           // entity-variant names to the enclosing scope, linked as a
           // non-enclosing parent — so bare `Open` resolves to `WorkStatus.Open`
@@ -245,7 +260,7 @@ object Loader:
           }
           for v <- variants do kb.symbols.addExposed(sortScope, v)
           if variants.nonEmpty then
-            kb.symbols.addParent(enclosing, ScopeInclusion(sortScope, isEnclosing = false))
+            kb.symbols.addParent(target, ScopeInclusion(sortScope, isEnclosing = false))
           // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
           // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type
           // parameter of the enclosing sort — register it like the `sort T = ?`
@@ -253,7 +268,7 @@ object Loader:
           // nested sort. (scaland emits no `SortAlias` backing-var fact — it has
           // no typer; the type-param marker is what the resolver and codegen read.)
           if sort.isTypeParam && isSortScope(kb, enclosing) then
-            kb.symbols.addTypeParam(enclosing, shortName)
+            kb.symbols.addTypeParam(enclosing, short)
           Some(sortScope)
 
     def atItem(item: Item, scope: ScopeId, prefix: String): Unit =
@@ -266,9 +281,8 @@ object Loader:
           defineAbstractSort(kb, fileSym, prefix, scope, sort.name.segments, isParam)
 
         case Item.EntityItem(entity) =>
-          val shortName = joinSegments(fileSym, entity.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, scope)
+          val (shortName, qualName, target) = declSite(kb, fileSym, entity.name.segments, prefix, scope)
+          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, target)
           val entityTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(entityTerm, SortKind.Constructor)
           // WI-985: the entity→parent edge is a SORT-BODY edge and ONLY that. This used
@@ -289,10 +303,12 @@ object Loader:
           kb.registerEntityFields(sym, fields)
 
         case Item.OperationItem(op) =>
-          val shortName = joinSegments(fileSym, op.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scope)
+          val (shortName, qualName, target) = declSite(kb, fileSym, op.name.segments, prefix, scope)
+          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, target)
 
+        // A BLOCK entry takes no `declSite` — its name is a simple one by construction
+        // (`operation { eq(a, b) -> Bool, … }` names members of the sort the block is
+        // written in), and rustland's pass 1 leaves this arm flat for the same reason.
         case Item.OperationBlockItem(block) =>
           for op <- block.entries do
             val shortName = joinSegments(fileSym, op.name.segments)
@@ -305,9 +321,8 @@ object Loader:
           // type-params to scan. scaland records only the symbol; the declared
           // type + optional body are not loaded (no typer/eval to consume them),
           // mirroring how operation bodies/effects are left inert here.
-          val shortName = joinSegments(fileSym, c.name.segments)
-          val qualName = makeQualified(prefix, shortName)
-          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, scope)
+          val (shortName, qualName, target) = declSite(kb, fileSym, c.name.segments, prefix, scope)
+          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, target)
 
         case Item.RuleItem(rule) =>
           rule.label.foreach { label =>
@@ -366,25 +381,93 @@ object Loader:
     segments: IndexedSeq[TermSymbol],
     isParam: Boolean
   ): Unit =
-    val shortName = joinSegments(fileSym, segments)
-    val qualName = makeQualified(prefix, shortName)
-    val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scope)
+    val (shortName, qualName, target) = declSite(kb, fileSym, segments, prefix, scope)
+    val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, target)
     kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Abstract)
+    // The marker goes on the SYNTACTICALLY enclosing sort — being a type parameter is a
+    // property of where the declaration is written, not of where its name puts it.
     if isParam && isSortScope(kb, scope) then
       kb.symbols.addTypeParam(scope, shortName)
+
+  /** Where a WRITTEN declaration name puts its symbol: the SHORT name it is defined
+    * under, the QUALIFIED name it is registered by, and the SCOPE it lands in. The three
+    * differ only for a DOTTED name, and then by [[ensureNamespacePath]] — which this may
+    * therefore create namespaces as a side effect of asking. Shared by the pass-1 arms
+    * whose rustland counterparts call `ensure_intermediate_namespaces` (sort, namespace,
+    * abstract sort, entity, operation, const). */
+  private def declSite(
+    kb: KnowledgeBase,
+    fileSym: SymbolTable,
+    segments: IndexedSeq[TermSymbol],
+    prefix: String,
+    scope: ScopeId
+  ): (String, String, ScopeId) =
+    val written = joinSegments(fileSym, segments)
+    val (short, target) = ensureNamespacePath(kb, written, scope, prefix)
+    (short, makeQualified(prefix, written), target)
+
+  /** The scope a DOTTED declaration name declares INTO, and the short name it declares
+    * there — `sort anthill.prelude.Eq` at a file's top level declares `Eq` in the
+    * namespace `anthill.prelude`. An UNDOTTED name is returned unchanged, with the scope
+    * it was already going into.
+    *
+    * WI-992 — before this, the whole dotted spelling WAS the short name and it was
+    * defined in `_global`; nothing ever linked it to a scope called `anthill.prelude`. So
+    * from inside `sort anthill.prelude.Eq` the name `PartialEq` resolved to nothing, even
+    * though `sort anthill.prelude.PartialEq` sits eleven lines above it in the same file
+    * — and since a `requires` here LINKS A PARENT SCOPE and is the whole of what a
+    * requirement does in scaland, the requires-chain inheritance the stdlib documents
+    * (WI-614: `Eq` inherits `eq`/`neq` from `PartialEq`) had never worked for any stdlib
+    * spec. Two workarounds grew on the import side around the same hole; one of them
+    * (`resolveSelectiveImport`'s fully-qualified rung) is gone with this.
+    *
+    * The intermediate namespaces are SYNTHESIZED when the source never wrote them, and
+    * reused when it did — including by the next dotted declaration naming the same one,
+    * which is what puts a file's sorts in ONE `anthill.prelude` rather than one each.
+    * `Prelude` writes `anthill` / `anthill.prelude` / `anthill.reflect` before any file is
+    * scanned, so the stdlib's dotted declarations land in exactly those.
+    *
+    * Settled against rustland, where `scan_items_pass1` has called
+    * `ensure_intermediate_namespaces` all along: this is a scaland gap, not a language
+    * question, and the answer is the one already in the other implementation. */
+  private def ensureNamespacePath(
+    kb: KnowledgeBase, written: String, outerScope: ScopeId, prefix: String
+  ): (String, ScopeId) =
+    val segments = written.split('.')
+    if segments.length <= 1 then (written, outerScope)
+    else
+      val innermost = segments.init.zipWithIndex.foldLeft(outerScope) { case (scope, (short, i)) =>
+        // Reuse whatever this scope already has under that short name — the same merge
+        // `define` performs for a re-opened namespace. Reusing by SHORT NAME IN SCOPE and
+        // not by qualified name is what makes `anthill` the one Prelude defined rather
+        // than a second symbol sharing its spelling.
+        kb.symbols.scope(scope).flatMap(_.locals.get(short)) match
+          case Some(sym) => ScopeId.of(sym)
+          case None =>
+            val qualPath = makeQualified(prefix, segments.take(i + 1).mkString("."))
+            val ns = ScopeId.of(kb.symbols.define(short, qualPath, SymbolKind.Namespace, scope))
+            kb.symbols.addParent(ns, ScopeInclusion(scope, isEnclosing = true))
+            ns
+      }
+      (segments.last, innermost)
 
   /** Define a symbol of `kind` unless its qualified name is already
     * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
     * entity arm). Shared by operations and consts. A kernel operation such as
-    * `anthill.reflect.not` is FIRST
-    * registered as a builtin by `Prelude.registerBuiltinTags` (into the
-    * prelude's `anthill.reflect` scope); the stdlib then ALSO declares
-    * `operation not(...)` in reflect.anthill. Because scaland scans a re-opened
-    * namespace into a fresh scope (it does not yet reuse the prelude's scope),
-    * a plain `define` here would mint a SECOND `anthill.reflect.not` symbol in a
-    * different scope — and a bare rule-body use (`:- not(...)` in typing.anthill)
-    * would then collect both via `resolveInScope` and report `AmbiguousSymbol`
-    * (WI-212). Reusing the already-registered symbol keeps exactly one. */
+    * `anthill.reflect.not` is FIRST registered as a builtin by
+    * `Prelude.registerBuiltinTags` (into the prelude's `anthill.reflect` scope); the
+    * stdlib then ALSO declares `operation not(...)` in reflect.anthill, and minting a
+    * SECOND `anthill.reflect.not` makes a bare rule-body use (`:- not(...)` in
+    * typing.anthill) collect both through `resolveInScope` and report `AmbiguousSymbol`
+    * (WI-212).
+    *
+    * WI-992 closed that case UPSTREAM: a re-opened namespace no longer scans into a fresh
+    * scope, because `ensureNamespacePath` reuses the one `Prelude` already defined — so
+    * `define`'s own short-name-in-scope merge now returns the builtin's symbol and mints
+    * nothing. MEASURED: removing this gate moves no test. It stays because what it guards
+    * is `define`'s UNCONDITIONAL `byQualifiedName` write — which happens whenever the
+    * short name is new in the target scope, by any route to a colliding qualified name,
+    * not only the one WI-212 hit. */
   private def defineSymbolOnce(
     kb: KnowledgeBase,
     shortName: String,
@@ -409,7 +492,9 @@ object Loader:
 
     // The import list attached to a `namespace` and to a `sort … end` body go through
     // the SAME `processImports`; only the scope differs, and the walk already carries it.
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: ScopeId
+    ): Option[ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors).map { scope =>
         processImports(kb, decl.imports, fileSym, scope, errors, pending)
         scope
@@ -480,7 +565,9 @@ object Loader:
     errors: ArrayBuffer[LoadError]
   ) extends ScopePass:
 
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: ScopeId
+    ): Option[ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors)
 
     def atItem(item: Item, scope: ScopeId, prefix: String): Unit =
@@ -573,10 +660,10 @@ object Loader:
     * 3, so such names are deferred and retried after it.
     *
     * `path` is the import's written spelling, and it is a RESOLUTION INPUT only (WI-962):
-    * [[resolveSelectiveImport]]'s fully-qualified and nested-scope rungs build lookup keys
-    * out of it. It used to double as the retry's diagnostic scope name, which is a second
-    * source for a field [[LoadError]] says is derived from a scope; the retry now reads
-    * that off `target` instead. */
+    * [[resolveSelectiveImport]]'s nested-scope rung builds lookup keys out of it. It used
+    * to double as the retry's diagnostic scope name, which is a second source for a field
+    * [[LoadError]] says is derived from a scope; the retry now reads that off `target`
+    * instead. */
   private case class PendingImport(
     scope: ScopeId, short: String, target: TermSymbol, span: Span, path: String)
 
@@ -590,16 +677,21 @@ object Loader:
   ): Option[TermSymbol] =
     kb.symbols.resolveInScope(name, ScopeId.of(target)) match
       case ResolveResult.Found(s) => Some(s)
-      // Fall back to direct fully-qualified lookup — covers top-level multi-segment
-      // sort decls like `enum anthill.prelude.Pair` whose symbol is registered at
-      // global with the dotted name and never gets attached to the
-      // `anthill.prelude` namespace's exports.
-      case _ => kb.symbols.byQualifiedName.get(s"$pathStr.$name")
-        // Last resort: an entity exported by the namespace but defined one scope
-        // deeper, e.g. `execution_platform` declared inside `sort ExecutionPlatform`
-        // of namespace `anthill.realization.platform`. Mirrors rustland's
-        // `find_in_nested_scope`.
-        .orElse(findInNestedScope(kb, pathStr, name))
+      // Last resort: an entity exported by the namespace but defined one scope
+      // deeper, e.g. `execution_platform` declared inside `sort ExecutionPlatform`
+      // of namespace `anthill.realization.platform`. Mirrors rustland's
+      // `find_in_nested_scope`.
+      //
+      // WI-992 retired the rung that used to sit ABOVE this one — a direct
+      // `byQualifiedName("$pathStr.$name")` lookup, there because a top-level dotted
+      // declaration such as `enum anthill.prelude.Pair` was registered at global under
+      // its whole spelling and never attached to the `anthill.prelude` namespace. It is
+      // attached now ([[ensureNamespacePath]]), so `resolveInScope` above answers those
+      // names, and the rung was measured dead: removing it moves no test. This one is
+      // NOT dead — removing it fails `WI-295: a deferred import resolves through the
+      // nested-scope rung too`, because the name there is a scope deeper than the path
+      // names, which is a different gap and the one rustland also still fills.
+      case _ => findInNestedScope(kb, pathStr, name)
 
   private def processImports(
     kb: KnowledgeBase,
@@ -703,20 +795,17 @@ object Loader:
     scope: ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
-    // WI-988 — the PARAMETERIZED form is still dropped here, and that is a deferral with
-    // a reason rather than the silence this WI removed elsewhere. Measured: `requires
-    // Ord[T]` is 24 of the stdlib's 26 requirements, and routing it through the
-    // resolution below makes 8 tests fail — every one of them a base name that does not
-    // resolve, e.g. `anthill/prelude/eq.anthill:35` `requires PartialEq[T]` inside `sort
-    // anthill.prelude.Eq`. The cause is NOT here: a top-level DOTTED declaration is
-    // defined in `_global` keyed by its whole dotted spelling, so a sibling's SHORT name
-    // is unreachable from it — which is also why the only two requirements the stdlib
-    // writes bare are written fully qualified. Fixing that is WI-992, and it belongs to
-    // the scope graph, not to this clause; a local "also try my own namespace prefix"
-    // rung here would be exactly the second ladder WI-986 removed.
+    // A requirement is resolved by its BASE NAME, whether or not bindings follow it:
+    // `requires Ord[T]` requires `Ord`, and the bindings say which instance — which
+    // scaland, having no typer, records nowhere (rustland builds an instantiation term
+    // from them). WI-988 had to drop the parameterized form — 24 of the stdlib's 26
+    // requirements — because routing it through this resolution failed 8 tests, every one
+    // a base name that did not resolve from inside a top-level DOTTED declaration. That
+    // was WI-992's gap in the scope graph, fixed at [[ensureNamespacePath]], and the arm
+    // now goes through the same one rung order as the bare form.
     (req.typeExpr match
       case TypeExpr.Simple(name) => Some(name)
-      case TypeExpr.Parameterized(_, _) => None   // WI-992
+      case TypeExpr.Parameterized(name, _) => Some(name)
       case _ => None
     ) match
       case Some(name) =>
@@ -740,10 +829,9 @@ object Loader:
               name.span, kb.scopeDisplayName(scope))
           case ResolveResult.NotFound =>
             errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scope))
-      case None => // parameterized: deferred to WI-992, see above. Every other
-                   // `TypeExpr` — an arrow, a tuple, a bare `?T` — is a type and not a
-                   // spec; those are refused by the parser's `requires` production, so
-                   // there is no reachable arm here to raise from.
+      case None => // Every other `TypeExpr` — an arrow, a tuple, a bare `?T` — is a type
+                   // and not a spec; those are refused by the parser's `requires`
+                   // production, so there is no reachable arm here to raise from.
 
   // ── Phase 2: Load items into KB ─────────────────────────────
 
@@ -757,7 +845,9 @@ object Loader:
     errors: ArrayBuffer[LoadError]
   ) extends ScopePass:
 
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: ScopeId
+    ): Option[ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors)
 
     def atItem(item: Item, scope: ScopeId, prefix: String): Unit =

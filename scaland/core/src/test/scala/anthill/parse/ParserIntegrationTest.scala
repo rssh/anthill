@@ -258,11 +258,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(numericSorts.length, 1)
     assertEquals(numericSorts.head.name.segments.map(numericPf.symbols.name).mkString("."), "anthill.prelude.Numeric")
 
-    // Step 3: Load stdlib into KB
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    val loadErrors = Loader.loadAll(kb, IndexedSeq(numericPf))
-    assert(loadErrors.isEmpty, s"Load errors for numeric: $loadErrors")
+    // Step 3: Load the stdlib chain into a KB.
+    //
+    // WI-992: the chain, not `numeric.anthill` alone. Its `requires PartialOrd[T]` names
+    // a spec declared in `ordered.anthill`, and that requirement is now RESOLVED — so
+    // loading this file by itself reports the missing spec, correctly, where the
+    // parameterized `requires` used to be dropped unread. This is the one test of the
+    // eight WI-988 measured whose fixture (not whose code) was the thing at fault.
+    val kb = kbWithStdlib()
 
     // Verify: sort and operations are registered with qualified names
     assert(kb.hasQualifiedName("anthill.prelude.Numeric"), "Numeric sort should be registered")
@@ -1260,4 +1263,85 @@ class ParserIntegrationTest extends munit.FunSuite:
         |end""".stripMargin)
     assertEquals(kindOf(kb, "p5.S.eq"), Some(SymbolKind.Goal),
       "a written call introduces a Goal; only the infix desugar makes an equation")
+  }
+
+  // ── WI-992: a dotted declaration lives in the namespace it names ──
+
+  /** `sort wi992.Spec` written at a file's top level, and a sibling requiring it by its
+    * SHORT name. Deliberately NOT under `anthill.prelude`: every non-primitive sort
+    * declared there is linked into `_global` by `autoImportPrelude`, which would give
+    * `spin` a second route and make the drive below pass for the wrong reason. */
+  private val dottedSiblingFixture =
+    """sort wi992.Spec
+      |  sort T = ?
+      |  operation spin(x: T) -> T
+      |end
+      |
+      |sort wi992.User
+      |  sort T = ?
+      |  requires Spec[T]
+      |end""".stripMargin
+
+  test("WI-992: a dotted declaration's SIBLING resolves by its short name") {
+    val (kb, errs) = loadFixture(dottedSiblingFixture)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+
+    // The namespace the source never wrote, synthesized because a name asked for it.
+    assertEquals(kindOf(kb, "wi992"), Some(SymbolKind.Namespace))
+    assertEquals(kindOf(kb, "wi992.Spec"), Some(SymbolKind.Sort))
+
+    val userScope = kb.symbols.byQualifiedName.get("wi992.User")
+      .map(ScopeId.of).getOrElse(fail("wi992.User should be registered"))
+    kb.symbols.resolveInScope("Spec", userScope) match
+      case ResolveResult.Found(sym) => assertEquals(functorQn(kb, sym), "wi992.Spec")
+      case other => fail(s"`Spec` should resolve from its sibling `wi992.User`, got $other")
+  }
+
+  /** THE acceptance, driven: a requirement LINKS A PARENT SCOPE — that is the whole of
+    * what `requires` does in scaland, which has no typer — so the requires-chain
+    * inheritance the stdlib documents (WI-614) is exactly "an operation of the required
+    * spec resolves from inside the requiring sort". `spin` is declared nowhere else and
+    * `wi992.Spec` is linked into nothing else, so this is the only route to it.
+    *
+    * CONTROL, measured, one per half of WI-992 (345 pass with both):
+    *   - back out `ensureNamespacePath` → 11 fail, 334 pass. This one and the sibling
+    *     test above report `unresolved name 'Spec' in scope 'wi992.User'`; the other
+    *     eight are the stdlib sites WI-988 measured, which is the whole reason this
+    *     ticket exists.
+    *   - restore `case TypeExpr.Parameterized(_, _) => None` in `processRequires` →
+    *     2 fail, 343 pass: this one with `spin … got NotFound` and the stdlib link test
+    *     below. NO error is reported for either, and the sibling test still passes
+    *     because `Spec` still resolves. That silence is what let the gap survive — a
+    *     load-clean assertion cannot see it, and 24 of the stdlib's 26 requirements are
+    *     the parameterized form. */
+  test("WI-992: a parameterized `requires` links the spec, so its operation is inherited") {
+    val (kb, errs) = loadFixture(dottedSiblingFixture)
+    assert(errs.isEmpty, s"unexpected load errors: $errs")
+
+    val userScope = kb.symbols.byQualifiedName.get("wi992.User")
+      .map(ScopeId.of).getOrElse(fail("wi992.User should be registered"))
+    kb.symbols.resolveInScope("spin", userScope) match
+      case ResolveResult.Found(sym) => assertEquals(functorQn(kb, sym), "wi992.Spec.spin")
+      case other =>
+        fail(s"`spin` should be inherited through `requires Spec[T]`, got $other")
+  }
+
+  /** The measured site the ticket was written from: `anthill/prelude/eq.anthill:35`.
+    * Structural, and deliberately so — `PartialEq` is auto-imported into `_global`
+    * alongside every other prelude spec, so resolving `eq` from inside `Eq` succeeds
+    * through that route whether or not the requirement linked anything. The drive lives
+    * in the `wi992.*` fixture above, which has no second route; this asserts the link
+    * itself, on the real declaration, and fails when the parameterized arm is backed
+    * out. */
+  test("WI-992: stdlib `sort anthill.prelude.Eq` has PartialEq as a parent scope") {
+    val kb = kbWithStdlib()
+    val eqScope = kb.symbols.byQualifiedName.get("anthill.prelude.Eq")
+      .map(ScopeId.of).getOrElse(fail("anthill.prelude.Eq should be registered"))
+    val partialEq = kb.symbols.byQualifiedName.get("anthill.prelude.PartialEq")
+      .map(ScopeId.of).getOrElse(fail("anthill.prelude.PartialEq should be registered"))
+    val parents = kb.symbols.scope(eqScope).map(_.parents.map(_.parent).toSet)
+      .getOrElse(fail("anthill.prelude.Eq should have a scope"))
+    assert(parents.contains(partialEq),
+      s"`requires PartialEq[T]` should link PartialEq; parents = " +
+      parents.map(p => kb.scopeDisplayName(p)).mkString(", "))
   }
