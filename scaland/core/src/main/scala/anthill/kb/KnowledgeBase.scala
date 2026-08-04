@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef}
+import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ScopeId}
 import anthill.term.{Term, TermId, TermStore, Var, VarId, Literal}
 import anthill.subst.Substitution
 import anthill.discrim.SubstTree
@@ -15,7 +15,10 @@ class KnowledgeBase:
 
   private val bySort_ = HashMap.empty[Int, ArrayBuffer[RuleId]]
   private val byFunctor_ = HashMap.empty[Int, ArrayBuffer[RuleId]]
-  private val byDomain_ = HashMap.empty[Int, ArrayBuffer[RuleId]]
+  // WI-983: keyed on the SCOPE, not on a term id. The sibling indices key on a raw
+  // because their key is a term — this one's is not, and the key type is where that
+  // gets said. Rustland's twin is `HashMap<Symbol, Vec<RuleId>>` (`kb/mod.rs`).
+  private val byDomain_ = HashMap.empty[ScopeId, ArrayBuffer[RuleId]]
 
   private val sortEntities_ = HashMap.empty[Int, ArrayBuffer[TermId]]
   private val entityParent_ = HashMap.empty[Int, TermId]
@@ -47,16 +50,42 @@ class KnowledgeBase:
       case SymbolDef.Resolved(_, qualifiedName, _, _) => qualifiedName
       case SymbolDef.Unresolved(name) => name
 
-  /** The functor of a SCOPE term, and THE one place that unwraps one (WI-962): a scope is
-    * a nullary name term, because [[makeNameTermFromSym]] is the sole producer of one.
-    * Both of its callers had open-coded this match. `None` says "not a scope term"; whether
-    * that is a `false` or a refusal is the caller's call, and the two callers differ. */
-  def scopeFunctor(scopeTerm: TermId): Option[TermSymbol] =
-    terms.get(scopeTerm) match
-      case f: Term.Fn if f.posArgs.isEmpty && f.namedArgs.isEmpty => Some(f.functor)
-      case _ => None
+  // ── Scopes ──────────────────────────────────────────────────
 
-  /** The name to call `scopeTerm` in a diagnostic (WI-957) — its QUALIFIED name where the
+  /** The synthetic scope a file's top-level declarations land in. A `def` naming the one
+    * spelling, not a general `scopeNamed(name: String)`: every call site wanted this
+    * scope, and a mint taking an arbitrary string would reopen for `String` the hole
+    * [[ScopeId]] closes for `Int` — `scopeNamed("Wodget")` compiles and denotes a scope
+    * that resolves nothing. */
+  def globalScope: ScopeId =
+    ScopeId.of(symbols.intern("_global"))
+
+  /** The scope a QUALIFIED name names (`anthill.prelude`) — the scope form of
+    * `resolveQualifiedNameTerm`'s old job, whose every caller was `Prelude` reaching for
+    * a scope, so with the scope typed it had none left.
+    *
+    * REFUSES an unregistered name, through [[resolveSymbol]]. Its predecessor interned
+    * the spelling instead, which would have minted a fresh Unresolved symbol and called
+    * it a scope — a scope resolving nothing, with no diagnostic. That arm is unreachable
+    * (`Prelude.register` defines `anthill.prelude` / `anthill.reflect` in its first step,
+    * before any caller here), and an unreachable arm that degrades quietly is the shape
+    * this ticket is removing, not one to inherit. */
+  def scopeByQualifiedName(name: String): ScopeId =
+    ScopeId.of(resolveSymbol(name))
+
+  /** A scope's TERM form — for the four callers that must hand a scope where a TERM is
+    * what fits: the `entity_of` and `provides_clause` facts embed one as an argument, an
+    * entity's parent sort is one, and reflect's `scope` builtin binds one as an answer.
+    * A clause's DOMAIN was spelled here too, at six loader sites, and is one no longer —
+    * it is a [[ScopeId]] (WI-983), which is what leaves the remaining four all genuine.
+    *
+    * THE direction that is a function (WI-976): it goes through [[makeNameTermFromSym]],
+    * the one name-term producer, so scope-as-term stays the nullary shape [[ScopeId]]
+    * presumes; recovering a scope FROM a term is what the type makes unnecessary. */
+  def scopeTerm(scope: ScopeId): TermId =
+    makeNameTermFromSym(scope.symbol)
+
+  /** The name to call `scope` in a diagnostic (WI-957) — its QUALIFIED name where the
     * scope is a declared one, and the interned spelling (`_global`) for the synthetic
     * global scope, which is not a declaration and has no qualified name.
     *
@@ -65,26 +94,27 @@ class KnowledgeBase:
     * raise site, rather than a helper per site — which is how the `requires` site came to
     * name no scope at all.
     *
-    * THROWS on a term [[scopeFunctor]] rejects, rather than degrading to `""` — the same
-    * "the producer cannot emit this" shape `Loader.reallocTerm`'s non-`Global` var arm
-    * refuses. The empty string is the WORSE answer of the two here, because a scopeless
-    * `ambiguous symbol 'x' in scope ''` is byte-for-byte what WI-957 exists to retire: the
-    * regression would reappear wearing the fixed version's face. */
-  def scopeDisplayName(scopeTerm: TermId): String =
-    scopeFunctor(scopeTerm) match
-      case Some(functor) => qualifiedNameOf(functor)
-      case None =>
-        throw new IllegalStateException(
-          s"scopeDisplayName: not a scope term (${terms.get(scopeTerm)}); every scope comes " +
-          "from makeNameTermFromSym, which builds only a nullary Term.Fn")
+    * TOTAL (WI-976) — it used to take a bare `TermId` and throw on one that was no scope.
+    * See [[anthill.intern.ScopeId]] for why that arm has no replacement. */
+  def scopeDisplayName(scope: ScopeId): String =
+    qualifiedNameOf(scope.symbol)
 
   def getTerm(id: TermId): Term = terms.get(id)
 
   // ── Rule assertion / retraction ─────────────────────────────
 
+  /** Assert a rule into `domain` — the SCOPE it was declared in (WI-983).
+    *
+    * The slot used to be a `TermId`, so every caller spelled the scope as its term form
+    * on the spot and the KB stored a term it never looked inside: the domain is an index
+    * key here and an identity in [[assertFact]]'s dedup, nothing more. A scope's term
+    * form is a real thing with real readers ([[scopeTerm]]) — this slot was simply never
+    * one of them, and typing it says so: passing a term where a scope belongs is now a
+    * compile error rather than a convention. Rustland has stored `domain: Symbol`
+    * throughout, so this is the parity direction as well. */
   def assertRule(
     head: TermId, body: IndexedSeq[TermId],
-    sort: TermId, domain: TermId, meta: Option[TermId] = None
+    sort: TermId, domain: ScopeId, meta: Option[TermId] = None
   ): RuleId =
     // WI-637: close the rule's Global head/body vars to DeBruijn (positional,
     // first-occurrence order over head then body), so a stored head var is
@@ -99,7 +129,7 @@ class KnowledgeBase:
     rules += RuleEntry(dbHead, dbBody, sort, domain, meta, arity)
 
     bySort_.getOrElseUpdate(TermId.raw(sort), ArrayBuffer.empty) += ruleId
-    byDomain_.getOrElseUpdate(TermId.raw(domain), ArrayBuffer.empty) += ruleId
+    byDomain_.getOrElseUpdate(domain, ArrayBuffer.empty) += ruleId
 
     terms.get(dbHead) match
       case fn: Term.Fn =>
@@ -110,7 +140,7 @@ class KnowledgeBase:
     ruleId
 
   def assertFact(
-    term: TermId, sort: TermId, domain: TermId, meta: Option[TermId] = None
+    term: TermId, sort: TermId, domain: ScopeId, meta: Option[TermId] = None
   ): RuleId =
     bySort_.get(TermId.raw(sort)) match
       case Some(ids) =>
@@ -118,7 +148,7 @@ class KnowledgeBase:
           val entry = rules(rid.index)
           if !entry.retracted &&
              TermId.raw(entry.head) == TermId.raw(term) &&
-             TermId.raw(entry.domain) == TermId.raw(domain) &&
+             entry.domain == domain &&
              entry.body.isEmpty then
             return rid
       case None =>
@@ -129,7 +159,7 @@ class KnowledgeBase:
     if entry.retracted then return
     entry.retracted = true
     bySort_.get(TermId.raw(entry.sort)).foreach(_.filterInPlace(_ != id))
-    byDomain_.get(TermId.raw(entry.domain)).foreach(_.filterInPlace(_ != id))
+    byDomain_.get(entry.domain).foreach(_.filterInPlace(_ != id))
     terms.get(entry.head) match
       case fn: Term.Fn =>
         byFunctor_.get(TermSymbol.raw(fn.functor)).foreach(_.filterInPlace(_ != id))
@@ -179,8 +209,10 @@ class KnowledgeBase:
       .map(_.filter(rid => !rules(rid.index).retracted))
       .getOrElse(ArrayBuffer.empty)
 
-  def byDomain(domain: TermId): ArrayBuffer[RuleId] =
-    byDomain_.get(TermId.raw(domain))
+  /** Every live clause declared in `domain` — the scope-keyed peer of [[bySort]] and
+    * [[byFunctor]]. */
+  def byDomain(domain: ScopeId): ArrayBuffer[RuleId] =
+    byDomain_.get(domain)
       .map(_.filter(rid => !rules(rid.index).retracted))
       .getOrElse(ArrayBuffer.empty)
 
@@ -189,12 +221,12 @@ class KnowledgeBase:
   def ruleHead(id: RuleId): TermId = rules(id.index).head
   def ruleBody(id: RuleId): IndexedSeq[TermId] = rules(id.index).body
   def ruleSort(id: RuleId): TermId = rules(id.index).sort
-  def ruleDomain(id: RuleId): TermId = rules(id.index).domain
+  def ruleDomain(id: RuleId): ScopeId = rules(id.index).domain
   def ruleMeta(id: RuleId): Option[TermId] = rules(id.index).meta
 
   def factTerm(id: RuleId): TermId = ruleHead(id)
   def factSort(id: RuleId): TermId = ruleSort(id)
-  def factDomain(id: RuleId): TermId = ruleDomain(id)
+  def factDomain(id: RuleId): ScopeId = ruleDomain(id)
 
   // ── Counting ─────────────────────────────────────────────────
 
@@ -413,20 +445,15 @@ class KnowledgeBase:
 
   // ── Helpers ─────────────────────────────────────────────────
 
-  /** THE producer of a name term, and so of every SCOPE term (WI-962) — the other two
-    * differ only in how they get the symbol, and both go through here. That is what makes
-    * [[scopeFunctor]]'s "a scope is a nullary `Term.Fn`" structural: it was an enumeration
-    * of producers in prose, and the prose was already missing `resolveQualifiedNameTerm`
-    * (whose results `Prelude` passes as `preludeScope` / `reflectScope`) on the day it was
-    * written. One producer is one thing to keep true. */
+  /** THE producer of a name term, and so of every SCOPE term (WI-962) — the spellings
+    * above ([[makeNameTerm]], [[scopeTerm]]) differ only in how they get the symbol, and
+    * all go through here. One producer is one thing to keep true, which is what lets
+    * [[ScopeId]] presume the shape instead of re-deriving it. */
   def makeNameTermFromSym(sym: TermSymbol): TermId =
     terms.alloc(Term.Fn(sym, IArray.empty, IArray.empty))
 
   def makeNameTerm(name: String): TermId =
     makeNameTermFromSym(symbols.intern(name))
-
-  def resolveQualifiedNameTerm(name: String): TermId =
-    makeNameTermFromSym(symbols.byQualifiedName.get(name).getOrElse(symbols.intern(name)))
 
   def resolveSymbol(name: String): TermSymbol =
     tryResolveSymbol(name).getOrElse(

@@ -1,5 +1,6 @@
 package anthill.kb
 
+import anthill.intern.ScopeId
 import anthill.term.TermId
 
 // ── Rule handle ─────────────────────────────────────────────────
@@ -23,7 +24,8 @@ private[kb] class RuleEntry(
   val head: TermId,
   val body: IndexedSeq[TermId],
   val sort: TermId,
-  val domain: TermId,
+  // The SCOPE the clause was declared in (WI-983) — see `KnowledgeBase.assertRule`.
+  val domain: ScopeId,
   val meta: Option[TermId],
   // Number of distinct DeBruijn vars closed over head+body (WI-637). 0 for a
   // truly ground fact — those take the resolver's raw-bind fast path; arity>0

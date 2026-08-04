@@ -2,7 +2,7 @@ package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
 import anthill.term.{Term, TermId, Var, VarId, Literal}
-import anthill.intern.TermSymbol
+import anthill.intern.{ScopeId, TermSymbol}
 import anthill.parse.*
 import anthill.span.Span
 import anthill.resolve.{SearchStream, ResolveConfig}
@@ -387,10 +387,9 @@ class LoaderTest extends munit.FunSuite:
     val errors = Loader.loadAll(kb, IndexedSeq(parsed))
     assert(errors.isEmpty, s"Load errors: $errors")
 
-    val globalRaw = kb.makeNameTerm("_global").raw
-    val cpsSym = kb.symbols.scope(globalRaw).flatMap(_.locals.get("CpsMonad"))
+    val cpsSym = kb.symbols.scope(kb.globalScope).flatMap(_.locals.get("CpsMonad"))
       .getOrElse(fail("CpsMonad not defined in global scope"))
-    val cpsScope = kb.symbols.scope(kb.makeNameTermFromSym(cpsSym).raw)
+    val cpsScope = kb.symbols.scope(ScopeId.of(cpsSym))
       .getOrElse(fail("no CpsMonad scope"))
     assert(cpsScope.typeParams.contains("F"), s"F should be a type param, got ${cpsScope.typeParams}")
     assert(cpsScope.typeParams.contains("A"), s"A should be a type param, got ${cpsScope.typeParams}")

@@ -28,13 +28,22 @@ enum SymbolKind:
 
 enum SymbolDef:
   case Unresolved(name: String)
-  case Resolved(shortName: String, qualifiedName: String, kind: SymbolKind, scopeRaw: Int)
+  case Resolved(shortName: String, qualifiedName: String, kind: SymbolKind, scope: ScopeId)
 
 // ── Scope ───────────────────────────────────────────────────────
 
+/** A parent link in the scope graph (WI-976: `parent` is a [[ScopeId]], not the raw
+  * `Int` a caller had to promise was one).
+  *
+  * The record used to carry a third field, `instantiationTermRaw: Int` — a raw term id,
+  * written by every producer and read by NONE, here and in rustland alike (`kb/load.rs`
+  * says so at its own writers). WI-976 dropped it rather than retype it: parity was the
+  * only argument for keeping it, and this same change already moved `parent` from a
+  * TermId raw to a symbol, so the two records had stopped agreeing regardless. What was
+  * left was an untyped term id inside the record whose untypedness this ticket exists to
+  * remove. The rustland twin is WI-984. */
 case class ScopeInclusion(
-  parentScopeRaw: Int,
-  instantiationTermRaw: Int,
+  parent: ScopeId,
   isEnclosing: Boolean
 )
 

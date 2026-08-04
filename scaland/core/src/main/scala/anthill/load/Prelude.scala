@@ -1,8 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind, BuiltinTag}
-import anthill.intern.{SymbolKind, ScopeInclusion, TermSymbol}
-import anthill.term.{Term, TermId}
+import anthill.intern.{SymbolKind, ScopeId, ScopeInclusion}
 
 /** Register prelude sorts and builtins into the KB. */
 object Prelude:
@@ -21,76 +20,65 @@ object Prelude:
     registerGlobalParents(kb)
 
   private def registerStdlibScopes(kb: KnowledgeBase): Unit =
-    val globalScope = kb.makeNameTerm("_global")
-
-    val anthillSym = kb.symbols.define("anthill", "anthill", SymbolKind.Namespace, globalScope.raw)
-    val anthillScope = kb.makeNameTermFromSym(anthillSym)
-
-    val preludeSym = kb.symbols.define("prelude", "anthill.prelude", SymbolKind.Namespace, anthillScope.raw)
-    kb.makeNameTermFromSym(preludeSym)
-
-    val reflectSym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind.Namespace, anthillScope.raw)
-    kb.makeNameTermFromSym(reflectSym)
-
-    val typingSym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind.Namespace,
-      kb.resolveQualifiedNameTerm("anthill.reflect").raw)
+    val anthillScope =
+      ScopeId.of(kb.symbols.define("anthill", "anthill", SymbolKind.Namespace, kb.globalScope))
+    kb.symbols.define("prelude", "anthill.prelude", SymbolKind.Namespace, anthillScope)
+    val reflectScope =
+      ScopeId.of(kb.symbols.define("reflect", "anthill.reflect", SymbolKind.Namespace, anthillScope))
+    kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind.Namespace, reflectScope)
 
   private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
-    val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
+    val preludeScope = kb.scopeByQualifiedName("anthill.prelude")
     for name <- IndexedSeq("Int64", "BigInt", "Float", "String", "Bool") do
       val qualName = s"anthill.prelude.$name"
-      val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, preludeScope.raw)
-      val sortTerm = kb.makeNameTermFromSym(sym)
-      kb.registerSort(sortTerm, SortKind.Defined)
+      val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, preludeScope)
+      kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
 
   private def registerKernelMetaSorts(kb: KnowledgeBase): Unit =
-    val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
+    val reflectScope = kb.scopeByQualifiedName("anthill.reflect")
     for name <- kernelMetaSorts do
       val qualName = s"anthill.reflect.$name"
-      val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, reflectScope.raw)
-      val sortTerm = kb.makeNameTermFromSym(sym)
-      kb.registerSort(sortTerm, SortKind.Defined)
+      val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, reflectScope)
+      kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
 
   /** Register Expr, Pattern, TypedExpr sorts and their entities. */
   private def registerExprSorts(kb: KnowledgeBase): Unit =
-    val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
+    val reflectScope = kb.scopeByQualifiedName("anthill.reflect")
 
     // Helper to define a sort with enclosing scope. The sort is also linked
     // as a non-enclosing parent of its parent scope so its entity variants
     // (added via defineEntity → addExposed) resolve bare from the enclosing
     // scope — the variant-exposure mechanism (proposal 044 job 2).
-    def defineSort(shortName: String, qualName: String, parentScope: TermId): TermId =
-      val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, parentScope.raw)
-      val sortTerm = kb.makeNameTermFromSym(sym)
-      kb.registerSort(sortTerm, SortKind.Defined)
-      kb.symbols.addParent(sortTerm.raw,
-        ScopeInclusion(parentScope.raw, parentScope.raw, isEnclosing = true))
-      kb.symbols.addParent(parentScope.raw,
-        ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
-      sortTerm
+    def defineSort(shortName: String, qualName: String, parentScope: ScopeId): ScopeId =
+      val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, parentScope)
+      val sortScope = ScopeId.of(sym)
+      kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
+      kb.symbols.addParent(sortScope, ScopeInclusion(parentScope, isEnclosing = true))
+      kb.symbols.addParent(parentScope, ScopeInclusion(sortScope, isEnclosing = false))
+      sortScope
 
     // Helper to define an entity (variant) in a sort scope — exposed to the
     // enclosing scope via the sort's variant-exposure link.
-    def defineEntity(shortName: String, qualName: String, scopeTerm: TermId): Unit =
-      kb.symbols.define(shortName, qualName, SymbolKind.Entity, scopeTerm.raw)
-      kb.symbols.addExposed(scopeTerm.raw, shortName)
+    def defineEntity(shortName: String, qualName: String, scope: ScopeId): Unit =
+      kb.symbols.define(shortName, qualName, SymbolKind.Entity, scope)
+      kb.symbols.addExposed(scope, shortName)
 
     // Helper to define a standalone entity directly in the reflect scope.
     // Visible by default (reflect is a parent of _global with empty `exposed`).
     def defineReflectEntity(shortName: String): Unit =
-      kb.symbols.define(shortName, s"anthill.reflect.$shortName", SymbolKind.Entity, reflectScope.raw)
+      kb.symbols.define(shortName, s"anthill.reflect.$shortName", SymbolKind.Entity, reflectScope)
 
     // anthill.reflect.Expr sort + entities
-    val exprTerm = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
+    val exprScope = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
     for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda_expr", "apply",
       "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do
-      defineEntity(name, s"anthill.reflect.Expr.$name", exprTerm)
+      defineEntity(name, s"anthill.reflect.Expr.$name", exprScope)
 
     // anthill.reflect.Pattern sort + entities
-    val patternTerm = defineSort("Pattern", "anthill.reflect.Pattern", reflectScope)
+    val patternScope = defineSort("Pattern", "anthill.reflect.Pattern", reflectScope)
     for name <- IndexedSeq("var_pattern", "tuple_pattern", "named_tuple_pattern",
       "constructor_pattern", "literal_pattern", "wildcard") do
-      defineEntity(name, s"anthill.reflect.Pattern.$name", patternTerm)
+      defineEntity(name, s"anthill.reflect.Pattern.$name", patternScope)
 
     // Standalone entities
     defineReflectEntity("MatchBranch")
@@ -111,15 +99,15 @@ object Prelude:
     defineReflectEntity("ListLiteral")
 
     // anthill.reflect.TypedExpr sort
-    val typedExprTerm = defineSort("TypedExpr", "anthill.reflect.TypedExpr", reflectScope)
-    defineEntity("typed", "anthill.reflect.TypedExpr.typed", typedExprTerm)
+    val typedExprScope = defineSort("TypedExpr", "anthill.reflect.TypedExpr", reflectScope)
+    defineEntity("typed", "anthill.reflect.TypedExpr.typed", typedExprScope)
 
     // Global imports for reflect entities
-    val globalScope = kb.makeNameTerm("_global")
+    val globalScope = kb.globalScope
     for name <- IndexedSeq("SortInfo", "FieldInfo", "OperationInfo", "EntityInfo",
         "SortRequiresInfo", "SortView", "SetLiteral", "TupleLiteral", "ListLiteral") do
       kb.tryResolveSymbol(s"anthill.reflect.$name").foreach { sym =>
-        kb.symbols.addImport(globalScope.raw, name, sym)
+        kb.symbols.addImport(globalScope, name, sym)
       }
 
   private def registerBuiltinTags(kb: KnowledgeBase): Unit =
@@ -143,8 +131,7 @@ object Prelude:
       val nsPrefix = qualName.substring(0, qualName.lastIndexOf('.'))
       kb.tryResolveSymbol(nsPrefix) match
         case Some(nsSym) =>
-          val nsScope = kb.makeNameTermFromSym(nsSym)
-          val sym = kb.symbols.define(short, qualName, SymbolKind.Operation, nsScope.raw)
+          val sym = kb.symbols.define(short, qualName, SymbolKind.Operation, ScopeId.of(nsSym))
           kb.registerBuiltinTag(sym, tag)
         case None =>
           val sym = kb.intern(qualName)
@@ -154,8 +141,8 @@ object Prelude:
     * making their exports visible everywhere.
     */
   private def registerGlobalParents(kb: KnowledgeBase): Unit =
-    val globalScope = kb.makeNameTerm("_global")
-    val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
-    kb.symbols.addParent(globalScope.raw, ScopeInclusion(preludeScope.raw, 0, isEnclosing = false))
-    val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
-    kb.symbols.addParent(globalScope.raw, ScopeInclusion(reflectScope.raw, 0, isEnclosing = false))
+    val globalScope = kb.globalScope
+    val preludeScope = kb.scopeByQualifiedName("anthill.prelude")
+    kb.symbols.addParent(globalScope, ScopeInclusion(preludeScope, isEnclosing = false))
+    val reflectScope = kb.scopeByQualifiedName("anthill.reflect")
+    kb.symbols.addParent(globalScope, ScopeInclusion(reflectScope, isEnclosing = false))

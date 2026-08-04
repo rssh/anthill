@@ -20,12 +20,16 @@ class Scope:
 
 /** Symbol table — maps strings to compact TermSymbol(Int) handles,
   * with optional resolution metadata (kind, scope, qualified name).
+  *
+  * WI-976: every scope-keyed entry point takes a [[ScopeId]]. It used to take a raw
+  * `Int` — nine of them — so the table could not tell a scope from a term id from an
+  * array index, and each caller carried the promise instead.
   */
 class SymbolTable:
   private val defs = ArrayBuffer.empty[SymbolDef]
   private val internMap = HashMap.empty[String, TermSymbol]
   val byQualifiedName: HashMap[String, TermSymbol] = HashMap.empty
-  private val scopes = HashMap.empty[Int, Scope]
+  private val scopes = HashMap.empty[ScopeId, Scope]
 
   /** Intern a name, returning a TermSymbol. Creates an Unresolved entry
     * if the name hasn't been seen before (deduplicated).
@@ -40,45 +44,44 @@ class SymbolTable:
   /** Define a new resolved symbol in a scope. If the same shortName
     * already exists in the scope, returns the existing symbol (merge behavior).
     */
-  def define(shortName: String, qualifiedName: String, kind: SymbolKind, scopeRaw: Int): TermSymbol =
-    val scope = scopes.getOrElseUpdate(scopeRaw, Scope())
+  def define(shortName: String, qualifiedName: String, kind: SymbolKind, scopeId: ScopeId): TermSymbol =
+    val scope = scopes.getOrElseUpdate(scopeId, Scope())
     scope.locals.get(shortName) match
       case Some(existing) => existing
       case None =>
         val sym = TermSymbol.fromRaw(defs.length)
-        defs += SymbolDef.Resolved(shortName, qualifiedName, kind, scopeRaw)
+        defs += SymbolDef.Resolved(shortName, qualifiedName, kind, scopeId)
         scope.locals(shortName) = sym
         byQualifiedName(qualifiedName) = sym
         sym
 
   /** Mark a name as exposed from a scope to its enclosing scope via the
     * variant-exposure parent link (populated from entity variants only). */
-  def addExposed(scopeRaw: Int, name: String): Unit =
-    scopes.getOrElseUpdate(scopeRaw, Scope()).exposed += name
+  def addExposed(scopeId: ScopeId, name: String): Unit =
+    scopes.getOrElseUpdate(scopeId, Scope()).exposed += name
 
-  def addTypeParam(scopeRaw: Int, name: String): Unit =
-    scopes.getOrElseUpdate(scopeRaw, Scope()).typeParams += name
+  def addTypeParam(scopeId: ScopeId, name: String): Unit =
+    scopes.getOrElseUpdate(scopeId, Scope()).typeParams += name
 
-  def addImport(scopeRaw: Int, shortName: String, sym: TermSymbol): Unit =
-    scopes.getOrElseUpdate(scopeRaw, Scope()).imports(shortName) = sym
+  def addImport(scopeId: ScopeId, shortName: String, sym: TermSymbol): Unit =
+    scopes.getOrElseUpdate(scopeId, Scope()).imports(shortName) = sym
 
-  def addParent(scopeRaw: Int, inclusion: ScopeInclusion): Unit =
-    scopes.getOrElseUpdate(scopeRaw, Scope()).parents += inclusion
+  def addParent(scopeId: ScopeId, inclusion: ScopeInclusion): Unit =
+    scopes.getOrElseUpdate(scopeId, Scope()).parents += inclusion
 
-  def scope(scopeRaw: Int): Option[Scope] = scopes.get(scopeRaw)
-
-  def scopeMut(scopeRaw: Int): Scope =
-    scopes.getOrElseUpdate(scopeRaw, Scope())
+  def scope(scopeId: ScopeId): Option[Scope] = scopes.get(scopeId)
 
   /** Resolve a name within a scope. */
-  def resolveInScope(name: String, scopeRaw: Int): ResolveResult =
-    val visited = HashSet.empty[Int]
-    resolveRecursive(name, scopeRaw, visited)
+  def resolveInScope(name: String, scopeId: ScopeId): ResolveResult =
+    val visited = HashSet.empty[ScopeId]
+    resolveRecursive(name, scopeId, visited)
 
-  private def resolveRecursive(name: String, scopeRaw: Int, visited: HashSet[Int]): ResolveResult =
-    if !visited.add(scopeRaw) then return ResolveResult.NotFound // cycle
+  private def resolveRecursive(
+    name: String, scopeId: ScopeId, visited: HashSet[ScopeId]
+  ): ResolveResult =
+    if !visited.add(scopeId) then return ResolveResult.NotFound // cycle
 
-    scopes.get(scopeRaw) match
+    scopes.get(scopeId) match
       case None => ResolveResult.NotFound
       case Some(scope) =>
         // 1. Local
@@ -89,12 +92,12 @@ class SymbolTable:
         // 2. Collect eligible parent scopes
         val eligibleParents = scope.parents.filter { p =>
           if p.isEnclosing then true
-          else scopes.get(p.parentScopeRaw) match
+          else scopes.get(p.parent) match
             case None => true
             case Some(parent) =>
               !parent.typeParams.contains(name) &&
               (parent.exposed.isEmpty || parent.exposed.contains(name))
-        }.map(_.parentScopeRaw)
+        }.map(_.parent)
 
         val matches = ArrayBuffer.empty[TermSymbol]
         for parentScope <- eligibleParents do

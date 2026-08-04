@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ScopeInclusion, ResolveResult}
+import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ScopeId, ScopeInclusion, ResolveResult}
 import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.parse.*
 import anthill.span.Span
@@ -25,8 +25,10 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
   * `P`, the scope searched INTO, and not the importing scope, because `n` IS resolved
   * against `P` ([[Loader.resolveSelectiveImport]]) — a distinct scope, not a distinct
   * meaning. The third site filled it with the literal string `"requires"`, which named no
-  * scope at all. A `String` field cannot enforce any of this; typing scope-hood so it
-  * could is WI-976. */
+  * scope at all. A `String` field cannot enforce any of this, and WI-976 deliberately did
+  * NOT type it: an opaque `ScopeName` would have accepted the right KIND of name computed
+  * from the wrong scope — the likelier next drift — so what got typed is the SCOPE
+  * ([[anthill.intern.ScopeId]]), which is what every filler now derives its name from. */
 enum LoadError:
   case UnresolvedName(name: String, span: Span, scopeName: String)
   case UnresolvedImport(path: String, span: Span)
@@ -66,7 +68,7 @@ object Loader:
 
   /** Scan all parsed files to define symbols and build scope chain. */
   def scanDefinitions(kb: KnowledgeBase, files: IndexedSeq[ParsedFile]): ArrayBuffer[LoadError] =
-    val globalScope = kb.makeNameTerm("_global")
+    val globalScope = kb.globalScope
     val errors = ArrayBuffer.empty[LoadError]
 
     // Pass 1: Define all names
@@ -99,7 +101,7 @@ object Loader:
     // import resolves like any declared name — erroring only if it is still unbound.
     for p <- pending do
       resolveSelectiveImport(kb, p.target, p.path, p.short) match
-        case Some(sym) => kb.symbols.addImport(p.scopeRaw, p.short, sym)
+        case Some(sym) => kb.symbols.addImport(p.scope, p.short, sym)
         // WI-962: the scope name comes off the SYMBOL, like the other two raise sites, and
         // not off `p.path` — the written import spelling. The two agree (a `define` writes
         // one qualified name into both the `byQualifiedName` key and the `SymbolDef`, and
@@ -113,7 +115,7 @@ object Loader:
 
   /** Load a parsed file into the KB (Phase 2 — after scanDefinitions). */
   def load(kb: KnowledgeBase, file: ParsedFile): ArrayBuffer[LoadError] =
-    val globalScope = kb.makeNameTerm("_global")
+    val globalScope = kb.globalScope
     val errors = ArrayBuffer.empty[LoadError]
     walkScopes(file.items, globalScope, "", LoadPass(kb, file.symbols, file.terms, errors))
     errors
@@ -155,14 +157,14 @@ object Loader:
 
     /** The child scope to recurse into, or `None` to abandon the subtree (only ever
       * because the scope could not be found, which `lookupScope` has already reported). */
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId]
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId]
 
     /** Every item that does not open a scope, with the scope and prefix enclosing it. */
-    def atItem(item: Item, scope: TermId, prefix: String): Unit
+    def atItem(item: Item, scope: ScopeId, prefix: String): Unit
 
   private def walkScopes(
     items: Iterable[Item],
-    scopeTerm: TermId,
+    scope: ScopeId,
     prefix: String,
     pass: ScopePass
   ): Unit =
@@ -175,12 +177,12 @@ object Loader:
         case Some(decl) =>
           val shortName = joinSegments(pass.fileSym, decl.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          pass.enterScope(decl, shortName, qualName, scopeTerm).foreach { child =>
+          pass.enterScope(decl, shortName, qualName, scope).foreach { child =>
             walkScopes(decl.items, child, qualName, pass)
           }
-        case None => pass.atItem(item, scopeTerm, prefix)
+        case None => pass.atItem(item, scope, prefix)
 
-  /** The name term for `qualName`, which `DefinePass` defined before any later pass ran.
+  /** The symbol `qualName` names, which `DefinePass` defined before any later pass ran.
     * A MISS is therefore a broken invariant, not a shape a pass may skip — and this is
     * the ONE place that answers it, for every pass and every kind of name: report, and
     * say what the miss costs. Skipping instead would drop the work with no diagnostic at
@@ -188,24 +190,24 @@ object Loader:
     * disagreed: pass 2 and the loader skipped, pass 3 reported. */
   private def lookupDefined(
     kb: KnowledgeBase, qualName: String, span: Span, consequence: String, errors: ArrayBuffer[LoadError]
-  ): Option[TermId] =
-    kb.symbols.byQualifiedName.get(qualName) match
-      case Some(sym) => Some(kb.makeNameTermFromSym(sym))
-      case None =>
-        // WI-947: the DECLARATION's span, not the missing name's — the name is missing
-        // from the symbol table, so there is nothing to point at on that side; what the
-        // reader needs is the declaration whose contents were dropped.
-        errors += LoadError.Other(
-          s"internal: '$qualName' was not defined in pass 1, so $consequence", span)
-        None
+  ): Option[TermSymbol] =
+    kb.symbols.byQualifiedName.get(qualName).orElse {
+      // WI-947: the DECLARATION's span, not the missing name's — the name is missing
+      // from the symbol table, so there is nothing to point at on that side; what the
+      // reader needs is the declaration whose contents were dropped.
+      errors += LoadError.Other(
+        s"internal: '$qualName' was not defined in pass 1, so $consequence", span)
+      None
+    }
 
   /** The scope `qualName` names — the descent's use of [[lookupDefined]]. A miss here
     * abandons the whole subtree: its imports unwired, its rule heads unregistered, its
     * facts and rules never loaded. */
   private def lookupScope(
     kb: KnowledgeBase, qualName: String, span: Span, errors: ArrayBuffer[LoadError]
-  ): Option[TermId] =
+  ): Option[ScopeId] =
     lookupDefined(kb, qualName, span, "the declarations inside it cannot be loaded", errors)
+      .map(ScopeId.of)
 
   // ── Pass 1: Define names ─────────────────────────────────────
 
@@ -213,21 +215,21 @@ object Loader:
     * so its `enterScope` defines rather than resolving, and can never miss. */
   private final class DefinePass(kb: KnowledgeBase, val fileSym: SymbolTable) extends ScopePass:
 
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
       decl match
         case ScopeDecl.Ns(_) =>
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, enclosing.raw)
-          val nsTerm = kb.makeNameTermFromSym(sym)
+          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, enclosing)
+          val nsScope = ScopeId.of(sym)
           // Enclosing scope. (Model C / proposal 044: names visible by default;
           // the `export` statement was removed in WI-291.)
-          kb.symbols.addParent(nsTerm.raw, ScopeInclusion(enclosing.raw, 0, isEnclosing = true))
-          Some(nsTerm)
+          kb.symbols.addParent(nsScope, ScopeInclusion(enclosing, isEnclosing = true))
+          Some(nsScope)
 
         case ScopeDecl.SortBody(sort) =>
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, enclosing.raw)
-          val sortTerm = kb.makeNameTermFromSym(sym)
-          kb.registerSort(sortTerm, SortKind.Defined)
-          kb.symbols.addParent(sortTerm.raw, ScopeInclusion(enclosing.raw, 0, isEnclosing = true))
+          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, enclosing)
+          val sortScope = ScopeId.of(sym)
+          kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
+          kb.symbols.addParent(sortScope, ScopeInclusion(enclosing, isEnclosing = true))
           // Variant exposure (proposal 044 job 2): a sort exposes ONLY its
           // entity-variant names to the enclosing scope, linked as a
           // non-enclosing parent — so bare `Open` resolves to `WorkStatus.Open`
@@ -236,9 +238,9 @@ object Loader:
           val variants = sort.items.collect {
             case Item.EntityItem(e) => joinSegments(fileSym, e.name.segments)
           }
-          for v <- variants do kb.symbols.addExposed(sortTerm.raw, v)
+          for v <- variants do kb.symbols.addExposed(sortScope, v)
           if variants.nonEmpty then
-            kb.symbols.addParent(enclosing.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
+            kb.symbols.addParent(enclosing, ScopeInclusion(sortScope, isEnclosing = false))
           // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
           // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type
           // parameter of the enclosing sort — register it like the `sort T = ?`
@@ -246,25 +248,25 @@ object Loader:
           // nested sort. (scaland emits no `SortAlias` backing-var fact — it has
           // no typer; the type-param marker is what the resolver and codegen read.)
           if sort.isTypeParam && isSortScope(kb, enclosing) then
-            kb.symbols.addTypeParam(enclosing.raw, shortName)
-          Some(sortTerm)
+            kb.symbols.addTypeParam(enclosing, shortName)
+          Some(sortScope)
 
-    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
+    def atItem(item: Item, scope: ScopeId, prefix: String): Unit =
       item match
         case Item.AbstractSortItem(sort) =>
           // `sort T = ?` inside a SortWithBody (or enum) declares a type
           // parameter local to the enclosing sort; `sort T = Concrete` is an
           // ordinary abstract sort. Only the variable form is a parameter.
           val isParam = sort.definition.isInstanceOf[TypeExpr.Variable]
-          defineAbstractSort(kb, fileSym, prefix, scopeTerm, sort.name.segments, isParam)
+          defineAbstractSort(kb, fileSym, prefix, scope, sort.name.segments, isParam)
 
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, scopeTerm.raw)
+          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, scope)
           val entityTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(entityTerm, SortKind.Constructor)
-          kb.registerEntityOf(entityTerm, scopeTerm)
+          kb.registerEntityOf(entityTerm, kb.scopeTerm(scope))
           // Register entity fields
           val fields = entity.fields.map(f => fileSym.name(f.name)).map(kb.intern)
           kb.registerEntityFields(sym, fields)
@@ -272,13 +274,13 @@ object Loader:
         case Item.OperationItem(op) =>
           val shortName = joinSegments(fileSym, op.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scopeTerm)
+          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scope)
 
         case Item.OperationBlockItem(block) =>
           for op <- block.entries do
             val shortName = joinSegments(fileSym, op.name.segments)
             val qualName = makeQualified(prefix, shortName)
-            defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scopeTerm)
+            defineSymbolOnce(kb, shortName, qualName, SymbolKind.Operation, scope)
 
         case Item.ConstItem(c) =>
           // Proposal 039 / WI-084: define the constant's symbol (pass 1, like
@@ -288,13 +290,13 @@ object Loader:
           // mirroring how operation bodies/effects are left inert here.
           val shortName = joinSegments(fileSym, c.name.segments)
           val qualName = makeQualified(prefix, shortName)
-          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, scopeTerm)
+          defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, scope)
 
         case Item.RuleItem(rule) =>
           rule.label.foreach { label =>
             val shortName = joinSegments(fileSym, label.segments)
             val qualName = makeQualified(prefix, shortName)
-            kb.symbols.define(shortName, qualName, SymbolKind.Rule, scopeTerm.raw)
+            kb.symbols.define(shortName, qualName, SymbolKind.Rule, scope)
           }
 
         case Item.RuleBlockItem(block) =>
@@ -302,7 +304,7 @@ object Loader:
             rule.label.foreach { label =>
               val shortName = joinSegments(fileSym, label.segments)
               val qualName = makeQualified(prefix, shortName)
-              kb.symbols.define(shortName, qualName, SymbolKind.Rule, scopeTerm.raw)
+              kb.symbols.define(shortName, qualName, SymbolKind.Rule, scope)
             }
 
         // WI-840 (proposal 058 §4.7): a NAMED requirement slot — `requires O: Ord[T]`
@@ -323,12 +325,12 @@ object Loader:
           // `declaration` yields one `Item` per production, so the binder rides on
           // the item and the shared helper is applied here instead.
           req.binder.foreach { binder =>
-            defineAbstractSort(kb, fileSym, prefix, scopeTerm, binder.segments, isParam = true)
+            defineAbstractSort(kb, fileSym, prefix, scope, binder.segments, isParam = true)
           }
 
         case _ => // Other items don't define symbols in pass 1
 
-  /** Define an ABSTRACT sort in `scopeTerm` and, when `isParam` and the scope is a
+  /** Define an ABSTRACT sort in `scope` and, when `isParam` and the scope is a
     * sort body, register it as one of that sort's TYPE PARAMETERS — the marker the
     * resolver uses to keep `T` from leaking into ambient name-resolution from sibling
     * sorts that share the canonical parameter name.
@@ -343,16 +345,16 @@ object Loader:
     kb: KnowledgeBase,
     fileSym: SymbolTable,
     prefix: String,
-    scopeTerm: TermId,
+    scope: ScopeId,
     segments: IndexedSeq[TermSymbol],
     isParam: Boolean
   ): Unit =
     val shortName = joinSegments(fileSym, segments)
     val qualName = makeQualified(prefix, shortName)
-    val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scopeTerm.raw)
+    val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scope)
     kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Abstract)
-    if isParam && isSortScope(kb, scopeTerm) then
-      kb.symbols.addTypeParam(scopeTerm.raw, shortName)
+    if isParam && isSortScope(kb, scope) then
+      kb.symbols.addTypeParam(scope, shortName)
 
   /** Define a symbol of `kind` unless its qualified name is already
     * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
@@ -371,10 +373,10 @@ object Loader:
     shortName: String,
     qualName: String,
     kind: SymbolKind,
-    scopeTerm: TermId
+    scope: ScopeId
   ): Unit =
     if !kb.symbols.byQualifiedName.contains(qualName) then
-      kb.symbols.define(shortName, qualName, kind, scopeTerm.raw)
+      kb.symbols.define(shortName, qualName, kind, scope)
 
   // ── Pass 2: Process requires/imports ─────────────────────────
 
@@ -390,16 +392,16 @@ object Loader:
 
     // The import list attached to a `namespace` and to a `sort … end` body go through
     // the SAME `processImports`; only the scope differs, and the walk already carries it.
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors).map { scope =>
         processImports(kb, decl.imports, fileSym, scope, errors, pending)
         scope
       }
 
-    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
+    def atItem(item: Item, scope: ScopeId, prefix: String): Unit =
       item match
         case Item.RequiresDeclItem(req) =>
-          processRequires(kb, req, fileSym, scopeTerm, errors)
+          processRequires(kb, req, fileSym, scope, errors)
 
         // WI-727 (proposal 056): "at most one variadic capture parameter, and
         // trailing" is checked HERE and not in the parser — the diagnostic quotes the
@@ -421,7 +423,7 @@ object Loader:
         // `bodyContent` consumes an `import` before `declaration` is tried, so it
         // lands in that body's `imports` list and never reaches this arm as an Item.
         case Item.ImportItem(imp) =>
-          processImports(kb, Seq(imp), fileSym, scopeTerm, errors, pending)
+          processImports(kb, Seq(imp), fileSym, scope, errors, pending)
 
         case _ =>
 
@@ -461,15 +463,15 @@ object Loader:
     errors: ArrayBuffer[LoadError]
   ) extends ScopePass:
 
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors)
 
-    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
+    def atItem(item: Item, scope: ScopeId, prefix: String): Unit =
       item match
-        case Item.RuleItem(rule) => scanRuleGoal(kb, rule, fileSym, fileTerms, scopeTerm, prefix)
+        case Item.RuleItem(rule) => scanRuleGoal(kb, rule, fileSym, fileTerms, scope, prefix)
         case Item.RuleBlockItem(block) =>
           for rule <- block.entries do
-            scanRuleGoal(kb, rule, fileSym, fileTerms, scopeTerm, prefix)
+            scanRuleGoal(kb, rule, fileSym, fileTerms, scope, prefix)
 
         case _ =>
 
@@ -478,7 +480,7 @@ object Loader:
     rule: Rule,
     fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
-    scopeTerm: TermId,
+    scope: ScopeId,
     prefix: String
   ): Unit =
     for (name, kind) <- ruleIntroducedFunctor(rule, fileSym, fileTerms) do
@@ -488,8 +490,8 @@ object Loader:
       // qualified name UNCONDITIONALLY whenever the SHORT name is new in the target
       // scope, so a rule head in a re-opened namespace could replace a builtin's
       // mapping (the case that gate was written for — see its doc).
-      if !kb.symbols.resolveInScope(name, scopeTerm.raw).denotes then
-        defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scopeTerm)
+      if !kb.symbols.resolveInScope(name, scope).denotes then
+        defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scope)
 
   /** The functor a rule introduces, and which kind of introduction it is — or `None`
     * when the rule introduces nothing. Mirrors rustland's
@@ -559,7 +561,7 @@ object Loader:
     * source for a field [[LoadError]] says is derived from a scope; the retry now reads
     * that off `target` instead. */
   private case class PendingImport(
-    scopeRaw: Int, short: String, target: TermSymbol, span: Span, path: String)
+    scope: ScopeId, short: String, target: TermSymbol, span: Span, path: String)
 
   /** Resolve one name of a `Selective` import against the imported symbol `target`
     * (whose qualified name is `pathStr`). THE one resolution both pass 2 and the
@@ -569,7 +571,7 @@ object Loader:
   private def resolveSelectiveImport(
     kb: KnowledgeBase, target: TermSymbol, pathStr: String, name: String
   ): Option[TermSymbol] =
-    kb.symbols.resolveInScope(name, kb.makeNameTermFromSym(target).raw) match
+    kb.symbols.resolveInScope(name, ScopeId.of(target)) match
       case ResolveResult.Found(s) => Some(s)
       // Fall back to direct fully-qualified lookup — covers top-level multi-segment
       // sort decls like `enum anthill.prelude.Pair` whose symbol is registered at
@@ -586,7 +588,7 @@ object Loader:
     kb: KnowledgeBase,
     imports: Iterable[Import],
     fileSym: SymbolTable,
-    scopeTerm: TermId,
+    scope: ScopeId,
     errors: ArrayBuffer[LoadError],
     pending: ArrayBuffer[PendingImport]
   ): Unit =
@@ -597,23 +599,21 @@ object Loader:
           imp.kind match
             case ImportKind.Plain =>
               val short = fileSym.name(imp.path.last)
-              kb.symbols.addImport(scopeTerm.raw, short, sym)
+              kb.symbols.addImport(scope, short, sym)
             case ImportKind.Selective(names) =>
               for n <- names do
                 val name = joinSegments(fileSym, n.segments)
                 resolveSelectiveImport(kb, sym, pathStr, name) match
-                  case Some(s) => kb.symbols.addImport(scopeTerm.raw, name, s)
+                  case Some(s) => kb.symbols.addImport(scope, name, s)
                   // WI-295: a RULE-INTRODUCED predicate's head-functor symbol is not
                   // registered until pass 3, which runs AFTER imports — so a selective
                   // import of one (`import anthill.prelude.Bool.{ite}`, stdlib
                   // int64/ordered) cannot resolve here. Defer instead of erroring; the
                   // post-pass-3 retry re-resolves it and errors only if still unbound.
                   case None =>
-                    pending += PendingImport(scopeTerm.raw, name, sym, n.span, pathStr)
+                    pending += PendingImport(scope, name, sym, n.span, pathStr)
             case ImportKind.Wildcard =>
-              val parentTerm = kb.makeNameTermFromSym(sym)
-              kb.symbols.addParent(scopeTerm.raw,
-                ScopeInclusion(parentTerm.raw, 0, isEnclosing = false))
+              kb.symbols.addParent(scope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
         case None =>
           errors += LoadError.UnresolvedImport(pathStr, imp.path.span)
 
@@ -649,7 +649,7 @@ object Loader:
     kb: KnowledgeBase,
     req: RequiresDecl,
     fileSym: SymbolTable,
-    scopeTerm: TermId,
+    scope: ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
     req.typeExpr match
@@ -657,9 +657,7 @@ object Loader:
         val nameStr = joinSegments(fileSym, name.segments)
         kb.symbols.byQualifiedName.get(nameStr) match
           case Some(sym) =>
-            val parentTerm = kb.makeNameTermFromSym(sym)
-            kb.symbols.addParent(scopeTerm.raw,
-              ScopeInclusion(parentTerm.raw, 0, isEnclosing = false))
+            kb.symbols.addParent(scope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
           case None =>
             // WI-962: the scope that DECLARED the requirement. Note the lookup just above
             // is by fully-qualified name and walks no scope chain — which is also why a
@@ -667,7 +665,7 @@ object Loader:
             // is read here as the scope the resolution was ON BEHALF OF. That is the
             // declaration the reader has to go fix, and it is the closest this site has to
             // a scope; the literal `"requires"` it used to pass named none at all.
-            errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scopeTerm))
+            errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scope))
       case _ => // Parameterized requires — TODO
 
   // ── Phase 2: Load items into KB ─────────────────────────────
@@ -682,24 +680,24 @@ object Loader:
     errors: ArrayBuffer[LoadError]
   ) extends ScopePass:
 
-    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: TermId): Option[TermId] =
+    def enterScope(decl: ScopeDecl, shortName: String, qualName: String, enclosing: ScopeId): Option[ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors)
 
-    def atItem(item: Item, scopeTerm: TermId, prefix: String): Unit =
+    def atItem(item: Item, scope: ScopeId, prefix: String): Unit =
       item match
         case Item.FactItem(fact) =>
-          val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scopeTerm, errors)
+          val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors)
           val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
-          kb.assertFact(kbTerm, sortSort, scopeTerm)
+          kb.assertFact(kbTerm, sortSort, scope)
 
         case Item.RuleItem(rule) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
-          loadRuleHeads(kb, rule, fileTerms, fileSym, scopeTerm, sortSort, errors)
+          loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
 
         case Item.RuleBlockItem(block) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
           for rule <- block.entries do
-            loadRuleHeads(kb, rule, fileTerms, fileSym, scopeTerm, sortSort, errors)
+            loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
 
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
@@ -709,21 +707,26 @@ object Loader:
           // fact — silently, before the miss got a diagnostic.
           val defined = lookupDefined(
             kb, qualName, entity.name.span, "its `entity_of` fact cannot be asserted", errors)
-          defined.foreach { entityTerm =>
+          defined.foreach { sym =>
+            val entityTerm = kb.makeNameTermFromSym(sym)
             val entityOfSort = findSortTerm(kb, "anthill.reflect.EntityOf")
             val entityOfSym = kb.intern("entity_of")
-            val entityOfFact = kb.alloc(Term.Fn(entityOfSym, IArray(entityTerm, scopeTerm), IArray.empty))
-            kb.assertFact(entityOfFact, entityOfSort, scopeTerm)
+            // The scope appears twice here in two DIFFERENT roles, which is why only one
+            // of them changed in WI-983: as the fact's second ARGUMENT it is a term the
+            // fact is about, and as the domain it is the scope the fact was declared in.
+            val entityOfFact = kb.alloc(
+              Term.Fn(entityOfSym, IArray(entityTerm, kb.scopeTerm(scope)), IArray.empty))
+            kb.assertFact(entityOfFact, entityOfSort, scope)
           }
 
         case Item.ProofItem(p) =>
-          loadProof(kb, p, fileSym, scopeTerm)
+          loadProof(kb, p, fileSym, scope)
 
         case Item.ProvidesClauseItem(pc) =>
-          loadProvidesClause(kb, pc, fileSym, scopeTerm)
+          loadProvidesClause(kb, pc, fileSym, scope)
 
         case Item.ProvidesBlockItem(pb) =>
-          loadProvidesBlock(kb, pb, fileTerms, fileSym, scopeTerm, errors)
+          loadProvidesBlock(kb, pb, fileTerms, fileSym, scope, errors)
 
         case _ => // Other items
 
@@ -747,7 +750,7 @@ object Loader:
     rule: Rule,
     fileTerms: SimpleTermStore,
     fileSym: SymbolTable,
-    scopeTerm: TermId,
+    scope: ScopeId,
     sortSort: TermId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
@@ -769,16 +772,16 @@ object Loader:
       return
 
     val kbBody = rule.body.map(_.map(b =>
-      reallocTerm(kb, fileTerms, fileSym, b, scopeTerm, errors, vm))).getOrElse(IndexedSeq.empty)
+      reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm))).getOrElse(IndexedSeq.empty)
 
     if hasBottom then
       val botTerm = kb.alloc(Term.Bottom)
-      kb.assertRule(botTerm, kbBody, sortSort, scopeTerm)
+      kb.assertRule(botTerm, kbBody, sortSort, scope)
     else
       // One horn rule per head, sharing body (and shared var scope via vm).
       for headId <- positiveHeads do
-        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scopeTerm, errors, vm)
-        kb.assertRule(kbHead, kbBody, sortSort, scopeTerm)
+        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm)
+        kb.assertRule(kbHead, kbBody, sortSort, scope)
 
   // ── Proof / Provides loaders (proposal 025 + 031) ────────────
 
@@ -786,7 +789,7 @@ object Loader:
     kb: KnowledgeBase,
     p: anthill.parse.ProofDecl,
     fileSym: SymbolTable,
-    scopeTerm: TermId
+    scope: ScopeId
   ): Unit =
     val targetStr = joinSegments(fileSym, p.target.segments)
     val targetTerm = kb.alloc(Term.Const(Literal.StringLit(targetStr)))
@@ -798,13 +801,13 @@ object Loader:
         (kb.intern("target"), targetTerm),
         (kb.intern("strategy"), strategyTerm))))
     val proofSort = kb.makeNameTerm("ProofRecord")
-    kb.assertFact(proofTerm, proofSort, scopeTerm)
+    kb.assertFact(proofTerm, proofSort, scope)
 
   private def loadProvidesClause(
     kb: KnowledgeBase,
     pc: anthill.parse.ProvidesClause,
     fileSym: SymbolTable,
-    scopeTerm: TermId
+    scope: ScopeId
   ): Unit =
     // Lossy: parameterized bindings (e.g. `Stack[T = Int]` vs `Stack[T = String]`)
     // collapse to the bare spec name. The witness pipeline (WI-157) replaces
@@ -812,19 +815,22 @@ object Loader:
     val specStr = specName(fileSym, pc.spec)
     val specTerm = kb.alloc(Term.Const(Literal.StringLit(specStr)))
     val provSym = kb.intern("provides_clause")
+    // `sort_ref` is the scope AS A TERM — the sort the clause is about, read back by a
+    // consumer of the fact. The domain beside it is the same scope in the other role
+    // (WI-983), and only that one stopped being a term.
     val provTerm = kb.alloc(Term.Fn(provSym, IArray.empty,
       IArray(
-        (kb.intern("sort_ref"), scopeTerm),
+        (kb.intern("sort_ref"), kb.scopeTerm(scope)),
         (kb.intern("spec"), specTerm))))
     val provSort = kb.makeNameTerm("Requirement")
-    kb.assertFact(provTerm, provSort, scopeTerm)
+    kb.assertFact(provTerm, provSort, scope)
 
   private def loadProvidesBlock(
     kb: KnowledgeBase,
     pb: anthill.parse.ProvidesBlock,
     fileTerms: SimpleTermStore,
     fileSym: SymbolTable,
-    scopeTerm: TermId,
+    scope: ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
     if fileSym.name(pb.language) != "anthill" then return
@@ -832,15 +838,15 @@ object Loader:
     val factSort = findSortTerm(kb, "anthill.reflect.Fact")
     for item <- pb.items do item match
       case ProvidesItem.RuleI(r) =>
-        loadRuleHeads(kb, r, fileTerms, fileSym, scopeTerm, ruleSort, errors)
+        loadRuleHeads(kb, r, fileTerms, fileSym, scope, ruleSort, errors)
       case ProvidesItem.RuleBlockI(rb) =>
         for r <- rb.entries do
-          loadRuleHeads(kb, r, fileTerms, fileSym, scopeTerm, ruleSort, errors)
+          loadRuleHeads(kb, r, fileTerms, fileSym, scope, ruleSort, errors)
       case ProvidesItem.FactI(f) =>
-        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scopeTerm, errors)
-        kb.assertFact(kbTerm, factSort, scopeTerm)
+        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors)
+        kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
-        loadProof(kb, p, fileSym, scopeTerm)
+        loadProof(kb, p, fileSym, scope)
       case ProvidesItem.ArtifactI(_)
          | ProvidesItem.CarrierI(_)
          | ProvidesItem.NamespaceMapI(_)
@@ -880,7 +886,7 @@ object Loader:
     fileTerms: SimpleTermStore,
     fileSym: SymbolTable,
     termId: TermId,
-    scopeTerm: TermId,
+    scope: ScopeId,
     errors: ArrayBuffer[LoadError],
     varMap: HashMap[Int, VarId] = HashMap.empty
   ): TermId =
@@ -911,27 +917,27 @@ object Loader:
         // the type and keep only the bare variable — sound-conservative (the head
         // still matches the untyped form). Mirrors rustland's strip minus the
         // bound install.
-        reallocTerm(kb, fileTerms, fileSym, fn.posArgs(0), scopeTerm, errors, varMap)
+        reallocTerm(kb, fileTerms, fileSym, fn.posArgs(0), scope, errors, varMap)
       // The three name-bearing carriers, and the only arms that resolve anything:
       // each hands `resolveName` the span its OWN parse term was allocated at
       // (WI-957), so a diagnostic lands on the occurrence, not on the enclosing
       // declaration and not nowhere.
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
-        val kbFunctor = resolveName(kb, name, scopeTerm, errors, fileTerms.spanOf(termId))
-        val kbPos = IArray.from(fn.posArgs.map(id => reallocTerm(kb, fileTerms, fileSym, id, scopeTerm, errors, varMap)))
+        val kbFunctor = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
+        val kbPos = IArray.from(fn.posArgs.map(id => reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap)))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
-          (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scopeTerm, errors, varMap))
+          (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap))
         })
         kb.alloc(Term.Fn(kbFunctor, kbPos, kbNamed))
       case Term.Ref(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scopeTerm, errors, fileTerms.spanOf(termId))
+        val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
         kb.alloc(Term.Ref(kbSym))
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scopeTerm, errors, fileTerms.spanOf(termId))
+        val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
         kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
 
@@ -954,23 +960,23 @@ object Loader:
     * the name from: `reallocTerm`'s `Term.Fn` arm resolves the functor, and its
     * arguments are separate terms with spans of their own. */
   private def resolveName(
-    kb: KnowledgeBase, name: String, scopeTerm: TermId,
+    kb: KnowledgeBase, name: String, scope: ScopeId,
     errors: ArrayBuffer[LoadError], span: Span
   ): TermSymbol =
     (if name.contains('.') then kb.symbols.byQualifiedName.get(name) else None) match
       case Some(sym) => sym
       case None =>
-        kb.symbols.resolveInScope(name, scopeTerm.raw) match
+        kb.symbols.resolveInScope(name, scope) match
           case ResolveResult.Found(sym) => sym
           case ResolveResult.Ambiguous(candidates) =>
             val qualNames = candidates.map(kb.qualifiedNameOf).toIndexedSeq
             // WI-957: the last locationless load diagnostic, closed. `scopeName` was
             // `""` for the same reason the span was empty — nothing was threaded here
             // — and it is the scope this very resolution was attempted in, so it is
-            // read off `scopeTerm` rather than passed down a second channel that could
+            // read off `scope` rather than passed down a second channel that could
             // disagree with the scope actually searched.
             errors += LoadError.AmbiguousSymbol(
-              name, qualNames, span, kb.scopeDisplayName(scopeTerm))
+              name, qualNames, span, kb.scopeDisplayName(scope))
             kb.intern(name)
           case ResolveResult.NotFound =>
             kb.intern(name)
@@ -985,7 +991,7 @@ object Loader:
     * Mirrors rustland's `register_prelude`, which only imports explicit
     * global aliases instead of bulk-parenting every prelude sort.
     */
-  private def autoImportPrelude(kb: KnowledgeBase, globalScope: TermId): Unit =
+  private def autoImportPrelude(kb: KnowledgeBase, globalScope: ScopeId): Unit =
     val preludePrefix = "anthill.prelude."
     // Skip primitive type sorts (their ops collide with kernel builtins)
     // AND typeclass sorts whose generic ops collide with each other —
@@ -1002,8 +1008,7 @@ object Loader:
       if qualName.startsWith(preludePrefix) then
         val afterPrelude = qualName.substring(preludePrefix.length)
         if !afterPrelude.contains('.') && !skip.contains(afterPrelude) then
-          val sortTerm = kb.makeNameTermFromSym(sym)
-          kb.symbols.addParent(globalScope.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
+          kb.symbols.addParent(globalScope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
 
   private def findSortTerm(kb: KnowledgeBase, qualName: String): TermId =
     kb.symbols.byQualifiedName.get(qualName) match
@@ -1015,15 +1020,15 @@ object Loader:
   private def joinSegments(symbols: SymbolTable, segments: IndexedSeq[TermSymbol]): String =
     segments.map(symbols.name).mkString(".")
 
-  /** WI-962: `false` rather than [[KnowledgeBase.scopeDisplayName]]'s refusal, because pass
-    * 1 asks this of an `enclosing` that may be `_global` — "is this a sort scope" has an
-    * answer for a term that is no scope at all. */
-  private def isSortScope(kb: KnowledgeBase, scope: TermId): Boolean =
-    kb.scopeFunctor(scope).exists { functor =>
-      kb.symbols.get(functor) match
-        case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
-        case _ => false
-    }
+  /** Is this scope a SORT body — i.e. does it have type parameters to add one to? Pass 1
+    * asks it of an `enclosing` that may be `_global`, which is a scope like any other but
+    * whose symbol was never declared, so the answer there is `false` (WI-976: `false`
+    * because `_global` is Unresolved, not because the term failed a scope-shape test —
+    * that test, and the `Option` it used to return, are gone). */
+  private def isSortScope(kb: KnowledgeBase, scope: ScopeId): Boolean =
+    kb.symbols.get(scope.symbol) match
+      case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
+      case _ => false
 
   private def makeQualified(prefix: String, name: String): String =
     if prefix.isEmpty then name else s"$prefix.$name"
@@ -1058,43 +1063,43 @@ object Loader:
     */
   private def convertExprTerm(
     kb: KnowledgeBase, fileTerms: SimpleTermStore, fileSym: SymbolTable,
-    parseId: TermId, scopeTerm: TermId, errors: ArrayBuffer[LoadError],
+    parseId: TermId, scope: ScopeId, errors: ArrayBuffer[LoadError],
     varMap: HashMap[Int, VarId]
   ): TermId =
     fileTerms.get(parseId) match
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
         name match
-          case "match_expr" => loadMatchExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "match_branch" => loadMatchBranch(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "if_expr" => loadIfExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "let_expr" => loadLetExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "lambda_expr" => loadLambdaExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "pattern_var" => loadPatternVar(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "match_expr" => loadMatchExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "match_branch" => loadMatchBranch(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "if_expr" => loadIfExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "let_expr" => loadLetExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "lambda_expr" => loadLambdaExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "pattern_var" => loadPatternVar(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
           case "pattern_wildcard" => loadPatternWildcard(kb)
-          case "pattern_literal" => loadPatternLiteral(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "pattern_constructor" => loadPatternConstructor(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "pattern_tuple" => loadPatternTuple(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "pattern_literal" => loadPatternLiteral(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "pattern_constructor" => loadPatternConstructor(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
+          case "pattern_tuple" => loadPatternTuple(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
           // WI-582: strip a `typed_var(?x, type: T)` marker back to the bare `?x`
           // here too (a typed arg in an expression body), matching `reallocTerm`.
           // Guarded on the exact marker shape (name + 1 pos + `type` named) — a
           // non-marker `typed_var` falls through to `loadApplyOrConstructor`.
           case "typed_var" if isTypedVarMarker(fn, fileSym) =>
-            exprRec((kb, fileTerms, fileSym, scopeTerm, errors, varMap), fn.posArgs(0))
+            exprRec((kb, fileTerms, fileSym, scope, errors, varMap), fn.posArgs(0))
           case _ => loadApplyOrConstructor(kb, fileTerms, fileSym, fn.functor, fileTerms.spanOf(parseId),
-                                           fn.posArgs, fn.namedArgs, scopeTerm, errors, varMap)
-      case Term.Const(_) => loadLiteralExpr(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
-      case Term.Ident(_) => loadVarRef(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
-      case _ => reallocTerm(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
+                                           fn.posArgs, fn.namedArgs, scope, errors, varMap)
+      case Term.Const(_) => loadLiteralExpr(kb, fileTerms, fileSym, parseId, scope, errors, varMap)
+      case Term.Ident(_) => loadVarRef(kb, fileTerms, fileSym, parseId, scope, errors, varMap)
+      case _ => reallocTerm(kb, fileTerms, fileSym, parseId, scope, errors, varMap)
 
   // Shorthand for recursive call parameters
-  private type Ctx = (KnowledgeBase, SimpleTermStore, SymbolTable, TermId, ArrayBuffer[LoadError], HashMap[Int, VarId])
+  private type Ctx = (KnowledgeBase, SimpleTermStore, SymbolTable, ScopeId, ArrayBuffer[LoadError], HashMap[Int, VarId])
   private def exprRec(ctx: Ctx, parseId: TermId): TermId =
     convertExprTerm(ctx._1, ctx._2, ctx._3, parseId, ctx._4, ctx._5, ctx._6)
 
   private def loadMatchExpr(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val scrutinee = exprRec(ctx, posArgs(0))
@@ -1106,7 +1111,7 @@ object Loader:
 
   private def loadMatchBranch(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val pattern = exprRec(ctx, posArgs(0))
@@ -1118,7 +1123,7 @@ object Loader:
 
   private def loadIfExpr(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val cond = exprRec(ctx, posArgs(0))
@@ -1130,7 +1135,7 @@ object Loader:
 
   private def loadLetExpr(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val pattern = exprRec(ctx, posArgs(0))
@@ -1142,7 +1147,7 @@ object Loader:
 
   private def loadLambdaExpr(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val param = exprRec(ctx, posArgs(0))
@@ -1153,7 +1158,7 @@ object Loader:
 
   private def loadVarRef(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    parseId: TermId, scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    parseId: TermId, scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val nameRef = ft.get(parseId) match
       case Term.Ident(sym) =>
@@ -1165,7 +1170,7 @@ object Loader:
 
   private def loadLiteralExpr(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    parseId: TermId, scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    parseId: TermId, scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     ft.get(parseId) match
       case Term.Const(lit) =>
@@ -1183,7 +1188,7 @@ object Loader:
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
     parseFunctor: TermSymbol, functorSpan: Span,
     posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)],
-    scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope, errors, functorSpan)
@@ -1223,7 +1228,7 @@ object Loader:
 
   private def loadPatternVar(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val nameRef = ft.get(posArgs(0)) match
       case Term.Ident(sym) =>
@@ -1241,7 +1246,7 @@ object Loader:
 
   private def loadPatternLiteral(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val value = reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
     val litPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.literal_pattern")
@@ -1249,7 +1254,7 @@ object Loader:
 
   private def loadPatternConstructor(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val nameRef = ft.get(posArgs(0)) match
@@ -1265,7 +1270,7 @@ object Loader:
 
   private def loadPatternTuple(
     kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+    posArgs: IArray[TermId], scope: ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
     val elements = IArray.tabulate(posArgs.length)(i => exprRec(ctx, posArgs(i)))

@@ -3,7 +3,7 @@ package anthill.parse
 import anthill.kb.{KnowledgeBase, SortKind}
 import anthill.load.{EmbeddedStdlib, FileSourceResolver, Loader, LoadError, Prelude}
 import anthill.term.{Term, TermId, Literal}
-import anthill.intern.{SymbolKind, SymbolDef, ResolveResult}
+import anthill.intern.{ScopeId, SymbolKind, SymbolDef, ResolveResult}
 
 import java.nio.file.Paths
 
@@ -1059,8 +1059,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val errs = Loader.loadAll(kb, IndexedSeq(provider, user)).filterNot(isToleratedLoadError)
     assert(errs.isEmpty, s"unexpected load errors: $errs")
 
-    val globalRaw = kb.makeNameTerm("_global").raw
-    kb.symbols.resolveInScope("Widget853", globalRaw) match
+    kb.symbols.resolveInScope("Widget853", kb.globalScope) match
       case ResolveResult.Found(sym) =>
         kb.symbols.get(sym) match
           case SymbolDef.Resolved(_, qn, _, _) => assertEquals(qn, "lib.Widget853")
@@ -1122,7 +1121,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val (kb, errs) = loadFixture(rulePredicateFixture)
     assert(errs.isEmpty, s"unexpected load errors: $errs")
     val userScope = kb.symbols.byQualifiedName.get("p3.User")
-      .map(s => kb.makeNameTermFromSym(s).raw)
+      .map(ScopeId.of)
       .getOrElse(fail("p3.User should be registered"))
     kb.symbols.resolveInScope("ite", userScope) match
       case ResolveResult.Found(sym) =>
@@ -1240,7 +1239,7 @@ class ParserIntegrationTest extends munit.FunSuite:
         |end""".stripMargin)
     assert(errs.isEmpty, s"unexpected load errors: $errs")
     val userScope = kb.symbols.byQualifiedName.get("p4.User")
-      .map(s => kb.makeNameTermFromSym(s).raw).getOrElse(fail("p4.User should be registered"))
+      .map(ScopeId.of).getOrElse(fail("p4.User should be registered"))
     kb.symbols.resolveInScope("ite", userScope) match
       case ResolveResult.Found(sym) =>
         kb.symbols.get(sym) match

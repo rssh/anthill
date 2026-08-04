@@ -143,8 +143,11 @@ object Builtins:
         kb.getTerm(symArg) match
           case inner: Term.Fn =>
             kb.symbols.get(inner.functor) match
-              case SymbolDef.Resolved(_, _, _, scopeRaw) =>
-                bindResult(kb, resultArg, TermId.fromRaw(scopeRaw), subst)
+              // WI-976: THE reader of the scope→term direction, and it goes through
+              // `scopeTerm`. It used to be `TermId.fromRaw(scopeRaw)` — see
+              // `anthill.intern.ScopeId` for why that was right only by coincidence.
+              case SymbolDef.Resolved(_, _, _, scope) =>
+                bindResult(kb, resultArg, kb.scopeTerm(scope), subst)
               case _ => BuiltinResult.Delay
           case _ => BuiltinResult.Delay
       case None => BuiltinResult.Failure
