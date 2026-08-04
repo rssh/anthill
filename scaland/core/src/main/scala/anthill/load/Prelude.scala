@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind, BuiltinTag}
-import anthill.intern.{SymbolKind, ScopeId, ScopeInclusion}
+import anthill.intern.{SymbolKind, ScopeId, ScopeInclusion, TermSymbol}
 
 /** Register prelude sorts and builtins into the KB. */
 object Prelude:
@@ -11,13 +11,34 @@ object Prelude:
     "Constraint", "EntityOf", "Param", "Field"
   )
 
+  /** The stdlib's namespace spine, as a VALUE (WI-990) — the one thing
+    * [[registerStdlibScopes]] produces and every later step consumes.
+    *
+    * The steps used to re-derive these scopes by qualified name from the KB
+    * (`scopeByQualifiedName("anthill.prelude")`), which THREW on a miss into a `Unit`
+    * return: a step run before the spine existed aborted KB bootstrap with a stack trace,
+    * and nothing but the statement order inside [[register]] kept that unreachable. Eight
+    * lines away [[registerBuiltinTags]] met the identical condition and DEGRADED instead —
+    * two policies for one condition in one file. Passing the scopes makes the condition
+    * unrepresentable: a step cannot be called before the spine exists, because it cannot
+    * be called without it. `PreludeScopesTest` asserts that as a compile error.
+    *
+    * `private[load]` for that test alone — nothing outside this file constructs one.
+    *
+    * THREE fields, not four: the enclosing `anthill` namespace is a step on the way to
+    * the other three and no later step reads it, so it stays a local. A field with no
+    * reader is a field nothing can catch being wrong — and all of these erase to `Int`,
+    * so a positional slip between them would type-check. */
+  private[load] case class StdlibScopes(
+    prelude: ScopeId, reflect: ScopeId, reflectTyping: ScopeId)
+
   def register(kb: KnowledgeBase): Unit =
-    registerStdlibScopes(kb)
-    registerPrimitiveSorts(kb)
-    registerKernelMetaSorts(kb)
-    registerExprSorts(kb)
-    registerBuiltinTags(kb)
-    registerGlobalParents(kb)
+    val scopes = registerStdlibScopes(kb)
+    registerPrimitiveSorts(kb, scopes)
+    registerKernelMetaSorts(kb, scopes)
+    registerExprSorts(kb, scopes)
+    registerBuiltinTags(kb, scopes)
+    registerGlobalParents(kb, scopes)
 
   /** The stdlib's namespace spine, created before any file is scanned.
     *
@@ -30,42 +51,63 @@ object Prelude:
     * searched INTO, through the `_global` parent links `registerGlobalParents` adds —
     * a file writing `namespace anthill.reflect` minted a SECOND symbol, keyed by the
     * dotted spelling in `_global`, and put its declarations there instead. */
-  private def registerStdlibScopes(kb: KnowledgeBase): Unit =
+  // `private[load]` for `PreludeScopesTest` alone (with `registerPrimitiveSorts` below):
+  // the two together are the shape its `typeCheckErrors` snippets need — a producer and
+  // one consumer. The other four steps stay `private`; they take the same argument.
+  private[load] def registerStdlibScopes(kb: KnowledgeBase): StdlibScopes =
     def defineNamespace(short: String, qualName: String, enclosing: ScopeId): ScopeId =
-      val scope = ScopeId.of(kb.symbols.define(short, qualName, SymbolKind.Namespace, enclosing))
+      val scope = kb.symbols.scopeOf(
+        kb.symbols.define(short, qualName, SymbolKind.Namespace, enclosing))
       kb.symbols.addParent(scope, ScopeInclusion(enclosing, isEnclosing = true))
       scope
 
     val anthillScope = defineNamespace("anthill", "anthill", kb.globalScope)
-    defineNamespace("prelude", "anthill.prelude", anthillScope)
+    val preludeScope = defineNamespace("prelude", "anthill.prelude", anthillScope)
     val reflectScope = defineNamespace("reflect", "anthill.reflect", anthillScope)
-    defineNamespace("typing", "anthill.reflect.typing", reflectScope)
+    val typingScope = defineNamespace("typing", "anthill.reflect.typing", reflectScope)
+    StdlibScopes(preludeScope, reflectScope, typingScope)
 
-  private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
-    val preludeScope = kb.scopeByQualifiedName("anthill.prelude")
+  /** Define `short` in `scope`, with the qualified name DERIVED from the scope (WI-990).
+    *
+    * Every definition in this file used to write the qualified name as a literal beside
+    * the scope it passed — `s"anthill.prelude.$name"` next to `scopes.prelude`, at ~30
+    * sites — so the two could disagree with nothing to notice, and the name that keys
+    * `byQualifiedName` is an IDENTITY, not a decoration. One derivation makes the pair
+    * unable to diverge, and it is the same rule the loader joins with
+    * ([[Loader.makeQualified]]), not a second copy of it.
+    *
+    * Deriving through [[KnowledgeBase.qualifiedNameOf]] and NOT `scopeDisplayName`: the
+    * latter is documented as the name to call a scope in a DIAGNOSTIC (WI-957), and
+    * WI-987 proposes changing what it renders for the synthetic global scope. A key must
+    * not move when a message does. */
+  private def defineIn(
+    kb: KnowledgeBase, scope: ScopeId, short: String, kind: SymbolKind
+  ): TermSymbol =
+    kb.symbols.define(
+      short, Loader.makeQualified(kb.qualifiedNameOf(scope.symbol), short), kind, scope)
+
+  // `private[load]` for `PreludeScopesTest` — see `registerStdlibScopes` above.
+  private[load] def registerPrimitiveSorts(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
     for name <- IndexedSeq("Int64", "BigInt", "Float", "String", "Bool") do
-      val qualName = s"anthill.prelude.$name"
-      val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, preludeScope)
+      val sym = defineIn(kb, scopes.prelude, name, SymbolKind.Sort)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
 
-  private def registerKernelMetaSorts(kb: KnowledgeBase): Unit =
-    val reflectScope = kb.scopeByQualifiedName("anthill.reflect")
+  private def registerKernelMetaSorts(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
     for name <- kernelMetaSorts do
-      val qualName = s"anthill.reflect.$name"
-      val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, reflectScope)
+      val sym = defineIn(kb, scopes.reflect, name, SymbolKind.Sort)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
 
   /** Register Expr, Pattern, TypedExpr sorts and their entities. */
-  private def registerExprSorts(kb: KnowledgeBase): Unit =
-    val reflectScope = kb.scopeByQualifiedName("anthill.reflect")
+  private def registerExprSorts(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+    val reflectScope = scopes.reflect
 
     // Helper to define a sort with enclosing scope. The sort is also linked
     // as a non-enclosing parent of its parent scope so its entity variants
     // (added via defineEntity → addExposed) resolve bare from the enclosing
     // scope — the variant-exposure mechanism (proposal 044 job 2).
-    def defineSort(shortName: String, qualName: String, parentScope: ScopeId): ScopeId =
-      val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, parentScope)
-      val sortScope = ScopeId.of(sym)
+    def defineSort(shortName: String, parentScope: ScopeId): ScopeId =
+      val sym = defineIn(kb, parentScope, shortName, SymbolKind.Sort)
+      val sortScope = kb.symbols.scopeOf(sym)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
       kb.symbols.addParent(sortScope, ScopeInclusion(parentScope, isEnclosing = true))
       kb.symbols.addParent(parentScope, ScopeInclusion(sortScope, isEnclosing = false))
@@ -73,90 +115,88 @@ object Prelude:
 
     // Helper to define an entity (variant) in a sort scope — exposed to the
     // enclosing scope via the sort's variant-exposure link.
-    def defineEntity(shortName: String, qualName: String, scope: ScopeId): Unit =
-      kb.symbols.define(shortName, qualName, SymbolKind.Entity, scope)
+    def defineEntity(shortName: String, scope: ScopeId): Unit =
+      defineIn(kb, scope, shortName, SymbolKind.Entity)
       kb.symbols.addExposed(scope, shortName)
 
     // Helper to define a standalone entity directly in the reflect scope.
     // Visible by default (reflect is a parent of _global with empty `exposed`).
-    def defineReflectEntity(shortName: String): Unit =
-      kb.symbols.define(shortName, s"anthill.reflect.$shortName", SymbolKind.Entity, reflectScope)
+    // RETURNS its symbol (WI-990): the global-import loop below used to look these
+    // names back up by string and drop a miss through `Option.foreach` — a definition
+    // and a re-lookup of the same name, with the same silent degrade the WI removed
+    // from `registerBuiltinTags`. Handing the symbol forward has no miss to drop.
+    def defineReflectEntity(shortName: String): TermSymbol =
+      defineIn(kb, reflectScope, shortName, SymbolKind.Entity)
 
     // anthill.reflect.Expr sort + entities
-    val exprScope = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
+    val exprScope = defineSort("Expr", reflectScope)
     for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda_expr", "apply",
       "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do
-      defineEntity(name, s"anthill.reflect.Expr.$name", exprScope)
+      defineEntity(name, exprScope)
 
     // anthill.reflect.Pattern sort + entities
-    val patternScope = defineSort("Pattern", "anthill.reflect.Pattern", reflectScope)
+    val patternScope = defineSort("Pattern", reflectScope)
     for name <- IndexedSeq("var_pattern", "tuple_pattern", "named_tuple_pattern",
       "constructor_pattern", "literal_pattern", "wildcard") do
-      defineEntity(name, s"anthill.reflect.Pattern.$name", patternScope)
+      defineEntity(name, patternScope)
 
     // Standalone entities
     defineReflectEntity("MatchBranch")
     defineReflectEntity("ApplyArg")
 
     // Reflect metadata entities (mirrors Rust register_prelude)
-    defineReflectEntity("SortInfo")
-    defineReflectEntity("FieldInfo")
-    defineReflectEntity("OperationInfo")
-    defineReflectEntity("EntityInfo")
-    defineReflectEntity("SortRequiresInfo")
-    defineReflectEntity("SortView")
+    val metadataEntities = IndexedSeq("SortInfo", "FieldInfo", "OperationInfo", "EntityInfo",
+      "SortRequiresInfo", "SortView").map(n => (n, defineReflectEntity(n)))
 
     // Collection literal entities (Proposal 019)
     // Used by the parser; the typing process (Proposal 011) desugars to concrete constructors
-    defineReflectEntity("SetLiteral")
-    defineReflectEntity("TupleLiteral")
-    defineReflectEntity("ListLiteral")
+    val literalEntities = IndexedSeq("SetLiteral", "TupleLiteral", "ListLiteral")
+      .map(n => (n, defineReflectEntity(n)))
 
     // anthill.reflect.TypedExpr sort
-    val typedExprScope = defineSort("TypedExpr", "anthill.reflect.TypedExpr", reflectScope)
-    defineEntity("typed", "anthill.reflect.TypedExpr.typed", typedExprScope)
+    val typedExprScope = defineSort("TypedExpr", reflectScope)
+    defineEntity("typed", typedExprScope)
 
     // Global imports for reflect entities
     val globalScope = kb.globalScope
-    for name <- IndexedSeq("SortInfo", "FieldInfo", "OperationInfo", "EntityInfo",
-        "SortRequiresInfo", "SortView", "SetLiteral", "TupleLiteral", "ListLiteral") do
-      kb.tryResolveSymbol(s"anthill.reflect.$name").foreach { sym =>
-        kb.symbols.addImport(globalScope, name, sym)
-      }
+    for (name, sym) <- metadataEntities ++ literalEntities do
+      kb.symbols.addImport(globalScope, name, sym)
 
-  private def registerBuiltinTags(kb: KnowledgeBase): Unit =
+  /** A kernel operation is DEFINED in its namespace scope, always (WI-990).
+    *
+    * The scope used to be re-derived here from the qualified name, with a degrade arm for
+    * the miss: `kb.intern(qualName)` registered the tag on a symbol whose whole spelling
+    * was `anthill.reflect.not`, in no scope at all — so `not(...)` would resolve to
+    * nothing and the builtin would be unreachable BY NAME, with nothing said. The scope is
+    * now passed in, so the miss has no arm to take.
+    *
+    * The list is in definition order, so the symbol ids it allocates are the ones it
+    * always allocated. */
+  private def registerBuiltinTags(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+    val reflect = scopes.reflect
+    val typing = scopes.reflectTyping
     val builtinDefs = IndexedSeq(
-      ("anthill.reflect.nonvar", BuiltinTag.NonVar),
-      ("anthill.reflect.ground", BuiltinTag.Ground),
-      ("anthill.reflect.qualified_name", BuiltinTag.QualifiedName),
-      ("anthill.reflect.short_name", BuiltinTag.ShortName),
-      ("anthill.reflect.lookup_symbol", BuiltinTag.LookupSymbol),
-      ("anthill.reflect.not", BuiltinTag.Not),
-      ("anthill.reflect.typing.is_entity_of", BuiltinTag.IsEntityOf),
-      ("anthill.reflect.typing.extract_sort_ref", BuiltinTag.ExtractSort),
-      ("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag.ResolveSortInstParam),
-      ("anthill.reflect.scope", BuiltinTag.Scope),
-      ("anthill.reflect.kind", BuiltinTag.Kind),
-      ("anthill.reflect.field_access", BuiltinTag.FieldAccess),
+      (reflect, "nonvar", BuiltinTag.NonVar),
+      (reflect, "ground", BuiltinTag.Ground),
+      (reflect, "qualified_name", BuiltinTag.QualifiedName),
+      (reflect, "short_name", BuiltinTag.ShortName),
+      (reflect, "lookup_symbol", BuiltinTag.LookupSymbol),
+      (reflect, "not", BuiltinTag.Not),
+      (typing, "is_entity_of", BuiltinTag.IsEntityOf),
+      (typing, "extract_sort_ref", BuiltinTag.ExtractSort),
+      (reflect, "resolve_sort_instantiation_param", BuiltinTag.ResolveSortInstParam),
+      (reflect, "scope", BuiltinTag.Scope),
+      (reflect, "kind", BuiltinTag.Kind),
+      (reflect, "field_access", BuiltinTag.FieldAccess),
     )
 
-    for (qualName, tag) <- builtinDefs do
-      val short = qualName.split('.').last
-      val nsPrefix = qualName.substring(0, qualName.lastIndexOf('.'))
-      kb.tryResolveSymbol(nsPrefix) match
-        case Some(nsSym) =>
-          val sym = kb.symbols.define(short, qualName, SymbolKind.Operation, ScopeId.of(nsSym))
-          kb.registerBuiltinTag(sym, tag)
-        case None =>
-          val sym = kb.intern(qualName)
-          kb.registerBuiltinTag(sym, tag)
+    for (scope, short, tag) <- builtinDefs do
+      kb.registerBuiltinTag(defineIn(kb, scope, short, SymbolKind.Operation), tag)
 
   /** Add anthill.prelude and anthill.reflect as parents of _global,
     * making their exports visible everywhere.
     */
-  private def registerGlobalParents(kb: KnowledgeBase): Unit =
+  private def registerGlobalParents(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
     val globalScope = kb.globalScope
-    val preludeScope = kb.scopeByQualifiedName("anthill.prelude")
-    kb.symbols.addParent(globalScope, ScopeInclusion(preludeScope, isEnclosing = false))
-    val reflectScope = kb.scopeByQualifiedName("anthill.reflect")
-    kb.symbols.addParent(globalScope, ScopeInclusion(reflectScope, isEnclosing = false))
+    kb.symbols.addParent(globalScope, ScopeInclusion(scopes.prelude, isEnclosing = false))
+    kb.symbols.addParent(globalScope, ScopeInclusion(scopes.reflect, isEnclosing = false))

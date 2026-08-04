@@ -1,6 +1,5 @@
 package anthill.kb
 
-import anthill.intern.ScopeId
 import anthill.term.{Term, TermId, Var, Literal}
 import anthill.subst.Substitution
 
@@ -9,7 +8,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("assert and query by sort") {
     val kb = KnowledgeBase()
     val sortAccount = kb.makeNameTerm("Account")
-    val domain = ScopeId.of(kb.intern("banking"))
+    val domain = kb.symbols.scopeOf(kb.intern("banking"))
     val idSym = kb.intern("account")
     val arg = kb.alloc(Term.Const(Literal.StringLit("A001")))
     val acct = kb.alloc(Term.Fn(idSym, IArray(arg), IArray.empty))
@@ -22,7 +21,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val kb = KnowledgeBase()
     val nat = kb.makeNameTerm("Nat")
     val zero = kb.makeNameTerm("zero")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
 
     kb.registerSort(nat, SortKind.Defined)
     kb.registerSort(zero, SortKind.Constructor)
@@ -40,7 +39,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("retract removes from index") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("T")
-    val domain = ScopeId.of(kb.intern("d"))
+    val domain = kb.symbols.scopeOf(kb.intern("d"))
     val term = kb.alloc(Term.Const(Literal.IntLit(42)))
     val fid = kb.assertFact(term, sort, domain)
     assertEquals(kb.bySort(sort).length, 1)
@@ -95,7 +94,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     // differ) and dropped the candidate: silent 0 solutions.
     val kb = KnowledgeBase()
     val factSort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val unbox = kb.intern("unbox0")
     val boxSym = kb.intern("box")
     val vField = kb.intern("v")
@@ -168,7 +167,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     def kbRule(sameVar: Boolean): (KnowledgeBase, TermId) =
       val kb = KnowledgeBase()
       val ruleSort = kb.makeNameTerm("Rule")
-      val domain = ScopeId.of(kb.intern("test"))
+      val domain = kb.symbols.scopeOf(kb.intern("test"))
       val pairSym = kb.intern("pair")
       val dummySym = kb.intern("dummy")
       val vx = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("x")))))
@@ -196,7 +195,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("query by pattern") {
     val kb = KnowledgeBase()
     val factSort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val parentSym = kb.intern("parent")
     val alice = kb.alloc(Term.Const(Literal.StringLit("alice")))
     val bob = kb.alloc(Term.Const(Literal.StringLit("bob")))
@@ -222,7 +221,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("assert rule with body") {
     val kb = KnowledgeBase()
     val ruleSort = kb.makeNameTerm("Rule")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val parentSym = kb.intern("parent")
     val grandparentSym = kb.intern("grandparent")
 
@@ -260,7 +259,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("standardize apart produces fresh vars") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Rule")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val fSym = kb.intern("f"); val gSym = kb.intern("g")
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
@@ -312,7 +311,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("isEquation recognizes both `eq` and `unify` heads (WI-528)") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Rule")
-    val domain = ScopeId.of(kb.intern("d"))
+    val domain = kb.symbols.scopeOf(kb.intern("d"))
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
     val varX = kb.alloc(Term.Var(Var.Global(vx)))
@@ -367,7 +366,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
   test("fact count and rule count") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("S")
-    val domain = ScopeId.of(kb.intern("d"))
+    val domain = kb.symbols.scopeOf(kb.intern("d"))
     val fSym = kb.intern("f"); val gSym = kb.intern("g")
     val v = kb.alloc(Term.Const(Literal.IntLit(1)))
     val fact = kb.alloc(Term.Fn(fSym, IArray(v), IArray.empty))

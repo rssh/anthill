@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.{ScopeId, SymbolDef}
+import anthill.intern.{SymbolDef, SymbolTable}
 import anthill.load.{Loader, Prelude}
 import anthill.parse.Parser
 import anthill.resolve.SearchStream
@@ -56,6 +56,19 @@ import scala.compiletime.testing.typeCheckErrors
   * `ruleDomain` and `assertFact`'s dedup had no reader anywhere in this tree, so a
   * mis-keyed index or a domain equality that answered the same for every scope would
   * have gone unnoticed either side of this WI.
+  *
+  * WI-990 SAID WHICH TABLE, which the type alone could not. `ScopeId.of` was total over
+  * `TermSymbol`, and a `TermSymbol` indexes ONE `SymbolTable`'s `defs` while the loader
+  * threads two. The two cases below split the usual way — the mint's LOCATION is a
+  * compile error, its RANGE a runtime refusal — and the second one also asserts what
+  * neither closes.
+  *
+  * MEASURE A TYPE-LEVEL CONTROL WITH `core/clean`. `typeCheckErrors` runs the typer at
+  * THIS file's compile time, and zinc does not treat the snippet's subject as a
+  * dependency: making `ScopeId.of` public again and re-running `testOnly` leaves the
+  * stale class file in place and reports green. Under a clean build it is exactly 1 of
+  * these 8 failing (`must not be reachable outside anthill.intern; got List()`). The same
+  * applies to every `typeCheckErrors` case above.
   */
 class ScopeIdentityTest extends munit.FunSuite:
 
@@ -105,13 +118,64 @@ class ScopeIdentityTest extends munit.FunSuite:
 
   test("WI-976: a declared scope displays as its qualified name; `_global` as its spelling") {
     val kb = loaded(src)
-    assertEquals(kb.scopeDisplayName(ScopeId.of(kb.resolveSymbol("demo.S"))), "demo.S")
+    assertEquals(kb.scopeDisplayName(kb.symbols.scopeOf(kb.resolveSymbol("demo.S"))), "demo.S")
     // The scope with NO qualified name — `_global` is interned, never declared, so its
     // `SymbolDef` is `Unresolved`. This is the input the old `scopeFunctor` /
     // `IllegalStateException` pair looked like it was guarding against and never was:
     // it is a perfectly good scope, and `qualifiedNameOf` already falls back to the
     // interned spelling.
     assertEquals(kb.scopeDisplayName(kb.globalScope), "_global")
+  }
+
+  test("WI-990: a scope is minted THROUGH the table whose symbol it is") {
+    // `ScopeId.of(sym)` compiled from anywhere before this WI, for a symbol from ANY
+    // table — and the loader threads two, `kb.symbols` and the parse-time `fileSym`. The
+    // snippet is that call on a foreign table's symbol, which is the shape
+    // `ScopeId.of(imp.path.last)` would have had at any of `Loader`'s import sites.
+    val companionMint = typeCheckErrors(
+      """val fileSym = anthill.intern.SymbolTable()
+         anthill.intern.ScopeId.of(fileSym.intern("Widget"))""")
+    // Matched on the ACCESS wording, not on the substring "of" — "of" appears in the
+    // routine "value X is not a member of Y", so a typo in the snippet would have
+    // satisfied the assertion while the message claimed access control was proven.
+    assert(
+      companionMint.exists(_.message.contains("cannot be accessed")),
+      s"`ScopeId.of` must not be reachable outside `anthill.intern`; got $companionMint")
+
+    // POSITIVE control: the same mint through the table type-checks clean, so the
+    // rejection above is about WHERE the mint lives and not about the snippet.
+    assertEquals(
+      typeCheckErrors(
+        """val st = anthill.intern.SymbolTable()
+           st.scopeOf(st.intern("Widget"))"""),
+      Nil)
+  }
+
+  test("WI-990: the mint refuses a symbol its table never issued") {
+    val kb = KnowledgeBase()
+    // A second table, grown past `kb.symbols` (a bare KB holds only `_global`), so its
+    // last symbol indexes off the end of the KB's `defs` — the direction the ticket
+    // MEASURED: `kb.scopeDisplayName(ScopeId.of(foreign))` used to throw
+    // `IndexOutOfBoundsException` from inside `qualifiedNameOf`, a display path, with
+    // nothing naming the actual mistake.
+    val other = SymbolTable()
+    val foreign = IndexedSeq("a", "b", "c", "d", "e").map(other.intern).last
+    // Discriminating for the range check alone: delete it and `intercept` finds no throw.
+    val refused = intercept[IllegalArgumentException](kb.symbols.scopeOf(foreign))
+    assert(refused.getMessage.contains("past this symbol table's 1 entries"),
+      s"the refusal should say what it observed; got ${refused.getMessage}")
+
+    // The bound is the TABLE's, not a global one: `other` issued it, so `other` mints it.
+    assertEquals(other.scopeOf(foreign), other.scopeOf(other.intern("e")))
+
+    // NOT closed, and no CHECK on this side can close it: a foreign symbol that is IN
+    // range mints a scope for whatever symbol shares that index — here `other`'s "a"
+    // names the KB's `_global`. That is the loader's own direction (`fileSym` small,
+    // `kb.symbols` large). Asserted so the limit is a measured fact rather than a hope;
+    // WI-1004 is the close that makes it a TYPE, and inverts this assertion.
+    val inRange = other.intern("a")
+    assertEquals(other.name(inRange), "a")
+    assertEquals(kb.scopeDisplayName(kb.symbols.scopeOf(inRange)), "_global")
   }
 
   test("WI-976: `scopeTerm` is the inverse of the scope a symbol was defined in") {
@@ -169,8 +233,8 @@ class ScopeIdentityTest extends munit.FunSuite:
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("S")
     val fact = kb.makeNameTerm("f")
-    val a = ScopeId.of(kb.intern("a"))
-    val b = ScopeId.of(kb.intern("b"))
+    val a = kb.symbols.scopeOf(kb.intern("a"))
+    val b = kb.symbols.scopeOf(kb.intern("b"))
 
     val inA = kb.assertFact(fact, sort, a)
     assertEquals(kb.assertFact(fact, sort, a), inA,

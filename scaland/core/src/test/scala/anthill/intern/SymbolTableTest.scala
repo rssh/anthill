@@ -5,10 +5,11 @@ class SymbolTableTest extends munit.FunSuite:
   /** WI-976: a scope is MINTED from a symbol. These cases used to pass bare integers
     * (`10`, `100`, `300`) as scopes, which is what "scope-hood is untyped" looked like
     * from the outside — the table accepted a number that named nothing, so the unit
-    * tests exercised a shape the loader could never produce. `ScopeId.of` is the only
-    * way in now, so the scopes here are the same kind of thing the loader threads. */
+    * tests exercised a shape the loader could never produce. `SymbolTable.scopeOf` is the
+    * only way in now (WI-990: minted THROUGH the table whose symbol it is), so the scopes
+    * here are the same kind of thing the loader threads. */
   private def scopeOf(st: SymbolTable, name: String): ScopeId =
-    ScopeId.of(st.intern(name))
+    st.scopeOf(st.intern(name))
 
   test("intern deduplicates") {
     val st = SymbolTable()

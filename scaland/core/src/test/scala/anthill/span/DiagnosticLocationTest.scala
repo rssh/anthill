@@ -1,7 +1,7 @@
 package anthill.span
 
 import anthill.kb.KnowledgeBase
-import anthill.intern.{ResolveResult, ScopeId}
+import anthill.intern.ResolveResult
 import anthill.load.{LoadError, Loader, Prelude}
 import anthill.parse.{ParseError, ParsedFile, Parser}
 
@@ -405,7 +405,7 @@ class DiagnosticLocationTest extends munit.FunSuite:
     // Without this the test would pass on a `requires` that resolved and then linked
     // nothing.
     val inS = kb.symbols.resolveInScope(
-      "spin", ScopeId.of(kb.resolveSymbol("demo.S")))
+      "spin", kb.symbols.scopeOf(kb.resolveSymbol("demo.S")))
     assertEquals(
       inS match
         case ResolveResult.Found(sym) => kb.qualifiedNameOf(sym)
@@ -414,7 +414,7 @@ class DiagnosticLocationTest extends munit.FunSuite:
   }
 
   /** WI-988 — LINKING A PARENT THAT CANNOT HOLD CONTENTS IS A NO-OP, AND IT USED TO BE
-    * A SILENT ONE. `ScopeId.of` is total over a symbol, so "can this name hold contents"
+    * A SILENT ONE. `scopeOf` is total over a symbol, so "can this name hold contents"
     * is the linking site's question; neither site asked it. `addParent` then created the
     * importing side's record and never the parent's, `resolveRecursive` treated the
     * missing parent as eligible, and the answer was `NotFound` — a name the user wrote
@@ -444,7 +444,7 @@ class DiagnosticLocationTest extends munit.FunSuite:
     // NOTHING, which is what the user cannot see. This probe is the pre-fix behaviour
     // and stays true after — the gate refuses the link, it does not repair it.
     assertEquals(
-      kb.symbols.resolveInScope("op1", ScopeId.of(kb.resolveSymbol("demo.User"))),
+      kb.symbols.resolveInScope("op1", kb.symbols.scopeOf(kb.resolveSymbol("demo.User"))),
       ResolveResult.NotFound)
   }
 
@@ -491,7 +491,7 @@ class DiagnosticLocationTest extends munit.FunSuite:
     val e = unresolved(errs, "Widget")
     assertEquals(e.scopeName, "demo.S")
     assertEquals(
-      kb.symbols.resolveInScope(e.name, ScopeId.of(kb.resolveSymbol(e.scopeName))),
+      kb.symbols.resolveInScope(e.name, kb.symbols.scopeOf(kb.resolveSymbol(e.scopeName))),
       ResolveResult.NotFound,
       s"'${e.name}' must really be unresolvable in '${e.scopeName}' for the message to be true")
   }

@@ -1,7 +1,6 @@
 package anthill.resolve
 
 import anthill.kb.KnowledgeBase
-import anthill.intern.ScopeId
 import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.subst.Substitution
 import scala.collection.mutable.ArrayBuffer
@@ -11,7 +10,7 @@ class ResolveTest extends munit.FunSuite:
   test("basic fact resolution") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val fSym = kb.intern("f")
     val v = kb.alloc(Term.Const(Literal.IntLit(42)))
     val fact = kb.alloc(Term.Fn(fSym, IArray(v), IArray.empty))
@@ -33,7 +32,7 @@ class ResolveTest extends munit.FunSuite:
   test("multiple fact results") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val fSym = kb.intern("f")
     val v1 = kb.alloc(Term.Const(Literal.IntLit(1)))
     val v2 = kb.alloc(Term.Const(Literal.IntLit(2)))
@@ -57,7 +56,7 @@ class ResolveTest extends munit.FunSuite:
   test("backward chaining with rule") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Sort")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val parentSym = kb.intern("parent")
     val grandparentSym = kb.intern("grandparent")
 
@@ -101,7 +100,7 @@ class ResolveTest extends munit.FunSuite:
   test("backtracking - no matching rule") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Sort")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val fSym = kb.intern("f")
     val v = kb.alloc(Term.Const(Literal.IntLit(42)))
     val fact = kb.alloc(Term.Fn(fSym, IArray(v), IArray.empty))
@@ -121,7 +120,7 @@ class ResolveTest extends munit.FunSuite:
   test("depth limit prevents infinite recursion") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Sort")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val fSym = kb.intern("f")
     val xSym = kb.intern("x")
     val vx = kb.freshVar(xSym)
@@ -146,7 +145,7 @@ class ResolveTest extends munit.FunSuite:
   test("lazy list interface") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val fSym = kb.intern("f")
     for i <- 1 to 5 do
       val v = kb.alloc(Term.Const(Literal.IntLit(i.toLong)))
@@ -166,7 +165,7 @@ class ResolveTest extends munit.FunSuite:
   test("multiple rules and facts combined") {
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Sort")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val colorSym = kb.intern("color")
     val mixSym = kb.intern("mix")
 
@@ -216,7 +215,7 @@ class ResolveTest extends munit.FunSuite:
     // After fix: succ(zero()), succ(succ(zero())), etc.
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Sort")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
 
     val natSym = kb.intern("nat")
     val zeroSym = kb.intern("zero")
@@ -280,7 +279,7 @@ class ResolveTest extends munit.FunSuite:
   private def buildNBodyFixture(n: Int): (KnowledgeBase, TermId) =
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Sort")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val bigSym = kb.intern("big")
 
     val fSyms = (0 until n).map(i => kb.intern(s"f_$i"))
@@ -349,7 +348,7 @@ class ResolveTest extends munit.FunSuite:
     // success with ?q unbound.
     val kb = KnowledgeBase()
     val factSort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val pSym = kb.intern("p")
     val boxSym = kb.intern("box")
     val vField = kb.intern("v")
@@ -377,7 +376,7 @@ class ResolveTest extends munit.FunSuite:
     // descended nested compounds with no path, so ?x came back UNBOUND.
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val pSym = kb.intern("p")
     val gSym = kb.intern("g")
 
@@ -403,7 +402,7 @@ class ResolveTest extends munit.FunSuite:
     // Named-arg nesting: `p(box(v: ?x))` against `p(box(v: 42))` binds ?x = 42.
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val pSym = kb.intern("p")
     val boxSym = kb.intern("box")
     val vField = kb.intern("v")
@@ -429,7 +428,7 @@ class ResolveTest extends munit.FunSuite:
     // of [Positional(0), Positional(0), Positional(0)].
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val pSym = kb.intern("p")
     val fSym = kb.intern("f")
     val gSym = kb.intern("g")
@@ -457,7 +456,7 @@ class ResolveTest extends munit.FunSuite:
     // guards the sibling-arg path continuation after a nested descent.
     val kb = KnowledgeBase()
     val sort = kb.makeNameTerm("Fact")
-    val domain = ScopeId.of(kb.intern("test"))
+    val domain = kb.symbols.scopeOf(kb.intern("test"))
     val pSym = kb.intern("p")
     val gSym = kb.intern("g")
 

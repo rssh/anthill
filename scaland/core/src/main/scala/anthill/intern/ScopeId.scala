@@ -12,30 +12,41 @@ package anthill.intern
   * shape any producer built — which is the definition of a runtime check standing in
   * for a type.
   *
-  * A SCOPE IS A SYMBOL. [[of]] is the sole mint and it is TOTAL, so [[symbol]] is a
-  * projection, not a query: no `Option`, no term store, nothing to refuse, and so
-  * nothing for a caller to re-decide.
+  * A SCOPE IS A SYMBOL. [[SymbolTable.scopeOf]] is the sole mint and it is total over its
+  * table's symbols, so [[symbol]] is a projection, not a query: no `Option`, no term
+  * store, nothing to refuse, and so nothing for a caller to re-decide.
   *
-  * TOTAL IS THE POINT, not a weakening of it. The scope graph is OPEN — [[SymbolTable]]
-  * creates a scope's entry lazily, so every symbol is a potential scope and there is no
-  * predicate a mint could check. What this type carries is a ROLE, not a capability: it
-  * says the value came from a symbol rather than from an integer or an arbitrary term,
-  * which is the whole of what was being promised by hand before.
+  * TOTAL OVER A TABLE'S SYMBOLS IS THE POINT, not a weakening of it. The scope graph is
+  * OPEN — [[SymbolTable]] creates a scope's entry lazily, so every symbol of that table
+  * is a potential scope and its KIND is nothing the mint could require. What this type
+  * carries is a ROLE, not a capability: it says the value came from a symbol rather than
+  * from an integer or an arbitrary term, which is the whole of what was being promised by
+  * hand before. The mint's one refusal is about the OTHER question, which table (WI-990,
+  * below).
   *
   * The scope's TERM form — `Term.Fn(symbol, [], [])`, what an `entity_of` fact and a
   * rule's domain carry — is recovered by `KnowledgeBase.scopeTerm`, which goes through
   * the one name-term producer (`makeNameTermFromSym`, WI-962). Scope → term is a
   * function; this type is what makes the other direction unnecessary.
+  *
+  * A SYMBOL MEANS SOMETHING ONLY RELATIVE TO ONE TABLE, so the mint is
+  * [[SymbolTable.scopeOf]] and not a companion method here (WI-990). A `TermSymbol` is
+  * an index into one [[SymbolTable]]'s `defs`, and the loader threads TWO tables side by
+  * side — `kb.symbols` and the parse-time `fileSym` — through nearly every signature;
+  * `ScopeId.of(imp.path.last)` used to type-check and mint a scope in the wrong universe.
+  * Naming the table at the mint is what this type could not say on its own —
+  * `ScopeIdentityTest` holds it, and `SymbolTable.scopeOf` says what it does not reach.
   */
 opaque type ScopeId = TermSymbol
 
 object ScopeId:
-  /** THE mint. A scope is named by a symbol and by nothing else, so this cannot fail
-    * and there is no other way in. */
-  def of(sym: TermSymbol): ScopeId = sym
+  /** The mint's implementation, `private[intern]` so [[SymbolTable.scopeOf]] is the only
+    * way in from outside — see the note on tables above, and `scopeOf`'s own comment for
+    * what naming the table does and does not close. */
+  private[intern] def of(sym: TermSymbol): ScopeId = sym
 
   extension (s: ScopeId)
-    /** The symbol that names this scope. Total by construction — see [[of]]. Named for
-      * the SYMBOL layer, not the term layer (`functor` would be the word if a scope
-      * were a term, which is exactly what this type denies). */
+    /** The symbol that names this scope. Total by construction — see
+      * [[SymbolTable.scopeOf]]. Named for the SYMBOL layer, not the term layer (`functor`
+      * would be the word if a scope were a term, which is exactly what this type denies). */
     def symbol: TermSymbol = s

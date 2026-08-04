@@ -221,7 +221,7 @@ object Loader:
     kb: KnowledgeBase, qualName: String, span: Span, errors: ArrayBuffer[LoadError]
   ): Option[ScopeId] =
     lookupDefined(kb, qualName, span, "the declarations inside it cannot be loaded", errors)
-      .map(ScopeId.of)
+      .map(kb.symbols.scopeOf)
 
   // ── Pass 1: Define names ─────────────────────────────────────
 
@@ -239,7 +239,7 @@ object Loader:
       decl match
         case ScopeDecl.Ns(_) =>
           val sym = kb.symbols.define(short, qualName, SymbolKind.Namespace, target)
-          val nsScope = ScopeId.of(sym)
+          val nsScope = kb.symbols.scopeOf(sym)
           // Enclosing scope. (Model C / proposal 044: names visible by default;
           // the `export` statement was removed in WI-291.)
           kb.symbols.addParent(nsScope, ScopeInclusion(target, isEnclosing = true))
@@ -247,7 +247,7 @@ object Loader:
 
         case ScopeDecl.SortBody(sort) =>
           val sym = kb.symbols.define(short, qualName, SymbolKind.Sort, target)
-          val sortScope = ScopeId.of(sym)
+          val sortScope = kb.symbols.scopeOf(sym)
           kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
           kb.symbols.addParent(sortScope, ScopeInclusion(target, isEnclosing = true))
           // Variant exposure (proposal 044 job 2): a sort exposes ONLY its
@@ -442,10 +442,11 @@ object Loader:
         // not by qualified name is what makes `anthill` the one Prelude defined rather
         // than a second symbol sharing its spelling.
         kb.symbols.scope(scope).flatMap(_.locals.get(short)) match
-          case Some(sym) => ScopeId.of(sym)
+          case Some(sym) => kb.symbols.scopeOf(sym)
           case None =>
             val qualPath = makeQualified(prefix, segments.take(i + 1).mkString("."))
-            val ns = ScopeId.of(kb.symbols.define(short, qualPath, SymbolKind.Namespace, scope))
+            val ns = kb.symbols.scopeOf(
+              kb.symbols.define(short, qualPath, SymbolKind.Namespace, scope))
             kb.symbols.addParent(ns, ScopeInclusion(scope, isEnclosing = true))
             ns
       }
@@ -675,7 +676,7 @@ object Loader:
   private def resolveSelectiveImport(
     kb: KnowledgeBase, target: TermSymbol, pathStr: String, name: String
   ): Option[TermSymbol] =
-    kb.symbols.resolveInScope(name, ScopeId.of(target)) match
+    kb.symbols.resolveInScope(name, kb.symbols.scopeOf(target)) match
       case ResolveResult.Found(s) => Some(s)
       // Last resort: an entity exported by the namespace but defined one scope
       // deeper, e.g. `execution_platform` declared inside `sort ExecutionPlatform`
@@ -760,9 +761,10 @@ object Loader:
 
   /** The scope a symbol names, when its KIND is one that has contents (WI-988).
     *
-    * `ScopeId.of` is total over a symbol, deliberately — the scope graph is open, so the
-    * MINT has no predicate to check. That leaves "can this name hold contents at all" to
-    * the sites that link a parent, and both of them used to skip it. An `import X.*` or a
+    * `scopeOf` is total over its table's symbols, deliberately — the scope graph is open,
+    * so a symbol's KIND is nothing the mint can require (its own refusal is about which
+    * table, WI-990). That leaves "can this name hold contents at all" to the sites that
+    * link a parent, and both of them used to skip it. An `import X.*` or a
     * `requires X` naming an OPERATION minted a scope that no `define` had ever filled;
     * `addParent` created the importing side's record and never the parent's, and
     * `resolveRecursive` then treated the missing parent as eligible and answered
@@ -777,7 +779,7 @@ object Loader:
     val actual = kb.symbols.get(sym) match
       case SymbolDef.Resolved(_, _, kind, _) => Some(kind)
       case SymbolDef.Unresolved(_) => None
-    if actual.exists(allowed.contains) then Some(ScopeId.of(sym))
+    if actual.exists(allowed.contains) then Some(kb.symbols.scopeOf(sym))
     else
       val got = actual
         .map(k => s"names a ${k.toString.toLowerCase}")
@@ -1195,7 +1197,8 @@ object Loader:
       if qualName.startsWith(preludePrefix) then
         val afterPrelude = qualName.substring(preludePrefix.length)
         if !afterPrelude.contains('.') && !skip.contains(afterPrelude) then
-          kb.symbols.addParent(globalScope, ScopeInclusion(ScopeId.of(sym), isEnclosing = false))
+          kb.symbols.addParent(
+            globalScope, ScopeInclusion(kb.symbols.scopeOf(sym), isEnclosing = false))
 
   private def findSortTerm(kb: KnowledgeBase, qualName: String): TermId =
     kb.symbols.byQualifiedName.get(qualName) match
@@ -1217,7 +1220,10 @@ object Loader:
       case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
       case _ => false
 
-  private def makeQualified(prefix: String, name: String): String =
+  // `private[load]` so `Prelude.defineIn` joins by the SAME rule (WI-990) rather than
+  // re-spelling it — including the empty-prefix arm, which a bare `s"$prefix.$name"`
+  // would turn into a leading dot.
+  private[load] def makeQualified(prefix: String, name: String): String =
     if prefix.isEmpty then name else s"$prefix.$name"
 
   // ── List / Option builders ────────────────────────────────────

@@ -31,6 +31,41 @@ class SymbolTable:
   val byQualifiedName: HashMap[String, TermSymbol] = HashMap.empty
   private val scopes = HashMap.empty[ScopeId, Scope]
 
+  /** THE mint for a [[ScopeId]] (WI-990) — on the table, because a `TermSymbol` is an
+    * index into ONE table's `defs` and means nothing anywhere else. `ScopeId.of` was a
+    * companion method, total over `TermSymbol` and therefore silent about which table the
+    * symbol came from, while the loader threads two — `kb.symbols` and the parse-time
+    * `fileSym` — through nearly every signature. Every mint now WRITES the table it means.
+    *
+    * The range check is what a table can actually decide, and it is the case that was
+    * MEASURED: a symbol from a bigger table reached `qualifiedNameOf` and threw
+    * `IndexOutOfBoundsException` from inside a display path, and `scopeTerm` built a name
+    * term for whatever symbol shared that index. It is refused HERE instead, naming the
+    * table's size, because the mint is where the mistake is.
+    *
+    * WHAT IT DOES NOT CLOSE, and cannot as a CHECK: a symbol that is IN range for the
+    * wrong table — which is the loader's own direction, `fileSym` being small and
+    * `kb.symbols` large. Both are `Int`s with no table tag, so this side can observe only
+    * the range, and the message says only that. The close that would make it a TYPE is a
+    * path-dependent `opaque type ScopeId` as a member of this class: `st1.ScopeId` and
+    * `st2.ScopeId` are then distinct types and the cross-table hand-off is a compile
+    * error (verified — Scala 3 reports `Found: (s : a.ScopeId) Required: b.ScopeId`). It
+    * is invasive rather than impossible: [[SymbolDef.Resolved]] and [[ScopeInclusion]]
+    * hold a `ScopeId` from outside the class, and `KnowledgeBase`'s `RuleEntry.domain`
+    * holds one with no table in scope, so all three would need a type parameter. That is
+    * WI-1004, and `ScopeIdentityTest`'s in-range case is the hole it inverts.
+    *
+    * `ScopeIdentityTest` asserts all three parts — the mint's location as a compile
+    * error, the refusal, and the in-range case that survives; backing out the location
+    * fails the first, backing out the range check the second. */
+  def scopeOf(sym: TermSymbol): ScopeId =
+    val raw = TermSymbol.raw(sym)
+    if raw < 0 || raw >= defs.length then
+      throw new IllegalArgumentException(
+        s"scopeOf: symbol #$raw is past this symbol table's ${defs.length} entries — " +
+        "a symbol only means anything in the table that issued it")
+    ScopeId.of(sym)
+
   /** Intern a name, returning a TermSymbol. Creates an Unresolved entry
     * if the name hasn't been seen before (deduplicated).
     */

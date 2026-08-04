@@ -66,22 +66,18 @@ class KnowledgeBase:
     * The spelling is `_global` for rustland parity (`kb/mod.rs` and four more sites), and
     * it is a legal identifier there and here, so `namespace _global` can name a SECOND
     * scope that renders identically. Closing that needs a sentinel both implementations
-    * agree on — see WI-987. */
-  val globalScope: ScopeId =
-    ScopeId.of(symbols.intern("_global"))
-
-  /** The scope a QUALIFIED name names (`anthill.prelude`) — the scope form of
-    * `resolveQualifiedNameTerm`'s old job, whose every caller was `Prelude` reaching for
-    * a scope, so with the scope typed it had none left.
+    * agree on — see WI-987.
     *
-    * REFUSES an unregistered name, through [[resolveSymbol]]. Its predecessor interned
-    * the spelling instead, which would have minted a fresh Unresolved symbol and called
-    * it a scope — a scope resolving nothing, with no diagnostic. That arm is unreachable
-    * (`Prelude.register` defines `anthill.prelude` / `anthill.reflect` in its first step,
-    * before any caller here), and an unreachable arm that degrades quietly is the shape
-    * this ticket is removing, not one to inherit. */
-  def scopeByQualifiedName(name: String): ScopeId =
-    ScopeId.of(resolveSymbol(name))
+    * A `val` naming a symbol, so `symbols.scopeOf(symbols.intern("_global"))` names this
+    * same scope: the KB's ONE mint (WI-990) is total over the symbol universe and this
+    * scope is in it. Its predecessor `scopeByQualifiedName` — a second mint, over
+    * QUALIFIED names — could not name this one at all (`_global` is interned and never
+    * defined) and THREW on a miss with no error channel, into four `Unit`-returning
+    * `Prelude` steps whose ordering was the only thing keeping it unreachable. It is
+    * gone: `Prelude` now takes the stdlib scopes as a value from the step that creates
+    * them, so there is no name to miss. */
+  val globalScope: ScopeId =
+    symbols.scopeOf(symbols.intern("_global"))
 
   /** A scope's TERM form — for the four callers that must hand a scope where a TERM is
     * what fits: the `entity_of` and `provides_clause` facts embed one as an argument,

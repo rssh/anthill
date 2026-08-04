@@ -3,7 +3,7 @@ package anthill.parse
 import anthill.kb.{KnowledgeBase, SortKind}
 import anthill.load.{EmbeddedStdlib, FileSourceResolver, Loader, LoadError, Prelude}
 import anthill.term.{Term, TermId, Literal}
-import anthill.intern.{ScopeId, SymbolKind, SymbolDef, ResolveResult}
+import anthill.intern.{SymbolKind, SymbolDef, ResolveResult}
 
 import java.nio.file.Paths
 
@@ -1124,7 +1124,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val (kb, errs) = loadFixture(rulePredicateFixture)
     assert(errs.isEmpty, s"unexpected load errors: $errs")
     val userScope = kb.symbols.byQualifiedName.get("p3.User")
-      .map(ScopeId.of)
+      .map(kb.symbols.scopeOf)
       .getOrElse(fail("p3.User should be registered"))
     kb.symbols.resolveInScope("ite", userScope) match
       case ResolveResult.Found(sym) =>
@@ -1242,7 +1242,7 @@ class ParserIntegrationTest extends munit.FunSuite:
         |end""".stripMargin)
     assert(errs.isEmpty, s"unexpected load errors: $errs")
     val userScope = kb.symbols.byQualifiedName.get("p4.User")
-      .map(ScopeId.of).getOrElse(fail("p4.User should be registered"))
+      .map(kb.symbols.scopeOf).getOrElse(fail("p4.User should be registered"))
     kb.symbols.resolveInScope("ite", userScope) match
       case ResolveResult.Found(sym) =>
         kb.symbols.get(sym) match
@@ -1291,7 +1291,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(kindOf(kb, "wi992.Spec"), Some(SymbolKind.Sort))
 
     val userScope = kb.symbols.byQualifiedName.get("wi992.User")
-      .map(ScopeId.of).getOrElse(fail("wi992.User should be registered"))
+      .map(kb.symbols.scopeOf).getOrElse(fail("wi992.User should be registered"))
     kb.symbols.resolveInScope("Spec", userScope) match
       case ResolveResult.Found(sym) => assertEquals(functorQn(kb, sym), "wi992.Spec")
       case other => fail(s"`Spec` should resolve from its sibling `wi992.User`, got $other")
@@ -1319,7 +1319,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(errs.isEmpty, s"unexpected load errors: $errs")
 
     val userScope = kb.symbols.byQualifiedName.get("wi992.User")
-      .map(ScopeId.of).getOrElse(fail("wi992.User should be registered"))
+      .map(kb.symbols.scopeOf).getOrElse(fail("wi992.User should be registered"))
     kb.symbols.resolveInScope("spin", userScope) match
       case ResolveResult.Found(sym) => assertEquals(functorQn(kb, sym), "wi992.Spec.spin")
       case other =>
@@ -1336,9 +1336,9 @@ class ParserIntegrationTest extends munit.FunSuite:
   test("WI-992: stdlib `sort anthill.prelude.Eq` has PartialEq as a parent scope") {
     val kb = kbWithStdlib()
     val eqScope = kb.symbols.byQualifiedName.get("anthill.prelude.Eq")
-      .map(ScopeId.of).getOrElse(fail("anthill.prelude.Eq should be registered"))
+      .map(kb.symbols.scopeOf).getOrElse(fail("anthill.prelude.Eq should be registered"))
     val partialEq = kb.symbols.byQualifiedName.get("anthill.prelude.PartialEq")
-      .map(ScopeId.of).getOrElse(fail("anthill.prelude.PartialEq should be registered"))
+      .map(kb.symbols.scopeOf).getOrElse(fail("anthill.prelude.PartialEq should be registered"))
     val parents = kb.symbols.scope(eqScope).map(_.parents.map(_.parent).toSet)
       .getOrElse(fail("anthill.prelude.Eq should have a scope"))
     assert(parents.contains(partialEq),
