@@ -27,14 +27,21 @@ package anthill.span
   * property the old shape could not have — every caller passed `0, 0, 0, 0` and
   * nothing could tell a real row from a placeholder.
   *
-  * `end` IS AN UPPER BOUND. A production captures it with fastparse's `Index`, and
-  * where that reads after a whitespace-skipping `~` it includes the trivia that
-  * followed the construct. Only `start` is rendered, so this costs nothing today;
-  * `~~ Index` (no-whitespace sequence) is the spelling that avoids it, and is what
-  * the item productions use.
+  * `end` IS THE CONSTRUCT'S OWN END, exclusive — NOT an upper bound (WI-970; it read
+  * as one here until then, which is how EIGHT parser sites came to disagree with the
+  * rest, ending wherever the trivia after the construct happened to run out). That is
+  * not a loose bound: adjacent constructs' spans overlap under it, so the first
+  * containment or caret reader would be WRONG rather than merely coarse. The fastparse
+  * spellings that keep it tight are a parser concern and are stated there
+  * (`AnthillParser.spanOfToken`); `SpanEndTest` is the invariant as assertions.
   *
-  * THE END HALF (`end`, `endRow`, `endCol`) HAS NO READER TODAY — only `start` and
-  * `formatStart` are ever consumed, and review flagged resolving it as waste. Kept
+  * A ZERO-WIDTH span is this invariant, not an exception to it, when the diagnostic
+  * is about a POINT rather than a construct — a parse failure has no construct to
+  * bracket (`AnthillParser.parse`, the one such site). It is [[Span.empty]] that
+  * makes the different claim: no source text at all.
+  *
+  * THE END HALF (`end`, `endRow`, `endCol`) HAS NO PRODUCTION READER — only `start`
+  * and `formatStart` are consumed, and review flagged resolving it as waste. Kept
   * anyway, deliberately: a span is a RANGE, and one that can locate its start but
   * not its end is a stranger record than one with a field waiting for its first
   * caret renderer. The cost objection is answered where it belongs — a column is a

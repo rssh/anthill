@@ -1,6 +1,6 @@
 package anthill.span
 
-import anthill.parse.{Item, Parser, ParsedFile}
+import anthill.parse.{Item, ParsedFile}
 
 /** WI-947 — one span assertion per DECLARATION SHAPE, at the IR.
   *
@@ -26,19 +26,9 @@ import anthill.parse.{Item, Parser, ParsedFile}
   */
 class DeclarationSpanTest extends munit.FunSuite:
 
-  private def parse(src: String): ParsedFile =
-    Parser.parse(src, "decls.anthill") match
-      case Right(pf) => pf
-      case Left(errs) => fail(s"parse failed: ${errs.map(_.render).mkString("; ")}")
+  private def parse(src: String): ParsedFile = SpanFixture.parse(src, "decls.anthill")
 
-  /** Every item in the file, flattened through the two scope-opening shapes. */
-  private def allItems(items: Iterable[Item]): Vector[Item] =
-    items.toVector.flatMap { item =>
-      item +: (item match
-        case Item.NamespaceItem(ns) => allItems(ns.items)
-        case Item.SortWithBodyItem(s) => allItems(s.items)
-        case _ => Vector.empty)
-    }
+  private def allItems(items: Iterable[Item]): Vector[Item] = SpanFixture.allItems(items)
 
   private def spanOf(item: Item): Span = item match
     case Item.NamespaceItem(x)     => x.span
@@ -76,6 +66,26 @@ class DeclarationSpanTest extends munit.FunSuite:
     assert(spans.exists(s => s.startRow == line && s.startCol == col),
       s"no declaration spans line $line col $col ('$expectedToken'); got " +
       spans.filter(_.startRow == line).map(s => s"${s.startRow}:${s.startCol}").mkString(", "))
+
+  /** WI-970: the same anchoring, for the OTHER end. A declaration written on ONE line
+    * must span exactly that line's text — so `end` is asserted against the fixture the
+    * start assertions already use, rather than in a file a new production's author
+    * would not think to open.
+    *
+    * Requires exactly one declaration to start at the anchor, and says so if not: two
+    * items sharing a start offset would make "the one that spans the line" a choice
+    * this helper is not entitled to make silently. */
+  private def assertDeclSpansLine(
+    pf: ParsedFile, src: String, line: Int, expectedToken: String
+  ): Unit =
+    val text = src.split("\n")(line - 1)
+    val col = text.indexWhere(!_.isWhitespace) + 1
+    assert(text.trim.startsWith(expectedToken),
+      s"fixture drift: line $line is '${text.trim}', expected it to start with '$expectedToken'")
+    val here = allItems(pf.items).map(spanOf).filter(s => s.startRow == line && s.startCol == col)
+    assertEquals(here.length, 1,
+      s"line $line ('$expectedToken') is anchored by ${here.length} declarations, expected 1")
+    assertEquals(src.slice(here.head.start, here.head.end), text.trim)
 
   // ── The fixture ──────────────────────────────────────────────
   //
@@ -150,6 +160,24 @@ class DeclarationSpanTest extends munit.FunSuite:
   test("the WI-454 type-param binder shapes span from the `sort` keyword") {
     assertDeclStartsAtLine(pf, src, 19, "sort")
     assertDeclStartsAtLine(pf, src, 20, "sort")
+  }
+
+  test("WI-970: a one-line declaration ends at its own last character") {
+    // The END half of the same rule, for every shape in this fixture that fits on one
+    // line. The multi-line shapes (`namespace`, `sort`/`enum` with a body) are absent
+    // because their end is on their `end` line, which this fixture's one-per-line
+    // anchoring cannot address — they are covered for START only, as before.
+    //
+    // WHY HERE and not in `SpanEndTest`: `AnthillParser`'s declaration-family note
+    // points a new production's author at THIS file. Pinning ends anywhere else means
+    // the next declaration production gets a start case and never an end one — which
+    // is how the six WI-970 repaired went unnoticed.
+    for (line, token) <- Seq(
+      4 -> "entity", 5 -> "fact", 6 -> "const", 7 -> "constraint",
+      8 -> "rule", 9 -> "rule", 10 -> "internal", 11 -> "operation",
+      15 -> "requires", 16 -> "effects", 17 -> "provides",
+      19 -> "sort", 20 -> "sort",
+    ) do assertDeclSpansLine(pf, src, line, token)
   }
 
   test("a desugared type-param's NAME spans its identifier, not the declaration") {

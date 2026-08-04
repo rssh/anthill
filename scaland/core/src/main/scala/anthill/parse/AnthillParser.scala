@@ -42,6 +42,13 @@ object AnthillParser:
         // so it is ALWAYS empty here — a branch on it would be dead code. `f.msg`
         // carried no expectation set either (it is `Position …, found …`), so nothing
         // is lost; recovering one means `f.trace()`, which re-runs the whole parse.
+        // WI-970: a ZERO-WIDTH span, and deliberately so — the only one left in the
+        // file. Every other was a construct reported at less than its own width; here
+        // the parse FAILED, so there is no construct to bracket and `idx` is a POINT
+        // ("the input stops making sense here"). `formatTrailing` is a display string
+        // — quoted, escaped and truncated — so its length is not a source length and
+        // cannot supply an end. See [[Span]] on why this is not an exception to the
+        // tight-end invariant.
         val idx = f.index
         val found = Parsed.Failure.formatTrailing(f.extra.input, idx)
         errors += ParseError(s"parse error: found $found", Span.at(fileName, lines, idx, idx))
@@ -194,21 +201,36 @@ private class AnthillParserImpl(
     * WI-965: this and [[located]] replace the open-coded `Index ~ p ~~ Index` +
     * `mkSpan(s, e)` that had accreted at ~30 productions, each spelling the same
     * three-step bracket-and-resolve by hand and each free to get the `~~` wrong.
-    * What stays written out is the genuine MULTI-TOKEN span — a declaration
-    * bracketing itself from its own first token to its last (see the WI-947 note at
-    * `namespaceDecl`), a dotted `name`, a `.(…)` projection — which neither
-    * combinator fits and which then reads as the deliberate thing it is.
+    *
+    * "MULTI-TOKEN" IS NOT WHY A PRODUCTION STAYS HAND-WRITTEN, though WI-965 said it
+    * was and WI-970 corrected it: [[located]] is generic in its payload, so a dotted
+    * `name` or a `.(…)` projection rides it, at the cost of one nesting level in the
+    * destructuring. Six productions genuinely cannot — their start does not come from
+    * an `Index` at their own entry: the four `sortDecl` branches take theirs handed
+    * down as an `Int` (the WI-947 note at `namespaceDecl`), `sortTypeParam` reads its
+    * back off `nameSpan.start`, and `proofStep` takes two different ends off one
+    * start. The other ~20 self-bracketing declaration productions are mechanically
+    * convertible and simply are not converted (WI-971) — which is a backlog, not a
+    * design line, and the difference matters to whoever writes the next one.
     *
     * `~~` for the trailing `Index`, always: fastparse's plain `~` skips the trivia
-    * after the token FIRST, which stretches the span over it (see [[Span]]'s note on
-    * `end` being an upper bound). Having two places that spell it is the point — the
-    * trailing `~` was a per-site decision at every one of the ~30.
+    * after the token FIRST, which stretches the span over it — the [[Span]] invariant,
+    * and what WI-970 measured at six productions that had it wrong. Having two places
+    * that spell it is the point — the trailing `~` was a per-site decision at every
+    * one of the ~30.
     *
     * TWO and not one, deliberately: `spanOfToken(p) = located(p).map(_._2)` does
     * compile (checked, not assumed — a `P[Unit]` rides `located` as `A = Unit`), and
     * it was rejected because it allocates a throwaway `(Unit, Span)` per token on the
     * parser's hottest path and hands fastparse's failure stack the wrong production
     * name. One line of duplication buys both back.
+    *
+    * THAT REJECTION IS ABOUT PER-TOKEN COST, and does not forbid what WI-970 did — the
+    * productions it routed through [[located]] are per-DECLARATION. Counted over the
+    * 105-file corpus: the token-level sites this combinator serves face ~46 000 open
+    * brackets and ~2 900 `?`-variables, where `simpleName` sees ~2 500 declarations and
+    * `operationTypeParam` 83. Two orders of magnitude, so the extra pair is real at one
+    * and noise at the other.
     *
     * The `Span` rides as ONE slot through further `~` composition, because fastparse
     * flattens `scala.TupleN`s and `Span` is a nominal case class — `spanOfToken(…) ~/
@@ -227,12 +249,13 @@ private class AnthillParserImpl(
     *     `ParseSpanCoverageTest` cases and the synthesized-marker one (the `let` and
     *     the bracket literals go through this one).
     *
-    * The suite pins span STARTS. Swap the `~~` below back to a whitespace-skipping
-    * `~` — the exact mistake these two exist to make unrepeatable — and NOTHING
-    * fails: `end` has no reader yet ([[Span]]), and the one width assertion
-    * (`DeclarationSpanTest`, the `F` of `sort Parameterized[A, F[T]]`) sits where no
-    * trivia follows the token. Which is the argument for one place to get it right
-    * rather than thirty, not an argument that it does not matter. */
+    * WI-970 CLOSED THE HOLE IN THAT CONTROL. When WI-965 wrote it, swapping the `~~`
+    * below back to a whitespace-skipping `~` — the exact mistake these two exist to
+    * make unrepeatable — failed NOTHING, because no test read `end`. Breaking
+    * [[located]] alone now fails EIGHT, all in `SpanEndTest`: every production WI-970
+    * routed through it (`simpleName`, `operationTypeParam`, `name`, `importPath`,
+    * `distributiveProjectionSeg`, `proofStrategy`, the visibility refusal) plus the
+    * combinator case itself. */
   private def spanOfToken[$: P](p: => P[Unit]): P[Span] =
     P(Index ~ p ~~ Index).map { case (s, e) => mkSpan(s, e) }
 
@@ -321,25 +344,17 @@ private class AnthillParserImpl(
   private def keyword[$: P](kw: String): P[Unit] =
     P(Tokens.identToken.filter(_ == kw)).map(_ => ())
 
-  // WI-965: five productions end on a plain `~ Index` rather than the `~~ Index` the
-  // rest use — these two, `importPath`, `distributiveProjectionSeg` and
-  // `proofStrategy`. `~` is whitespace-SKIPPING, so their `end` reaches past the
-  // construct into the trivia after it. Measured, not assumed: `simpleName` over
-  // `rule lbl   :` reports width 6 for a 3-character `lbl`.
-  //
-  // Three of the five are multi-token anyway, so no combinator fits them regardless.
-  // `simpleName` is the one this note exists for: it is a single identifier and
-  // [[located]] fits it exactly, and it stays hand-written ONLY because converting it
-  // would silently tighten its span — a behavioural change, and not this refactor's
-  // business. WI-970 decides whether the widened end is a defect at all (only `start`
-  // has a reader today; see [[Span]]).
+  // WI-970: [[located]] is generic in its payload, so a MULTI-TOKEN production rides it
+  // too — the cost is one nesting level in the destructuring (`case ((first, rest),
+  // span)`), which is cheaper than a per-site `~~` decision, since getting that decision
+  // wrong at four such sites is what WI-970 exists to repair.
   private def name[$: P]: P[Name] =
-    P(Index ~ ident ~ ("." ~ ident).rep ~ Index).map { case (s, first, rest, e) =>
-      Name(first +: rest.toIndexedSeq, mkSpan(s, e))
+    P(located(ident ~ ("." ~ ident).rep)).map { case ((first, rest), span) =>
+      Name(first +: rest.toIndexedSeq, span)
     }
 
   private def simpleName[$: P]: P[Name] =
-    P(Index ~ ident ~ Index).map { case (s, sym, e) => Name.simple(sym, mkSpan(s, e)) }
+    P(located(ident)).map { case (sym, span) => Name.simple(sym, span) }
 
   // ── Literals ─────────────────────────────────────────────────
 
@@ -725,8 +740,8 @@ private class AnthillParserImpl(
     * unconsumed. The `.` alone stays cut-free (the alternation must fall back to
     * `fieldSeg` when the token after `.` is an identifier, not `(`). */
   private def distributiveProjectionSeg[$: P]: P[DotSeg] =
-    P(Index ~ "." ~ "(" ~/ projectionMember.rep(1, sep = ",") ~ ",".? ~ ")" ~ Index).map {
-      case (s, members, e) => DotSeg.Projection(members.toIndexedSeq, mkSpan(s, e))
+    P(located("." ~ "(" ~/ projectionMember.rep(1, sep = ",") ~ ",".? ~ ")")).map {
+      case (members, span) => DotSeg.Projection(members.toIndexedSeq, span)
     }
 
   /** One member of a distributive projection: a bare member `f` auto-labels
@@ -1537,14 +1552,14 @@ private class AnthillParserImpl(
     P(keyword("import") ~/ importPath)
 
   private def importPath[$: P]: P[Import] =
-    P(Index ~ ident ~ ("." ~ importSegment).rep ~ Index).map { case (s, first, rest, e) =>
+    P(located(ident ~ ("." ~ importSegment).rep)).map { case ((first, rest), span) =>
       val allSegments = ArrayBuffer(first)
       var kind: ImportKind = ImportKind.Plain
       for seg <- rest do
         seg match
           case Left(sym) => allSegments += sym
           case Right(ik) => kind = ik
-      Import(Name(allSegments.toIndexedSeq, mkSpan(s, e)), kind)
+      Import(Name(allSegments.toIndexedSeq, span), kind)
     }
 
   private def importSegment[$: P]: P[Either[TermSymbol, ImportKind]] =
@@ -1816,12 +1831,22 @@ private class AnthillParserImpl(
     * so probing for it only after the heads parse cleanly stays cheap. */
   private def ruleArrowChoice[$: P]: P[(IndexedSeq[RuleHead], Option[IndexedSeq[TermId]])] =
     P(
-      (ruleHeads ~ (":-" ~/ goalTerm.rep(1, sep = ",")).?).flatMap { case (hs, body) =>
+      // WI-970: `flatMapX`, not `flatMap`. fastparse's `flatMap` runs the whitespace
+      // skipper between the first parser and the continuation — and the continuation
+      // for a rule that HAS a `:-` body is `Pass`, which consumes nothing, so the parse
+      // index was left sitting past the rule's own text. `ruleEntry` and `ruleDecl`
+      // both read their `~~ Index` from there, so every `:-` rule's declaration span
+      // ran to the start of whatever followed it. `flatMapX` is the no-whitespace twin;
+      // the `-:` branch below, which genuinely needs the trivia skipped, asks for it.
+      (ruleHeads ~ (":-" ~/ goalTerm.rep(1, sep = ",")).?).flatMapX { case (hs, body) =>
         body match
           case Some(_) =>
             Pass.map(_ => (hs, body.map(_.toIndexedSeq)))
           case None =>
-            ("-:" ~/ ruleHeads).?.map {
+            // `Pass ~` is the request: `~` skips trivia before its RIGHT operand, so
+            // this is how the reversed form still matches `heads\n  -: body` (the
+            // spelling stdlib `prelude/int64.anthill` uses).
+            (Pass ~ "-:" ~/ ruleHeads).?.map {
               case Some(reversedHeads) =>
                 // What we parsed as `heads` was actually the body of `body -: heads`.
                 val bodyTerms = hs.collect { case RuleHead.TermHead(t) => t }
@@ -1851,20 +1876,24 @@ private class AnthillParserImpl(
     // node's span itself. Wrapping first and re-stamping afterwards needs a match over
     // all of `Item` for two reachable shapes, whose third arm could only be a silent
     // pass-through.
-    P(Index ~ visibility.? ~ keyword("operation") ~/ (
+    // WI-970: the visibility is [[located]] for the refusal below — it was reported at
+    // `mkSpan(s, s)`, the declaration's start, which is the right column (the modifier
+    // IS the first token when present) but zero characters wide. The modifier is what
+    // the message is about, so it is what the span brackets.
+    P(Index ~ located(visibility).? ~ keyword("operation") ~/ (
       bracedOperationBlock.map(Left(_)) |
       operationEntry.map(Right(_))
     ) ~~ Index).map {
       case (s, vis, Right(op), e) =>
-        Item.OperationItem(op.copy(visibility = op.visibility.orElse(vis), span = mkSpan(s, e)))
+        Item.OperationItem(op.copy(visibility = op.visibility.orElse(vis.map(_._1)), span = mkSpan(s, e)))
       case (s, vis, Left(entries), e) =>
         // A leading visibility on a braced `operation { … }` block has no meaning
         // (rustland has no such form — visibility is per-entry). Reject it loudly
         // rather than silently dropping it (CLAUDE.md: loud error over silent skip).
-        if vis.isDefined then
+        for (_, visSpan) <- vis do
           errors += ParseError(
             "a visibility modifier cannot precede a braced `operation { … }` block; " +
-            "put the visibility on each entry", mkSpan(s, s))
+            "put the visibility on each entry", visSpan)
         Item.OperationBlockItem(OperationBlock(entries, mkSpan(s, e)))
     }
 
@@ -1905,14 +1934,13 @@ private class AnthillParserImpl(
     // identifier may contain `-`) a `my--type` whose `--` reads as a line comment to
     // anything that re-lexes the slice. `renderTypeExpr` reads the tree instead, so
     // there is nothing to re-lex (WI-950).
-    // WI-965: the one `Index` capture that brackets NOTHING — `mkSpan(idx, idx)` is a
-    // zero-WIDTH span at the parameter's first character, so [[located]] does not
-    // apply and widening it to the token would be a behavioural change (WI-970). The
-    // WI-850 refusal below is a live reader of it, which is what makes that a real
-    // change rather than a cosmetic one. (`operationDecl`'s braced-block refusal also
-    // builds a `mkSpan(s, s)`, but from an `Index` that brackets a real range too.)
-    P(Index ~ ident ~ ("=" ~/ typeExpr).?).map { case (idx, n, default) =>
-      WrittenTypeParam(TypeParam(n, mkSpan(idx, idx)), default)
+    // WI-970: this was `mkSpan(idx, idx)` — a zero-WIDTH span at the parameter's first
+    // character, so the WI-850 refusal below pointed at a position with nothing to
+    // underline. [[located]] spans the identifier TOKEN, which is what the refusal is
+    // about. The START is unchanged (both capture `Index` before the ident), so the
+    // refusal renders at the same `line:col` as before — only the end moved.
+    P(located(ident) ~ ("=" ~/ typeExpr).?).map { case (n, span, default) =>
+      WrittenTypeParam(TypeParam(n, span), default)
     }
 
   /** WI-850: a declared type-param DEFAULT (`operation foo[T = Int64](…)`) is
@@ -2200,13 +2228,13 @@ private class AnthillParserImpl(
     P(name.rep(1, sep = ",")).map(_.toIndexedSeq)
 
   private def proofStrategy[$: P]: P[ProofStrategy] =
-    P(Index ~ ident ~ ("(" ~/ fnArg.rep(1, sep = ",") ~ ")").? ~ Index).map {
-      case (s, n, args, e) =>
+    P(located(ident ~ ("(" ~/ fnArg.rep(1, sep = ",") ~ ")").?)).map {
+      case ((n, args), span) =>
         val rawArgs: IndexedSeq[TermId] = args.getOrElse(Seq.empty).toIndexedSeq.map {
           case Left(tid) => tid
           case Right((k, v)) => allocNamedArg(k, v)
         }
-        ProofStrategy(n, rawArgs, mkSpan(s, e))
+        ProofStrategy(n, rawArgs, span)
     }
 
   private def stringText[$: P]: P[String] = P(Tokens.stringToken)
