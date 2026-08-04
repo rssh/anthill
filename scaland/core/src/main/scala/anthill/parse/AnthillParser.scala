@@ -1332,8 +1332,13 @@ private class AnthillParserImpl(
     // WI-964, the same principle one function up: `canonicalAtomKey` is a full
     // structural walk, so it is derived ONCE PER ATOM and carried. `sortBy(f)` is
     // `sorted(Ordering.by(f))` — it re-ran the walk per COMPARISON, and the dedup then
-    // re-ran it twice more per element. `distinctBy` is the consecutive dedup exactly
-    // because the list is sorted by that same key.
+    // re-ran it twice more per element.
+    // The two steps are INDEPENDENT, and neither implies the other: `distinctBy` is a
+    // GLOBAL first-wins dedup over a `HashSet`, so it would drop the same atoms unsorted.
+    // `sortBy` is here for CANONICAL ORDER — rustland's `build_canonical_effects_rows`
+    // parity, pinned by `ParseTest`'s row-order assertion — and dropping it as "implied
+    // by the dedup" would leave every dedup assertion green while the row silently
+    // stopped being canonical.
     val deduped = atoms.map(a => (canonicalAtomKey(a), a)).sortBy(_._1).distinctBy(_._1).map(_._2)
     // Seed: innermost tail — `open(?ρ)` when a row var was present, else the
     // closed `empty_row`; any extra tails fold in as `open(…)` merges. Then

@@ -191,14 +191,19 @@ object Loader:
   private def lookupDefined(
     kb: KnowledgeBase, qualName: String, span: Span, consequence: String, errors: ArrayBuffer[LoadError]
   ): Option[TermSymbol] =
-    kb.symbols.byQualifiedName.get(qualName).orElse {
-      // WI-947: the DECLARATION's span, not the missing name's — the name is missing
-      // from the symbol table, so there is nothing to point at on that side; what the
-      // reader needs is the declaration whose contents were dropped.
-      errors += LoadError.Other(
-        s"internal: '$qualName' was not defined in pass 1, so $consequence", span)
-      None
-    }
+    // A `match` and not `.orElse { errors += … ; None }`: the combinator form is correct
+    // only because `orElse`'s parameter is by-name, so the raise lives one strict-argument
+    // refactor away from firing on EVERY successful lookup — once per declaration, in the
+    // one helper four passes share.
+    kb.symbols.byQualifiedName.get(qualName) match
+      case some @ Some(_) => some
+      case None =>
+        // WI-947: the DECLARATION's span, not the missing name's — the name is missing
+        // from the symbol table, so there is nothing to point at on that side; what the
+        // reader needs is the declaration whose contents were dropped.
+        errors += LoadError.Other(
+          s"internal: '$qualName' was not defined in pass 1, so $consequence", span)
+        None
 
   /** The scope `qualName` names — the descent's use of [[lookupDefined]]. A miss here
     * abandons the whole subtree: its imports unwired, its rule heads unregistered, its

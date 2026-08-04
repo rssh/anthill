@@ -52,12 +52,22 @@ class KnowledgeBase:
 
   // ── Scopes ──────────────────────────────────────────────────
 
-  /** The synthetic scope a file's top-level declarations land in. A `def` naming the one
+  /** The synthetic scope a file's top-level declarations land in. A `val` naming the one
     * spelling, not a general `scopeNamed(name: String)`: every call site wanted this
     * scope, and a mint taking an arbitrary string would reopen for `String` the hole
     * [[ScopeId]] closes for `Int` — `scopeNamed("Wodget")` compiles and denotes a scope
-    * that resolves nothing. */
-  def globalScope: ScopeId =
+    * that resolves nothing.
+    *
+    * A `val` and not a `def` because `intern` WRITES: as a `def` this read-shaped member
+    * grew the symbol table on every call, so merely inspecting a KB (a dump, a
+    * diagnostic) allocated a symbol and shifted every id after it. Minting once at
+    * construction is also the cheaper answer — the loader asks for it per file.
+    *
+    * The spelling is `_global` for rustland parity (`kb/mod.rs` and four more sites), and
+    * it is a legal identifier there and here, so `namespace _global` can name a SECOND
+    * scope that renders identically. Closing that needs a sentinel both implementations
+    * agree on — see WI-987. */
+  val globalScope: ScopeId =
     ScopeId.of(symbols.intern("_global"))
 
   /** The scope a QUALIFIED name names (`anthill.prelude`) — the scope form of
@@ -74,10 +84,17 @@ class KnowledgeBase:
     ScopeId.of(resolveSymbol(name))
 
   /** A scope's TERM form — for the four callers that must hand a scope where a TERM is
-    * what fits: the `entity_of` and `provides_clause` facts embed one as an argument, an
-    * entity's parent sort is one, and reflect's `scope` builtin binds one as an answer.
-    * A clause's DOMAIN was spelled here too, at six loader sites, and is one no longer —
-    * it is a [[ScopeId]] (WI-983), which is what leaves the remaining four all genuine.
+    * what fits: the `entity_of` and `provides_clause` facts embed one as an argument,
+    * `registerEntityOf` records one as an entity's parent, and reflect's `scope` builtin
+    * binds one as an answer. A clause's DOMAIN was spelled here too, at six loader sites,
+    * and is one no longer — it is a [[ScopeId]] (WI-983), which is what leaves the
+    * remaining four all genuine.
+    *
+    * `registerEntityOf`'s is the one to read carefully: it records the ENCLOSING scope,
+    * which is the entity's parent SORT only when the entity sits inside a `sort … end`.
+    * An `entity` written directly under a namespace gets that namespace as its parent, so
+    * `is_entity_of` answers of a namespace — see WI-985, and the same hazard stated for
+    * the rule form at `stdlib/anthill/reflect/typing.anthill`.
     *
     * THE direction that is a function (WI-976): it goes through [[makeNameTermFromSym]],
     * the one name-term producer, so scope-as-term stays the nullary shape [[ScopeId]]
@@ -148,7 +165,12 @@ class KnowledgeBase:
           val entry = rules(rid.index)
           if !entry.retracted &&
              TermId.raw(entry.head) == TermId.raw(term) &&
-             entry.domain == domain &&
+             // Compared through the raws, like the head above it, and not as
+             // `entry.domain == domain`: `ScopeId`, `TermSymbol` and `TermId` all erase
+             // to `Int` and this build does not run `-language:strictEquality`, so a
+             // cross-type `==` compiles clean and answers on raw indices. Extracting
+             // first puts the type check where a wrong operand cannot reach.
+             TermSymbol.raw(entry.domain.symbol) == TermSymbol.raw(domain.symbol) &&
              entry.body.isEmpty then
             return rid
       case None =>
