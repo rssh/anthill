@@ -4477,9 +4477,10 @@ impl KnowledgeBase {
     /// scalar / value-level var passes through. Used at the resolver's goal
     /// boundaries that need a σ-applied goal as a `Value` — NAF sub-resolution
     /// and assumed-fact matching — so neither lowers an occurrence goal to a
-    /// hash-consed term. Distinct from `reify_goal_value` (resolve.rs), the
-    /// term-only materializer (`Value -> TermId`, no `σ`) the remaining
-    /// term-structured goal-handlers still use.
+    /// hash-consed term. It was distinct from `reify_goal_value` (resolve.rs),
+    /// the term-only materializer (`Value -> TermId`, no `σ`) — that one is now
+    /// DELETED, its last readers having turned out to be reads the view answers,
+    /// so this is the only `Value`-in / `Value`-out σ-applier left.
     ///
     /// WI-535: `pub` so the host reflect bridge (`anthill-stl`) realizes its
     /// carrier-faithful `Substitution.apply` / `KB.apply_core_subst` over a
@@ -7956,6 +7957,99 @@ mod tests {
         assert!(
             via_value.is_opaque_free(),
             "a spliced occurrence with its child supplied keys cleanly",
+        );
+    }
+
+    /// A `Value::SymbolRef` is INDISTINGUISHABLE from its `Term::Ref` twin —
+    /// the whole claim the variant rests on, driven at each level that could
+    /// disagree rather than asserted.
+    ///
+    /// CONTROL — which assertion fails when which piece is backed out, MEASURED
+    /// by removing each:
+    ///  - (1) fails if `Value::head`'s `SymbolRef` arm goes (it falls to the
+    ///    `Opaque` group): the query stops matching a fact it must match, 0
+    ///    solutions instead of 1. This is the assertion that would also catch a
+    ///    future `functor_view_head` detour re-spelling the head.
+    ///  - (2) fails if `value_symbol` is reverted to the `carrier_term` +
+    ///    `Term::Ref | Term::Ident` match it replaced — that route is `None` for
+    ///    every carrier but `Term`/`Node`, so it answers "not a symbol".
+    ///  - (3) fails if `alloc_from_value`'s arm goes (`UnsupportedVariant`).
+    ///  - (4) passes either way BY DESIGN. It pins that the OLD carrier still
+    ///    answers, which is what makes (1)/(2) cross-carrier AGREEMENT claims
+    ///    rather than a swap — without it, deleting the `Term` support entirely
+    ///    would leave this test green.
+    #[test]
+    fn a_symbol_ref_value_is_indistinguishable_from_its_term_twin() {
+        use crate::eval::value::Value;
+
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        let p = kb.intern("symref_p");
+        let foo = kb.intern("symref_foo");
+        let bar = kb.intern("symref_bar");
+        let domain = kb.intern("test");
+
+        // The fact is stored the CLASSICAL way: a hash-consed `p(Ref(foo))`.
+        // Nothing about the storage side knows the new carrier exists.
+        let foo_ref = kb.alloc(Term::Ref(foo));
+        let head = kb.alloc(Term::Fn {
+            functor: p,
+            pos_args: SmallVec::from_elem(foo_ref, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact_value(Value::Term { id: head }, ClauseKind::Fact, domain, None);
+
+        let config = resolve::ResolveConfig::default();
+        let query = |sym: Symbol| {
+            Value::Entity {
+                functor: p,
+                pos: Rc::from(vec![Value::SymbolRef(sym)]),
+                named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            }
+        };
+
+        // (1) A goal carrying the symbol as `Value::SymbolRef` MATCHES the fact
+        //     that stored it as `Term::Ref` — through the discrimination tree,
+        //     which is where a head-spelling disagreement would surface.
+        assert_eq!(
+            kb.resolve_goals(vec![query(foo)], &config).len(),
+            1,
+            "a SymbolRef goal must match its own Term::Ref twin in the index",
+        );
+        // …and the match is on the SYMBOL, not on "any symbol": a different one
+        // must not match, or (1) would pass for a carrier that keys nothing.
+        assert_eq!(
+            kb.resolve_goals(vec![query(bar)], &config).len(),
+            0,
+            "a different symbol must not match — (1) must be discriminating",
+        );
+
+        // (2) The by-content reader answers the same symbol off either carrier.
+        assert_eq!(kb.value_symbol(&Value::SymbolRef(foo)), Some(foo));
+        assert_eq!(
+            kb.value_symbol(&Value::SymbolRef(foo)),
+            kb.value_symbol(&Value::Term { id: foo_ref }),
+            "one symbol, one answer, whichever carrier is asked",
+        );
+
+        // (3) …and it lowers back to exactly that `TermId` — hash-consing makes
+        //     this an identity check, not a structural one.
+        assert_eq!(
+            kb.alloc_from_value(&Value::SymbolRef(foo)).expect("SymbolRef lowers"),
+            foo_ref,
+            "the round-trip is lossless: SymbolRef(s) → Term::Ref(s)",
+        );
+
+        // (4) The interned carrier still works — see the CONTROL note.
+        let term_query = Value::Entity {
+            functor: p,
+            pos: Rc::from(vec![Value::Term { id: foo_ref }]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        assert_eq!(
+            kb.resolve_goals(vec![term_query], &config).len(),
+            1,
+            "the pre-existing carrier is untouched",
         );
     }
 

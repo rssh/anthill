@@ -765,16 +765,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     buf.push(')');
                 }
             }
-            Term::Ref(sym) => {
-                // WI-511: a nullary TypeExtractor (only `Nothing`) is the
-                // canonical `Ref` form; render it in type surface syntax,
-                // mirroring the `Fn` arm's `is_type_functor` route.
-                if self.is_type_functor(*sym) {
-                    self.write_type_term(id, buf);
-                } else {
-                    buf.push_str(self.view.sym_name(*sym));
-                }
-            }
+            Term::Ref(sym) => self.write_symbol_ref(*sym, buf),
             Term::Ident(sym) => {
                 buf.push_str(self.view.sym_name(*sym));
             }
@@ -826,6 +817,28 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             .iter()
             .find(|(s, _)| self.view.sym_name(*s) == key)
             .map(|(_, t)| *t)
+    }
+
+    /// Render a bare symbol reference — the `Term::Ref` arm of [`Self::write_term`]
+    /// and the `Value::SymbolRef` carrier, which has no `TermId` to hand.
+    ///
+    /// ONE owner so two carriers of one symbol can never render — and so never
+    /// KEY — differently; `Interpreter::write_value_canonical` builds a store key
+    /// from this, and a key that disagrees with its own twin's is the WI-425
+    /// cross-carrier wrong answer, not a cosmetic difference.
+    ///
+    /// This IS the former inline body, not an approximation of it. That body
+    /// routed a type functor through `write_type_term`, whose only `Term::Ref`
+    /// arms are the `Nothing` special case (WI-511) and `sym_name` — so a
+    /// non-`Nothing` type functor already rendered `sym_name`, identical to the
+    /// non-type-functor branch, and the `is_type_functor` gate distinguished
+    /// exactly one symbol.
+    pub fn write_symbol_ref(&self, sym: Symbol, buf: &mut String) {
+        if self.view.qualified_name(sym) == "anthill.prelude.TypeExtractor.Nothing" {
+            buf.push_str("nothing");
+        } else {
+            buf.push_str(self.view.sym_name(sym));
+        }
     }
 
     /// WI-173: render a hash-consed TYPE term in surface syntax. The caller has

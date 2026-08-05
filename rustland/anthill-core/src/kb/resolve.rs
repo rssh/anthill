@@ -386,7 +386,8 @@ impl Default for ResolveConfig {
 /// `nonvar(?x)` where `?x` was never bound by any other goal), carried
 /// carrier-agnostically as `Value` (WI-348): a delayed goal mentioning a
 /// `Value::Node` keeps it, instead of materializing to a hash-consed `TermId`
-/// via `reify_goal_value` (lossy for an occurrence's identity/span).
+/// (lossy for an occurrence's identity/span). WI-348 was the first step of the
+/// audit that has since removed this module's `Value` → `TermId` reify outright.
 pub struct Solution {
     pub subst: Substitution,
     pub residual: Vec<Value>,
@@ -509,45 +510,34 @@ struct Frame {
     assumed_facts: Vec<Value>,
 }
 
-/// WI-246: reify a `Value` to a hash-consed `TermId` — a `Value::Term` unwraps
-/// for free, a `Value::Node` occurrence goes through `occurrence_to_term`.
-///
-/// ONE CALLER, and it is not a goal: [`Interpreter::carrier_term`] (below), the
-/// field-access carrier reader shared by the `field_access` builtin,
-/// `field_name_from_value` and `reduce_dot_value` (WI-482). So the name is now a
-/// misnomer — kept only because renaming it is churn, but do not read "goal" as
-/// a statement about where this runs.
-///
-/// THE LIST THIS DOC USED TO CARRY WAS INVERTED, which is worth recording because
-/// it is how a doc rots without anyone touching it. It said "used only at genuine
-/// term/identity boundaries (residual, external-row handlers, assumed-fact
-/// matching)" — those are precisely the paths that were migrated AWAY, one at a
-/// time, and the tree still says so at each: `Solution::residual` keeps a `Value`
-/// "instead of materializing to a hash-consed `TermId` via `reify_goal_value`"
-/// (WI-348); `mod.rs`'s assumed-fact note records it "retired from the
-/// assumed-fact path"; and two builtin paths say outright "don't route through
-/// `reify_goal_value`" so they fail cleanly rather than panic. Each migration
-/// removed a caller and left the list naming it.
-///
-/// NEVER for the candidate match (that goes through `query_view`), and NEVER for
-/// a dedup or identity key: WI-348 moved answer-dedup to `GoalKey` and WI-815
-/// moved fact-head dedup there too, so a consumer wanting structural identity
-/// wants `goal_fingerprint` — which reads any carrier, allocates nothing, and is
-/// total where this is partial.
-///
-/// The `panic!` arm is unreachable from the sole caller, which matches
-/// `Term`/`Node` before calling. It stays because a future caller inside this
-/// module — the function is private to `resolve.rs`, so that is the whole reachable
-/// surface — passing a scalar carrier has a BUG, and a silent `Bottom` would hide
-/// it. Loud over silent, on a path with no legitimate fallback.
-fn reify_goal_value(kb: &mut KnowledgeBase, g: &Value) -> TermId {
-    match g {
-        Value::Term { id: t, .. } => *t,
-        Value::Node(occ) => node_occurrence::occurrence_to_term(kb, occ),
-        // Goals are always term- or occurrence-shaped structures.
-        other => panic!("reify_goal_value: non-goal Value {}", other.type_name()),
-    }
-}
+// THE `Value` → `TermId` REIFY IS GONE from this module (`reify_goal_value` /
+// `KnowledgeBase::carrier_term`, WI-246). It survived as the shared "structural
+// carrier" reader for field projection and a handful of per-arg symbol reads;
+// every one of those turned out to be a read that `TermView` answers without
+// allocating, and the reify was not a narrow cost but a WRONG ANSWER on the
+// carriers it declined — `None` for a `Value::Entity` that plainly has fields,
+// and `occurrence_to_term`'s `debug_assert` (⊥ in release) for a `Expr::Spliced`
+// leaf.
+//
+// (Plain `//`, not `///`: as a doc comment this block had no item to attach to
+// and rustdoc folded it into the `EqOperands` docs below.)
+//
+// A consumer here that believes it needs a `TermId` should check what for:
+//  - to READ a symbol / name / field → it does not; use `value_symbol`,
+//    `value_head_symbol`, `ViewHead::functor_sym`, `project_field`, or the view.
+//  - for structural identity or a dedup key → `term_view::goal_fingerprint`,
+//    which reads any carrier, allocates nothing, and is total where a reify is
+//    partial (WI-348 moved answer dedup there, WI-815 fact-head dedup).
+//  - for the candidate match → `query_view`.
+//  - to BUILD a term that is then stored (`lower_ho_apply`'s lowered goal) →
+//    `node_occurrence::value_to_term`, which is explicit about being a
+//    conversion and returns a `Result` rather than panicking.
+//
+// WHAT THIS DOES NOT COVER: the view's carrier coverage is not identical to the
+// retired reify's, and where it is narrower a receiver that used to project no
+// longer does. `occ_head` answers `Opaque` for `Expr::TupleLit` / `Expr::SetLit`
+// while `try_occurrence_to_term` has real WI-559 arms for both — owned by
+// WI-1014, which is Open.
 
 /// Outcome of walking an `eq`/`neq` goal's two operands (WI-246): both
 /// resolved, a flex operand forcing `Delay`, or a missing arg slot.
@@ -909,7 +899,7 @@ impl SearchStream {
         if is_marker {
             // 3.4 __pop_assumption(N) — pops N entries off assumed_facts.
             // Carrier-neutral: reads the count off the goal's TermView, so this
-            // marker classifies without a `reify_goal_value` lowering.
+            // marker classifies without lowering the goal to a term.
             if let Some(n) = Self::pop_assumption_arg(kb, &goal_val) {
                 let f = self.stack.last_mut().unwrap();
                 let drop_from = f.assumed_facts.len().saturating_sub(n);
@@ -1117,19 +1107,42 @@ impl SearchStream {
                     // any constraint a builtin recorded. (No-op until a resolver-side
                     // producer exists in Step 3; mirrors ignoring `extra.parent`.)
                     new_subst.absorb_constraints(&extra);
-                    // WI-649 NB: this non-`Term` `bind_waking` is NOT
-                    // occurs-checked (unlike the external-row bind at the fact
-                    // fast-path). It is safe today only by ABSENCE OF A PRODUCER:
-                    // every builtin that writes a non-`Term` `extra` binding is
-                    // either occurs-checked already (`builtin_unify` →
-                    // `unify_bind`) or has no live anthill caller
-                    // (`occurrence_term` / `sub_occurrences`, which could bind a
-                    // pattern var to a non-`Term` occurrence). If a reflect op that
-                    // quotes an open term over a shared var ever gains a caller,
-                    // this becomes the same cyclic-σ route WI-649 closed at the
-                    // fact fast-path — mirror the `occurs_in_value` guard here then.
+                    // WI-1017 — OCCURS-CHECKED, the guard the note that stood here
+                    // prescribed for "if a producer ever appears". It said this
+                    // bind was "safe today only by ABSENCE OF A PRODUCER: every
+                    // builtin that writes a non-`Term` `extra` binding is either
+                    // occurs-checked already (`builtin_unify`) or has no live
+                    // anthill caller".
+                    //
+                    // THAT ARGUMENT WAS ALREADY FALSE, and its carrier framing is
+                    // what hid it: the loop is un-occurs-checked for EVERY carrier,
+                    // not just non-`Term`, and `field_access` — the desugaring of
+                    // every `?x.y`, live caller and all — reaches it through
+                    // `finish_result`. MEASURED before this guard, on the plain
+                    // hash-consed path: `field_access(Point(x: g(?r)), "x", ?r)`
+                    // returns ONE solution with `?r ↦ g(?r)` and no contradiction
+                    // flagged, and reifying that answer overflows the stack and
+                    // ABORTS THE PROCESS. So this is not a latent hole a later
+                    // carrier would open; it was reachable from ordinary dot
+                    // projection, and the non-`Term` producers WI-1015 added only
+                    // widened it.
+                    //
+                    // A positive check drops the branch exactly as
+                    // `BuiltinResult::Failure` does: a binding that mentions its own
+                    // var is no unifier, so this branch has no solution. Checked
+                    // against `new_subst` as it accumulates, so a cycle formed
+                    // ACROSS two bindings of one `extra` is caught too.
+                    let mut cyclic = false;
                     for (var, val) in extra.bindings.iter() {
+                        if kb.occurs_in_value(*var, val, &new_subst) {
+                            cyclic = true;
+                            break;
+                        }
                         new_subst.bind_waking(kb, *var, val.clone());
+                    }
+                    if cyclic {
+                        self.stack.pop();
+                        return Some(StepResult::Continue);
                     }
                     let new_depth = depth + 1;
                     let new_delay = delay_mode.reset();
@@ -1876,19 +1889,31 @@ impl SearchStream {
                 ViewItem::Node(occ) => Value::Node(occ),
             });
         }
-        // The predicate (arg 0) must reduce to a concrete symbol under σ: reify
-        // its carrier, then chase the var chain multi-hop through σ via
-        // `walk_view` (the carrier-faithful walk the old `walk_arg_term` used, so
-        // an ≥2-hop chain resolves the same). A still-unbound var / non-symbol
-        // term can't be applied.
-        let pred_term = kb.carrier_term(&raw[0])?;
-        let pred_sym = match kb.walk_view(pred_term, subst) {
-            Value::Term { id, .. } => match kb.terms.get(id) {
-                Term::Ref(s) => *s,
-                Term::Fn { functor, pos_args: pa, named_args: na, .. }
-                    if pa.is_empty() && na.is_empty() => *functor,
-                _ => return None,
-            },
+        // The predicate (arg 0) must reduce to a concrete symbol under σ: chase
+        // its var chain multi-hop, then read the symbol off the head. A
+        // still-unbound var / non-symbol predicate can't be applied.
+        //
+        // It reified first and chased with `walk_view`, which follows a chain
+        // only while each link is a `Value::Term` — so the chase was carrier-
+        // gated twice over. `carrier_term` refused any predicate that was not a
+        // `Term`/`Node`, and a chain that passed THROUGH a non-term link stopped
+        // there.
+        //
+        // Through [`Self::walk_value_chain`], the chain walk this file already
+        // owned. A hand-rolled loop here got two things wrong that it has right:
+        // it chased with `value_global_var`, which does NOT read a var off any
+        // carrier (no `Value::Var` arm — see `unify_flex_var`'s note), so a
+        // `Value::Var` predicate stopped at hop 0; and its self-binding guard
+        // caught only a 1-cycle, where `walk_view`'s identical guard had been
+        // safe ONLY because it stopped dead at the first non-`Term` link. A
+        // 2-cycle across carriers would have hung inside `step`.
+        let mut seen: HashSet<VarId> = HashSet::new();
+        let pred = Self::walk_value_chain(kb, raw[0].clone(), subst, &mut seen)?;
+        // `Ref(p)` or the NULLARY application `p()`, and deliberately not
+        // `Ident` or an applied `f(x)` — the pre-existing shape, unwidened.
+        let pred_sym = match pred.head(kb) {
+            ViewHead::Ref(s) => s,
+            ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => s,
             _ => return None,
         };
         // Create a term for each argument (a `Value::Node` arg lowers via
@@ -2061,8 +2086,8 @@ impl SearchStream {
     /// hash-consed `TermId`. The marker is synthesised as a `Value::Term` (see
     /// `make_pop_assumption_marker`), so it never actually carries a `Value::Node`;
     /// reading it via the view is what lets the marker branch dispatch on `&Value`
-    /// directly, before the `reify_goal_value` the term-structured forall/quant
-    /// handlers beside it still need. Returns None for anything else.
+    /// directly, ahead of the term-structured forall/quant handlers beside it.
+    /// Returns None for anything else.
     fn pop_assumption_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<usize> {
         match goal.head(kb) {
             ViewHead::Functor { functor: Some(f), pos_arity: 1, named_arity: 0 }
@@ -3399,12 +3424,19 @@ impl KnowledgeBase {
     ) -> BuiltinResult {
         // Every builtin reads its goal carrier-agnostically through `TermView`
         // (WI-482): a rule-body `Value::Node` occurrence resolves without
-        // lowering the whole goal to a hash-consed `TermId`. The
-        // symbol-reflection builtins (`qualified_name`, `short_name`,
-        // `lookup_symbol`, `resolve_sort_instantiation_param`) still reify their
-        // *structural* argument carrier (a symbol ref, a `SortView`) internally
-        // via `carrier_term` — the KB's symbol/field lookups are keyed over
-        // `Term` — but that is a narrow, per-arg reify, not a per-goal one.
+        // lowering the whole goal to a hash-consed `TermId`.
+        //
+        // The symbol-reflection builtins (`qualified_name`, `short_name`,
+        // `lookup_symbol`, `resolve_sort_instantiation_param`) read their ARGUMENT
+        // carriers that way too, off the head via `value_symbol` / `functor_sym`.
+        // They used to reify each per-arg through the module's `carrier_term`,
+        // justified as "the KB's symbol/field lookups are keyed over `Term`" —
+        // which is true of the LOOKUP and irrelevant to the READ: a symbol is a
+        // symbol on any carrier, and `ViewHead::Ref` hands it over without
+        // allocating. What that reify actually did was answer by carrier — `None`
+        // for everything but `Term`/`Node`, and ⊥ for a `Spliced` leaf — so the
+        // narrowness was a silent wrong answer, not a narrow cost. It has no
+        // callers left and is deleted; see the module note below `Frame`.
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
             BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
@@ -3685,9 +3717,8 @@ impl KnowledgeBase {
 
     /// `qualified_name(?sym, ?result)` — if `?sym` is bound to a `Ref`/`Ident`
     /// symbol, bind `?result` to its full qualified-name string. Delay if `?sym`
-    /// is unbound. Reads its goal through [`TermView`] (WI-482) so a rule-body
-    /// `Value::Node` occurrence resolves; the symbol carrier itself is reified
-    /// via `carrier_term`.
+    /// is unbound. Goal AND symbol carrier both read through [`TermView`]
+    /// ([`Self::value_symbol`]) — no reify.
     fn builtin_qualified_name<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
             return BuiltinResult::Failure;
@@ -3700,12 +3731,8 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let Some(sym_term) = self.carrier_term(&sym_val) else {
+        let Some(sym) = self.value_symbol(&sym_val) else {
             return BuiltinResult::Failure;
-        };
-        let sym = match self.terms.get(sym_term) {
-            Term::Ref(s) | Term::Ident(s) => *s,
-            _ => return BuiltinResult::Failure,
         };
         let name = self.symbol_qualified_name(sym);
         let str_term = self.alloc(Term::Const(super::term::Literal::String(name)));
@@ -3714,8 +3741,8 @@ impl KnowledgeBase {
 
     /// `short_name(?sym, ?result)` — if `?sym` is bound to a `Ref`/`Ident`
     /// symbol, bind `?result` to the last dot-separated segment of its name.
-    /// Delay if `?sym` is unbound. `TermView` goal (WI-482); symbol carrier
-    /// reified via `carrier_term`.
+    /// Delay if `?sym` is unbound. Goal AND symbol carrier both read through
+    /// [`TermView`] ([`Self::value_symbol`]) — no reify.
     fn builtin_short_name<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
             return BuiltinResult::Failure;
@@ -3728,12 +3755,8 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let Some(sym_term) = self.carrier_term(&sym_val) else {
+        let Some(sym) = self.value_symbol(&sym_val) else {
             return BuiltinResult::Failure;
-        };
-        let sym = match self.terms.get(sym_term) {
-            Term::Ref(s) | Term::Ident(s) => *s,
-            _ => return BuiltinResult::Failure,
         };
         // `name` is the symbol's name IN ITS DECLARING SCOPE, which is usually one
         // segment but not always: a WI-341 callback place `<op>.f.a` is declared in
@@ -3754,7 +3777,7 @@ impl KnowledgeBase {
     /// `lookup_symbol(?name_str, ?result)` — if `?name_str` is a bound String,
     /// search the symbol table for that qualified name and bind `?result` to
     /// `Ref(symbol)` if found, fail if not. Delay if `?name_str` is unbound.
-    /// `TermView` goal (WI-482); the name carrier is reified via `carrier_term`.
+    /// Goal AND name carrier both read through [`TermView`] — no reify.
     fn builtin_lookup_symbol<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
             return BuiltinResult::Failure;
@@ -3767,11 +3790,14 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
-        let Some(name_term) = self.carrier_term(&name_val) else {
-            return BuiltinResult::Failure;
-        };
-        let name = match self.terms.get(name_term) {
-            Term::Const(super::term::Literal::String(s)) => s.clone(),
+        // Read the name off the head. This also WIDENS the accepted carrier, and
+        // that is the point rather than a side effect: an unboxed `Value::Str` —
+        // what an eval-side string arrives as — reads as `ViewHead::Const(String)`
+        // here, and answered `None` at `carrier_term` before, so the builtin
+        // refused a perfectly good name because of how it was carried. Same
+        // by-carrier-not-by-content bug WI-982 fixed in `value_is_unbound_var`.
+        let name = match name_val.head(self) {
+            ViewHead::Const(super::term::Literal::String(s)) => s,
             _ => return BuiltinResult::Failure,
         };
         // Look up the symbol by qualified name (read-only).
@@ -3869,7 +3895,7 @@ impl KnowledgeBase {
         // `Symbol` value is a `Ref`, a canonical sort/place reference a nullary `Fn`;
         // `functor_sym` yields the symbol from either spelling for any carrier
         // (Term/Node/Entity) with no reify. A non-symbol arg (scalar/…) reads `None`
-        // → clean `Failure` (the former `reify_goal_value` would have panicked).
+        // → clean `Failure` (the module's former reify would have panicked).
         let Some(sym) = place_val.head(self).functor_sym() else {
             return BuiltinResult::Failure;
         };
@@ -4080,16 +4106,17 @@ impl KnowledgeBase {
             Some(v) if self.value_is_unbound_var(&v) => return BuiltinResult::delay(),
             Some(v) => v,
         };
-        // arg0 must be a term-shaped Symbol (Ref/Ident/Fn-functor). A non-term
-        // Value (Node / scalar / tuple) is simply not an operation symbol — fail
-        // cleanly rather than panic (don't route through `reify_goal_value`).
-        let op_sym = match &op_val {
-            Value::Term { id: t, .. } => match self.terms.get(*t) {
-                Term::Ref(s) | Term::Ident(s) => *s,
-                Term::Fn { functor, .. } => *functor,
-                _ => return BuiltinResult::Failure,
-            },
-            _ => return BuiltinResult::Failure,
+        // arg0 must be a Symbol (Ref/Ident/Fn-functor), read off the head so ANY
+        // carrier spelling it answers to. A value with no functor symbol (scalar
+        // / tuple / handle) is simply not an operation symbol — fail cleanly
+        // rather than panic (this never routed through the module's old reify,
+        // and now it doesn't route through a carrier test either).
+        //
+        // `functor_sym` ALONE would not do: it has no `Ident` arm, so migrating
+        // to it silently dropped the `Term::Ident` half of the match it replaced
+        // — while this doc and the line above went on claiming `Ident` works.
+        let Some(op_sym) = self.value_head_symbol(&op_val) else {
+            return BuiltinResult::Failure;
         };
         // arg1 — the result pattern, read carrier-faithfully (WI-682): a
         // `Value::Node` some(value: …) / none() pattern STAYS a Node, matched via
@@ -4318,8 +4345,8 @@ impl KnowledgeBase {
     /// `resolve_sort_instantiation_param(?spec, ?param_name, ?value)` — given a
     /// `SortView(sort, named…)` instance and a `Ref`/`Fn` param symbol, bind
     /// `?value` to the instance's binding for that param (fail if none). Delays
-    /// if `?spec` or `?param_name` is unbound. `TermView` goal (WI-482); the
-    /// `SortView`/param carriers are reified via `carrier_term`.
+    /// if `?spec` or `?param_name` is unbound. Goal, param symbol AND `SortView`
+    /// instance all read through [`TermView`] — no reify anywhere on the path.
     fn builtin_resolve_sort_inst_param<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 3) {
             return BuiltinResult::Failure;
@@ -4336,28 +4363,25 @@ impl KnowledgeBase {
             return BuiltinResult::delay();
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
-        // The param arg names a `Ref`, or a nullary-`Fn` name term.
-        let Some(param_term) = self.carrier_term(&param_val) else {
+        // The param arg names a `Ref`, or a nullary-`Fn` name term — the two
+        // spellings `functor_sym` unifies, read off the head with no reify.
+        let Some(param_sym) = param_val.head(self).functor_sym() else {
             return BuiltinResult::Failure;
-        };
-        let param_sym = match self.terms.get(param_term) {
-            Term::Ref(sym) => *sym,
-            Term::Fn { functor, .. } => *functor,
-            _ => return BuiltinResult::Failure,
         };
         // The instance must be `SortView(sort_name, named_args…)`; find the
-        // named binding for `param_sym`.
-        let Some(inst_term) = self.carrier_term(&inst_val) else {
+        // named binding for `param_sym`. Head + named child, no reify — the
+        // binding is handed back in its own carrier, so a value-in-type binding
+        // (a `Value::Node` denoted) keeps its identity instead of being
+        // flattened into the term store on the way to `?value`.
+        let Some(functor) = inst_val.head(self).functor_sym() else {
             return BuiltinResult::Failure;
         };
-        let value_tid = match self.terms.get(inst_term).clone() {
-            Term::Fn { ref functor, ref named_args, .. } if self.symbols.local_name(*functor) == "SortView" => {
-                named_args.iter().find(|(sym, _)| *sym == param_sym).map(|(_, tid)| *tid)
-            }
-            _ => None,
-        };
-        match value_tid {
-            Some(val) => self.finish_result(target, val),
+        if self.symbols.local_name(functor) != "SortView" {
+            return BuiltinResult::Failure;
+        }
+        let binding = inst_val.named_arg(self, param_sym).map(|item| item.to_value());
+        match binding {
+            Some(val) => self.finish_result_value(target, val),
             None => BuiltinResult::Failure,
         }
     }
@@ -5395,18 +5419,31 @@ impl KnowledgeBase {
     /// Back half of result binding: bind the computed `value` to the result
     /// var, or check equality against an already-bound result.
     fn finish_result(&mut self, target: ResultTarget, value: TermId) -> BuiltinResult {
+        self.finish_result_value(target, Value::term(value))
+    }
+
+    /// [`Self::finish_result`] for a builtin whose result is already a `Value` —
+    /// binds it in the carrier it arrived on instead of forcing it through the
+    /// term store. A projected field child keeps its `Value::Node` occurrence
+    /// this way, where the `TermId` front door would have flattened it.
+    ///
+    /// The `TermId` front door delegates here rather than the reverse, so there
+    /// is ONE result-binding rule. Behaviour-identical for a term result:
+    /// `bind_term(v, t)` and `bind_value(v, Value::term(t))` differ only in which
+    /// consistency fast-path they take on a re-bind (`TermId` compare either
+    /// way), and `values_equal` already compared cross-carrier.
+    fn finish_result_value(&mut self, target: ResultTarget, value: Value) -> BuiltinResult {
         match target {
             ResultTarget::Bind(vid) => {
                 let mut extra = Substitution::new();
-                extra.bind(self, vid, value);
+                extra.bind_value(self, vid, value);
                 BuiltinResult::SuccessWithBindings(extra)
             }
             ResultTarget::Compare(Some(v)) => {
                 // WI-685: structural cross-carrier compare of the σ-walked result
                 // arg (a `Value::Node` literal, a `Value::Term`, or an unboxed
-                // scalar) against the computed term — no materialization of `v` to
-                // a `TermId` first.
-                if self.values_equal(&v, &Value::term(value)) {
+                // scalar) against the computed value — neither side materialized.
+                if self.values_equal(&v, &value) {
                     BuiltinResult::Success
                 } else {
                     BuiltinResult::Failure
@@ -5677,17 +5714,16 @@ impl KnowledgeBase {
         }
         let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
-        // The receiver must be a structural carrier (entity/sort term, or a
-        // denoted-occurrence twin); a scalar receiver has no fields.
-        let Some(obj_term) = self.carrier_term(&obj) else {
-            return BuiltinResult::Failure;
-        };
         let Some(field_name) = self.field_name_from_value(&field) else {
             return BuiltinResult::Failure;
         };
-        match self.project_field(obj_term, &field_name) {
+        // No receiver reify: `project_field` reads the head. The old
+        // `carrier_term` gate here refused a `Value::Entity` receiver outright —
+        // a runtime entity that reached SLD could not have a field read off it —
+        // and hit `occurrence_to_term`'s `debug_assert` on a spliced one.
+        match self.project_field(&obj, &field_name) {
             Some(val) => match target {
-                Some(t) => self.finish_result(t, val),
+                Some(t) => self.finish_result_value(t, val),
                 None => BuiltinResult::Success,
             },
             None => BuiltinResult::Failure,
@@ -5698,54 +5734,142 @@ impl KnowledgeBase {
     /// `String` scalar / `Const`-string (the dispatched-dot form, whose eval
     /// twin also takes a string — `eval::builtins::reflect_field_access`), or a
     /// `Ref`/`Ident`/`Fn` symbol (the reflection-rule form). `None` otherwise.
-    fn field_name_from_value(&mut self, v: &Value) -> Option<String> {
-        if let Value::Str(s) = v {
-            return Some(s.clone());
-        }
-        let t = self.carrier_term(v)?;
-        self.field_operand_name(t)
-    }
-
-    /// The hash-consed term carrier of a structural value — a `Value::Term`
-    /// unwrapped, a `Value::Node` occurrence reified via `occurrence_to_term`.
-    /// `None` for a scalar / value-level var carrier, which has no fields (the
-    /// caller fails or leaves the operand unreduced). Shared by the
-    /// `field_access` builtin, `field_name_from_value`, and `reduce_dot_value`
-    /// (WI-482).
-    fn carrier_term(&mut self, v: &Value) -> Option<TermId> {
-        match v {
-            Value::Term { .. } | Value::Node(_) => Some(reify_goal_value(self, v)),
+    ///
+    /// One head read covers all four. The `Value::Str` arm used to be a carrier
+    /// special-case ahead of a reify precisely BECAUSE the reify could not see
+    /// it; through the view it is just `ViewHead::Const(String)`, the same answer
+    /// a hash-consed `Term::Const` gives.
+    fn field_name_from_value(&self, v: &Value) -> Option<String> {
+        match v.head(self) {
+            ViewHead::Const(Literal::String(s)) => Some(s),
+            ViewHead::Ref(s) | ViewHead::Ident(s) => Some(self.symbols.local_name(s).to_owned()),
+            ViewHead::Functor { functor: Some(s), .. } => {
+                Some(self.symbols.local_name(s).to_owned())
+            }
             _ => None,
         }
     }
 
-    /// The field's short name from a reified field operand term — a `Ref`/`Ident`
-    /// symbol or `Fn` functor → its short name, a `String` const → the string.
-    fn field_operand_name(&self, field_term: TermId) -> Option<String> {
-        match self.terms.get(field_term) {
-            Term::Ref(s) | Term::Ident(s) => Some(self.symbols.local_name(*s).to_owned()),
-            Term::Fn { functor, .. } => Some(self.symbols.local_name(*functor).to_owned()),
-            Term::Const(Literal::String(s)) => Some(s.clone()),
+    /// The symbol a value NAMES, read off its head — ANY carrier, no reify.
+    ///
+    /// The carrier-neutral form of the `Term::Ref(s) | Term::Ident(s)` match the
+    /// symbol builtins used to reach through the module's old `carrier_term`.
+    ///
+    /// It is WIDER than that route in two ways, and an earlier version of this
+    /// doc denied the first — it claimed `alloc`'s nullary-constructor canon
+    /// (`Fn{c,[],[]}` → `Term::Ref(c)`) meant `ViewHead::Ref` and `Term::Ref`
+    /// named "exactly the same set". They do not: `resolve_qualified_name_term`
+    /// (kb/mod.rs) deliberately calls `terms.alloc` to BYPASS that canon — its
+    /// callers read the functor back off the name term — so non-canonicalized
+    /// nullary constructor `Fn`s exist in the store, and `functor_view_head`
+    /// reads them as `ViewHead::Ref(c)` where the replaced match answered
+    /// `None`. Arguably the better answer (`Color.red` IS a symbol), but a
+    /// widening, and no test drives it at any of the migrated sites.
+    ///
+    /// Second, it answers on carriers the reify simply dropped: `carrier_term`
+    /// was `None` for everything but `Term`/`Node`, and reify has no
+    /// `Expr::Spliced` arm (`debug_assert!(false)` → ⊥) where `occ_head` reads
+    /// through the spliced value.
+    ///
+    /// NARROWER than [`ViewHead::functor_sym`], deliberately: an application
+    /// `f(1, 2)` is not a name, so it must not answer `f` here. A site that does
+    /// want the `Fn` spelling (a param place, a spec base) calls `functor_sym`.
+    ///
+    /// THE ONE OWNER of "which symbol does this value name?", and `pub` for the
+    /// same reason [`Self::value_is_unbound_var`] is: host code and tests ask it
+    /// too, and the hand-written `match Value::Term { id } → Term::Ref | Ident`
+    /// they would otherwise write is a by-CARRIER answer to a by-CONTENT
+    /// question — it says "no" to a `Value::SymbolRef`, a nullary constructor
+    /// entity, and a `Value::Node` ref occurrence, all of which name a symbol.
+    pub fn value_symbol(&self, v: &Value) -> Option<Symbol> {
+        match v.head(self) {
+            ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
             _ => None,
         }
     }
+
+    /// The symbol at a value's head in ANY naming spelling — `Ref`, `Ident`, or
+    /// a `Fn` / entity functor. The WIDEST of the three symbol readers, for
+    /// sites whose replaced match had all three arms.
+    ///
+    /// It exists because reaching for [`ViewHead::functor_sym`] instead is a
+    /// silent NARROWING: `functor_sym` has no `Ident` arm, and two sites
+    /// migrated to it lost the `Term::Ident` half of the match they replaced —
+    /// `builtin_operation_body` (whose doc kept claiming `Ident` worked) and
+    /// `term_functor_name`. Pick between the three by what the site means:
+    /// [`Self::value_symbol`] for "is this value a NAME" (an application is
+    /// not), `functor_sym` for "what does this value's head APPLY" (WI-436's
+    /// `Ref`/nullary-`Fn` pair, no `Ident`), and this for "what symbol is at the
+    /// head, however spelled".
+    pub fn value_head_symbol(&self, v: &Value) -> Option<Symbol> {
+        match v.head(self) {
+            ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
+            ViewHead::Functor { functor: Some(s), .. } => Some(s),
+            _ => None,
+        }
+    }
+
 
     /// WI-482: the field-projection core shared by the `field_access` builtin (a
     /// dot goal) and [`Self::reduce_dot_value`] (a dot in operand position).
-    /// Returns the projected value term for an entity instance's named field or
-    /// a sort-scope component, or `None` if the object carries no such field.
-    /// Pure lookup — no result binding, no delay.
-    fn project_field(&mut self, obj_term: TermId, field_name: &str) -> Option<TermId> {
-        let (functor, named_args) = match self.terms.get(obj_term) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-            _ => return None,
-        };
+    /// Returns an entity instance's named field or a sort-scope component, or
+    /// `None` if the object carries no such field. Pure lookup — no result
+    /// binding, no delay.
+    ///
+    /// CARRIER-NEUTRAL in and out. It took a `TermId` until its callers' reify
+    /// gate was removed, which cost two things: a `Value::Entity` receiver was
+    /// refused outright (`carrier_term` is `None` for it) even though it plainly
+    /// has fields, and a `Value::Node` field child was flattened into the term
+    /// store on the way out. Neither was a decision — the signature demanded a
+    /// `TermId`, so the callers produced one.
+    fn project_field(&mut self, obj: &Value, field_name: &str) -> Option<Value> {
+        // The receiver's functor, off its head — so an entity riding as a
+        // `Value::Entity`, a `Value::Node` occurrence, or a hash-consed
+        // `Term::Fn` all project alike. `functor_sym` also accepts the bare
+        // `Ref` spelling, which is REQUIRED rather than a widening: WI-436 makes
+        // a nullary constructor read as `Ref(c)` from every carrier, so refusing
+        // it would make `c` projectable or not depending on its arity.
+        let functor = obj.head(self).functor_sym()?;
         // Dispatch 1: entity field access — match the named arg by short name.
         if self.entity_fields.contains_key(&functor) {
-            return named_args
+            let named_keys = obj.named_keys(self);
+            if let Some(key) = named_keys
                 .iter()
-                .find(|(arg_sym, _)| self.symbols.local_name(*arg_sym) == field_name)
-                .map(|(_, v)| *v);
+                .copied()
+                .find(|k| self.symbols.local_name(*k) == field_name)
+            {
+                // `to_value` keeps the child's carrier: a `Value::Node` field
+                // stays an occurrence rather than being flattened into the store.
+                return obj.named_arg(self, key).map(|item| item.to_value());
+            }
+            // POSITIONAL spelling. A runtime `Value::Entity` keeps unnamed args
+            // in `pos` — `finish_constructor` does not desugar, so `Point(42)`
+            // rides as `Entity{Point, pos:[42], named:[]}` — where the
+            // `Value::Term` twin was desugared to named by `alloc_from_value`.
+            // Reading only `named` here made the receiver's CARRIER decide
+            // whether its own field was reachable, which is the bug this
+            // function was rewritten to stop making.
+            //
+            // Through `positional_to_named_plan`, the same owner `alloc_from_value`
+            // desugars with, so both carriers agree by construction rather than by
+            // two copies of the declaration-order rule.
+            let pos_arity = match obj.head(self) {
+                ViewHead::Functor { pos_arity, .. } => pos_arity,
+                _ => 0,
+            };
+            if pos_arity > 0 {
+                if let PositionalPlan::Assign(fields) =
+                    self.positional_to_named_plan(functor, &named_keys, pos_arity)
+                {
+                    if let Some(idx) = fields
+                        .iter()
+                        .position(|f| self.symbols.local_name(*f) == field_name)
+                    {
+                        return obj.pos_arg(self, idx).map(|item| item.to_value());
+                    }
+                }
+            }
+            return None;
         }
         // Dispatch 2: sort component access — resolve `functor_qname.field`.
         let functor_qname = match self.symbols.get(functor) {
@@ -5755,14 +5879,21 @@ impl KnowledgeBase {
         let target_qname = format!("{}.{}", functor_qname, field_name);
         let resolved_sym = *self.symbols.by_qualified_name.get(&target_qname)?;
         // A sort/entity component is a nullary name term; anything else a Ref.
-        Some(match self.symbols.get(resolved_sym) {
+        //
+        // This branch MINTS rather than projects, so there is no incoming carrier
+        // to preserve, and it deliberately keeps interning: a component reference
+        // names a declared program element and recurs across calls — persistent,
+        // shared structure, which is what the term store is for. The transient
+        // interning worth avoiding is a per-call result nobody stores again.
+        let term = match self.symbols.get(resolved_sym) {
             d if d.has_kind(crate::intern::SymbolKind::Sort)
                 || d.has_kind(crate::intern::SymbolKind::Entity) =>
             {
                 self.make_name_term_from_sym(resolved_sym)
             }
             _ => self.alloc(Term::Ref(resolved_sym)),
-        })
+        };
+        Some(Value::term(term))
     }
 
     /// WI-482: reduce a σ-walked operand `Value` that is a dispatched dot
@@ -5800,15 +5931,17 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&recv) || self.value_is_unbound_var(&field) {
             return v;
         }
-        // Scalar receiver: no fields — leave the operand unreduced.
-        let Some(obj_term) = self.carrier_term(&recv) else {
-            return v;
-        };
         let Some(field_name) = self.field_name_from_value(&field) else {
             return v;
         };
-        match self.project_field(obj_term, &field_name) {
-            Some(val) => Value::term(val),
+        // A scalar receiver has no functor, so `project_field` answers `None` and
+        // the operand is left unreduced — the same outcome the `carrier_term`
+        // gate here used to produce, now decided by CONTENT (has this value a
+        // field?) rather than by carrier (is this value a term?).
+        match self.project_field(&recv, &field_name) {
+            // The projected child is returned in its own carrier — `Value::term`
+            // here would have re-flattened what `to_value` just preserved.
+            Some(val) => val,
             None => v,
         }
     }
@@ -10152,6 +10285,373 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 0, "lookup_symbol for unknown name should fail");
+    }
+
+    /// The name argument is read by CONTENT, not by carrier: a SPLICED string —
+    /// what a compile-time macro expansion (WI-722) binds a param to — names the
+    /// same symbol a hash-consed `Term::Const(String)` does.
+    ///
+    /// CONTROL, MEASURED by reverting `builtin_lookup_symbol` to its
+    /// `carrier_term` + `Term::Const(String)` read: this test PANICS there rather
+    /// than failing an assert. `try_occurrence_to_term` has no `Expr::Spliced`
+    /// arm, so reify hits its `debug_assert!(false)` — and in a release build
+    /// falls through to `Term::Bottom`, i.e. 0 solutions, indistinguishable from
+    /// `builtin_lookup_symbol_fails_for_unknown` above. That is why this test
+    /// names a symbol that DOES exist: a green "no solutions" is the exact shape
+    /// the defect wore.
+    ///
+    /// The bare `Value::Str` carrier is NOT tested here, deliberately: probing it
+    /// showed a value-carried goal never reaches builtin dispatch at all, so a
+    /// test built on one would assert 0 for a reason that has nothing to do with
+    /// the string. The occurrence goal below is the carrier that does resolve.
+    #[test]
+    fn builtin_lookup_symbol_reads_a_spliced_string_carrier() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
+
+        let mut kb = kb_with_prelude();
+        let global = kb.make_name_term("_global");
+        kb.symbols.define("Quux", "ns.Quux", crate::intern::SymbolKind::Sort, global.raw());
+        let quux_sym = *kb.symbols.by_qualified_name.get("ns.Quux").unwrap();
+
+        let result_sym = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_sym);
+        let ls_sym = kb.resolve_symbol("anthill.reflect.lookup_symbol");
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+
+        // The name rides as a SPLICED unboxed string — no hash-consed term on the
+        // argument side, and no reifiable occurrence shape either.
+        let name_occ = NodeOccurrence::new_expr(
+            Expr::Spliced(Value::Str("ns.Quux".into())),
+            span,
+            None,
+        );
+        let var_occ =
+            NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None);
+        let goal = Value::Node(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: ls_sym,
+                pos_args: vec![name_occ, var_occ],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        ));
+
+        let solutions = kb.resolve_goals(vec![goal], &ResolveConfig::default());
+        assert_eq!(
+            solutions.len(),
+            1,
+            "a spliced String names a symbol exactly as a Const String does",
+        );
+        assert_eq!(
+            kb.value_symbol(
+                &solutions[0].subst.resolve_as_value(result_vid).cloned().expect("bound"),
+            ),
+            Some(quux_sym),
+        );
+    }
+
+    /// `field_access` projects a receiver that rides as a runtime `Value::Entity`
+    /// — and hands the field back in the carrier it was stored in.
+    ///
+    /// CONTROL, MEASURED by restoring the `carrier_term` gate this replaced (and
+    /// `project_field`'s `TermId` signature with it): the test PANICS in
+    /// `occurrence_to_term` on the spliced receiver, and in a release build falls
+    /// through to `Term::Bottom` → 0 solutions. A plain (unspliced)
+    /// `Value::Entity` receiver reaching that gate answers `None` outright, since
+    /// `carrier_term` accepts only `Term`/`Node` — an entity with fields, refused
+    /// for having the wrong carrier.
+    ///
+    /// The second assert is the half that `project_field`'s return type used to
+    /// make impossible: the field was stored as an unboxed `Value::Int` and comes
+    /// back as one, where a `TermId` return had to intern it into the KB's store
+    /// first. It fails (`Value::Term`, not `Value::Int`) if `to_value` /
+    /// `finish_result_value` are reverted even when the projection itself works.
+    #[test]
+    fn field_access_projects_a_value_carried_entity_receiver() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+
+        let mut kb = kb_with_prelude();
+        let point = kb.intern("Point");
+        let x_field = kb.intern("x");
+        kb.register_entity_fields(point, vec![x_field]);
+
+        let result_sym = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_sym);
+        let fa_sym = kb.resolve_symbol("anthill.reflect.field_access");
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+
+        // `Point(x: 42)` as a RUNTIME value — never interned, its field an
+        // unboxed scalar.
+        let recv = Value::Entity {
+            functor: point,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(x_field, Value::Int(42))]),
+        };
+        let goal = Value::Node(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: fa_sym,
+                pos_args: vec![
+                    NodeOccurrence::new_expr(Expr::Spliced(recv), span, None),
+                    NodeOccurrence::new_expr(
+                        Expr::Const(Literal::String("x".into())),
+                        span,
+                        None,
+                    ),
+                    NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None),
+                ],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        ));
+
+        let solutions = kb.resolve_goals(vec![goal], &ResolveConfig::default());
+        assert_eq!(
+            solutions.len(),
+            1,
+            "an entity's field is readable whatever carrier the entity rides on",
+        );
+        match solutions[0].subst.resolve_as_value(result_vid) {
+            Some(Value::Int(42)) => {}
+            other => panic!(
+                "the projected field must keep its own carrier (unboxed Int 42), got {other:?}",
+            ),
+        }
+
+        // …and the same entity in its POSITIONAL spelling — what
+        // `finish_constructor` actually builds for `Point(42)`, since it does not
+        // desugar. CONTROL: reading only `named_keys` (the first version of this
+        // migration) answers 0 here while the block above still passes, i.e. the
+        // receiver's carrier decided whether its own field was reachable.
+        let result2 = kb.fresh_var(result_sym);
+        let positional = Value::Entity {
+            functor: point,
+            pos: Rc::from(vec![Value::Int(7)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        let goal2 = Value::Node(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: fa_sym,
+                pos_args: vec![
+                    NodeOccurrence::new_expr(Expr::Spliced(positional), span, None),
+                    NodeOccurrence::new_expr(
+                        Expr::Const(Literal::String("x".into())),
+                        span,
+                        None,
+                    ),
+                    NodeOccurrence::new_expr(Expr::Var(Var::Global(result2)), span, None),
+                ],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        ));
+        let solutions2 = kb.resolve_goals(vec![goal2], &ResolveConfig::default());
+        assert_eq!(solutions2.len(), 1, "a positional entity has the same field");
+        assert!(
+            matches!(solutions2[0].subst.resolve_as_value(result2), Some(Value::Int(7))),
+            "the positional spelling projects the same field, same carrier",
+        );
+    }
+
+    /// `ho_apply`'s predicate is read by CONTENT: a predicate that rides as a
+    /// `Value::SymbolRef` (spliced into the goal) lowers and applies.
+    ///
+    /// CONTROL, MEASURED by restoring the `carrier_term(&raw[0])` + `walk_view`
+    /// read this replaced: PANIC in `occurrence_to_term` on the spliced leaf (0
+    /// solutions in release). The carrier gate refused twice over —
+    /// `carrier_term` was `None` for a bare `Value::SymbolRef`, so a predicate
+    /// that IS a symbol could not be applied, and the reify was the only way a
+    /// spliced one got read at all.
+    ///
+    /// NOT driven here, and worth naming rather than implying: the same rewrite
+    /// also made the σ chase carrier-neutral (`walk_view` followed a chain only
+    /// while every link was a `Value::Term`). A chain passing THROUGH a non-term
+    /// link now resolves where it used to stop. That is a widening with no
+    /// isolated test — it needs an initial σ, which no `resolve` entry point
+    /// accepts — so it rests on the suite and on σ-following being what σ means.
+    #[test]
+    fn ho_apply_reads_a_value_carried_predicate() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
+
+        let mut kb = kb_with_prelude();
+        let pred = kb.intern("hoap_p");
+        let domain = kb.intern("test");
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+
+        // `hoap_p(1)` as an ordinary hash-consed fact.
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let fact = kb.alloc(Term::Fn {
+            functor: pred,
+            pos_args: SmallVec::from_elem(one, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact_value(Value::Term { id: fact }, ClauseKind::Fact, domain, None);
+
+        // `ho_apply(<the symbol, as a SymbolRef value>, 1)`.
+        let ha_sym = kb.resolve_symbol("anthill.reflect.Expr.ho_apply");
+        let goal = Value::Node(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: ha_sym,
+                pos_args: vec![
+                    NodeOccurrence::new_expr(
+                        Expr::Spliced(Value::SymbolRef(pred)),
+                        span,
+                        None,
+                    ),
+                    NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None),
+                ],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        ));
+
+        assert_eq!(
+            kb.resolve_goals(vec![goal], &ResolveConfig::default()).len(),
+            1,
+            "a predicate that names a symbol is applicable whatever carries it",
+        );
+    }
+
+    /// `resolve_sort_instantiation_param` reads a value-carried `SortView` and
+    /// hands its binding back in the binding's own carrier.
+    ///
+    /// CONTROL, MEASURED by restoring the `carrier_term(&inst_val)` gate: PANIC
+    /// in `occurrence_to_term` on the spliced instance (0 solutions in release).
+    /// The second assert is the `finish_result_value` half — with the `TermId`
+    /// result path the binding comes back as `Value::Term`, interned on the way
+    /// out, which for a value-in-type binding would have dropped the occurrence
+    /// identity the type carries.
+    #[test]
+    fn sort_inst_param_reads_a_value_carried_instance() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+
+        let mut kb = kb_with_prelude();
+        let sort_view = kb.intern("SortView");
+        let t_param = kb.intern("T");
+        let result_vid = {
+            let n = kb.intern("?value");
+            kb.fresh_var(n)
+        };
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+
+        // `SortView(T: 42)` as a RUNTIME value, its binding an unboxed scalar.
+        let inst = Value::Entity {
+            functor: sort_view,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(t_param, Value::Int(42))]),
+        };
+        let rsip = kb.resolve_symbol("anthill.reflect.resolve_sort_instantiation_param");
+        let goal = Value::Node(NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: rsip,
+                pos_args: vec![
+                    NodeOccurrence::new_expr(Expr::Spliced(inst), span, None),
+                    // The param names itself as a `SymbolRef` — the carrier
+                    // `carrier_term` also declined.
+                    NodeOccurrence::new_expr(
+                        Expr::Spliced(Value::SymbolRef(t_param)),
+                        span,
+                        None,
+                    ),
+                    NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None),
+                ],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        ));
+
+        let solutions = kb.resolve_goals(vec![goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "a value-carried SortView is still a SortView");
+        match solutions[0].subst.resolve_as_value(result_vid) {
+            Some(Value::Int(42)) => {}
+            other => panic!("the binding must keep its own carrier, got {other:?}"),
+        }
+    }
+
+    /// WI-1017 — a projection whose RESULT var occurs inside its RECEIVER is
+    /// refused, not silently bound to a cyclic term.
+    ///
+    /// CONTROL, MEASURED by removing the `occurs_in_value` guard in the
+    /// `SuccessWithBindings` merge: this returns ONE solution with `?r ↦
+    /// probe_g(?r)` and `is_contradiction() == false`, and reifying that answer
+    /// (`kb.reify`) OVERFLOWS THE STACK and aborts the process — not a wrong
+    /// answer, a crash.
+    ///
+    /// Note the carrier: a hash-consed `Term` receiver and a `Value::Term`
+    /// binding, i.e. the path that predates the WI-1015 carrier work. The note
+    /// this guard replaced argued the site was safe "by absence of a producer"
+    /// of NON-`Term` bindings; the merge loop never distinguished carriers, and
+    /// `field_access` is the desugaring of every `?x.y`.
+    #[test]
+    fn a_projection_binding_its_own_receiver_var_is_refused() {
+        use crate::eval::value::Value;
+        let mut kb = kb_with_prelude();
+        let point = kb.intern("ProbePoint");
+        let x_field = kb.intern("x");
+        kb.register_entity_fields(point, vec![x_field]);
+        let g = kb.intern("probe_g");
+
+        let r_sym = kb.intern("?r");
+        let r_vid = kb.fresh_var(r_sym);
+        let r_term = kb.alloc(Term::Var(Var::Global(r_vid)));
+        // receiver = ProbePoint(x: probe_g(?r)) — the result var occurs INSIDE it.
+        let inner = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(r_term, 1),
+            named_args: SmallVec::new(),
+        });
+        let recv = kb.alloc(Term::Fn {
+            functor: point,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(x_field, inner)]),
+        });
+        let field = kb.alloc(Term::Const(Literal::String("x".into())));
+        let fa = kb.resolve_symbol("anthill.reflect.field_access");
+        let goal = kb.alloc(Term::Fn {
+            functor: fa,
+            pos_args: SmallVec::from_slice(&[recv, field, r_term]),
+            named_args: SmallVec::new(),
+        });
+
+        let sols = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(sols.len(), 0, "a cyclic projection has no solution");
+
+        // The CONTROL for the control: the same projection with an unrelated
+        // result var binds normally, so the guard refuses cycles and not
+        // projections. Without this, deleting `field_access` entirely would
+        // leave the assert above green.
+        let ok_vid = kb.fresh_var(r_sym);
+        let ok_term = kb.alloc(Term::Var(Var::Global(ok_vid)));
+        let goal_ok = kb.alloc(Term::Fn {
+            functor: fa,
+            pos_args: SmallVec::from_slice(&[recv, field, ok_term]),
+            named_args: SmallVec::new(),
+        });
+        let sols_ok = kb.resolve(&[goal_ok], &ResolveConfig::default());
+        assert_eq!(sols_ok.len(), 1, "an acyclic projection still binds");
+        assert!(
+            matches!(sols_ok[0].subst.resolve_as_value(ok_vid), Some(Value::Term { .. })),
+            "and binds to the projected child",
+        );
     }
 
     #[test]

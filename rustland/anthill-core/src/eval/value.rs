@@ -152,6 +152,29 @@ pub enum Value {
     /// `alloc_from_value` routes it back to `Term::Var`.
     Var(Var),
 
+    /// The value-level analog of `Term::Ref` — a named symbol as a first-class
+    /// value. Same motivation as `Value::Var` one variant up, for the other
+    /// leaf: a symbol had no direct `Value` carrier, so one had to ride as
+    /// `Value::Term{Term::Ref(s)}` (interning a transient into the KB-lifetime
+    /// `TermStore`), as `Value::Node(Expr::Ref(s))` (synthesizing an occurrence
+    /// with a span it doesn't have), or as `Value::Entity{functor: c, [], []}`
+    /// — which WI-436's `functor_view_head` does canonicalize to
+    /// `ViewHead::Ref(c)`, but ONLY when `c` is a registered constructor, so it
+    /// was never available for a sort, op, or param-place symbol.
+    ///
+    /// Views as `ViewHead::Ref(sym)` and promotes to `Term::Ref(sym)`, so it is
+    /// indistinguishable from its hash-consed twin to every structural
+    /// consumer — matching, unification, `goal_fingerprint`, discrim keys. That
+    /// is the whole contract: this is a CARRIER choice, not a new kind of thing.
+    ///
+    /// `Ref` only, no `Ident` twin. `Term::Ident` is an as-yet-unresolved bare
+    /// identifier — a parse/load-stage state, not a runtime value — and the one
+    /// consumer that must see it (reflection over un-elaborated source) reads it
+    /// through `Value::Node(Expr::Ident)`, which is unchanged. Minting an
+    /// unresolved identifier as a runtime value would be a bug, so there is no
+    /// variant to mint it with.
+    SymbolRef(Symbol),
+
     /// WI-242 — positional content binding (operation body, rule head,
     /// or other NodeOccurrence). Reflection ops like `body_of`, `head_of`,
     /// `args_of` produce this; consumers walk the `Rc<NodeOccurrence>`
@@ -253,6 +276,10 @@ impl Value {
             // WI-109: two value-level logic variables are equal iff they are
             // the same variable (kind + id; `VarId` compares by id only).
             (Value::Var(x), Value::Var(y)) => x == y,
+            // Mirrors the `Term` arm above: hash-consing makes `Term::Ref(s)`
+            // one id per symbol, so identity IS symbol equality. Without this
+            // arm two values naming the SAME symbol compared unequal.
+            (Value::SymbolRef(x), Value::SymbolRef(y)) => x == y,
             _ => false,
         }
     }
@@ -364,6 +391,7 @@ impl Value {
             Value::Term { .. } => "Term",
             Value::Node(_) => "Node",
             Value::Var(_) => "Var",
+            Value::SymbolRef(_) => "SymbolRef",
             Value::Relation { .. } => "Relation",
         }
     }

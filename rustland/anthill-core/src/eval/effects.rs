@@ -294,6 +294,14 @@ fn detect_cycle(
             }
             Ok(())
         }
+        // The `Term::Ref` arm of `detect_cycle_term`, on the other carrier of the
+        // same symbol. `_ => Ok(())` would report NO cycle for the one shape this
+        // guard exists to catch — `Modify[<sym>].set(<same sym>)` — since
+        // `resource_key` reads its key through `value_functor`, which does accept
+        // this carrier.
+        Value::SymbolRef(sym) => {
+            if *sym == target { Err(EvalError::CyclicReference) } else { Ok(()) }
+        }
         _ => Ok(()),
     }
 }

@@ -323,6 +323,14 @@ fn constructor_sub_values(
             }
             _ => None,
         },
+        // The nullary-constructor arm above, on the other carrier. Without it the
+        // head PROMISES the arm can match — `MatchDispatch`'s pre-filter reads
+        // `value_functor`, which accepts this carrier — and the destructure then
+        // declines, so the arm is skipped silently or the match fails outright.
+        Value::SymbolRef(sym) => {
+            if !functor_matches(kb, expected, *sym) { return None; }
+            Some(Vec::new())
+        }
         _ => None,
     }
 }

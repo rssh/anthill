@@ -34684,13 +34684,7 @@ fn view_child_value<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Optio
 
 /// A view's named child as the `Symbol` it references (`Ref(s)` / `Ident(s)`).
 fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<Symbol> {
-    match view_child_value(kb, ty, key)? {
-        Value::Term { id: t, .. } => match kb.get_term(t) {
-            Term::Ref(s) | Term::Ident(s) => Some(*s),
-            _ => None,
-        },
-        _ => None,
-    }
+    kb.value_symbol(&view_child_value(kb, ty, key)?)
 }
 
 /// The "sort head" of an inferred type — the least declared sort it

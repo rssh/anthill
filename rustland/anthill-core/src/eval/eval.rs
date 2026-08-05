@@ -2932,6 +2932,10 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
             Term::Ref(sym) => Some(*sym),
             _ => None,
         },
+        // Its own `Term::Ref` twin one arm up answers `Some(sym)`; the `_` below
+        // would have answered `None`, so the same symbol would name a carrier
+        // sort through one carrier and none through the other.
+        Value::SymbolRef(sym) => Some(*sym),
         _ => None,
     }
 }
@@ -2976,7 +2980,11 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Str(_) => Some("anthill.prelude.String"),
         Value::Bool(_) => Some("anthill.prelude.Bool"),
         // Structured values: the carrier is the constructor's parent sort (below).
-        Value::Entity { .. } | Value::Term { .. } => None,
+        // `SymbolRef` rides with them, not with the fixed-carrier handles: it is
+        // the twin of a `Value::Term{Term::Ref(c)}`, which reaches the
+        // `sort_of_constructor` route below, and a bare constructor reference
+        // must dispatch the same through either carrier.
+        Value::Entity { .. } | Value::Term { .. } | Value::SymbolRef(_) => None,
         // WI-714 (proposal 052): a `Relation` value's carrier IS the `Relation`
         // sort — so `splitFirst`/`head`/`map`/… dispatch to `Relation.splitFirst`
         // (the query-running host builtin) and, via `provides LogicalStream`, the

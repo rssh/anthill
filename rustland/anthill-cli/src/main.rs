@@ -1941,6 +1941,17 @@ fn render_value(
             }));
             format!("({})", parts.join(", "))
         }
+        // Through the shared owner, so a symbol prints as a symbol here exactly
+        // as its `Term::Ref` twin does via `print_term` below. The `other` arm
+        // renders the Rust `Debug` form, which for a `?X = <symbol>` answer
+        // binding is the cross-carrier divergence `write_symbol_ref` exists to
+        // prevent — this was the THIRD printer, missed when the other two were
+        // unified onto it.
+        Value::SymbolRef(sym) => {
+            let mut buf = String::new();
+            printer.write_symbol_ref(*sym, &mut buf);
+            buf
+        }
         other => format!("{other:?}"),
     }
 }

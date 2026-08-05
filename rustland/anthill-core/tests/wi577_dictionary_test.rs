@@ -43,13 +43,21 @@ fn sym_val(interp: &mut Interpreter, qn: &str) -> Value {
 }
 
 /// The qualified name of a `Symbol` runtime value.
+///
+/// Reads the symbol by CONTENT (`value_symbol`), not by carrier. It used to
+/// match `Value::Term { id } → Term::Ref | Ident`, asserting the carrier as well
+/// as the symbol.
+///
+/// That made it the ONLY thing that noticed when `symbol_value` was briefly
+/// flipped to mint `Value::SymbolRef` — which is a statement about test
+/// COVERAGE, not about blast radius: anthill-stl's `expect_symbol` reads by
+/// carrier too and stayed green over five broken host ops. The flip is reverted
+/// and owned by WI-1016; this reader is by-content either way, which is what it
+/// should have been from the start.
 fn sym_qn(interp: &Interpreter, v: &Value) -> String {
-    match v {
-        Value::Term { id, .. } => match interp.kb().get_term(*id) {
-            Term::Ref(s) | Term::Ident(s) => interp.kb().qualified_name_of(*s).to_string(),
-            other => panic!("expected a Ref/Ident Symbol term, got {other:?}"),
-        },
-        other => panic!("expected a Symbol (Term) value, got {}", other.type_name()),
+    match interp.kb().value_symbol(v) {
+        Some(s) => interp.kb().qualified_name_of(s).to_string(),
+        None => panic!("expected a Symbol value, got {}", v.type_name()),
     }
 }
 

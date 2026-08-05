@@ -284,6 +284,9 @@ impl KnowledgeBase {
             // WI-109: a value-level logic variable lowers back to `Term::Var`,
             // making the round-trip lossless.
             Value::Var(var) => Ok(self.terms.alloc(Term::Var(*var))),
+            // Same round-trip losslessness for the other leaf: a `Value::SymbolRef`
+            // lowers back to the `Term::Ref` it views as.
+            Value::SymbolRef(sym) => Ok(self.terms.alloc(Term::Ref(*sym))),
             Value::Entity { functor, pos, named, .. } => {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
                 for p in pos.iter() {

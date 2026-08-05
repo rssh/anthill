@@ -639,6 +639,15 @@ fn list_items_strict(kb: &KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
                 None
             }
         }
+        // The `Term::Ref(nil)` arm above, on the other carrier of the same
+        // symbol: an empty list is a bare `nil` reference, and reaching `_ =>
+        // None` here would classify it MALFORMED rather than empty.
+        //
+        // Matched to the `Term` arm EXACTLY — local name only. The `Entity` arm
+        // below also accepts `Some(*functor) == nil_sym`; adding that here would
+        // make this carrier answer on a qualified `nil` its own twin rejects,
+        // i.e. codify a new cross-carrier disagreement while fixing one.
+        Value::SymbolRef(s) if is_nil(kb.local_name_of(*s)) => Some(Vec::new()),
         _ => None,
     }
 }

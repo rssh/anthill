@@ -2658,19 +2658,22 @@ fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
 
-    let name: Option<String> = match &arg {
-        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
-            crate::kb::term::Term::Fn { functor, .. } => {
-                Some(interp.kb.local_name_of(*functor).to_string())
-            }
-            crate::kb::term::Term::Ref(sym) | crate::kb::term::Term::Ident(sym) => {
-                Some(interp.kb.local_name_of(*sym).to_string())
-            }
-            _ => None,
-        },
-        Value::Entity { functor, .. } => Some(interp.kb.local_name_of(*functor).to_string()),
-        _ => None,
-    };
+    // One head read replaces the `Fn` / `Ref` / `Ident` / `Entity` nest this
+    // hand-matched, via the reader that keeps ALL of those spellings —
+    // `functor_sym` alone has no `Ident` arm and silently dropped it.
+    //
+    // IT IS NOT A PURE EQUIVALENCE, and an earlier version of this comment
+    // claimed it was. The replaced outer match ended `_ => None`, so a
+    // `Value::Node` answered `none()`; a head read answers the occurrence's own
+    // functor. That is the right answer — an occurrence carrying `Apply{f, …}`
+    // has functor `f` whatever holds it — but it does flip `none()` to
+    // `some(name)` for any caller that was using this op to discriminate a
+    // term-carrier from an occurrence. No caller in the corpus does; nothing
+    // pins it either way.
+    let name: Option<String> = interp
+        .kb
+        .value_head_symbol(&arg)
+        .map(|s| interp.kb.local_name_of(s).to_string());
 
     Ok(match name {
         Some(s) => Value::Entity {
@@ -3694,7 +3697,18 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 
 /// Build a `Symbol` runtime value for `s` — the reflect representation of an
 /// anthill `Symbol` (a nullary `Ref` term). The construction counterpart of
-/// reading one back via `Value::Term { id } → Term::Ref(s) | Term::Ident(s)`.
+/// reading one back via [`KnowledgeBase::value_symbol`].
+///
+/// STILL MINTS THE INTERNED CARRIER, and that is the open half of the
+/// `Value::SymbolRef` work, not an oversight. Minting the new carrier here is a
+/// one-line change that makes it live across the whole reflect surface at once,
+/// and every `Value` match in the workspace that answers a question about
+/// symbol-ness has to have decided about it first. Several had not — an
+/// anthill-stl host reader that rejects by carrier, `scalar_eq` (two identical
+/// symbols comparing unequal), `Modify.set`'s cycle guard, `MapKey`, the
+/// value-fact dedup key space. The ones with a forced answer (mirror the
+/// `Term::Ref` twin) are now handled; the ones that need a REPRESENTATION
+/// decision are WI-1016, which owns this flip.
 fn symbol_value(kb: &mut crate::kb::KnowledgeBase, s: crate::intern::Symbol) -> Value {
     Value::term(kb.alloc(crate::kb::term::Term::Ref(s)))
 }
@@ -3764,19 +3778,14 @@ fn dict_sub(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 /// its captured dict (`spread_eta_args` reads a body-less op's arity from its
 /// signature, so a native-builtin-backed resolved op like `PartialEq.eq` is callable).
 fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::term::Term;
     use crate::kb::typing::resolve_op_target_checked;
     let [d, spec_op] = expect_args::<2>("Dictionary.resolveOp", args)?;
     let h = match d {
         Value::Requirement(h) => h,
         other => return Err(type_mismatch("Dictionary", &other, None)),
     };
-    let spec_op_sym = match &spec_op {
-        Value::Term { id, .. } => match interp.kb.get_term(*id) {
-            Term::Ref(s) | Term::Ident(s) => *s,
-            _ => return Err(type_mismatch("Symbol", &spec_op, None)),
-        },
-        other => return Err(type_mismatch("Symbol", other, None)),
+    let Some(spec_op_sym) = interp.kb.value_symbol(&spec_op) else {
+        return Err(type_mismatch("Symbol", &spec_op, None));
     };
     // WI-857: refuses a `NoProvider` marker — `resolveOp` MINTS A CALLABLE, so it is
     // a dispatch face, and letting it hand back an `OpRef` on the spec op is the

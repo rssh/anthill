@@ -495,6 +495,11 @@ impl Interpreter {
             Value::Term { id: tid, .. } => {
                 buf.push_str(&crate::persistence::print::TermPrinter::new(&self.kb).print_term(*tid));
             }
+            // Through the SAME owner the `Term::Ref` twin prints by, so the two
+            // carriers of one symbol cannot key differently.
+            Value::SymbolRef(sym) => {
+                crate::persistence::print::TermPrinter::new(&self.kb).write_symbol_ref(*sym, buf);
+            }
             Value::Unit
             | Value::Tuple { .. }
             | Value::Closure(_)

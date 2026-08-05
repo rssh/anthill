@@ -3955,6 +3955,11 @@ pub(super) fn scalar_value_expr(v: &Value) -> Option<Expr> {
         // — so an occurrence var bound to a `Value::Var` reconstructs as a
         // variable rather than tripping the caller's non-scalar policy.
         Value::Var(var) => Expr::Var(*var),
+        // Same reconstruction for the other leaf — `Expr::Ref` is its twin.
+        // Without it `subst_var_leaf` PANICS on this carrier and
+        // `simp_rewrite`'s `unwrap_or(Expr::Bottom)` silently rewrites a redex
+        // to bottom, five lines below the `Term::Ref` arm that works.
+        Value::SymbolRef(s) => Expr::Ref(*s),
         _ => return None,
     })
 }

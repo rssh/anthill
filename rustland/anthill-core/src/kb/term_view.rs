@@ -141,11 +141,22 @@ impl ViewItem<'_> {
     /// Lets a `&mut KnowledgeBase` walker (e.g. the guard engine reading a
     /// `LogicalQuery` through [`TermView`]) own each structural child without
     /// holding a borrow of the parent across a mutating call.
+    /// The `Node` arm goes through [`Value::node`], the NORMALIZING constructor,
+    /// not a raw `Value::Node(…)`: its contract is that no walker ever meets a
+    /// doubly-wrapped carrier, and it unwraps `Expr::Spliced(v)` to `v` and
+    /// `Expr::Var(x)` to `Value::Var(x)`.
+    ///
+    /// A raw clone here was invisible while `to_value` fed only local reads, and
+    /// became a silent wrong answer once `project_field` started BINDING the
+    /// result into σ: a field whose child is `Expr::Spliced(Value::Var(x))` bound
+    /// `?r` to a doubly-wrapped UNBOUND var, and neither `value_is_unbound_var`
+    /// nor `value_global_var` looks through `Spliced`, so every later gate read
+    /// it as bound.
     pub fn to_value(&self) -> Value {
         match self {
             ViewItem::Term(t) => Value::term(*t),
             ViewItem::Value(v) => (*v).clone(),
-            ViewItem::Node(occ) => Value::Node(Rc::clone(occ)),
+            ViewItem::Node(occ) => Value::node(Rc::clone(occ)),
         }
     }
 }
@@ -1806,6 +1817,13 @@ impl TermView for Value {
             // `Var`, and the discrim tree keys flex `Global`/`DeBruijn` as a
             // wildcard var-edge, `Rigid` as a `RigidVar` constant.
             Value::Var(v) => ViewHead::Var(*v),
+            // The whole contract of the variant: indistinguishable from its
+            // `Term::Ref` twin here, so every structural consumer — matching,
+            // unification, `goal_fingerprint`, discrim keys — reads one symbol
+            // one way regardless of which carrier it arrived on. NOT through
+            // `functor_view_head`: this IS the canonical bare-`Ref` spelling
+            // that function canonicalizes a nullary application TO.
+            Value::SymbolRef(s) => ViewHead::Ref(*s),
             Value::Closure(_)
             | Value::OpRef { .. }
             | Value::Stream(_)
