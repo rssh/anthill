@@ -2589,9 +2589,13 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // WI-1014 follow-up: THE COMMENT WAS RIGHT AND THE CODE WAS NOT. It
         // passed `positional` through as POSITIONAL args, while the parser
         // (`parse/convert.rs`, `BuildFrame::TupleLiteral`) labels every
-        // positional `_N` and emits `pos_args: []` — which is what
-        // `reflect.anthill` documents as the representation: "(x, y) is
-        // represented as TupleLiteral(_1: x, _2: y)". So one source produced two
+        // positional `_N` and emits `pos_args: []` — which is what the SPEC
+        // requires: `docs/kernel-language.md` §Tuple sorts, "Positional syntax is
+        // sugar for auto-generated names `_1`, `_2`, …", "one-based and
+        // canonical", and "Tuple literals are represented as `TupleLiteral(...)`
+        // terms with named args". THE SPEC SAID SO ALL ALONG; this arm was
+        // written by reading sibling CODE instead, which is how it disagreed with
+        // every other producer. So one source produced two
         // different terms depending on which path built it, the cross-carrier
         // disagreement WI-425 calls a wrong answer. The parser and the spec agree
         // with each other, so this side moves.
