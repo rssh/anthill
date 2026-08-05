@@ -291,7 +291,7 @@ poisoning just that atom's row to the node carrier as a `denoted` label already 
 Hash-consing is therefore **not** a constraint on the guard's carrier: a node-carried atom indexes
 and matches identically through structural discrim keys (CLAUDE.md representation note — the discrim
 tree never keys on `TermId` identity), and where the dedup / identity fast-path pays, the occurrence
-**generates and caches its hash-consed term twin** via `occurrence_to_term` (WI-390 / WI-471) — a
+**generates its hash-consed term twin** via `occurrence_to_term` (WI-390) — a
 boundary/index op, consistent with WI-348 (logic reads through `TermView`, never materializing a
 `TermId` from a `Value`). This needs **no** node-world `Type`/`EffectExpression` migration (no WI-470
 dependency) — see open question F. The disjunctive merge above needs **no** new constructor — two
@@ -428,7 +428,9 @@ just do not read its guard closed-world.
   - Hash-consing is not lost on the node carrier: a node-carried atom indexes and matches identically
     through structural discrim keys (representation note — the discrim tree never keys on `TermId`
     identity), and where dedup / the `unify_effect_rows` identity fast-path pays, the occurrence
-    **generates and caches its hash-consed term twin** via `occurrence_to_term` (WI-390 / WI-471).
+    **generates its hash-consed term twin** via `occurrence_to_term` (WI-390). There is no CACHE:
+    WI-471's per-occurrence memo was deleted by WI-815, whose one consumer now takes a
+    `GoalKey` structural fingerprint instead of materializing a `TermId` at all.
     This is a boundary/index op, consistent with WI-348 (logic reads through `TermView`, never
     materializing a `TermId` from a `Value`). So 048 needs **no** node-world `Type`/`EffectExpression`
     migration — **WI-470 is no longer a dependency** (it remains the separate, larger inversion that

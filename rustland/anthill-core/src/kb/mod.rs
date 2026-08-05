@@ -389,8 +389,18 @@ pub struct ProgramClauseMatch {
 /// `None` covers two different situations that both mean "store it": no entry,
 /// and an entry naming a RETRACTED rule. The stale entry is deliberate — `retract`
 /// only evicts a key when the RuleId there is its own ([`remove_dedup_entry`]), so
-/// a retracted-then-superseded key can linger, and the caller must overwrite it
-/// with `insert` rather than `or_insert`. Liveness is read bounds-checked, the
+/// a retracted-then-superseded key can linger.
+///
+/// THE TWO INDEXES DISAGREE ABOUT WHAT TO DO NEXT, and this doc describes only the
+/// VALUE path. `assert_fact_value` re-points a stale key with `insert`; the Term
+/// path in `assert_rule_nodes` still uses `.or_insert(..)` and says so ("We do not
+/// overwrite an existing entry"). On the Term path a stale entry would therefore
+/// never be re-pointed, and every later assert of that fact would store another
+/// duplicate. That is pre-existing (WI-233) and unreached — the flip that could
+/// strand an entry is guarded by a `debug_assert_eq!` in `set_rule_body_nodes`,
+/// compiled out in release — but the two indexes should not answer this
+/// differently, and this note is here so the next reader sees the asymmetry rather
+/// than inferring one rule from the other. Liveness is read bounds-checked, the
 /// same rule as [`KnowledgeBase::is_rule_alive`].
 ///
 /// One owner because the two indexes now have different key types (WI-815), so
@@ -402,7 +412,13 @@ fn live_dedup_hit<K: std::hash::Hash + Eq>(
     key: &(K, ClauseKind, Symbol),
 ) -> Option<RuleId> {
     let rid = *map.get(key)?;
-    rules.get(rid.index()).filter(|r| !r.retracted).map(|_| rid)
+    // INDEXED, not `get`: a RuleId sitting in a dedup index that is out of bounds is
+    // index CORRUPTION, and the read it replaced panicked on it. Degrading to "not
+    // alive" would answer "store it", so the map would silently duplicate that fact
+    // forever instead of failing — the silent skip CLAUDE.md forbids. (This is why
+    // it is not `KnowledgeBase::is_rule_alive`, whose contract is the opposite: it
+    // exists for callers that CANNOT guarantee the id is well-formed.)
+    (!rules[rid.index()].retracted).then_some(rid)
 }
 
 /// Drop `key`'s entry from a ground-fact dedup index, but ONLY when `id` is the
@@ -2633,10 +2649,17 @@ impl KnowledgeBase {
     /// "does this head carry a discrimination key?", which also rejects `Opaque` but
     /// additionally rejects functor-less aggregates that key here perfectly well. It
     /// is not shared because the two failure modes differ: an unindexable head is
-    /// REFUSED (the insert walk panics, and does so before this key is ever used —
-    /// see `wi815_an_opaque_bearing_head_cannot_be_stored_at_all`), whereas an
-    /// unkeyable head must only DEGRADE. WI-348's contract is that a head this
-    /// function cannot key is stored un-deduped, never rejected.
+    /// REFUSED (the discrim insert walk panics), whereas an unkeyable head must only
+    /// DEGRADE — WI-348's contract is that a head this function cannot key is stored
+    /// un-deduped, never rejected.
+    ///
+    /// THE ORDER IS THIS GUARD FIRST, THE PANIC SECOND — stated because an earlier
+    /// draft of this note had it backwards, and the inverted version is exactly the
+    /// reasoning that would justify deleting `is_opaque_free` as unreachable.
+    /// `assert_fact_value` calls THIS function, and only a head that gets past it
+    /// reaches `push_value_head_entry` and the panicking insert. So the degrade
+    /// genuinely runs; what makes it unobservable today is that the panic follows it
+    /// for the same heads, not that the panic precedes it.
     ///
     /// A `Value::Term` head never reaches here — [`Self::assert_fact_value`] routes
     /// it to [`Self::assert_fact`] first — but no carrier is special-cased: the
@@ -2647,7 +2670,7 @@ impl KnowledgeBase {
         head: &crate::eval::value::Value,
     ) -> Option<term_view::GoalKey> {
         let key = term_view::goal_fingerprint(self, head, &subst::Substitution::new());
-        key.is_opaque_free().then_some(key)
+        (key.is_opaque_free() && key.has_named_functors()).then_some(key)
     }
 
     /// Assert a fact `functor(pos…, named…)` from carrier-agnostic `Value`
@@ -3172,13 +3195,23 @@ impl KnowledgeBase {
             // retract could not give it at this point; `value_fact_dedup_key` is
             // now `&self`, so the obstacle is gone and with it the reason.
             //
-            // Re-deriving is also SYMMETRIC BY CONSTRUCTION in a way a stash is
-            // not: a head that got no key at assert (`None`) recomputes to `None`
-            // and removes nothing, with no second field to keep in step. And it is
-            // not a new assumption — `remove_ground` ten lines below already
-            // re-derives the discrim path from this same head through `TermView`,
-            // so retract's dependence on view stability is pre-existing and
-            // load-bearing either way. Measured cold: 5 value-fact retracts across
+            // WHAT MAKES RE-DERIVING SAFE — stated precisely, because an earlier
+            // draft claimed "symmetric by construction" and that is too strong.
+            // The key is a function of (head, MUTABLE KB STATE), not of the head
+            // alone: `functor_view_head` consults `is_constructor_symbol`,
+            // `wrapped_expr_head` / `pattern_head` / `list_literal_functor` consult
+            // `try_resolve_symbol`, and `type_node_keys` consults `lookup_symbol` —
+            // all of which can answer differently later in a load. So a re-derived
+            // key CAN differ from the one inserted.
+            //
+            // Safety therefore rests on the RID GUARD, not on stability:
+            // `remove_dedup_entry` evicts only an entry naming THIS rule, so a
+            // drifted key removes nothing and the worst case is an orphan entry
+            // pointing at a retracted rule — which `live_dedup_hit` already treats
+            // as a miss and `insert` overwrites. Bounded, and the same exposure
+            // `remove_ground` ten lines below has had all along (it re-derives the
+            // discrim path from this same head), so it is pre-existing rather than
+            // introduced here — but it is a leak, not an impossibility. Measured cold: 5 value-fact retracts across
             // the entire 4139-test suite, against ~103k asserts — so a stash would
             // have paid a `GoalKey` deep clone per ASSERT to save five walks.
             match &head_val {
@@ -7598,12 +7631,21 @@ mod tests {
     /// filter, which is why it is here — the same gap WI-1010's
     /// `an_unrunnable_own_member_is_not_a_supplier` was written to close.
     ///
-    /// WHAT PASSES EITHER WAY, BY DESIGN: an `Opaque`-bearing head got no key
-    /// BEFORE WI-815 either, by a different and weaker route — `value_to_term`
-    /// returned `Err` on an opaque child. So this is a control for the GUARD, not
-    /// for the port off `cached_term`. The port's controls are
-    /// `wi472_node_head_fact_dedup` (dedup still happens, and part 3 here) and the
-    /// compile itself (`cached_term` and `term_cache` no longer exist).
+    /// WHAT THIS IS A CONTROL FOR: the GUARD, not the port off `cached_term`. The
+    /// port's controls are `wi472_node_head_fact_dedup` (dedup still happens, and
+    /// part 3 here) and the compile itself.
+    ///
+    /// AND A CLAIM THIS COMMENT USED TO MAKE, WHICH WAS FALSE — corrected because it
+    /// misdescribes the pre-change behaviour of this very fixture. It said an
+    /// `Opaque`-bearing head "got no key before WI-815 either, because `value_to_term`
+    /// returned `Err` on an opaque child". `value_to_term`'s `Value::Node` arm is
+    /// `Ok(occurrence_to_term(..))` and cannot return `Err`; and WI-559 gave
+    /// `Expr::SetLit` a real reifier, so this fixture's head had a VALID, injective
+    /// key before the change and deduped correctly. After it, the head is `Opaque`
+    /// and gets none. Both store two facts, so the test passes either way — but for
+    /// opposite reasons, and "dedup behaviour unchanged, key for key" has this
+    /// exception, which a hit-counting instrument could not see. WI-1014 re-points
+    /// this fixture at a subject that is opaque BY NATURE.
     ///
     /// WHY THE GUARD IS THE WHOLE KEY AND NOT THE ROOT. The old check was
     /// `matches!(root, Term::Bottom)`, and it was asymmetric: for a BARE `Node`
@@ -7656,6 +7698,119 @@ mod tests {
         let p3 = kb.assert_fact_value(wi815_head(g_sym, 2, false), kind, domain, None);
         assert_eq!(p1, p2, "identical keyable heads still dedup");
         assert_ne!(p1, p3, "and distinct ones still do not");
+    }
+
+    /// WI-815 — A NAMED TUPLE'S COMPONENT ORDER IS ITS IDENTITY, and the dedup key
+    /// must not sort it away. REGRESSION TEST: WI-815 shipped this defect and a
+    /// review caught it by DRIVING; it is fixed at `fingerprint_into`.
+    ///
+    /// The old key ran `value_to_term` -> `canonicalize_record_named_args`, which
+    /// deliberately EXEMPTS an ORDERED PRODUCT (`is_ordered_product_functor`,
+    /// i.e. `anthill.reflect.TupleLiteral`) because "a tuple's component source
+    /// order IS its identity" (WI-788). `fingerprint_into` sorted unconditionally,
+    /// so two DIFFERENT tuples produced ONE `GoalKey` — and fact dedup DROPS the
+    /// duplicate, so the second tuple was silently discarded.
+    ///
+    /// WHAT FAILS IF THE FIX IS BACKED OUT — MEASURED, not predicted: remove the
+    /// `ordered_product` guard from `fingerprint_into` and part (1) fails with both
+    /// asserts (equal keys, and `assert_fact_value` returning the SAME RuleId for
+    /// two distinct tuples). Remove the duplicate-label guard and part (2) fails
+    /// the same way.
+    ///
+    /// WHY THE CORPUS DID NOT CATCH IT, recorded because the delivery claimed
+    /// "dedup behaviour unchanged, key for key" on an instrument that could not see
+    /// this: the instrumentation COUNTED keys and hits, and no `TupleLiteral`-headed
+    /// value fact exists in the tree (0 of 103451). A hit count cannot detect a key
+    /// that is wrong in a population of size zero — only driving the shape can.
+    #[test]
+    fn wi815_a_named_tuples_component_order_is_its_identity() {
+        use crate::eval::value::Value;
+
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        let tl = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+        let domain = kb.intern("test");
+        let kind = ClauseKind::Fact;
+        let sigma = subst::Substitution::new();
+        let lit = |kb: &mut KnowledgeBase, n: i64| {
+            Value::Term { id: kb.alloc(Term::Const(crate::kb::term::Literal::Int(n))) }
+        };
+
+        // (1) ORDER. `(x: 1, y: 2)` and `(y: 2, x: 1)` are two different tuples.
+        let (x, y) = (kb.intern("xcomp"), kb.intern("ycomp"));
+        let (one, two) = (lit(&mut kb, 1), lit(&mut kb, 2));
+        let tuple = |named: Vec<(Symbol, Value)>| Value::Entity {
+            functor: tl,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(named),
+        };
+        let h1 = tuple(vec![(x, one.clone()), (y, two.clone())]);
+        let h2 = tuple(vec![(y, two.clone()), (x, one.clone())]);
+        assert_ne!(
+            term_view::goal_fingerprint(&kb, &h1, &sigma),
+            term_view::goal_fingerprint(&kb, &h2, &sigma),
+            "component order is identity for an ordered product — the keys must differ",
+        );
+        let r1 = kb.assert_fact_value(h1, kind, domain, None);
+        let r2 = kb.assert_fact_value(h2, kind, domain, None);
+        assert_ne!(r1, r2, "two distinct tuples must stay TWO facts, not one");
+
+        // …while a NON-ordered-product functor still sorts, so the two carriers of
+        // one record agree. This is the control that the guard is scoped to ordered
+        // products and did not simply disable sorting.
+        let rec = kb.intern("wi815rec");
+        let a = Value::Entity {
+            functor: rec,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(x, one.clone()), (y, two.clone())]),
+        };
+        let b = Value::Entity {
+            functor: rec,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(y, two.clone()), (x, one.clone())]),
+        };
+        assert_eq!(
+            term_view::goal_fingerprint(&kb, &a, &sigma),
+            term_view::goal_fingerprint(&kb, &b, &sigma),
+            "an ordinary record still canonicalizes, so field order is NOT identity",
+        );
+
+        // (2) DUPLICATE LABEL. `named_arg` resolves by symbol and returns the FIRST
+        //     match, so a repeated label makes the second component unreadable. The
+        //     key must degrade rather than conflate; producers refuse duplicates
+        //     (WI-805/808/809), but this primitive must not rely on that.
+        let d = kb.intern("dupx");
+        let three = lit(&mut kb, 3);
+        let g1 = tuple(vec![(d, one.clone()), (d, two.clone())]);
+        let g2 = tuple(vec![(d, one.clone()), (d, three.clone())]);
+        let kg1 = term_view::goal_fingerprint(&kb, &g1, &sigma);
+        assert!(!kg1.is_opaque_free(), "a repeated label makes the key unusable");
+        let q1 = kb.assert_fact_value(g1, kind, domain, None);
+        let q2 = kb.assert_fact_value(g2, kind, domain, None);
+        assert_ne!(q1, q2, "duplicate-label heads must not collapse into one fact");
+
+        // (3) ANONYMOUS FUNCTOR. `Value::Unit` and an EMPTY `Value::Tuple` both head
+        //     as `Functor{None, 0, 0}` and key as one payload-BEARING token
+        //     `Open(None, 0, 0)` — so `is_opaque_free` cannot see the collision, and
+        //     the old key refused them outright (`value_to_term` returned `Err` for
+        //     `Unit` / `Tuple`). Dedup must not start admitting what its predecessor
+        //     rejected. Backing out `has_named_functors` fails this arm.
+        let unit_key = term_view::goal_fingerprint(&kb, &Value::Unit, &sigma);
+        let empty_tuple = Value::Tuple {
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+        assert_eq!(
+            unit_key,
+            term_view::goal_fingerprint(&kb, &empty_tuple, &sigma),
+            "Unit and an empty Tuple are indistinguishable through the view — the hazard",
+        );
+        assert!(unit_key.is_opaque_free(), "and opaque-freedom cannot see it");
+        assert!(
+            kb.value_fact_dedup_key(&Value::Unit).is_none()
+                && kb.value_fact_dedup_key(&empty_tuple).is_none(),
+            "so an anonymous functor must get no dedup key",
+        );
     }
 
     /// WI-815 — THE TWO DEDUP KEY SPACES ARE DISJOINT, and that is a decision.
@@ -7723,7 +7878,12 @@ mod tests {
     /// `Opaque` head — a deliberate loud refusal that predates WI-815 ("no fact/rule
     /// form in use today produces a functor-less / opaque stored head; fail loudly
     /// rather than silently mis-index"). So the refusal that actually fires is
-    /// louder and earlier than the dedup guard.
+    /// louder than the dedup guard — though NOT earlier: `assert_fact_value` calls
+    /// `value_fact_dedup_key` first and only then `push_value_head_entry`, so the
+    /// guard runs and degrades, and the panic follows for the same head. (An earlier
+    /// draft of this comment claimed the panic came first. That is the reasoning
+    /// which would retire the guard as unreachable, so it is corrected rather than
+    /// quietly dropped.)
     ///
     /// That makes `is_opaque_free()` defence-in-depth, and it stays for a reason the
     /// panic does not cover: the two failure modes are not equivalent. The discrim

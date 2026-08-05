@@ -2411,7 +2411,8 @@ fn collect_type_args_vars(
 // WI-815 deleted WI-471's `cached_term`, the `NodeOccurrence::term_cache` it
 // memoized into, and the `KbId` / `KnowledgeBase::id` stamp that existed only to
 // keep a memoized `TermId` from being read against the wrong store. This is the
-// only surviving mention of that chain: WI-471 built the cache, WI-472 keyed
+// only surviving mention IN CODE (`docs/proposals/048-conditional-effects.md` also
+// referenced the WI-471 caching and has been corrected to stop prescribing it): WI-471 built the cache, WI-472 keyed
 // value-fact dedup off it, WI-473 was filed to drain the term-store `+1` it
 // pinned but could never release, and WI-815 removed the need for all three by
 // making the one caller (`KnowledgeBase::value_fact_dedup_key`) key on a
@@ -2463,7 +2464,11 @@ pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> T
 /// always run on such a KB.)
 ///
 /// **DO NOT "FINISH" THE `None` ARMS** (the args-bearing `DotApply`, `Match` /
-/// `If` / `Let` / `Lambda`, `SetLit` / `TupleLit`, the `*Within` family). Each
+/// `If` / `Let` / `Lambda`, the `*Within` family). NOTE `SetLit` / `TupleLit` are
+/// NOT among them — an earlier draft of this list copied them across from
+/// `occ_head`'s `Opaque` table, which answers a DIFFERENT question; WI-559 gave
+/// both real reifier arms ~110 lines below, and it is only their VIEW that is
+/// still opaque (WI-1014). Each
 /// `None` is the back-pressure that keeps a CONSUMER carrier-neutral; widening
 /// the reifier relieves it and re-entrenches the conversion the standing reify
 /// audit is removing. Every step of that audit — WI-348, WI-482, WI-621, WI-678,
@@ -5320,6 +5325,10 @@ mod tests {
             "a goal-shaped occurrence's key carries a payload at every leaf, so \
              `value_fact_dedup_key` may use it",
         );
+        // Deliberately NOT phrased as "injective": this fixture is an `Expr::Apply`,
+        // the one shape whose view is documented as under-determining its own key
+        // (`occ_head` drops `type_args` — WI-1013). Opaque-freedom is what the
+        // predicate checks and what dedup admits; injectivity is what it is FOR.
 
         // (4) and no term was allocated to answer any of it: the whole point of
         //     retiring `cached_term` is that the question needs `&kb`, not `&mut kb`

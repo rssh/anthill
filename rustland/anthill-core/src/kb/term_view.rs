@@ -954,13 +954,18 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //    since `views_structurally_equal` has no `(Opaque, Opaque)` arm, a set
         //    literal is not equal to ITSELF through this carrier.
         //
-        //    A REAL hazard survives the correction, but it is in
-        //    `fingerprint_into`, not here: it SORTS named keys, while
-        //    `occ_build_fn` does not canonicalize and `TermStore::alloc` hash-conses
-        //    as given — so a `TupleLiteral` TERM preserves source order (which
-        //    WI-788 makes tuple IDENTITY) and a sorted `GoalKey` would not. That is
-        //    WI-1014's Part B, and it is why this arm was not simply filled in
-        //    here. `SetLit` has no such question (elements ride in `pos_args`).
+        //    A REAL hazard was named alongside this, and it has since been FIXED
+        //    rather than deferred — recorded because the first version of this note
+        //    mis-scoped it. `fingerprint_into` sorted named keys unconditionally,
+        //    while `canonicalize_record_named_args` EXEMPTS an ordered product
+        //    (WI-788: a tuple's component order IS its identity), so two distinct
+        //    tuples produced one key and fact dedup DROPPED one of them. This note
+        //    claimed that was gated behind this `Opaque` arm; it was not — a
+        //    `Value::Entity` whose functor is `TupleLiteral` heads through
+        //    `functor_view_head` and never touches this arm at all, so the defect
+        //    was LIVE. `fingerprint_into` now honours the exemption, and
+        //    `wi815_a_named_tuples_component_order_is_its_identity` pins it. What
+        //    remains for WI-1014 here is only the two view arms themselves.
         //
         //    The lesson recorded for the next reader: WI-814's other three gaps
         //    each got a TICKET NUMBER (WI-819 / WI-803 / WI-816); this one got a
@@ -1476,6 +1481,27 @@ impl GoalKey {
         self.0.iter().all(Self::token_bears_payload)
     }
 
+    /// True when no token is an ANONYMOUS functor — `Open(None, ..)`, the head of a
+    /// functor-less aggregate (`Value::Unit`, `Value::Tuple`).
+    ///
+    /// Such a token names no constructor, so two DIFFERENT functor-less carriers of
+    /// the same arity are indistinguishable: `Value::Unit` and
+    /// `Value::Tuple{pos: [], named: []}` both head as `Functor{None, 0, 0}` and key
+    /// as the single token `Open(None, 0, 0)`. Payload-BEARING (it carries both
+    /// arities), so [`Self::is_opaque_free`] cannot see it — a separate question,
+    /// separately named.
+    ///
+    /// Only fact dedup asks: `value_to_term` used to return `Err` for `Unit` /
+    /// `Tuple`, so the old key refused them outright, and dedup must not silently
+    /// start admitting what its predecessor rejected (over-dedup DROPS a fact). The
+    /// query cache does NOT ask — a functor-less goal is still keyed distinctly by
+    /// its children, and excluding it would only lose caching. `discrim::view_is_indexable`
+    /// rejects these heads for the third, adjacent reason: they carry no
+    /// discrimination key.
+    pub fn has_named_functors(&self) -> bool {
+        !self.0.iter().any(|t| matches!(t, StructToken::Open(None, _, _)))
+    }
+
     /// True when this key may safely index the resolver's per-query cache. Two
     /// conditions, both restoring exactly what the former hash-consed `TermId`
     /// cache key guaranteed:
@@ -1544,16 +1570,51 @@ fn fingerprint_into<V: TermView>(
         ViewHead::Functor { functor, pos_arity, named_arity } => {
             out.push(StructToken::Open(functor, pos_arity, named_arity));
             for i in 0..pos_arity {
-                if let Some(child) = view.pos_arg(kb, i) {
-                    fingerprint_into(kb, &child, subst, out);
+                match view.pos_arg(kb, i) {
+                    Some(child) => fingerprint_into(kb, &child, subst, out),
+                    // FAIL CLOSED. `Open` has just PROMISED `pos_arity` children;
+                    // emitting nothing for a missing one lets `f(<missing>, X)` and
+                    // `f(X, <missing>)` produce ONE key with no marker that anything
+                    // was lost — a key that fails OPEN, which for a dedup consumer
+                    // means silently DROPPING a fact (WI-815). `Opaque` is the token
+                    // that says "something here is not represented", and it is
+                    // exactly what `GoalKey::is_opaque_free` exists to see.
+                    // `discrim::view_is_indexable` answers the same question the same
+                    // way (`map_or(false, …)`), and `insert_walk_args` treats it as an
+                    // invariant violation outright.
+                    None => out.push(StructToken::Opaque),
                 }
             }
+            // NAMED-ARG ORDER IS NOT ALWAYS SORTABLE. Sorting is what makes a
+            // `Term::Fn` and an occurrence of the same structure agree, because the
+            // record builders canonicalize (`canonicalize_record_named_args`) while an
+            // occurrence holds a fixed slice — but that function deliberately EXEMPTS
+            // an ORDERED PRODUCT, since "a tuple's component source order IS its
+            // identity" (WI-788, CLAUDE.md). `value_to_term` ran it and inherited the
+            // exemption; this walk did not, so `(x: 1, y: 2)` and `(y: 2, x: 1)` —
+            // two DIFFERENT tuples, distinct hash-consed terms — produced ONE key and
+            // the second fact was discarded. MEASURED, and fixed here rather than in
+            // the ticket that found it, because over-dedup drops a fact.
+            let ordered_product = functor.is_some_and(|f| kb.is_ordered_product_functor(f));
             let mut keys = view.named_keys(kb);
-            keys.sort_by_key(|s| s.index());
+            if !ordered_product {
+                keys.sort_by_key(|s| s.index());
+            }
+            // A REPEATED LABEL DEFEATS KEY-ADDRESSED CHILDREN. `named_arg` resolves by
+            // SYMBOL and returns the FIRST match, so `(d: 1, d: 2)` and `(d: 1, d: 3)`
+            // both fingerprint as `d↦1, d↦1`. Distinctness is enforced at the
+            // producers (WI-805/808/809), which is what keeps this unreached — but a
+            // shared structural primitive must not depend on someone else's check, and
+            // reading a duplicate correctly needs POSITIONAL access `TermView` does not
+            // offer. So the key degrades instead: no dedup, never a collapse.
+            if keys.iter().enumerate().any(|(i, k)| keys[..i].contains(k)) {
+                out.push(StructToken::Opaque);
+            }
             for key in keys {
                 out.push(StructToken::NamedKey(key));
-                if let Some(child) = view.named_arg(kb, key) {
-                    fingerprint_into(kb, &child, subst, out);
+                match view.named_arg(kb, key) {
+                    Some(child) => fingerprint_into(kb, &child, subst, out),
+                    None => out.push(StructToken::Opaque),
                 }
             }
         }
@@ -1567,11 +1628,16 @@ pub fn goal_fingerprint<V: TermView>(
     view: &V,
     subst: &crate::kb::subst::Substitution,
 ) -> GoalKey {
-    // Pre-sized: a `StructToken` is 32 bytes, so an un-sized `Vec` regrows
-    // 4→8→16→32 and a typical goal/head key pays 3–4 mallocs. One 16-slot
-    // allocation covers essentially every key, on both the per-goal resolver path
-    // and WI-815's per-value-fact-assert one.
-    let mut out = Vec::with_capacity(16);
+    // NOT pre-sized, and that is measured rather than assumed. A `with_capacity(16)`
+    // was added on the reasoning that an un-sized `Vec` regrows 4→8→16→32; driving
+    // it showed 16 is wrong for BOTH callers — real value-fact head keys run 25–93
+    // tokens (mean ~57), so it removes one malloc from the chain rather than all of
+    // them, while the resolver's short goal keys would over-allocate 512 B where an
+    // un-sized `Vec` settles at 128 B. These allocations are RETAINED (a `GoalKey` is
+    // a map key in `value_fact_dedup`, `seen_goals` and `query_cache`), so
+    // over-allocating is the costlier error. Reverted until someone sizes it from a
+    // measured distribution.
+    let mut out = Vec::new();
     fingerprint_into(kb, view, subst, &mut out);
     GoalKey(out)
 }

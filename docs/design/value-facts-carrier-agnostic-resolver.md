@@ -419,7 +419,8 @@ Three consequences worth having written down:
   `wi815_the_two_key_spaces_are_disjoint`.
 - **The lossy-key guard moved from the root to the whole key.** The old rule
   rejected a key whose ROOT reified to `Term::Bottom`; the new one rejects any key
-  containing a payload-free `Opaque` token (`GoalKey::is_injective`, shared with
+  containing a payload-free `Opaque` token (`GoalKey::is_opaque_free`, sharing its
+  token predicate with
   `is_cacheable`, which is that plus the query cache's own flex-var exclusion).
   This is the same rule made total: it catches a lossy child nested inside an
   `Entity` (`value_to_term`'s `Value::Node` arm maps a non-goal child to `Bottom`
