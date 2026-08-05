@@ -65,7 +65,7 @@ There is a structural distinction available, and 058 already leans on it twice:
 
 | candidate | provider vs carrier | 058's existing reading |
 |---|---|---|
-| `anthill.prelude.String` provides `Ordered[T = String]` | provider **IS** the carrier | §4.9/WI-855: *"a SELF-PROVIDER is a candidate of neither kind"* — this is why the three coexist at LOAD |
+| `anthill.prelude.String` provides `Ordered[T = String]` | provider **IS** the carrier | a SELF-PROVIDER. WI-855 measured it a candidate of NEITHER kind — which is why the three coexisted at LOAD; **WI-859 made it the third kind**, and the three still coexist because all three are nameable (tier 3) |
 | `ByLength` provides `Ordered[T = String]` | provider ≠ carrier | a WITNESS (`witness_dispatch_carrier`, which returns `None` exactly when provider IS carrier) |
 
 So "the carrier's own provision" is already a computed predicate with one owner. A rung

@@ -61,7 +61,7 @@ end
 
 /// `ctor_qn(f1: v1, …)` as a term. Every carrier in this file is a one- or
 /// two-field entity, so the tests differ only in the qualified name and the values.
-fn entity_term(kb: &mut KnowledgeBase, ctor_qn: &str, fields: &[(&str, i64)]) -> TermId {
+pub(crate) fn entity_term(kb: &mut KnowledgeBase, ctor_qn: &str, fields: &[(&str, i64)]) -> TermId {
     let functor = kb.try_resolve_symbol(ctor_qn).unwrap_or_else(|| panic!("{ctor_qn}"));
     let named = fields
         .iter()
@@ -80,7 +80,7 @@ fn entity_term(kb: &mut KnowledgeBase, ctor_qn: &str, fields: &[(&str, i64)]) ->
 
 /// Solutions of `pred_qn(x, y)` — each carrier's `eq` answers true for ANY pair, so
 /// ONE solution means the index dispatched and NONE means it answered structurally.
-fn solutions(kb: &mut KnowledgeBase, pred_qn: &str, x: TermId, y: TermId) -> usize {
+pub(crate) fn solutions(kb: &mut KnowledgeBase, pred_qn: &str, x: TermId, y: TermId) -> usize {
     let functor = kb.try_resolve_symbol(pred_qn).unwrap_or_else(|| panic!("{pred_qn}"));
     let goal = kb.alloc(Term::Fn {
         functor,
@@ -120,7 +120,7 @@ fn assert_refused(src: &str, needles: &[&str], why: &str) {
 /// the check over-refuses the one-supplier shape too. `common::load_kb_with` is not a
 /// substitute — it panics with a generic "load failed with N errors" and drops the
 /// per-test rationale, which is the whole content of a control.
-fn assert_loads_clean(src: &str, why: &str) {
+pub(crate) fn assert_loads_clean(src: &str, why: &str) {
     if let Err(errs) = crate::common::try_load_kb_with(src) {
         panic!("{why}; got:\n{}", errs.join("\n"));
     }

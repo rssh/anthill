@@ -46,12 +46,16 @@ const INSTANCES: &str = crate::common::DESC_INSTANCES;
 
 /// The SECOND provider of `Desc[T = Leaf]`, beside `Leaf`'s own `describe`.
 ///
-/// It LOADS CLEAN, for the reason WI-855 measured: `Leaf`'s own provision is a
-/// coherence candidate of NEITHER kind (it binds no op, and its provider IS its
-/// carrier), so no `(Desc, Leaf)` group ever reaches two. `Rival` is CONCRETE, which
-/// exempts it from the witness rule as well. Both halves are needed — this is the only
-/// way to put two providers in front of a bracket-less read while phase 3b is still
-/// unwritten.
+/// It LOADS CLEAN because `Rival` is CONCRETE, which exempts it from the witness rule
+/// as a manifest backend, so no `(Desc, Leaf)` group ever reaches two candidates —
+/// the only way to put two providers in front of a bracket-less read while phase 3b
+/// is still unwritten.
+///
+/// WI-855 measured a second reason that WI-859 then retired: `Leaf`'s own provision
+/// used to be a coherence candidate of NEITHER kind (it binds no op, and its provider
+/// IS its carrier). It is now the SELF-PROVIDER candidate, so with an ABSTRACT rival
+/// the group holds two — and still loads, since both are nameable (058 tier 3). The
+/// concrete spelling here is what keeps this fixture a group of one either way.
 const RIVAL: &str = r#"
   sort Rival
     entity rival

@@ -37,19 +37,25 @@ const INSTANCES: &str = crate::common::DESC_INSTANCES;
 
 /// The SECOND provider of `Desc[T = Leaf]` — the tie.
 ///
-/// It LOADS CLEAN, and the reason is worth stating exactly, because it is not
-/// the one that first suggests itself. `check_provider_operations`'s coherence
-/// pass groups candidates per `(spec, dispatch carrier)` and refuses a group of
-/// two — but `Leaf`'s OWN provision is a candidate of NEITHER kind: it binds no
-/// op, so `provision_binds_any_op` rejects it as an instance fact, and its
-/// provider IS its carrier, so `witness_dispatch_carrier` rejects it as a
-/// witness. A self-provider can therefore never be one half of a refused pair,
-/// whatever the other half is — MEASURED both ways by
-/// `the_tie_is_invisible_to_load_coherence_either_way` below, which drives this
-/// concrete `Rival` and an ABSTRACT twin of it. (The concrete-provider exemption
-/// noted in proposal 058 §4.9 is a red herring here: it is why the concrete
-/// spelling forms no group, but the abstract spelling forms a group of ONE and
-/// is admitted just the same.)
+/// It LOADS CLEAN, and the reason is worth stating exactly, because it is not the
+/// one that first suggests itself and it CHANGED at WI-859 without the verdict
+/// changing with it. `check_provider_operations`'s coherence pass groups candidates
+/// per `(spec, dispatch carrier)`; `Rival` is CONCRETE, and the concrete-provider
+/// exemption (a manifest backend, distinguished by its values) keeps it out of the
+/// grouping, so `Leaf`'s own provision is alone in its group and a group of one is
+/// skipped before any rule looks at it.
+///
+/// The ABSTRACT twin below is what makes that account honest rather than lucky, and
+/// it is the arm WI-859 moved. When WI-855 measured this, `Leaf`'s OWN provision was
+/// a candidate of NEITHER kind — it binds no op, so `provision_binds_any_op` rejected
+/// it as an instance fact, and its provider IS its carrier, so
+/// `witness_dispatch_carrier` rejected it as a witness — so the abstract spelling
+/// too formed a group of ONE, and a self-provider could never be half of anything.
+/// WI-859 (058 phase 8a) added the SELF-PROVIDER kind, so that group now holds TWO
+/// candidates and is admitted for a different reason: both are NAMEABLE, which is
+/// 058 tier 3's coexistence rule. Same verdict, different mechanism —
+/// `load_coherence_admits_the_tie_either_way` below drives both spellings, and
+/// `wi859_self_provider_candidate_test` asserts the group's contents.
 const RIVAL_CONCRETE: &str = r#"
   sort Rival
     entity rival
@@ -58,9 +64,10 @@ const RIVAL_CONCRETE: &str = r#"
   end
 "#;
 
-/// The same rival with no constructor — a WI-450 witness sort, which the
-/// coherence pass DOES admit as a candidate. It still forms a group of one
-/// (`Leaf`'s self-provision never joins it), so it still loads.
+/// The same rival with no constructor — a WI-450 witness sort, which the coherence
+/// pass DOES admit as a candidate. Since WI-859 `Leaf`'s self-provision joins it, so
+/// this is a group of TWO nameable candidates: legal by 058 tier 3, and refused only
+/// at a dispatch that selects neither.
 const RIVAL_ABSTRACT: &str = r#"
   sort Rival
     fact Desc[T = Leaf]
@@ -161,18 +168,21 @@ fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers(
 }
 
 /// WHY THE RUNTIME OWNS THIS VERDICT — measured, and measured on the shape that
-/// refutes the easy explanation. A tie between a SELF-provider and a second
-/// provider is invisible to load-time coherence whether that second provider is
-/// CONCRETE (exempted from the witness rule as a manifest backend) or ABSTRACT
-/// (admitted as a witness, but alone in its group, since a self-provider is a
-/// candidate of neither kind). Both spellings load, and both then tie at
-/// dispatch.
+/// refutes the easy explanation. A tie between a SELF-provider and a second provider
+/// is ADMITTED by load-time coherence whether that second provider is CONCRETE
+/// (exempted from the witness rule as a manifest backend, so the group stays a group
+/// of one) or ABSTRACT (a witness beside the self-provider — a group of two, both
+/// NAMEABLE, which 058 tier 3 lets coexist). Both spellings load, for two different
+/// reasons, and both then tie at dispatch.
 ///
-/// Without this, `RIVAL_CONCRETE`'s doc would rest on the exemption alone —
-/// which is true of that spelling and false as a general account, and would send
-/// the next reader to narrow an exemption that is not what admits the program.
+/// Without this, `RIVAL_CONCRETE`'s doc would rest on the exemption alone — which is
+/// true of that spelling and false as a general account, and would send the next
+/// reader to narrow an exemption that is not what admits the other program.
+///
+/// The name changed at WI-859: "invisible" was accurate while a self-provider was a
+/// candidate of no kind at all, and the abstract arm is now SEEN and admitted.
 #[test]
-fn the_tie_is_invisible_to_load_coherence_either_way() {
+fn load_coherence_admits_the_tie_either_way() {
     for (ns, rival) in [
         ("wi855.tie.concrete", RIVAL_CONCRETE),
         ("wi855.tie.abstract", RIVAL_ABSTRACT),

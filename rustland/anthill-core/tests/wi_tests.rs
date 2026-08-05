@@ -879,6 +879,9 @@ mod wi857_dictionary_layout_test;
 #[path = "include/wi858_pair_orderings_test.rs"]
 mod wi858_pair_orderings_test;
 
+#[path = "include/wi859_self_provider_candidate_test.rs"]
+mod wi859_self_provider_candidate_test;
+
 #[path = "include/wi876_operation_mapping_test.rs"]
 mod wi876_operation_mapping_test;
 
