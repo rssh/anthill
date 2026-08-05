@@ -444,6 +444,7 @@ pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<V
     Some(match head_field(kb, head, key)? {
         ViewItem::Term(t) => Value::term(t),
         ViewItem::Value(v) => v.clone(),
+        ViewItem::Owned(v) => v,
         ViewItem::Node(occ) => Value::Node(occ),
     })
 }
@@ -588,6 +589,7 @@ fn type_param_entries(kb: &KnowledgeBase, head: &Value) -> Vec<Result<(Symbol, V
     let field: Value = match field {
         ViewItem::Term(t) => Value::term(t),
         ViewItem::Value(v) => v.clone(),
+        ViewItem::Owned(v) => v,
         ViewItem::Node(occ) => Value::Node(occ),
     };
     let Some(items) = list_items_strict(kb, &field) else {

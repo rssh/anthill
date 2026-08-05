@@ -284,62 +284,44 @@ impl Value {
         }
     }
 
-    /// A STOPGAP equality for values that view as `ViewHead::Opaque`, owned by
-    /// WI-1019 — and the framing it replaced was wrong, which is the useful part
-    /// to keep.
+    /// Equality for a value that views as `ViewHead::Opaque`: its IDENTITY, since
+    /// it has no shape to compare. Reached only from
+    /// `views_structurally_equal`'s `(Opaque, Opaque)` arm.
     ///
-    /// That framing said `Opaque` means "no structure to WALK" and the walkers
-    /// merely misread it as "no identity". Both halves let the representation off
-    /// too easily. An `OpRef` is `{op, dict, named}` — a PURE VALUE whose `op` and
-    /// `named` halves are plain symbols, only `dict` being a runtime environment.
-    /// It HAS structure; the view just declines to present it. The right fix is
-    /// therefore to GENERATE an entity representation for it (a reflect-form head
-    /// with named children, exactly as `wrapped_expr_head` already does for the
-    /// `Expr` variants), after which equality, keying, indexing and unification
-    /// all fall out of the machinery every other structural form uses — and this
-    /// function goes away. WI-1019.
+    /// WI-1019 RE-FOUNDED THIS, and the correction is the useful part. It was
+    /// introduced as a stopgap for `Value::OpRef`, which MEASURED as not equal to
+    /// ITSELF — but that was not a missing equality, it was a missing SHAPE. An
+    /// `OpRef` is two symbols and a dictionary, all three already `Value`-carried,
+    /// so it now views structurally and never reaches here; likewise
+    /// `Value::Requirement`, whose slot is `(functor, [sub-handles])` written once
+    /// at `alloc`. Giving them a shape fixed equality AND the fingerprint at once,
+    /// where this function could only ever fix the first — the head stayed
+    /// payload-free, so two distinct `OpRef`s still shared one `goal_fingerprint`.
     ///
-    /// WHY IT IS A STOPGAP AND NOT A FIX. It repairs equality and nothing else:
-    /// the head stays payload-free, so two distinct `OpRef`s still share one
-    /// `goal_fingerprint`. Equality and the key now DISAGREE. That is survivable
-    /// only because `is_opaque_free()` is false for such a key and
-    /// `value_fact_dedup_key` degrades to no-dedup, so the disagreement costs a
-    /// dedup rather than a fact. It is also a SECOND equality path to keep in sync
-    /// by hand — the duplication WI-486 collapsed when it made
-    /// `views_structurally_equal` the single structural compare.
+    /// So this is no longer a second compare path racing the structural one; it is
+    /// the law for carriers that genuinely have no shape. Its coarse KEY is not a
+    /// disagreement to repair: `is_opaque_free()` is false for such a key, so
+    /// `value_fact_dedup_key` degrades to no-dedup rather than merging two rows.
     ///
-    /// MEASURED before it existed: `views_structurally_equal` on one `OpRef`
-    /// against ITSELF was `false`, because the head match has no
-    /// `(Opaque, Opaque)` arm and fell to `_ => false`.
+    /// WHAT THE STOPGAP GOT WRONG BESIDES ITS FRAMING, kept because the shape of
+    /// the mistake recurs: it compared two dictionaries with `ha.raw() == hb.raw()`
+    /// while `RequirementHandle`'s own doc says "Identity is `(arena, raw)`". It
+    /// dropped the arena half, so two dictionaries from DIFFERENT interpreter
+    /// arenas sharing a raw compared EQUAL — a false positive, the direction that
+    /// merges facts (WI-815), and reachable because a fresh interpreter per call is
+    /// the normal pattern. Content comparison has no such half to drop.
     ///
-    /// `dict` compares by SLOT (`RequirementHandle`'s own doc: "Identity is
-    /// `(arena, raw)`"), which is deliberately conservative: two equal-CONTENT
-    /// dictionaries in different slots read unequal. That direction is safe — a
-    /// false negative loses a dedup — where a false positive would merge two
-    /// values that dispatch differently, and this feeds `value_fact_dedup`,
-    /// where merging DROPS A FACT (WI-815).
-    ///
-    /// Everything else stays `false`, INCLUDING against itself, and that is not
-    /// an endorsement — `FactRef` was MEASURED to have the same defect (not equal
-    /// to itself, two distinct rows sharing one key) and the arena handles are
-    /// unexamined. Deliberately not widened here: widening a stopgap entrenches
-    /// it, and WI-1019 must decide per carrier anyway — an arena handle's content
-    /// mutates behind its slot, so it cannot key on content the way an `OpRef`
-    /// can.
-    pub fn native_carrier_eq(&self, other: &Value) -> bool {
+    /// `FactRef` is the remaining answer and the type case: a row locator spelled
+    /// in a private slot index (`RuleId` / `RowKey`) that has no `Value` carrier,
+    /// so it is an identity to hold rather than a shape to present (proposal 005).
+    /// Everything else stays `false`, INCLUDING against itself. That is not an
+    /// endorsement — `Closure` / `Stream` / `Substitution` / `Map` are UNEXAMINED,
+    /// and `Cell`'s content genuinely mutates behind its slot so only its slot
+    /// identity could answer. WI-1019 measured what it changed and did not widen
+    /// past it.
+    pub fn opaque_carrier_eq(&self, other: &Value) -> bool {
         match (self, other) {
-            (
-                Value::OpRef { op: oa, dict: da, named: na },
-                Value::OpRef { op: ob, dict: db, named: nb },
-            ) => {
-                oa == ob
-                    && na == nb
-                    && match (da, db) {
-                        (None, None) => true,
-                        (Some(ha), Some(hb)) => ha.raw() == hb.raw(),
-                        _ => false,
-                    }
-            }
+            (Value::FactRef(a), Value::FactRef(b)) => a.locates_same_row(b),
             _ => false,
         }
     }

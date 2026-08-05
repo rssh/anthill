@@ -483,6 +483,7 @@ fn collect_occ_ground_terms_into(
         match occ.pos_arg(kb, i) {
             Some(ViewItem::Term(t)) => out.push(t),
             Some(ViewItem::Value(c)) => collect_value_ground_terms_into(kb, c, out),
+            Some(ViewItem::Owned(c)) => collect_value_ground_terms_into(kb, &c, out),
             Some(ViewItem::Node(o)) => collect_occ_ground_terms_into(kb, &o, out),
             None => {}
         }
@@ -491,6 +492,7 @@ fn collect_occ_ground_terms_into(
         match occ.named_arg(kb, sym) {
             Some(ViewItem::Term(t)) => out.push(t),
             Some(ViewItem::Value(c)) => collect_value_ground_terms_into(kb, c, out),
+            Some(ViewItem::Owned(c)) => collect_value_ground_terms_into(kb, &c, out),
             Some(ViewItem::Node(o)) => collect_occ_ground_terms_into(kb, &o, out),
             None => {}
         }
@@ -7611,8 +7613,9 @@ mod tests {
     /// is `{op: Symbol, dict, named}`, a PURE VALUE carrying a symbol. MEASURED:
     /// `views_structurally_equal` on one `OpRef` against ITSELF is `false`, and
     /// two `OpRef`s naming DIFFERENT ops share one `goal_fingerprint` — the exact
-    /// pair of symptoms that made `SetLit` the wrong subject. It is opaque by
-    /// omission too; WI-1018 owns it.
+    /// pair of symptoms that made `SetLit` the wrong subject. It was opaque by
+    /// omission too, and WI-1019 gave it a structural head, so it would ALSO have
+    /// started failing here had it stayed the subject.
     ///
     /// `Value::FactRef` is the subject that actually qualifies, and the argument
     /// is the type's OWN CONTRACT rather than a claim about its carrier: it is a
@@ -7621,6 +7624,13 @@ mod tests {
     /// promises not to, so no future arm can decompose it without changing what
     /// `FactRef` IS. Two distinct rows are two distinct values a payload-free
     /// head cannot tell apart, which is the hazard these tests are about.
+    ///
+    /// WI-1019 CONFIRMED THAT CHOICE by asking the question generally: what a
+    /// reference is spelled IN is what decides. An `OpRef` names its target with a
+    /// `Symbol`, which has a `Value` carrier and means the same to every reader;
+    /// a `FactRef` locates its row by a private slot index with no `Value` carrier
+    /// at all. So this subject is opaque by NATURE, not by omission — the property
+    /// these tests need and the one `SetLit` and `OpRef` both lacked.
     fn wi815_head(kb: &mut KnowledgeBase, functor: Symbol, n: i64, opaque: bool) -> crate::eval::value::Value {
         use crate::kb::node_occurrence::{Expr, NodeOccurrence};
         use crate::kb::term::Literal;
@@ -7646,51 +7656,55 @@ mod tests {
         }
     }
 
-    /// An `OpRef` is equal to ITSELF, and two naming different ops are not.
+    /// A `FactRef` is an IDENTITY, not a shape: equal to itself, distinguishing
+    /// two rows, and presenting no structure at all.
     ///
-    /// It was not, and the reason is worth keeping: `ViewHead::Opaque` says the
-    /// view has no structure to WALK, and `views_structurally_equal`'s head match
-    /// read that as "no identity at all", falling to `_ => false`. So an
-    /// op-as-value — a pure `{op, dict, named}` value, not an arena handle —
-    /// failed the most basic law equality has.
+    /// WI-1019 REPLACED an `OpRef` test here. That one pinned WI-1014's stopgap,
+    /// which existed because an `OpRef` measured as not equal to ITSELF — but the
+    /// missing thing was a SHAPE, not an equality: an `OpRef` is two symbols and a
+    /// dictionary, all three already `Value`-carried, so it now views structurally
+    /// and never reaches the `(Opaque, Opaque)` arm. Its claims moved to
+    /// `wi1019_native_carrier_view_test`, which needs a loaded KB to resolve the
+    /// declared sort; a `FactRef` needs no symbols precisely BECAUSE it presents
+    /// nothing, which is why this half stays a bare-KB unit test.
     ///
-    /// CONTROL, MEASURED by removing the `(Opaque, Opaque)` arm: the FIRST assert
-    /// fails (`a == a` is false). The `assert!(!…)` pair passes either way BY
-    /// DESIGN — before the arm everything was unequal, so only the positive case
-    /// distinguishes the fix, and the negatives are what stop it from being
-    /// "return true".
+    /// The `FactRef` line the old test carried — "STILL not equal to itself" —
+    /// was a pinned DEFECT. It is now a pinned property, and the difference is
+    /// that `FactRef` is opaque BY NATURE rather than by omission: it locates its
+    /// row by a private slot index (`RuleId` / `RowKey`) with no `Value` carrier,
+    /// so there is nothing to present (proposal 005).
     ///
-    /// The KEY is deliberately NOT asserted equal/distinct here. Two distinct
-    /// `OpRef`s still share a `goal_fingerprint` (the head is payload-free), which
-    /// is safe only because `is_opaque_free()` is false and `value_fact_dedup_key`
-    /// degrades to no-dedup. Giving the head an identity is WI-1018; this test
-    /// pins the equality that was asked for and does not claim the key is fixed.
+    /// CONTROL, MEASURED by deleting the `(Opaque, Opaque)` arm in
+    /// `views_structurally_equal`: the equal-to-itself assert fails. The `!…`
+    /// asserts pass either way BY DESIGN — without the arm everything is unequal
+    /// — so only the positive case distinguishes the fix, and the negatives are
+    /// what stop it from being "return true". The key assert fails if `Opaque`
+    /// ever becomes payload-bearing, which is what would silently start deduping
+    /// two distinct rows onto one key (WI-815).
     #[test]
-    fn an_opref_is_equal_to_itself() {
+    fn a_factref_is_an_identity_not_a_shape() {
         use crate::eval::value::Value;
-        let mut kb = KnowledgeBase::new();
-        let a = kb.intern("opref_eq_a");
-        let b = kb.intern("opref_eq_b");
-        let mk = |op, named| Value::OpRef { op, dict: None, named };
+        use term_view::{TermView, ViewHead};
+        let kb = KnowledgeBase::new();
+        let fr = |n: u32| Value::FactRef(crate::kb::extent::FactRef::resident(RuleId::from_raw(n)));
 
         assert!(
-            term_view::views_structurally_equal(&kb, &mk(a, None), &mk(a, None)),
-            "an op-as-value is equal to itself",
+            matches!(fr(1).head(&kb), ViewHead::Opaque),
+            "a FactRef presents no structure",
         );
         assert!(
-            !term_view::views_structurally_equal(&kb, &mk(a, None), &mk(b, None)),
-            "two different ops are not equal",
+            term_view::views_structurally_equal(&kb, &fr(1), &fr(1)),
+            "a row reference is equal to itself",
         );
         assert!(
-            !term_view::views_structurally_equal(&kb, &mk(a, None), &mk(a, Some(b))),
-            "and the NAMED spec-op half is part of the identity, not ignored",
+            !term_view::views_structurally_equal(&kb, &fr(1), &fr(2)),
+            "and two distinct rows are not equal",
         );
-        // Still-unfixed siblings, pinned so the narrowness is visible rather than
-        // assumed: `FactRef` was MEASURED to have the identical defect.
-        let fr = |n: u32| Value::FactRef(crate::kb::extent::FactRef::resident(RuleId::from_raw(n)));
         assert!(
-            !term_view::views_structurally_equal(&kb, &fr(1), &fr(1)),
-            "a FactRef is STILL not equal to itself — WI-1018, not fixed here",
+            !term_view::goal_fingerprint(&kb, &fr(1), &crate::kb::subst::Substitution::new())
+                .is_opaque_free(),
+            "its key stays coarse, so fact dedup DECLINES it rather than merging \
+             two rows — the coarseness is the safety, not a defect",
         );
     }
 

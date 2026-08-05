@@ -83,5 +83,17 @@ namespace anthill.realization.runtime
     -- The captured dispatching dictionary — none() only for a requires-free op
     -- (enclosing sort has no `requires`) or a namespace-level op.
     operation dict(r: OpRef) -> Option[T = Dictionary]
+
+    -- The op the CALL NAMED, when that differs from the resolved `op` (WI-857).
+    -- none() means "the same" — an eta'd reference, whose captured dict is its own
+    -- parent's bundle, so spec and provider coincide. `resolveOp` sets it: there
+    -- `op` is the impl member while `dict` carries the SPEC's requires chain as its
+    -- prefix, and reading the layout off `op` alone measures a spec dictionary
+    -- against the provider's chain.
+    --
+    -- Declared because it is part of the value's IDENTITY: two OpRefs agreeing on
+    -- `op` and `dict` but not on this are different values (WI-1019). Without it
+    -- the accessor set did not, in fact, expose everything the value holds.
+    operation named(r: OpRef) -> Option[T = Symbol]
   end
 end

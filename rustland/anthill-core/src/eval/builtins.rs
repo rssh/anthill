@@ -216,6 +216,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.realization.runtime.Dictionary.ops", dict_ops)?;
     register_if_present(interp, "anthill.realization.runtime.OpRef.op", opref_op)?;
     register_if_present(interp, "anthill.realization.runtime.OpRef.dict", opref_dict)?;
+    register_if_present(interp, "anthill.realization.runtime.OpRef.named", opref_named)?;
 
     // WI-876 — last, because it is the KB-DRIVEN half: everything above is a
     // hardcoded qualified name, this reads what the loaded binding blocks asked
@@ -3866,6 +3867,28 @@ fn opref_dict(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     match r {
         Value::OpRef { dict, .. } => Ok(match dict {
             Some(h) => option_some(some_sym, value_key, Value::Requirement(h)),
+            None => option_none(none_sym),
+        }),
+        other => Err(type_mismatch("OpRef", &other, None)),
+    }
+}
+
+/// `OpRef.named(r) -> Option[Symbol]` — the op the CALL named, when that differs
+/// from the resolved `op` (WI-857); none() means "the same".
+///
+/// WI-1019 declared it because it is part of the value's identity, and the
+/// accessor set claimed to expose everything the value holds while omitting it.
+fn opref_named(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r] = expect_args::<1>("OpRef.named", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    match r {
+        Value::OpRef { named, .. } => Ok(match named {
+            Some(sym) => {
+                let s = symbol_value(&mut interp.kb, sym);
+                option_some(some_sym, value_key, s)
+            }
             None => option_none(none_sym),
         }),
         other => Err(type_mismatch("OpRef", &other, None)),

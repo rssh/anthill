@@ -210,7 +210,11 @@ impl OwnedView {
     fn from_item(item: &ViewItem<'_>) -> Self {
         match item {
             ViewItem::Term(t) => OwnedView::Term(*t),
+            // A computed child is ALREADY owned — the clone is the same cost as
+            // the borrowed arm's, and both land in one `OwnedView::Value`, so the
+            // flattened sequence cannot tell which carrier it came from.
             ViewItem::Value(v) => OwnedView::Value((*v).clone()),
+            ViewItem::Owned(v) => OwnedView::Value(v.clone()),
             ViewItem::Node(occ) => OwnedView::Node(Rc::clone(occ)),
         }
     }

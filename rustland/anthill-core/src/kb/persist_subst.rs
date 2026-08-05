@@ -128,6 +128,7 @@ pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &Var
         cur = match item {
             Some(ViewItem::Term(t)) => Value::term(t),
             Some(ViewItem::Value(v)) => v.clone(),
+            Some(ViewItem::Owned(v)) => v,
             Some(ViewItem::Node(occ)) => Value::Node(occ),
             // Mirror extract_at_path: a recorded path must descend a matching
             // head; a missing child is a path/head desync — loud in debug,

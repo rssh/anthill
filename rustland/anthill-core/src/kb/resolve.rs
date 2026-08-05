@@ -1886,6 +1886,7 @@ impl SearchStream {
             raw.push(match goal.pos_arg(kb, i)? {
                 ViewItem::Term(t) => Value::term(t),
                 ViewItem::Value(v) => v.clone(),
+                ViewItem::Owned(v) => v,
                 ViewItem::Node(occ) => Value::Node(occ),
             });
         }
@@ -3498,7 +3499,9 @@ impl KnowledgeBase {
         Some(match item? {
             ViewItem::Term(t) => self.walk_view(t, subst),
             ViewItem::Value(Value::Term { id: t, .. }) => self.walk_view(*t, subst),
+            ViewItem::Owned(Value::Term { id: t, .. }) => self.walk_view(t, subst),
             ViewItem::Value(v) => v.clone(),
+            ViewItem::Owned(v) => v,
             ViewItem::Node(occ) => match occ.as_expr() {
                 Some(Expr::Var(Var::Global(vid))) => {
                     subst.resolve_as_value(*vid).cloned().unwrap_or(Value::Node(occ))
@@ -3982,8 +3985,14 @@ impl KnowledgeBase {
         match goal.pos_arg(self, 1) {
             Some(ViewItem::Term(t)) => pat_term = Some(t),
             Some(ViewItem::Value(Value::Term { id: t, .. })) => pat_term = Some(*t),
+            Some(ViewItem::Owned(Value::Term { id: t, .. })) => pat_term = Some(t),
             Some(ViewItem::Node(o)) => pat_node = Some(o),
-            Some(ViewItem::Value(_)) | None => return Err(BuiltinResult::Failure),
+            // A computed child is never a pattern source here for the same reason
+            // a borrowed non-`Term` `Value` is not: an occurrence pattern needs a
+            // term or an occurrence, and this refuses anything else.
+            Some(ViewItem::Value(_) | ViewItem::Owned(_)) | None => {
+                return Err(BuiltinResult::Failure)
+            }
         }
         match (pat_term, pat_node) {
             (Some(t), _) => Ok(OccPattern::Term(self.apply_subst(t, subst))),

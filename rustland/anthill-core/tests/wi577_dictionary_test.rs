@@ -294,3 +294,68 @@ fn opref_dict_none_for_dictless_ref() {
         other => panic!("dict(r) must be an Option, got {}", other.type_name()),
     }
 }
+
+// ── OpRef.named — the spec op the call named (WI-1019) ───────────────────────
+
+/// `OpRef.named(r)` — the accessor face of the `named` half.
+///
+/// WI-1019 declared it because that half is part of the value's IDENTITY (two
+/// `OpRef`s agreeing on `op` and `dict` but not on `named` are different values,
+/// and the structural view keys on all three), while this sort's declared
+/// accessor set claimed to "expose everything the value holds" and omitted it.
+///
+/// Driven through `Interpreter::call` on a REAL `resolveOp`-minted ref, so this
+/// tests the anthill-visible operation. `resolve_op_remembers_the_named_spec_op`
+/// asserts the same fact on the `Value` — and it passed for as long as the
+/// accessor was missing, which is precisely why it could not have caught the gap.
+///
+/// CONTROL: drop the `OpRef.named` registration in `builtins.rs` and this test
+/// fails to dispatch, while `resolve_op_remembers_the_named_spec_op` stays green.
+#[test]
+fn opref_named_reads_the_spec_op_through_the_accessor() {
+    let src = "namespace test.wi577.namedop\n\
+               import anthill.prelude.{Int64, Ordered}\n\
+               import anthill.prelude.Numeric.{sub}\n\
+               sort Descending\n\
+               fact Ordered[T = Int64]\n\
+               operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
+               end\n\
+               end\n";
+    let mut interp = common::interp_for(src);
+    let desc = resolve(&interp, "test.wi577.namedop.Descending");
+    let mut subs: SmallVec<[_; 1]> = SmallVec::new();
+    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
+    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
+    let dict = Value::Requirement(interp.alloc_requirement(desc, subs));
+    let cmp = sym_val(&mut interp, "anthill.prelude.Ordered.compare");
+    let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
+
+    let got = interp.call(&format!("{OPREF}.named"), &[opref]).unwrap();
+    match &got {
+        Value::Entity { functor, named, .. } => {
+            assert!(
+                interp.kb().qualified_name_of(*functor).ends_with(".some"),
+                "a resolveOp-minted ref carries a named spec op",
+            );
+            assert_eq!(
+                sym_qn(&interp, named_field(&interp, named, "value")),
+                "anthill.prelude.Ordered.compare",
+                "and it is the SPEC op the call passed in, not the resolved member",
+            );
+        }
+        other => panic!("named(r) must be an Option, got {}", other.type_name()),
+    }
+
+    // none() for an eta'd ref, where spec and provider coincide — the other half
+    // of the contract, so the `some(...)` above is not merely "always some".
+    let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
+    let bare = Value::OpRef { op: eq_eq, dict: None, named: None };
+    let got = interp.call(&format!("{OPREF}.named"), &[bare]).unwrap();
+    match &got {
+        Value::Entity { functor, named, .. } => {
+            assert!(interp.kb().qualified_name_of(*functor).ends_with(".none"), "must be none()");
+            assert!(named.is_empty());
+        }
+        other => panic!("named(r) must be an Option, got {}", other.type_name()),
+    }
+}

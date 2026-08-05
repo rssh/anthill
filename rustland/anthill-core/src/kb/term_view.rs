@@ -16,6 +16,7 @@
 
 use std::rc::Rc;
 
+use crate::eval::requirement_arena::RequirementHandle;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
@@ -113,12 +114,21 @@ fn functor_view_head(
 /// [`TermView::as_bind_value`] can bind a matched child as `Value::Node`
 /// (WI-276). `'a` is the lifetime of the borrowed `Value`.
 ///
+/// `Owned` is for a child the parent COMPUTES rather than stores, so there is
+/// nothing to borrow: the native-carrier views (WI-1019) derive an `OpRef`'s
+/// `op`/`named` symbols and a `Dictionary`'s `impl` / sub-dictionaries from the
+/// value or its arena handle, and each read mints a fresh `Value`. It is not a
+/// second spelling of [`ViewItem::Value`] — a borrowed child exists in the
+/// parent and an owned one does not — and every reader treats the two
+/// identically, so no consumer has to know which it got.
+///
 /// `Clone` but **not** `Copy`: the `Node` variant carries an `Rc`.
 #[derive(Clone, Debug)]
 pub enum ViewItem<'a> {
     Term(TermId),
     Value(&'a Value),
     Node(Rc<NodeOccurrence>),
+    Owned(Value),
 }
 
 impl ViewItem<'_> {
@@ -131,7 +141,8 @@ impl ViewItem<'_> {
     pub fn as_term_id(&self) -> Option<TermId> {
         match self {
             ViewItem::Term(t) => Some(*t),
-            ViewItem::Value(Value::Term { id: t, .. }) => Some(*t),
+            ViewItem::Value(Value::Term { id: t, .. })
+            | ViewItem::Owned(Value::Term { id: t, .. }) => Some(*t),
             _ => None,
         }
     }
@@ -157,6 +168,7 @@ impl ViewItem<'_> {
             ViewItem::Term(t) => Value::term(*t),
             ViewItem::Value(v) => (*v).clone(),
             ViewItem::Node(occ) => Value::node(Rc::clone(occ)),
+            ViewItem::Owned(v) => v.clone(),
         }
     }
 }
@@ -1507,18 +1519,26 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
             }
             true
         }
-        // Two NATIVE-CARRIER values. `Opaque` says the view has no structure to
-        // walk; it does NOT say the value has no identity, and reading it as the
-        // latter is what made an `OpRef` unequal to ITSELF. Delegated to
-        // [`Value::native_carrier_eq`], which today answers only for `OpRef` and
-        // stays `false` elsewhere — see its doc for what is still unexamined.
+        // Two OPAQUE carriers. `Opaque` says the view has no structure to walk; it
+        // does NOT say the value has no identity, and reading it as the latter is
+        // what made an `OpRef` unequal to ITSELF.
+        //
+        // WI-1019 RE-FOUNDED THIS ARM rather than retiring it. It began as a
+        // stopgap for `OpRef`, whose real defect was being opaque AT ALL — that is
+        // fixed at the head now, and `OpRef` never reaches here. What remains is
+        // the general law for a carrier that genuinely has no shape: its equality
+        // is its identity, and its KEY stays payload-free. Those two do not
+        // "disagree" in any way that costs a wrong answer — the key is
+        // deliberately coarser, and every consumer of it already guards
+        // (`GoalKey::is_opaque_free` for fact dedup, `is_cacheable` for the query
+        // cache), so an opaque carrier degrades to no-dedup instead of merging.
         //
         // Both sides must be `Value`-backed to have a value to compare: a
         // `TermId`-backed view never heads `Opaque` (`TermIdView::head` has an
         // arm for every `Term`), so this costs nothing on the term path.
         (ViewHead::Opaque, ViewHead::Opaque) => {
             match (a.as_bind_value(), b.as_bind_value()) {
-                (BindValue::Value(va), BindValue::Value(vb)) => va.native_carrier_eq(&vb),
+                (BindValue::Value(va), BindValue::Value(vb)) => va.opaque_carrier_eq(&vb),
                 _ => false,
             }
         }
@@ -1886,6 +1906,138 @@ impl TermView for TermId {
     }
 }
 
+// ── Native-carrier structural views (WI-1019) ───────────────────
+//
+// `Value::OpRef` and `Value::Requirement` are RESOLVED VALUES, not handles into
+// mutable state. An `OpRef` is two symbols and a dictionary; a requirement slot
+// is `(functor, [sub-handles])`, written once at `alloc` and never mutated after
+// (`requirement_arena.rs` — only `refcount` moves). So each HAS a shape, and
+// presenting it is what makes equality, `goal_fingerprint` keying, discrim
+// indexing and unification fall out of the machinery every other structural form
+// already uses — with no second compare path to keep in sync by hand, which is
+// the duplication WI-486 collapsed.
+//
+// THE SHAPE IS THE EQUALITY. Before this, both viewed as `ViewHead::Opaque` and
+// the head match had no `(Opaque, Opaque)` arm, so an `OpRef` MEASURED as not
+// equal to ITSELF. WI-1014's stopgap repaired that with a bespoke
+// `Value::native_carrier_eq`, which fixed equality and nothing else — the head
+// stayed payload-free, so two distinct `OpRef`s still shared one fingerprint.
+// A shape fixes both at once, because both read the same view.
+//
+// They view under their OWN DECLARED SORT (`anthill.realization.runtime.OpRef` /
+// `.Dictionary`, `stdlib/anthill/realization/runtime.anthill`). This is NOT a new
+// surface: those sorts are constructor-less and stay so, and `ViewHead` is
+// internal machinery — a structural view adds no syntax and grants a user no way
+// to match. That is the layer split `requirement-dictionaries.md` §2.3 draws and
+// §2.4.1 states.
+//
+// `Value::FactRef` is deliberately NOT here, and the reason is not that it is a
+// "reference" — an `OpRef` is one too. It is what the reference is spelled IN: an
+// `OpRef` names its target with a `Symbol`, which has a `Value` carrier and
+// denotes the same operation to every reader, while a `FactRef` locates its row
+// by a private slot index (`RuleId` / `RowKey`) that has no `Value` carrier and
+// means nothing outside the KB that minted it. It is an identity to hold, not a
+// shape to present, so it keeps a payload-free `Opaque` head and compares by that
+// identity — [`Value::opaque_carrier_eq`], proposal 005.
+
+const OPREF_QNAME: &str = "anthill.realization.runtime.OpRef";
+const DICT_QNAME: &str = "anthill.realization.runtime.Dictionary";
+
+/// Field keys come from the DECLARED ACCESSOR names, not from bare short names.
+///
+/// [`reflect_field_key`] resolves a short name through `lookup_symbol`, which
+/// finds it only if something already interned it — for the reflect `Expr` forms
+/// that is guaranteed, because the loader interned every key when it built the
+/// occurrence's term twin. These carriers have NO term twin, so nothing
+/// guarantees it; `named` in particular is spelled nowhere in the stdlib and
+/// would have panicked on the first `OpRef` carrying one. A declared accessor's
+/// qualified name resolves in any KB that could hold one of these values, for the
+/// same reason `reflect_ctor_sym`'s do — so the key cannot fail to resolve,
+/// rather than being checked and hoped for.
+/// One owner for both carriers' key reads, so the head's functor and its field
+/// keys cannot come to name different namespaces: `accessor` is checked to be a
+/// member of `sort`, which is the invariant a rename would otherwise break
+/// SILENTLY — both halves resolve, just in different places, and the view would
+/// go on producing plausible heads with keys nothing ever matches.
+///
+/// Not `format!("{sort}.{k}")`: this runs once per named-child access on the
+/// discrim / `views_structurally_equal` / `goal_fingerprint` paths, where an
+/// allocation per read is pure waste (the same reason `wrapped_expr_child`
+/// resolves lazily instead of through `wrapped_expr_keys`).
+fn accessor_key(kb: &KnowledgeBase, sort: &str, accessor: &'static str, form: &str) -> Symbol {
+    debug_assert!(
+        accessor.strip_prefix(sort).is_some_and(|rest| rest.starts_with('.')),
+        "accessor `{accessor}` is not a member of `{sort}` — the head functor and \
+         its field keys would resolve in different namespaces",
+    );
+    reflect_ctor_sym(kb, accessor, form)
+}
+
+fn opref_key(kb: &KnowledgeBase, k: &str) -> Symbol {
+    let accessor = match k {
+        "op" => "anthill.realization.runtime.OpRef.op",
+        "dict" => "anthill.realization.runtime.OpRef.dict",
+        "named" => "anthill.realization.runtime.OpRef.named",
+        other => unreachable!("opref_key: `{other}` is not an OpRef accessor"),
+    };
+    accessor_key(kb, OPREF_QNAME, accessor, "OpRef")
+}
+
+fn dict_key(kb: &KnowledgeBase, k: &str) -> Symbol {
+    let accessor = match k {
+        "impl" => "anthill.realization.runtime.Dictionary.impl",
+        other => unreachable!("dict_key: `{other}` is not a Dictionary accessor"),
+    };
+    accessor_key(kb, DICT_QNAME, accessor, "Dictionary")
+}
+
+/// An `OpRef`'s named keys, in accessor-declaration order.
+///
+/// CONDITIONAL on the optional halves being present — the `Expr::Proof`
+/// precedent: an absent key and a `none()` payload carry the same information,
+/// and the arity difference keeps the two shapes distinct, so no `Option` wrapper
+/// has to be synthesized on every child read.
+///
+/// `dict` AND `named` are both here because both are IDENTITY. Two `OpRef`s with
+/// the same `op` but different dictionaries dispatch under different requirement
+/// environments, and `named` records the op the call NAMED when that differs from
+/// the resolved `op` (WI-857). Dropping either would make two distinct values
+/// compare equal and share a key — a false positive, and this feeds fact dedup,
+/// where merging DROPS A FACT (WI-815).
+fn opref_shape(has_dict: bool, has_named: bool) -> &'static [&'static str] {
+    let keys: &'static [&'static str] = match (has_dict, has_named) {
+        (false, false) => &["op"],
+        (true, false) => &["op", "dict"],
+        (false, true) => &["op", "named"],
+        (true, true) => &["op", "dict", "named"],
+    };
+    debug_assert_keys_distinct(OPREF_QNAME, keys);
+    keys
+}
+
+fn opref_head(has_dict: bool, has_named: bool, kb: &KnowledgeBase) -> ViewHead {
+    ViewHead::Functor {
+        functor: Some(reflect_ctor_sym(kb, OPREF_QNAME, "OpRef")),
+        pos_arity: 0,
+        named_arity: opref_shape(has_dict, has_named).len(),
+    }
+}
+
+/// A dictionary reads as its ACCESSOR SET: `impl` is the one named child,
+/// `arity` is the positional arity, and `sub(i)` is the i-th positional child.
+/// One value, read one way by the view and by the operations.
+///
+/// Positional, not named, because the sub-dictionaries are an ORDERED bundle —
+/// slot `k` is the k-th entry of the dictionary layout (WI-857), so the order is
+/// the identity and a name would have to be invented for each.
+fn dict_head(h: &RequirementHandle, kb: &KnowledgeBase) -> ViewHead {
+    ViewHead::Functor {
+        functor: Some(reflect_ctor_sym(kb, DICT_QNAME, "Dictionary")),
+        pos_arity: h.arity(),
+        named_arity: 1,
+    }
+}
+
 impl TermView for Value {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match self {
@@ -1923,17 +2075,36 @@ impl TermView for Value {
             // `functor_view_head`: this IS the canonical bare-`Ref` spelling
             // that function canonicalizes a nullary application TO.
             Value::SymbolRef(s) => ViewHead::Ref(*s),
+            // WI-1019 — the two RESOLVED values read structurally; see the
+            // section above for why these two and not the rest.
+            Value::OpRef { dict, named, .. } => {
+                opref_head(dict.is_some(), named.is_some(), kb)
+            }
+            Value::Requirement(h) => dict_head(h, kb),
+            // WHAT IS STILL `Opaque`, AND WHY — a payload-free head is the right
+            // answer for a carrier with no shape to present, NOT a gap. Equality
+            // is carrier identity ([`Value::opaque_carrier_eq`]) and the key stays
+            // deliberately coarse, which every consumer already guards on
+            // (`GoalKey::is_opaque_free` for fact dedup, `is_cacheable` for the
+            // query cache), so an opaque carrier degrades to no-dedup rather than
+            // merging two values.
+            //
+            //  - `FactRef` — a row locator spelled in a private slot index with no
+            //    `Value` carrier (proposal 005). An identity, not a shape.
+            //  - `Cell` — content MUTATES behind the slot (`Cell.set`), so a
+            //    content view would not be stable; its identity IS the slot.
+            //  - `Closure` / `Stream` / `Substitution` / `Map` — arena handles
+            //    whose contents are not resolved-value structure; unexamined here
+            //    rather than endorsed, and WI-1019 measured only what it changed.
+            //  - `Relation` — an intensional query value, not structural data (it
+            //    never unifies or indexes; it is consumed only through
+            //    `Relation.splitFirst`). WI-714.
             Value::Closure(_)
-            | Value::OpRef { .. }
             | Value::Stream(_)
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_)
             | Value::FactRef(_)
-            // WI-714: a `Relation` is an intensional query value, not structural
-            // data — opaque to the term view (it never unifies or indexes; it is
-            // consumed only through `Relation.splitFirst`).
             | Value::Relation { .. } => ViewHead::Opaque,
         }
     }
@@ -1949,6 +2120,13 @@ impl TermView for Value {
             Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Node(occ) => occ_view_pos_arg(occ, kb, i),
+            // WI-1019: a dictionary's sub-dictionaries ARE its positional
+            // children — `dict_head` promised `h.arity()` of them and `project`
+            // panics past the end, so the bound is checked here rather than
+            // trusted.
+            Value::Requirement(h) => {
+                (i < h.arity()).then(|| ViewItem::Owned(Value::Requirement(h.project(i))))
+            }
             _ => None,
         }
     }
@@ -1970,6 +2148,26 @@ impl TermView for Value {
             // WI-342: a Type/EffectExpr child may be ground (`Term`) — handle
             // both via `occ_type_named`; fall back to the Expr `Rc` reader.
             Value::Node(occ) => occ_view_named_arg(occ, kb, sym),
+            // WI-1019 — resolved by NAME against the same shape `named_keys`
+            // lists, so a key the head counted always has a child and no other
+            // key does. The `Some` unwraps below cannot fire: `opref_shape`
+            // emits `dict`/`named` only when that half is present.
+            Value::OpRef { op, dict, named } => {
+                let keys = opref_shape(dict.is_some(), named.is_some());
+                let idx = keys.iter().position(|k| opref_key(kb, k) == sym)?;
+                Some(ViewItem::Owned(match keys[idx] {
+                    "op" => Value::SymbolRef(*op),
+                    "dict" => Value::Requirement(
+                        dict.clone().expect("opref_shape listed `dict` without one"),
+                    ),
+                    "named" => Value::SymbolRef(
+                        named.expect("opref_shape listed `named` without one"),
+                    ),
+                    other => unreachable!("opref named_arg: no arm for key `{other}`"),
+                }))
+            }
+            Value::Requirement(h) => (dict_key(kb, "impl") == sym)
+                .then(|| ViewItem::Owned(Value::SymbolRef(h.functor()))),
             _ => None,
         }
     }
@@ -1983,6 +2181,14 @@ impl TermView for Value {
             Value::Tuple { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             Value::Entity { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             Value::Node(occ) => occ_view_named_keys(occ, kb),
+            // WI-1019 — the SAME shape the head counted and `named_arg` resolves
+            // against, so head arity, keys and children cannot drift apart (the
+            // WI-814 discipline).
+            Value::OpRef { dict, named, .. } => opref_shape(dict.is_some(), named.is_some())
+                .iter()
+                .map(|k| opref_key(kb, k))
+                .collect(),
+            Value::Requirement(_) => vec![dict_key(kb, "impl")],
             _ => Vec::new(),
         }
     }
@@ -2130,11 +2336,18 @@ impl TermView for Rc<NodeOccurrence> {
     }
 }
 
+// EVERY ARM BELOW PAIRS `Value` WITH `Owned` (WI-1019). The two differ only in
+// who holds the `Value` — a borrowed child lives in the parent, an owned one was
+// computed by the read — and nothing downstream may be able to tell them apart:
+// splitting their behaviour would be a cross-carrier disagreement of exactly the
+// kind WI-425 calls a wrong answer, on a value whose carrier is an accident of
+// how its parent stores it.
 impl TermView for ViewItem<'_> {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match self {
             ViewItem::Term(t) => TermIdView(*t).head(kb),
             ViewItem::Value(v) => (**v).head(kb),
+            ViewItem::Owned(v) => v.head(kb),
             ViewItem::Node(occ) => occ_head(occ, kb),
         }
     }
@@ -2146,6 +2359,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).pos_arg(kb, i),
+            ViewItem::Owned(v) => v.pos_arg(kb, i),
             ViewItem::Node(occ) => occ_view_pos_arg(occ, kb, i),
         }
     }
@@ -2159,6 +2373,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).named_arg(kb, sym),
+            ViewItem::Owned(v) => v.named_arg(kb, sym),
             ViewItem::Node(occ) => occ_view_named_arg(occ, kb, sym),
         }
     }
@@ -2170,6 +2385,7 @@ impl TermView for ViewItem<'_> {
                 _ => Vec::new(),
             },
             ViewItem::Value(v) => (*v).named_keys(kb),
+            ViewItem::Owned(v) => v.named_keys(kb),
             ViewItem::Node(occ) => occ_view_named_keys(occ, kb),
         }
     }
@@ -2178,6 +2394,7 @@ impl TermView for ViewItem<'_> {
         match self {
             ViewItem::Term(t) => BindValue::Term(*t),
             ViewItem::Value(v) => BindValue::Value((*v).clone()),
+            ViewItem::Owned(v) => v.as_bind_value(),
             ViewItem::Node(occ) => occ_view_bind_value(occ),
         }
     }
@@ -2189,6 +2406,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).index_var(kb),
+            ViewItem::Owned(v) => v.index_var(kb),
             // An occurrence surfaces a var of any kind as a var-edge — see
             // `occ_index_var` / `Value::index_var` (WI-373).
             ViewItem::Node(occ) => occ_view_index_var(occ, kb),

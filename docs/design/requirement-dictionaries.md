@@ -329,13 +329,74 @@ or a tuple/literal/var/wildcard. `Dictionary` is a `sort` with operations, not a
 `entity dict(...)`, so no `dict` constructor exists to match against.
 
 Making it matchable would need either a **new language feature** (user-defined
-extractors) or a **core-matcher special-case** that fabricates a `dict` view over
-the opaque `Value::Requirement` (teaching `TermView` to project it as
-`ViewHead::Constructor` instead of `ViewHead::Opaque`). Neither is justified: the
+extractors) or a **core-matcher special-case**. Neither is justified: the
 accessor ops (`impl` / `sub` / `arity` / `resolveOp` / `ops`) plus the denoted-type
 parameter already expose everything the value holds; a pattern-match face would add syntax,
 not capability. (If anthill ever gains extractors, a structural-match face could
 be revisited — noted, not planned.)
+
+**This is a rule about the SURFACE, and it does not reach `TermView`.** An earlier
+wording named "teaching `TermView` to project it as a constructor instead of
+`ViewHead::Opaque`" as one of the two rejected routes. That conflated two layers:
+`ViewHead` is internal machinery, so a structural view adds no syntax and grants a
+user no way to match — the argument above ("adds syntax, not capability") simply
+does not apply to it. §2.4.1 states what the view IS.
+
+### 2.4.1 View-level representation — the shape IS the equality (WI-1019)
+
+`Value::OpRef` and `Value::Requirement` present a **structural `TermView`**: a
+`ViewHead::Functor` keyed by their already-declared sort symbol, with named
+children. This is not a second surface — it declares no constructor, and the sorts
+stay constructor-less per §2.3.
+
+| value | head | children |
+|---|---|---|
+| `Value::Requirement(h)` | `Functor{anthill.realization.runtime.Dictionary, pos: h.arity(), named: 1}` | named `impl` = `SymbolRef(h.functor())`; positional `i` = `Requirement(h.project(i))` |
+| `Value::OpRef{op, dict, named}` | `Functor{anthill.realization.runtime.OpRef, pos: 0, named: N}` | `op` = `SymbolRef` (always); `dict` = `Requirement` (only when `Some`); `named` = `SymbolRef` (only when `Some`) |
+
+The `Dictionary` shape is exactly the accessor set — `impl` / `arity` / `sub` — so
+the view and the operations read one value one way.
+
+**Why a shape rather than a bespoke equality.** Given the shape, equality,
+`goal_fingerprint` keying, discrimination indexing and unification all fall out of
+the machinery every other structural form already uses; a second, hand-maintained
+compare path does not have to be kept in sync with the first (the duplication
+WI-486 collapsed). §2.1's soundness premise is what licenses it: both are
+**immutable resolved values**, so a structural view is a pure view.
+
+**`dict` is part of an `OpRef`'s identity and must never be dropped.** Two `OpRef`s
+with the same `op` and `named` but different dictionaries dispatch under different
+requirement environments. A representation omitting `dict` makes them equal and
+share a key — a false positive, and this feeds fact dedup, where merging DROPS A
+FACT (WI-815). `named` is identity for the same reason (WI-857: it records the op
+the call NAMED when that differs from the resolved `op`).
+
+**Keys are CONDITIONAL on `Some`,** the `Expr::Proof` precedent: an absent key and
+a `none()` payload carry the same information, and the arity difference keeps the
+two shapes distinct on both carriers — so no `Option` wrapper is synthesized.
+
+**Dictionary equality is by CONTENT, not by slot.** A dictionary is fully
+determined by `(functor, sub-dicts)`, so two with the same tree are
+interchangeable. Slot identity is the wrong test twice over: `RequirementHandle`'s
+identity is `(arena, raw)` and a raw-only compare answers EQUAL across two
+interpreters' arenas (a false positive), while `RequirementArena` reuses freed
+slots from a `free_list`, so a raw is not even stable within one arena.
+
+**What stays `ViewHead::Opaque`, by nature.** A carrier with no structure to walk
+keeps a payload-free head: equality is carrier identity, and the key stays
+deliberately coarse. That coarseness is not a disagreement to repair — every
+consumer already guards on it (`GoalKey::is_opaque_free` for fact dedup,
+`is_cacheable` for the query cache), so an opaque carrier degrades to no-dedup
+rather than merging. `Value::FactRef` is the type case.
+
+**The discriminator is what the reference is spelled IN — not "reference vs.
+value".** An `OpRef` is a reference too; the point is that it names its target
+with a **`Symbol`**, a KB-lifetime name that already has a `Value` carrier
+(`Value::SymbolRef`) and denotes the same operation to every reader. A `FactRef`
+locates its target with a **private slot index** (`RuleId`, `RowKey`) that has no
+`Value` carrier and means nothing outside the KB that minted it. So one reference
+has a shape to present and the other has only an identity to hold — which is why
+the same word, "reference", lands them on opposite sides. See proposal 005.
 
 ### 2.4 OpRef
 

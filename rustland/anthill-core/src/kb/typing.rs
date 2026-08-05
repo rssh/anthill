@@ -27864,6 +27864,7 @@ fn view_item_value(item: &ViewItem) -> Value {
     match item {
         ViewItem::Term(t) => Value::term(*t),
         ViewItem::Value(v) => (*v).clone(),
+        ViewItem::Owned(v) => v.clone(),
         ViewItem::Node(rc) => Value::Node(Rc::clone(rc)),
     }
 }

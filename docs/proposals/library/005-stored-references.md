@@ -61,14 +61,36 @@ no public signature.
 
 `FactRef` is valid only for the KB session that produced it, until the referenced
 row is replaced or retracted. It is passable to the persistence operations, but
-is not serializable, printable as a durable identifier, constructible by user
-code, or an `Eq` value. A backend that offers a durable domain identifier puts
-that identifier in the row's ordinary `value`; it does not change `FactRef`'s
-session-reference contract.
+is not serializable, printable as a durable identifier, or constructible by user
+code. A backend that offers a durable domain identifier puts that identifier in
+the row's ordinary `value`; it does not change `FactRef`'s session-reference
+contract.
 
 This deliberately prevents an application from persisting an in-memory rule
 slot or a file span as data. A later process reads a fresh `StoredRef` from its
 source.
+
+### Internal representation: identity, not shape
+
+`FactRef` holds a **session identity** and presents **no structure** to the term
+view (`ViewHead::Opaque`). Two are equal iff they locate the same row; a
+structural key is deliberately not derived from them, so the consumers that need
+an injective key (`GoalKey::is_opaque_free` for fact dedup, `is_cacheable` for
+the query cache) degrade to no-dedup rather than merging two rows.
+
+This is a property of what a `FactRef` is spelled in, not of the word
+"reference". A reference whose target is named by a `Symbol` has a shape worth
+presenting — the runtime `OpRef` is one, and it views structurally
+(`docs/design/requirement-dictionaries.md` §2.4.1). A `FactRef` instead locates
+its target by a private slot index — a `RuleId`, or a source's `RowKey` — which
+has no `Value` carrier and denotes nothing outside the KB that minted it.
+Presenting it would mint that index as data, which is exactly what the
+capabilities above forbid.
+
+Equality here is a Rust-internal comparison of the private payload; it is not an
+`Eq` instance, and it exposes nothing. Anthill code still cannot construct,
+print, or persist a `FactRef` — those prohibitions live at the surface and are
+unaffected.
 
 ### Uniform persistence surface
 

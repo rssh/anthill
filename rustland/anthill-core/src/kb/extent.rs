@@ -109,6 +109,52 @@ impl FactRef {
             FactRefInner::Resident { .. } => None,
         }
     }
+
+    /// Do these two references locate the SAME row? The identity of an opaque
+    /// reference, and the whole of what [`Value::opaque_carrier_eq`] can ask of it
+    /// — a `FactRef` views as `ViewHead::Opaque` because its payload is a private
+    /// slot index with no `Value` carrier, so identity is all there is (WI-1019,
+    /// proposal 005).
+    ///
+    /// Deliberately NOT a `PartialEq` impl. `Eq`-ness is a claim 005 makes about
+    /// the SURFACE, where a `FactRef` is explicitly not comparable, and a derived
+    /// operator would put the two on the same footing and invite a caller to reach
+    /// for it as though it were. A named method reads as what it is: an internal
+    /// identity probe.
+    ///
+    /// A resident id is stable to compare because `RuleId`s are never reused — a
+    /// retract sets a `retracted` tombstone and entries are only appended
+    /// (`KnowledgeBase::retract`; "retracted and then re-asserted holds a DIFFERENT
+    /// RuleId at the same key", `kb/mod.rs`). So a stale reference reads unequal to
+    /// the live row that replaced it, which is correct, rather than aliasing it.
+    ///
+    /// `mirror` participates: it names WHICH durability mirror the reference was
+    /// taken through (WI-919), so two references differing only in it are not
+    /// interchangeable for a write.
+    pub(crate) fn locates_same_row(&self, other: &FactRef) -> bool {
+        match (&self.0, &other.0) {
+            (
+                FactRefInner::Resident { rule: ra, mirror: ma },
+                FactRefInner::Resident { rule: rb, mirror: mb },
+            ) => ra == rb && ma == mb,
+            (
+                FactRefInner::External { owner: oa, key: ka },
+                FactRefInner::External { owner: ob, key: kb },
+            ) => oa == ob && ka.locates_same_row(kb),
+            _ => false,
+        }
+    }
+}
+
+impl RowKey {
+    /// Two source-native row keys locating the same row. Private to the seam, as
+    /// [`FactRef::locates_same_row`] is — a `RowKey` is "Rust/source-private"
+    /// (proposal 005) and never crosses the declared library boundary.
+    fn locates_same_row(&self, other: &RowKey) -> bool {
+        match (&self.0, &other.0) {
+            (RowKeyInner::InMemory(a), RowKeyInner::InMemory(b)) => a == b,
+        }
+    }
 }
 
 /// Visible row content paired with the only valid mutation locator.
