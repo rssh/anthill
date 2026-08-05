@@ -60,6 +60,7 @@ hyphens in identifiers become underscores.
 | `namespace N` | `package n` (top-level) or `object N` (nested) |
 | Sort with operations (no constructors) `sort S { operation ... }` | `trait S` |
 | Sort with constructors `sort S { entity C₁(...), entity C₂(...) }` | `enum S { case C1(...); case C2(...) }` |
+| Sort with an **eponymous** constructor `sort S { entity S(fields) }` | `case class S(...)` — see §2.4 |
 | Standalone `entity E(fields)` | `case class E(...)` |
 | `operation op(a: S, ...) -> R` (first arg is enclosing sort) | `def op(...): R` on the trait |
 | `operation op(a: S, ...) -> ...S...` (return contains S) | `def op(...): Self`-typed (when `Self` makes sense) |
@@ -139,7 +140,7 @@ sort Stream {                               trait Stream[T, E] {
 
 ### 2.3 Sort with Constructors → Enum
 
-A sort with entity constructors maps to a Scala 3 `enum`. Each constructor becomes a `case`:
+A sort whose constructors are named *differently* from it maps to a Scala 3 `enum`. Each constructor becomes a `case`. (A sort with a single **eponymous** constructor is the other case — one `case class`, §2.4.)
 
 ```
 sort WorkStatus {                           enum WorkStatus {
@@ -176,7 +177,7 @@ sort LogicalStream {                        enum LogicalStream[T] {
 
 The generated file compiles as-is: abstract trait members are valid Scala, the data layer (`enum LogicalStream`) is fully usable, and the rules generate ScalaCheck properties that any implementation of `LogicalStreamOps` must satisfy.
 
-### 2.4 Standalone Entity → Case Class
+### 2.4 Single-Constructor Sort → Case Class
 
 A standalone `entity` (sugar for a single-constructor sort) maps to a `case class`:
 
@@ -186,6 +187,36 @@ entity Account(                             case class Account(
   balance: Money                              balance: Money
 )                                           )
 ```
+
+**The long form emits the same thing** (WI-940). `kernel-language.md` §6.3 makes
+the desugaring an *equivalence* — an **eponymous** constructor **is** its sort, one
+symbol, so `sort Vec3 { entity Vec3(…) }` has no nested `Vec3.Vec3` to name — and
+"a codegen backend naming `Vec3` gets the same answer either way" is that rule
+stated for this document. So the long form is a `case class` too, and §2.3's `enum`
+is for constructors named *differently* from their sort:
+
+```
+sort Vec3 {                                 case class Vec3(x: Double, y: Double, z: Double)
+  entity Vec3(x: Float,          →
+    y: Float, z: Float)                     trait Vec3Ops {
+  operation vec_add(a: Vec3,                  def vecAdd(a: Vec3, b: Vec3): Vec3
+    b: Vec3) -> Vec3 = ...                    ...
+  ...                                       }
+}
+```
+
+The members stay on the separate `<Sort>Ops` contract of §2.3, and that is a Scala
+limit rather than a reading of §6.3: bootstrap emits signatures only, and Scala has
+no abstract member in an instantiable `case class`. (`anthill-cpp-gen` *does* put an
+eponymous sort's operations inside the same `struct` — a C++ member declaration
+needs no definition. WI-931 is that same one-symbol-one-declaration rule in the
+other backend.) What §6.3 buys here is that the **type** is one declaration.
+
+A sort carrying an eponymous constructor **alongside** other variants — which §6.3
+admits — has no Scala spelling at all, since the sum and one of its cases would
+have to be one name in one scope. Bootstrap **refuses** it (`BootstrapError`)
+rather than emit `enum S { case S }`, which declares the nested `S.S` this rule
+exists to remove.
 
 ### 2.5 Operation → Method or Function
 

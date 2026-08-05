@@ -1528,6 +1528,16 @@ Consequences worth stating, because they are what the rule buys:
   and the fields and operations therefore belong to one type in every backend
   (a C++ backend emits one `struct`, not a data struct beside a traits struct).
 
+  What every backend owes is that the **type is one declaration**; where the members
+  go is the host language's to answer (WI-940). C++ can put them in the same
+  `struct` because a member declaration needs no definition there. Scala cannot: a
+  `case class` admits no abstract member, so a signature-only backend emits the one
+  `case class` and leaves the members on the separate `<Sort>Ops` contract it
+  already uses for every sort with constructors — which is not the forbidden
+  shape, since that contract does not bear the type's name. The defect the rule
+  names is a **second declaration of the sort's own name** — `Vec3.Vec3`, or two
+  `struct Vec3` — not the existence of a companion.
+
   Mind the **short name** when doing this in a namespace that already has a
   rule or operation of that name: the new member is a second binding for it, and an
   `import ns.{f}` elsewhere may bind to the member rather than to the namespace-level
@@ -2364,7 +2374,7 @@ fact Monoid[T, combine = add]
 
 When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Defaulted operations (a spec-level `operation … = body`) carry over automatically; the satisfying sort only provides the primitive operations. For example, `Stream` defines `head` by a default body over `splitFirst`, so a sort declaring `fact Stream[T]` inherits `head` without redeclaring it.
 
-**A NAMESPACE-level operation is not backing (WI-935).** Backing must be reachable *through the carrier* — the carrier's own member or an inherited spec default (see the next paragraph for the full list). A free operation declared at **namespace** level, with the same name and signature and sitting beside the carrier, is none of those and backs nothing: `check_provider_operations` reports one `… no own <op> on <carrier>` per declared member (measured). The refusal is not incidental. A spec member is dispatched *through* its carrier, so with two carriers of one spec there are two `vec_add`s and the carrier is the only thing that distinguishes them; a namespace-level name has no carrier dimension to distinguish by. The implementation therefore goes in the carrier's sort body. Writing it there means writing the long form `sort E { entity E(…); operation … }` where `entity E(…)` stood — the same declaration (§6.3), now with somewhere to put members, but **not** a no-op edit: it changes the parse-IR item kind, and a codegen backend may treat the two spellings differently (WI-940 measured exactly that).
+**A NAMESPACE-level operation is not backing (WI-935).** Backing must be reachable *through the carrier* — the carrier's own member or an inherited spec default (see the next paragraph for the full list). A free operation declared at **namespace** level, with the same name and signature and sitting beside the carrier, is none of those and backs nothing: `check_provider_operations` reports one `… no own <op> on <carrier>` per declared member (measured). The refusal is not incidental. A spec member is dispatched *through* its carrier, so with two carriers of one spec there are two `vec_add`s and the carrier is the only thing that distinguishes them; a namespace-level name has no carrier dimension to distinguish by. The implementation therefore goes in the carrier's sort body. Writing it there means writing the long form `sort E { entity E(…); operation … }` where `entity E(…)` stood — the same declaration (§6.3), now with somewhere to put members, but **not** a no-op edit: it changes the parse-IR item kind, and a codegen backend reached the two spellings by different paths — scaland's `Bootstrap` emitted a `case class` for the sugar and `enum Vec3: case Vec3(…)` for the long form, which is the `Vec3.Vec3` §6.3 rules out. Fixed and pinned by byte-equality of the two emissions (WI-940).
 
 **Backing conformance is NOT checked beyond the name (WI-935, measured).** `op_backed` matches a declared member by **short name only**. Arity, return type and parameter order are not compared against the spec's declaration in either direction, and `check_override_refinement` compares only the effect row — so `fact VectorSpace[BadVec, Float]` loads clean when `vec_add` takes one argument, when `vec_sub` returns `Float`, or when `vec_scale`'s parameters are swapped. Each of those then mis-dispatches or dies at the call. Treat a provision as certifying that a member of that *name* exists, not that it fits.
 

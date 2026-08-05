@@ -10,9 +10,12 @@ class BootstrapTest extends munit.FunSuite:
   private def parseStdlib(rel: String) =
     val src = scala.io.Source.fromFile(s"$stdlibDir/$rel")
     val text = try src.mkString finally src.close()
-    Parser.parse(text, rel) match
+    parseSource(text, rel)
+
+  private def parseSource(text: String, name: String) =
+    Parser.parse(text, name) match
       case Right(pf) => pf
-      case Left(es) => fail(s"$rel parse failed: ${es.head.message}")
+      case Left(es) => fail(s"$name parse failed: ${es.head.message}")
 
   test("WI-170: Bootstrap.generate on option.anthill emits Option enum") {
     val pf = parseStdlib("anthill/prelude/option.anthill")
@@ -105,15 +108,12 @@ class BootstrapTest extends munit.FunSuite:
     // eponymous constructor and four members — so it is no longer an example of
     // what this test is named for. It is re-pointed rather than deleted: the
     // claim ("a standalone entity becomes a case class, Float→Double") is still
-    // worth pinning, and `EulerAngles` still is one.
+    // worth pinning, and `EulerAngles` still is one. Vec3's own emission is now
+    // asserted by the WI-940 tests below.
     //
-    // Vec3 is NOT asserted here, and deliberately not with its current output:
-    // Bootstrap emits `enum Vec3: case Vec3(…)` plus a separate `Vec3Ops` trait
-    // for it — a nested `Vec3.Vec3` that §6.3 / WI-926 say must not exist (an
-    // eponymous constructor IS its sort, one symbol). That is the same defect
-    // WI-931 fixed on the Rust side for cpp-gen, unexercised until now only
-    // because stdlib shipped no sort of this shape. Tracked separately; encoding
-    // the current output here would pin the bug as the contract.
+    // CONTROL for WI-940: this passes either way BY DESIGN. Its job is to say
+    // the record collapse did not reach the sugar path it was already correct
+    // on — the shared `renderCaseClass` must not have moved this output.
     val pf = parseStdlib("anthill/geometry.anthill")
     val files = Bootstrap.generate(pf)
     val eulerFile = files.find(_.relPath.endsWith("/EulerAngles.scala"))
@@ -122,6 +122,156 @@ class BootstrapTest extends munit.FunSuite:
     assert(src.contains("package anthill.geometry"))
     assert(src.contains("case class EulerAngles(roll: Double, pitch: Double, yaw: Double)"),
       s"expected `case class EulerAngles(...)` with Float→Double mapping in:\n$src")
+  }
+
+  // ── WI-940: an eponymous constructor IS its sort (§6.3) ───────────────────
+
+  test("WI-940/§6.3: eponymous sort Vec3 is ONE case class — no `enum Vec3: case Vec3`") {
+    // `sort Vec3 { entity Vec3(x, y, z); operation vec_add(…) = … }` writes
+    // `Vec3` once and defines ONE symbol (§6.3, WI-926) — there is no
+    // `Vec3.Vec3`. Bootstrap emitted `enum Vec3:` + `case Vec3(…)` for it, which
+    // is exactly that nested name; the same defect WI-931 fixed in the other
+    // backend, where cpp-gen emitted `struct Vec3` twice for this shape.
+    //
+    // CONTROL, MEASURED not asserted: with `shapeOf` returning `Sum` for the
+    // eponymous single-constructor case (i.e. the old behaviour), exactly FOUR
+    // tests fail — this one, `TotalFloat`, `the entity sugar and the eponymous
+    // long form emit the SAME declaration`, and `an eponymous PARAMETRIC sort`.
+    // The two named CONTROL / REFUSED tests and every WI-170 test pass either
+    // way BY DESIGN; the refusal has its own probe, recorded at its site.
+    val pf = parseStdlib("anthill/geometry.anthill")
+    val files = Bootstrap.generate(pf)
+    val vec3 = files.find(_.relPath.endsWith("/Vec3.scala"))
+      .getOrElse(fail(s"expected Vec3.scala in: ${files.map(_.relPath)}"))
+    val src = vec3.contents
+    assert(src.contains("package anthill.geometry"), s"missing package in:\n$src")
+    assert(!src.contains("enum Vec3"),
+      s"an eponymous sort must not reach Scala as an enum:\n$src")
+    assert(!src.linesIterator.exists(_.trim.startsWith("case Vec3")),
+      s"`case Vec3` is the nested Vec3.Vec3 §6.3 rules out:\n$src")
+    assert(src.contains("case class Vec3(x: Double, y: Double, z: Double)"),
+      s"expected the one `case class Vec3(…)` declaration in:\n$src")
+    // The four members stay reachable — as the abstract contract, since
+    // bootstrap emits signatures only and a `case class` has no abstract member.
+    assert(src.contains("trait Vec3Ops:"), s"expected `trait Vec3Ops` in:\n$src")
+    assert(src.contains("def vecAdd(a: Vec3, b: Vec3): Vec3"),
+      s"expected `def vecAdd(a: Vec3, b: Vec3): Vec3` in:\n$src")
+    assert(src.contains("def vecScale(c: Double, v: Vec3): Vec3"),
+      s"expected `def vecScale(c: Double, v: Vec3): Vec3` in:\n$src")
+    assert(src.contains("def vecZero(): Vec3"), s"expected `def vecZero(): Vec3` in:\n$src")
+  }
+
+  test("WI-940: TotalFloat — stdlib's other eponymous sort — collapses the same way") {
+    // Vec3 is not a special case of geometry: `sort TotalFloat { entity
+    // TotalFloat(raw: Float); operation eq(…) }` is the same shape in the
+    // prelude, and gets the same one declaration. Two real fixtures, so the rule
+    // is not fitted to one file.
+    val pf = parseStdlib("anthill/prelude/totalfloat.anthill")
+    val files = Bootstrap.generate(pf)
+    val tf = files.find(_.relPath.endsWith("/TotalFloat.scala"))
+      .getOrElse(fail(s"expected TotalFloat.scala in: ${files.map(_.relPath)}"))
+    val src = tf.contents
+    assert(!src.contains("enum TotalFloat"), s"eponymous sort emitted as an enum:\n$src")
+    assert(src.contains("case class TotalFloat(raw: Double)"),
+      s"expected `case class TotalFloat(raw: Double)` in:\n$src")
+    assert(src.contains("def eq(a: TotalFloat, b: TotalFloat): Boolean"),
+      s"expected the `eq` member on the TotalFloatOps contract in:\n$src")
+  }
+
+  test("WI-940/§6.3: the `entity` sugar and the eponymous long form emit the SAME declaration") {
+    // §6.3 calls the desugaring an EQUIVALENCE — "the sugar and the long form
+    // denote the same thing", so "a codegen backend naming `Acct` gets the same
+    // answer either way". That is what failed: the sugar emitted a case class
+    // and the long form an `enum Acct: case Acct(…)`. Asserted as byte equality
+    // of the whole file rather than as two independent expectations, so the two
+    // paths cannot drift apart again while both still "look right".
+    val sugar = Bootstrap.generate(parseSource(
+      """namespace anthill.wi940
+        |  entity Acct(id: Int64, balance: Float)
+        |end
+        |""".stripMargin, "sugar.anthill"))
+    val longForm = Bootstrap.generate(parseSource(
+      """namespace anthill.wi940
+        |  sort Acct
+        |    entity Acct(id: Int64, balance: Float)
+        |  end
+        |end
+        |""".stripMargin, "long.anthill"))
+    // Both sides emit exactly one file — asserted, not assumed: `assertEquals`
+    // on two EMPTY sequences would pass, and this is what stops that from being
+    // a way for the test to be vacuously green.
+    assertEquals(sugar.size, 1, s"expected one file from the sugar: ${sugar.map(_.relPath)}")
+    assertEquals(longForm.size, 1, s"expected one file from the long form: ${longForm.map(_.relPath)}")
+    assertEquals(longForm.map(f => (f.relPath, f.contents)),
+      sugar.map(f => (f.relPath, f.contents)))
+    assert(sugar.head.contents.contains("case class Acct(id: Int, balance: Double)"),
+      s"expected the record declaration in:\n${sugar.head.contents}")
+  }
+
+  test("WI-940: an eponymous PARAMETRIC sort keeps its type parameters on the case class") {
+    // `case class Box[T](value: T)`, not `case class Box(value: T)[T]` — the
+    // record branch is the first one to place `tpStr` on a `case class`.
+    val files = Bootstrap.generate(parseSource(
+      """namespace anthill.wi940
+        |  sort Box
+        |    sort T = ?
+        |    entity Box(value: T)
+        |    operation unbox(b: Box) -> T
+        |  end
+        |end
+        |""".stripMargin, "box.anthill"))
+    val src = files.find(_.relPath.endsWith("/Box.scala"))
+      .getOrElse(fail(s"expected Box.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("case class Box[T](value: T)"),
+      s"expected `case class Box[T](value: T)` in:\n$src")
+    assert(src.contains("trait BoxOps[T]:"), s"expected `trait BoxOps[T]` in:\n$src")
+  }
+
+  test("WI-940 CONTROL: a non-eponymous multi-constructor sort still emits an enum") {
+    // The collapse is keyed on the constructor's name matching its sort's
+    // (§6.3), not on being a sole variant — so a sum sort is untouched. This
+    // passes both with and without the change BY DESIGN: its job is to say the
+    // record branch did not widen into the sum branch. (The stdlib `Option` and
+    // `Pair` tests above are the same control on real files.)
+    val files = Bootstrap.generate(parseSource(
+      """namespace anthill.wi940
+        |  sort Shape
+        |    entity Circle(r: Float)
+        |    entity Square(side: Float)
+        |  end
+        |end
+        |""".stripMargin, "shape.anthill"))
+    val src = files.find(_.relPath.endsWith("/Shape.scala"))
+      .getOrElse(fail(s"expected Shape.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("enum Shape:"), s"expected `enum Shape:` in:\n$src")
+    assert(src.contains("case Circle(r: Double)"), s"expected `case Circle(r: Double)` in:\n$src")
+    assert(src.contains("case Square(side: Double)"), s"expected `case Square(side: Double)` in:\n$src")
+    assert(!src.contains("case class"), s"a sum sort is not a record:\n$src")
+  }
+
+  test("WI-940: an eponymous variant ALONGSIDE siblings is REFUSED, not emitted wrong") {
+    // §6.3 admits this shape ("an eponymous variant is a sibling of the other
+    // variants of its sort", WI-946) and Scala has no spelling for it: the sum
+    // and one of its cases would have to be one name in one scope. Emitting
+    // `enum Node: case Node` would declare the nested `Node.Node` this whole
+    // classification exists to remove, so it is refused loudly. No stdlib file
+    // has this shape (measured), which is exactly why the case needs a fixture.
+    //
+    // CONTROL, MEASURED: replacing the refusal with `SortShape.Sum(ctors)` fails
+    // THIS test and nothing else — the record collapse's own probe leaves it
+    // green, so the two claims are pinned separately.
+    val pf = parseSource(
+      """namespace anthill.wi940
+        |  sort Node
+        |    entity Node(v: Int64)
+        |    entity Leaf
+        |  end
+        |end
+        |""".stripMargin, "node.anthill")
+    val err = intercept[BootstrapError](Bootstrap.generate(pf))
+    assert(err.getMessage.contains("Node"), s"refusal must name the sort: ${err.getMessage}")
+    assert(err.getMessage.contains("node.anthill:"),
+      s"refusal must be located: ${err.getMessage}")
   }
 
   test("scala-forward-mapping §1: ??? must never appear in generated output") {
