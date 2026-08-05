@@ -122,6 +122,4 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
  - assert the CONTROL too: a test that passes both with and without the change measures nothing. Say at its site which tests fail when the change is backed out, and which pass either way by design.
 
 # Work with anthill-todo
- - before openig follow-up tickets think:
-   - is this ticket can be implemented inline without firing?
-   - is it necessory?  
+ - Prefer implement follow-ups after review immediatly instead firing follow-ups tickets. Fire follow-up only if it is a big task, which can't be implemented inline.
