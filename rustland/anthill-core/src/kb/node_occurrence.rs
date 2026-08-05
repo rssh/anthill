@@ -2585,9 +2585,31 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // twin — elements ride in `named_args` (positional → `_1`/`_2` labels),
         // the inverse of the `"TupleLiteral" => Expr::TupleLit` build. Same
         // motivation as `SetLit` above.
+        //
+        // WI-1014 follow-up: THE COMMENT WAS RIGHT AND THE CODE WAS NOT. It
+        // passed `positional` through as POSITIONAL args, while the parser
+        // (`parse/convert.rs`, `BuildFrame::TupleLiteral`) labels every
+        // positional `_N` and emits `pos_args: []` — which is what
+        // `reflect.anthill` documents as the representation: "(x, y) is
+        // represented as TupleLiteral(_1: x, _2: y)". So one source produced two
+        // different terms depending on which path built it, the cross-carrier
+        // disagreement WI-425 calls a wrong answer. The parser and the spec agree
+        // with each other, so this side moves.
+        //
+        // Labels minted through `intern::positional_label` — WI-790 owns the
+        // `_N` convention and a local `format!` is how the two spellings drift.
+        // Order mirrors the parser exactly: declared `named` first, then the
+        // labelled positionals. (The parser REFUSES a mix, so in practice one of
+        // the two lists is empty and this is just source order — which is the
+        // tuple's identity, WI-788.)
         Some(Expr::TupleLit { positional, named }) => {
             let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
-            return occ_build_fn(kb, functor, positional, named);
+            let mut all: Vec<(Symbol, Rc<NodeOccurrence>)> = named.clone();
+            for (i, child) in positional.iter().enumerate() {
+                let label = kb.intern(&crate::intern::positional_label(i));
+                all.push((label, Rc::clone(child)));
+            }
+            return occ_build_fn(kb, functor, &[], &all);
         }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // Child-bearing / non-goal form: no goal-term shape.

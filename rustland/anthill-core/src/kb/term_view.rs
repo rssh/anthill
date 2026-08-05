@@ -965,14 +965,22 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             Some(f) => functor_view_head(kb, f, es.len(), 0),
             None => ViewHead::Opaque,
         },
-        // WI-1014 Part B — `(p…, n…)` reads as its `TupleLiteral(p…, n…)` twin.
-        // The named half is what made this the harder sibling, and the hazard was
-        // never in the HEAD: it was `fingerprint_into` sorting named keys past an
-        // ORDERED PRODUCT's identity (WI-788), which is fixed and pinned by
-        // `wi815_a_named_tuples_component_order_is_its_identity`. With the sort
-        // honouring the exemption, mirroring the twin here adds no key hazard.
+        // WI-1014 Part B — `(…)` reads as its `TupleLiteral(_1: …, name: …)` twin:
+        // ALL-NAMED, zero positional, positionals carrying `_N` labels. That is
+        // what the parser builds and what `reflect.anthill` documents, and what
+        // `try_occurrence_to_term` now also builds.
+        //
+        // The first version of this arm announced `pos_arity: positional.len()`,
+        // mirroring the reifier — which was itself out of step with the parser. A
+        // positional tuple literal then viewed as `Functor{TupleLiteral, N, 0}`
+        // against a term twin of `Functor{TupleLiteral, 0, N}`: the exact
+        // cross-carrier disagreement this ticket exists to remove.
+        //
+        // The remaining hazard was never in the HEAD: it was `fingerprint_into`
+        // sorting named keys past an ORDERED PRODUCT's identity (WI-788), fixed
+        // and pinned by `wi815_a_named_tuples_component_order_is_its_identity`.
         Some(Expr::TupleLit { positional, named }) => match tuple_literal_functor(kb) {
-            Some(f) => functor_view_head(kb, f, positional.len(), named.len()),
+            Some(f) => functor_view_head(kb, f, 0, positional.len() + named.len()),
             None => ViewHead::Opaque,
         },
         // WHAT IS STILL `Opaque`, AND WHY — each for a NAMED reason, not because
@@ -1052,7 +1060,14 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
         // tuple literal's POSITIONAL components are the positional children,
         // mirroring what `occ_build_fn` puts in `pos_args`.
         Expr::SetLit(es) => es.get(i).map(Rc::clone),
-        Expr::TupleLit { positional, .. } => positional.get(i).map(Rc::clone),
+        // NOT `TupleLit`: its canonical twin is all-named (`_N` labels), so it has
+        // no positional children to expose — see `occ_head`.
+        //
+        // The head is the only thing that could have made this look right: it
+        // promised `pos_arity: positional.len()`, and children that agree with a
+        // WRONG head are still wrong.
+        //
+        // `SetLit` genuinely is positional in both the parser and the reifier.
         _ => None,
     }
 }
@@ -1084,10 +1099,20 @@ fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Opt
         | Expr::Constructor { named_args, .. }
         // WI-520: `Instantiation` reads like `Constructor`.
         | Expr::Instantiation { named_args, .. } => named_args,
-        // WI-1014: a tuple literal's LABELLED components are its named children,
-        // mirroring `occ_build_fn`'s `named_args`. Head arity and this list come
-        // off the same slice, so they cannot disagree.
-        Expr::TupleLit { named, .. } => named,
+        // WI-1014: a tuple literal's children are ALL named — the declared ones
+        // under their own labels, the positional ones under `_N`. Handled below
+        // rather than here, because the `_N` half is not in this slice.
+        Expr::TupleLit { positional, named } => {
+            if let Some(hit) = named.iter().find(|(s, _)| *s == sym) {
+                return Some(Rc::clone(&hit.1));
+            }
+            // `positional_label_index` is `positional_label`'s exact inverse and
+            // refuses everything outside its image (`_b`, `_0`, `_01`), so a USER
+            // label that merely starts with `_` cannot be re-slotted positionally
+            // (WI-790).
+            let idx = crate::intern::positional_label_index(kb.local_name_of(sym))?;
+            return positional.get(idx).map(Rc::clone);
+        }
         _ => return None,
     };
     named.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c))
@@ -1116,11 +1141,25 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::Apply { named_args, .. })
         | Some(Expr::Constructor { named_args, .. })
         // WI-520: `Instantiation` reads like `Constructor`.
-        | Some(Expr::Instantiation { named_args, .. })
-        // WI-1014: the tuple literal's named components, SAME SLICE the head
-        // counted and `occ_named_child` reads.
-        | Some(Expr::TupleLit { named: named_args, .. }) => {
+        | Some(Expr::Instantiation { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
+        }
+        // WI-1014: a tuple literal's keys are its declared labels PLUS an `_N` per
+        // positional component — the same list, in the same order, that
+        // `try_occurrence_to_term` builds and `occ_head` counted. All three read
+        // the two slices the same way, so arity and keys cannot disagree.
+        Some(Expr::TupleLit { positional, named }) => {
+            let mut keys: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
+            for i in 0..positional.len() {
+                keys.push(kb.lookup_symbol(&crate::intern::positional_label(i)).unwrap_or_else(
+                    || panic!(
+                        "TupleLiteral view: positional label `{}` not interned — the \
+                         KB holds a tuple-literal occurrence but never built its twin",
+                        crate::intern::positional_label(i),
+                    ),
+                ));
+            }
+            keys
         }
         // Every reflect-WRAPPED form returned above, from the shape table.
         _ => Vec::new(),

@@ -317,3 +317,80 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
         "and the component comes back in its own carrier",
     );
 }
+
+/// THE CASE THE FIRST VERSION OF THIS TICKET MISSED: a POSITIONAL tuple literal.
+///
+/// `(x, y)` has no labels in source, and the parser gives it some: it labels
+/// every positional `_N` and emits `pos_args: []` — which `reflect.anthill`
+/// states as THE representation, "(x, y) is represented as TupleLiteral(_1: x,
+/// _2: y)". The first Part B arm mirrored `occ_build_fn` instead, which passed
+/// positionals through, so a positional tuple literal viewed as
+/// `Functor{TupleLiteral, 2, 0}` against a term twin of
+/// `Functor{TupleLiteral, 0, 2}` — the WI-425 disagreement this ticket removes,
+/// reintroduced inside its own fix. Both the reifier and the view now follow the
+/// parser.
+///
+/// It went unnoticed because `tuple_occ` above builds `positional: Vec::new()` —
+/// only NAMED components. A case a test cannot reach is a case it cannot pin,
+/// which is why this drives the positional spelling explicitly.
+///
+/// CONTROL: with either side reverted to the positional shape, the arity assert
+/// fails (`(2, 0)` vs `(0, 2)`) and the cross-carrier equality below fails with
+/// it.
+#[test]
+fn a_positional_tuple_literal_agrees_with_the_parsers_term() {
+    let mut kb = stdlib_kb();
+    let f = kb.try_resolve_symbol("anthill.reflect.TupleLiteral").unwrap();
+
+    let node = occ(Expr::TupleLit {
+        positional: vec![int_occ(1), int_occ(2)],
+        named: Vec::new(),
+    });
+
+    match TermView::head(&node, &kb) {
+        ViewHead::Functor { functor, pos_arity, named_arity } => {
+            assert_eq!(functor, Some(f));
+            assert_eq!(
+                (pos_arity, named_arity),
+                (0, 2),
+                "ALL-NAMED: the parser labels positionals `_N` and emits no pos_args",
+            );
+        }
+        other => panic!("must read structurally, got {other:?}"),
+    }
+
+    // The keys are `_1` / `_2`, and each promised key has its component.
+    let keys = TermView::named_keys(&node, &kb);
+    let names: Vec<&str> = keys.iter().map(|k| kb.local_name_of(*k)).collect();
+    assert_eq!(names, vec!["_1", "_2"], "one-based `_N` labels (WI-790)");
+    for (i, k) in keys.iter().enumerate() {
+        let child = TermView::named_arg(&node, &kb, *k).expect("every promised key has a child");
+        assert!(
+            matches!(child.to_value().head(&kb), ViewHead::Const(Literal::Int(n)) if n == i as i64 + 1),
+            "`_{}` is the {}th component", i + 1, i + 1,
+        );
+    }
+
+    // The whole point: the same source, through the two carriers, is ONE value.
+    // Built as the PARSER builds it — all named, `_N` labels, no pos_args.
+    let (k1, k2) = (kb.intern("_1"), kb.intern("_2"));
+    let (e1, e2) = (
+        kb.alloc(Term::Const(Literal::Int(1))),
+        kb.alloc(Term::Const(Literal::Int(2))),
+    );
+    let term = kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(k1, e1), (k2, e2)]),
+    });
+    assert!(
+        views_structurally_equal(&kb, &term, &node),
+        "the occurrence and the parser's term for one source are equal",
+    );
+    let sigma = Substitution::new();
+    assert_eq!(
+        goal_fingerprint(&kb, &Value::term(term), &sigma),
+        goal_fingerprint(&kb, &Value::Node(node), &sigma),
+        "…and key identically, which is what makes a cross-carrier match sound",
+    );
+}
