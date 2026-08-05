@@ -284,6 +284,66 @@ impl Value {
         }
     }
 
+    /// A STOPGAP equality for values that view as `ViewHead::Opaque`, owned by
+    /// WI-1019 — and the framing it replaced was wrong, which is the useful part
+    /// to keep.
+    ///
+    /// That framing said `Opaque` means "no structure to WALK" and the walkers
+    /// merely misread it as "no identity". Both halves let the representation off
+    /// too easily. An `OpRef` is `{op, dict, named}` — a PURE VALUE whose `op` and
+    /// `named` halves are plain symbols, only `dict` being a runtime environment.
+    /// It HAS structure; the view just declines to present it. The right fix is
+    /// therefore to GENERATE an entity representation for it (a reflect-form head
+    /// with named children, exactly as `wrapped_expr_head` already does for the
+    /// `Expr` variants), after which equality, keying, indexing and unification
+    /// all fall out of the machinery every other structural form uses — and this
+    /// function goes away. WI-1019.
+    ///
+    /// WHY IT IS A STOPGAP AND NOT A FIX. It repairs equality and nothing else:
+    /// the head stays payload-free, so two distinct `OpRef`s still share one
+    /// `goal_fingerprint`. Equality and the key now DISAGREE. That is survivable
+    /// only because `is_opaque_free()` is false for such a key and
+    /// `value_fact_dedup_key` degrades to no-dedup, so the disagreement costs a
+    /// dedup rather than a fact. It is also a SECOND equality path to keep in sync
+    /// by hand — the duplication WI-486 collapsed when it made
+    /// `views_structurally_equal` the single structural compare.
+    ///
+    /// MEASURED before it existed: `views_structurally_equal` on one `OpRef`
+    /// against ITSELF was `false`, because the head match has no
+    /// `(Opaque, Opaque)` arm and fell to `_ => false`.
+    ///
+    /// `dict` compares by SLOT (`RequirementHandle`'s own doc: "Identity is
+    /// `(arena, raw)`"), which is deliberately conservative: two equal-CONTENT
+    /// dictionaries in different slots read unequal. That direction is safe — a
+    /// false negative loses a dedup — where a false positive would merge two
+    /// values that dispatch differently, and this feeds `value_fact_dedup`,
+    /// where merging DROPS A FACT (WI-815).
+    ///
+    /// Everything else stays `false`, INCLUDING against itself, and that is not
+    /// an endorsement — `FactRef` was MEASURED to have the same defect (not equal
+    /// to itself, two distinct rows sharing one key) and the arena handles are
+    /// unexamined. Deliberately not widened here: widening a stopgap entrenches
+    /// it, and WI-1019 must decide per carrier anyway — an arena handle's content
+    /// mutates behind its slot, so it cannot key on content the way an `OpRef`
+    /// can.
+    pub fn native_carrier_eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (
+                Value::OpRef { op: oa, dict: da, named: na },
+                Value::OpRef { op: ob, dict: db, named: nb },
+            ) => {
+                oa == ob
+                    && na == nb
+                    && match (da, db) {
+                        (None, None) => true,
+                        (Some(ha), Some(hb)) => ha.raw() == hb.raw(),
+                        _ => false,
+                    }
+            }
+            _ => false,
+        }
+    }
+
     pub fn as_int(&self) -> Option<i64> {
         if let Value::Int(n) = self { Some(*n) } else { None }
     }

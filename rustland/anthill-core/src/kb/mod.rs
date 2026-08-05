@@ -7587,30 +7587,111 @@ mod tests {
     }
 
     /// `functor(<n>)` as a value head, in the two shapes WI-815's lossy-key tests
-    /// compare: `opaque = false` wraps the `Int(n)` leaf directly, `opaque = true`
-    /// wraps it in an `Expr::SetLit` — one of the forms `occ_head` deliberately
-    /// declines to decompose, so it views as the payload-free `ViewHead::Opaque`.
+    /// compare: `opaque = false` gives the head an `Int(n)` occurrence child,
+    /// `opaque = true` gives it a `Value::OpRef` naming a per-`n` symbol — a
+    /// NATIVE CARRIER, which views as the payload-free `ViewHead::Opaque`.
     ///
-    /// ONE builder for both so the SetLit wrapper is provably the ONLY difference
+    /// ONE builder for both so the carrier swap is provably the ONLY difference
     /// between subject and control. Two hand-written fixtures could drift on
     /// functor arity, named args or child span, and the tests' whole claim is that
     /// nothing else differs.
-    fn wi815_head(functor: Symbol, n: i64, opaque: bool) -> crate::eval::value::Value {
+    ///
+    /// WI-1014 RE-POINTED THIS. The opaque subject used to be `Expr::SetLit`,
+    /// which was opaque BY OMISSION — `occ_head` simply had no arm for it — and
+    /// WI-1014 gave it one, so a set literal now decomposes and these two tests
+    /// would have started failing at their central assert. That is the right
+    /// failure mode and the wrong subject: a test about what happens to a
+    /// payload-free key must not rest on a form that was only waiting for someone
+    /// to write its arm.
+    ///
+    /// THE FIRST REPLACEMENT WAS `Value::OpRef`, AND IT WAS THE SAME MISTAKE —
+    /// recorded rather than quietly swapped, because the reasoning is the point.
+    /// It was justified as "a native carrier, not structural data, the same
+    /// reason `Stream` / `Map` / `Cell` are". But an `OpRef` is not a handle: it
+    /// is `{op: Symbol, dict, named}`, a PURE VALUE carrying a symbol. MEASURED:
+    /// `views_structurally_equal` on one `OpRef` against ITSELF is `false`, and
+    /// two `OpRef`s naming DIFFERENT ops share one `goal_fingerprint` — the exact
+    /// pair of symptoms that made `SetLit` the wrong subject. It is opaque by
+    /// omission too; WI-1018 owns it.
+    ///
+    /// `Value::FactRef` is the subject that actually qualifies, and the argument
+    /// is the type's OWN CONTRACT rather than a claim about its carrier: it is a
+    /// "KB-session-scoped locator" whose doc says it "never exposes a resident
+    /// `RuleId`". A structural view would have to expose exactly what the type
+    /// promises not to, so no future arm can decompose it without changing what
+    /// `FactRef` IS. Two distinct rows are two distinct values a payload-free
+    /// head cannot tell apart, which is the hazard these tests are about.
+    fn wi815_head(kb: &mut KnowledgeBase, functor: Symbol, n: i64, opaque: bool) -> crate::eval::value::Value {
         use crate::kb::node_occurrence::{Expr, NodeOccurrence};
         use crate::kb::term::Literal;
         use crate::span::{SourceId, SourceSpan};
-        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
-        let leaf = NodeOccurrence::new_expr(Expr::Const(Literal::Int(n)), span, None);
         let child = if opaque {
-            NodeOccurrence::new_expr(Expr::SetLit(vec![leaf]), span, None)
+            // Distinct row per `n`: the two subjects differ in a way that is REAL
+            // and that an `Opaque` head cannot report — which is the hazard.
+            crate::eval::value::Value::FactRef(crate::kb::extent::FactRef::resident(
+                RuleId::from_raw(n as u32),
+            ))
         } else {
-            leaf
+            let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+            crate::eval::value::Value::Node(NodeOccurrence::new_expr(
+                Expr::Const(Literal::Int(n)),
+                span,
+                None,
+            ))
         };
         crate::eval::value::Value::Entity {
             functor,
-            pos: Rc::from(vec![crate::eval::value::Value::Node(child)]),
+            pos: Rc::from(vec![child]),
             named: Rc::from(Vec::<(Symbol, crate::eval::value::Value)>::new()),
         }
+    }
+
+    /// An `OpRef` is equal to ITSELF, and two naming different ops are not.
+    ///
+    /// It was not, and the reason is worth keeping: `ViewHead::Opaque` says the
+    /// view has no structure to WALK, and `views_structurally_equal`'s head match
+    /// read that as "no identity at all", falling to `_ => false`. So an
+    /// op-as-value — a pure `{op, dict, named}` value, not an arena handle —
+    /// failed the most basic law equality has.
+    ///
+    /// CONTROL, MEASURED by removing the `(Opaque, Opaque)` arm: the FIRST assert
+    /// fails (`a == a` is false). The `assert!(!…)` pair passes either way BY
+    /// DESIGN — before the arm everything was unequal, so only the positive case
+    /// distinguishes the fix, and the negatives are what stop it from being
+    /// "return true".
+    ///
+    /// The KEY is deliberately NOT asserted equal/distinct here. Two distinct
+    /// `OpRef`s still share a `goal_fingerprint` (the head is payload-free), which
+    /// is safe only because `is_opaque_free()` is false and `value_fact_dedup_key`
+    /// degrades to no-dedup. Giving the head an identity is WI-1018; this test
+    /// pins the equality that was asked for and does not claim the key is fixed.
+    #[test]
+    fn an_opref_is_equal_to_itself() {
+        use crate::eval::value::Value;
+        let mut kb = KnowledgeBase::new();
+        let a = kb.intern("opref_eq_a");
+        let b = kb.intern("opref_eq_b");
+        let mk = |op, named| Value::OpRef { op, dict: None, named };
+
+        assert!(
+            term_view::views_structurally_equal(&kb, &mk(a, None), &mk(a, None)),
+            "an op-as-value is equal to itself",
+        );
+        assert!(
+            !term_view::views_structurally_equal(&kb, &mk(a, None), &mk(b, None)),
+            "two different ops are not equal",
+        );
+        assert!(
+            !term_view::views_structurally_equal(&kb, &mk(a, None), &mk(a, Some(b))),
+            "and the NAMED spec-op half is part of the identity, not ignored",
+        );
+        // Still-unfixed siblings, pinned so the narrowness is visible rather than
+        // assumed: `FactRef` was MEASURED to have the identical defect.
+        let fr = |n: u32| Value::FactRef(crate::kb::extent::FactRef::resident(RuleId::from_raw(n)));
+        assert!(
+            !term_view::views_structurally_equal(&kb, &fr(1), &fr(1)),
+            "a FactRef is STILL not equal to itself — WI-1018, not fixed here",
+        );
     }
 
     /// WI-815 — A LOSSY KEY MUST DEGRADE TO NO DEDUP, NEVER COLLAPSE DISTINCT
@@ -7668,8 +7749,8 @@ mod tests {
         // (1) THE HAZARD, asserted: two DISTINCT heads share one fingerprint,
         //     because the token standing for their differing child is payload-free.
         let sigma = subst::Substitution::new();
-        let h1 = wi815_head(f_sym, 1, true);
-        let h2 = wi815_head(f_sym, 2, true);
+        let h1 = wi815_head(&mut kb, f_sym, 1, true);
+        let h2 = wi815_head(&mut kb, f_sym, 2, true);
         let k1 = term_view::goal_fingerprint(&kb, &h1, &sigma);
         let k2 = term_view::goal_fingerprint(&kb, &h2, &sigma);
         assert_eq!(k1, k2, "an Opaque child erases the difference — this is the hazard");
@@ -7691,12 +7772,18 @@ mod tests {
         //     (2) just as well.
         let g_sym = kb.intern("vg815");
         assert!(
-            kb.value_fact_dedup_key(&wi815_head(g_sym, 1, false)).is_some(),
+            {
+                let h = wi815_head(&mut kb, g_sym, 1, false);
+                kb.value_fact_dedup_key(&h).is_some()
+            },
             "the same head keys fine once its child is payload-bearing",
         );
-        let p1 = kb.assert_fact_value(wi815_head(g_sym, 1, false), kind, domain, None);
-        let p2 = kb.assert_fact_value(wi815_head(g_sym, 1, false), kind, domain, None);
-        let p3 = kb.assert_fact_value(wi815_head(g_sym, 2, false), kind, domain, None);
+        let hg1 = wi815_head(&mut kb, g_sym, 1, false);
+        let hg1b = wi815_head(&mut kb, g_sym, 1, false);
+        let hg2 = wi815_head(&mut kb, g_sym, 2, false);
+        let p1 = kb.assert_fact_value(hg1, kind, domain, None);
+        let p2 = kb.assert_fact_value(hg1b, kind, domain, None);
+        let p3 = kb.assert_fact_value(hg2, kind, domain, None);
         assert_eq!(p1, p2, "identical keyable heads still dedup");
         assert_ne!(p1, p3, "and distinct ones still do not");
     }
@@ -8090,7 +8177,7 @@ mod tests {
             pos_args: SmallVec::from_elem(one, 1),
             named_args: SmallVec::new(),
         });
-        let value_head = wi815_head(f, 1, false);
+        let value_head = wi815_head(&mut kb, f, 1, false);
 
         let r_term = kb.assert_fact_value(Value::Term { id: term_head }, kind, domain, None);
         let r_value = kb.assert_fact_value(value_head, kind, domain, None);
@@ -8103,7 +8190,8 @@ mod tests {
         // …and each still dedups WITHIN its own space, so the split is a split and
         // not a broken index.
         let r_term2 = kb.assert_fact_value(Value::Term { id: term_head }, kind, domain, None);
-        let r_value2 = kb.assert_fact_value(wi815_head(f, 1, false), kind, domain, None);
+        let vh2 = wi815_head(&mut kb, f, 1, false);
+        let r_value2 = kb.assert_fact_value(vh2, kind, domain, None);
         assert_eq!(r_term, r_term2, "Term heads still dedup among themselves");
         assert_eq!(r_value, r_value2, "value heads still dedup among themselves");
     }
@@ -8141,7 +8229,7 @@ mod tests {
         crate::kb::load::register_prelude(&mut kb);
         let f_sym = kb.intern("vf815panic");
         let domain = kb.intern("test");
-        let head = wi815_head(f_sym, 1, true);
+        let head = wi815_head(&mut kb, f_sym, 1, true);
         kb.assert_fact_value(head, ClauseKind::Fact, domain, None);
     }
 

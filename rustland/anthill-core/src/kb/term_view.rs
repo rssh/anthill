@@ -311,6 +311,27 @@ fn list_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.ListLiteral")
 }
 
+/// The `SetLiteral` / `TupleLiteral` functor symbols — WI-1014, the two siblings
+/// [`list_literal_functor`] was left holding alone.
+///
+/// Their term twins are the WI-559 arms of `try_occurrence_to_term`, which build
+/// through the SAME `occ_build_fn` the list literal uses: `{e…}` →
+/// `Fn{SetLiteral, pos_args: e…}` and `(p…, n…)` → `Fn{TupleLiteral, pos_args:
+/// p…, named_args: n…}`. So the heads below are read off the twin, not invented.
+///
+/// (`occ_build_fn` passes positionals through AS positionals. The WI-559 comment
+/// at the tuple arm says its elements "ride in `named_args` (positional →
+/// `_1`/`_2` labels)" — that describes the LOADER's build, not this one, and a
+/// view mirroring the comment instead of the code would have disagreed with the
+/// twin on arity.)
+fn set_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.SetLiteral")
+}
+
+fn tuple_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.TupleLiteral")
+}
+
 // ── Lambda ↔ `lambda_expr` term isomorphism (WI-814) ────────────
 //
 // A `lambda p -> e` occurrence reads byte-identically to the term twin the
@@ -513,7 +534,20 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
 /// standard load.
 fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
     let (qname, keys) = expr_wrapped_shape(expr)?;
-    let f = kb.try_resolve_symbol(qname)?;
+    // WI-1014 Part C — LOUD, not fail-soft. This resolved with `try_resolve_symbol(qname)?`
+    // and fell through to `_ => ViewHead::Opaque`, documented as "fail-soft, as
+    // such a KB holds no loader-built occurrence of it". But `reflect_field_key`,
+    // ONE LAYER DOWN and reached from this very form's `wrapped_expr_keys`,
+    // asserts the SAME invariant and PANICS on it. They cannot both be right: if
+    // the invariant holds, the soft arm is dead code; if it does not, the panic
+    // fires a layer down anyway.
+    //
+    // Degrading was the worse half. `ViewHead::Opaque` is PAYLOAD-FREE, so it does
+    // not lose precision — it makes two structurally DIFFERENT `if`s compare EQUAL
+    // and share a `GoalKey`, turning "reflect not loaded" into wrong answers
+    // instead of an error. That is the silent skip CLAUDE.md forbids, on the path
+    // WI-815 made a soundness surface.
+    let f = reflect_ctor_sym(kb, qname, qname.rsplit('.').next().unwrap_or(qname));
     Some(ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: keys.len() })
 }
 
@@ -522,10 +556,13 @@ fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
 /// [`wrapped_expr_head`] then yields).
 fn wrapped_expr_keys(expr: &Expr, kb: &KnowledgeBase) -> Vec<Symbol> {
     let Some((qname, keys)) = expr_wrapped_shape(expr) else { return Vec::new() };
-    if kb.try_resolve_symbol(qname).is_none() {
-        return Vec::new();
-    }
+    // WI-1014 Part C — the head's twin guard, and it must stay in lockstep with
+    // it: an early `return Vec::new()` here while `wrapped_expr_head` announced
+    // `named_arity: keys.len()` would be the WI-815 shape defect (a head promising
+    // N children and supplying none), so the soft arm was not even self-consistent
+    // with the head it was "consistent with".
     let form = qname.rsplit('.').next().unwrap_or(qname);
+    let _ = reflect_ctor_sym(kb, qname, form);
     keys.iter().map(|k| reflect_field_key(kb, k, form)).collect()
 }
 
@@ -922,6 +959,22 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             Some(f) => functor_view_head(kb, f, es.len(), 0),
             None => ViewHead::Opaque,
         },
+        // WI-1014 Part A — `{e…}` reads as its `SetLiteral(e…)` twin, the same
+        // shape as the list literal one line up.
+        Some(Expr::SetLit(es)) => match set_literal_functor(kb) {
+            Some(f) => functor_view_head(kb, f, es.len(), 0),
+            None => ViewHead::Opaque,
+        },
+        // WI-1014 Part B — `(p…, n…)` reads as its `TupleLiteral(p…, n…)` twin.
+        // The named half is what made this the harder sibling, and the hazard was
+        // never in the HEAD: it was `fingerprint_into` sorting named keys past an
+        // ORDERED PRODUCT's identity (WI-788), which is fixed and pinned by
+        // `wi815_a_named_tuples_component_order_is_its_identity`. With the sort
+        // honouring the exemption, mirroring the twin here adds no key hazard.
+        Some(Expr::TupleLit { positional, named }) => match tuple_literal_functor(kb) {
+            Some(f) => functor_view_head(kb, f, positional.len(), named.len()),
+            None => ViewHead::Opaque,
+        },
         // WHAT IS STILL `Opaque`, AND WHY — each for a NAMED reason, not because
         // the arm is unwritten (WI-814 retired that catch-all reading):
         //
@@ -950,37 +1003,17 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //  - `HoApply` / `RequirementAtSort` / `ConstructRequirement`:
         //    rebuild-only — `visit_fn` materializes them from terms nothing in
         //    the pipeline emits, so again there is no live pair to align.
-        //  - `SetLit` / `TupleLit`: **OWNED BY WI-1014, not a principled
-        //    exclusion** — and the reason this note used to give was wrong, which
-        //    is why it is corrected rather than deleted. It read: "`TupleLit`
-        //    especially is entangled with tuple IDENTITY (WI-788 order, WI-803
-        //    labels, WI-805 distinctness), where a wrong key set is a wrong answer
-        //    about type identity — not a place to guess." But WI-559 already built
-        //    BOTH term twins (`try_occurrence_to_term`), fixing functor, child
-        //    carrier and labels on the term side, so mirroring the twin is what
-        //    REMOVES the guessing — inventing a key set would be guessing, and the
-        //    twin leaves no freedom to. Leaving them `Opaque` is itself the
-        //    cross-carrier disagreement WI-425 forbids: one source `{1}` reads
-        //    `Fn{SetLiteral, [1]}` as a term and `Opaque` as an occurrence, and
-        //    since `views_structurally_equal` has no `(Opaque, Opaque)` arm, a set
-        //    literal is not equal to ITSELF through this carrier.
         //
-        //    A REAL hazard was named alongside this, and it has since been FIXED
-        //    rather than deferred — recorded because the first version of this note
-        //    mis-scoped it. `fingerprint_into` sorted named keys unconditionally,
-        //    while `canonicalize_record_named_args` EXEMPTS an ordered product
-        //    (WI-788: a tuple's component order IS its identity), so two distinct
-        //    tuples produced one key and fact dedup DROPPED one of them. This note
-        //    claimed that was gated behind this `Opaque` arm; it was not — a
-        //    `Value::Entity` whose functor is `TupleLiteral` heads through
-        //    `functor_view_head` and never touches this arm at all, so the defect
-        //    was LIVE. `fingerprint_into` now honours the exemption, and
-        //    `wi815_a_named_tuples_component_order_is_its_identity` pins it. What
-        //    remains for WI-1014 here is only the two view arms themselves.
+        //  (`SetLit` / `TupleLit` were the fourth entry here and are GONE — they
+        //  now read as their WI-559 twins, above. The lesson their absence leaves
+        //  behind: WI-814's other three gaps each got a TICKET NUMBER (WI-819 /
+        //  WI-803 / WI-816) while this one got a JUSTIFICATION — "entangled with
+        //  tuple identity, not a place to guess" — which read as a principled
+        //  exclusion and was not one. WI-559 had already fixed functor, child
+        //  carrier and labels on the term side, so mirroring the twin is what
+        //  REMOVED the guessing. A reason in place of an owner is what kept it off
+        //  every list; WI-1014 was filed to give it one.)
         //
-        //    The lesson recorded for the next reader: WI-814's other three gaps
-        //    each got a TICKET NUMBER (WI-819 / WI-803 / WI-816); this one got a
-        //    justification, which is what kept it off every list.
         _ => ViewHead::Opaque,
     }
 }
@@ -1015,6 +1048,11 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
         // WI-683: a list literal's elements are its positional children, mirroring
         // the `Fn{ListLiteral, pos_args: e…}` term twin.
         Expr::ListLit(es) => es.get(i).map(Rc::clone),
+        // WI-1014: same for the two siblings — a set literal's elements and a
+        // tuple literal's POSITIONAL components are the positional children,
+        // mirroring what `occ_build_fn` puts in `pos_args`.
+        Expr::SetLit(es) => es.get(i).map(Rc::clone),
+        Expr::TupleLit { positional, .. } => positional.get(i).map(Rc::clone),
         _ => None,
     }
 }
@@ -1046,6 +1084,10 @@ fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Opt
         | Expr::Constructor { named_args, .. }
         // WI-520: `Instantiation` reads like `Constructor`.
         | Expr::Instantiation { named_args, .. } => named_args,
+        // WI-1014: a tuple literal's LABELLED components are its named children,
+        // mirroring `occ_build_fn`'s `named_args`. Head arity and this list come
+        // off the same slice, so they cannot disagree.
+        Expr::TupleLit { named, .. } => named,
         _ => return None,
     };
     named.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c))
@@ -1074,7 +1116,10 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::Apply { named_args, .. })
         | Some(Expr::Constructor { named_args, .. })
         // WI-520: `Instantiation` reads like `Constructor`.
-        | Some(Expr::Instantiation { named_args, .. }) => {
+        | Some(Expr::Instantiation { named_args, .. })
+        // WI-1014: the tuple literal's named components, SAME SLICE the head
+        // counted and `occ_named_child` reads.
+        | Some(Expr::TupleLit { named: named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
         }
         // Every reflect-WRAPPED form returned above, from the shape table.
@@ -1422,6 +1467,21 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
                 }
             }
             true
+        }
+        // Two NATIVE-CARRIER values. `Opaque` says the view has no structure to
+        // walk; it does NOT say the value has no identity, and reading it as the
+        // latter is what made an `OpRef` unequal to ITSELF. Delegated to
+        // [`Value::native_carrier_eq`], which today answers only for `OpRef` and
+        // stays `false` elsewhere — see its doc for what is still unexamined.
+        //
+        // Both sides must be `Value`-backed to have a value to compare: a
+        // `TermId`-backed view never heads `Opaque` (`TermIdView::head` has an
+        // arm for every `Term`), so this costs nothing on the term path.
+        (ViewHead::Opaque, ViewHead::Opaque) => {
+            match (a.as_bind_value(), b.as_bind_value()) {
+                (BindValue::Value(va), BindValue::Value(vb)) => va.native_carrier_eq(&vb),
+                _ => false,
+            }
         }
         _ => false,
     }
