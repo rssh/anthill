@@ -30,7 +30,7 @@ namespace anthill.todo
   import anthill.cli.parse.{Binding}
   import anthill.prelude.Option.{Option, none, some}
   import anthill.prelude.Pair.{Pair, pair}
-  import anthill.prelude.Ordered.{lt}
+  import anthill.prelude.Ordered.{lt, lte}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Int64.{to_string}
@@ -1266,6 +1266,52 @@ namespace anthill.todo
               if eq(st, status) then cons(r, rows_with_status(rest, status))
               else rows_with_status(rest, status)
 
+    -- ── Id order is NUMERIC, not lexicographic ────────────────────
+    -- `lt` on a whole id compares code units, so "WI-1000" sits between
+    -- "WI-094" and "WI-102": at id 1000 the four-digit items land in the
+    -- MIDDLE of the listing, and the cursor `chrono_topo` documents as
+    -- advancing chronologically stops doing so. The ids are allocated
+    -- monotonically (`max + 1`, main.rs), so their number IS their age —
+    -- which is what makes numeric order the chronological one.
+    --
+    -- Compared on the trailing DIGIT RUN, leading zeros dropped, by
+    -- (length, then code units) — which IS numeric order once no leading
+    -- zero survives, and needs no string→Int64 parse (`anthill.prelude.
+    -- String` declares none). Zero-padding is why the run must be
+    -- normalised rather than compared as written: ids below 1000 are
+    -- written "WI-094", so a bare length compare would rank "WI-094"
+    -- (3 digits) against "WI-1000" (4) correctly but "WI-0094" against
+    -- "WI-999" backwards.
+    operation id_before(a: String, b: String) -> Bool =
+      let na = id_number(a)
+      let nb = id_number(b)
+      if eq(length(na), length(nb)) then
+        if eq(na, nb) then lt(a, b) else lt(na, nb)
+      else lt(length(na), length(nb))
+
+    -- The trailing run of digits, leading zeros dropped: "WI-010" -> "10",
+    -- "WI-1005" -> "1005", "WI-000" -> "0". An id NOT ending in a digit
+    -- gives "" and so sorts before every numbered one — a defined place
+    -- rather than a trap, and the whole-id tie-break below keeps the order
+    -- total for two of them.
+    operation id_number(s: String) -> String =
+      drop_leading_zeros(substring(s, digit_run_start(s, length(s)), length(s)))
+
+    -- Walk back from `i` while the character before it is a digit.
+    operation digit_run_start(s: String, i: Int64) -> Int64 =
+      if lte(i, 0) then 0
+      else if is_digit(substring(s, i - 1, i)) then digit_run_start(s, i - 1)
+      else i
+
+    operation is_digit(c: String) -> Bool =
+      if lt(c, "0") then false else lte(c, "9")
+
+    -- Keeps the last digit, so "000" is "0" and not "".
+    operation drop_leading_zeros(d: String) -> String =
+      if lte(length(d), 1) then d
+      else if eq(substring(d, 0, 1), "0") then drop_leading_zeros(substring(d, 1, length(d)))
+      else d
+
     -- Stable merge sort by id. Ties retain input order (legacy
     -- slice::sort_by is stable; the data has duplicate WI-169 ids).
     operation merge_by_id(xs: List[Row], ys: List[Row]) -> List[Row] =
@@ -1279,7 +1325,7 @@ namespace anthill.todo
                 case Row(xid, _, _, _, _, _) ->
                   match y
                     case Row(yid, _, _, _, _, _) ->
-                      if lt(yid, xid) then cons(y, merge_by_id(xs, yrest))
+                      if id_before(yid, xid) then cons(y, merge_by_id(xs, yrest))
                       else cons(x, merge_by_id(xrest, ys))
 
     operation sort_by_id(rs: List[Row]) -> List[Row] =
