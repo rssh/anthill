@@ -1405,6 +1405,43 @@ pub enum StructToken {
 pub struct GoalKey(Vec<StructToken>);
 
 impl GoalKey {
+    /// One token's contribution to both predicates below: is it payload-BEARING?
+    ///
+    /// Only `Opaque` is not. Every other token carries what distinguishes it — a
+    /// `Bottom` is a real `⊥` leaf, an `Open` its functor and both arities, a
+    /// `Var` its id, a `Const` its literal — and children are walked, so two keys
+    /// that differ structurally differ token-wise. An `Opaque` (a
+    /// `Map`/`Cell`/`Closure`/`OpRef`/`Relation` carrier, or one of the occurrence
+    /// forms `occ_head` still declines to decompose) is payload-free and not even
+    /// structurally self-comparable — `views_structurally_equal` answers `false`
+    /// for it — so two genuinely distinct views differing only inside an `Opaque`
+    /// child produce ONE key.
+    ///
+    /// One owner so [`Self::is_opaque_free`] and [`Self::is_cacheable`] cannot
+    /// disagree about what "opaque" means, while each still makes a SINGLE pass —
+    /// `is_cacheable` is called once per goal expansion in the SLD loop.
+    fn token_bears_payload(t: &StructToken) -> bool {
+        !matches!(t, StructToken::Opaque)
+    }
+
+    /// No `Opaque` leaf anywhere in the key.
+    ///
+    /// This is what fact-dedup needs (WI-815): dedup DROPS the duplicate, so a key
+    /// two distinct heads share silently discards one of them, and `Opaque` is the
+    /// one token that erases a difference. See
+    /// [`KnowledgeBase::value_fact_dedup_key`], which carries the full argument —
+    /// **including the one known way a key can still under-determine its view**
+    /// (`occ_head`'s `Expr::Apply` arm drops `type_args`). That caveat is why this
+    /// is named for what it CHECKS rather than "is_injective": injectivity is what
+    /// the check is FOR, not a guarantee this predicate can make on its own.
+    ///
+    /// Named for the property rather than a consumer because two consumers need
+    /// different amounts of it — [`Self::is_cacheable`] additionally excludes flex
+    /// vars, which fact-dedup must NOT.
+    pub fn is_opaque_free(&self) -> bool {
+        self.0.iter().all(Self::token_bears_payload)
+    }
+
     /// True when this key may safely index the resolver's per-query cache. Two
     /// conditions, both restoring exactly what the former hash-consed `TermId`
     /// cache key guaranteed:
@@ -1416,20 +1453,16 @@ impl GoalKey {
     ///   *constant* whose identity is baked into the key, so it stays cacheable —
     ///   mirroring [`KnowledgeBase::collect_vars`] (Global-only, DeBruijn/Rigid
     ///   ignored), the predicate the old key used.
-    /// - **No `Opaque` leaf.** A `StructToken::Opaque` (a `Map`/`Cell`/`Closure`/
-    ///   `OpRef`/… carrier — and one may itself hide unbound vars the fingerprint
-    ///   can't see, so it is not truly "ground") is payload-free and not even
-    ///   structurally self-comparable (`views_structurally_equal` is `false` for
-    ///   it), so two genuinely distinct goals differing only inside an `Opaque`
-    ///   child collapse to one key. The old `TermId` key never faced this (a
+    /// - **No `Opaque` leaf** ([`Self::token_bears_payload`]) — one may itself hide
+    ///   unbound vars the fingerprint can't see, so it is not truly "ground", on
+    ///   top of collapsing distinct goals. The old `TermId` key never faced this (a
     ///   `Term` can't hold an `Opaque` child); excluding it restores that immunity
     ///   locally, mirroring the explicit non-`Term`/`Node` guard the answer-dedup
     ///   sibling `is_duplicate_projection` already applies for the same reason.
     pub fn is_cacheable(&self) -> bool {
-        !self.0.iter().any(|t| matches!(
-            t,
-            StructToken::Var(Var::Global(_)) | StructToken::Opaque
-        ))
+        self.0.iter().all(|t| {
+            Self::token_bears_payload(t) && !matches!(t, StructToken::Var(Var::Global(_)))
+        })
     }
 }
 
@@ -1500,7 +1533,11 @@ pub fn goal_fingerprint<V: TermView>(
     view: &V,
     subst: &crate::kb::subst::Substitution,
 ) -> GoalKey {
-    let mut out = Vec::new();
+    // Pre-sized: a `StructToken` is 32 bytes, so an un-sized `Vec` regrows
+    // 4→8→16→32 and a typical goal/head key pays 3–4 mallocs. One 16-slot
+    // allocation covers essentially every key, on both the per-goal resolver path
+    // and WI-815's per-value-fact-assert one.
+    let mut out = Vec::with_capacity(16);
     fingerprint_into(kb, view, subst, &mut out);
     GoalKey(out)
 }

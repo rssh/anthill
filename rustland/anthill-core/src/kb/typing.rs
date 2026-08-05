@@ -2900,8 +2900,10 @@ fn thread_expected_tuple_fields(
 /// interned leaves; a denoted-bearing child (e.g. a lambda body effect `Modify[c]`)
 /// is CARRIED as a poisoned `TypeChild::Node`. Consumers read either through
 /// `TermView` (`arrow_compatible_view` / `subtype_effect_rows` at the op-boundary
-/// return check); a genuine TermId demand recovers identity via `cached_term`
-/// (WI-471). Label order is not load-bearing — row unify/subtype compare label
+/// return check); a genuine TermId demand materializes via `occurrence_to_term`
+/// (WI-815 retired the memoizing `cached_term` wrapper — structural identity is
+/// now a `GoalKey` walk, which needs no term at all). Label order is not
+/// load-bearing — row unify/subtype compare label
 /// sets. `span`/`owner` stamp the occurrences. (WI-342 introduced the Node arm for
 /// poisoned arrows; WI-470 made it the sole arm.)
 fn make_arrow_value(
@@ -2920,8 +2922,8 @@ fn make_arrow_value(
     // `TypeChild::Ground(TermId)` (poison flows up, not down), so a fully-ground
     // arrow is a Node spine over interned leaves; consumers read it through
     // `TermView` (already carrier-agnostic — `unify_*`, `extract_type`,
-    // `decompose_effect_row`), and a genuine TermId demand recovers identity via
-    // `cached_term` (WI-471). Label order is not load-bearing (rows compare as
+    // `decompose_effect_row`), and a genuine TermId demand materializes via
+    // `occurrence_to_term` (WI-815). Label order is not load-bearing (rows compare as
     // sets). The former `if poisoned` ground fast-path is retired: the hash-consed
     // arrow is now a *derived* form, not the primary one.
     let mut row = kb.make_empty_row_occ(span, owner);
@@ -3213,7 +3215,6 @@ fn rewrite_type_occ_deep(
             kind,
             span: occ.span,
             owner: occ.owner,
-            term_cache: std::cell::Cell::new(None),
         }),
         _ => Rc::clone(occ),
     }
@@ -5333,13 +5334,15 @@ fn try_relation_projection_tuple(
     //
     // Two other tools were tried and are the wrong shape; recorded so neither is reached for
     // again:
-    //  - `cached_term` / `occurrence_to_term`: answers a pure question by MUTATING the KB,
-    //    and its cache "owns the single `+1` … and never releases it (pin-for-lifetime)",
-    //    so each comparison pins a term for the KB's life. It is also a GOAL-POSITION
-    //    reifier — an args-bearing `Expr::DotApply` (`r.where(λ)`) takes its
-    //    `debug_assert!(false)` arm and yields `Term::Bottom`, so in RELEASE two DIFFERENT
-    //    computed receivers would both reify to ⊥ and compare EQUAL. (Retiring that reifier
-    //    is WI-815.)
+    //  - `occurrence_to_term` (and the memoizing `cached_term` wrapper it then had):
+    //    answers a pure question by MUTATING the KB, and that cache "owns the single `+1`
+    //    … and never releases it (pin-for-lifetime)", so each comparison pinned a term for
+    //    the KB's life. It is also a GOAL-POSITION reifier — an args-bearing
+    //    `Expr::DotApply` (`r.where(λ)`) takes its `debug_assert!(false)` arm and yields
+    //    `Term::Bottom`, so in RELEASE two DIFFERENT computed receivers would both reify to
+    //    ⊥ and compare EQUAL. WI-815 DELIVERED the half of this that was actionable: the
+    //    wrapper and its cache are gone, and the one caller that wanted structural identity
+    //    (value-fact dedup) reads a `GoalKey` — the same answer this note reached.
     //  - a hand-rolled `for_each_child` walk: a second comparator, diverging on first
     //    contact with a carrier `views_structurally_equal` already handles.
     //
@@ -33659,10 +33662,12 @@ pub struct RequiresEntry {
 /// which needs a `kb`). A ground `Value::Term` keys by its hash-cons `TermId`
 /// (exact, alloc-free). A denoted spec (`Value::Entity` / `Value::Node`) has no
 /// hash-cons id and MUST NOT be keyed by `Debug`: `NodeOccurrence`'s derived
-/// `Debug` prints the interior-mutable `term_cache: Cell<…>` (lazily filled by
-/// `cached_term`) and the `span`, so a live map key's hash would mutate in place
-/// (an unsound `HashMap` key) and structurally-identical specs at different spans
-/// would never collide. Key it instead by ALLOCATION identity — the `Rc` data
+/// `Debug` prints the `span`, so structurally-identical specs at different spans
+/// would never collide. (It also used to print the interior-mutable `term_cache:
+/// Cell<…>`, which made a live map key's hash mutate in place — an unsound
+/// `HashMap` key; WI-815 deleted that field with `cached_term`, so only the span
+/// half of the argument is still live, and it is sufficient on its own.) Key it
+/// instead by ALLOCATION identity — the `Rc` data
 /// pointer(s), stable under interior mutation. Same-`Rc` clones (the requires-chain
 /// caches hand back clones of one allocation) collide correctly; two distinct
 /// allocations key distinctly (a sound false MISS = a recompute, never a false

@@ -512,8 +512,10 @@ struct Frame {
 /// WI-246: reify a goal `Value` to a hash-consed `TermId` — a `Value::Term`
 /// unwraps for free; a `Value::Node` occurrence goal is reified via
 /// `occurrence_to_term`. Used only at genuine term/identity boundaries
-/// (residual, dedup key, external-row handlers, assumed-fact matching), never
-/// for the candidate match itself (which goes through `query_view`).
+/// (residual, external-row handlers, assumed-fact matching), never for the
+/// candidate match itself (which goes through `query_view`). NOT for dedup keys:
+/// WI-348 moved answer-dedup to `GoalKey` and WI-815 moved fact-head dedup there
+/// too, so a consumer wanting structural identity wants `goal_fingerprint`.
 fn reify_goal_value(kb: &mut KnowledgeBase, g: &Value) -> TermId {
     match g {
         Value::Term { id: t, .. } => *t,

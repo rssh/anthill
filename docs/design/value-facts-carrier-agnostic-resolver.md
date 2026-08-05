@@ -369,6 +369,88 @@ carrier-agnostic *storage* layer is not enough — every reader the *resolver* f
 touches per candidate must be carrier-agnostic too, and only a `resolve`-path
 consumer test (not a `query`-path substrate test) exercises that funnel.
 
+## Delivered — value-fact dedup, and the two supersessions of §Indexing
+
+§Indexing and §Retract above say `fact_dedup` **skips** a non-`Value::Term` head
+("a dedup-*miss*, not unsound"). That was the Phase-B decision and it has been
+superseded twice; both are recorded here rather than by editing the plan, so the
+reasoning stays readable in order.
+
+**WI-472 — the miss closed, by materializing.** A `Node`/`Entity` head became
+`fact_dedup`-indexed under a *derived* hash-consed key: `cached_term` (WI-471's
+per-occurrence memo) for a bare `Node`, `value_to_term` for an `Entity`. Two
+structurally-identical value facts then collapsed to one `RuleEntry`, as two
+identical `Term` facts do, because both routes ran through the hash-consing
+`TermStore`. `RuleEntry.dedup_key` stashed the derived key so retract could remove
+the same entry (rid-guarded). The cost was a term the KB could never free: the
+memo owned the `+1` its `alloc` returned and `Drop` cannot reach the store, so
+every deduped value head pinned a term for the KB's lifetime. WI-473 was filed to
+drain that with a deferred-release queue.
+
+**WI-815 — the materialization retired, and the leak dissolved.** The key is now
+the head's carrier-agnostic `GoalKey` (`term_view::goal_fingerprint`), walked
+through `TermView` with `&kb` and no store allocation — the move the resolver's
+`seen_goals` had already made under WI-348. `cached_term`,
+`NodeOccurrence::term_cache`, the `KbId` type and `KnowledgeBase::id` are deleted;
+WI-473 is closed as dissolved, because a `GoalKey` owns no refcount and there is
+nothing to reclaim.
+
+Three consequences worth having written down:
+
+- **The key space is SPLIT.** `fact_dedup` stays `TermId`-keyed for `Value::Term`
+  heads — a hash-consed id already *is* a term's structural identity — and value
+  heads key a separate `value_fact_dedup` on `GoalKey`. Pre-WI-815 they shared one
+  map (the value key having been materialized into it), so a `Term` head and a
+  structurally-identical value head could dedup against each other; they no longer
+  can. Splitting only ever *loses* a dedup — a miss, never a collapse — so it is
+  sound by construction, and it was measured to lose none. Both hit paths were
+  instrumented to record the CARRIER of the entry already sitting at the key, over
+  a full workspace run: **103451** value-head keys (103449 `Entity`, 2 `Node`),
+  **57** dedup hits — every one value-against-value — and **zero** in either cross
+  direction. The same run showed the guards this replaces never firing (0
+  `Bottom`-rejected `Node` keys, 0 un-lowerable `Entity` heads).
+
+  Re-running the same instrumentation on the NEW key gives 103455 / 58 / 3;
+  subtracting WI-815's own three new tests (exactly +4 keys, +1 hit, +3 rejections)
+  leaves **103451 / 57 / 0** — identical to the old key, key for key. That is the
+  "fact-dedup behaviour is otherwise unchanged" clause, as a number.
+
+  The disjointness itself is a RULE, not just a measurement, and is pinned by
+  `wi815_the_two_key_spaces_are_disjoint`.
+- **The lossy-key guard moved from the root to the whole key.** The old rule
+  rejected a key whose ROOT reified to `Term::Bottom`; the new one rejects any key
+  containing a payload-free `Opaque` token (`GoalKey::is_injective`, shared with
+  `is_cacheable`, which is that plus the query cache's own flex-var exclusion).
+  This is the same rule made total: it catches a lossy child nested inside an
+  `Entity` (`value_to_term`'s `Value::Node` arm maps a non-goal child to `Bottom`
+  *without* propagating, so such a head lowered to `Fn{f, [Bottom]}` and passed a
+  root-only check), and it holds in release, where the old path's
+  `debug_assert!(false)` did nothing. `Bottom` itself is no longer rejected — under
+  `TermView` it is a real `⊥` leaf, not a conversion failure.
+- **An `Opaque`-bearing head is unstorable anyway**, and the guard is deliberate
+  defence-in-depth behind that. §Discrimination tree's insert walk panics on a
+  functor-less / `Opaque` head, which fires earlier and louder. The guard stays
+  because the two failure modes are not equivalent: the panic is loud, while a
+  lossy dedup key silently *drops* a fact.
+- **`RuleEntry.dedup_key` is gone with it.** WI-472 stashed the derived key
+  because `cached_term` needed `&mut kb`, which `retract` could not give it at that
+  point; `value_fact_dedup_key` is `&kb`, so `retract` re-derives instead. That is
+  symmetric by construction — a head that got no key recomputes to `None` and
+  removes nothing — and it is not a new assumption, since `remove_ground` in the
+  same function already re-derives the discrim path from the same head through
+  `TermView`. Measured cold before deciding: the whole 4139-test suite performs
+  **five** value-fact retracts against ~103k asserts, all five agreeing with a
+  recompute, so a stash would have paid a `GoalKey` deep clone per *assert* (plus
+  16 bytes on every `RuleEntry`, nearly all `None`) to save five walks.
+
+**One hole the guard does not close, inherited and recorded rather than fixed.**
+`occ_head`'s `Expr::Apply` arm drops `type_args`, so two `Apply`s differing only
+there fingerprint identically with no `Opaque` token — `is_opaque_free` answers
+`true` on a key that is not injective. That is why the predicate is named for what
+it CHECKS. Unreachable while no producer mints a `type_args`-bearing `Apply` at a
+head or goal position; it also affects `seen_goals` and `views_structurally_equal`,
+so it is filed separately as **WI-1013** rather than patched here.
+
 ## References
 
 - `docs/design/entity-term-mapping.md` §1 — the carrier rule (a value element forces `Value`).

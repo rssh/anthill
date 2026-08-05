@@ -7,7 +7,7 @@
 /// bindings are cheap (`Rc::clone`), eval can stash on its frame stack
 /// without lifetime threading, and cross-pass identity is `Rc::ptr_eq`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::intern::Symbol;
@@ -17,7 +17,7 @@ pub use super::occurrence::PassId;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::typing::{get_named_arg, list_to_vec, unwrap_option};
-use super::{KbId, KnowledgeBase};
+use super::KnowledgeBase;
 use crate::eval::value::Value;
 
 // ── Origin ──────────────────────────────────────────────────────
@@ -47,15 +47,6 @@ pub struct NodeOccurrence {
     /// Symbol of the enclosing declaration (operation, rule label, ...).
     /// `None` for top-level / unknown context.
     pub owner: Option<Symbol>,
-    /// WI-471: lazily-materialized, memoized intrinsic term form of this
-    /// occurrence — `(KbId, TermId)`, the `KbId` tagging which store the
-    /// `TermId` belongs to. Set once by [`cached_term`]; σ-independent (reads
-    /// only the immutable structural spine, never the typer's `RefCell`
-    /// annotations), so never invalidated. The cache owns the `+1` `alloc`
-    /// returns and never releases it (pin-for-lifetime; `Drop` cannot reach the
-    /// store), so it is excluded from the structural `Drop` walk — nothing to
-    /// drain. Reclamation (deferred-release queue keyed by the `KbId`) is WI-472.
-    pub(crate) term_cache: Cell<Option<(KbId, TermId)>>,
 }
 
 /// Iterative `Drop` for `NodeOccurrence`. The default Drop walks
@@ -323,7 +314,6 @@ impl NodeOccurrence {
             },
             span,
             owner,
-            term_cache: Cell::new(None),
         })
     }
 
@@ -378,7 +368,6 @@ impl NodeOccurrence {
             },
             span,
             owner,
-            term_cache: Cell::new(None),
         })
     }
 
@@ -398,7 +387,6 @@ impl NodeOccurrence {
             },
             span,
             owner,
-            term_cache: Cell::new(None),
         })
     }
 
@@ -427,7 +415,6 @@ impl NodeOccurrence {
             kind: NodeKind::Pattern { pattern, type_ann },
             span,
             owner,
-            term_cache: Cell::new(None),
         })
     }
 
@@ -438,7 +425,6 @@ impl NodeOccurrence {
             kind: NodeKind::Type(ty),
             span,
             owner,
-            term_cache: Cell::new(None),
         })
     }
 
@@ -452,7 +438,6 @@ impl NodeOccurrence {
             kind: NodeKind::EffectExpr(expr),
             span,
             owner,
-            term_cache: Cell::new(None),
         })
     }
 
@@ -2423,45 +2408,15 @@ fn collect_type_args_vars(
     }
 }
 
-/// WI-471: the occurrence's intrinsic structural term form, materialized on
-/// demand and memoized in `occ.term_cache`. Because `alloc` hash-conses, two
-/// structurally-identical occurrences yield the SAME `TermId` — recovering
-/// hash-cons identity for a `Node` without making it term-backed (the
-/// drift-proof alternative to a separate structural fingerprint: it routes
-/// through the one `Term` `Eq`/`Hash`, adding no second definition of
-/// structural equality).
-///
-/// **Ownership: the returned `TermId` is BORROWED.** The cache owns the single
-/// `+1` the final `alloc` returns and never releases it (pin-for-lifetime;
-/// `Drop` cannot reach the store), so the term lives until KB teardown. Callers
-/// must NOT `release` the result — unlike [`occurrence_to_term`], whose result
-/// is *owned* — because releasing it would drop the cache's only refcount and
-/// dangle the memoized id. The stamped `KbId` lets a future deferred-release
-/// queue (WI-472) reclaim it.
-///
-/// Reads only the immutable structural spine (never the typer's `RefCell`
-/// annotations), so the result is stable for the occurrence's life — set once,
-/// never invalidated. Only the ROOT occurrence is memoized; children are
-/// re-materialized by `occurrence_to_term` on each miss (their own `term_cache`
-/// is untouched here). Takes `&Rc<NodeOccurrence>` (like [`occurrence_to_term`]);
-/// a caller holding an occurrence reachable from `kb` clones the `Rc` out first
-/// to avoid the `&mut kb` / `&occ` borrow clash.
-pub fn cached_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> TermId {
-    // A hit is valid only for the KB that stamped it — a `TermId` indexes one
-    // `TermStore`. Same KB → return the memoized id. A foreign stamp (the same
-    // occurrence read against a different KB; rare, occurrences are normally
-    // single-KB) is re-materialized against THIS store and re-stamped — never
-    // returned blindly (that would index the wrong store). The prior store's
-    // `+1` stays pinned there, reclaimed at its own teardown.
-    if let Some((id, t)) = occ.term_cache.get() {
-        if id == kb.id {
-            return t;
-        }
-    }
-    let t = occurrence_to_term(kb, occ);
-    occ.term_cache.set(Some((kb.id, t)));
-    t
-}
+// WI-815 deleted WI-471's `cached_term`, the `NodeOccurrence::term_cache` it
+// memoized into, and the `KbId` / `KnowledgeBase::id` stamp that existed only to
+// keep a memoized `TermId` from being read against the wrong store. This is the
+// only surviving mention of that chain: WI-471 built the cache, WI-472 keyed
+// value-fact dedup off it, WI-473 was filed to drain the term-store `+1` it
+// pinned but could never release, and WI-815 removed the need for all three by
+// making the one caller (`KnowledgeBase::value_fact_dedup_key`) key on a
+// `GoalKey` fingerprint instead — see that function, and
+// `docs/design/value-facts-carrier-agnostic-resolver.md` §Delivered.
 
 /// WI-246: reify a rule-body-atom occurrence to a hash-consed `TermId` — the
 /// reverse of [`materialize_from_handle`]. Used ONLY at genuine term/identity
@@ -2506,6 +2461,16 @@ pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> T
 /// so this path requires a prelude-loaded KB; the existing in-tree
 /// callers — `occurrence_term` builtins in resolve.rs and the typer —
 /// always run on such a KB.)
+///
+/// **DO NOT "FINISH" THE `None` ARMS** (the args-bearing `DotApply`, `Match` /
+/// `If` / `Let` / `Lambda`, `SetLit` / `TupleLit`, the `*Within` family). Each
+/// `None` is the back-pressure that keeps a CONSUMER carrier-neutral; widening
+/// the reifier relieves it and re-entrenches the conversion the standing reify
+/// audit is removing. Every step of that audit — WI-348, WI-482, WI-621, WI-678,
+/// WI-692, and WI-815, which deleted this function's memoizing `cached_term`
+/// wrapper — removed a CALLER instead. A consumer that wants structural identity
+/// wants `term_view::goal_fingerprint`, which reads any carrier and allocates
+/// nothing; this function is for genuine `TermId` demands only.
 pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
     if let NodeKind::Pattern { .. } = &occ.kind {
         return Some(pattern_to_term(kb, occ));
@@ -2729,7 +2694,7 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             let e = type_child_to_term(kb, effects);
             // WI-791: the arity child crosses to the term twin as-is (a ground
             // `Const(Int)`), so the two carriers stay structurally identical —
-            // `cached_term` identity and discrim keys both depend on that.
+            // `GoalKey` identity and discrim keys both depend on that.
             let a = type_child_to_term(kb, arity);
             kb.make_arrow_from_effects_rows_arity_term(p, r, e, a)
         }
@@ -5299,14 +5264,23 @@ mod tests {
         assert_eq!(*vid, v0, "type_args DeBruijn(0) must open to fresh Global(v0)");
     }
 
+    /// WI-815 — the identity property `wi471_cached_term_recovers_hash_cons_identity`
+    /// used to pin, now pinned on the mechanism that replaced `cached_term`.
+    ///
+    /// The old test asserted four things; two were about the CACHE and died with
+    /// it (set-once/idempotent, and the `KbId` guard that kept a memoized `TermId`
+    /// from being read against a foreign `TermStore` — a hazard a `GoalKey` cannot
+    /// have, since it references no store). The two that were about IDENTITY are
+    /// the ones the value-fact dedup key actually needs, and they are kept here:
+    /// same structure ⇒ same key, different structure ⇒ different key.
+    ///
+    /// This is also the CONTROL for the claim that the fingerprint is not a
+    /// constant-returning stub — case (2) fails against one.
     #[test]
-    fn wi471_cached_term_recovers_hash_cons_identity() {
-        // WI-471: cached_term materializes (through the hash-consing TermStore)
-        // and memoizes an occurrence's intrinsic term form. Verifies (1) two
-        // distinct occurrences of the SAME structure → the SAME TermId; (2) a
-        // DIFFERENT structure → a DIFFERENT TermId; (3) set-once / KbId-stamped /
-        // idempotent; (4) a read against a FOREIGN KB re-materializes + re-stamps
-        // (the KbId guard) rather than returning a TermId from the wrong store.
+    fn wi815_goal_key_recovers_structural_identity_without_a_store() {
+        use crate::kb::subst::Substitution;
+        use crate::kb::term_view::goal_fingerprint;
+
         let mut kb = KnowledgeBase::new();
         let f = kb.intern("f");
         let span = make_span();
@@ -5326,34 +5300,33 @@ mod tests {
         let o1 = build(42);
         let o2 = build(42);
         assert!(!std::rc::Rc::ptr_eq(&o1, &o2), "distinct Rc allocations");
-        assert!(o1.term_cache.get().is_none(), "cache starts empty");
 
-        // (1) identical structure → identical hash-consed TermId.
-        let t1 = cached_term(&mut kb, &o1);
-        let t2 = cached_term(&mut kb, &o2);
-        assert_eq!(t1, t2, "structurally-identical occurrences share one TermId");
+        let sigma = Substitution::new();
+        let key = |o: &Rc<NodeOccurrence>| {
+            goal_fingerprint(&kb, &crate::eval::value::Value::Node(Rc::clone(o)), &sigma)
+        };
 
-        // (2) different structure → different TermId (a constant-returning stub
-        // would fail here).
+        // (1) identical structure → identical key, across distinct `Rc`s.
+        assert_eq!(key(&o1), key(&o2), "structurally-identical occurrences share one key");
+
+        // (2) different structure → different key.
         let o3 = build(43);
-        assert_ne!(cached_term(&mut kb, &o3), t1, "f(43) must not collide with f(42)");
+        assert_ne!(key(&o3), key(&o1), "f(43) must not collide with f(42)");
 
-        // (3) memoized: populated, stamped with this KB's id, idempotent.
-        let cached = o1.term_cache.get().expect("cache populated after demand");
-        assert_eq!(cached.1, t1, "cache holds the materialized TermId");
-        assert_eq!(cached.0, kb.id, "cache stamped with this KB's id");
-        assert_eq!(cached_term(&mut kb, &o1), t1, "second demand is idempotent");
-
-        // (4) KbId guard: reading o1 against a FOREIGN KB re-materializes against
-        // that store and re-stamps — it must NOT return kb's TermId blindly.
-        let mut kb2 = KnowledgeBase::new();
-        assert_ne!(kb.id, kb2.id, "distinct KBs get distinct ids");
-        let t_in_kb2 = cached_term(&mut kb2, &o1);
-        assert_eq!(o1.term_cache.get().unwrap().0, kb2.id, "re-stamped for the foreign KB");
+        // (3) both keys are usable AS keys — injective, so `value_fact_dedup_key`
+        //     admits them rather than degrading to no-dedup.
         assert!(
-            matches!(kb2.get_term(t_in_kb2), Term::Fn { .. }),
-            "returned id is a live term in kb2's store",
+            key(&o1).is_opaque_free(),
+            "a goal-shaped occurrence's key carries a payload at every leaf, so \
+             `value_fact_dedup_key` may use it",
         );
+
+        // (4) and no term was allocated to answer any of it: the whole point of
+        //     retiring `cached_term` is that the question needs `&kb`, not `&mut kb`
+        //     and not a `+1` pinned for the KB's lifetime.
+        let before = kb.terms.len();
+        let _ = key(&o1);
+        assert_eq!(kb.terms.len(), before, "fingerprinting allocates nothing in the store");
     }
 
     #[test]
