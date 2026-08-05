@@ -1482,9 +1482,10 @@ private class AnthillParserImpl(
     )).map { case (sym, span) => OpToken(sym, span) }
 
   // WI-957: `ListLiteral` / `SetLiteral` / `TupleLiteral` / `forall_impl` are names
-  // the loader RESOLVES (they are not in `convertExprTerm`'s by-name dispatch, so they
-  // reach `resolveName` like a written call), which means each must be located. The
-  // span is the OPENING BRACKET — the token that decided which literal this is.
+  // the loader RESOLVES — they reach `resolveName` like a written call — which means
+  // each must be located. The span is the OPENING BRACKET — the token that decided
+  // which literal this is. (`typed_var` is the only shape `reallocTerm` intercepts
+  // before resolution — WI-1007.)
   private def collectionLiteral[$: P]: P[TermId] =
     // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
     // surface; list destructuring uses the explicit `cons(?h, ?t)` constructor.
@@ -1718,8 +1719,9 @@ private class AnthillParserImpl(
 
   private def patternConstructor[$: P]: P[TermId] =
     P(name ~ "(" ~ pattern.rep(sep = ",") ~ ")").map { case (n, pats) =>
-      // WI-957: the constructor name is resolved by `loadPatternConstructor`, so it
-      // carries the span a `case nosuchctor(…)` diagnostic points at.
+      // WI-957: the constructor name is RESOLVED (`reallocTerm`'s `Term.Ident` arm hands
+      // it to `resolveName` like a written call), so it carries the span a `case
+      // nosuchctor(…)` diagnostic points at.
       val nameTerm = terms.allocAt(Term.Ident(n.last), n.span)
       terms.allocAt(Term.Fn(intern("pattern_constructor"),
         IArray(nameTerm) ++ IArray.from(pats), IArray.empty), n.span)

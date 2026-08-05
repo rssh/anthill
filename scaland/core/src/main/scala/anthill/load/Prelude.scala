@@ -133,13 +133,33 @@ object Prelude:
     def defineReflectEntity(shortName: String): TermSymbol =
       defineIn(kb, reflectScope, shortName, SymbolKind.Entity)
 
-    // anthill.reflect.Expr sort + entities
+    // WI-1009 — THIS BLOCK HAS NO PRODUCER, and four of its names are worse than unused.
+    //
+    // These are the REFLECT ENTITIES (the spec vocabulary — `stdlib/anthill/reflect/
+    // reflect.anthill` declares the same `var_pattern` / `wildcard` / `MatchBranch`).
+    // They are the TARGET of a translation from the parser's PARSE-TIME MARKERS
+    // (`pattern_var`, `pattern_wildcard`, `match_branch`, …), which are a deliberately
+    // different set of names — rustland's `convert_expr_term` is that translation.
+    // Scaland's copy of it was dead and WI-1007 deleted it, so nothing here has a
+    // producer: this is the target vocabulary of a translation scaland does not perform.
+    //
+    // The four spellings the two layers happen to SHARE — `match_expr` / `if_expr` /
+    // `let_expr` / `lambda_expr` — are the hazard, not the healthy part. A marker in a
+    // rule body reaches `reallocTerm`, which resolves every functor by name, so the
+    // MARKER captures the ENTITY symbol. MEASURED, loading `rule r(?x) :- p(lambda s -> s)`:
+    //     Fn p                                   [bare intern]
+    //       Fn anthill.reflect.Expr.lambda_expr  [RESOLVED  <- the marker, captured]
+    //         Fn pattern_var                     [bare intern — no entity to capture]
+    // So a KB term now carries an Entity symbol applied POSITIONALLY to (pattern, body),
+    // which is not that entity's declared shape (`lambda_expr(param:, body:)`), and the
+    // sibling marker one line down escapes as an undeclared predicate with no diagnostic.
+    // Whether a marker is captured or leaks is decided by nothing but a spelling
+    // coincidence. Do not read this list as names that resolve correctly — WI-1009.
     val exprScope = defineSort("Expr", reflectScope)
     for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda_expr", "apply",
       "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do
       defineEntity(name, exprScope)
 
-    // anthill.reflect.Pattern sort + entities
     val patternScope = defineSort("Pattern", reflectScope)
     for name <- IndexedSeq("var_pattern", "tuple_pattern", "named_tuple_pattern",
       "constructor_pattern", "literal_pattern", "wildcard") do

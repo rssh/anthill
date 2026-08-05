@@ -174,7 +174,15 @@ object Loader:
       enclosing: kb.ScopeId
     ): Option[kb.ScopeId]
 
-    /** Every item that does not open a scope, with the scope and prefix enclosing it. */
+    /** Every item that does not open a scope, with the scope and prefix enclosing it.
+      *
+      * WI-1007: [[LoadPass]]'s implementation is EXHAUSTIVE and the other three end in a
+      * catch-all, which is a decision and not drift. `LoadPass` is the pass whose job is
+      * "everything that reaches the KB reaches it here", so an `Item` kind it does not
+      * name is data loss — that is how `ConstraintItem` was found being dropped in
+      * silence. The other three are narrow scans (`DefinePass` defines names,
+      * `ImportPass` handles imports, `RuleHeadPass` handles 2 of 23 kinds), where a
+      * catch-all says "not my job" honestly and enumerating would be 18 arms of noise. */
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit
 
   /** Walk a whole file for one pass, from the scope its top-level declarations land in.
@@ -331,9 +339,9 @@ object Loader:
         case Item.ConstItem(c) =>
           // Proposal 039 / WI-084: define the constant's symbol (pass 1, like
           // operations). Monomorphic + carrier-independent — no params or
-          // type-params to scan. scaland records only the symbol; the declared
-          // type + optional body are not loaded (no typer/eval to consume them),
-          // mirroring how operation bodies/effects are left inert here.
+          // type-params to scan. The symbol is ALL that is recorded; why the declared
+          // type and the value are not is stated once, at the seam they would enter —
+          // `LoadPass.atItem`'s WI-1007 arm.
           val (shortName, qualName, target) = declSite(kb, fileSym, c.name.segments, prefix, scope)
           defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, target)
 
@@ -916,7 +924,58 @@ object Loader:
         case Item.ProvidesBlockItem(pb) =>
           loadProvidesBlock(kb, pb, fileTerms, fileSym, scope, errors)
 
-        case _ => // Other items
+        // WI-1007: THE seam an operation BODY / const VALUE would enter the KB at.
+        // Both are parsed (`Operation.body`, `Const.value`) and both are deliberately
+        // dropped: scaland has no typer and no evaluator to consume them, and the KB has
+        // no slot to hold them — rustland stores the body as an occurrence
+        // (`set_op_body_node`, called from its `convert_expr_term`) and scaland has no
+        // peer for either side. Pass 1 already took what IS loaded: the symbol.
+        //
+        // Dropped, NOT refused. A refusal here is what this arm would otherwise be — the
+        // repo prefers a loud error to a silent skip — but it cannot be one: 72 of the
+        // stdlib's 319 operations carry a body, so an error would stop scaland loading
+        // its own stdlib. (Counted through the PARSER, not by grep — `Operation.body
+        // .isDefined` over every `Item` of every `EmbeddedStdlib.stdlibPaths` file,
+        // braced `operation { … }` entries included; `list.anthill` alone has 18.) The
+        // limitation is whole-implementation, not per-site, so it is pinned by a test
+        // that DRIVES it (`LoaderTest`, "WI-1007": the symbol is defined, and a goal
+        // calling the operation has no clause) rather than reported per declaration.
+        //
+        // WI-1007 deleted the ~250-line Expr/Pattern conversion cluster that hung off
+        // this decision: ported ahead of any consumer in 03415ce1 and never once called,
+        // because the caller it was written for is this arm and this arm never grew one.
+        // Wire bodies in HERE, and restore the conversion from that commit, when scaland
+        // grows something that reads them.
+        case Item.OperationItem(_) | Item.OperationBlockItem(_) | Item.ConstItem(_) =>
+
+        // WI-1007: `constraint` is PARSED and dropped, and unlike the body above that is
+        // not a decision anyone has made — it fell through the `case _` this arm's
+        // enumeration replaced. `Item.ConstraintItem` has exactly one mention in the main
+        // tree, the parser production that builds it: no pass reads it, so an integrity
+        // guard a user writes is accepted and vanishes. Named here so the gap is visible
+        // rather than silent; loading it is its own work.
+        case Item.ConstraintItem(_) =>
+
+        // Consumed by an EARLIER pass, so phase 2 has nothing left to do with them:
+        // `AbstractSortItem` and `RequiresDeclItem` by `DefinePass`, `ImportItem` by
+        // `ImportPass`. Listed rather than defaulted so "already handled" and "not
+        // handled at all" stay different answers.
+        case Item.AbstractSortItem(_) | Item.RequiresDeclItem(_) | Item.ImportItem(_) =>
+
+        // The todo-domain IR (`anthill-todo`'s work items, tools, feedback). scaland's
+        // parser has NO production for any of these — they are `Item` shapes ported ahead
+        // of the parser that would build them, so nothing can reach this arm today.
+        case Item.DescribeItem(_) | Item.ProjectItem(_) | Item.ToolItem(_)
+           | Item.WorkItemItem(_) | Item.FeedbackItem(_) | Item.ImportToolsItem(_) =>
+
+        // Unreachable BY CONSTRUCTION: `walkScopes` routes the two scope-opening shapes
+        // to `enterScope` and only everything else to `atItem`. Loud rather than silent,
+        // because reaching it means that routing changed and a whole subtree is being
+        // loaded as a leaf.
+        case Item.NamespaceItem(_) | Item.SortWithBodyItem(_) =>
+          errors += LoadError.Other(
+            "internal: a scope-opening item reached LoadPass.atItem; walkScopes routes " +
+            "those to enterScope", Span.empty)
 
   /** Load a rule under the proposal-032 grammar. `rule.heads` may be a single
     * positive head, multiple positive heads (conjunctive sugar), or a single
@@ -1238,256 +1297,3 @@ object Loader:
   // would turn into a leading dot.
   private[load] def makeQualified(prefix: String, name: String): String =
     if prefix.isEmpty then name else s"$prefix.$name"
-
-  // ── List / Option builders ────────────────────────────────────
-
-  private def buildList(kb: KnowledgeBase, items: IndexedSeq[TermId]): TermId =
-    val nilSym = kb.tryResolveSymbol("anthill.prelude.List.nil").getOrElse(kb.intern("nil"))
-    val consSym = kb.tryResolveSymbol("anthill.prelude.List.cons").getOrElse(kb.intern("cons"))
-    val headKey = kb.intern("head")
-    val tailKey = kb.intern("tail")
-    var list = kb.alloc(Term.Fn(nilSym, IArray.empty, IArray.empty))
-    var i = items.length - 1
-    while i >= 0 do
-      list = kb.alloc(Term.Fn(consSym, IArray.empty, IArray((headKey, items(i)), (tailKey, list))))
-      i -= 1
-    list
-
-  private def buildNone(kb: KnowledgeBase): TermId =
-    val noneSym = kb.tryResolveSymbol("anthill.prelude.Option.none").getOrElse(kb.intern("none"))
-    kb.alloc(Term.Fn(noneSym, IArray.empty, IArray.empty))
-
-  private def buildSome(kb: KnowledgeBase, value: TermId): TermId =
-    val someSym = kb.tryResolveSymbol("anthill.prelude.Option.some").getOrElse(kb.intern("some"))
-    val valueKey = kb.intern("value")
-    kb.alloc(Term.Fn(someSym, IArray.empty, IArray((valueKey, value))))
-
-  // ── Expression conversion ─────────────────────────────────────
-
-  /** Convert a parse-time expression term into the KB's Expr representation.
-    * Dispatches on functor name to restructure positional args into named args.
-    */
-  private def convertExprTerm(
-    kb: KnowledgeBase, fileTerms: SimpleTermStore, fileSym: SymbolTable,
-    parseId: TermId, scope: kb.ScopeId, errors: ArrayBuffer[LoadError],
-    varMap: HashMap[Int, VarId]
-  ): TermId =
-    fileTerms.get(parseId) match
-      case fn: Term.Fn =>
-        val name = fileSym.name(fn.functor)
-        name match
-          case "match_expr" => loadMatchExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "match_branch" => loadMatchBranch(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "if_expr" => loadIfExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "let_expr" => loadLetExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "lambda_expr" => loadLambdaExpr(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "pattern_var" => loadPatternVar(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "pattern_wildcard" => loadPatternWildcard(kb)
-          case "pattern_literal" => loadPatternLiteral(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "pattern_constructor" => loadPatternConstructor(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          case "pattern_tuple" => loadPatternTuple(kb, fileTerms, fileSym, fn.posArgs, scope, errors, varMap)
-          // WI-582: strip a `typed_var(?x, type: T)` marker back to the bare `?x`
-          // here too (a typed arg in an expression body), matching `reallocTerm`.
-          // Guarded on the exact marker shape (name + 1 pos + `type` named) — a
-          // non-marker `typed_var` falls through to `loadApplyOrConstructor`.
-          case "typed_var" if isTypedVarMarker(fn, fileSym) =>
-            exprRec(Ctx(kb, fileTerms, fileSym, scope, errors, varMap), fn.posArgs(0))
-          case _ => loadApplyOrConstructor(kb, fileTerms, fileSym, fn.functor, fileTerms.spanOf(parseId),
-                                           fn.posArgs, fn.namedArgs, scope, errors, varMap)
-      case Term.Const(_) => loadLiteralExpr(kb, fileTerms, fileSym, parseId, scope, errors, varMap)
-      case Term.Ident(_) => loadVarRef(kb, fileTerms, fileSym, parseId, scope, errors, varMap)
-      case _ => reallocTerm(kb, fileTerms, fileSym, parseId, scope, errors, varMap)
-
-  /** Shorthand for the recursive call's parameters.
-    *
-    * A CLASS and not the 6-tuple it was (WI-1004): `scope` is a `kb.ScopeId`, which is a
-    * type only where `kb` is a stable identifier, and a tuple's components have no names
-    * for the others to depend on. One parameter list, not two: a class parameter is
-    * already a stable identifier for the parameters that FOLLOW it in the same list. */
-  private final class Ctx(
-    val kb: KnowledgeBase, val fileTerms: SimpleTermStore, val fileSym: SymbolTable,
-    val scope: kb.ScopeId, val errors: ArrayBuffer[LoadError], val vm: HashMap[Int, VarId])
-
-  private def exprRec(ctx: Ctx, parseId: TermId): TermId =
-    convertExprTerm(ctx.kb, ctx.fileTerms, ctx.fileSym, parseId, ctx.scope, ctx.errors, ctx.vm)
-
-  private def loadMatchExpr(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val scrutinee = exprRec(ctx, posArgs(0))
-    val branches = IArray.tabulate(posArgs.length - 1)(i => exprRec(ctx, posArgs(i + 1)))
-    val branchList = buildList(kb, branches.toIndexedSeq)
-    val matchSym = kb.resolveSymbol("anthill.reflect.Expr.match_expr")
-    kb.alloc(Term.Fn(matchSym, IArray.empty,
-      IArray((kb.intern("scrutinee"), scrutinee), (kb.intern("branches"), branchList))))
-
-  private def loadMatchBranch(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val pattern = exprRec(ctx, posArgs(0))
-    val body = exprRec(ctx, posArgs(1))
-    val guard = buildNone(kb)
-    val branchSym = kb.resolveSymbol("anthill.reflect.MatchBranch")
-    kb.alloc(Term.Fn(branchSym, IArray.empty,
-      IArray((kb.intern("pattern"), pattern), (kb.intern("guard"), guard), (kb.intern("body"), body))))
-
-  private def loadIfExpr(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val cond = exprRec(ctx, posArgs(0))
-    val thenBranch = exprRec(ctx, posArgs(1))
-    val elseBranch = exprRec(ctx, posArgs(2))
-    val ifSym = kb.resolveSymbol("anthill.reflect.Expr.if_expr")
-    kb.alloc(Term.Fn(ifSym, IArray.empty,
-      IArray((kb.intern("cond"), cond), (kb.intern("then_branch"), thenBranch), (kb.intern("else_branch"), elseBranch))))
-
-  private def loadLetExpr(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val pattern = exprRec(ctx, posArgs(0))
-    val value = exprRec(ctx, posArgs(1))
-    val body = exprRec(ctx, posArgs(2))
-    val letSym = kb.resolveSymbol("anthill.reflect.Expr.let_expr")
-    kb.alloc(Term.Fn(letSym, IArray.empty,
-      IArray((kb.intern("pattern"), pattern), (kb.intern("value"), value), (kb.intern("body"), body))))
-
-  private def loadLambdaExpr(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val param = exprRec(ctx, posArgs(0))
-    val body = exprRec(ctx, posArgs(1))
-    val lambdaSym = kb.resolveSymbol("anthill.reflect.Expr.lambda_expr")
-    kb.alloc(Term.Fn(lambdaSym, IArray.empty,
-      IArray((kb.intern("param"), param), (kb.intern("body"), body))))
-
-  private def loadVarRef(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    parseId: TermId, scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val nameRef = ft.get(parseId) match
-      case Term.Ident(sym) =>
-        val kbSym = kb.intern(fs.name(sym))
-        kb.alloc(Term.Ref(kbSym))
-      case _ => reallocTerm(kb, ft, fs, parseId, scope, errors, vm)
-    val varRefSym = kb.resolveSymbol("anthill.reflect.Expr.var_ref")
-    kb.alloc(Term.Fn(varRefSym, IArray.empty, IArray((kb.intern("name"), nameRef))))
-
-  private def loadLiteralExpr(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    parseId: TermId, scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    ft.get(parseId) match
-      case Term.Const(lit) =>
-        val (entityName, valueTerm) = lit match
-          case Literal.IntLit(n) => ("anthill.reflect.Expr.int_lit", kb.alloc(Term.Const(Literal.IntLit(n))))
-          case Literal.BigIntLit(n) => ("anthill.reflect.Expr.bigint_lit", kb.alloc(Term.Const(Literal.BigIntLit(n))))
-          case Literal.FloatLit(f) => ("anthill.reflect.Expr.float_lit", kb.alloc(Term.Const(Literal.FloatLit(f))))
-          case Literal.StringLit(s) => ("anthill.reflect.Expr.string_lit", kb.alloc(Term.Const(Literal.StringLit(s))))
-          case Literal.BoolLit(b) => ("anthill.reflect.Expr.bool_lit", kb.alloc(Term.Const(Literal.BoolLit(b))))
-        val entitySym = kb.resolveSymbol(entityName)
-        kb.alloc(Term.Fn(entitySym, IArray.empty, IArray((kb.intern("value"), valueTerm))))
-      case _ => reallocTerm(kb, ft, fs, parseId, scope, errors, vm)
-
-  private def loadApplyOrConstructor(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    parseFunctor: TermSymbol, functorSpan: Span,
-    posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)],
-    scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope, errors, functorSpan)
-    val isEntity = kb.symbols.get(kbFunctor) match
-      case SymbolDef.Resolved(_, _, SymbolKind.Entity, _) => true
-      case _ => false
-
-    val applyArgSym = kb.resolveSymbol("anthill.reflect.ApplyArg")
-    val argNameKey = kb.intern("name")
-    val argValueKey = kb.intern("value")
-
-    val argTerms = scala.collection.mutable.ArrayBuffer.empty[TermId]
-    for tid <- posArgs do
-      val value = exprRec(ctx, tid)
-      val none = buildNone(kb)
-      argTerms += kb.alloc(Term.Fn(applyArgSym, IArray.empty,
-        IArray((argNameKey, none), (argValueKey, value))))
-    for (sym, tid) <- namedArgs do
-      val value = exprRec(ctx, tid)
-      val nameRef = kb.alloc(Term.Ref(kb.intern(fs.name(sym))))
-      val someName = buildSome(kb, nameRef)
-      argTerms += kb.alloc(Term.Fn(applyArgSym, IArray.empty,
-        IArray((argNameKey, someName), (argValueKey, value))))
-    val argsList = buildList(kb, argTerms.toIndexedSeq)
-    val nameRef = kb.alloc(Term.Ref(kbFunctor))
-
-    if isEntity then
-      val ctorSym = kb.resolveSymbol("anthill.reflect.Expr.constructor")
-      kb.alloc(Term.Fn(ctorSym, IArray.empty,
-        IArray((kb.intern("name"), nameRef), (kb.intern("args"), argsList))))
-    else
-      val applySym = kb.resolveSymbol("anthill.reflect.Expr.apply")
-      kb.alloc(Term.Fn(applySym, IArray.empty,
-        IArray((kb.intern("fn"), nameRef), (kb.intern("args"), argsList))))
-
-  // ── Pattern conversion ───────────────────────────────────────
-
-  private def loadPatternVar(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val nameRef = ft.get(posArgs(0)) match
-      case Term.Ident(sym) =>
-        val kbSym = kb.intern(fs.name(sym))
-        kb.alloc(Term.Ref(kbSym))
-      case _ => reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
-    val typeAnn = buildNone(kb)
-    val varPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.var_pattern")
-    kb.alloc(Term.Fn(varPatternSym, IArray.empty,
-      IArray((kb.intern("name"), nameRef), (kb.intern("type_ann"), typeAnn))))
-
-  private def loadPatternWildcard(kb: KnowledgeBase): TermId =
-    val wildcardSym = kb.resolveSymbol("anthill.reflect.Pattern.wildcard")
-    kb.alloc(Term.Fn(wildcardSym, IArray.empty, IArray.empty))
-
-  private def loadPatternLiteral(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val value = reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
-    val litPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.literal_pattern")
-    kb.alloc(Term.Fn(litPatternSym, IArray.empty, IArray((kb.intern("value"), value))))
-
-  private def loadPatternConstructor(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val nameRef = ft.get(posArgs(0)) match
-      case Term.Ident(sym) =>
-        val kbSym = resolveName(kb, fs.name(sym), scope, errors, ft.spanOf(posArgs(0)))
-        kb.alloc(Term.Ref(kbSym))
-      case _ => reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
-    val subPatterns = IArray.tabulate(posArgs.length - 1)(i => exprRec(ctx, posArgs(i + 1)))
-    val argsList = buildList(kb, subPatterns.toIndexedSeq)
-    val ctorPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.constructor_pattern")
-    kb.alloc(Term.Fn(ctorPatternSym, IArray.empty,
-      IArray((kb.intern("name"), nameRef), (kb.intern("args"), argsList))))
-
-  private def loadPatternTuple(
-    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
-    posArgs: IArray[TermId], scope: kb.ScopeId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
-  ): TermId =
-    val ctx = Ctx(kb, ft, fs, scope, errors, vm)
-    val elements = IArray.tabulate(posArgs.length)(i => exprRec(ctx, posArgs(i)))
-    val elementsList = buildList(kb, elements.toIndexedSeq)
-    val tuplePatternSym = kb.resolveSymbol("anthill.reflect.Pattern.tuple_pattern")
-    kb.alloc(Term.Fn(tuplePatternSym, IArray.empty, IArray((kb.intern("elements"), elementsList))))

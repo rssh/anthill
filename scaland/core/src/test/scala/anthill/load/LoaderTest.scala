@@ -2,7 +2,7 @@ package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
 import anthill.term.{Term, TermId, Var, VarId, Literal}
-import anthill.intern.TermSymbol
+import anthill.intern.{TermSymbol, SymbolDef, SymbolKind}
 import anthill.parse.*
 import anthill.span.Span
 import anthill.resolve.{SearchStream, ResolveConfig}
@@ -462,4 +462,66 @@ class LoaderTest extends munit.FunSuite:
     assertEquals(unscanned.factCount, 0)
     // The control — the same file through the full pipeline — is
     // `load namespace with scoping`, which shares this fixture.
+  }
+
+  /** WI-1007 — the limitation the Expr conversion cluster was deleted to stop
+    * pretending away: scaland PARSES an operation body and does not load it.
+    *
+    * It replaces a test in `ExprLoaderTest` named "buildList creates cons-list" that
+    * called no builder and converted no expression — its own comment said so ("facts use
+    * reallocTerm, not convertExprTerm"). It loaded a literal fact and asserted
+    * `factCount > 0`, which is how ~250 lines of conversion machinery sat unreachable
+    * under a green suite for five months.
+    *
+    * CONTROL, in the same load and the same resolver call shape: `marker(?x)` — a fact —
+    * yields its solution. So the operation's zero is the BODY's absence, not a dead
+    * fixture or an unwired KB. Back the DELETION out and this test still passes: the
+    * cluster had no caller, so nothing observable changes either way — that IS the
+    * finding, and no test can be written that catches it. What this one catches is the
+    * reverse direction: the day `LoadPass` grows the body arm its WI-1007 comment
+    * describes, `inc` acquires a clause and this test fails, which is exactly when
+    * someone must revisit it. */
+  test("WI-1007: an operation's body is parsed and NOT loaded — the goal has no clause") {
+    val src =
+      """operation inc(x: Int64) -> Int64
+        |  = add(x, 1)
+        |
+        |fact marker(1)""".stripMargin
+    val pf = Parser.parse(src, "<wi1007>").toOption.getOrElse(fail("parse failed"))
+
+    // The body IS parsed — the drop is the loader's, not the parser's. Top-level, so
+    // finding it needs no descent: a walk here would be a shallower fourth copy of
+    // `SpanFixture.allItems`, and the copy that forgets a scope shape fails as "no
+    // operation in the fixture" rather than as the missing descent it is.
+    val op = pf.items.collectFirst { case Item.OperationItem(o) => o }
+      .getOrElse(fail("fixture drift: no operation in the parsed file"))
+    assert(op.body.isDefined, "the parser must carry the body; WI-1007 is about the loader")
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errors = Loader.loadAll(kb, IndexedSeq(pf))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    // Pass 1 defines the name, so the zero below is not a vanished symbol.
+    val incSym = kb.tryResolveSymbol("inc").getOrElse(fail("`inc` must be defined"))
+    kb.symbols.get(incSym) match
+      case SymbolDef.Resolved(_, _, SymbolKind.Operation, _) => ()
+      case other => fail(s"`inc` should be an Operation, got $other")
+
+    def solutionsOf(sym: TermSymbol): Int =
+      val arg = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("a")))))
+      SearchStream.resolve(kb, kb.alloc(Term.Fn(sym, IArray(arg), IArray.empty)))
+        .allSolutions(kb).length
+
+    // CONTROL: the fact in the same file resolves through this very call shape.
+    // `marker` interns UNQUALIFIED — a fact's functor is a predicate name reached by
+    // `resolveName`'s intern rung, not a declaration a scope prefixes.
+    assertEquals(solutionsOf(kb.intern("marker")), 1, "the control fact must resolve")
+
+    // The body would have been `inc`'s only definition.
+    assertEquals(solutionsOf(incSym), 0, "no clause: the body was not loaded")
+    // ARITY-FREE, and the stronger half: `byFunctor` is keyed on the functor symbol
+    // alone, so this covers every shape a future body-loading port could lower to —
+    // where a second `solutionsOf` at a guessed arity would re-probe the same bucket.
+    assert(kb.byFunctor(incSym).isEmpty, "no clause at any arity: the body was not loaded")
   }

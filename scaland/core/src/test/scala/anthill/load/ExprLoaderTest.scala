@@ -1,15 +1,21 @@
 package anthill.load
 
 import anthill.kb.KnowledgeBase
-import anthill.term.{Term, TermId, VarId, Literal}
-import anthill.intern.TermSymbol
-import anthill.parse.*
-import anthill.span.Span
-import scala.collection.mutable.ArrayBuffer
 
+/** What `Prelude.register` puts in a KB for the reflect ENCODING of expressions and
+  * patterns — the vocabulary, not a loader.
+  *
+  * WI-1007: the expression LOADER this file was named for is gone (it was ported ahead
+  * of any consumer and never called), and the test that pretended to cover it moved to
+  * `LoaderTest` as a driven one.
+  *
+  * What survives here asserts REGISTRATION ONLY — `hasQualifiedName`, the weak shape the
+  * moved test's own docstring indicts. It is left standing because the names are what
+  * WI-1009 is about, not because these tests establish anything works: none of these
+  * entities has a producer, and four of them are captured by a parse-time marker of the
+  * same spelling. Read `Prelude.registerExprSorts`'s WI-1009 note before adding to this.
+  */
 class ExprLoaderTest extends munit.FunSuite:
-
-  private def emptySpan = Span.empty
 
   /** Create a KB with prelude registered. */
   private def mkKb(): KnowledgeBase =
@@ -53,33 +59,6 @@ class ExprLoaderTest extends munit.FunSuite:
     val kb = mkKb()
     assert(kb.hasQualifiedName("anthill.reflect.MatchBranch"))
     assert(kb.hasQualifiedName("anthill.reflect.ApplyArg"))
-  }
-
-  test("buildList creates cons-list") {
-    val kb = mkKb()
-    val v1 = kb.alloc(Term.Const(Literal.IntLit(1)))
-    val v2 = kb.alloc(Term.Const(Literal.IntLit(2)))
-    // Use the loader's buildList via reflection-like access (it's private)
-    // Instead, test it indirectly through expression conversion
-
-    // Build a simple ParsedFile with a literal expression fact
-    val symbols = anthill.intern.SymbolTable()
-    val terms = SimpleTermStore()
-
-    // Build int_lit expression: Const(42) — should convert to int_lit(value: 42)
-    val litTerm = terms.alloc(Term.Const(Literal.IntLit(42)))
-
-    // Wrap in a fact
-    val items = ArrayBuffer[Item](
-      Item.FactItem(Fact(litTerm, None, emptySpan))
-    )
-    val parsed = ParsedFile(items, symbols, terms)
-
-    // Load — the fact just gets reallocated as-is (not as an expression)
-    // since facts use reallocTerm, not convertExprTerm
-    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
-    assert(errors.isEmpty, s"errors: $errors")
-    assert(kb.factCount > 0)
   }
 
   test("qualifiedNameOf returns qualified name for resolved symbols") {

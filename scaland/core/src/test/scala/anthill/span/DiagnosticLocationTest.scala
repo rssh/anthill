@@ -305,13 +305,12 @@ class DiagnosticLocationTest extends munit.FunSuite:
 
   test("WI-957: a SYNTHESIZED marker the loader still resolves is located too") {
     // The trap review caught: "the functor looks synthetic" is NOT a reason a node may
-    // claim `Span.empty`. `reallocTerm` resolves the functor of EVERY `Term.Fn`, and
-    // only the markers `convertExprTerm` dispatches on BY NAME (`if_expr`,
-    // `pattern_var`, …) are shielded from that. These five are not shielded — they
-    // reach `resolveName` exactly like a written call — so a user who declares an
-    // operation of the same name gets the locationless report this WI exists to
-    // retire. Measured, not reasoned: before the fix all five reported
-    // `hasLocation == false`.
+    // claim `Span.empty`. `reallocTerm` resolves the functor of EVERY `Term.Fn` bar the
+    // one shape it intercepts first (`typed_var`, WI-582 — WI-1007 removed the other
+    // exception). These five are not that shape — they reach `resolveName` exactly like
+    // a written call — so a user who declares an operation of the same name gets the
+    // locationless report this WI exists to retire. Measured, not reasoned: before the
+    // fix all five reported `hasLocation == false`.
     //
     // Each is located at the token that PRODUCED it (the `let`, the applied `?p`, the
     // opening bracket), because the functor itself is written nowhere.
