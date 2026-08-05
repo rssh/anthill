@@ -556,6 +556,24 @@ pub enum LoadError {
         /// (whence the `Option`).
         span: Option<Span>,
     },
+    /// WI-953: a name the DEFINING pass is supposed to have put in the symbol
+    /// table is not there. Every walk after sub-pass 1 — imports, rule heads, and
+    /// the load phase — reaches a declaration by looking its qualified name up;
+    /// a miss is a broken loader invariant, not a shape a pass may skip. Before
+    /// WI-953 two of those walks answered it by dropping the whole subtree with
+    /// no diagnostic at all: the namespace's imports went unwired and its rule
+    /// heads unregistered, and the load reported success. Raised from the one
+    /// helper the walks share ([`lookup_defined`]), so they cannot disagree again.
+    UndefinedAfterDefinePass {
+        /// The qualified name that was looked up and missing.
+        qualified: String,
+        /// What the miss costs, e.g. "the declarations inside it cannot be loaded".
+        consequence: &'static str,
+        /// The DECLARATION's span — the name is absent from the symbol table, so
+        /// there is nothing to point at on that side; what the reader needs is the
+        /// declaration whose contents were dropped.
+        span: Span,
+    },
     Other {
         message: String,
     },
@@ -1107,6 +1125,7 @@ impl LoadError {
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::MacroRejected { span, .. }
+            | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -1312,6 +1331,12 @@ impl LoadError {
             // as `error: load error: …`. `Other` is now a blocking front-door
             // diagnostic, so it matches its siblings.
             LoadError::Other { message } => message.clone(),
+            LoadError::UndefinedAfterDefinePass { qualified, consequence, span } => {
+                format!(
+                    "{}: internal: '{}' was not defined by the loader's name pass, so {}",
+                    loc.format_start(*span), qualified, consequence
+                )
+            }
             LoadError::FunctorOwnedByExtent { kind, functor, span } => {
                 format!(
                     "{}: resident {} for '{}' is refused: the functor is owned by a \
@@ -1700,6 +1725,13 @@ impl std::fmt::Display for LoadError {
             LoadError::Other { message } => {
                 write!(f, "{}", message)
             }
+            LoadError::UndefinedAfterDefinePass { qualified, consequence, span } => {
+                write!(
+                    f,
+                    "internal: '{}' was not defined by the loader's name pass, so {} (at {}..{})",
+                    qualified, consequence, span.start, span.end,
+                )
+            }
             LoadError::FunctorOwnedByExtent { kind, functor, span } => {
                 write!(
                     f,
@@ -1930,7 +1962,8 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // once here and read after the whole loop rather than per file.
     let mut ledger = DeclLedger::default();
     for (file_idx, file) in files.iter().enumerate() {
-        scan_items_pass1(kb, &file.items, &file.symbols, &file.terms, global, "", file_idx, &mut ledger);
+        let mut pass = DefinePass { kb, parse_sym: &file.symbols, file_idx, ledger: &mut ledger };
+        walk_scopes(&mut pass, &file.items, global);
     }
 
     // Sub-pass 2: process requires and imports (all sorts exist now). A
@@ -1953,14 +1986,31 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
         // same scope its top-level `sort` / `fact` / `rule` are defined in.
         // Processed exactly like a namespace body's, one nesting level out.
         process_imports(kb, &file.symbols, &file.imports, global, &mut file_errors, &mut pending, file_idx);
-        scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut file_errors, &mut pending, file_idx);
+        let mut pass = ImportPass {
+            kb,
+            parse_sym: &file.symbols,
+            errors: &mut file_errors,
+            pending: &mut pending,
+            file_idx,
+        };
+        walk_scopes(&mut pass, &file.items, global);
         errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
     }
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
     // inherited/existing origin where one resolves (proposal 044 / B2).
     for file in files {
-        scan_items_pass3(kb, &file.items, &file.symbols, &file.terms, global, "");
+        // WI-745 / WI-953: this pass reports now, so its errors are stamped with
+        // the file they came from exactly as sub-pass 2's are.
+        let mut file_errors = Vec::new();
+        let mut pass = RuleHeadPass {
+            kb,
+            parse_sym: &file.symbols,
+            parse_terms: &file.terms,
+            errors: &mut file_errors,
+        };
+        walk_scopes(&mut pass, &file.items, global);
+        errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
     }
 
     // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
@@ -2197,6 +2247,16 @@ fn eponymous_sort_symbol(kb: &KnowledgeBase, scope: TermId, name: &str, short: &
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
 /// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
+/// The two spellings a `sort` / `enum` declaration needs: the [`SortKind`] it
+/// registers under and the keyword its `SortInfo` reports. Read by both halves of
+/// the sort load, which is why it is derived once here rather than twice there.
+fn sort_decl_kinds(kind: SortDeclKind) -> (SortKind, &'static str) {
+    match kind {
+        SortDeclKind::Enum => (SortKind::Enum, "enum"),
+        SortDeclKind::Sort => (SortKind::Sort, "sort"),
+    }
+}
+
 fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
     if let Term::Fn { functor, pos_args, named_args } = kb.get_term(scope) {
         if pos_args.is_empty() && named_args.is_empty() {
@@ -2857,22 +2917,216 @@ impl DeclLedger {
     }
 }
 
-fn scan_items_pass1(
-    kb: &mut KnowledgeBase,
+// ── The scope spine ────────────────────────────────────────────────────────
+//
+// WI-953: ONE walker, not one per pass. Five walks over a file's items —
+// [`DefinePass`], [`ImportPass`], [`RuleHeadPass`], the WI-936 declaration pass
+// ([`DeclarePass`]) and the load phase ([`LoadPass`]) — each re-spelled the same
+// descent: join the written segments, qualify against the enclosing prefix,
+// obtain the child scope, recurse with the new (scope, prefix) pair. They differ
+// only in what they do AT a scope and at every other item, which is what the
+// [`ScopePass`] trait names. The copies had already come to disagree about a
+// scope that is MISSING — see [`lookup_defined`], now the single answer.
+
+/// A declaration that OPENS a child scope. Both carry a name, an import list and
+/// a body, which is all the walk needs; only the passes that DEFINE or EMIT per
+/// scope have to tell the two apart, so the distinction stays available here
+/// rather than being re-derived from `Item` (and rather than every pass carrying
+/// an unreachable third arm).
+#[derive(Clone, Copy)]
+enum ScopeDecl<'a> {
+    Namespace(&'a Namespace),
+    Sort(&'a SortWithBody),
+}
+
+impl<'a> ScopeDecl<'a> {
+    /// The scope-opening view of an item, or `None` for every other item kind.
+    /// THE one place the walk classifies an `Item`.
+    fn of(item: &'a Item) -> Option<Self> {
+        match item {
+            Item::Namespace(n) => Some(ScopeDecl::Namespace(n)),
+            Item::SortWithBody(s) => Some(ScopeDecl::Sort(s)),
+            _ => None,
+        }
+    }
+
+    fn name(&self) -> &'a Name {
+        match self {
+            ScopeDecl::Namespace(n) => &n.name,
+            ScopeDecl::Sort(s) => &s.name,
+        }
+    }
+
+    fn imports(&self) -> &'a [Import] {
+        match self {
+            ScopeDecl::Namespace(n) => &n.imports,
+            ScopeDecl::Sort(s) => &s.imports,
+        }
+    }
+
+    fn items(&self) -> &'a [Item] {
+        match self {
+            ScopeDecl::Namespace(n) => &n.items,
+            ScopeDecl::Sort(s) => &s.items,
+        }
+    }
+}
+
+/// One scope-opening declaration as the walk sees it: the decl, the names the
+/// descent derived from it, and the scope it is written in.
+struct ScopeSite<'a> {
+    decl: ScopeDecl<'a>,
+    /// The name AS WRITTEN, which is the short name only when it has no dot. A
+    /// DOTTED name declares INTO the namespace it names, so the segments before
+    /// the last are namespaces [`ensure_intermediate_namespaces`] creates —
+    /// which only [`DefinePass`] cares about; the lookup passes need only
+    /// [`Self::qualified`], where that walk ends up either way.
+    written: &'a str,
+    /// `make_qualified(prefix, written)` — the key sub-pass 1 defined the scope under.
+    qualified: &'a str,
+    /// The ENCLOSING scope's qualified path, the same one `at_item` receives.
+    prefix: &'a str,
+    /// The scope the declaration is written in.
+    enclosing: TermId,
+}
+
+/// One pass over the scope spine.
+///
+/// [`walk_scopes`] owns the descent, so a pass supplies only what it does AT a
+/// scope ([`Self::enter_scope`], which yields the scope to recurse into, and
+/// [`Self::exit_scope`], which runs after that subtree) and at every other item
+/// ([`Self::at_item`], in the scope that ENCLOSES it).
+trait ScopePass {
+    /// The parse-time symbol table of the file being walked — names are file-local.
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable;
+
+    /// The child scope to recurse into, or `None` to abandon the subtree — which
+    /// only ever happens because the scope could not be found, and
+    /// [`lookup_defined`] has already reported that.
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId>;
+
+    /// Runs after the subtree, with `scope` still the child. The default is the
+    /// three scan sub-passes' answer: nothing to do. The two loader-phase passes
+    /// override it — [`DeclarePass`] to restore `current_scope`, [`LoadPass`]
+    /// for that plus the per-sort emission that must read names the body has
+    /// already loaded.
+    fn exit_scope(&mut self, _site: &ScopeSite<'_>, _scope: TermId) {}
+
+    /// Every item that does NOT open a scope, with the scope and prefix enclosing it.
+    fn at_item(&mut self, item: &Item, scope: TermId, prefix: &str);
+}
+
+/// Walk `items` for one pass, starting from the scope `items` live in.
+///
+/// `prefix` is not a parameter: a walk always starts at the qualified path of
+/// `root`, and every entry point starts at the file's top level, whose path is
+/// empty. One fewer thing a pass can start differently from the others.
+fn walk_scopes<P: ScopePass + ?Sized>(pass: &mut P, items: &[Item], root: TermId) {
+    walk_scope_items(pass, items, root, "");
+}
+
+fn walk_scope_items<P: ScopePass + ?Sized>(
+    pass: &mut P,
     items: &[Item],
-    parse_sym: &crate::intern::SymbolTable,
-    parse_terms: &SimpleTermStore,
     scope: TermId,
     prefix: &str,
-    file_idx: usize,
-    ledger: &mut DeclLedger,
 ) {
     for item in items {
-        match item {
-            Item::SortWithBody(s) => {
-                let name = join_segments(parse_sym, &s.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
-                let qualified = make_qualified(prefix, &name);
+        match ScopeDecl::of(item) {
+            Some(decl) => {
+                let written = join_segments(pass.parse_symbols(), &decl.name().segments);
+                let qualified = make_qualified(prefix, &written);
+                let site = ScopeSite {
+                    decl,
+                    written: &written,
+                    qualified: &qualified,
+                    prefix,
+                    enclosing: scope,
+                };
+                if let Some(child) = pass.enter_scope(&site) {
+                    walk_scope_items(pass, decl.items(), child, &qualified);
+                    pass.exit_scope(&site, child);
+                }
+            }
+            None => pass.at_item(item, scope, prefix),
+        }
+    }
+}
+
+/// The symbol `qualified` names, which [`DefinePass`] defined before any later
+/// pass ran. A MISS is therefore a broken invariant, not a shape a pass may skip
+/// — and this is the ONE place that answers it, for every pass: report, and say
+/// what the miss costs. Skipping instead drops the work with no diagnostic at
+/// all, the silent skip this project forbids. Before WI-953 the copies
+/// disagreed: sub-passes 2 and 3 skipped (3 could not even report — it took no
+/// `errors`), and the load phase never asked.
+fn lookup_defined(
+    kb: &KnowledgeBase,
+    qualified: &str,
+    span: Span,
+    consequence: &'static str,
+    errors: &mut Vec<LoadError>,
+) -> Option<Symbol> {
+    match kb.symbols.by_qualified_name.get(qualified) {
+        Some(&sym) => Some(sym),
+        None => {
+            errors.push(LoadError::UndefinedAfterDefinePass {
+                qualified: qualified.to_owned(),
+                consequence,
+                span,
+            });
+            None
+        }
+    }
+}
+
+/// The scope `site.qualified` names — the descent's use of [`lookup_defined`].
+/// A miss here abandons the whole subtree: its imports unwired, its rule heads
+/// unregistered, its facts and rules never loaded.
+fn lookup_scope(
+    kb: &mut KnowledgeBase,
+    site: &ScopeSite<'_>,
+    errors: &mut Vec<LoadError>,
+) -> Option<TermId> {
+    let sym = lookup_defined(
+        kb,
+        site.qualified,
+        site.decl.name().span,
+        "the declarations inside it cannot be loaded",
+        errors,
+    )?;
+    Some(kb.make_name_term_from_sym(sym))
+}
+
+// ── Sub-pass 1: define names ───────────────────────────────────────────────
+
+/// Sub-pass 1 — DEFINE every name. The pass that creates the scopes the others
+/// look up, so its `enter_scope` defines rather than resolving, and can never miss.
+struct DefinePass<'a> {
+    kb: &'a mut KnowledgeBase,
+    parse_sym: &'a crate::intern::SymbolTable,
+    file_idx: usize,
+    ledger: &'a mut DeclLedger,
+}
+
+impl ScopePass for DefinePass<'_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        self.parse_sym
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+        // WI-992: a DOTTED name declares into the namespace it names, not into
+        // `site.enclosing` under its whole spelling. `scope` stays the enclosing
+        // scope — the one the TYPE-PARAM marker is added to below — because that
+        // is a property of the syntactic nesting, not of the name.
+        let (kb, parse_sym, ledger) = (&mut *self.kb, self.parse_sym, &mut *self.ledger);
+        let file_idx = self.file_idx;
+        let scope = site.enclosing;
+        let qualified = site.qualified;
+        let (short, actual_scope) =
+            ensure_intermediate_namespaces(kb, site.written, scope, site.prefix);
+        match site.decl {
+            ScopeDecl::Sort(s) => {
                 // WI-997 / 059 R1 — recorded BEFORE the reuse-or-define split below,
                 // because that split is exactly what erases the duplication: the
                 // `by_qualified_name` arm hands back the FIRST declaration's symbol,
@@ -2890,10 +3144,10 @@ fn scan_items_pass1(
                     );
                 }
                 // Reuse existing sort symbol if already defined (e.g. by register_prelude)
-                let (sym, is_new) = if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
+                let (sym, is_new) = if let Some(&existing) = kb.symbols.by_qualified_name.get(qualified) {
                     (existing, false)
                 } else {
-                    (kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw()), true)
+                    (kb.symbols.define(&short, qualified, SymbolKind::Sort, actual_scope.raw()), true)
                 };
                 // WI-979 — recorded from the DECLARATION, not from which arm above
                 // produced the symbol. `define` accumulates categories (WI-926), but
@@ -2990,27 +3244,12 @@ fn scan_items_pass1(
                 if s.is_type_param && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope.raw(), &short);
                 }
-                // Recurse into sort body with the sort's qualified name as prefix
-                scan_items_pass1(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified, file_idx, ledger);
+                Some(sort_term)
             }
-            Item::AbstractSort(s) => {
-                let name = join_segments(parse_sym, &s.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
-                let qualified = make_qualified(prefix, &name);
-                let abstract_sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
-                record_internal(kb, abstract_sym, s.visibility);
-                // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
-                if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(scope.raw(), &short);
-                }
-            }
-            Item::Namespace(n) => {
-                let name = join_segments(parse_sym, &n.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
-                let qualified = make_qualified(prefix, &name);
+            ScopeDecl::Namespace(_) => {
                 // Reuse existing namespace symbol if already defined in the same scope
                 // (multiple files can contribute items to the same namespace).
-                let existing = kb.symbols.by_qualified_name.get(&qualified).copied().filter(|&sym| {
+                let existing = kb.symbols.by_qualified_name.get(qualified).copied().filter(|&sym| {
                     matches!(
                         kb.symbols.get(sym),
                         SymbolDef::Resolved { scope_raw, .. }
@@ -3026,7 +3265,7 @@ fn scan_items_pass1(
                     });
                     (sym, ns_term)
                 } else {
-                    let sym = kb.symbols.define(&short, &qualified, SymbolKind::Namespace, actual_scope.raw());
+                    let sym = kb.symbols.define(&short, qualified, SymbolKind::Namespace, actual_scope.raw());
                     let ns_term = kb.alloc(Term::Fn {
                         functor: sym,
                         pos_args: SmallVec::new(),
@@ -3042,8 +3281,25 @@ fn scan_items_pass1(
                 };
                 // Model C / job 2 (proposal 044): namespace members are visible
                 // by default; the `export` statement was removed (WI-291).
-                // Recurse into namespace body with the namespace's qualified name as prefix
-                scan_items_pass1(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified, file_idx, ledger);
+                Some(ns_term)
+            }
+        }
+    }
+
+    fn at_item(&mut self, item: &Item, scope: TermId, prefix: &str) {
+        let (kb, parse_sym, ledger) = (&mut *self.kb, self.parse_sym, &mut *self.ledger);
+        let file_idx = self.file_idx;
+        match item {
+            Item::AbstractSort(s) => {
+                let name = join_segments(parse_sym, &s.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
+                let abstract_sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
+                record_internal(kb, abstract_sym, s.visibility);
+                // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
+                if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
+                    kb.symbols.add_type_param(scope.raw(), &short);
+                }
             }
             Item::Entity(e) => {
                 let name = join_segments(parse_sym, &e.name.segments);
@@ -3184,39 +3440,41 @@ fn scan_items_pass1(
     }
 }
 
-/// Sub-pass 2: process requires declarations and imports → build parent scope chain.
-///
-/// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
-fn scan_items_pass2(
-    kb: &mut KnowledgeBase,
-    items: &[Item],
-    parse_sym: &crate::intern::SymbolTable,
-    scope: TermId,
-    prefix: &str,
-    errors: &mut Vec<LoadError>,
-    pending: &mut Vec<PendingImport>,
+// ── Sub-pass 2: requires + imports ─────────────────────────────────────────
+
+/// Sub-pass 2 — process `requires` declarations and imports → build the parent
+/// scope chain. Every sort/namespace it descends into was defined by
+/// [`DefinePass`], so the descent is [`lookup_scope`]'s.
+struct ImportPass<'a> {
+    kb: &'a mut KnowledgeBase,
+    parse_sym: &'a crate::intern::SymbolTable,
+    errors: &'a mut Vec<LoadError>,
+    pending: &'a mut Vec<PendingImport>,
     file_idx: usize,
-) {
-    for item in items {
+}
+
+impl ScopePass for ImportPass<'_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        self.parse_sym
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+        let scope = lookup_scope(self.kb, site, self.errors)?;
+        process_imports(
+            self.kb,
+            self.parse_sym,
+            site.decl.imports(),
+            scope,
+            self.errors,
+            self.pending,
+            self.file_idx,
+        );
+        Some(scope)
+    }
+
+    fn at_item(&mut self, item: &Item, scope: TermId, _prefix: &str) {
+        let (kb, parse_sym) = (&mut *self.kb, self.parse_sym);
         match item {
-            Item::SortWithBody(s) => {
-                let name = join_segments(parse_sym, &s.name.segments);
-                let qualified = make_qualified(prefix, &name);
-                if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
-                    process_imports(kb, parse_sym, &s.imports, sort_term, errors, pending, file_idx);
-                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors, pending, file_idx);
-                }
-            }
-            Item::Namespace(n) => {
-                let name = join_segments(parse_sym, &n.name.segments);
-                let qualified = make_qualified(prefix, &name);
-                if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
-                    // Process namespace-level imports
-                    process_imports(kb, parse_sym, &n.imports, ns_term, errors, pending, file_idx);
-                    // Recurse
-                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified, errors, pending, file_idx);
-                }
-            }
             Item::RequiresDecl(r) => {
                 let req_sort_name = type_expr_base_name(parse_sym, &r.type_expr);
                 // The `effects E = ?` desugar's `requires anthill.prelude.EffectsRuntime[…]`
@@ -3251,34 +3509,35 @@ fn scan_items_pass2(
     }
 }
 
-/// Sub-pass 3: register unlabeled rule head functors as Goal symbols, now that
+// ── Sub-pass 3: rule head functors ─────────────────────────────────────────
+
+/// Sub-pass 3 — register unlabeled rule head functors as Goal symbols, now that
 /// `requires`/import parents are wired (pass 2). A head functor that already
 /// resolves — an inherited operation or a locally declared one — binds to that
 /// origin rather than minting a shadowing sort-local symbol (proposal 044 / B2).
-fn scan_items_pass3(
-    kb: &mut KnowledgeBase,
-    items: &[Item],
-    parse_sym: &crate::intern::SymbolTable,
-    parse_terms: &SimpleTermStore,
-    scope: TermId,
-    prefix: &str,
-) {
-    for item in items {
+///
+/// WI-953: it now carries an `errors` vec. It never had one, which is why its
+/// missing-scope arm could not report even in principle — the subtree's rule
+/// heads went unregistered and the load reported success.
+struct RuleHeadPass<'a> {
+    kb: &'a mut KnowledgeBase,
+    parse_sym: &'a crate::intern::SymbolTable,
+    parse_terms: &'a SimpleTermStore,
+    errors: &'a mut Vec<LoadError>,
+}
+
+impl ScopePass for RuleHeadPass<'_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        self.parse_sym
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+        lookup_scope(self.kb, site, self.errors)
+    }
+
+    fn at_item(&mut self, item: &Item, scope: TermId, prefix: &str) {
+        let (kb, parse_sym, parse_terms) = (&mut *self.kb, self.parse_sym, self.parse_terms);
         match item {
-            Item::SortWithBody(s) => {
-                let name = join_segments(parse_sym, &s.name.segments);
-                let qualified = make_qualified(prefix, &name);
-                if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
-                    scan_items_pass3(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified);
-                }
-            }
-            Item::Namespace(n) => {
-                let name = join_segments(parse_sym, &n.name.segments);
-                let qualified = make_qualified(prefix, &name);
-                if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
-                    scan_items_pass3(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified);
-                }
-            }
             Item::Rule(r) => scan_rule_goal(kb, r, parse_sym, parse_terms, scope, prefix),
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
@@ -5110,7 +5369,7 @@ fn load_with_visited(
 ) -> Result<LoadResult, Vec<LoadError>> {
     let global = kb.make_name_term("_global");
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
-    loader.load_items(&parsed.items, None);
+    loader.load_items(&parsed.items);
     // WI-839: every honouring reader of the call-site bracket channel has now run,
     // so anything still unread was written and dropped — report it.
     loader.check_unconsumed_call_type_args();
@@ -13451,42 +13710,11 @@ impl<'a> Loader<'a> {
         // the alias's backing var, and in source order the alias may be written after
         // the entity that uses it. Both emitters dedup on the asserted `SortAlias`, so
         // the load pass re-encountering them no-ops (`load_abstract_sort`'s own note).
+        // The nested levels are `DeclarePass::enter_scope`'s; this is the top one.
         let domain = self.current_domain();
         self.preload_type_param_aliases(items, domain);
-        for item in items {
-            match item {
-                Item::Namespace(n) => {
-                    let ns_term = self.name_to_sort_term(&n.name);
-                    let prev_scope = self.current_scope;
-                    self.current_scope = ns_term;
-                    self.declare_field_types(&n.items);
-                    self.current_scope = prev_scope;
-                }
-                Item::SortWithBody(s) => {
-                    let sort_term = self.name_to_sort_term(&s.name);
-                    let prev_scope = self.current_scope;
-                    self.current_scope = sort_term;
-                    self.declare_field_types(&s.items);
-                    self.current_scope = prev_scope;
-                }
-                Item::Entity(e) => self.register_declared_field_types(e),
-                // `AbstractSort` is handled by the alias pre-load above; the rest
-                // declare no entity fields.
-                Item::AbstractSort(_)
-                | Item::Rule(_)
-                | Item::Operation(_)
-                | Item::Const(_)
-                | Item::RequiresDecl(_)
-                | Item::Fact(_)
-                | Item::Constraint(_)
-                | Item::OperationBlock(_)
-                | Item::RuleBlock(_)
-                | Item::Describe(_)
-                | Item::Proof(_)
-                | Item::ProvidesClause(_)
-                | Item::ProvidesBlock(_) => {}
-            }
-        }
+        let root = self.current_scope;
+        walk_scopes(&mut DeclarePass(self), items, root);
     }
 
     /// WI-936 — lower `e`'s field types and register them, the one place that happens.
@@ -13581,79 +13809,49 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Load items (top-level or within a domain), tracking scope.
-    fn load_items(&mut self, items: &[Item], domain: Option<TermId>) {
-        let prev_scope = self.current_scope;
-        let scope = domain.unwrap_or_else(|| self.kb.make_name_term("_global"));
-        self.current_scope = scope;
-        // The scope TERM keys the symbol table (`resolve_in_scope` takes
-        // `TermId::raw()`); the DOMAIN a rule/fact is stored under is its NAME.
-        // This is the one place a scope becomes a domain, so it is the one place
-        // the bridge is crossed — every `load_*` below takes the `Symbol`.
-        let domain = self.kb.name_term_sym(scope);
-
-        // WI-233: per-item-kind timing/count, gated by
-        // ANTHILL_ITEM_TIMING=1. Aggregated across all `load_items`
-        // invocations into thread-local counters; printed by the
-        // outermost caller at end-of-pass.
+    /// Load a file's items, from the scope its top level lives in.
+    ///
+    /// WI-953: the recursion into namespaces and sort bodies is [`walk_scopes`]'s
+    /// — the same one the three scan sub-passes and the declaration pass use;
+    /// [`LoadPass`] supplies only what this phase does at each item.
+    fn load_items(&mut self, items: &[Item]) {
+        let root = self.current_scope;
+        // WI-233: per-item-kind timing/count, gated by ANTHILL_ITEM_TIMING=1.
+        // Aggregated across the walk into thread-local counters; printed by the
+        // outermost caller at end-of-pass. Read ONCE — it gates every item.
         let timing = std::env::var("ANTHILL_ITEM_TIMING").map(|v| v == "1").unwrap_or(false);
-
-        // WI-840: how many `requires` items this scope has seen. Local to the walk —
-        // `load_items` runs once per domain, so the count is exact and needs no keying.
-        let mut requires_seen = 0usize;
-
-        for item in items {
-            let t0 = if timing { Some(std::time::Instant::now()) } else { None };
-            let kind = match item {
-                Item::Namespace(n) => { self.load_namespace(n); "Namespace" }
-                Item::AbstractSort(s) => { self.load_abstract_sort(s, domain); "AbstractSort" }
-                Item::SortWithBody(s) => { self.load_sort_with_body(s, domain); "SortWithBody" }
-                Item::Rule(r) => { self.load_rule(r, domain); "Rule" }
-                Item::Operation(o) => { self.load_operation(o, domain); "Operation" }
-                Item::Const(c) => { self.load_const(c, domain); "Const" }
-                Item::RequiresDecl(r) => {
-                    // WI-840: source-order position among THIS scope's requirements,
-                    // named or not, so a named slot's index covers the whole list.
-                    self.load_requires_decl(r, domain, requires_seen);
-                    requires_seen += 1;
-                    "RequiresDecl"
-                }
-                Item::Entity(e) => { self.load_entity(e, domain); "Entity" }
-                Item::Fact(f) => { self.load_fact(f, domain); "Fact" }
-                Item::Constraint(c) => { self.load_constraint(c, domain); "Constraint" }
-                Item::OperationBlock(ob) => {
-                    for op in &ob.entries {
-                        self.load_operation(op, domain);
-                    }
-                    "OperationBlock"
-                }
-                Item::RuleBlock(rb) => {
-                    for rule in &rb.entries {
-                        self.load_rule(rule, domain);
-                    }
-                    "RuleBlock"
-                }
-                Item::Describe(d) => { self.load_describe(d, domain); "Describe" }
-                Item::Proof(p) => { self.load_proof(p, domain); "Proof" }
-                Item::ProvidesClause(pc) => { self.load_provides_clause(pc, domain); "ProvidesClause" }
-                Item::ProvidesBlock(pb) => { self.load_provides_block(pb, domain); "ProvidesBlock" }
-            };
-            if let Some(t0) = t0 {
-                let dt = t0.elapsed();
-                ITEM_TIMINGS.with(|m| {
-                    let mut m = m.borrow_mut();
-                    let entry = m.entry(kind).or_insert((0u32, std::time::Duration::ZERO));
-                    entry.0 += 1;
-                    entry.1 += dt;
-                });
-            }
-        }
-
-        self.current_scope = prev_scope;
+        let mut pass = LoadPass {
+            loader: self,
+            timing,
+            requires_seen: HashMap::new(),
+            carrier_stack: Vec::new(),
+        };
+        walk_scopes(&mut pass, items, root);
     }
 
-    fn load_namespace(&mut self, n: &Namespace) {
-        let ns_term = self.name_to_sort_term(&n.name);
+    /// The scope a namespace / sort declaration opens, as THIS phase names it:
+    /// the term its written name resolves to in the enclosing scope, which is
+    /// how every other name here resolves too.
+    ///
+    /// WI-953: `remap_name` cannot fail — an unresolvable functor falls back to a
+    /// bare `intern` — so a name sub-pass 1 never defined would load its whole
+    /// subtree into a phantom scope, silently. The invariant is checked against
+    /// the qualified key the DEFINING pass writes, from the helper every walk
+    /// shares, and a miss abandons the subtree rather than misfiling it.
+    fn resolve_declared_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+        lookup_defined(
+            self.kb,
+            site.qualified,
+            site.decl.name().span,
+            "the declarations inside it cannot be loaded",
+            &mut self.errors,
+        )?;
+        Some(self.name_to_sort_term(site.decl.name()))
+    }
+
+    /// A namespace's own facts, and the scope its body loads in. The descent
+    /// itself is [`walk_scopes`]'s.
+    fn enter_namespace(&mut self, n: &Namespace, ns_term: TermId) {
         let ns_sort = ClauseKind::Namespace;
 
         // Assert namespace as a fact — a namespace is its own domain.
@@ -13661,16 +13859,10 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
 
         // Set scope to namespace for member resolution
-        let prev_scope = self.current_scope;
         self.current_scope = ns_term;
 
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&n.items, ns_term);
-
-        // Load nested items within this namespace scope
-        self.load_items(&n.items, Some(ns_term));
-
-        self.current_scope = prev_scope;
     }
 
     /// True iff a `SortAlias(sort_term, _)` fact is already asserted. Reads pos 0
@@ -13778,16 +13970,21 @@ impl<'a> Loader<'a> {
         self.assert_sort_alias(sort_term, Value::term(var_term), domain);
     }
 
-    fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: Symbol) {
-        let sort_term = self.name_to_sort_term(&s.name);
+    /// The half of a sort's load that runs BEFORE its body: everything the body
+    /// resolves against (the sort registration, the type-param aliases, the
+    /// entity→parent edges and their metadata, the member facts, the WI-201
+    /// carrier bindings). Returns the carrier bindings it displaced, which
+    /// [`Self::exit_sort_with_body`] puts back. The descent between the two
+    /// halves is [`walk_scopes`]'s (WI-953).
+    fn enter_sort_with_body(
+        &mut self,
+        s: &SortWithBody,
+        sort_term: TermId,
+        parent_domain: Symbol,
+    ) -> HashMap<(Symbol, Symbol), TermId> {
         self.defined_sorts.push(self.kb.name_term_sym(sort_term));
-        let sort_sort = ClauseKind::Sort;
 
-        let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
-        let (sort_kind, kind_str) = match s.kind {
-            SortDeclKind::Enum => (SortKind::Enum, "enum"),
-            SortDeclKind::Sort => (SortKind::Sort, "sort"),
-        };
+        let (sort_kind, _) = sort_decl_kinds(s.kind);
         self.kb.register_sort(self.kb.name_term_sym(sort_term), sort_kind);
 
         // Emit DescriptionInfo facts for all description blocks
@@ -13796,7 +13993,6 @@ impl<'a> Loader<'a> {
         }
 
         // Set scope to sort for child resolution
-        let prev_scope = self.current_scope;
         self.current_scope = sort_term;
 
         // Pre-load nested type-param SortAliases so they are in place before the
@@ -13855,23 +14051,34 @@ impl<'a> Loader<'a> {
         // whether the binding appears before or after the using operation. Saved/
         // restored around the body load so a nested sort's bindings don't leak out.
         let sort_carrier_bindings = self.scan_sort_carrier_bindings(&s.items);
-        let prev_sort_carrier_bindings =
-            std::mem::replace(&mut self.current_sort_carrier_bindings, sort_carrier_bindings);
+        std::mem::replace(&mut self.current_sort_carrier_bindings, sort_carrier_bindings)
+    }
 
-        // Load all items within this sort's domain scope
-        self.load_items(&s.items, Some(sort_term));
-
+    /// The half of a sort's load that runs AFTER its body — the `SortInfo` roll-up
+    /// and the induction principle, which read names the body has just resolved.
+    /// `current_scope` is still the sort here; the caller restores it.
+    fn exit_sort_with_body(
+        &mut self,
+        s: &SortWithBody,
+        sort_term: TermId,
+        parent_domain: Symbol,
+        prev_sort_carrier_bindings: HashMap<(Symbol, Symbol), TermId>,
+    ) {
         self.current_sort_carrier_bindings = prev_sort_carrier_bindings;
 
+        let sort_sort = ClauseKind::Sort;
+        let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
+        let (_, kind_str) = sort_decl_kinds(s.kind);
+
         // Now collect constructors, operations, parameters, requires from child items
-        // (after loading, so all names are resolved in sort scope)
-        // `sort_domain` above is this same symbol, taken once and loudly. The
+        // (after loading, so all names are resolved in sort scope). `sort_domain`
+        // in the entering half is this same symbol, taken once and loudly. The
         // hand-rolled re-derivation this replaces fell back to a fabricated
         // `_unknown` functor for a `Term::Ref` sort term (the WI-511 canon for a
         // constructor-named symbol), emitting `SortInfo` under a name nothing
         // resolves rather than failing — the silent-fallback family the rest of
         // this migration removes.
-        let sort_functor = sort_domain;
+        let sort_functor = self.kb.name_term_sym(sort_term);
 
         let mut ctor_refs = Vec::new();
         let mut op_refs = Vec::new();
@@ -13940,8 +14147,6 @@ impl<'a> Loader<'a> {
                 .collect();
             self.emit_induction_rule(&entities, sort_term, sort_functor, parent_domain);
         }
-
-        self.current_scope = prev_scope;
     }
 
     /// Emit `<Sort>.induction(?P) :- ho_apply(?P, ctor_1(...)), ...` —
@@ -17463,6 +17668,313 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::new(),
             named_args,
         })
+    }
+}
+
+// ── The declaration pass and the load phase, on the shared spine ───────────
+//
+// WI-953: both are [`ScopePass`]es over the same walk the three scan sub-passes
+// use. They obtain a child scope the way the loader always has — by RESOLVING
+// the written name in the enclosing scope ([`Loader::name_to_sort_term`]) —
+// rather than by qualified-name lookup, and the difference is deliberate: this
+// phase resolves every other name that way too (imports and aliases included),
+// so a scope reached differently from the members inside it would be a second
+// answer to one question. The invariant the scan passes check is checked here
+// too — `enter_scope` reports a name sub-pass 1 never defined, which the phase
+// could not previously notice at all, because `remap_name`'s bare-intern
+// fallback quietly loads the subtree into a phantom scope.
+
+/// WI-936 declaration pass — lower and register every entity's field types,
+/// before any of them is read.
+struct DeclarePass<'l, 'a>(&'l mut Loader<'a>);
+
+impl ScopePass for DeclarePass<'_, '_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        &self.0.parsed.symbols
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+        let scope = self.0.resolve_declared_scope(site)?;
+        self.0.current_scope = scope;
+        // Aliases first, at every level — see `declare_field_types`, which does
+        // this for the top level.
+        let domain = self.0.current_domain();
+        self.0.preload_type_param_aliases(site.decl.items(), domain);
+        Some(scope)
+    }
+
+    fn exit_scope(&mut self, site: &ScopeSite<'_>, _scope: TermId) {
+        self.0.current_scope = site.enclosing;
+    }
+
+    fn at_item(&mut self, item: &Item, _scope: TermId, _prefix: &str) {
+        match item {
+            Item::Entity(e) => self.0.register_declared_field_types(e),
+            // `AbstractSort` is handled by the alias pre-load; the rest declare no
+            // entity fields. Exhaustive on purpose: a future item kind that can
+            // contain an `entity` has to decide here, rather than defaulting into
+            // the silence above.
+            Item::AbstractSort(_)
+            | Item::Rule(_)
+            | Item::Operation(_)
+            | Item::Const(_)
+            | Item::RequiresDecl(_)
+            | Item::Fact(_)
+            | Item::Constraint(_)
+            | Item::OperationBlock(_)
+            | Item::RuleBlock(_)
+            | Item::Describe(_)
+            | Item::Proof(_)
+            | Item::ProvidesClause(_)
+            | Item::ProvidesBlock(_) => {}
+            // Routed to `enter_scope` by `walk_scopes`, which is the ONE place an
+            // `Item` is classified as scope-opening.
+            Item::Namespace(_) | Item::SortWithBody(_) => {
+                unreachable!("walk_scopes routes scope openers to enter_scope")
+            }
+        }
+    }
+}
+
+/// Phase 2 — fill the KB.
+struct LoadPass<'l, 'a> {
+    loader: &'l mut Loader<'a>,
+    /// WI-233: the `ANTHILL_ITEM_TIMING` gate, read once for the whole walk.
+    timing: bool,
+    /// WI-840: source-order position among a SCOPE's `requires` items, named or
+    /// not, so a named slot's index covers the whole list. Keyed by scope: the
+    /// walk covers many scopes, and each item is offered to exactly one of them.
+    requires_seen: HashMap<u32, usize>,
+    /// WI-201: the carrier bindings each enclosing SORT displaced, innermost
+    /// last. A stack because sort bodies nest and each must get its own back.
+    carrier_stack: Vec<HashMap<(Symbol, Symbol), TermId>>,
+}
+
+impl ScopePass for LoadPass<'_, '_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        &self.loader.parsed.symbols
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+        let scope = self.loader.resolve_declared_scope(site)?;
+        match site.decl {
+            ScopeDecl::Namespace(n) => self.loader.enter_namespace(n, scope),
+            ScopeDecl::Sort(s) => {
+                // The scope TERM keys the symbol table; the DOMAIN a rule/fact is
+                // stored under is that scope's NAME — see `at_item`.
+                let parent_domain = self.loader.kb.name_term_sym(site.enclosing);
+                let displaced = self.loader.enter_sort_with_body(s, scope, parent_domain);
+                self.carrier_stack.push(displaced);
+            }
+        }
+        Some(scope)
+    }
+
+    fn exit_scope(&mut self, site: &ScopeSite<'_>, scope: TermId) {
+        if let ScopeDecl::Sort(s) = site.decl {
+            let displaced = self
+                .carrier_stack
+                .pop()
+                .expect("enter_scope pushes exactly one carrier frame per sort");
+            let parent_domain = self.loader.kb.name_term_sym(site.enclosing);
+            self.loader.exit_sort_with_body(s, scope, parent_domain, displaced);
+        }
+        self.loader.current_scope = site.enclosing;
+    }
+
+    fn at_item(&mut self, item: &Item, scope: TermId, _prefix: &str) {
+        let t0 = if self.timing { Some(std::time::Instant::now()) } else { None };
+        // The scope TERM keys the symbol table (`resolve_in_scope` takes
+        // `TermId::raw()`); the DOMAIN a rule/fact is stored under is its NAME.
+        // This is the one place a scope becomes a domain, so it is the one place
+        // the bridge is crossed — every `load_*` below takes the `Symbol`.
+        let domain = self.loader.kb.name_term_sym(scope);
+        let kind = match item {
+            Item::AbstractSort(s) => { self.loader.load_abstract_sort(s, domain); "AbstractSort" }
+            Item::Rule(r) => { self.loader.load_rule(r, domain); "Rule" }
+            Item::Operation(o) => { self.loader.load_operation(o, domain); "Operation" }
+            Item::Const(c) => { self.loader.load_const(c, domain); "Const" }
+            Item::RequiresDecl(r) => {
+                let seen = self.requires_seen.entry(scope.raw()).or_insert(0);
+                let index = *seen;
+                *seen += 1;
+                self.loader.load_requires_decl(r, domain, index);
+                "RequiresDecl"
+            }
+            Item::Entity(e) => { self.loader.load_entity(e, domain); "Entity" }
+            Item::Fact(f) => { self.loader.load_fact(f, domain); "Fact" }
+            Item::Constraint(c) => { self.loader.load_constraint(c, domain); "Constraint" }
+            Item::OperationBlock(ob) => {
+                for op in &ob.entries {
+                    self.loader.load_operation(op, domain);
+                }
+                "OperationBlock"
+            }
+            Item::RuleBlock(rb) => {
+                for rule in &rb.entries {
+                    self.loader.load_rule(rule, domain);
+                }
+                "RuleBlock"
+            }
+            Item::Describe(d) => { self.loader.load_describe(d, domain); "Describe" }
+            Item::Proof(p) => { self.loader.load_proof(p, domain); "Proof" }
+            Item::ProvidesClause(pc) => { self.loader.load_provides_clause(pc, domain); "ProvidesClause" }
+            Item::ProvidesBlock(pb) => { self.loader.load_provides_block(pb, domain); "ProvidesBlock" }
+            // Routed to `enter_scope`/`exit_scope` by `walk_scopes`.
+            Item::Namespace(_) | Item::SortWithBody(_) => {
+                unreachable!("walk_scopes routes scope openers to enter_scope")
+            }
+        };
+        if let Some(t0) = t0 {
+            let dt = t0.elapsed();
+            ITEM_TIMINGS.with(|m| {
+                let mut m = m.borrow_mut();
+                let entry = m.entry(kind).or_insert((0u32, std::time::Duration::ZERO));
+                entry.0 += 1;
+                entry.1 += dt;
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod wi953_scope_spine_tests {
+    //! WI-953 — the ONE answer to a missing scope.
+    //!
+    //! Sub-pass 1 defines every namespace and sort; every later walk reaches a
+    //! declaration by looking that qualified name up. A miss is a broken loader
+    //! invariant, and before WI-953 the four walks answered it four ways —
+    //! sub-passes 2 and 3 dropped the subtree with no diagnostic (3 could not
+    //! report even in principle: it took no `errors` vec), and the load phase
+    //! never asked, so `remap_name`'s bare-intern fallback filed the subtree
+    //! under a phantom symbol.
+    //!
+    //! DRIVING THE MISS. Within one `scan_definitions` run the miss is
+    //! unreachable by construction — sub-pass 1 defines a scope under exactly
+    //! the key the others look up. What IS reachable is the loader's two-phase
+    //! CONTRACT: run a later walk over a file the defining pass never saw. That
+    //! is the same drive the scaland twin uses (WI-949, `Loader.load` without
+    //! `scanDefinitions`), and the same one each test below performs — directly
+    //! for the two scan passes, and through the phase-2 entry points for the
+    //! declaration pass and the load phase.
+    //!
+    //! CONTROL: `the_same_file_loads_clean_through_the_whole_pipeline`, which
+    //! takes the SAME fixture through `load` and passes with or without the
+    //! reports. Back the reports out of `lookup_defined` and every other test
+    //! here fails (no `UndefinedAfterDefinePass` is ever produced) while the
+    //! control still passes.
+    use super::*;
+    use crate::parse;
+
+    /// A namespace with a body whose contents each walk has work to do on: an
+    /// import to wire (sub-pass 2), a rule head to register (sub-pass 3), an
+    /// entity whose field types the declaration pass lowers, and a fact for the
+    /// load phase.
+    const SRC: &str = "\
+namespace demo
+  import anthill.prelude.{Option}
+  sort Colour
+    entity Red(shade: Int64)
+  end
+  rule reddish(?s) :- Red(shade: ?s)
+  fact Red(shade: 3)
+end
+";
+
+    fn parsed() -> crate::parse::ir::ParsedFile {
+        parse::parse(SRC).expect("parse")
+    }
+
+    /// Every `UndefinedAfterDefinePass` in `errors`, by the qualified name it names.
+    fn missed(errors: &[LoadError]) -> Vec<String> {
+        errors
+            .iter()
+            .filter_map(|e| match e.peel() {
+                LoadError::UndefinedAfterDefinePass { qualified, .. } => Some(qualified.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Sub-pass 2 (imports / `requires`) over a file the defining pass never saw.
+    /// Its `if let Some(scope) = find_scope_by_name(..)` used to drop `demo`
+    /// whole — the import unwired, and no diagnostic anywhere.
+    #[test]
+    fn the_import_pass_reports_a_scope_the_define_pass_never_defined() {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let file = parsed();
+        let global = kb.make_name_term("_global");
+        let mut errors = Vec::new();
+        let mut pending = Vec::new();
+        let mut pass = ImportPass {
+            kb: &mut kb,
+            parse_sym: &file.symbols,
+            errors: &mut errors,
+            pending: &mut pending,
+            file_idx: 0,
+        };
+        walk_scopes(&mut pass, &file.items, global);
+
+        assert_eq!(missed(&errors), vec!["demo".to_string()],
+            "the miss is reported once, naming the scope whose body was abandoned");
+    }
+
+    /// Sub-pass 3 (rule head functors) over the same unscanned file. This one
+    /// could not report at all before WI-953 — it took no `errors` vec, so its
+    /// silent skip was not a choice the code could have made differently.
+    #[test]
+    fn the_rule_head_pass_reports_a_scope_the_define_pass_never_defined() {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let file = parsed();
+        let global = kb.make_name_term("_global");
+        let mut errors = Vec::new();
+        let mut pass = RuleHeadPass {
+            kb: &mut kb,
+            parse_sym: &file.symbols,
+            parse_terms: &file.terms,
+            errors: &mut errors,
+        };
+        walk_scopes(&mut pass, &file.items, global);
+
+        assert_eq!(missed(&errors), vec!["demo".to_string()],
+            "sub-pass 3 now has a channel, and uses it");
+    }
+
+    /// The WI-936 declaration pass and the load phase, both driven through their
+    /// own entry points with `scan_definitions` skipped. The load phase could not
+    /// previously NOTICE the miss: it builds the scope term by resolving the
+    /// written name, and an unresolvable functor bare-interns rather than failing.
+    #[test]
+    fn the_loader_phases_report_a_scope_the_define_pass_never_defined() {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let file = parsed();
+        let mut loaded_paths = HashSet::new();
+
+        let (source_id, decl_errors) =
+            declare_file_field_types(&mut kb, &file, &NullResolver, &mut loaded_paths);
+        assert_eq!(missed(&decl_errors), vec!["demo".to_string()],
+            "the declaration pass reaches the same scope through the same helper");
+
+        let load_errors = load_with_visited(&mut kb, &file, &NullResolver, &mut loaded_paths, source_id)
+            .expect_err("a file the defining pass never saw cannot load");
+        assert_eq!(missed(&load_errors), vec!["demo".to_string()],
+            "the load phase reports it too, instead of filing the body under a phantom scope");
+    }
+
+    /// CONTROL — the same source through the whole pipeline. Passes identically
+    /// with and without the WI-953 reports: `scan_definitions` defines `demo`, so
+    /// no walk ever misses it.
+    #[test]
+    fn the_same_file_loads_clean_through_the_whole_pipeline() {
+        let mut kb = KnowledgeBase::new();
+        let file = parsed();
+        let result = load(&mut kb, &file, &NullResolver);
+        let errors = result.err().unwrap_or_default();
+        assert_eq!(missed(&errors), Vec::<String>::new(),
+            "nothing is missing when the defining pass has run: {errors:?}");
     }
 }
 
