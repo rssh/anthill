@@ -33661,13 +33661,23 @@ pub struct RequiresEntry {
 /// (WI-486 deliberately routes value equality through `views_structurally_equal`,
 /// which needs a `kb`). A ground `Value::Term` keys by its hash-cons `TermId`
 /// (exact, alloc-free). A denoted spec (`Value::Entity` / `Value::Node`) has no
-/// hash-cons id and MUST NOT be keyed by `Debug`: `NodeOccurrence`'s derived
-/// `Debug` prints the `span`, so structurally-identical specs at different spans
-/// would never collide. (It also used to print the interior-mutable `term_cache:
-/// Cell<…>`, which made a live map key's hash mutate in place — an unsound
-/// `HashMap` key; WI-815 deleted that field with `cached_term`, so only the span
-/// half of the argument is still live, and it is sufficient on its own.) Key it
-/// instead by ALLOCATION identity — the `Rc` data
+/// hash-cons id and MUST NOT be keyed by `Debug`, for TWO independent reasons,
+/// BOTH still live. (1) The derived `Debug` prints the `span`, so
+/// structurally-identical specs at different spans would never collide. (2) It also
+/// prints INTERIOR-MUTABLE state, so a live map key's hash would mutate in place —
+/// an unsound `HashMap` key. `NodeOccurrence` and `NodeKind` both
+/// `#[derive(Debug)]`, and `NodeKind::Expr` holds FOUR `RefCell` channels the typer
+/// fills in AFTER an entry is already in `resolve_cache`: `classification`,
+/// `resolved_type_args`, `inferred_type`, `lowered_receiver`.
+///
+/// A WI-815 edit narrowed this to "only the span half is still live", on the
+/// grounds that the `Cell<(KbId, TermId)>` `term_cache` had been deleted. That was
+/// WRONG and is corrected here rather than dropped: `term_cache` was never the only
+/// interior-mutable thing `Debug` printed, and a maintainer trusting the narrowed
+/// claim could reintroduce a `Debug`-derived key for these arms — the `Other(String)`
+/// arm below already keys by `format!("{other:?}")`, so the pattern is one arm away.
+///
+/// Key it instead by ALLOCATION identity — the `Rc` data
 /// pointer(s), stable under interior mutation. Same-`Rc` clones (the requires-chain
 /// caches hand back clones of one allocation) collide correctly; two distinct
 /// allocations key distinctly (a sound false MISS = a recompute, never a false

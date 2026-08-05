@@ -7813,6 +7813,82 @@ mod tests {
         );
     }
 
+    /// WI-815 — A HEAD THAT PROMISES N NAMED CHILDREN AND SUPPLIES FEWER MUST NOT
+    /// KEY. The named twin of `pos_arg`'s `None` guard, driven on the live case.
+    ///
+    /// `type_node_head` returns a HARDCODED `named_arity` per form (`ExprCarried`
+    /// → 2, `Arrow` → 4), while `type_node_keys` is
+    /// `short_keys.iter().filter_map(|k| kb.lookup_symbol(k))` — it comes up SHORT
+    /// whenever one of those names is not interned. That is not hypothetical: it is
+    /// the state of an ORDINARY `register_prelude` KB, MEASURED — the qualified
+    /// `anthill.prelude.TypeExtractor.ExprCarried` resolves (so the head really does
+    /// announce arity 2) and `value` is interned, but `member` is NOT. So the key
+    /// list holds ONE key for a head promising TWO, and two `ExprCarried` types
+    /// differing only in `member` fingerprinted IDENTICALLY with nothing marking the
+    /// loss — and the same head keys differently before and after that name is
+    /// interned, making identity LOAD-ORDER-DEPENDENT.
+    ///
+    /// WHAT FAILS IF BACKED OUT — MEASURED, by deleting the
+    /// `keys.len() != named_arity` guard and re-running: the `is_opaque_free` assert
+    /// fails, because the short key list then yields a perfectly usable key for two
+    /// types the view cannot tell apart, and fact dedup would drop one of them.
+    ///
+    /// Found by `/code-review` on the WI-815 follow-up, in the same family as the
+    /// ordered-product and duplicate-label holes.
+    #[test]
+    fn wi815_a_short_named_key_list_cannot_key() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{NodeOccurrence, TypeChild, TypeNode};
+        use crate::span::{SourceId, SourceSpan};
+
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+
+        // THE PRECONDITION, asserted rather than assumed — this test measures
+        // nothing if the KB happens to intern both names.
+        assert!(
+            kb.try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried").is_some(),
+            "the head must really announce a functor with arity 2",
+        );
+        assert!(kb.lookup_symbol("value").is_some(), "`value` is interned");
+        assert!(
+            kb.lookup_symbol("member").is_none(),
+            "`member` is NOT — this asymmetry is the whole subject",
+        );
+
+        let carried = |kb: &mut KnowledgeBase, member: &str| {
+            let v = kb.intern("shared_value");
+            let m = kb.intern(member);
+            Value::Node(NodeOccurrence::new_type(
+                TypeNode::ExprCarried {
+                    value: TypeChild::Ground(kb.alloc(Term::Ident(v))),
+                    member: TypeChild::Ground(kb.alloc(Term::Ident(m))),
+                },
+                span,
+                None,
+            ))
+        };
+        let a = carried(&mut kb, "alpha_member");
+        let b = carried(&mut kb, "beta_member");
+        let sigma = subst::Substitution::new();
+        let ka = term_view::goal_fingerprint(&kb, &a, &sigma);
+
+        // THE HAZARD: the view cannot distinguish them, because the key it names
+        // `member` by was never emitted.
+        assert_eq!(
+            ka,
+            term_view::goal_fingerprint(&kb, &b, &sigma),
+            "differing only in `member`, these share one key — the hazard",
+        );
+        // THE GUARD: so the key must not be usable.
+        assert!(
+            !ka.is_opaque_free(),
+            "a head promising more named children than the view supplies must degrade",
+        );
+        assert!(kb.value_fact_dedup_key(&a).is_none(), "and fact dedup must refuse it");
+    }
+
     /// WI-815 — THE TWO DEDUP KEY SPACES ARE DISJOINT, and that is a decision.
     ///
     /// `fact_dedup` keys a `Value::Term` head on its hash-consed `TermId`;

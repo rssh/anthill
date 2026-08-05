@@ -1597,6 +1597,19 @@ fn fingerprint_into<V: TermView>(
             // the ticket that found it, because over-dedup drops a fact.
             let ordered_product = functor.is_some_and(|f| kb.is_ordered_product_functor(f));
             let mut keys = view.named_keys(kb);
+            // THE HEAD PROMISED `named_arity` KEYS; a view that supplies fewer has
+            // dropped a child, and dropping it SILENTLY is what makes the key lossy.
+            // `type_node_keys` is the live case: `type_node_head` returns a HARDCODED
+            // arity per form (`Arrow` → 4, `ExprCarried` → 2) while the key list is
+            // `short_keys.iter().filter_map(|k| kb.lookup_symbol(k))`, which comes up
+            // short on any KB where one of those names was never interned — so two
+            // `ExprCarried` types differing only in `member` would key identically,
+            // with no `Opaque` to mark the loss, and LOAD-ORDER-DEPENDENTLY (the same
+            // head keys differently before and after that name is interned). The
+            // positional side is guarded by `pos_arg`'s `None`; this is its named twin.
+            if keys.len() != named_arity {
+                out.push(StructToken::Opaque);
+            }
             if !ordered_product {
                 keys.sort_by_key(|s| s.index());
             }
