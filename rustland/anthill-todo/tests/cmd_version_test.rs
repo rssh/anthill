@@ -59,8 +59,13 @@ fn version_flag_after_subcommand_is_not_hijacked() {
         .output()
         .expect("run anthill-todo");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // Read from `CARGO_PKG_VERSION`, never spelled literally: a hardcoded
+    // "0.1.0" here turns VACUOUS the moment the crate version moves — the
+    // stamp would then read "0.1.1", the `contains` would be false however
+    // loudly the flag was hijacked, and this test would keep passing while
+    // measuring nothing.
     assert!(
-        !stdout.contains("0.1.0"),
+        !stdout.contains(env!("CARGO_PKG_VERSION")),
         "`add --version` must not print the version stamp: {stdout}"
     );
     assert!(

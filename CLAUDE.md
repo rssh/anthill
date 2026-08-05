@@ -53,7 +53,7 @@ npx tree-sitter test       # run grammar corpus tests
 ## Example and Skill
 
 - `examples/github-todo/` — complete example: domain entities, work items, rules, tools, feedback. Used by integration tests (`github_todo_test.rs`).
-- `/todo` skill (`.claude/skills/todo/SKILL.md`) — manages work items via `anthill-todo` CLI. Build: `cd rustland && cargo build -p anthill-todo`. Run from project root.
+- `/anthill-todo` skill (`skills/anthill-todo/SKILL.md`) — manages work items via the `anthill-todo` CLI. Build: `cd rustland && cargo build -p anthill-todo`. Run from project root. Skills live in the top-level `skills/`; there is no `.claude/skills/`.
 
 ## Anthill Language Syntax
 
