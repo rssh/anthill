@@ -34,6 +34,13 @@ enum LoadError:
   case UnresolvedName(name: String, span: Span, scopeName: String)
   case UnresolvedImport(path: String, span: Span)
   case AmbiguousSymbol(name: String, candidates: IndexedSeq[String], span: Span, scopeName: String)
+  /** WI-1009: an expression or pattern form reached a position the loader lowers to a KB
+    * TERM (a rule head or body goal, a fact, a constraint). Scaland loads declarations
+    * only — it has no expression→reflect translation — so the form cannot be lowered, and
+    * this refusal is what the alternatives were: the marker's functor either CAPTURED the
+    * reflect entity of the same spelling or LEAKED as an undeclared predicate, decided by
+    * nothing but whether the two vocabularies happened to agree. See [[ExprMarker]]. */
+  case ExpressionInTermPosition(marker: ExprMarker, span: Span)
   case Other(message: String, span: Span)
 
   /** WI-947: `file:line:col: message`, through the ONE located renderer that
@@ -55,6 +62,11 @@ enum LoadError:
       span.render(s"unresolved import '$path'")
     case AmbiguousSymbol(name, candidates, span, scopeName) =>
       span.render(s"ambiguous symbol '$name' in scope '$scopeName': candidates ${candidates.mkString(", ")}")
+    case ExpressionInTermPosition(marker, span) =>
+      span.render(
+        s"${marker.description} cannot be loaded as a term — scaland loads declarations " +
+        s"only and does not translate expressions into the reflect encoding " +
+        s"(parse marker '${marker.functorName}')")
     case Other(message, span) =>
       span.render(message)
 
@@ -1137,6 +1149,29 @@ object Loader:
     errors: ArrayBuffer[LoadError],
     varMap: HashMap[Int, VarId] = HashMap.empty
   ): TermId =
+    // WI-1009: refuse a PARSE-TIME MARKER before anything below reads its functor name.
+    // Asked of the term's PROVENANCE and not its spelling, which is the whole fix: four
+    // marker spellings are also `anthill.reflect.Expr` entity names, so the `Term.Fn` arm
+    // below RESOLVED those four (the marker captured the entity symbol, and the KB gained
+    // an Entity applied positionally to a shape that entity does not declare) while every
+    // other marker fell through its `NotFound` rung and leaked as an undeclared predicate
+    // with no diagnostic. One condition, one answer, and neither turns on a name.
+    //
+    // The subterms are deliberately NOT walked: one form, one diagnostic — a walk would
+    // report the `pattern_var` under a `lambda` as a second, derived failure.
+    //
+    // `Bottom` stands in for the term that could not be built. It is the one carrier with
+    // neither a name nor structure, so nothing downstream can read a resolution out of it,
+    // and the load has already failed by the time anything looks. It does NOT collide with
+    // `Bottom`'s other meaning — a `⊥` denial head — because a marker can never BE a head
+    // or a fact term: both parse a `term`, and only `fnArg` admits a full `exprBody`, so a
+    // marker reaches this loader nested as an ARGUMENT and never as the subject.
+    fileTerms.markerOf(termId) match
+      case Some(marker) =>
+        errors += LoadError.ExpressionInTermPosition(marker, fileTerms.spanOf(termId))
+        return kb.alloc(Term.Bottom)
+      case None => ()
+
     fileTerms.get(termId) match
       case Term.Const(lit) => kb.alloc(Term.Const(lit))
       case Term.Var(v) =>

@@ -25,6 +25,18 @@ open class SimpleTermStore:
     * the loader's rule-introduced-functor scan, which must not mint a symbol for a
     * desugar's own functor name. */
   private val minted = scala.collection.mutable.HashSet.empty[TermId]
+  /** WI-1009: which nodes are PARSE-TIME MARKERS, and which marker each one is — the
+    * expression and pattern forms scaland has no translation for (see [[ExprMarker]]).
+    *
+    * The same provenance argument as `minted` one field up, for a sharper reason: four
+    * marker spellings are ALSO reflect entity names, so a loader that recognized markers
+    * by spelling would refuse a user's legitimate `lambda_expr(?x)` — and a loader that
+    * did not recognize them at all let the marker capture that entity's symbol, which is
+    * the defect WI-1009 names. Carried, so neither can happen.
+    *
+    * SPARSE, hence a `HashMap` and not a parallel buffer: markers are a handful of nodes
+    * per file where `spans` below is total. */
+  private val markers = HashMap.empty[TermId, ExprMarker]
   /** WI-957: the source text each term was built from, parallel to `terms`.
     *
     * A parse-time term is the ONE IR shape with no node of its own to carry a span
@@ -104,7 +116,25 @@ open class SimpleTermStore:
     minted += id
     id
 
+  /** Allocate a PARSE-TIME MARKER (WI-1009) — a marker is minted by definition, so this
+    * records both provenances in one step, as [[allocMintedAt]] does for its one.
+    *
+    * THE RESIDUAL, said out loud: this store holds no symbol table, so it cannot check
+    * that `term`'s functor is `marker.functorName` — and that pairing is the whole point.
+    * It is enforced one level up instead, at `AnthillParser.markerFn`, which derives the
+    * functor FROM the marker and is this method's only caller. Closing it here would mean
+    * taking an `intern` function as a parameter and threading it through twelve
+    * productions, which trades a one-site convention for a twelve-site one. */
+  final def allocMarkerAt(marker: ExprMarker, term: Term.Fn, span: Span): TermId =
+    val id = allocMintedAt(term, span)
+    markers(id) = marker
+    id
+
   def isMinted(id: TermId): Boolean = minted.contains(id)
+
+  /** Which parse-time marker `id` is, or `None` for an ordinary term (WI-1009). THE
+    * question `Loader.reallocTerm` asks before it resolves a functor by name. */
+  def markerOf(id: TermId): Option[ExprMarker] = markers.get(id)
 
   /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957).
     *

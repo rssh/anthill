@@ -133,28 +133,25 @@ object Prelude:
     def defineReflectEntity(shortName: String): TermSymbol =
       defineIn(kb, reflectScope, shortName, SymbolKind.Entity)
 
-    // WI-1009 — THIS BLOCK HAS NO PRODUCER, and four of its names are worse than unused.
+    // THIS BLOCK HAS NO PRODUCER — the vocabulary is registered, nothing in scaland emits
+    // it. These are the REFLECT ENTITIES (the spec vocabulary — `stdlib/anthill/reflect/
+    // reflect.anthill` declares the same `var_pattern` / `wildcard` / `MatchBranch`), the
+    // TARGET of a translation from the parser's PARSE-TIME MARKERS (`pattern_var`,
+    // `pattern_wildcard`, `match_branch`, …, see `anthill.parse.ExprMarker`) that
+    // rustland performs in `convert_expr_term`. Scaland's copy of it was ported ahead of
+    // any consumer and WI-1007 deleted it, so this is the target vocabulary of a
+    // translation this tree does not perform. Registered anyway, mirroring rustland's
+    // `register_prelude` and reachable BY NAME like any declared entity.
     //
-    // These are the REFLECT ENTITIES (the spec vocabulary — `stdlib/anthill/reflect/
-    // reflect.anthill` declares the same `var_pattern` / `wildcard` / `MatchBranch`).
-    // They are the TARGET of a translation from the parser's PARSE-TIME MARKERS
-    // (`pattern_var`, `pattern_wildcard`, `match_branch`, …), which are a deliberately
-    // different set of names — rustland's `convert_expr_term` is that translation.
-    // Scaland's copy of it was dead and WI-1007 deleted it, so nothing here has a
-    // producer: this is the target vocabulary of a translation scaland does not perform.
-    //
-    // The four spellings the two layers happen to SHARE — `match_expr` / `if_expr` /
-    // `let_expr` / `lambda_expr` — are the hazard, not the healthy part. A marker in a
-    // rule body reaches `reallocTerm`, which resolves every functor by name, so the
-    // MARKER captures the ENTITY symbol. MEASURED, loading `rule r(?x) :- p(lambda s -> s)`:
-    //     Fn p                                   [bare intern]
-    //       Fn anthill.reflect.Expr.lambda_expr  [RESOLVED  <- the marker, captured]
-    //         Fn pattern_var                     [bare intern — no entity to capture]
-    // So a KB term now carries an Entity symbol applied POSITIONALLY to (pattern, body),
-    // which is not that entity's declared shape (`lambda_expr(param:, body:)`), and the
-    // sibling marker one line down escapes as an undeclared predicate with no diagnostic.
-    // Whether a marker is captured or leaks is decided by nothing but a spelling
-    // coincidence. Do not read this list as names that resolve correctly — WI-1009.
+    // WI-1009 CLOSED THE HAZARD, which was not the orphans: four spellings here —
+    // `match_expr` / `if_expr` / `let_expr` / `lambda_expr` — are ALSO marker names, and
+    // `reallocTerm` resolves every functor by name, so a marker in a rule body used to
+    // capture the entity symbol of its spelling (leaking as an undeclared predicate where
+    // the two vocabularies happened to disagree). The loader now refuses a marker by its
+    // PROVENANCE before any name is read, so nothing here is reachable except by being
+    // written — which is why adding to this list is safe again. `ExprLoaderTest` drives
+    // both halves; do not weaken that refusal to a name test, which is the shape this
+    // collision defeats.
     val exprScope = defineSort("Expr", reflectScope)
     for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda_expr", "apply",
       "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do

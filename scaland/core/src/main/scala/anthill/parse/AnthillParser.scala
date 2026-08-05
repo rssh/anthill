@@ -1484,8 +1484,9 @@ private class AnthillParserImpl(
   // WI-957: `ListLiteral` / `SetLiteral` / `TupleLiteral` / `forall_impl` are names
   // the loader RESOLVES — they reach `resolveName` like a written call — which means
   // each must be located. The span is the OPENING BRACKET — the token that decided
-  // which literal this is. (`typed_var` is the only shape `reallocTerm` intercepts
-  // before resolution — WI-1007.)
+  // which literal this is. (`reallocTerm` intercepts two shapes before resolution:
+  // `typed_var`, which it strips — WI-582 — and a parse-time marker, which it refuses
+  // — WI-1009. A literal is neither; it is a name meant to resolve.)
   private def collectionLiteral[$: P]: P[TermId] =
     // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
     // surface; list destructuring uses the explicit `cons(?h, ?t)` constructor.
@@ -1590,6 +1591,23 @@ private class AnthillParserImpl(
 
   // ── Expression bodies ────────────────────────────────────────
 
+  /** THE one place a parse-time marker term is built (WI-1009).
+    *
+    * The functor is derived FROM the marker, so the name and the recorded provenance
+    * cannot disagree — which is what lets `Loader.reallocTerm` refuse a marker without
+    * consulting a spelling. See [[ExprMarker]] for why a spelling would be wrong.
+    *
+    * Every production in this section and the pattern section below goes through it. A
+    * new one that reaches for `terms.allocAt(Term.Fn(intern("…")))` instead compiles
+    * clean and leaks its marker into the KB as an undeclared predicate — the pre-WI-1009
+    * behaviour — so add the [[ExprMarker]] case and mint here. */
+  private def markerFn(
+    marker: ExprMarker, posArgs: IArray[TermId], span: Span,
+    namedArgs: IArray[(TermSymbol, TermId)] = IArray.empty
+  ): TermId =
+    terms.allocMarkerAt(
+      marker, Term.Fn(intern(marker.functorName), posArgs, namedArgs), span)
+
   private def exprBody[$: P]: P[TermId] =
     P(matchExpr | ifExpr | letExpr | lambdaExpr | proofStatement | term)
 
@@ -1620,21 +1638,20 @@ private class AnthillParserImpl(
     // no `end`. `matchBranch.rep(1)` self-terminates at the first non-`case`.
     P(spanOfToken(keyword("match")) ~/ term ~ matchBranch.rep(1)).map {
       case (span, scrutinee, branches) =>
-        terms.allocAt(
-          Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty),
-          span)
+        markerFn(ExprMarker.MatchExpr, IArray(scrutinee) ++ IArray.from(branches), span)
     }
 
   private def matchBranch[$: P]: P[TermId] =
     P(spanOfToken(keyword("case")) ~/ pattern ~ "->" ~ exprBody).map { case (span, pat, body) =>
-      // WI-618: binder-form provenance, as for the accessor builds.
-      terms.allocMintedAt(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty), span)
+      // WI-618: binder-form provenance, as for the accessor builds — carried by
+      // `markerFn` since WI-1009, along with which marker this is.
+      markerFn(ExprMarker.MatchBranch, IArray(pat, body), span)
     }
 
   private def ifExpr[$: P]: P[TermId] =
     P(spanOfToken(keyword("if")) ~/ term ~ keyword("then") ~ exprBody ~ keyword("else") ~ exprBody).map {
       case (span, cond, thenB, elseB) =>
-        terms.allocAt(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty), span)
+        markerFn(ExprMarker.IfExpr, IArray(cond, thenB, elseB), span)
     }
 
   /** `let pat [: T] = value [in] body`. The `in` keyword is OPTIONAL:
@@ -1652,13 +1669,13 @@ private class AnthillParserImpl(
           case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty, span)))
           case None     => IArray.empty[(TermSymbol, TermId)]
         // WI-618: binder-form provenance.
-        terms.allocMintedAt(Term.Fn(intern("let_expr"), IArray(pat, value, body), named), span)
+        markerFn(ExprMarker.LetExpr, IArray(pat, value, body), span, named)
     }
 
   private def lambdaExpr[$: P]: P[TermId] =
     P(spanOfToken(keyword("lambda")) ~/ pattern ~ "->" ~ exprBody).map { case (span, param, body) =>
       // WI-618: binder-form provenance.
-      terms.allocMintedAt(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty), span)
+      markerFn(ExprMarker.LambdaExpr, IArray(param, body), span)
     }
 
   // ── Patterns ─────────────────────────────────────────────────
@@ -1686,8 +1703,8 @@ private class AnthillParserImpl(
   private def typedBinder[$: P]: P[TermId] =
     P(located(ident) ~ ":" ~ typeExpr).map { case (nameSym, span, ty) =>
       val idTerm = terms.allocAt(Term.Ident(nameSym), span)
-      terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm),
-        IArray((intern("type"), typeExprToRef(ty, span)))), span)
+      markerFn(ExprMarker.PatternVar, IArray(idTerm), span,
+        IArray((intern("type"), typeExprToRef(ty, span))))
     }
 
   /** WI-517: a parenthesized single typed binder `(x: T)` (e.g.
@@ -1703,18 +1720,18 @@ private class AnthillParserImpl(
 
   private def patternWildcard[$: P]: P[TermId] =
     P(spanOfToken("_")).map { span =>
-      terms.allocAt(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty), span)
+      markerFn(ExprMarker.PatternWildcard, IArray.empty, span)
     }
 
   private def patternVar[$: P]: P[TermId] =
     P(located(ident)).map { case (sym, span) =>
       val idTerm = terms.allocAt(Term.Ident(sym), span)
-      terms.allocAt(Term.Fn(intern("pattern_var"), IArray(idTerm), IArray.empty), span)
+      markerFn(ExprMarker.PatternVar, IArray(idTerm), span)
     }
 
   private def patternLiteral[$: P]: P[TermId] =
     P(located(literal)).map { case (tid, span) =>
-      terms.allocAt(Term.Fn(intern("pattern_literal"), IArray(tid), IArray.empty), span)
+      markerFn(ExprMarker.PatternLiteral, IArray(tid), span)
     }
 
   private def patternConstructor[$: P]: P[TermId] =
@@ -1723,18 +1740,16 @@ private class AnthillParserImpl(
       // it to `resolveName` like a written call), so it carries the span a `case
       // nosuchctor(…)` diagnostic points at.
       val nameTerm = terms.allocAt(Term.Ident(n.last), n.span)
-      terms.allocAt(Term.Fn(intern("pattern_constructor"),
-        IArray(nameTerm) ++ IArray.from(pats), IArray.empty), n.span)
+      markerFn(ExprMarker.PatternConstructor, IArray(nameTerm) ++ IArray.from(pats), n.span)
     }
 
   private def patternTuple[$: P]: P[TermId] =
     P(
       (spanOfToken("(") ~ ")").map { span =>
-        terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty), span) } |
+        markerFn(ExprMarker.PatternTuple, IArray.empty, span) } |
       (spanOfToken("(") ~ patternTupleElem ~ "," ~ patternTupleElem.rep(1, sep = ",") ~ ")").map {
         case (span, first, rest) =>
-          terms.allocAt(Term.Fn(intern("pattern_tuple"), IArray.from(first +: rest), IArray.empty),
-            span)
+          markerFn(ExprMarker.PatternTuple, IArray.from(first +: rest), span)
       }
     )
 
