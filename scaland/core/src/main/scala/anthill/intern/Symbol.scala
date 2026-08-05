@@ -26,26 +26,30 @@ enum SymbolKind:
   case Sort, Entity, Operation, Const, Namespace, Fact, Rule, Constraint, Param, Field,
        Goal, EquationFunctor
 
-enum SymbolDef:
-  case Unresolved(name: String)
-  case Resolved(shortName: String, qualifiedName: String, kind: SymbolKind, scope: ScopeId)
-
-// ── Scope ───────────────────────────────────────────────────────
-
-/** A parent link in the scope graph (WI-976: `parent` is a [[ScopeId]], not the raw
-  * `Int` a caller had to promise was one).
+/** A symbol's metadata, PARAMETERIZED by the scope type (WI-1004).
   *
-  * The record used to carry a third field, `instantiationTermRaw: Int` — a raw term id,
-  * written by every producer and read by NONE, here and in rustland alike (`kb/load.rs`
-  * says so at its own writers). WI-976 dropped it rather than retype it: parity was the
-  * only argument for keeping it, and this same change already moved `parent` from a
-  * TermId raw to a symbol, so the two records had stopped agreeing regardless. What was
-  * left was an untyped term id inside the record whose untypedness this ticket exists to
-  * remove. The rustland twin is WI-984. */
-case class ScopeInclusion(
-  parent: ScopeId,
-  isEnclosing: Boolean
-)
+  * `Resolved.scope` used to be a top-level `ScopeId`, which is exactly why the type could
+  * not say WHICH table's scope it was: `SymbolDef` lives outside [[SymbolTable]], and a
+  * scope identity is now that class's own member ([[SymbolTable.ScopeId]]). The parameter
+  * is how a record held outside the class still names the one table it belongs to — a
+  * table's `defs` are `SymbolDef[ScopeId]`, so `st.get(sym)` hands back a scope only `st`
+  * accepts. Nothing else varies over `S`; it is never instantiated at anything but some
+  * table's `ScopeId`.
+  *
+  * COVARIANT so `Unresolved` — which has no scope to name — is a `SymbolDef` of every
+  * table at once, rather than needing a cast into each table's `defs`.
+  *
+  * A PARAMETER and not a move inside [[SymbolTable]], unlike the other three records that
+  * hold a scope (`Scope`, `ScopeInclusion`, `KnowledgeBase.RuleEntry`): this enum is
+  * pattern-matched by unqualified name at ~20 sites across `kb`, `resolve`, `load` and
+  * the tests, and a member enum would make every one of them
+  * `kb.symbols.SymbolDef.Resolved(…)`. The parameter's price is that `scope` erases to
+  * `Object` where the others are back to `int` — ~960 boxed ints per loaded stdlib, plus a
+  * discarded unbox at the seven sites that destructure and ignore the field. Measured and
+  * accepted: 15 KB against a load phase that allocates ~15 MB. */
+enum SymbolDef[+S]:
+  case Unresolved(name: String) extends SymbolDef[Nothing]
+  case Resolved(shortName: String, qualifiedName: String, kind: SymbolKind, scope: S)
 
 enum ResolveResult:
   case Found(sym: TermSymbol)

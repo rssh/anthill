@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ScopeId}
+import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef}
 import anthill.term.{Term, TermId, TermStore, Var, VarId, Literal}
 import anthill.subst.Substitution
 import anthill.discrim.SubstTree
@@ -10,6 +10,30 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 class KnowledgeBase:
   val terms: TermStore = TermStore()
   val symbols: SymbolTable = SymbolTable()
+
+  /** THE KB PINS ONE TABLE (WI-1004). A scope identity is a member of the [[SymbolTable]]
+    * that issued it, and a KB has exactly one — so `kb.ScopeId` is `kb.symbols.ScopeId`
+    * and the two spellings are interchangeable. That settles the question the ticket asked
+    * first: everything the KB stores a scope in — `byDomain_`, [[RuleEntry]]`.domain` — is
+    * fixed at this one table, rather than each clause carrying a table of its own. */
+  type ScopeId = symbols.ScopeId
+
+  /** A stored clause. INSIDE the KB (WI-1004) so `domain` can name [[ScopeId]] directly:
+    * as a top-level class it would need a type parameter, and one that could never vary,
+    * since the KB is its only constructor and its only reader. */
+  private class RuleEntry(
+    val head: TermId,
+    val body: IndexedSeq[TermId],
+    val sort: TermId,
+    // The SCOPE the clause was declared in (WI-983) — see [[assertRule]].
+    val domain: ScopeId,
+    val meta: Option[TermId],
+    // Number of distinct DeBruijn vars closed over head+body (WI-637). 0 for a
+    // truly ground fact — those take the resolver's raw-bind fast path; arity>0
+    // rules (incl. bodyless facts with vars) open through `withFreshVars`.
+    val arity: Int = 0,
+    var retracted: Boolean = false
+  )
 
   private val rules = ArrayBuffer.empty[RuleEntry]
 
@@ -96,7 +120,7 @@ class KnowledgeBase:
     * the one name-term producer, so scope-as-term stays the nullary shape [[ScopeId]]
     * presumes; recovering a scope FROM a term is what the type makes unnecessary. */
   def scopeTerm(scope: ScopeId): TermId =
-    makeNameTermFromSym(scope.symbol)
+    makeNameTermFromSym(symbols.symbolOf(scope))
 
   /** The name to call `scope` in a diagnostic (WI-957) — its QUALIFIED name where the
     * scope is a declared one, and the interned spelling (`_global`) for the synthetic
@@ -108,9 +132,9 @@ class KnowledgeBase:
     * name no scope at all.
     *
     * TOTAL (WI-976) — it used to take a bare `TermId` and throw on one that was no scope.
-    * See [[anthill.intern.ScopeId]] for why that arm has no replacement. */
+    * See [[anthill.intern.SymbolTable.ScopeId]] for why that arm has no replacement. */
   def scopeDisplayName(scope: ScopeId): String =
-    qualifiedNameOf(scope.symbol)
+    qualifiedNameOf(symbols.symbolOf(scope))
 
   def getTerm(id: TermId): Term = terms.get(id)
 
@@ -166,7 +190,8 @@ class KnowledgeBase:
              // to `Int` and this build does not run `-language:strictEquality`, so a
              // cross-type `==` compiles clean and answers on raw indices. Extracting
              // first puts the type check where a wrong operand cannot reach.
-             TermSymbol.raw(entry.domain.symbol) == TermSymbol.raw(domain.symbol) &&
+             TermSymbol.raw(symbols.symbolOf(entry.domain)) ==
+               TermSymbol.raw(symbols.symbolOf(domain)) &&
              entry.body.isEmpty then
             return rid
       case None =>

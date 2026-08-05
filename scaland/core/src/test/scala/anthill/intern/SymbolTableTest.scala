@@ -7,8 +7,11 @@ class SymbolTableTest extends munit.FunSuite:
     * from the outside — the table accepted a number that named nothing, so the unit
     * tests exercised a shape the loader could never produce. `SymbolTable.scopeOf` is the
     * only way in now (WI-990: minted THROUGH the table whose symbol it is), so the scopes
-    * here are the same kind of thing the loader threads. */
-  private def scopeOf(st: SymbolTable, name: String): ScopeId =
+    * here are the same kind of thing the loader threads.
+    *
+    * WI-1004: the return type is `st.ScopeId` — a scope belongs to the table that issued
+    * it, so this helper cannot be written without naming which one. */
+  private def scopeOf(st: SymbolTable, name: String): st.ScopeId =
     st.scopeOf(st.intern(name))
 
   test("intern deduplicates") {
@@ -52,7 +55,7 @@ class SymbolTableTest extends munit.FunSuite:
     val eq = scopeOf(st, "Eq")
     val user = scopeOf(st, "User")
     val eqSym = st.define("eq", "Eq.eq", SymbolKind.Operation, eq)
-    st.addParent(user, ScopeInclusion(parent = eq, isEnclosing = false))
+    st.addParent(user, eq, isEnclosing = false)
 
     st.resolveInScope("eq", user) match
       case ResolveResult.Found(found) => assertEquals(TermSymbol.raw(found), TermSymbol.raw(eqSym))
@@ -68,7 +71,7 @@ class SymbolTableTest extends munit.FunSuite:
 
     val eqSym = st.define("eq", "Eq.eq", SymbolKind.Operation, eq)
 
-    st.addParent(user, ScopeInclusion(parent = eq, isEnclosing = false))
+    st.addParent(user, eq, isEnclosing = false)
 
     st.resolveInScope("T", user) match
       case ResolveResult.NotFound => // expected
@@ -87,8 +90,8 @@ class SymbolTableTest extends munit.FunSuite:
     st.define("foo", "A.foo", SymbolKind.Operation, a)
     st.define("foo", "B.foo", SymbolKind.Operation, b)
 
-    st.addParent(c, ScopeInclusion(parent = a, isEnclosing = false))
-    st.addParent(c, ScopeInclusion(parent = b, isEnclosing = false))
+    st.addParent(c, a, isEnclosing = false)
+    st.addParent(c, b, isEnclosing = false)
 
     st.resolveInScope("foo", c) match
       case ResolveResult.Ambiguous(candidates) => assertEquals(candidates.length, 2)
@@ -102,7 +105,7 @@ class SymbolTableTest extends munit.FunSuite:
     st.define("foo", "A.foo", SymbolKind.Operation, a)
 
     val localFoo = st.define("foo", "B.foo", SymbolKind.Operation, b)
-    st.addParent(b, ScopeInclusion(parent = a, isEnclosing = false))
+    st.addParent(b, a, isEnclosing = false)
 
     st.resolveInScope("foo", b) match
       case ResolveResult.Found(found) => assertEquals(TermSymbol.raw(found), TermSymbol.raw(localFoo))

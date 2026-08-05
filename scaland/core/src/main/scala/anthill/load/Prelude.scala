@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind, BuiltinTag}
-import anthill.intern.{SymbolKind, ScopeId, ScopeInclusion, TermSymbol}
+import anthill.intern.{SymbolKind, TermSymbol}
 
 /** Register prelude sorts and builtins into the KB. */
 object Prelude:
@@ -27,10 +27,13 @@ object Prelude:
     *
     * THREE fields, not four: the enclosing `anthill` namespace is a step on the way to
     * the other three and no later step reads it, so it stays a local. A field with no
-    * reader is a field nothing can catch being wrong — and all of these erase to `Int`,
-    * so a positional slip between them would type-check. */
-  private[load] case class StdlibScopes(
-    prelude: ScopeId, reflect: ScopeId, reflectTyping: ScopeId)
+    * reader is a field nothing can catch being wrong — and all three have the SAME type,
+    * so a positional slip between them would type-check.
+    *
+    * `S` is the KB's scope type (WI-1004) — the record is held outside the table that
+    * issues one, so it names the table the way [[anthill.intern.SymbolDef]] does. */
+  private[load] case class StdlibScopes[S](
+    prelude: S, reflect: S, reflectTyping: S)
 
   def register(kb: KnowledgeBase): Unit =
     val scopes = registerStdlibScopes(kb)
@@ -54,11 +57,11 @@ object Prelude:
   // `private[load]` for `PreludeScopesTest` alone (with `registerPrimitiveSorts` below):
   // the two together are the shape its `typeCheckErrors` snippets need — a producer and
   // one consumer. The other four steps stay `private`; they take the same argument.
-  private[load] def registerStdlibScopes(kb: KnowledgeBase): StdlibScopes =
-    def defineNamespace(short: String, qualName: String, enclosing: ScopeId): ScopeId =
+  private[load] def registerStdlibScopes(kb: KnowledgeBase): StdlibScopes[kb.ScopeId] =
+    def defineNamespace(short: String, qualName: String, enclosing: kb.ScopeId): kb.ScopeId =
       val scope = kb.symbols.scopeOf(
         kb.symbols.define(short, qualName, SymbolKind.Namespace, enclosing))
-      kb.symbols.addParent(scope, ScopeInclusion(enclosing, isEnclosing = true))
+      kb.symbols.addParent(scope, enclosing, isEnclosing = true)
       scope
 
     val anthillScope = defineNamespace("anthill", "anthill", kb.globalScope)
@@ -81,41 +84,43 @@ object Prelude:
     * WI-987 proposes changing what it renders for the synthetic global scope. A key must
     * not move when a message does. */
   private def defineIn(
-    kb: KnowledgeBase, scope: ScopeId, short: String, kind: SymbolKind
+    kb: KnowledgeBase, scope: kb.ScopeId, short: String, kind: SymbolKind
   ): TermSymbol =
     kb.symbols.define(
-      short, Loader.makeQualified(kb.qualifiedNameOf(scope.symbol), short), kind, scope)
+      short,
+      Loader.makeQualified(kb.qualifiedNameOf(kb.symbols.symbolOf(scope)), short),
+      kind, scope)
 
   // `private[load]` for `PreludeScopesTest` — see `registerStdlibScopes` above.
-  private[load] def registerPrimitiveSorts(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+  private[load] def registerPrimitiveSorts(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     for name <- IndexedSeq("Int64", "BigInt", "Float", "String", "Bool") do
       val sym = defineIn(kb, scopes.prelude, name, SymbolKind.Sort)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
 
-  private def registerKernelMetaSorts(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+  private def registerKernelMetaSorts(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     for name <- kernelMetaSorts do
       val sym = defineIn(kb, scopes.reflect, name, SymbolKind.Sort)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
 
   /** Register Expr, Pattern, TypedExpr sorts and their entities. */
-  private def registerExprSorts(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+  private def registerExprSorts(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     val reflectScope = scopes.reflect
 
     // Helper to define a sort with enclosing scope. The sort is also linked
     // as a non-enclosing parent of its parent scope so its entity variants
     // (added via defineEntity → addExposed) resolve bare from the enclosing
     // scope — the variant-exposure mechanism (proposal 044 job 2).
-    def defineSort(shortName: String, parentScope: ScopeId): ScopeId =
+    def defineSort(shortName: String, parentScope: kb.ScopeId): kb.ScopeId =
       val sym = defineIn(kb, parentScope, shortName, SymbolKind.Sort)
       val sortScope = kb.symbols.scopeOf(sym)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
-      kb.symbols.addParent(sortScope, ScopeInclusion(parentScope, isEnclosing = true))
-      kb.symbols.addParent(parentScope, ScopeInclusion(sortScope, isEnclosing = false))
+      kb.symbols.addParent(sortScope, parentScope, isEnclosing = true)
+      kb.symbols.addParent(parentScope, sortScope, isEnclosing = false)
       sortScope
 
     // Helper to define an entity (variant) in a sort scope — exposed to the
     // enclosing scope via the sort's variant-exposure link.
-    def defineEntity(shortName: String, scope: ScopeId): Unit =
+    def defineEntity(shortName: String, scope: kb.ScopeId): Unit =
       defineIn(kb, scope, shortName, SymbolKind.Entity)
       kb.symbols.addExposed(scope, shortName)
 
@@ -172,7 +177,7 @@ object Prelude:
     *
     * The list is in definition order, so the symbol ids it allocates are the ones it
     * always allocated. */
-  private def registerBuiltinTags(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+  private def registerBuiltinTags(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     val reflect = scopes.reflect
     val typing = scopes.reflectTyping
     val builtinDefs = IndexedSeq(
@@ -196,7 +201,7 @@ object Prelude:
   /** Add anthill.prelude and anthill.reflect as parents of _global,
     * making their exports visible everywhere.
     */
-  private def registerGlobalParents(kb: KnowledgeBase, scopes: StdlibScopes): Unit =
+  private def registerGlobalParents(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     val globalScope = kb.globalScope
-    kb.symbols.addParent(globalScope, ScopeInclusion(scopes.prelude, isEnclosing = false))
-    kb.symbols.addParent(globalScope, ScopeInclusion(scopes.reflect, isEnclosing = false))
+    kb.symbols.addParent(globalScope, scopes.prelude, isEnclosing = false)
+    kb.symbols.addParent(globalScope, scopes.reflect, isEnclosing = false)

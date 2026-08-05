@@ -9,7 +9,7 @@ import anthill.term.{Term, TermId, Var}
 import scala.compiletime.testing.typeCheckErrors
 
 /** WI-976 — SCOPE-HOOD IS A TYPE, NOT A CLAIM EACH CALLER RE-MAKES. The type and its
-  * history live in [[anthill.intern.ScopeId]]; this file is what holds it true.
+  * history live in [[anthill.intern.SymbolTable.ScopeId]]; this file is what holds it true.
   *
   * CONTROL — two mechanisms, because they fail differently:
   *
@@ -31,7 +31,7 @@ import scala.compiletime.testing.typeCheckErrors
   *      a site that previously reconstructed the term as `TermId.fromRaw(scopeRaw)`,
   *      correct ONLY because the scope key happened to be a term id. Measured:
   *      transcribe that old line under the new storage —
-  *      `TermId.fromRaw(TermSymbol.raw(scope.symbol))` — and exactly ONE case fails, the
+  *      `TermId.fromRaw(TermSymbol.raw(kb.symbols.symbolOf(scope)))` — and exactly ONE case fails, the
   *      builtin one, binding term 66 where `demo.S` is term 18. The other two pass
   *      either way BY DESIGN: they never reach the builtin.
   *
@@ -57,18 +57,35 @@ import scala.compiletime.testing.typeCheckErrors
   * mis-keyed index or a domain equality that answered the same for every scope would
   * have gone unnoticed either side of this WI.
   *
-  * WI-990 SAID WHICH TABLE, which the type alone could not. `ScopeId.of` was total over
-  * `TermSymbol`, and a `TermSymbol` indexes ONE `SymbolTable`'s `defs` while the loader
-  * threads two. The two cases below split the usual way — the mint's LOCATION is a
-  * compile error, its RANGE a runtime refusal — and the second one also asserts what
-  * neither closes.
+  * WI-990 SAID WHICH TABLE AT THE MINT SITE, which the type alone could not. `ScopeId.of`
+  * was total over `TermSymbol`, and a `TermSymbol` indexes ONE `SymbolTable`'s `defs`
+  * while the loader threads two. Its two cases split the usual way — the mint's LOCATION
+  * is a compile error, its RANGE a runtime refusal.
+  *
+  * WI-1004 MADE THE TABLE PART OF THE TYPE — `ScopeId` is a member of the table that
+  * issues it. Why that, and what it does and does not reach, is stated once at
+  * [[anthill.intern.SymbolTable.ScopeId]]. What this file adds is the assertions, and the
+  * limit WI-990 recorded splits in two across them:
+  *   - a scope minted by one table and USED at another is a compile error (`Found:
+  *     a.ScopeId  Required: b.ScopeId`), at `resolveInScope` and at the KB's `domain` slot;
+  *   - a foreign symbol handed to the RIGHT table's MINT still compiles. That half stays
+  *     open, and the `mint refuses` case asserts it rather than implying it is closed.
   *
   * MEASURE A TYPE-LEVEL CONTROL WITH `core/clean`. `typeCheckErrors` runs the typer at
   * THIS file's compile time, and zinc does not treat the snippet's subject as a
-  * dependency: making `ScopeId.of` public again and re-running `testOnly` leaves the
-  * stale class file in place and reports green. Under a clean build it is exactly 1 of
-  * these 8 failing (`must not be reachable outside anthill.intern; got List()`). The same
-  * applies to every `typeCheckErrors` case above.
+  * dependency: changing the subject and re-running `testOnly` leaves the stale class file
+  * in place and reports green.
+  *
+  * MEASURED for WI-1004 under `core/clean`, by aliasing the member back to ONE top-level
+  * opaque type (`type ScopeId = anthill.intern.SharedScopeId`) — the pre-WI-1004 semantics
+  * in the post-WI-1004 spelling, so the tree still compiles and only the type-level
+  * assertions can move: 2 of these 9 cases fail, "belongs to the table that minted it" and
+  * the inverted third assertion of "the mint refuses", both with `got List()` — the
+  * snippet compiled clean, which is exactly the state this WI closed. Its two rejections
+  * were measured ONE AT A TIME (munit stops a case at its first failed assert): each fails
+  * on its own, so the `domain` half is not riding on the `resolveInScope` half. The other
+  * 354 tests pass either way, by design — they are WI-976/983/990's, and this WI changes
+  * what the type SAYS, not what any of it does.
   */
 class ScopeIdentityTest extends munit.FunSuite:
 
@@ -93,17 +110,26 @@ class ScopeIdentityTest extends munit.FunSuite:
     // Both snippets COMPILED before this WI. `typeCheckErrors` runs the typer over them
     // at THIS file's compile time and hands back the diagnostics, so the assertion is on
     // the rejection itself rather than on a comment claiming one.
+    //
+    // Matched on `Required: <table>.ScopeId` since WI-1004: the type is a MEMBER now, so
+    // its rendering names the path as well as the type, and a match on the pair asserts
+    // both halves at once — that a scope is what was wanted, and whose.
     val termAsScope = typeCheckErrors(
       """val kb = anthill.kb.KnowledgeBase()
          kb.scopeDisplayName(kb.makeNameTerm("Foo"))""")
     assert(
-      termAsScope.exists(_.message.contains("anthill.intern.ScopeId")),
+      termAsScope.exists(_.message.contains("Required: kb.ScopeId")),
       s"a bare TermId must not be a scope; got $termAsScope")
 
+    // Through a `val`, so the table has a NAME to render: an unstable prefix
+    // (`SymbolTable().resolveInScope(…)`) is rejected just the same, but the message reads
+    // `Required: ?1.ScopeId`, which pins nothing a reader can check. Both spellings
+    // compiled before WI-976.
     val intAsScope = typeCheckErrors(
-      """anthill.intern.SymbolTable().resolveInScope("x", 100)""")
+      """val st = anthill.intern.SymbolTable()
+         st.resolveInScope("x", 100)""")
     assert(
-      intAsScope.exists(_.message.contains("anthill.intern.ScopeId")),
+      intAsScope.exists(_.message.contains("Required: st.ScopeId")),
       s"a bare Int must not be a scope; got $intAsScope")
 
     // POSITIVE control, so the two rejections cannot pass vacuously: the same snippet
@@ -135,12 +161,17 @@ class ScopeIdentityTest extends munit.FunSuite:
     val companionMint = typeCheckErrors(
       """val fileSym = anthill.intern.SymbolTable()
          anthill.intern.ScopeId.of(fileSym.intern("Widget"))""")
-    // Matched on the ACCESS wording, not on the substring "of" — "of" appears in the
-    // routine "value X is not a member of Y", so a typo in the snippet would have
-    // satisfied the assertion while the message claimed access control was proven.
+    // WI-990 made this an ACCESS refusal (`ScopeId.of` went `private[intern]`); WI-1004
+    // moved the type itself INTO the table, so there is no `anthill.intern.ScopeId` left
+    // to reach — a mint outside a table is now unspellable rather than inaccessible. The
+    // assertion follows the message, and still discriminates the same thing: re-introduce
+    // a top-level `ScopeId` with a companion mint and it fails. Matched on the NAME as
+    // well as the wording — "is not a member of" alone would be satisfied by any typo in
+    // the snippet, which is the trap the previous spelling of this assertion named.
     assert(
-      companionMint.exists(_.message.contains("cannot be accessed")),
-      s"`ScopeId.of` must not be reachable outside `anthill.intern`; got $companionMint")
+      companionMint.exists(m =>
+        m.message.contains("ScopeId is not a member of anthill.intern")),
+      s"a scope must not be mintable outside a `SymbolTable`; got $companionMint")
 
     // POSITIVE control: the same mint through the table type-checks clean, so the
     // rejection above is about WHERE the mint lives and not about the snippet.
@@ -168,14 +199,78 @@ class ScopeIdentityTest extends munit.FunSuite:
     // The bound is the TABLE's, not a global one: `other` issued it, so `other` mints it.
     assertEquals(other.scopeOf(foreign), other.scopeOf(other.intern("e")))
 
-    // NOT closed, and no CHECK on this side can close it: a foreign symbol that is IN
-    // range mints a scope for whatever symbol shares that index — here `other`'s "a"
-    // names the KB's `_global`. That is the loader's own direction (`fileSym` small,
-    // `kb.symbols` large). Asserted so the limit is a measured fact rather than a hope;
-    // WI-1004 is the close that makes it a TYPE, and inverts this assertion.
+    // INVERTED BY WI-1004, which is what this pair of assertions used to record as a hole.
+    // The direction that mattered — `other` issues the symbol, so `other` mints the scope,
+    // and the KB is then handed something that means nothing to it — is a compile error:
+    // the table is in the TYPE, so no index is ever looked at.
     val inRange = other.intern("a")
     assertEquals(other.name(inRange), "a")
+    val handedOver = typeCheckErrors(
+      """val kb = anthill.kb.KnowledgeBase()
+         val other = anthill.intern.SymbolTable()
+         other.intern("a")
+         kb.scopeDisplayName(other.scopeOf(other.intern("a")))""")
+    assert(
+      handedOver.exists(m =>
+        m.message.contains("Found:    other.ScopeId") &&
+        m.message.contains("Required: kb.ScopeId")),
+      s"another table's scope must not be one of the KB's; got $handedOver")
+
+    // WHAT IS STILL OPEN, asserted so the limit stays a measured fact rather than a hope:
+    // the MINT takes a bare `TermSymbol`, so a foreign symbol handed to the KB's OWN mint
+    // is in range and silently names another scope — `other`'s "a" is index 0, which in
+    // the KB is `_global`. Why it is not closed is at `SymbolTable.ScopeId`; what this
+    // line does is make the non-guarantee executable, so a later change that closes it
+    // fails here rather than leaving a comment claiming a limit that is gone.
     assertEquals(kb.scopeDisplayName(kb.symbols.scopeOf(inRange)), "_global")
+  }
+
+  test("WI-1004: a scope belongs to the table that minted it") {
+    // THE cross-table hand-off, which is the direction `scopeOf`'s range check cannot see
+    // (`fileSym` small, `kb.symbols` large — a parse-time symbol is always in range for
+    // the KB's table). Before WI-1004 `ScopeId` was ONE top-level opaque type, so every
+    // table's scopes had the same type and this snippet compiled.
+    val crossTable = typeCheckErrors(
+      """val a = anthill.intern.SymbolTable()
+         val b = anthill.intern.SymbolTable()
+         a.intern("x")
+         b.resolveInScope("x", a.scopeOf(a.intern("x")))""")
+    assert(
+      crossTable.exists(m =>
+        m.message.contains("Found:    a.ScopeId") &&
+        m.message.contains("Required: b.ScopeId")),
+      s"a scope of `a` must not resolve in `b`; got $crossTable")
+
+    // The SAME rejection across the KB's write boundary — `RuleEntry.domain` (WI-983).
+    // It is a separate assertion because it is what the ticket's first question settled:
+    // `RuleEntry` takes a type parameter and `KnowledgeBase` pins it at its own table's
+    // `ScopeId`, rather than each clause carrying a table of its own. Instantiate it at
+    // anything else and this stops being a compile error.
+    val foreignDomain = typeCheckErrors(
+      """val kb = anthill.kb.KnowledgeBase()
+         val other = anthill.intern.SymbolTable()
+         other.intern("a")
+         kb.assertFact(kb.makeNameTerm("f"), kb.makeNameTerm("S"),
+                       other.scopeOf(other.intern("a")))""")
+    assert(
+      foreignDomain.exists(m =>
+        m.message.contains("Found:    other.ScopeId") &&
+        m.message.contains("Required: kb.ScopeId")),
+      s"another table's scope must not be a clause domain; got $foreignDomain")
+
+    // POSITIVE controls, one per rejection, so neither can pass on some unrelated error in
+    // its snippet: the same two calls with the SAME table's scope type-check clean.
+    assertEquals(
+      typeCheckErrors(
+        """val a = anthill.intern.SymbolTable()
+           a.intern("x")
+           a.resolveInScope("x", a.scopeOf(a.intern("x")))"""),
+      Nil)
+    assertEquals(
+      typeCheckErrors(
+        """val kb = anthill.kb.KnowledgeBase()
+           kb.assertFact(kb.makeNameTerm("f"), kb.makeNameTerm("S"), kb.globalScope)"""),
+      Nil)
   }
 
   test("WI-976: `scopeTerm` is the inverse of the scope a symbol was defined in") {
@@ -217,7 +312,7 @@ class ScopeIdentityTest extends munit.FunSuite:
          val scope = kb.globalScope
          kb.assertFact(kb.makeNameTerm("f"), kb.makeNameTerm("S"), kb.scopeTerm(scope))""")
     assert(
-      termAsDomain.exists(_.message.contains("anthill.intern.ScopeId")),
+      termAsDomain.exists(_.message.contains("Required: kb.ScopeId")),
       s"a scope's term form must not be a domain; got $termAsDomain")
 
     // POSITIVE control: the same call with the scope itself type-checks clean, so the
