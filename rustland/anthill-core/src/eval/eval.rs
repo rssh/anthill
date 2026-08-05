@@ -984,16 +984,48 @@ impl Interpreter {
         spec_op: Symbol,
         arg_values: &[Value],
     ) -> Result<Option<Symbol>, EvalError> {
+        self.sole_supplier_by_value(
+            spec_op,
+            arg_values,
+            crate::kb::typing::spec_op_suppliers_for_carrier,
+        )
+    }
+
+    /// The body BOTH value-directed readers share: classify the runtime carrier, ask
+    /// `suppliers` who implements `spec_op` for it, and answer only if the answer is
+    /// unique — `Ok(None)` when nothing supplies it (the caller's fallback runs),
+    /// `Err(AmbiguousSpecOpDispatch)` on a second candidate, per proposal 058 §4.9's
+    /// rule that a bracket-less read goes loud rather than picking by route order.
+    ///
+    /// Written once because the two readers differ ONLY in which supplier reader they
+    /// pass ([`Self::resolve_spec_op_target_by_value`] the body-less one,
+    /// [`Self::resolve_carrier_override_by_value`] the runnable-only one). WI-1010
+    /// created that twin — before it, the override reader was four lines and shared
+    /// nothing — and these are the tree's only two constructions of
+    /// `AmbiguousSpecOpDispatch`, so a copy would mean the refusal's wording, fields
+    /// and candidate rendering had to be edited in two places with a half-edit
+    /// compiling clean. `provision_supplier`'s doc names that shape as what produced
+    /// WI-838's blind spot.
+    fn sole_supplier_by_value(
+        &self,
+        spec_op: Symbol,
+        arg_values: &[Value],
+        suppliers: fn(
+            &KnowledgeBase,
+            Symbol,
+            Symbol,
+            Symbol,
+            Symbol,
+        ) -> SmallVec<[crate::kb::typing::SpecOpSupplier; 2]>,
+    ) -> Result<Option<Symbol>, EvalError> {
         let Some((spec_sort, carrier)) = self.spec_call_runtime_carrier(spec_op, arg_values)
         else {
             return Ok(None);
         };
         let op_qn = self.kb.qualified_name_of(spec_op);
-        let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
+        let op_short = crate::kb::typing::short_name_of(op_qn);
         let Some(op_short_sym) = self.kb.lookup_symbol(op_short) else { return Ok(None) };
-        let cands = crate::kb::typing::spec_op_suppliers_for_carrier(
-            &self.kb, spec_sort, carrier, spec_op, op_short_sym,
-        );
+        let cands = suppliers(&self.kb, spec_sort, carrier, spec_op, op_short_sym);
         match cands.as_slice() {
             [] => Ok(None),
             [only] => Ok(Some(only.target)),
@@ -1005,25 +1037,32 @@ impl Interpreter {
         }
     }
 
-    /// WI-444 — the GENUINE carrier override of a (possibly defaulted) spec op,
-    /// resolved from a runtime receiver value. Returns the carrier sort's OWN
-    /// member backing `spec_op` (declared IN the carrier), or `None` when the
-    /// carrier merely inherits the spec default (`carrier_override_op` rejects
-    /// both the spec op itself and a DIFFERENT spec's same-short-name default
-    /// the carrier also inherits). Stricter than [`Self::resolve_spec_op_target_by_value`]
-    /// — it never dispatches to another spec's default body — so the eval step-3
-    /// override path runs the genuine override or the spec's OWN default,
-    /// nothing in between.
+    /// WI-444 — the RUNNABLE implementation of a (possibly defaulted) spec op
+    /// supplied for the runtime receiver's own carrier, or `None` when the carrier
+    /// merely inherits the spec default. Stricter than
+    /// [`Self::resolve_spec_op_target_by_value`] — it never dispatches to another
+    /// spec's same-short-name default, nor to a member the interpreter cannot run —
+    /// so the eval step-3 override path runs a genuine implementation or the spec's
+    /// OWN default, nothing in between.
+    ///
+    /// WI-1010 — "supplied" is all three routes
+    /// ([`crate::kb::typing::carrier_override_suppliers`]), not the carrier's own
+    /// member alone. A WI-431 instance fact's op-valued binding is an implementation
+    /// the author wrote and the loader validated, and reading only route 1 here ran
+    /// the default over it. `Err` is the same second-candidate refusal
+    /// [`Self::resolve_spec_op_target_by_value`] raises, for the same reason and in
+    /// the same words: this is a bracket-less site, so nothing later can name a
+    /// selection for it.
     fn resolve_carrier_override_by_value(
         &self,
         spec_op: Symbol,
         arg_values: &[Value],
-    ) -> Option<Symbol> {
-        let (_spec_sort, carrier) = self.spec_call_runtime_carrier(spec_op, arg_values)?;
-        let op_qn = self.kb.qualified_name_of(spec_op);
-        let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
-        let op_short_sym = self.kb.lookup_symbol(op_short)?;
-        crate::kb::typing::carrier_override_op(&self.kb, carrier, spec_op, op_short_sym)
+    ) -> Result<Option<Symbol>, EvalError> {
+        self.sole_supplier_by_value(
+            spec_op,
+            arg_values,
+            crate::kb::typing::carrier_override_suppliers,
+        )
     }
 
     /// WI-350/WI-444 — the `(spec_sort, carrier_sort)` a spec-op call names at
@@ -1733,11 +1772,12 @@ impl Interpreter {
             // call the typer could not pin (the concrete-carrier call is already
             // rewritten to the impl op, whose `target` is not a spec op so this
             // resolves `None`). The STRICT resolver returns only a GENUINE carrier
-            // override (a member declared in the carrier sort itself), never
-            // another spec's same-short-name default — so a carrier that merely
+            // override — a member declared in the carrier sort itself, or (WI-1010)
+            // an implementation a provision SUPPLIES for that carrier — never
+            // another spec's same-short-name default. So a carrier that merely
             // inherits the default runs it, unchanged; a normal (non-spec) op
             // resolves `None` and runs its body directly.
-            if let Some(impl_target) = self.resolve_carrier_override_by_value(target, &arg_values) {
+            if let Some(impl_target) = self.resolve_carrier_override_by_value(target, &arg_values)? {
                 if impl_target != target {
                     // WI-455: name the op we actually RUN. The ring was fed with
                     // `target` (the spec op) by the dispatch wrapper; the override

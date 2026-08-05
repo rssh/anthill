@@ -9267,7 +9267,7 @@ fn classify_pin_or_apply_within(
     classify(kb, occ, class);
 }
 
-/// WI-606: the carrier's GENUINE self-receiver override of the body-less spec op
+/// WI-606: the carrier's GENUINE self-receiver override of the spec op
 /// `fn_sym` (short name `op_short_sym`), or `None`. `carrier_override_op` already
 /// filters to a runnable carrier member of that short name; this additionally
 /// requires that member to declare a self-receiver parameter typed by the carrier
@@ -9276,6 +9276,27 @@ fn classify_pin_or_apply_within(
 /// arity. Shared by both WI-606 sites (the return-threading fallback and the
 /// `NoCandidates` classification) so they cannot disagree about what counts as the
 /// override.
+///
+/// WI-1010 deliberately did NOT widen this to [`carrier_override_suppliers`], though
+/// it is the last reader of `carrier_override_op`. Not because a default cannot reach
+/// it — a first draft of this note claimed both callers were body-less-gated and that
+/// is FALSE, measured: the `classify_pin_or_apply_within` caller is inside
+/// `lookup_spec_op_dispatch`'s block, but the other, reached through
+/// [`concrete_override_threaded`], sits in the projection-elimination fallback, gated
+/// only on `self_recv_spec` — which comes from the deliberately BODY-AGNOSTIC
+/// `self_receiver_spec_sort`. A defaulted spec op with a projection-laden return does
+/// reach here.
+///
+/// The reasons it stays route-1 are:
+///   * declining here RE-RAISES the projection error rather than selecting anything,
+///     so no supplier can be shadowed by a default — the failure mode WI-1010 exists
+///     to close cannot occur at this site whatever it reads;
+///   * the question is narrower: which member's RETURN to thread, gated on a
+///     self-receiver parameter typed by the carrier;
+///   * for a SELF-RECEIVER spec no route-2/3 supplier reaches the carrier at all
+///     today — `provision_carrier_sort` files such a provision under the spec's FIRST
+///     TYPE PARAM (058 §12's recorded limit, WI-450's carrier-as-artifact problem), so
+///     widening this would be inert as well as unmotivated.
 fn concrete_self_receiver_override(
     kb: &mut KnowledgeBase,
     carrier_sym: Symbol,
@@ -10735,8 +10756,9 @@ fn check_apply_iter(
                     // on a `FiniteCollection` would mis-pin to FiniteCollection's OWN `map`
                     // (a different op). A CONCRETE carrier — direct OR transitive — keeps
                     // its static override pin (WI-444/496 typeclass-default semantics): a
-                    // real member wins, and a concrete carrier without one resolves `None`
-                    // from `carrier_override_op` and defers at the gate below anyway.
+                    // real member wins, and a concrete carrier with no SUPPLIER at all
+                    // yields an empty `carrier_override_suppliers` list (WI-1010 — it is
+                    // no longer route 1 alone) and defers at the gate below anyway.
                     None => carrier_param_info.as_ref().and_then(|(_, c, _, _, _, _, _)| {
                         (!carrier_is_abstract_spec(kb, *c)).then_some(*c)
                     }),
@@ -10744,9 +10766,18 @@ fn check_apply_iter(
                 if let Some(carrier_sym) = carrier {
                     let op_qn = kb.qualified_name_of(fn_sym).to_string();
                     let op_short_sym = kb.intern(short_name_of(&op_qn));
-                    if let Some(impl_op) =
-                        carrier_override_op(kb, carrier_sym, fn_sym, op_short_sym)
-                    {
+                    // WI-1010: the impl may arrive by ANY of the three supply routes,
+                    // not just the carrier's own member — a WI-431 instance fact's
+                    // op-valued binding fills the same gap and must win over the
+                    // default for the same reason. On a TIE this pins nothing and
+                    // defers: eval's read raises `AmbiguousSpecOpDispatch`, which is
+                    // the one wording that can name a route with no name of its own
+                    // (an instance fact, 058 §4.3) — see [`carrier_override_suppliers`].
+                    let cands = carrier_override_suppliers(
+                        kb, spec_sort, carrier_sym, fn_sym, op_short_sym,
+                    );
+                    if let [only] = cands.as_slice() {
+                        let impl_op = only.target;
                         let derived = dispatched_impl_effects(
                             kb, impl_op, &op.params, &subst, pos_args, named_args,
                             pos_results, named_results,
@@ -15397,7 +15428,15 @@ pub(crate) fn carrier_own_op(
 /// bodyless rule-backed member is not invocable by the interpreter).
 /// Returns the override op symbol, or `None` (run the spec's default body).
 ///
-/// WI-876 widened "runnable" from a BODY to [`op_is_executable`] — a body-less
+/// WI-1010 — THE TWO WI-444 SITES NO LONGER READ THIS: they read
+/// [`carrier_override_suppliers`], which is this predicate's rule applied to all three
+/// supply routes instead of route 1 alone. The one remaining caller is WI-606's
+/// [`concrete_self_receiver_override`], whose doc records why it stays route-1. Kept
+/// as its own function because that caller narrows the result further, and because
+/// `carrier_own_op` + this filter is the definition `carrier_override_suppliers`
+/// preserves bit-for-bit for route 1.
+///
+/// WI-876 widened "runnable" from a BODY to executability — a body-less
 /// member whose implementation is the HOST's is runnable too, and rejecting it here
 /// meant the spec's default body ran INSTEAD of the carrier's own host code.
 /// MEASURED once `Float` declared its own IEEE `gt`: `gt(nan, 1.0)` fell through to
@@ -15410,6 +15449,10 @@ pub(crate) fn carrier_own_op(
 /// The gate still excludes what it was built to exclude: a member that is merely
 /// DECLARED, or backed only by rules, which the interpreter cannot invoke (and which
 /// a same-short-name collision — `sub` ↔ `Numeric.sub` — would otherwise capture).
+/// The predicate is [`op_is_interpretable`], not the `op_is_executable` this paragraph
+/// named before WI-886 split the two: a cpp `operation_map` entry is a real
+/// implementation that THIS interpreter cannot call, so counting it would select a
+/// member eval then fails to find.
 pub(crate) fn carrier_override_op(
     kb: &KnowledgeBase,
     carrier: Symbol,
@@ -15418,6 +15461,61 @@ pub(crate) fn carrier_override_op(
 ) -> Option<Symbol> {
     carrier_own_op(kb, carrier, spec_op, op_short_sym)
         .filter(|&o| op_is_interpretable(kb, o))
+}
+
+/// WI-1010 — every RUNNABLE implementation of a DEFAULTED spec op that reaches
+/// `carrier`, from ALL THREE supply routes.
+///
+/// [`carrier_override_op`] answers the same question for route 1 alone, and that
+/// was the defect: a spec op with a default body consumed on a carrier whose impl
+/// arrives through a WI-431 instance fact resolved to `None` here, so the DEFAULT
+/// ran and the written binding meant nothing — a silent wrong answer, since the
+/// loader had already validated the binding's signature
+/// ([`check_instance_fact_op_signatures`]) and counted it as backing. WI-444's rule
+/// is that defaults fill GAPS and do not SHADOW; a written binding is not a gap,
+/// whichever syntax writes it.
+///
+/// This is [`spec_op_suppliers_for_carrier`] — the SAME owner the body-less path
+/// reads (WI-842 / proposal 058 §4.9) — narrowed to what the interpreter can run.
+/// Sharing it is the point: the alternative, `carrier_override_op(…).or_else(fact)`,
+/// would have been a FOURTH enumeration of the three routes and a first-match chain
+/// of exactly the shape WI-842 deleted, blind to the second candidate again.
+///
+/// THE INTERPRETABILITY FILTER IS THIS READER'S OWN, and MUST NOT be pushed down into
+/// [`spec_op_suppliers_for_carrier`], for two independent reasons.
+///
+/// WHY IT IS NEEDED HERE: this question has a fallback and the body-less one does not.
+/// WI-876 measured that running the spec's default beats selecting a member the
+/// interpreter cannot call — the latter turns a working call into
+/// `OperationBodyMissing`. So an unrunnable candidate is not a supplier at all for
+/// this question, and is dropped BEFORE the count: a rules-only member beside a fact
+/// binding leaves ONE supplier, not an ambiguity between a live impl and one nothing
+/// can call. DRIVEN by `an_unrunnable_own_member_is_not_a_supplier`.
+///
+/// WHY IT MUST NOT MOVE DOWN — the load-bearing one, and the reason the shared owner
+/// is left alone rather than "improved": [`op_is_interpretable`] is BACKEND-RELATIVE.
+/// WI-886 made its mapping leg `is_interpreter_mapped_op` (rust only), so a
+/// cpp-`operation_map`ped member answers `false` here. The other consumer of the
+/// shared owner is eval's body-less `resolve_spec_op_target_by_value`, whose ≥2 arm is
+/// a COHERENCE refusal — "did the author supply two implementations?" — and that
+/// question must not change answer with the host backend, which is exactly what
+/// filtering inside the owner would do. Note this is NOT what the test above pins:
+/// moving the filter down keeps the whole suite green, because the tree has no
+/// cpp-mapped rival to make the two counts diverge. The argument is the guard.
+///
+/// Route 1's answer is preserved bit-for-bit — `carrier_own_op` + `op_is_interpretable`
+/// is [`carrier_override_op`] spelled out — so a carrier with no provision-supplied
+/// impl resolves exactly what it resolved before.
+pub(crate) fn carrier_override_suppliers(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+) -> SmallVec<[SpecOpSupplier; 2]> {
+    let mut cands = spec_op_suppliers_for_carrier(kb, spec_sort, carrier, spec_op, op_short_sym);
+    cands.retain(|c| op_is_interpretable(kb, c.target));
+    cands
 }
 
 /// WI-876 — can the INTERPRETER run `op`? A runnable body, or a HOST
