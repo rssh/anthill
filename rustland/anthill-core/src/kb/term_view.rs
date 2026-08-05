@@ -488,6 +488,18 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
 /// `expr`'s reflect-wrapped head, or `None` when the form is not wrapped or
 /// reflect isn't loaded (the caller then falls through to the direct-form arms /
 /// `Opaque` — fail-soft, as such a KB holds no loader-built occurrence of it).
+///
+/// **THE FAIL-SOFT HALF IS OWNED BY WI-1014**, because it contradicts its own
+/// neighbour: [`reflect_field_key`], one layer down, asserts the SAME invariant
+/// and PANICS on it. Both cannot be right — if the invariant holds, the `?` below
+/// is dead code that DEGRADES instead of erroring; if it does not, the panic
+/// fires one layer down anyway. Degrading is the worse half, because `Opaque` is
+/// payload-free: it does not lose precision, it makes two structurally DIFFERENT
+/// `if`s compare EQUAL and share a `GoalKey`, turning "reflect isn't loaded" into
+/// wrong answers rather than an error. A structural view should not be contingent
+/// on a symbol lookup at all — these are `KERNEL_VOCAB_QUALIFIED` reserved names
+/// that `wi900_implicit_tier_agreement_test` already asserts resolve after a
+/// standard load.
 fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
     let (qname, keys) = expr_wrapped_shape(expr)?;
     let f = kb.try_resolve_symbol(qname)?;
@@ -927,10 +939,32 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //  - `HoApply` / `RequirementAtSort` / `ConstructRequirement`:
         //    rebuild-only — `visit_fn` materializes them from terms nothing in
         //    the pipeline emits, so again there is no live pair to align.
-        //  - `SetLit` / `TupleLit`: path-B siblings of `ListLit`. `TupleLit`
+        //  - `SetLit` / `TupleLit`: **OWNED BY WI-1014, not a principled
+        //    exclusion** — and the reason this note used to give was wrong, which
+        //    is why it is corrected rather than deleted. It read: "`TupleLit`
         //    especially is entangled with tuple IDENTITY (WI-788 order, WI-803
-        //    labels, WI-805 distinctness), where a wrong key set is a wrong
-        //    answer about type identity — not a place to guess.
+        //    labels, WI-805 distinctness), where a wrong key set is a wrong answer
+        //    about type identity — not a place to guess." But WI-559 already built
+        //    BOTH term twins (`try_occurrence_to_term`), fixing functor, child
+        //    carrier and labels on the term side, so mirroring the twin is what
+        //    REMOVES the guessing — inventing a key set would be guessing, and the
+        //    twin leaves no freedom to. Leaving them `Opaque` is itself the
+        //    cross-carrier disagreement WI-425 forbids: one source `{1}` reads
+        //    `Fn{SetLiteral, [1]}` as a term and `Opaque` as an occurrence, and
+        //    since `views_structurally_equal` has no `(Opaque, Opaque)` arm, a set
+        //    literal is not equal to ITSELF through this carrier.
+        //
+        //    A REAL hazard survives the correction, but it is in
+        //    `fingerprint_into`, not here: it SORTS named keys, while
+        //    `occ_build_fn` does not canonicalize and `TermStore::alloc` hash-conses
+        //    as given — so a `TupleLiteral` TERM preserves source order (which
+        //    WI-788 makes tuple IDENTITY) and a sorted `GoalKey` would not. That is
+        //    WI-1014's Part B, and it is why this arm was not simply filled in
+        //    here. `SetLit` has no such question (elements ride in `pos_args`).
+        //
+        //    The lesson recorded for the next reader: WI-814's other three gaps
+        //    each got a TICKET NUMBER (WI-819 / WI-803 / WI-816); this one got a
+        //    justification, which is what kept it off every list.
         _ => ViewHead::Opaque,
     }
 }
