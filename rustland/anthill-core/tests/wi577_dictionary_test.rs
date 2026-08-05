@@ -36,7 +36,10 @@ fn resolve(interp: &Interpreter, qn: &str) -> Symbol {
 }
 
 /// Build a `Symbol` runtime value (a `Ref` term) for a qualified name — the
-/// representation `impl` / `op` return and `resolveOp` consumes.
+/// carrier `resolveOp` is HANDED here, and deliberately NOT the one `impl` / `op`
+/// return: those mint `Value::SymbolRef` (WI-1016), so keeping this side on the
+/// interned spelling makes `resolveOp` take one carrier and answer in the other,
+/// which is the cross-carrier round trip worth testing.
 fn sym_val(interp: &mut Interpreter, qn: &str) -> Value {
     let s = resolve(interp, qn);
     Value::term(interp.kb_mut().alloc(Term::Ref(s)))
@@ -50,10 +53,10 @@ fn sym_val(interp: &mut Interpreter, qn: &str) -> Value {
 ///
 /// That made it the ONLY thing that noticed when `symbol_value` was briefly
 /// flipped to mint `Value::SymbolRef` — which is a statement about test
-/// COVERAGE, not about blast radius: anthill-stl's `expect_symbol` reads by
-/// carrier too and stayed green over five broken host ops. The flip is reverted
-/// and owned by WI-1016; this reader is by-content either way, which is what it
-/// should have been from the start.
+/// COVERAGE, not about blast radius: anthill-stl's `expect_symbol` read by
+/// carrier too and stayed green over five broken host ops. The flip landed in
+/// WI-1016, whose own tests pin the CARRIER; this reader is by-content either
+/// way, which is what it should have been from the start.
 fn sym_qn(interp: &Interpreter, v: &Value) -> String {
     match interp.kb().value_symbol(v) {
         Some(s) => interp.kb().qualified_name_of(s).to_string(),

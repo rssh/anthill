@@ -2830,9 +2830,33 @@ impl SearchStream {
     /// a stream, a closure). A `Value::Node` does NOT disable dedup (it
     /// fingerprints structurally); only those opaque rows do, which would
     /// otherwise collapse genuinely distinct rows to one key.
+    ///
+    /// `Value::SymbolRef` is on the fingerprinting side for the reason the variant
+    /// exists (WI-1016): it views as `ViewHead::Ref(s)`, INDISTINGUISHABLE from
+    /// the `Term::Ref(s)` twin already listed, so leaving it out would turn answer
+    /// dedup on or off according to which carrier the symbol arrived on — a
+    /// `qualified_name(?s, ?n)` answer deduped and a `Dictionary.impl(d) = ?s` one
+    /// not. Fail-open (duplicate answers survive), which is why no test caught it.
+    ///
+    /// WHY THIS STAYS A BY-CARRIER ALLOW-LIST and does not become
+    /// `GoalKey::is_opaque_free` or a per-binding `head(kb) != Opaque`: the DOMAINS
+    /// differ. The fingerprint below is taken of `original_goal` through σ, so it
+    /// sees only goal-reachable vars; this scan is over ALL of σ, which is the
+    /// point — the doc's "genuinely external row" is a solution distinguished by a
+    /// binding the goal never mentions. A content predicate would start collapsing
+    /// those, and here over-dedup DROPS AN ANSWER (the direction
+    /// `value_fact_dedup_key`'s doc names as the unsafe one).
+    ///
+    /// THE LIST IS INCOMPLETE, and this is its owner rather than its excuse:
+    /// `Value::Requirement` and `Value::OpRef` became structural in WI-1019 (the
+    /// commit before this one) and `Value::Var` fingerprints as a `Var` token, yet
+    /// all three still switch dedup off here. Same fail-open direction, reachable
+    /// by the same route the WI-1016 test drives. Adding them widens in the
+    /// answer-DROPPING direction, so it needs its own measured change — WI-1023,
+    /// which also proposes replacing all four sites with one named predicate.
     fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
         let has_value_binding = sol.subst.iter()
-            .any(|(_, v)| !matches!(v, Value::Term { .. } | Value::Node(_)));
+            .any(|(_, v)| !matches!(v, Value::Term { .. } | Value::Node(_) | Value::SymbolRef(_)));
         if has_value_binding {
             return false;
         }

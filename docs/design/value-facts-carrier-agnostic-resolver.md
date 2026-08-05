@@ -417,6 +417,17 @@ Three consequences worth having written down:
 
   The disjointness itself is a RULE, not just a measurement, and is pinned by
   `wi815_the_two_key_spaces_are_disjoint`.
+
+  **Because the spaces are disjoint, WHICH ONE a head lands in is a correctness
+  question, and `KnowledgeBase::fn_value` is its one owner** (WI-1016). It decides
+  by asking whether every child has a faithful term form; a child that does must
+  not tip the head into the other space, or one logical fact stores twice with
+  neither key able to see the other. `Value::SymbolRef` is the case that made this
+  concrete: it lowers losslessly to `Term::Ref` and is indistinguishable from that
+  twin under `TermView`, so the test reads "has a faithful term form", not "is a
+  `Value::Term`". This is the same rule as the `MapKey` canonicalization and the
+  `TermPrinter::write_symbol_ref` one — two carriers of one symbol may not key
+  differently in a store key — applied to the fact store.
 - **The lossy-key guard moved from the root to the whole key.** The old rule
   rejected a key whose ROOT reified to `Term::Bottom`; the new one rejects any key
   containing a payload-free `Opaque` token (`GoalKey::is_opaque_free`, sharing its

@@ -4440,10 +4440,37 @@ impl KnowledgeBase {
     /// `Value`s into its canonical head carrier (WI-348) — the **single source**
     /// of the `Term`-vs-`Value::Entity` decision, shared by [`Self::reify`]
     /// (rebuilding a reified `Fn`) and [`Self::assert_fact_carrier`] (asserting
-    /// the result). All-`Term` children rebuild a hash-consed `Value::Term(Fn)`
-    /// (the universal case — dedup-able, indexes identically); any non-`Term`
-    /// child forces a `Value::Entity`, which cannot hash-cons but reads back
-    /// through `TermView` like its term twin.
+    /// the result). Children that are all LEAVES rebuild a hash-consed
+    /// `Value::Term(Fn)` (the universal case — dedup-able, indexes identically);
+    /// any other child forces a `Value::Entity`, which cannot hash-cons but reads
+    /// back through `TermView` like its term twin.
+    ///
+    /// THE TEST IS NOT "IS A `Value::Term`" (WI-1016). A `Value::SymbolRef(s)` is
+    /// `Term::Ref(s)` with the interning not yet done — [`Self::alloc_from_value`]
+    /// lowers it losslessly, and `TermView` cannot tell the two apart. Reading it
+    /// as a non-`Term` child would push the whole application onto the
+    /// `Value::Entity` path, and that is not a cosmetic difference:
+    /// [`Self::assert_fact_value`] keys an `Entity` head in `value_fact_dedup` (a
+    /// `GoalKey`) while a `Term` head keys `fact_dedup` (a `TermId`), and the two
+    /// key spaces are DISJOINT — so `f(<sym as SymbolRef>)` and `f(<the same sym
+    /// as Term::Ref>)` would store as two facts for one logical fact, and neither
+    /// dedup would ever see the other (WI-815).
+    ///
+    /// `lowers_to_leaf` IS NARROWER THAN "WHAT `alloc_from_value` ACCEPTS", and
+    /// that is a choice, not the answer. `alloc_from_value` also lowers
+    /// `Int`/`Str`/`Bool`/`Var`/`Entity`, and the disjoint-key-space argument
+    /// above applies verbatim to a scalar child — `f(Value::Int(1))` takes the
+    /// `Entity` path while `f(1)` built as a term keys `fact_dedup`. It is
+    /// unreachable today rather than harmless: every `assert_fact_carrier` caller
+    /// (`eq_derive.rs:281`, `load.rs:14991`, `typing.rs:40273`, and
+    /// `assert_metadata_fact_carrier`) passes `Value::term(..)` children. Widening
+    /// the set would RE-ROUTE existing heads between the two key spaces, so it
+    /// needs its own measurement — WI-1023.
+    ///
+    /// This is the one place a `SymbolRef` is deliberately interned. It is not a
+    /// transient: the term it becomes is a CHILD of a hash-consed application that
+    /// is about to be asserted or answered, and `Term::Ref` is one node per symbol
+    /// — the persistent, heavily-shared structure hash-consing is for.
     fn fn_value(
         &mut self,
         functor: Symbol,
@@ -4451,14 +4478,26 @@ impl KnowledgeBase {
         named: Vec<(Symbol, crate::eval::value::Value)>,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        let all_term = pos.iter().all(|v| matches!(v, Value::Term { .. }))
-            && named.iter().all(|(_, v)| matches!(v, Value::Term { .. }));
-        if all_term {
+        fn lowers_to_leaf(v: &Value) -> bool {
+            matches!(v, Value::Term { .. } | Value::SymbolRef(_))
+        }
+        // `alloc_from_value` is the one owner of every carrier's lowering (it is
+        // where `SymbolRef → Term::Ref` is written); restating those two arms here
+        // would be a second, untied statement of the variant's whole contract. It
+        // cannot fail for a child `lowers_to_leaf` accepted, so the `Err` is a
+        // broken invariant — loud, exactly as the `expect_term` it replaces was.
+        let all_lower = pos.iter().all(lowers_to_leaf)
+            && named.iter().all(|(_, v)| lowers_to_leaf(v));
+        if all_lower {
+            let lower = |kb: &mut Self, v: &Value| {
+                kb.alloc_from_value(v)
+                    .unwrap_or_else(|e| panic!("fn_value: a leaf child did not lower: {e:?}"))
+            };
             let pos_args: SmallVec<[TermId; 4]> =
-                pos.iter().map(|v| v.expect_term()).collect();
+                pos.iter().map(|v| lower(self, v)).collect();
             let named_args: SmallVec<[(Symbol, TermId); 2]> = named
                 .iter()
-                .map(|(s, v)| (*s, v.expect_term()))
+                .map(|(s, v)| (*s, lower(self, v)))
                 .collect();
             Value::term(self.alloc(Term::Fn { functor, pos_args, named_args }))
         } else {

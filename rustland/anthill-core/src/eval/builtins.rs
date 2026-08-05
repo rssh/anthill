@@ -3697,21 +3697,26 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 }
 
 /// Build a `Symbol` runtime value for `s` — the reflect representation of an
-/// anthill `Symbol` (a nullary `Ref` term). The construction counterpart of
+/// anthill `Symbol` (a `Value::SymbolRef`). The construction counterpart of
 /// reading one back via [`KnowledgeBase::value_symbol`].
 ///
-/// STILL MINTS THE INTERNED CARRIER, and that is the open half of the
-/// `Value::SymbolRef` work, not an oversight. Minting the new carrier here is a
-/// one-line change that makes it live across the whole reflect surface at once,
-/// and every `Value` match in the workspace that answers a question about
-/// symbol-ness has to have decided about it first. Several had not — an
-/// anthill-stl host reader that rejects by carrier, `scalar_eq` (two identical
-/// symbols comparing unequal), `Modify.set`'s cycle guard, `MapKey`, the
-/// value-fact dedup key space. The ones with a forced answer (mirror the
-/// `Term::Ref` twin) are now handled; the ones that need a REPRESENTATION
-/// decision are WI-1016, which owns this flip.
-fn symbol_value(kb: &mut crate::kb::KnowledgeBase, s: crate::intern::Symbol) -> Value {
-    Value::term(kb.alloc(crate::kb::term::Term::Ref(s)))
+/// WI-1016 FLIPPED THIS to the value-level carrier, which is what made
+/// `Value::SymbolRef` live: `Dictionary.impl`, `OpRef.op` and `OpRef.named` are
+/// its only producers, and each answers a question about a value the KB already
+/// holds — interning a `Term::Ref` to hand one symbol back is a store write for a
+/// read, and it PINS that node for the KB's lifetime. It takes no `KnowledgeBase`
+/// for exactly that reason: a function that still demanded `&mut` on the store
+/// would advertise the write this change exists to remove.
+///
+/// NOT the other minters (`lookup_symbol`, `scope`, the resolver's
+/// `builtin_lookup_symbol`), and deliberately so: they build a `Symbol` out of a
+/// string, so they must intern something anyway, and leaving them on the
+/// `Term::Ref` carrier keeps BOTH spellings of one symbol in circulation. That is
+/// the state every cross-carrier seam has to survive — `MapKey`, `values_equal`,
+/// the discrim keys, the printer — so keeping it is what tests those seams rather
+/// than avoiding them.
+fn symbol_value(s: crate::intern::Symbol) -> Value {
+    Value::SymbolRef(s)
 }
 
 // ── WI-577 — runtime dictionary / op-ref views ──────────────────────────────
@@ -3724,11 +3729,11 @@ fn symbol_value(kb: &mut crate::kb::KnowledgeBase, s: crate::intern::Symbol) -> 
 // Design: `docs/design/requirement-dictionaries.md` §2.
 
 /// `Dictionary.impl(d) -> Symbol` — the resolved impl identity (the arena
-/// slot's `functor`), surfaced as a `Symbol` value (a `Ref` term).
-fn dict_impl(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+/// slot's `functor`), surfaced as a `Symbol` value.
+fn dict_impl(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [d] = expect_args::<1>("Dictionary.impl", args)?;
     match d {
-        Value::Requirement(h) => Ok(symbol_value(&mut interp.kb, h.functor())),
+        Value::Requirement(h) => Ok(symbol_value(h.functor())),
         other => Err(type_mismatch("Dictionary", &other, None)),
     }
 }
@@ -3849,10 +3854,10 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 
 /// `OpRef.op(r) -> Symbol` — the resolved operation's identity (a fully-
 /// qualified op symbol), surfaced as a `Symbol` value.
-fn opref_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn opref_op(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r] = expect_args::<1>("OpRef.op", args)?;
     match r {
-        Value::OpRef { op, .. } => Ok(symbol_value(&mut interp.kb, op)),
+        Value::OpRef { op, .. } => Ok(symbol_value(op)),
         other => Err(type_mismatch("OpRef", &other, None)),
     }
 }
@@ -3885,10 +3890,7 @@ fn opref_named(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     let value_key = interp.kb.intern("value");
     match r {
         Value::OpRef { named, .. } => Ok(match named {
-            Some(sym) => {
-                let s = symbol_value(&mut interp.kb, sym);
-                option_some(some_sym, value_key, s)
-            }
+            Some(sym) => option_some(some_sym, value_key, symbol_value(sym)),
             None => option_none(none_sym),
         }),
         other => Err(type_mismatch("OpRef", &other, None)),
@@ -3957,11 +3959,21 @@ fn option_none(none_sym: crate::intern::Symbol) -> Value {
     Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() }
 }
 
-fn unsupported_key(v: &Value) -> EvalError {
-    EvalError::TypeMismatch {
-        expected: "Map key (Int / Bool / String / Term)",
+/// The `MapKey` a builtin's key argument addresses, or the loud type error.
+///
+/// One owner for the four `Map` builtins, which all ask the same question and
+/// used to spell it two different ways (one `ok_or_else`, three four-line
+/// `match`es). WI-1016 had to thread a `&KnowledgeBase` through every one of
+/// them — `try_from_value` canonicalizes the two carriers of a symbol — which is
+/// the second time this sequence was edited in lockstep.
+fn map_key(
+    kb: &crate::kb::KnowledgeBase,
+    v: &Value,
+) -> Result<super::map_arena::MapKey, EvalError> {
+    super::map_arena::MapKey::try_from_value(kb, v).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Map key (Int / Bool / String / Symbol / Term)",
         got: v.type_name().to_string(),
-    }
+    })
 }
 
 fn map_empty(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -3976,8 +3988,7 @@ fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = super::map_arena::MapKey::try_from_value(&k_arg)
-        .ok_or_else(|| unsupported_key(&k_arg))?;
+    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = interp.maps.clone_body(&handle);
     body.insert(key, v_arg);
     let new_handle = interp.alloc_map(body);
@@ -3993,10 +4004,7 @@ fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = match super::map_arena::MapKey::try_from_value(&k_arg) {
-        Some(k) => k,
-        None => return Err(unsupported_key(&k_arg)),
-    };
+    let key = map_key(&interp.kb, &k_arg)?;
     let found: Option<Value> = interp.maps.with_body(&handle, |b| b.get(&key).cloned());
     Ok(match found {
         Some(v) => option_some(some_sym, value_key, v),
@@ -4010,10 +4018,7 @@ fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = match super::map_arena::MapKey::try_from_value(&k_arg) {
-        Some(k) => k,
-        None => return Err(unsupported_key(&k_arg)),
-    };
+    let key = map_key(&interp.kb, &k_arg)?;
     let present = interp.maps.with_body(&handle, |b| b.contains_key(&key));
     Ok(Value::Bool(present))
 }
@@ -4024,10 +4029,7 @@ fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = match super::map_arena::MapKey::try_from_value(&k_arg) {
-        Some(k) => k,
-        None => return Err(unsupported_key(&k_arg)),
-    };
+    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = interp.maps.clone_body(&handle);
     // `shift_remove` preserves the order of the remaining entries — matches
     // anthill's user-visible semantics that iteration order reflects insertion

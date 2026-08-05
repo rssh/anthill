@@ -467,15 +467,22 @@ pub fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<Val
     }
 }
 
-/// The operation symbol carried in an `OperationInfo` head's `name` field
-/// (`Term::Ref`), for the by-functor walks that match a fact to an op symbol.
-/// Carrier-agnostic (WI-348) — `pub` so out-of-crate consumers (codegen) can
-/// match a fact to its op symbol without reading the head as a term.
+/// The operation symbol carried in an `OperationInfo` head's `name` field, for
+/// the by-functor walks that match a fact to an op symbol. Carrier-agnostic
+/// (WI-348) — `pub` so out-of-crate consumers (codegen) can match a fact to its
+/// op symbol without reading the head as a term.
+///
+/// BY CONTENT (WI-1016). It read `head_field_term` + `Term::Ref`, which answers
+/// `None` for a `Value::SymbolRef` field — and every caller treats `None` as
+/// "skip this fact", so an op fact would go silently invisible rather than
+/// erroring. Narrow reachability (an all-leaf head lowers to the term carrier at
+/// `fn_value`, so a `SymbolRef` survives as a value child only beside a `Node`
+/// sibling, which nothing mints today) — but the fix costs a line and removes a
+/// silent skip, which beats a comment explaining why the skip is currently safe.
+/// The `Ident` arm `value_symbol` adds is inert here: an unresolved identifier's
+/// symbol matches no declared op.
 pub fn head_name_ref(kb: &KnowledgeBase, head: &Value) -> Option<Symbol> {
-    match kb.get_term(head_field_term(kb, head, "name")?) {
-        Term::Ref(s) => Some(*s),
-        _ => None,
-    }
+    kb.value_symbol(&head_field_value(kb, head, "name")?)
 }
 
 /// Decode the `effects` field to carrier-agnostic labels. A hash-consed head

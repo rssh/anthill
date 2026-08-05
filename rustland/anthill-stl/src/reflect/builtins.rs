@@ -678,19 +678,19 @@ fn decode_literal_repr(
     }
 }
 
-/// Read a `Ref`/`Fn` name off its in-band `Ref` TERM carrier — the inverse of
-/// how [`ValueReprBuilder`] emits a name (`Value::term(Ref(sym))`).
+/// Read a `Ref`/`Fn` name off a `TermRepr`'s `name` field — the inverse of how
+/// [`ValueReprBuilder`] emits one.
+///
+/// BY CONTENT, through the same [`expect_symbol`], because the field is DECLARED
+/// `Symbol` (`entity RefRepr(name: Symbol)` / `FnRepr(name: Symbol, …)` in
+/// `stdlib/anthill/reflect/reflect.anthill`), not "whatever `ValueReprBuilder`
+/// happened to put there". Reading it as `Value::Term { id } → Term::Ref | Ident`
+/// only worked because producer and consumer are both in this module and both
+/// chose the interned carrier; a program writing `RefRepr(name: Dictionary.impl(d))`
+/// supplies a perfectly well-typed `Symbol` that the old match rejected — and
+/// after WI-1016 that op mints `Value::SymbolRef`, so the rejection became live.
 fn ref_repr_symbol(kb: &KnowledgeBase, name: Value) -> Result<Symbol, EvalError> {
-    let tid = match name {
-        Value::Term { id: t, .. } => t,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "Term (name symbol)", got: other.type_name().to_string(),
-        }),
-    };
-    match kb.get_term(tid) {
-        CoreTerm::Ref(s) | CoreTerm::Ident(s) => Ok(*s),
-        _ => Err(EvalError::Internal("TermRepr name must resolve to Ref/Ident".into())),
-    }
+    expect_symbol(kb, name, "TermRepr name")
 }
 
 /// Collect the head `Value`s of a `FnRepr.args` prelude cons-list (a `List` of
@@ -730,18 +730,27 @@ fn collect_repr_list(
 
 // ── Symbol ops (namespace-level) ─────────────────────────────────
 
+/// The symbol a reflect `Symbol` argument names — read by CONTENT, through the
+/// resolver's own [`KnowledgeBase::value_symbol`], NOT by carrier.
+///
+/// THE EVAL TWIN OF `builtin_qualified_name` / `builtin_short_name`, and that is
+/// why it may not have its own match. Every op below (`qualified_name`,
+/// `short_name`, `scope`, `kind`, `resolve_sort_instantiation_param`) has an SLD
+/// twin that WI-1015 moved onto `value_symbol`; this reader stayed a hand-written
+/// `Value::Term { id } → Term::Ref | Ident`, which is a by-CARRIER answer to a
+/// by-CONTENT question. With `symbol_value` minting `Value::SymbolRef` (WI-1016)
+/// that gap is observable: `qualified_name(Dictionary.impl(d))` would be a type
+/// error at the eval entry and answer a string through the goal entry — ONE
+/// operation, two answers, decided by which phase asked.
+///
+/// The widening is the same one the SLD twins took: `value_symbol` also answers
+/// on a `Value::Node` ref occurrence and on a non-canonicalized nullary
+/// constructor `Fn{c,[],[]}` (`resolve_qualified_name_term` mints those).
 fn expect_symbol(kb: &KnowledgeBase, v: Value, _op: &'static str) -> Result<Symbol, EvalError> {
-    match v {
-        Value::Term { id: tid, .. } => match kb.get_term(tid) {
-            CoreTerm::Ref(s) | CoreTerm::Ident(s) => Ok(*s),
-            _ => Err(EvalError::TypeMismatch {
-                expected: "Symbol (Ref/Ident term)", got: "other Term".into(),
-            }),
-        },
-        other => Err(EvalError::TypeMismatch {
-            expected: "Symbol", got: other.type_name().to_string(),
-        }),
-    }
+    kb.value_symbol(&v).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Symbol",
+        got: v.type_name().to_string(),
+    })
 }
 
 fn qualified_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -1064,17 +1073,31 @@ mod tests {
         anthill_core::fs_util::collect_files(dir, &["anthill"]).expect("collect stdlib")
     }
 
+    /// The stdlib, read and parsed ONCE per test binary.
+    ///
+    /// `load_stdlib_and_source` has ~23 callers in this module and used to re-walk,
+    /// re-read and re-parse every stdlib file at each one. The parsed files are
+    /// immutable inputs to `load_all`, so sharing them is safe — the same shape
+    /// `anthill-core/tests/common/mod.rs`'s `STDLIB_PARSED` already uses.
+    static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
+        std::sync::LazyLock::new(|| {
+            let stdlib_dir =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+            let files = collect_anthill_files(&stdlib_dir);
+            assert!(!files.is_empty(), "stdlib empty");
+            files
+                .iter()
+                .map(|f| {
+                    let src = std::fs::read_to_string(f).expect("read stdlib");
+                    parse::parse(&src)
+                        .unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
+                })
+                .collect()
+        });
+
     fn load_stdlib_and_source(source: &str) -> Interpreter {
-        let stdlib_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../stdlib/anthill");
-        let files = collect_anthill_files(&stdlib_dir);
-        assert!(!files.is_empty(), "stdlib empty");
-        let mut parsed: Vec<_> = files.iter().map(|f| {
-            let src = std::fs::read_to_string(f).expect("read stdlib");
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
-        }).collect();
-        parsed.push(parse::parse(source).expect("parse user source"));
-        let refs: Vec<_> = parsed.iter().collect();
+        let user = parse::parse(source).expect("parse user source");
+        let refs: Vec<_> = STDLIB_PARSED.iter().chain(std::iter::once(&user)).collect();
 
         let mut kb = KnowledgeBase::new();
         load::load_all(&mut kb, &refs, &NullResolver)
@@ -1508,6 +1531,136 @@ end
             }
             other => panic!("expected Option entity, got {other:?}"),
         }
+    }
+
+    /// Drive `qualified_name` / `short_name` / `kind` on one `Symbol` value and
+    /// assert all three answers.
+    ///
+    /// Shared by the two tests that differ ONLY in the carrier they hand in —
+    /// `symbol_ops_qualified_short_lookup_kind` (interned `Term::Ref`) and
+    /// `a_minted_symbol_reads_through_the_host_symbol_ops` (minted
+    /// `Value::SymbolRef`). The claim under test is that those answer identically,
+    /// so the op set has to be one list: with two hand-copied blocks, an op added
+    /// to one is silently absent from the other and the equality stops being
+    /// checked without anything going red.
+    fn assert_symbol_ops(
+        interp: &mut Interpreter,
+        sym: Value,
+        qualified: &str,
+        short: &str,
+        kind: &str,
+    ) {
+        for (op, expected) in [
+            ("anthill.reflect.qualified_name", qualified),
+            ("anthill.reflect.short_name", short),
+            ("anthill.reflect.kind", kind),
+        ] {
+            match interp.call(op, &[sym.clone()]) {
+                Ok(Value::Str(got)) => assert_eq!(
+                    got, expected,
+                    "{op} on a {} carrier", sym.type_name(),
+                ),
+                other => panic!(
+                    "{op} must answer a String on a {} carrier, got {other:?}",
+                    sym.type_name(),
+                ),
+            }
+        }
+    }
+
+    /// WI-1016 — THE SEAM between the two crates' halves of one reflect surface:
+    /// a `Symbol` MINTED by an anthill-core op is READ by an anthill-stl one.
+    ///
+    /// `Dictionary.impl` / `OpRef.op` / `OpRef.named` now hand back
+    /// `Value::SymbolRef`; `qualified_name` / `short_name` / `kind` / `scope` /
+    /// `resolve_sort_instantiation_param` all read their `Symbol` argument through
+    /// the one `expect_symbol`. Nothing in either crate's own tests crosses that
+    /// line, which is why both halves were green while the composition was broken.
+    ///
+    /// TWO CONTROLS, both measured by backing the change out:
+    ///  - revert `eval/builtins.rs::symbol_value` to `Value::term(alloc(Term::Ref))`
+    ///    → the `Value::SymbolRef` assert fails; every other assert here still
+    ///    passes, which is exactly why WI-1015 could revert the flip unnoticed.
+    ///  - revert `expect_symbol` to its `Value::Term { id } → Term::Ref | Ident`
+    ///    match → all five op calls below fail with `TypeMismatch`, while the
+    ///    resolver's twins (`builtin_qualified_name`, …) go on answering. One
+    ///    operation, two answers, decided by which phase asked.
+    #[test]
+    fn a_minted_symbol_reads_through_the_host_symbol_ops() {
+        let mut interp = load_stdlib_and_source(
+            r#"
+namespace test.wi1016_seam
+  sort Color
+    entity red
+  end
+  sort Shape
+    entity circle
+  end
+end
+"#,
+        );
+        let color = interp
+            .kb()
+            .try_resolve_symbol("test.wi1016_seam.Color")
+            .expect("Color declared above");
+        let dict = Value::Requirement(interp.alloc_requirement(color, Default::default()));
+
+        // The producer: `Dictionary.impl(d) -> Symbol`.
+        let sym_val = interp
+            .call("anthill.realization.runtime.Dictionary.impl", &[dict])
+            .expect("Dictionary.impl");
+        assert!(
+            matches!(sym_val, Value::SymbolRef(s) if s == color),
+            "the reflect Symbol answer rides the value carrier, got {sym_val:?}",
+        );
+
+        // The three string readers, through the SAME block that
+        // `symbol_ops_qualified_short_lookup_kind` drives on the interned carrier
+        // — the point of this test is that both carriers answer alike, so the two
+        // must not be able to drift into checking different op sets.
+        assert_symbol_ops(&mut interp, sym_val.clone(), "test.wi1016_seam.Color", "Color", "Sort");
+
+        // `scope` is asserted only to ACCEPT the carrier and answer whatever
+        // `KnowledgeBase::scope_of` answers — not pinned to a particular symbol.
+        // That reader returns a SIBLING sort/namespace/operation sharing the
+        // symbol's `scope_raw`, not the parent (`scope_of(anthill.prelude.Int64)`
+        // is `anthill.prelude.List`), so pinning it here would be pinning an
+        // unrelated function's behaviour. `Shape` above is what gives `Color` a
+        // sibling to find at all.
+        assert_eq!(
+            interp.call("anthill.reflect.scope", &[sym_val.clone()])
+                .map(|v| anthill_core::eval::value_functor(interp.kb(), &v)
+                    .map(|f| interp.kb().local_name_of(f).to_string()))
+                .expect("scope must answer on a minted Symbol"),
+            Some("some".to_string()),
+        );
+
+        // The fifth reader, whose `param` argument is the Symbol: a `SortView`
+        // instance term plus the param NAME as the minted carrier.
+        let (inst, t_param) = {
+            let t_param = interp.kb_mut().intern("T");
+            let sort_view = interp.kb_mut().intern("SortView");
+            let inst = interp
+                .kb_mut()
+                .alloc_from_value(&Value::Entity {
+                    functor: sort_view,
+                    pos: Vec::new().into(),
+                    named: vec![(t_param, Value::Int(42))].into(),
+                })
+                .expect("a SortView instance lowers");
+            (inst, t_param)
+        };
+        let bound = interp
+            .call(
+                "anthill.reflect.resolve_sort_instantiation_param",
+                &[Value::term(inst), Value::SymbolRef(t_param)],
+            )
+            .expect("resolve_sort_instantiation_param must accept a minted Symbol param");
+        assert!(
+            matches!(bound, Value::Term { id, .. }
+                if matches!(interp.kb().get_term(id), CoreTerm::Const(Literal::Int(42)))),
+            "the param's binding comes back, got {bound:?}",
+        );
     }
 
     #[test]

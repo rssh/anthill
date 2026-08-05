@@ -9,50 +9,97 @@
 //! the single-key edit rather than an O(N) full copy.
 //!
 //! Type erasure: at runtime K and V are gone — the entry's key is one of
-//! `MapKey` (Int / Bool / Str / Term hash). The type checker is responsible
-//! for ruling out heterogeneous keys; if user code somehow obtains a value
-//! whose key type doesn't match the map's, the lookup just misses.
+//! `MapKey` (Int / Bool / Str / Symbol / Term hash). The type checker is
+//! responsible for ruling out heterogeneous keys; if user code somehow obtains a
+//! value whose key type doesn't match the map's, the lookup just misses.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use imbl::{HashMap as ImHashMap, Vector as ImVector};
 
-use crate::kb::term::TermId;
+use crate::intern::Symbol;
+use crate::kb::KnowledgeBase;
+use crate::kb::term::{Term, TermId};
 
 use super::value::Value;
 
 /// Hashable / orderable key view over a `Value`. Map operations canonicalize
 /// the user-supplied `Value::Int` / `Value::Bool` / `Value::Str` /
-/// `Value::Term` into one of these variants. Other variants (Tuple, Entity,
-/// Closure, Stream, …) are not supported as keys for the v1 builtin —
-/// inserting one is a runtime type error.
+/// `Value::SymbolRef` / `Value::Term` into one of these variants. Other variants
+/// (Tuple, Entity, Closure, Stream, …) are not supported as keys for the v1
+/// builtin — inserting one is a runtime type error.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MapKey {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A named symbol — the key BOTH carriers of a reflect `Symbol` collapse to.
+    /// See [`MapKey::try_from_value`] for why it is a variant of its own rather
+    /// than a `Term(Term::Ref(s))`.
+    Ref(Symbol),
     /// Hash-consed term — TermId is structural identity in the KB so two
     /// equal terms map to the same slot.
     Term(TermId),
 }
 
 impl MapKey {
-    pub fn try_from_value(v: &Value) -> Option<Self> {
+    /// The key `v` addresses, or `None` for a carrier a v1 `Map` cannot key on.
+    ///
+    /// TAKES THE KB TO CANONICALIZE, and that is what the `Ref` variant is for.
+    /// A reflect `Symbol` rides on TWO carriers — `Value::SymbolRef(s)` from
+    /// `Dictionary.impl` / `OpRef.op` / `OpRef.named`, and `Value::Term` wrapping
+    /// `Term::Ref(s)` from `lookup_symbol` / `scope` — and a `Map` is a STORE KEY,
+    /// so keying them apart would put one symbol in two slots: `Map.get(m,
+    /// lookup_symbol("…"))` would miss an entry `Map.put` stored under
+    /// `Dictionary.impl(d)`. This is the same rule `TermPrinter::write_symbol_ref`
+    /// enforces for the printed spelling (WI-1015).
+    ///
+    /// The rewrite COLLAPSES NOTHING that was not already one key: `Term::Ref` is
+    /// hash-consed, so there is exactly one `TermId` per symbol and `Term(t) ↔
+    /// Ref(s)` is a bijection. Deliberately NOT routed through
+    /// [`KnowledgeBase::value_symbol`], which is the right reader for "does this
+    /// value NAME something" but is WIDER by three carriers — and they do not all
+    /// fail the same way, so one blanket "widening is unsafe" would be wrong:
+    ///
+    ///  - `Term::Ident(s)` — a widening here MERGES KEYS. `Ident(s)` and `Ref(s)`
+    ///    are distinct terms today, so collapsing them makes one `put` silently
+    ///    overwrite the other's entry. This is the case that decides the reader.
+    ///  - a non-canonicalized nullary constructor `Fn{c,[],[]}` (which
+    ///    `resolve_qualified_name_term` mints by bypassing `alloc`'s canon) — this
+    ///    one IS the same name as `Ref(c)`, so declining it accepts a key SPLIT
+    ///    rather than avoiding a merge. Narrow (that mint has few callers and none
+    ///    feeds a `Map` today) but not free — WI-1023.
+    ///  - `Value::Node(Expr::Ref(s))` — not keyed at all: `None`, so `Map.put`
+    ///    hard-errors. A REFUSAL, which is the right failure mode for a carrier
+    ///    whose occurrence identity a map key cannot represent.
+    pub fn try_from_value(kb: &KnowledgeBase, v: &Value) -> Option<Self> {
         match v {
             Value::Int(n) => Some(MapKey::Int(*n)),
             Value::Bool(b) => Some(MapKey::Bool(*b)),
             Value::Str(s) => Some(MapKey::Str(s.clone())),
-            Value::Term { id: tid, .. } => Some(MapKey::Term(*tid)),
+            Value::SymbolRef(s) => Some(MapKey::Ref(*s)),
+            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
+                Term::Ref(s) => Some(MapKey::Ref(*s)),
+                _ => Some(MapKey::Term(*tid)),
+            },
             _ => None,
         }
     }
 
+    /// The key back as a `Value` — what `Map.keys` / `Map.entries` hand out.
+    ///
+    /// A `Ref` key spells itself `Value::SymbolRef`, the carrier-free form, rather
+    /// than re-interning a `Term::Ref`: this is a READ, and it must not need
+    /// `&mut kb`. The two are indistinguishable to every structural consumer
+    /// (`ViewHead::Ref`), and feeding it back to `try_from_value` returns the same
+    /// key, so `Map.get(m, k)` for a `k` out of `Map.keys(m)` still hits.
     pub fn to_value(&self) -> Value {
         match self {
             MapKey::Int(n) => Value::Int(*n),
             MapKey::Bool(b) => Value::Bool(*b),
             MapKey::Str(s) => Value::Str(s.clone()),
+            MapKey::Ref(s) => Value::SymbolRef(*s),
             MapKey::Term(tid) => Value::term(*tid),
         }
     }
@@ -286,14 +333,55 @@ mod tests {
 
     #[test]
     fn map_key_round_trips() {
+        let kb = KnowledgeBase::new();
         let kv = vec![
             (Value::Int(7), MapKey::Int(7)),
             (Value::Bool(true), MapKey::Bool(true)),
             (Value::Str("k".into()), MapKey::Str("k".into())),
         ];
         for (v, expected) in kv {
-            assert_eq!(MapKey::try_from_value(&v), Some(expected.clone()));
+            assert_eq!(MapKey::try_from_value(&kb, &v), Some(expected.clone()));
             assert!(expected.to_value().scalar_eq(&v));
         }
+    }
+
+    /// WI-1016: the two carriers of ONE reflect `Symbol` address ONE map slot.
+    ///
+    /// `Value::SymbolRef(s)` (what `Dictionary.impl` / `OpRef.op` mint) and
+    /// `Value::Term` wrapping the hash-consed `Term::Ref(s)` (what `lookup_symbol`
+    /// / `scope` mint) are the same symbol, so a `put` through one must be found
+    /// by a `get` through the other. CONTROL: drop the `Term::Ref` arm of
+    /// `try_from_value` and the two keys differ — this fails on the `assert_eq!`.
+    #[test]
+    fn both_symbol_carriers_key_one_map_slot() {
+        let mut kb = KnowledgeBase::new();
+        let s = kb.intern("demo.Thing");
+        let ref_tid = kb.alloc(Term::Ref(s));
+
+        let via_symbolref = MapKey::try_from_value(&kb, &Value::SymbolRef(s));
+        let via_term = MapKey::try_from_value(&kb, &Value::term(ref_tid));
+        assert_eq!(via_symbolref, Some(MapKey::Ref(s)));
+        assert_eq!(
+            via_symbolref, via_term,
+            "a symbol keys the same slot whichever carrier it arrived on",
+        );
+
+        // And the round-trip out of `keys` addresses that slot again.
+        let mut body = MapBody::new();
+        body.insert(via_symbolref.clone().unwrap(), Value::Int(1));
+        let back = body.keys().next().cloned().expect("one key");
+        assert_eq!(
+            MapKey::try_from_value(&kb, &back.to_value()),
+            via_symbolref,
+            "a key read back out of the map re-keys to itself",
+        );
+
+        // A NON-`Ref` term is untouched — the canon is the symbol spelling only,
+        // not "every term becomes something else".
+        let int_tid = kb.alloc(Term::Const(crate::kb::term::Literal::Int(3)));
+        assert_eq!(
+            MapKey::try_from_value(&kb, &Value::term(int_tid)),
+            Some(MapKey::Term(int_tid)),
+        );
     }
 }
