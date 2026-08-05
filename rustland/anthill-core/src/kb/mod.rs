@@ -7889,6 +7889,76 @@ mod tests {
         assert!(kb.value_fact_dedup_key(&a).is_none(), "and fact dedup must refuse it");
     }
 
+    /// WI-815 — ONE OCCURRENCE, THREE CARRIERS, ONE KEY. A `Spliced` leaf carries a
+    /// `Value`, and every `TermView` impl that can reach an occurrence must view
+    /// through to it.
+    ///
+    /// `occ_head` delegates to the carried value internally, so the HEAD announced
+    /// the value's functor and arity from every carrier. The CHILD readers did not:
+    /// only the `Rc<NodeOccurrence>` impl checked `spliced_value`, while
+    /// `Value::Node(occ)` and `ViewItem::Node(occ)` went straight to the `occ_*`
+    /// helpers — which return OCCURRENCE children, and a `Spliced` leaf has none. So
+    /// one occurrence answered differently depending on which carrier reached it: a
+    /// head promising one child, and no child supplied.
+    ///
+    /// That is the WI-425 cross-carrier miss — a WRONG ANSWER, not a precision loss
+    /// — and WI-815 made it load-bearing by keying fact dedup on the same walk.
+    /// Found by `/code-review`; fixed by moving the delegation into shared
+    /// `occ_view_*` owners all three impls call, so a carrier cannot forget.
+    ///
+    /// WHAT FAILS IF BACKED OUT — MEASURED: revert `Value::Node`'s arms to the bare
+    /// `occ_*` helpers and part (1) fails (the two carriers disagree) and part (2)
+    /// fails (two distinct spliced values collapse to one key).
+    #[test]
+    fn wi815_a_spliced_occurrence_keys_the_same_through_every_carrier() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
+
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+        let g = kb.intern("wi815spliced");
+        let sigma = subst::Substitution::new();
+
+        let spliced = |kb: &mut KnowledgeBase, n: i64| {
+            let lit = kb.alloc(Term::Const(crate::kb::term::Literal::Int(n)));
+            let carried = Value::Entity {
+                functor: g,
+                pos: Rc::from(vec![Value::Term { id: lit }]),
+                named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            };
+            NodeOccurrence::new_expr(Expr::Spliced(carried), span, None)
+        };
+        let o1 = spliced(&mut kb, 1);
+        let o2 = spliced(&mut kb, 2);
+
+        // (1) THE SAME occurrence, read through the occurrence carrier and through
+        //     `Value::Node`, must produce the SAME key.
+        let via_occ = term_view::goal_fingerprint(&kb, &o1, &sigma);
+        let via_value = term_view::goal_fingerprint(&kb, &Value::Node(Rc::clone(&o1)), &sigma);
+        assert_eq!(
+            via_occ, via_value,
+            "an occurrence must key identically whichever carrier reaches it (WI-425)",
+        );
+
+        // (2) …and the key must still SEE the carried value, so two different
+        //     splices stay different. Without the delegation both keyed as a bare
+        //     head with no children.
+        assert_ne!(
+            via_value,
+            term_view::goal_fingerprint(&kb, &Value::Node(Rc::clone(&o2)), &sigma),
+            "distinct carried values must not collapse to one key",
+        );
+
+        // (3) and the key is usable — the delegation supplies the child the head
+        //     promised, so the arity guard does not have to degrade it.
+        assert!(
+            via_value.is_opaque_free(),
+            "a spliced occurrence with its child supplied keys cleanly",
+        );
+    }
+
     /// WI-815 — THE TWO DEDUP KEY SPACES ARE DISJOINT, and that is a decision.
     ///
     /// `fact_dedup` keys a `Value::Term` head on its hash-consed `TermId`;

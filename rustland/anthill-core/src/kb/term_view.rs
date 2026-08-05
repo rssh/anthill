@@ -1831,7 +1831,7 @@ impl TermView for Value {
             },
             Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
-            Value::Node(occ) => occ_pos_child(occ, kb, i).map(ViewItem::Node),
+            Value::Node(occ) => occ_view_pos_arg(occ, kb, i),
             _ => None,
         }
     }
@@ -1852,8 +1852,7 @@ impl TermView for Value {
             }
             // WI-342: a Type/EffectExpr child may be ground (`Term`) — handle
             // both via `occ_type_named`; fall back to the Expr `Rc` reader.
-            Value::Node(occ) => occ_type_named(occ, kb, sym)
-                .or_else(|| occ_named_child(occ, kb, sym).map(ViewItem::Node)),
+            Value::Node(occ) => occ_view_named_arg(occ, kb, sym),
             _ => None,
         }
     }
@@ -1866,7 +1865,7 @@ impl TermView for Value {
             },
             Value::Tuple { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             Value::Entity { named, .. } => named.iter().map(|(s, _)| *s).collect(),
-            Value::Node(occ) => occ_named_keys(occ, kb),
+            Value::Node(occ) => occ_view_named_keys(occ, kb),
             _ => Vec::new(),
         }
     }
@@ -1874,7 +1873,13 @@ impl TermView for Value {
     fn as_bind_value(&self) -> BindValue {
         match self {
             Value::Term { id: tid, .. } => BindValue::Term(*tid),
-            // Value::Node clones cheaply (Rc), preserving occurrence identity.
+            // Through the shared owner, so a SPLICED occurrence binds the value it
+            // carries rather than the wrapper — the same answer the
+            // `Rc<NodeOccurrence>` carrier gives. The catch-all below would clone
+            // `Value::Node(occ)` verbatim, which for every other occurrence IS the
+            // right answer and is what this arm still produces.
+            Value::Node(occ) => occ_view_bind_value(occ),
+            // Everything else clones cheaply (Rc), preserving carrier identity.
             other => BindValue::Value(other.clone()),
         }
     }
@@ -1891,7 +1896,7 @@ impl TermView for Value {
             // arms above and `TermIdView` (WI-373). A stored value rule head's
             // De Bruijn binder thus indexes like a term head's, instead of
             // collapsing to `Opaque` and panicking at insert.
-            Value::Node(occ) => occ_index_var(occ),
+            Value::Node(occ) => occ_view_index_var(occ, kb),
             _ => None,
         }
     }
@@ -1917,48 +1922,94 @@ fn spliced_value(occ: &NodeOccurrence) -> Option<&Value> {
     }
 }
 
+// THE SPLICED DELEGATION BELONGS TO THE OCCURRENCE, NOT TO ONE IMPL OF IT.
+//
+// An occurrence is read through THREE `TermView` impls — `Rc<NodeOccurrence>`
+// directly, `Value::Node(occ)`, and `ViewItem::Node(occ)` — and each used to reach
+// the `occ_*` child helpers on its own. Only `Rc<NodeOccurrence>` remembered to
+// check `spliced_value` first, so ONE occurrence answered DIFFERENTLY depending on
+// which carrier reached it: `occ_head` announced the carried value's functor and
+// arity (it delegates internally), while the other two carriers then supplied NO
+// children for it. MEASURED: through `Rc<NodeOccurrence>` two spliced occurrences
+// carrying `g(1)` and `g(2)` key as `[Open(g,1,0), Const(1)]` / `[Open(g,1,0),
+// Const(2)]`; through `Value::Node` both keyed as `[Open(g,1,0)]` — identical, and
+// (before the arity guard) usable.
+//
+// That is a WI-425 cross-carrier miss — a WRONG ANSWER, not a precision loss — and
+// WI-815 made it load-bearing by keying fact dedup on the same walk. The repair is
+// altitude, not another `if`: these four helpers own the check, and all three impls
+// call them, so a carrier CANNOT forget. `head` needs no twin because `occ_head`
+// already delegates inside itself, which is exactly why the asymmetry was invisible.
+
+fn occ_view_pos_arg<'a>(
+    occ: &'a Rc<NodeOccurrence>,
+    kb: &'a KnowledgeBase,
+    i: usize,
+) -> Option<ViewItem<'a>> {
+    if let Some(v) = spliced_value(occ) {
+        return v.pos_arg(kb, i);
+    }
+    occ_pos_child(occ, kb, i).map(ViewItem::Node)
+}
+
+fn occ_view_named_arg<'a>(
+    occ: &'a Rc<NodeOccurrence>,
+    kb: &'a KnowledgeBase,
+    sym: Symbol,
+) -> Option<ViewItem<'a>> {
+    if let Some(v) = spliced_value(occ) {
+        return v.named_arg(kb, sym);
+    }
+    occ_type_named(occ, kb, sym).or_else(|| occ_named_child(occ, kb, sym).map(ViewItem::Node))
+}
+
+fn occ_view_named_keys(occ: &Rc<NodeOccurrence>, kb: &KnowledgeBase) -> Vec<Symbol> {
+    if let Some(v) = spliced_value(occ) {
+        return v.named_keys(kb);
+    }
+    occ_named_keys(occ, kb)
+}
+
+fn occ_view_bind_value(occ: &Rc<NodeOccurrence>) -> BindValue {
+    if let Some(v) = spliced_value(occ) {
+        return v.as_bind_value();
+    }
+    BindValue::Value(Value::Node(Rc::clone(occ)))
+}
+
+fn occ_view_index_var(occ: &Rc<NodeOccurrence>, kb: &KnowledgeBase) -> Option<Var> {
+    if let Some(v) = spliced_value(occ) {
+        return v.index_var(kb);
+    }
+    occ_index_var(occ)
+}
+
 impl TermView for Rc<NodeOccurrence> {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         occ_head(self, kb)
     }
 
     fn pos_arg<'a>(&'a self, kb: &'a KnowledgeBase, i: usize) -> Option<ViewItem<'a>> {
-        if let Some(v) = spliced_value(self) {
-            return v.pos_arg(kb, i);
-        }
-        occ_pos_child(self, kb, i).map(ViewItem::Node)
+        occ_view_pos_arg(self, kb, i)
     }
 
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
-        if let Some(v) = spliced_value(self) {
-            return v.named_arg(kb, sym);
-        }
-        occ_type_named(self, kb, sym)
-            .or_else(|| occ_named_child(self, kb, sym).map(ViewItem::Node))
+        occ_view_named_arg(self, kb, sym)
     }
 
     fn named_keys(&self, kb: &KnowledgeBase) -> Vec<Symbol> {
-        if let Some(v) = spliced_value(self) {
-            return v.named_keys(kb);
-        }
-        occ_named_keys(self, kb)
+        occ_view_named_keys(self, kb)
     }
 
     fn as_bind_value(&self) -> BindValue {
-        if let Some(v) = spliced_value(self) {
-            return v.as_bind_value();
-        }
-        BindValue::Value(Value::Node(Rc::clone(self)))
+        occ_view_bind_value(self)
     }
 
     /// Override the `Global`-only default: an occurrence keys a stored-pattern
     /// var of any kind (Global / Rigid / DeBruijn) as a var-edge, like the
     /// `TermId` carrier (WI-373).
     fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
-        if let Some(v) = spliced_value(self) {
-            return v.index_var(kb);
-        }
-        occ_index_var(self)
+        occ_view_index_var(self, kb)
     }
 }
 
@@ -1978,7 +2029,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).pos_arg(kb, i),
-            ViewItem::Node(occ) => occ_pos_child(occ, kb, i).map(ViewItem::Node),
+            ViewItem::Node(occ) => occ_view_pos_arg(occ, kb, i),
         }
     }
 
@@ -1991,8 +2042,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).named_arg(kb, sym),
-            ViewItem::Node(occ) => occ_type_named(occ, kb, sym)
-                .or_else(|| occ_named_child(occ, kb, sym).map(ViewItem::Node)),
+            ViewItem::Node(occ) => occ_view_named_arg(occ, kb, sym),
         }
     }
 
@@ -2003,7 +2053,7 @@ impl TermView for ViewItem<'_> {
                 _ => Vec::new(),
             },
             ViewItem::Value(v) => (*v).named_keys(kb),
-            ViewItem::Node(occ) => occ_named_keys(occ, kb),
+            ViewItem::Node(occ) => occ_view_named_keys(occ, kb),
         }
     }
 
@@ -2011,7 +2061,7 @@ impl TermView for ViewItem<'_> {
         match self {
             ViewItem::Term(t) => BindValue::Term(*t),
             ViewItem::Value(v) => BindValue::Value((*v).clone()),
-            ViewItem::Node(occ) => BindValue::Value(Value::Node(Rc::clone(occ))),
+            ViewItem::Node(occ) => occ_view_bind_value(occ),
         }
     }
 
@@ -2024,7 +2074,7 @@ impl TermView for ViewItem<'_> {
             ViewItem::Value(v) => (*v).index_var(kb),
             // An occurrence surfaces a var of any kind as a var-edge — see
             // `occ_index_var` / `Value::index_var` (WI-373).
-            ViewItem::Node(occ) => occ_index_var(occ),
+            ViewItem::Node(occ) => occ_view_index_var(occ, kb),
         }
     }
 }
