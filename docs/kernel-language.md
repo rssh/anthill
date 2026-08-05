@@ -1512,6 +1512,16 @@ Consequences worth stating, because they are what the rule buys:
   a given **carrier** is realized — that is a separate declaration, and conflating
   the two lets any carrier claim the spec (WI-876, WI-931).
 
+  **The obligation follows the claim, not where it is written or which declaration
+  came first** (WI-978). `fact Spec[X]` carries it identically in `X`'s body, beside
+  `X` in its namespace, at a file's top level, and inside a `namespace X` block at
+  `X`'s address. The loader files the provision by asking whether the enclosing
+  scope **names a type** — a category *membership* question, since a name carries a
+  SET of categories (the rule above, WI-925/WI-956) — never by reading whichever
+  category was registered first. That made a claim beside a free-standing `entity X(…)`
+  record no provision at all, so it loaded clean with nothing backing it, while
+  moving the same text one line out refused it.
+
 - **Operations move a free-standing entity to the long form.** The sugar has no body
   in which to write one, so `sort Box { entity Box(v: Int64); operation unwrap(…) = … }`
   is how a free-standing entity gains members — still one symbol, per the rule above,

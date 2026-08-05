@@ -14597,10 +14597,13 @@ impl<'a> Loader<'a> {
     /// <named bindings>))` alongside the bare fact. Two recognised
     /// shapes (kernel-language §1418 + the stdlib namespace-level
     /// convention):
-    /// - **Sort-body**: `current_scope` is a sort. The carrier is
-    ///   `current_scope` itself; bindings come from the fact.
-    /// - **Namespace-level**: `current_scope` is a namespace.
-    ///   The carrier is derived from the fact's first binding value
+    /// - **Names a type**: `domain` carries `SymbolKind::Sort`. The carrier is
+    ///   `domain` itself; bindings come from the fact. This is the `sort X { …
+    ///   }` / `enum X { … }` body, §6.3's free-standing `entity X(…)`, and — the
+    ///   WI-978 fix — a `namespace X` SECONDARY ENTRY to any of them (059).
+    ///   Asked as `has_kind`, never `kind_of`: see the comment at the branch.
+    /// - **Names no type**: a plain namespace, or a file's synthetic `_global`
+    ///   root scope. The carrier is derived from the fact's first binding value
     ///   (the type that satisfies the spec).
     ///
     /// Positional bindings are translated to named bindings via
@@ -14667,70 +14670,96 @@ impl<'a> Loader<'a> {
             named_terms.push((param_sym, *pos_val));
         }
 
-        // Determine sort_ref (the carrier). For sort-body facts, it's
-        // the enclosing sort. For namespace-level facts, it's the
-        // first binding value's underlying sort symbol.
-        let sort_ref_term = match self.kb.kind_of(domain) {
-            Some(SymbolKind::Sort) => self.kb.make_name_term_from_sym(domain),
-            Some(SymbolKind::Namespace) => {
-                // Derive the carrier from the spec's CARRIER ("Self") TYPE
-                // PARAMETER — the first-declared TYPE binding — NOT
-                // `named_terms.first()`. Two reasons the first binding is not
-                // reliably the carrier: (1) a POSITIONAL binding is translated and
-                // APPENDED after the named ones, so in `fact Combiner[Tag, combine
-                // = tagCombine]` the leading binding is the OP `combine`; (2)
-                // `fact_value_to_sort_sym` returns the symbol of a bare
-                // `Ref`/`Ident` WITHOUT a Sort check, so an op binding would file
-                // the provision under the operation `tagCombine` instead of `Tag`
-                // (WI-431 (E)). Selecting the non-op binding with the lowest SYMBOL
-                // INDEX (= earliest declared) finds the carrier regardless of
-                // written order, skips op bindings, and works for a structured /
-                // higher-kinded carrier param (`CpsMonad`'s `F`) that
-                // `type_params_of_sort` does not list. WI-407: a NON-parametric
-                // spec has no type param, so the raw leading positional IS the
-                // carrier (`fact BulkStore[IndexedFileStore]` ⇒ `IndexedFileStore`).
-                let carrier_val = named_terms
-                    .iter()
-                    .filter(|(_, v)| binding_op_symbol(self.kb, *v).is_none())
-                    .min_by_key(|(s, _)| s.index())
-                    .map(|(_, v)| *v)
-                    .or_else(|| fact_pos_args.first().copied());
-                // The carrier must be a TYPE (Sort or namespace-level Entity),
-                // never an operation — a binding to an op value is a
-                // mis-derivation, not a carrier.
-                let carrier_sym = carrier_val
-                    .and_then(|val| self.fact_value_to_sort_sym(val))
-                    .filter(|s| !matches!(self.kb.kind_of(*s), Some(SymbolKind::Operation)));
-                match carrier_sym {
-                    Some(sym) => self.kb.make_name_term_from_sym(sym),
-                    // WI-431 (E): a parametric INSTANCE FACT (binds ≥1 op) whose
-                    // carrier cannot be derived is malformed — be LOUD instead of
-                    // silently dropping the whole provision (and with it the
-                    // coverage / coherence / signature checks). A type-only or bare
-                    // provider fact (no op binding) keeps the lenient path: it may
-                    // legitimately have no carrier here (a bare `fact BulkStore`).
-                    None => {
-                        // Loud only for a PARAMETRIC instance fact — `binds_any_op`
-                        // AND a carrier type-param slot (`spec_params.first()`). A
-                        // non-parametric spec has no carrier param to forget, and a
-                        // type-only / bare provider fact (no op binding) keeps the
-                        // lenient path.
-                        let binds_any_op = named_terms
-                            .iter()
-                            .any(|(_, v)| binding_op_symbol(self.kb, *v).is_some());
-                        if binds_any_op {
-                            if let Some(carrier_param) = spec_params.first() {
-                                self.errors.push(LoadError::UnresolvableInstanceCarrier {
-                                    spec: self.kb.qualified_name_of(fact_functor).to_string(),
-                                    carrier_param: carrier_param.clone(),
-                                });
-                            }
+        // Determine sort_ref (the carrier). A scope that NAMES A TYPE carries the
+        // provision for that type; any other scope derives the carrier from the
+        // fact's bindings.
+        //
+        // WI-978 — ASK `has_kind`, NOT `kind_of`. Symbol categories are a SET
+        // (WI-956/WI-926) and `kind_of` returns the FIRST kind added, so it
+        // answers off WHICH DECLARATION CAME FIRST (WI-979). MEASURED, for the
+        // three main-entry spellings beside a `namespace X` secondary entry
+        // (proposal 059): `sort X` and `enum X` are `primary=Sort`, but §6.3's
+        // free-standing `entity X(…)` is `primary=Entity` — all three carry
+        // `Sort`. So a `fact Spec[X]` written in a secondary entry to a
+        // free-standing entity matched NEITHER old arm and fell out of the
+        // `_ => return` that used to close them: no `SortProvidesInfo` was
+        // emitted at all, and with it went every reader — the backing obligation
+        // (`check_provider_operations`), coherence, and dispatch. It loaded clean
+        // with nothing backing the claim. Writing the SAME `namespace X` block
+        // BEFORE the entity made the primary kind `Namespace` and the whole
+        // obligation came back, so the PLACEMENT was never the discriminator —
+        // declaration ORDER was.
+        //
+        // THE ELSE IS "EVERYTHING ELSE", not "a namespace", which is why it is
+        // not spelled `has_kind(domain, Namespace)`. Making that third case loud
+        // instead found the second population the old `_ => return` swallowed: a
+        // `fact Spec[X]` at a FILE'S TOP LEVEL, whose domain is the synthetic root
+        // scope `_global` (`load_items`' `domain.unwrap_or(_global)`) — a symbol
+        // with no declared kind, so `Namespace` is as false for it as `Sort` is.
+        // It emitted no provision either, while the identical text one `namespace`
+        // in did. A root scope names no type, so it derives from the bindings
+        // exactly as a namespace does — one rule, no third case to fall out of.
+        // (`parse_test::load_polynom_with_ring_requirement` is that fixture, and
+        // it is what fails under a three-arm spelling.)
+        let sort_ref_term = if self.kb.has_kind(domain, SymbolKind::Sort) {
+            self.kb.make_name_term_from_sym(domain)
+        } else {
+            // Derive the carrier from the spec's CARRIER ("Self") TYPE
+            // PARAMETER — the first-declared TYPE binding — NOT
+            // `named_terms.first()`. Two reasons the first binding is not
+            // reliably the carrier: (1) a POSITIONAL binding is translated and
+            // APPENDED after the named ones, so in `fact Combiner[Tag, combine
+            // = tagCombine]` the leading binding is the OP `combine`; (2)
+            // `fact_value_to_sort_sym` returns the symbol of a bare
+            // `Ref`/`Ident` WITHOUT a Sort check, so an op binding would file
+            // the provision under the operation `tagCombine` instead of `Tag`
+            // (WI-431 (E)). Selecting the non-op binding with the lowest SYMBOL
+            // INDEX (= earliest declared) finds the carrier regardless of
+            // written order, skips op bindings, and works for a structured /
+            // higher-kinded carrier param (`CpsMonad`'s `F`) that
+            // `type_params_of_sort` does not list. WI-407: a NON-parametric
+            // spec has no type param, so the raw leading positional IS the
+            // carrier (`fact BulkStore[IndexedFileStore]` ⇒ `IndexedFileStore`).
+            let carrier_val = named_terms
+                .iter()
+                .filter(|(_, v)| binding_op_symbol(self.kb, *v).is_none())
+                .min_by_key(|(s, _)| s.index())
+                .map(|(_, v)| *v)
+                .or_else(|| fact_pos_args.first().copied());
+            // The carrier must be a TYPE (Sort or namespace-level Entity),
+            // never an operation — a binding to an op value is a
+            // mis-derivation, not a carrier.
+            let carrier_sym = carrier_val
+                .and_then(|val| self.fact_value_to_sort_sym(val))
+                .filter(|s| !matches!(self.kb.kind_of(*s), Some(SymbolKind::Operation)));
+            match carrier_sym {
+                Some(sym) => self.kb.make_name_term_from_sym(sym),
+                // WI-431 (E): a parametric INSTANCE FACT (binds ≥1 op) whose
+                // carrier cannot be derived is malformed — be LOUD instead of
+                // silently dropping the whole provision (and with it the
+                // coverage / coherence / signature checks). A type-only or bare
+                // provider fact (no op binding) keeps the lenient path: it may
+                // legitimately have no carrier here (a bare `fact BulkStore`).
+                None => {
+                    // Loud only for a PARAMETRIC instance fact — `binds_any_op`
+                    // AND a carrier type-param slot (`spec_params.first()`). A
+                    // non-parametric spec has no carrier param to forget, and a
+                    // type-only / bare provider fact (no op binding) keeps the
+                    // lenient path.
+                    let binds_any_op = named_terms
+                        .iter()
+                        .any(|(_, v)| binding_op_symbol(self.kb, *v).is_some());
+                    if binds_any_op {
+                        if let Some(carrier_param) = spec_params.first() {
+                            self.errors.push(LoadError::UnresolvableInstanceCarrier {
+                                spec: self.kb.qualified_name_of(fact_functor).to_string(),
+                                carrier_param: carrier_param.clone(),
+                            });
                         }
-                        return;
                     }
+                    return;
                 }
             }
-            _ => return,
         };
 
         // WI-449: re-lower each binding VALUE to its faithful, `provides`-identical
