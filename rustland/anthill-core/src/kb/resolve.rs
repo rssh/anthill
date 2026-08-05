@@ -509,13 +509,37 @@ struct Frame {
     assumed_facts: Vec<Value>,
 }
 
-/// WI-246: reify a goal `Value` to a hash-consed `TermId` — a `Value::Term`
-/// unwraps for free; a `Value::Node` occurrence goal is reified via
-/// `occurrence_to_term`. Used only at genuine term/identity boundaries
-/// (residual, external-row handlers, assumed-fact matching), never for the
-/// candidate match itself (which goes through `query_view`). NOT for dedup keys:
-/// WI-348 moved answer-dedup to `GoalKey` and WI-815 moved fact-head dedup there
-/// too, so a consumer wanting structural identity wants `goal_fingerprint`.
+/// WI-246: reify a `Value` to a hash-consed `TermId` — a `Value::Term` unwraps
+/// for free, a `Value::Node` occurrence goes through `occurrence_to_term`.
+///
+/// ONE CALLER, and it is not a goal: [`Interpreter::carrier_term`] (below), the
+/// field-access carrier reader shared by the `field_access` builtin,
+/// `field_name_from_value` and `reduce_dot_value` (WI-482). So the name is now a
+/// misnomer — kept only because renaming it is churn, but do not read "goal" as
+/// a statement about where this runs.
+///
+/// THE LIST THIS DOC USED TO CARRY WAS INVERTED, which is worth recording because
+/// it is how a doc rots without anyone touching it. It said "used only at genuine
+/// term/identity boundaries (residual, external-row handlers, assumed-fact
+/// matching)" — those are precisely the paths that were migrated AWAY, one at a
+/// time, and the tree still says so at each: `Solution::residual` keeps a `Value`
+/// "instead of materializing to a hash-consed `TermId` via `reify_goal_value`"
+/// (WI-348); `mod.rs`'s assumed-fact note records it "retired from the
+/// assumed-fact path"; and two builtin paths say outright "don't route through
+/// `reify_goal_value`" so they fail cleanly rather than panic. Each migration
+/// removed a caller and left the list naming it.
+///
+/// NEVER for the candidate match (that goes through `query_view`), and NEVER for
+/// a dedup or identity key: WI-348 moved answer-dedup to `GoalKey` and WI-815
+/// moved fact-head dedup there too, so a consumer wanting structural identity
+/// wants `goal_fingerprint` — which reads any carrier, allocates nothing, and is
+/// total where this is partial.
+///
+/// The `panic!` arm is unreachable from the sole caller, which matches
+/// `Term`/`Node` before calling. It stays because a future caller inside this
+/// module — the function is private to `resolve.rs`, so that is the whole reachable
+/// surface — passing a scalar carrier has a BUG, and a silent `Bottom` would hide
+/// it. Loud over silent, on a path with no legitimate fallback.
 fn reify_goal_value(kb: &mut KnowledgeBase, g: &Value) -> TermId {
     match g {
         Value::Term { id: t, .. } => *t,
