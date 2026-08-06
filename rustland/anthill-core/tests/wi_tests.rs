@@ -1037,6 +1037,9 @@ mod wi978_secondary_entry_provision_test;
 #[path = "include/wi979_declaration_order_test.rs"]
 mod wi979_declaration_order_test;
 
+#[path = "include/wi984_scope_identity_test.rs"]
+mod wi984_scope_identity_test;
+
 #[path = "include/wi994_variant_exposure_test.rs"]
 mod wi994_variant_exposure_test;
 

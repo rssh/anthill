@@ -35,7 +35,6 @@
 //! (WI-926), but that symbol is NOT marked a constructor (measured), so its scope
 //! term stayed an `Fn` and its members answered before this change as well.
 
-mod common;
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, Var};
@@ -65,7 +64,7 @@ fn scope_qn(kb: &KnowledgeBase, member_qn: &str) -> Option<String> {
 /// change is backed out.
 #[test]
 fn a_field_names_its_declaring_constructor() {
-    let kb = common::load_kb_with(SOURCE);
+    let kb = crate::common::load_kb_with(SOURCE);
     assert!(
         kb.is_constructor_symbol(kb.try_resolve_symbol("wi984.Tank.Full").unwrap()),
         "precondition: the declaring scope's owner is a CONSTRUCTOR — the property \
@@ -83,7 +82,7 @@ fn a_field_names_its_declaring_constructor() {
 /// asserting that the loader records scopes at all.
 #[test]
 fn an_operation_names_its_declaring_sort() {
-    let kb = common::load_kb_with(SOURCE);
+    let kb = crate::common::load_kb_with(SOURCE);
     assert!(
         !kb.is_constructor_symbol(kb.try_resolve_symbol("wi984.Tank").unwrap()),
         "precondition: this scope's owner is NOT a constructor",
@@ -97,7 +96,7 @@ fn an_operation_names_its_declaring_sort() {
 /// solutions when the change is backed out.
 #[test]
 fn the_scope_builtin_answers_for_a_constructor_owned_scope() {
-    let mut kb = common::load_kb_with(SOURCE);
+    let mut kb = crate::common::load_kb_with(SOURCE);
     let field = kb.try_resolve_symbol("wi984.Tank.Full.litres").expect("field symbol");
     let owner = kb.try_resolve_symbol("wi984.Tank.Full").expect("owner symbol");
 
