@@ -43,6 +43,13 @@
 //! dispatch and narrowing `op_backed`. This file therefore asserts what the
 //! LOADER records, not what the requires route can run.
 //!
+//! **WI-1008 DELIVERED that half** — by WIDENING, per 059 R2, and in the RECORD
+//! rather than in the dispatch reader: a secondary entry's operations now join
+//! their sort's `SortInfo.operations`, which is what `sort_ops` (and five other
+//! readers) are built from. The split above still describes this file's scope —
+//! it pins the emitter, not the requires route — and the run-time half is driven
+//! and controlled in `wi1008_secondary_entry_dispatch_test`.
+//!
 //! A SECOND POPULATION, found by making the old `_ => return` loud rather than
 //! by reasoning about it: a `fact Spec[X]` at a FILE'S TOP LEVEL, outside any
 //! `namespace`. Its domain is the synthetic `_global` root scope, which carries

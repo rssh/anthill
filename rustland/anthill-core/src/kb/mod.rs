@@ -916,12 +916,21 @@ pub struct KnowledgeBase {
     /// (raw `==` within a canonical bucket returns the same exact fact).
     ///
     /// SOUND BUILD-ONCE — no per-mutation invalidation, no `constant` runtime guard.
-    /// `SortInfo` is asserted only by `emit_sort_info` during the file-loading loop
-    /// and never retracted or re-asserted (the typer / `eq_derive` / eval only READ
-    /// it), so it is frozen well before `type_check_sorts` and cannot go stale — no
+    /// `SortInfo` is frozen well before `type_check_sorts` and cannot go stale — no
     /// eq_derive null-then-rebuild pair (unlike `provides_index`). Reset to `None` at
     /// `load_phase_inner` start for incremental loads; `None` until first built, and
     /// while `None` every consumer falls back to the live scan.
+    ///
+    /// WI-1008 — "asserted ONLY by `emit_sort_info`, never retracted or re-asserted" was
+    /// how that freeze used to be argued, and it no longer holds:
+    /// `load::merge_secondary_entry_operations` retracts and re-asserts a sort's record to
+    /// add the operations its SECONDARY ENTRIES declare (059 R2). The freeze survives on a
+    /// narrower claim — that writer runs inside `resolve_instantiations`, strictly before
+    /// the build — and it drops this index when it rewrites, which is what covers the
+    /// `load` entry point, where the `load_phase_inner` reset never runs. THE STANDING
+    /// RULE for any future writer: drop the index, because a retracted RuleId left in a
+    /// bucket is SERVED, not detected — `is_fact` and `fact_head_named_args` read a
+    /// retracted slot happily, so the failure is a stale answer rather than an error.
     pub(crate) sort_info_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
 
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by

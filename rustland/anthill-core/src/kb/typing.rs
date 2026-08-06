@@ -16717,9 +16717,16 @@ pub(crate) fn sort_info_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Ve
 /// exact key that de-conflates two DISTINCT sorts merely sharing a last segment (spec §8.6;
 /// see `KnowledgeBase::sort_info_index`). Called at `type_check_sorts` start beside
 /// `build_provides_index`, when every SortInfo fact is asserted and the relation is frozen
-/// for the rest of the load (its sole producer `emit_sort_info` ran in the file-loading
-/// loop; nothing re-asserts it). Value-fact heads (no named args) are skipped, as every
-/// keyed consumer skips them.
+/// for the rest of the load. Value-fact heads (no named args) are skipped, as every keyed
+/// consumer skips them.
+///
+/// WI-1008 — `emit_sort_info` is no longer the SOLE producer: `merge_secondary_entry_operations`
+/// re-asserts a sort's record to add the operations its SECONDARY ENTRIES declare (059 R2).
+/// Build-once stays sound because that pass runs in `resolve_instantiations`, strictly
+/// before this call, and it drops `sort_info_index` when it rewrites — so nothing this
+/// builds from can be a retracted slot. A future writer that runs AFTER this point must
+/// drop the index too; a retracted RuleId left in a bucket is served, not detected
+/// (`is_fact` reads a retracted slot happily).
 pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
     let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
         return;

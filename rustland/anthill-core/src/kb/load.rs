@@ -5100,8 +5100,11 @@ fn load_phase_inner(
     // (`build_sort_info_index`); clearing it first makes this phase's load-time SortInfo
     // lookups fall back to the live scan (seeing THIS phase's freshly-asserted SortInfo
     // facts) instead of a stale index from a prior phase — load-bearing for
-    // `load_incremental`. SortInfo is frozen after the file-loading loop and untouched
-    // by eq_derive, so unlike `provides_index` this is the ONLY invalidation it needs.
+    // `load_incremental`. SortInfo is untouched by eq_derive, so unlike `provides_index`
+    // this is the only invalidation THIS phase needs. WI-1008: it is no longer the only
+    // one in the crate — `merge_secondary_entry_operations` re-asserts SortInfo records
+    // and drops the index itself, which is what covers the `load` entry point, where
+    // this line does not run.
     kb.sort_info_index = None;
 
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
@@ -5430,13 +5433,267 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 
 /// Complete all ParameterizedType substitutions in SortRequiresInfo facts.
 ///
-/// Called after load: (1) builds base substitutions from SortInfo facts,
-/// (2) for each SortRequiresInfo fact, completes spec_inst with explicit bindings
-/// and auto-bound same-named operations from the requiring sort's scope.
+/// Called after load: (0) completes each sort's `SortInfo.operations` with the
+/// members its SECONDARY ENTRIES declare, (1) builds base substitutions from
+/// SortInfo facts, (2) for each SortRequiresInfo fact, completes spec_inst with
+/// explicit bindings and auto-bound same-named operations from the requiring
+/// sort's scope.
+///
+/// STEP 0 MUST COME FIRST, and that ordering is the whole reason it is hosted here
+/// rather than beside the call: both (1) and (2) read `SortInfo.operations` —
+/// `build_base_substitutions` maps every operation slot to itself, and
+/// `resolve_requires_bindings` auto-binds by that list — so a record completed after
+/// them would leave the substitutions built off the short list. Inside, the ordering
+/// is unforgeable; beside, it is a convention a caller can get wrong.
 pub fn resolve_instantiations(kb: &mut KnowledgeBase) {
+    merge_secondary_entry_operations(kb);
     build_base_substitutions(kb);
     resolve_requires_bindings(kb);
 }
+
+/// WI-1008 / proposal 059 R2 — a SECONDARY ENTRY's operations join their sort's
+/// `SortInfo.operations`.
+///
+/// [`Loader::emit_sort_info`] builds that list from the items of the `sort X … end`
+/// block it is emitting for, so it can only ever see the MAIN entry. But a
+/// `namespace X` at the address of a sort `X` DECLARES MEMBERS OF `X` (059 R2 —
+/// "what it declares enters `X`'s scope … and may back `X`'s `provides`/`fact
+/// Spec[X]` claims"), and the loader already records each one:
+/// [`Loader::emit_member_facts_for_items`] runs for every scope it walks and asserts
+/// `MemberInfo(name: X.op, kind: Operation, parent: X)` for a secondary entry's
+/// operation exactly as it does for a main entry's, off the same two `Item` arms.
+///
+/// So the KB held THREE answers to "what are `X`'s operations", and `SortInfo` was the
+/// ODD ONE OUT. Measured on the same fixture, `OperationInfo` + `declaring_scope_symbol`
+/// — what reflect's anthill-level `operations(kb, sort)` reads, via `anthill-stl`'s
+/// `read_operations` — answered `Rec` for BOTH placements too; `SortInfo.operations`
+/// alone was main-entry-only.
+///
+/// EVERYTHING THAT DISPATCHES READ THE SORTINFO ONE. [`build_sort_ops_table`] fills
+/// `sort_ops` from it (via [`sorts_and_own_ops`]), and when the carrier has no entry
+/// of its own its pass 2 substitutes the SPEC's body-less declaration — so a generic
+/// caller reaching the carrier through `requires Spec[T = X]` resolved to the spec op
+/// and died `OperationBodyMissing` on a program that loaded clean, which is the
+/// WI-818 failure mode in the placement 059 R2 makes the point of the mechanism.
+/// Measured, with the backing op in a secondary entry and the caller generic: the
+/// requires route died while the DIRECT call `X.op(v)` answered `111` in the same KB
+/// — dot dispatch resolves through the symbol table, where one written name is one
+/// symbol (WI-926), and `op_backed` accepted the claim for the same reason (its
+/// `{carrier_qn}.{op_short}` candidate IS that symbol). Accepted at load by ADDRESS,
+/// unreachable at run by RECORD: that asymmetry was the whole defect.
+///
+/// FIXED IN THE RECORD, NOT IN THE DISPATCH READER. `SortInfo.operations` has SIX
+/// independent readers, each re-scanning the facts and each asking the same question:
+/// [`build_base_substitutions`], [`collect_sort_operations`], [`sorts_and_own_ops`],
+/// `op_requirements`'s spec-op list, and two in `typing` (`sort_operation_names`, the
+/// ctors-and-ops pair). Widening only the dictionary route would have left the other
+/// five answering the short list — trading one disagreement for five, in a record
+/// that already disagreed with the KB's two other answers. The field is documented as
+/// "operation names in this sort" (reflect.anthill), and under R2 a secondary entry's
+/// operation IS in this sort, so the short list was not a different question.
+///
+/// COMPLETING FROM `MemberInfo` IS A FILL, NOT A SECOND OPINION. The two lists are
+/// built from the SAME two `Item` arms (`Item::Operation`, `Item::OperationBlock`)
+/// through the SAME `remap_name`, in `emit_member_facts_for_items` and in
+/// `exit_sort_with_body`'s `op_refs` loop — they cannot classify an operation
+/// differently, only cover a different set of scopes. That is what makes the union
+/// sound. `OperationInfo` + `declaring_scope_symbol` would ALSO have answered
+/// correctly here, and is the worse source: it is symbol-table-derived, and
+/// `impl_parent_of_op` documents at length why that is deliberately not the loader's
+/// notion of an operation's parent, and it is not keyed by parent, so it would need an
+/// all-operations filter per sort where `MemberInfo` is bucketed already.
+///
+/// A POST-LOAD PASS BECAUSE PLACEMENT IS NOT ORDER. 059 is explicit that a secondary
+/// entry is legal "before, beside, or after the main entry", in the same file or
+/// another, so at the moment `emit_sort_info` runs the entry may not have been read
+/// yet. There IS a cross-file pre-pass that could in principle answer at emission time
+/// — `scan_definitions` sub-pass 1 walks every file before any is loaded, and its
+/// `DeclLedger` is keyed on exactly `(scope, local name)` — but that ledger records
+/// TYPE declarations only and does not outlive the scan. **WI-998 owns the member
+/// table**; with it, `emit_sort_info` could read the union directly and this pass would
+/// have nothing to do. Until then, running over the finished fact base is the
+/// order-insensitive answer — the same property WI-978 reached for when it replaced
+/// `primary_kind()` with `has_kind`.
+///
+/// ONLY `operations` IS COMPLETED, AND THAT IS THE CLOSED ANSWER, not a first
+/// instalment. `SortInfo`'s other three list fields are fed by exactly the constructs
+/// 059 R3 REFUSES in a secondary entry — `constructors` by `entity`, `parameters` by
+/// `sort T = ?`, `requires` by a sort-level `requires`, all three refused as identity
+/// — so completing them would build the capability R3 removes. Consts are allowed by
+/// R3 but have no `SortInfo` slot at all, and a nested `sort`/`enum` with a body emits
+/// its OWN record from its own main entry. **WI-1000 owns R3's enforcement**; until it
+/// lands those three constructs still LOAD in an entry and are still not recorded
+/// here, and that is deliberate.
+///
+/// A scope with no `SortInfo` is skipped rather than reported: that is an ordinary
+/// `namespace`, whose operations are namespace-level and are members of no sort. The
+/// classification is the whole question 059 answers, and having a `SortInfo` is
+/// exactly "this address names a type".
+fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
+    let (Some(member_sym), Some(op_kind), Some(sort_info_sym)) = (
+        kb.try_resolve_symbol("anthill.reflect.MemberInfo"),
+        kb.try_resolve_symbol("anthill.reflect.MemberKind.Operation"),
+        kb.try_resolve_symbol("anthill.reflect.SortInfo"),
+    ) else {
+        return;
+    };
+    let op_kind = kb.canonical_sym(op_kind);
+
+    // THE GATE, and what keeps this pass free on a program that has no secondary entry
+    // at all — which today is the entire corpus. A secondary entry is written
+    // `namespace X` at the address of a sort `X`, and `SymbolTable::define` records the
+    // second declaration's role on the SAME symbol rather than minting a copy (WI-926,
+    // and a symbol's categories are a SET — WI-956), so the sort's symbol carries
+    // Namespace as well as Sort. MEASURED: false for a sort-body op, true for both
+    // secondary-entry shapes, and true for 0 of the stdlib's 183 `SortInfo` sorts. Same
+    // `has_kind` reading WI-978 replaced `primary_kind()` with, for the same reason.
+    //
+    // Reading both the stored and the canonical symbol because they can be two copies
+    // of one name (what `canonical_sym` exists for) and the kind sits on whichever one
+    // `define` saw.
+    //
+    // WHAT THE GATE SAVES, counted rather than timed — the wall-clock difference on a
+    // stdlib load sits under this machine's noise, so the honest claim is the WORK, not
+    // a duration. Without it both walks below run in full on every load to discover
+    // they have nothing to do: measured, 829 `MemberInfo` + 183 `SortInfo` facts, each
+    // read through `fact_head_named_args`, which CLONES the named-arg vector (7 fields
+    // for `SortInfo`, so every clone spills its inline capacity), plus ~2000
+    // `canonical_sym` calls, each a string-keyed map lookup. With it, a program that
+    // declares no secondary entry pays one 183-row borrowed walk and returns.
+    let entry_sorts: HashSet<Symbol> = kb
+        .rules_by_functor_iter(sort_info_sym)
+        .filter(|&rid| kb.is_fact(rid))
+        .filter_map(|rid| kb.fact_head_term(rid))
+        .filter_map(|head| match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "name")
+                .and_then(|(_, v)| kb.head_functor(*v)),
+            _ => None,
+        })
+        .filter(|&s| {
+            kb.has_kind(s, SymbolKind::Namespace)
+                || kb.has_kind(kb.canonical_sort_sym(s), SymbolKind::Namespace)
+        })
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    if entry_sorts.is_empty() {
+        return;
+    }
+
+    // The operation members declared for those sorts, keyed by the scope symbol. One
+    // written name is one symbol (WI-926), so a main entry and its secondary entries
+    // land under the same key — the union is what the sort declares. Read by BORROW
+    // (`fact_head_term` + `get_term`, as `sorts_and_own_ops` does) rather than through
+    // `fact_head_named_args`, which clones; and `kind` is tested FIRST, since most
+    // members are not operations and the other two fields are then never extracted.
+    let mut members_by_parent: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
+    for rid in kb.rules_by_functor_iter(member_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else { continue };
+        let Term::Fn { named_args, .. } = kb.get_term(head) else { continue };
+        let field = |n: &str| {
+            named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == n)
+                .and_then(|(_, v)| kb.head_functor(*v))
+        };
+        if field("kind").map(|k| kb.canonical_sym(k)) != Some(op_kind) {
+            continue;
+        }
+        let (Some(name), Some(parent)) = (field("name"), field("parent")) else { continue };
+        let parent = kb.canonical_sort_sym(parent);
+        if !entry_sorts.contains(&parent) {
+            continue;
+        }
+        members_by_parent.entry(parent).or_default().push(name);
+    }
+    // `rules_by_functor` returns an OWNED `Vec<RuleId>` — that is what it is for, per
+    // its own doc against the borrowing `_iter` sibling: "NOT usable when the loop body
+    // mutates the KB … those callers keep the owned `rules_by_functor`". So the rewrite
+    // happens inline, and the snapshot a two-phase version would need does not exist. A
+    // fact re-asserted here lands at a NEW RuleId appended to that bucket, which this
+    // already-taken snapshot does not contain, so nothing is revisited.
+    for rid in kb.rules_by_functor(sort_info_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(mut named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(sort_sym) = super::typing::get_named_arg(kb, &named, "name")
+            .and_then(|t| kb.head_functor(t))
+        else {
+            continue;
+        };
+        let Some(members) = members_by_parent.get(&kb.canonical_sort_sym(sort_sym)) else {
+            continue;
+        };
+        let Some(ops_tid) = super::typing::get_named_arg(kb, &named, "operations") else {
+            continue;
+        };
+        // The list already there, in its emitted order, plus every member missing from
+        // it. APPENDING rather than rebuilding from the member facts keeps the pass a
+        // pure EXTENSION of what `emit_sort_info` wrote: the existing prefix is
+        // byte-stable, so no reader's view of an unaffected sort can shift, and a
+        // second run has nothing to add — which is the idempotence `load_incremental`
+        // relies on (`rerunning_the_pass_rewrites_nothing`).
+        let mut ops: Vec<Symbol> = super::typing::list_to_vec(kb, ops_tid)
+            .into_iter()
+            .filter_map(|t| kb.head_functor(t))
+            .collect();
+        // A `Vec` + linear `contains`, not a `HashSet`: measured over the stdlib, the 61
+        // sorts declaring any operation declare 302 between them — mean 5.0, max 34 —
+        // sizes at which the scan beats hashing and skips the allocation outright.
+        let mut seen: Vec<Symbol> = ops.iter().map(|&s| kb.canonical_sym(s)).collect();
+        let declared = ops.len();
+        for &m in members {
+            let canon = kb.canonical_sym(m);
+            if !seen.contains(&canon) {
+                seen.push(canon);
+                ops.push(m);
+            }
+        }
+        if ops.len() == declared {
+            continue;
+        }
+
+        // This pass is the SECOND writer of the SortInfo relation, and the keyed index
+        // over it (`sort_info_index`, WI-671) is built once on the premise that
+        // `emit_sort_info` is the only one — so drop it, per the standing rule its
+        // field doc now carries. `load_phase` clears it before loading; the single-file
+        // `load` entry point does not, which is why the drop belongs here and not
+        // there. Idempotent, so re-dropping on a later row costs nothing, and a KB with
+        // no secondary entry never reaches it.
+        kb.sort_info_index = None;
+
+        // Build the new head BEFORE the retract (the shared subterms it takes are
+        // incref'd, so they survive the old fact's release — `set_proof_result`, the
+        // other site doing this, documents the same ordering). The `operations` value
+        // is replaced IN PLACE so the field ORDER survives: `emit_sort_info` sorts the
+        // args into declared-field order because rule-body partial-named-arg queries
+        // unify against that order, and a re-sorted rebuild would silently match zero
+        // solutions.
+        let clause_kind = kb.rule_clause_kind(rid);
+        let domain = kb.rule_domain(rid);
+        let meta = kb.rule_meta(rid);
+        let refs: Vec<TermId> = ops.iter().map(|&s| kb.alloc(Term::Ref(s))).collect();
+        let ops_list = kb.build_list(&refs);
+        for (field, value) in named.iter_mut() {
+            if kb.local_name_of(*field) == "operations" {
+                *value = ops_list;
+            }
+        }
+        let fact_term = kb.alloc(Term::Fn {
+            functor: sort_info_sym,
+            pos_args: SmallVec::new(),
+            named_args: named,
+        });
+        kb.retract(rid);
+        kb.assert_metadata_fact(fact_term, clause_kind, domain, meta);
+    }
+}
+
 
 /// Build base substitution for each sort from its SortInfo fact.
 ///
@@ -5468,6 +5725,17 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
                     _ => None,
                 });
 
+            // Memoized: a sort whose base substitution a PRIOR phase already built is
+            // skipped. WI-1008 — this now sits behind a non-memoized step 0
+            // ([`merge_secondary_entry_operations`]), so under `load_incremental` a sort
+            // that GAINS an operation in a later phase (059's secondary entry is the
+            // first mechanism that lets an already-loaded sort do so) has its
+            // `SortInfo.operations` completed while its base substitution keeps the
+            // earlier phase's slots. It bites only when the sort gaining the member is
+            // the SPEC — a carrier's own base substitution is not what the dictionary
+            // reads — and no corpus or test reaches it. Recorded rather than fixed:
+            // clearing the entry here would re-derive every spec on every incremental
+            // phase, which is the cost this memo exists to avoid.
             if let Some(sym) = sort_functor_sym {
                 if kb.sort_base_subst(sym).is_some() {
                     continue;
