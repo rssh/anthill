@@ -389,6 +389,31 @@ consumer already guards on it (`GoalKey::is_opaque_free` for fact dedup,
 `is_cacheable` for the query cache), so an opaque carrier degrades to no-dedup
 rather than merging. `Value::FactRef` is the type case.
 
+**A STRUCTURAL HEAD NAMES THE ENCODING, NOT A REFERENT (WI-1024).** These two
+carriers now head as `Functor{OpRef}` / `Functor{Dictionary}` — their own sort
+symbols, so that they unify, index and fingerprint. That is not the same as
+*referencing* a sort, and a reader asking "which sort does this value reference?"
+must not read it off the head. `eval::value_functor` is that reader (`KB.facts_of`,
+`stored_facts_of`, `is_modifiable`, `sort_query` lowering, the `MatchDispatch`
+pre-filter, eight anthill-stl bridge sites): routing these two through
+`ViewHead::functor_sym` would answer `Some(Dictionary)` for
+`facts_of(kb, <a dictionary>)` and hand back an empty list — a silent reply to a
+type error, where the excluded form raises `TypeMismatch`. Only `Term` / `Entity` /
+`SymbolRef` route through the head, because for them the head IS the referent.
+
+The same rule keeps `Value::Node` out, one level harder: `Expr::Spliced(v)` reads
+*through* to `v.head(kb)`, so an occurrence wrapping a dictionary would launder
+this exclusion straight back in. Driven by `wi1024_value_functor_test`'s
+`node-spliced-dict` row. (The rest of the `Node` question — a bare `Expr::Ref`
+genuinely does name a symbol — is WI-1025.)
+
+`runtime_carrier_sort` is unaffected either way: it gives `OpRef` → `Function`,
+`Requirement` → `Dictionary` and `Node` → none from its own fixed arms *before* it
+consults `value_functor`, so this reader and dynamic dispatch never share a fate.
+That is an argument from the code, not a test — and note that §2.4's own caveat
+still holds, so `Dictionary.impl` is **not** evidence for it: that call resolves a
+host builtin by symbol and never enters `runtime_carrier_sort` at all.
+
 **The discriminator is what the reference is spelled IN — not "reference vs.
 value".** An `OpRef` is a reference too; the point is that it names its target
 with a **`Symbol`**, a KB-lifetime name that already has a `Value` carrier

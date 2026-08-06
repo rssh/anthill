@@ -2918,29 +2918,88 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
     })
 }
 
-/// Head functor of a value, when one is recoverable: an entity, a `Fn` term,
-/// or a bare `Ref` (a nullary reference, e.g. a free-standing entity used as a
-/// type value). `pub` (re-exported as `anthill_core::eval::value_functor`) so
-/// the reflect host bridge (`anthill-stl`) reads an entity reference's functor
-/// through the SAME single source the interpreter uses (WI-551), instead of a
-/// hand-maintained twin.
-/// WI-1024: this is the fifth by-carrier list of the class WI-1023 removed, and
-/// `ViewHead::functor_sym` is the question it asks. Not converted there because
-/// the direction is opposite — those four fail open, this one would make values
-/// START naming a carrier sort, which is a dispatch change with its own controls.
+/// The sort / constructor a value REFERENCES: an entity, a `Fn` term, or a bare
+/// `Ref` (a nullary reference, e.g. a free-standing entity used as a type value).
+/// `pub` (re-exported as `anthill_core::eval::value_functor`) so the reflect host
+/// bridge (`anthill-stl`) reads an entity reference's functor through the SAME
+/// single source the interpreter uses (WI-551), instead of a hand-maintained twin.
+///
+/// WI-1024 — TWO SEPARATE CHANGES, and conflating them is what the ticket got
+/// wrong.
+///
+/// **The three pre-existing naming carriers route through the view.** `Entity` /
+/// `Term` / `SymbolRef` all present "a name, or an application of one" as
+/// [`ViewHead::functor_sym`], so reading the head is one statement of the question
+/// instead of three spellings of the answer. Answer-for-answer identical to the
+/// match it replaces, including `Term::Ident → None`.
+///
+/// **The `_ => None` catch-all is gone, and THAT is the anti-drift fix.** The
+/// problem was never that this is a by-carrier match — [`runtime_carrier_sort`]
+/// ninety lines below is one too, deliberately, and says why. The problem was the
+/// catch-all: `SymbolRef` fell into it silently until WI-1016 noticed, and
+/// `OpRef` / `Requirement` fell into it again when WI-1019 gave them structural
+/// heads. Every variant is listed now, so the next one is a compile error here.
+///
+/// **A STRUCTURAL HEAD IS NOT A REFERENT, and that is the rule the two `None`
+/// groups share** — the point at which WI-1024's own premise ("`functor_sym` is
+/// the question it asks") is REFUTED. `OpRef` / `Requirement` head as
+/// `Functor{OpRef}` / `Functor{Dictionary}`: WI-1019 gave them shapes so they
+/// would unify and fingerprint, and those name the value's ENCODING, not anything
+/// it references. Routing them through `functor_sym` would turn
+/// `facts_of(kb, <a dictionary>)` from a LOUD `TypeMismatch` into
+/// `rules_by_functor(Dictionary)` — a silently empty answer to a type error.
+///
+/// **`Value::Node` stays `None`, and the reason is the same rule one level
+/// harder.** A bare `Expr::Ref(s)` occurrence really does name `s` — it is the
+/// third carrier of a name, and [`KnowledgeBase::value_symbol`]'s doc says so — so
+/// the temptation is to admit it. But no single head test separates referent from
+/// encoding on THIS carrier: `occ_head` answers `Functor{Some(..)}` with the
+/// REFLECT CONSTRUCTOR symbol for a `Lambda` / `If` / pattern / arrow occurrence
+/// (an encoding, exactly like `Dictionary`); `Expr::Spliced(v)` reads THROUGH to
+/// `v.head(kb)`, so a `Node(Spliced(Requirement))` would launder the excluded
+/// carrier back in; and restricting to `ViewHead::Ref` would answer `None` for an
+/// applied sort occurrence whose TERM twin answers `Some` — `facts_of(kb,
+/// List[T = Int64])` is a live consumer of exactly that shape (WI-707). Admitting
+/// it also obliges the two sites that pair with this reader, per the rule WI-1016
+/// wrote at `eval/pattern.rs`: a carrier this function accepts must be
+/// destructurable by `match_constructor_pattern` (else the `MatchDispatch`
+/// pre-filter promises an arm that then declines) and walkable by
+/// `effects::detect_cycle`. That is a capability change with its own controls, not
+/// a line in this match — WI-1025.
+///
+/// The ticket also claimed a widening here would reach dynamic dispatch: it cannot.
+/// [`runtime_carrier_sort`] gives `OpRef`, `Requirement` AND `Node` fixed answers
+/// BEFORE it calls this, so none of them arrives here from the dispatch consumer.
 pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    use crate::kb::term_view::TermView;
     match value {
-        Value::Entity { functor, .. } => Some(*functor),
-        Value::Term { id: tid, .. } => match kb.get_term(*tid) {
-            Term::Fn { functor, .. } => Some(*functor),
-            Term::Ref(sym) => Some(*sym),
-            _ => None,
-        },
-        // Its own `Term::Ref` twin one arm up answers `Some(sym)`; the `_` below
-        // would have answered `None`, so the same symbol would name a carrier
-        // sort through one carrier and none through the other.
-        Value::SymbolRef(sym) => Some(*sym),
-        _ => None,
+        // The carriers that reference a name or apply one. One view read, so
+        // `Term::Ref(s)`, `Value::SymbolRef(s)` and a nullary-constructor
+        // `Entity{s}` cannot answer differently for one symbol.
+        Value::Entity { .. } | Value::Term { .. } | Value::SymbolRef(_) => {
+            value.head(kb).functor_sym()
+        }
+        // Structural heads that name a REFLECT ENCODING rather than a referenced
+        // sort — see the note above. Excluding them keeps the type error loud.
+        Value::OpRef { .. } | Value::Requirement(_) | Value::Node(_) => None,
+        // No name to give: a scalar, a functor-less aggregate, an opaque runtime
+        // handle, a logic variable. Listed rather than defaulted so a new `Value`
+        // variant must decide here (the `runtime_carrier_sort` discipline).
+        Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::Unit
+        | Value::Tuple { .. }
+        | Value::Closure(_)
+        | Value::Stream(_)
+        | Value::Substitution(_)
+        | Value::Map(_)
+        | Value::Cell(_)
+        | Value::FactRef(_)
+        | Value::Var(_)
+        | Value::Relation { .. } => None,
     }
 }
 
@@ -3085,3 +3144,4 @@ pub fn lookup_operation_body(
     let body = rec.body_node?;
     Some((body, rec.params))
 }
+

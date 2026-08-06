@@ -524,7 +524,9 @@ struct Frame {
 //
 // A consumer here that believes it needs a `TermId` should check what for:
 //  - to READ a symbol / name / field → it does not; use `value_symbol`,
-//    `value_head_symbol`, `ViewHead::functor_sym`, `project_field`, or the view.
+//    `value_head_symbol`, `ViewHead::functor_sym`, `eval::value_functor`
+//    (see `value_head_symbol`'s doc for which of the four a site wants),
+//    `project_field`, or the view.
 //  - for structural identity or a dedup key → `term_view::goal_fingerprint`,
 //    which reads any carrier, allocates nothing, and is total where a reify is
 //    partial (WI-348 moved answer dedup there, WI-815 fact-head dedup).
@@ -5837,11 +5839,21 @@ impl KnowledgeBase {
     /// silent NARROWING: `functor_sym` has no `Ident` arm, and two sites
     /// migrated to it lost the `Term::Ident` half of the match they replaced —
     /// `builtin_operation_body` (whose doc kept claiming `Ident` worked) and
-    /// `term_functor_name`. Pick between the three by what the site means:
+    /// `term_functor_name`. Pick between the FOUR by what the site means:
     /// [`Self::value_symbol`] for "is this value a NAME" (an application is
     /// not), `functor_sym` for "what does this value's head APPLY" (WI-436's
-    /// `Ref`/nullary-`Fn` pair, no `Ident`), and this for "what symbol is at the
-    /// head, however spelled".
+    /// `Ref`/nullary-`Fn` pair, no `Ident`), this for "what symbol is at the
+    /// head, however spelled", and [`crate::eval::value_functor`] for "which sort
+    /// does this value REFERENCE".
+    ///
+    /// THE FOURTH IS NOT A DUPLICATE OF `functor_sym`, and reaching for
+    /// `functor_sym` at one of its sites is the mistake WI-1024 exists to stop:
+    /// `value_functor` is `functor_sym` MINUS the carriers whose structural head
+    /// names their reflect ENCODING rather than a referent (`OpRef`,
+    /// `Requirement`, every `Value::Node` form). Admitting those turns
+    /// `facts_of(kb, <a dictionary>)` from a loud `TypeMismatch` into a silently
+    /// empty list. It is also the only one of the four that is `pub` across the
+    /// crate boundary — anthill-stl's reflect bridge reads it at eight sites.
     pub fn value_head_symbol(&self, v: &Value) -> Option<Symbol> {
         match v.head(self) {
             ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
