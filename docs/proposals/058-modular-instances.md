@@ -1,6 +1,6 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Active. The core (§3.1–§3.5) is delivered; §3.8's bundle rule is driven end to end over `Pair` (`wi858_pair_orderings_test`); defaults (§3.6) and per-provision conditions (§3.8) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); defaults (§3.6) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -51,7 +51,7 @@ biFold[plus = AddM, times = MulM](xs)      -- two slots of one spec: keys = the 
 
 A key resolves as: (1) a declared **type parameter** of the operation or its enclosing sort — a named slot *is* one; (2) a requirement's **spec short name**, when unambiguous among the callee's anonymous slots. A **qualified** key is refused, not resolved — selection must not depend on the caller's imports, and any selection a short name cannot express is written with a named slot instead. Name collisions across the two scopes, with a requirement's short name, or with the spec's own name are refused **at the declaration**: one name, one channel. A bracket in a **rule body** is refused loudly (selection there is deferred, not ignored); route through an operation.
 
-Pinning does not reach into the resolution tree: a witness's own sub-goals always resolve by search. Steering one is written as a named slot **on the witness**, bound in the key's value position — `fold[Monoid = ListM[O = MyEq]]`, an ordinary type application.
+Pinning does not reach into the resolution tree: a witness's own sub-goals always resolve by search. Steering one is written as a named slot **on the witness**, bound in the key's value position — `fold[Monoid = ListM[O = MyEq]]`, an ordinary type application. *(delivered — WI-870)* A key still reaches exactly one level, so the two channels are exclusive by construction: a spec key answers the goal the call made, a value's slot binding answers a sub-goal of the provider it names, and the composition nests.
 
 ### 3.4 A named requirement slot is a parameter; an anonymous one is a constraint
 
@@ -210,9 +210,10 @@ sort ListOrd
 end
 let s  = SortedSet.empty[T = List[T = Int64], O = ListOrd]()              -- OE inferred (§3.2)
 let s2 = SortedSet.empty[T = List[T = P],    O = ListOrd[OE = LexFst]]()  -- OE selected (§3.3)
--- status: the inferred form is delivered and RUNS. The SELECTED form on the second
--- line is NOT wired — driven, the value's bracket is validated against the witness's
--- parameters and then discarded, so it steers no sub-goal (implementation notes §7)
+-- both forms are delivered and RUN (WI-870). The selected form composes to any depth
+-- and survives into a bracket-less later call, `OE` being an ordinary type parameter
+-- (§3.4) and so part of `s2`'s type; a binding whose value provides nothing at the
+-- slot's bindings is refused naming the SLOT
 
 -- linking libraries you do NOT own (proposed, §3.6) — in lib_b, shipped UNMARKED:
 sort MoneyByAmount                             -- glue: a witness beside a foreign carrier

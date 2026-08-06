@@ -888,6 +888,9 @@ mod wi859_self_provider_candidate_test;
 #[path = "include/wi869_per_provision_conditions_test.rs"]
 mod wi869_per_provision_conditions_test;
 
+#[path = "include/wi870_bracket_value_slot_test.rs"]
+mod wi870_bracket_value_slot_test;
+
 #[path = "include/wi876_operation_mapping_test.rs"]
 mod wi876_operation_mapping_test;
 

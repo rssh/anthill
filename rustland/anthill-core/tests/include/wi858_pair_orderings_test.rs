@@ -631,20 +631,26 @@ fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
 /// 058 §3.3 says pinning does not reach into the resolution tree, and that steering a
 /// witness's own sub-goal is written by binding its NAMED slot in the key's VALUE
 /// position — `fold[Monoid = ListM[O = MyEq]]`. `BySnd`'s `OA`/`OB` are exactly such
-/// slots. DRIVEN: the binding is accepted and then DISCARDED.
+/// slots.
 ///
-/// Two arms, because either alone is explicable:
+/// **This was the RECORDED DEFECT and is now the positive assertion (WI-870).** As
+/// written here the binding was accepted and then DISCARDED, and it took two arms to
+/// show that, because either alone is explicable: the KEY is checked (an unknown slot
+/// name is refused, naming the real ones — so the bracket list was parsed and
+/// validated against the witness), while the VALUE steered nothing (a NONSENSE
+/// binding, `OA = ByFst`, which provides no `Ordered[Int64]` at all, loaded clean and
+/// computed `1`, `BySnd`'s unbound answer). A silent drop of written text — and a
+/// defect rather than a gap because `TieRepair::SubGoal` PRINTS this spelling as the
+/// repair for a sub-goal tie, so an author who followed the diagnostic got the
+/// identical error back.
 ///
-///  * the KEY is checked — an unknown slot name is refused, naming the real ones. So
-///    the value's bracket list is parsed and validated against the witness.
-///  * the VALUE steers nothing — a NONSENSE binding (`OA = ByFst`, which provides
-///    no `Ordered[Int64]` at all) loads clean and computes the unbound answer.
-///
-/// The consequence that makes this a defect rather than a gap: `TieRepair::SubGoal`
-/// PRINTS this spelling as the repair for a sub-goal tie, so an author who follows the
-/// diagnostic gets the identical error back. WI-870.
+/// Both arms are kept, one flipped: the key check is unchanged, and the nonsense
+/// binding is now REFUSED naming the slot. The positive half of the leg — a MEANINGFUL
+/// binding that resolves a sub-goal tie — is driven in
+/// `wi870_bracket_value_slot_test`, over a carrier whose element ties are the
+/// program's own rather than the prelude's.
 #[test]
-fn a_named_slot_bound_in_a_bracket_value_steers_nothing() {
+fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
     let unknown = program(
         "wi858.compose.key",
         &format!(
@@ -659,8 +665,8 @@ fn a_named_slot_bound_in_a_bracket_value_steers_nothing() {
         errs.iter().any(|e| {
             e.contains("has no type parameter named 'NoSuchSlot'") && e.contains("OA, OB")
         }),
-        "the value's bracket IS validated against the witness's parameters — which is \
-         what makes the silent drop below a drop rather than a parse failure: {errs:?}"
+        "the value's bracket is validated against the witness's parameters — the arm \
+         that made the drop below a DROP rather than a parse failure: {errs:?}"
     );
 
     let nonsense = program(
@@ -672,14 +678,12 @@ fn a_named_slot_bound_in_a_bracket_value_steers_nothing() {
              pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
         ),
     );
-    assert_eq!(
-        eval_int(&nonsense, "wi858.compose.value.Driver.go", "the nonsense binding"),
-        1,
-        "RECORDED: `ByFst` provides no `Ordered[Int64]`, so a binding that reached \
-         the sub-goal would be refused. Loading clean AND computing the unbound answer \
-         (`BySnd`: 9 > 1) is the measurement — the value's slot bindings are validated \
-         and then dropped. If this ever REFUSES, the composition leg was implemented: \
-         move this to a positive assertion.",
+    let errs = load_errs(&nonsense);
+    assert!(
+        errs.iter().any(|e| e.contains("bound slot `OA` of") && e.contains("ByFst")),
+        "`ByFst` provides `Ordered` at `Pair`, never at `Int64`, so the binding is now \
+         refused where it used to be dropped — and named in the author's own \
+         vocabulary, the SLOT rather than the sub-goal it became: {errs:?}"
     );
 }
 

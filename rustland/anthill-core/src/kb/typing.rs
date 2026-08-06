@@ -265,6 +265,20 @@ pub enum TypeError {
         op: Symbol,
         spec: Symbol,
     },
+    /// WI-870: `f[Spec = W[Slot = X]](…)` where `W`'s named slot `Slot` cannot be
+    /// located in `W`'s DICTIONARY chain. The two indexings coincide by construction
+    /// ([`dict_chain_index_of_named_slot`] states why), so this is an internal
+    /// disagreement rather than an author error — and it is an ERROR rather than a
+    /// dropped binding because pinning the wrong slot is silent: it resolves a real
+    /// goal with a real provider and computes a wrong answer.
+    SlotSelectionUnindexable {
+        span: Option<Span>,
+        op: Symbol,
+        /// The witness whose slot could not be indexed.
+        owner: Symbol,
+        /// The slot's binder as written.
+        binder: Symbol,
+    },
     /// WI-841: `f[Spec = W](…)` on a slot whose route cannot THREAD the selection —
     /// an OP-SCOPED `requires`, served by value-directed dispatch at eval, which never
     /// sees the call's selections (`synth_req_names` is keyed by the parent SORT; the
@@ -727,6 +741,16 @@ impl TypeError {
                     spec_qn,
                 )
             }
+            TypeError::SlotSelectionUnindexable { op, owner, binder, .. } => {
+                format!(
+                    "the `[{} = …]` binding on `{}` at {} names a requirement slot whose \
+                     position in that sort's dictionary chain could not be established, \
+                     so it cannot be honoured",
+                    kb.local_name_of(*binder),
+                    kb.qualified_name_of(*owner),
+                    kb.qualified_name_of(*op),
+                )
+            }
             TypeError::UnthreadableSelection { op, spec, witness, candidates, .. } => {
                 format!(
                     "`[{} = {}]` cannot be honoured at {}: the requirement is declared \
@@ -903,6 +927,7 @@ impl TypeError {
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
+            | TypeError::SlotSelectionUnindexable { span, .. }
             | TypeError::UnthreadableSelection { span, .. }
             | TypeError::WitnessDoesNotProvide { span, .. }
             | TypeError::ValueDirectedSelection { span, .. }
@@ -1115,6 +1140,20 @@ impl TypeError {
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
+            TypeError::SlotSelectionUnindexable { op, owner, binder, .. } => {
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*op).to_string(),
+                    field_name: "type_arg".to_string(),
+                    expected_type: format!(
+                        "a locatable requirement slot `{}` on {}",
+                        kb.local_name_of(*binder),
+                        kb.qualified_name_of(*owner),
+                    ),
+                    actual_type: self.format(kb),
+                    span: self.span(kb),
+                }
+            }
             TypeError::UnthreadableSelection { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -14852,9 +14891,167 @@ fn seed_op_type_args(
         let concrete = concrete
             .get_or_insert_with(|| super::load::sorts_with_constructors(kb));
         validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
-        push_selection(kb, &mut selections, spec_sort, witness, fn_sym, span)?;
+        // WI-870: and what the value's OWN bracket bound on that witness (§3.3).
+        let slots = witness_value_slot_selections(kb, fn_sym, witness, value, span)?;
+        push_selection(kb, &mut selections, spec_sort, witness, slots, fn_sym, span)?;
     }
     Ok(selections)
+}
+
+/// WI-870 (058 §3.3) — the SELECTIONS a bracket VALUE makes on the witness it names:
+/// `[Ordered = ListOrd[OE = LexFst]]`.
+///
+/// A value's bracket list has always been parsed and validated against the witness's
+/// declared parameters (`check_sort_type_args` refuses an unknown name at load, naming
+/// the real ones) — and then DISCARDED, which is the defect: `selection_witness_sym`
+/// keeps the BASE, and the arguments reached the type-parameter half and became no
+/// selection for any sub-goal. That is a silent drop of written text, and a defect
+/// rather than a gap because `TieRepair::SubGoal` PRINTS this spelling as the repair.
+///
+/// **Only a NAMED REQUIREMENT SLOT becomes a selection.** §3.4 makes a named slot an
+/// ordinary type parameter, so the witness's plain parameters share this bracket —
+/// `LexFst[A = Int64]` binds a type and selects nothing, and reading every entry as a
+/// selection would turn a type argument into a provider name.
+/// [`named_requirement_slot_of`] is the discriminator — the WITNESS's own list, not
+/// [`named_slot_spec`]'s callee ladder.
+///
+/// **Check 3 is deliberately NOT applied to a sub-slot**, and this is the one place
+/// the sub-selection's validation differs from [`validate_instance_selection`]'s. That
+/// check refuses naming a CONCRETE provider because at a call site the argument's own
+/// value already directs dispatch, so an explicit witness could only agree redundantly
+/// or contradict silently (§3.5). A witness's requirement slot has no value: it is a
+/// dictionary slot the typer resolves, so naming the carrier's own provision there is
+/// meaningful. Driven — the identical name is refused in the KEY's value position and
+/// accepted one level in.
+///
+/// Check 1 IS applied, through the shared owner: a value that provides the slot's spec
+/// nowhere gets the site's own message. The binding-precise half ("provides it, but
+/// not at THESE bindings") is [`resolve_inner`]'s, exactly as it is for the outer pin.
+///
+/// TWO PRODUCERS, one reader — the same discipline WI-844 gave the outer channel. A
+/// named slot IS a type parameter (§3.4), so `SortedSet[T = List[P], O = ListOrd[OE =
+/// LexFst]]` is a writable TYPE and the nested binding reaches
+/// [`selections_from_slot_bindings`] as an ARGUMENT as well as reaching
+/// [`seed_op_type_args`] as a bracket. Reading the base at one producer and the whole
+/// application at the other would drop the nested pin on exactly 058 §5's second
+/// `SortedSet` line.
+fn witness_value_slot_selections(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    witness: Symbol,
+    value: &Value,
+    span: Option<Span>,
+) -> Result<Vec<SlotSelection>, TypeError> {
+    // The overwhelmingly common witness declares no named slot at all; a bare `[Spec =
+    // W]` value has no named args either. Both are a read of an already-built list.
+    if kb.named_requirement_slots(witness).is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<SlotSelection> = Vec::new();
+    for key in value.named_keys(kb) {
+        // POSITIONAL bindings arrive here too: the lowering maps each onto the next
+        // free DECLARED parameter name before building the term (`type_expr_to_child`),
+        // so `LexFst[Int64, Int64, Descending]` reaches this loop as named `A`, `B`,
+        // `OA`. One reader for both spellings, which is what keeps the positional form
+        // from being a second silent drop.
+        let Some(slot) = named_requirement_slot_of(kb, witness, key) else { continue };
+        let Some(spec) = slot.spec_base else { continue };
+        let Some(bound) = named_child_value(kb, value, key) else { continue };
+        // An ABSTRACT binding derives nothing — the same rule [`is_type_param_value`]
+        // states for the outer channel, and for the same reason: inside `report[T, O](s:
+        // SortedSet[T = T, O = O])` the slot names the caller's parameter, and pinning
+        // it would turn universal polymorphism into a wrong answer. `W[OE = T]` written
+        // in a bracket says the same thing one level in — resolve `OE` however the
+        // enclosing scope resolves `T` — so it FORWARDS rather than pins.
+        if view_is_abstract_type_param(kb, &bound) {
+            continue;
+        }
+        let Some(sub_witness) = selection_witness_sym(kb, &bound) else {
+            return Err(TypeError::SelectionValueNotASort { span, op: fn_sym, spec });
+        };
+        let chain_index = dict_chain_index_of_named_slot(kb, witness, &slot, fn_sym, span)?;
+        // Check 1 only — see this function's doc for why check 3 is not a sub-slot's.
+        check_witness_provides_spec(kb, fn_sym, spec, sub_witness, span)?;
+        let nested = witness_value_slot_selections(kb, fn_sym, sub_witness, &bound, span)?;
+        out.push(SlotSelection {
+            binder: key,
+            owner: witness,
+            chain_index,
+            selection: InstanceSelection {
+                spec_sort: spec,
+                witness: sub_witness,
+                slots: nested,
+            },
+        });
+    }
+    Ok(out)
+}
+
+/// WI-870 — [`is_type_param_value`] read through a view, so a `Value::Node`-carried
+/// binding answers rather than falling into "not a sort" and being refused. The two
+/// spellings an abstract binding takes are a `TypeVar` head (the occurrence carrier's)
+/// and a bare reference to a `sort P = ?` symbol (the term carrier's).
+fn view_is_abstract_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    match type_head(kb, v) {
+        TypeHead::TypeVar(_) => true,
+        TypeHead::SortRef(s) => is_sort_param_symbol(kb, s),
+        _ => false,
+    }
+}
+
+/// WI-870 — `owner`'s NAMED requirement slot whose binder is `key`, or `None` when
+/// `key` is one of its ordinary type parameters.
+///
+/// A SORT's own list, deliberately not [`named_slot_spec`]'s two-scope ladder: that
+/// one answers for a CALLEE, whose slots may be its enclosing sort's, and a witness
+/// named in a bracket value is neither a callee nor inside one. Matching is by symbol
+/// identity, which holds because both sides are BARE interns of the written name — the
+/// binder from `join_segments` at the declaration, the key from `reintern(p.last())`
+/// at the type application.
+fn named_requirement_slot_of(
+    kb: &KnowledgeBase,
+    owner: Symbol,
+    key: Symbol,
+) -> Option<crate::kb::NamedRequirementSlot> {
+    kb.named_requirement_slots(owner)
+        .iter()
+        .find(|s| s.binder == key)
+        .copied()
+}
+
+/// WI-870 — where `slot` sits in `owner`'s DICTIONARY chain, which is the coordinate a
+/// sub-goal pin is keyed by.
+///
+/// The two indexings coincide by construction and the identity is stated once, here,
+/// per WI-857's dual lesson: `NamedRequirementSlot.slot` is the declaration's position
+/// among the scope's `requires` items (`LoadPass`'s per-scope counter), `direct_requires`
+/// reads one `SortRequiresInfo` fact per such item in assertion order, and
+/// [`provider_dict_chain`] PREFIXES that chain with itself before appending any
+/// provision conditions. So the dictionary index IS the declaration index.
+///
+/// VERIFIED rather than trusted: the entry found there must demand the very spec the
+/// slot was recorded for. A disagreement means the two orders have drifted, and pinning
+/// the wrong slot is silent — it resolves a real goal with a real provider and computes
+/// the wrong answer. So it is an error, not a `debug_assert` and not a skip. Unreachable
+/// on today's surface, which is exactly why nothing else would notice it.
+fn dict_chain_index_of_named_slot(
+    kb: &mut KnowledgeBase,
+    owner: Symbol,
+    slot: &crate::kb::NamedRequirementSlot,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<usize, TypeError> {
+    let chain = provider_dict_entries(kb, owner);
+    let demanded = chain.entries().get(slot.slot).map(|e| e.required_sort);
+    match (demanded, slot.spec_base) {
+        (Some(d), Some(s)) if same_sort_canonical(kb, d, s) => Ok(slot.slot),
+        _ => Err(TypeError::SlotSelectionUnindexable {
+            span,
+            op: fn_sym,
+            owner,
+            binder: slot.binder,
+        }),
+    }
 }
 
 /// WI-841/WI-844 — add one selection, upholding the invariant EVERY producer shares: at
@@ -14877,11 +15074,19 @@ fn seed_op_type_args(
 /// served both deps. A `debug_assert` written to document the exemption fired on the
 /// first program that exercised it. So the comparison is unconditional: witnesses agree
 /// or the call is refused, whoever wrote them.
+///
+/// WI-870 — `slots` is what the value bound on the witness's OWN named slots, and BOTH
+/// producers supply it (a named slot is a type parameter, so the σ-read producer sees
+/// the same application the bracket wrote). A second push for an already-selected spec
+/// therefore keeps the FIRST entry's slots, which is sound for the reason the witness
+/// comparison is unconditional: for one slot the two producers read one variable, so
+/// they agree and the second push is a no-op.
 fn push_selection(
     kb: &KnowledgeBase,
     selections: &mut Vec<InstanceSelection>,
     spec_sort: Symbol,
     witness: Symbol,
+    slots: Vec<SlotSelection>,
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
@@ -14900,7 +15105,7 @@ fn push_selection(
         }
         return Ok(());
     }
-    selections.push(InstanceSelection { spec_sort, witness });
+    selections.push(InstanceSelection { spec_sort, witness, slots });
     Ok(())
 }
 
@@ -14982,7 +15187,15 @@ fn selections_from_slot_bindings(
         // a tuple) — no witness to name, and `check_selection_bindings` has no goal to
         // judge it against; the requirement's own route reports it.
         let Some(witness) = sort_functor_of(kb, bound) else { continue };
-        push_selection(kb, &mut selected, spec_sort, witness, fn_sym, span)?;
+        // WI-870: and the witness's OWN slot bindings, read out of the same type. A
+        // named slot IS a type parameter (§4.7), so `SortedSet[T = List[P], O =
+        // ListOrd[OE = LexFst]]` carries the nested selection in the ARGUMENT exactly
+        // as the bracket carries it — reading only the base here would drop it on
+        // every call after the construction site, which is the very asymmetry WI-844
+        // built this producer to close.
+        let slots =
+            witness_value_slot_selections(kb, fn_sym, witness, &Value::term(bound), span)?;
+        push_selection(kb, &mut selected, spec_sort, witness, slots, fn_sym, span)?;
     }
     Ok(selected)
 }
@@ -15023,10 +15236,43 @@ fn pinned_witness_for(
     selected: &[InstanceSelection],
     spec: Symbol,
 ) -> Option<Symbol> {
-    selected
-        .iter()
-        .find(|s| same_sort_canonical(kb, s.spec_sort, spec))
-        .map(|s| s.witness)
+    pinned_selection_for(kb, selected, spec).map(|s| s.witness)
+}
+
+/// WI-870 — the WHOLE selection [`pinned_witness_for`] reads its witness out of, for
+/// the one caller that also needs the witness's own slot bindings ([`resolve_inner`]'s
+/// step 0). Split so the four "is this pinned" askers keep asking a `Symbol` question
+/// and cannot start depending on the composition.
+fn pinned_selection_for<'a>(
+    kb: &KnowledgeBase,
+    selected: &'a [InstanceSelection],
+    spec: Symbol,
+) -> Option<&'a InstanceSelection> {
+    selected.iter().find(|s| same_sort_canonical(kb, s.spec_sort, spec))
+}
+
+/// WI-870 — the slot binding, if any, that `pin` wrote for dictionary sub-goal `i`.
+///
+/// The SPEC half is never reachable: those slots are the SPEC's own `requires`, which
+/// the provider does not declare and whose names no author can write. `checked_sub`
+/// says exactly that, and says it once.
+///
+/// **EVERY nameable slot is one this dispatch answers**, which is why there is no
+/// "this binding steers nothing" arm here — the shape that would need one does not
+/// exist. A binder is minted only for a SORT-LEVEL `requires O: Spec[…]` (058 §4's
+/// `:- goals` tail is a list of spec instantiations and admits no name), and a
+/// sort-level slot conditions EVERY provision — `ProviderDictChain::conditions_for`
+/// leaves its owner list empty, which `strict_mask` reads as strict. So WI-869's
+/// `Unavailable` slots, the only ones a dispatch declines to answer, are exactly the
+/// ones with nothing to write. If a condition ever gains a binder, the arm that
+/// refuses a sibling provision's slot goes here.
+fn slot_pin_at<'a>(
+    pin: Option<&'a InstanceSelection>,
+    i: usize,
+    spec_half_len: usize,
+) -> Option<&'a SlotSelection> {
+    let j = i.checked_sub(spec_half_len)?;
+    pin?.slots.iter().find(|s| s.chain_index == j)
 }
 
 /// WI-841 (058 §4.2) — one explicit provider selection a call site wrote:
@@ -15037,12 +15283,52 @@ fn pinned_witness_for(
 /// silently first-matched. That corner is unreachable in a loading program until 058
 /// phase 3b lets two providers coexist, and it is 3b's business to give a slot-precise
 /// key if it needs one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// `Hash` is load-bearing, not derived out of habit: a selection rides in
+/// `resolve_cache`'s KEY (`dispatch_spec_op_cached`), and WI-870's `slots` decide the
+/// answer exactly as `witness` does — two sites pinning one witness's slot differently
+/// resolve differently and must not share an entry.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct InstanceSelection {
     /// The spec sort of the selected requirement slot.
     pub spec_sort: Symbol,
     /// The witness sort the call named.
     pub witness: Symbol,
+    /// WI-870 (058 §3.3) — what the witness's OWN named slots were bound to, written
+    /// in the key's VALUE position: `fold[Monoid = ListM[O = MyEq]]`. Empty for the
+    /// overwhelmingly common bare witness.
+    ///
+    /// This is a SEPARATE channel from `witness`, not a refinement of it, and §3.3
+    /// says why: *pinning does not reach into the resolution tree*. `spec_sort` keys
+    /// the goal the CALL made; these key sub-goals of the chosen provider's own
+    /// dictionary, which no spec key could reach — two same-spec slots of one witness
+    /// (`requires OA: Ordered[A]`, `requires OB: Ordered[B]`) are one spec and two
+    /// answers.
+    pub slots: Vec<SlotSelection>,
+}
+
+/// WI-870 (058 §3.3) — one named slot of a WITNESS, bound in a bracket value.
+///
+/// Keyed POSITIONALLY (`chain_index`), because the spec cannot key it: a witness may
+/// declare two slots of one spec, and that is the shape 058's own example has
+/// (`requires OA: Ordered[A]`, `requires OB: Ordered[B]`). The index is into the
+/// witness's DICTIONARY CHAIN — i.e. into the PROVIDER half of the dictionary
+/// [`dict_sub_goals`] lays out — and it has one owner,
+/// [`dict_chain_index_of_named_slot`], per WI-857's standing lesson about positional
+/// channels.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SlotSelection {
+    /// The slot's binder as the author wrote it (`OA`) — for the diagnostic, which
+    /// must name the slot and not merely the sub-goal.
+    pub binder: Symbol,
+    /// The witness that DECLARES the slot — likewise for the diagnostic, and the sort
+    /// `chain_index` indexes.
+    pub owner: Symbol,
+    /// The slot's position in `owner`'s dictionary chain.
+    pub chain_index: usize,
+    /// What the value selected for the slot — recursively, since the bound witness may
+    /// carry value-position bindings of its own (`W[S = X[Inner = Y]]`).
+    pub selection: InstanceSelection,
 }
 
 /// WI-841 (058 §4.2 rule 1) — the type parameters a call bracket on `fn_sym` may bind:
@@ -15274,18 +15560,7 @@ fn validate_instance_selection(
     // provision reported "Conc is a CONCRETE provider of Monoid", telling the author
     // their typo was a coherence rule. Ordering check 3 first was justified as "a
     // refusal of the WHOLE spelling", which only holds once the witness provides.
-    let provides = impl_sorts_providing_spec(kb, spec_sort)
-        .iter()
-        .any(|s| same_sort_canonical(kb, *s, witness));
-    if !provides {
-        return Err(TypeError::WitnessDoesNotProvide {
-            span,
-            op: fn_sym,
-            witness,
-            spec: spec_sort,
-            at_bindings: false,
-        });
-    }
+    check_witness_provides_spec(kb, fn_sym, spec_sort, witness, span)?;
     if is_value_directed_provider(kb, concrete, witness) {
         return Err(TypeError::ValueDirectedSelection {
             span,
@@ -15295,6 +15570,37 @@ fn validate_instance_selection(
         });
     }
     Ok(())
+}
+
+/// §4.4 CHECK 1 ALONE — does `witness` provide `spec_sort` anywhere at all.
+///
+/// Its own function because WI-870 gave it a second caller and check 3 did NOT get
+/// one: a slot of a witness is a dictionary slot the typer resolves, with no value to
+/// direct it, so the value-directed refusal has nothing to say there
+/// ([`witness_value_slot_selections`] argues it). Sharing the check that IS common
+/// makes that split structural — a change to check 1's criterion cannot reach one
+/// caller and miss the other, which is how the two would drift about what "provides"
+/// means.
+fn check_witness_provides_spec(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    spec_sort: Symbol,
+    witness: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if impl_sorts_providing_spec(kb, spec_sort)
+        .iter()
+        .any(|s| same_sort_canonical(kb, *s, witness))
+    {
+        return Ok(());
+    }
+    Err(TypeError::WitnessDoesNotProvide {
+        span,
+        op: fn_sym,
+        witness,
+        spec: spec_sort,
+        at_bindings: false,
+    })
 }
 
 /// WI-839: the call-site bracket bindings this application wrote, or `None` when it
@@ -15733,12 +16039,10 @@ fn goal_from_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
 /// for the same reason rule (1) spans both: a sort's named slot is bindable at a call
 /// on its member (§5.3's construction site) as well as in a type application.
 fn named_slot_spec(kb: &KnowledgeBase, fn_sym: Symbol, binder: Symbol) -> Option<Symbol> {
-    let find = |owner: Symbol| {
-        kb.named_requirement_slots(owner)
-            .iter()
-            .find(|s| s.binder == binder)
-            .and_then(|s| s.spec_base)
-    };
+    // WI-870 gave "the slot named `binder` on `owner`" its own reader; this is that
+    // reader over the callee's two scopes, so the two cannot disagree about which
+    // declaration a binder names.
+    let find = |owner: Symbol| named_requirement_slot_of(kb, owner, binder)?.spec_base;
     find(fn_sym).or_else(|| impl_parent_of_op(kb, fn_sym).and_then(find))
 }
 
@@ -16794,13 +17098,13 @@ pub fn resolve(
     scope: &ResolutionScope,
 ) -> ResolutionResult {
     let mut stack: Vec<SortGoal> = Vec::new();
-    resolve_inner(kb, goal, scope, &mut stack, None)
+    resolve_inner(kb, goal, scope, &mut stack, None, None)
 }
 
-fn resolve_inner(
+fn resolve_inner<'a>(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
-    scope: &ResolutionScope,
+    scope: &ResolutionScope<'a>,
     stack: &mut Vec<SortGoal>,
     // WI-857 — the provider whose dictionary this goal is a sub-requirement OF, when
     // it is one (`None` at the goal the call made). The LOCALITY rule: a sub-goal
@@ -16808,6 +17112,15 @@ fn resolve_inner(
     // search. The IMMEDIATELY enclosing provider only — one level down, the sub-goal's
     // own chosen provider takes over, which is what makes locality compose.
     local_provider: Option<Symbol>,
+    // WI-870 (058 §3.3) — the binding a bracket VALUE wrote for THIS sub-goal's slot,
+    // when this goal is a named slot of the provider one level up and the call named
+    // it: `[Ordered = ListOrd[OE = LexFst]]`. `None` at the call's own goal (where
+    // `scope.selected` answers instead) and at every slot the value left unwritten.
+    //
+    // The whole `SlotSelection` rather than its witness, because the REFUSAL has to
+    // name the slot: "provides no instance at these bindings" is unactionable when the
+    // author's text was `OE = LexFst` and the goal rendered is `Ordered[T = Int64]`.
+    slot_pin: Option<&'a SlotSelection>,
 ) -> ResolutionResult {
     // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
     // CALL made", so a selection reaches the call's own goal and no sub-goal: a
@@ -16815,12 +17128,19 @@ fn resolve_inner(
     // is what keeps a bracket key from depending on which witness was pinned.
     // WI-843 reuses this exact test for the tie diagnostic (see `InstanceTie`): "the
     // goal the CALL made" is also the only level a call-site bracket can steer.
+    //
+    // WI-870 — and a sub-goal is steered ONLY by a slot binding written on the
+    // provider that owns it, which is the same rule seen from the other side: a
+    // spec-keyed bracket entry still reaches exactly one level, and the composition
+    // is written as a type application of the witness, resolved at the witness's own
+    // boundary. So the two sources are exclusive by construction, not by precedence.
     let at_call_goal = stack.is_empty();
-    let pinned = if at_call_goal {
-        pinned_witness_for(kb, scope.selected, goal.spec_sort)
+    let pin: Option<&'a InstanceSelection> = if at_call_goal {
+        pinned_selection_for(kb, scope.selected, goal.spec_sort)
     } else {
-        None
+        slot_pin.map(|s| &s.selection)
     };
+    let pinned = pin.map(|s| s.witness);
 
     // Steps 1–4 are untouched — except that a PINNED goal skips the scope lookup:
     // explicit beats forwarded as well as searched (§4.1 tier 1), and returning
@@ -16872,15 +17192,27 @@ fn resolve_inner(
         candidates.retain(|c| same_sort_canonical(kb, c.impl_sort, witness));
         if candidates.is_empty() {
             stack.pop();
-            return ResolutionResult::NoMatch {
-                goal_text: format_goal(kb, goal),
-                hint: format!(
+            // WI-870: the SAME refusal at two levels, worded from the text the author
+            // wrote. The outer pin names a spec key; a slot pin names a slot of a
+            // witness, and reporting it as "the call selected W" would send the author
+            // looking at the bracket's key instead of at its value.
+            let hint = match slot_pin {
+                Some(s) => format!(
+                    "the call bound slot `{}` of `{}` to `{}`, which provides no {} \
+                     instance at these bindings",
+                    kb.local_name_of(s.binder),
+                    kb.qualified_name_of(s.owner),
+                    kb.qualified_name_of(witness),
+                    kb.qualified_name_of(goal.spec_sort),
+                ),
+                None => format!(
                     "the call selected `{}` for {}, which provides no instance at these \
                      bindings",
                     kb.qualified_name_of(witness),
                     kb.qualified_name_of(goal.spec_sort),
                 ),
             };
+            return ResolutionResult::NoMatch { goal_text: format_goal(kb, goal), hint };
         }
     }
 
@@ -17001,7 +17333,8 @@ fn resolve_inner(
         // search ties. The only right answer is witness-local. It depends on the
         // SELECTED provider and never on caller scope, so it introduces no
         // import-coupling.
-        match resolve_inner(kb, sg, scope, stack, Some(chosen_impl_sort)) {
+        let sub_pin = slot_pin_at(pin, i, spec_half_len);
+        match resolve_inner(kb, sg, scope, stack, Some(chosen_impl_sort), sub_pin) {
             ResolutionResult::Resolved(t) => sub_resolutions.push(t),
             // WI-857: a SPEC-half slot that does not resolve is CARRIED as
             // `Unavailable`, uniformly across NoMatch / Ambiguous / Cyclic — the
@@ -23148,9 +23481,10 @@ fn resolve_at_goal(
     }
 
     let mut stack: Vec<SortGoal> = Vec::new();
-    // `None`: this IS the goal the call made, so there is no enclosing provider whose
-    // locality could narrow it (WI-857).
-    match resolve_inner(kb, &goal, &scope, &mut stack, None) {
+    // Two `None`s: this IS the goal the call made, so there is no enclosing provider
+    // whose locality could narrow it (WI-857) and no slot of one to pin (WI-870) —
+    // `scope.selected` is the only pin that reaches this level.
+    match resolve_inner(kb, &goal, &scope, &mut stack, None, None) {
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
