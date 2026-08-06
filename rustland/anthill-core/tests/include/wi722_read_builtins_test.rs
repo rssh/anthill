@@ -16,8 +16,6 @@
 //! builtin misbehaved, the macro's `none`/empty branch would leave the argument
 //! untouched and the consumer would evaluate to 5, not 105.
 
-mod common;
-
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
@@ -77,7 +75,7 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
 }
 
 fn eval_int(consumer: &str) -> i64 {
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     match interp.call(consumer, &[]).unwrap_or_else(|e| panic!("{consumer} evaluates: {e:?}")) {
         Value::Int(n) => n,
         other => panic!("{consumer}: expected Int, got {other:?}"),
@@ -89,9 +87,9 @@ fn eval_int(consumer: &str) -> i64 {
 /// so `via_subs(orig(5))` becomes `wrapped(5)` at compile time.
 #[test]
 fn sub_occurrences_children_rebuild() {
-    let kb = common::load_kb_with(SRC);
+    let kb = crate::common::load_kb_with(SRC);
     let body = kb.op_body_node(sym(&kb, "test.wi722read.consumer_a")).expect("consumer_a body");
-    assert_eq!(common::head_short(&kb, &body), "wrapped", "sub_occurrences should have rebuilt wrapped(...)");
+    assert_eq!(crate::common::head_short(&kb, &body), "wrapped", "sub_occurrences should have rebuilt wrapped(...)");
     assert_eq!(eval_int("test.wi722read.consumer_a"), 105, "wrapped(5) = 105");
 }
 

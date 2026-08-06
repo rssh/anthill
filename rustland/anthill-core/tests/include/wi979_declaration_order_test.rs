@@ -19,8 +19,6 @@
 //! `sort X` item: `is_sort_scope` is consulted during the same pass, so a reader
 //! reached earlier still sees the pre-fix answer.
 
-mod common;
-
 use anthill_core::eval::Value;
 use anthill_core::intern::SymbolKind;
 
@@ -62,7 +60,7 @@ fn cases() -> [(&'static str, &'static str, &'static str); 2] {
 #[test]
 fn both_orders_record_the_same_categories() {
     for (label, src, ns) in cases() {
-        let kb = common::load_kb_with(src);
+        let kb = crate::common::load_kb_with(src);
         let sym = kb
             .try_resolve_symbol(&format!("{ns}.Rec"))
             .unwrap_or_else(|| panic!("{label}: {ns}.Rec has no symbol"));
@@ -89,7 +87,7 @@ fn neither_order_defines_a_phantom_nested_constructor() {
     // leaves `Rec.Rec` standing as a separate nested symbol, and a receiver then
     // reports its sort as `<ns>.Rec.Rec` and dot dispatch misses.
     for (label, src, ns) in cases() {
-        let kb = common::load_kb_with(src);
+        let kb = crate::common::load_kb_with(src);
         assert!(
             kb.try_resolve_symbol(&format!("{ns}.Rec.Rec")).is_none(),
             "{label}: `{ns}.Rec.Rec` exists — the eponymous constructor did not collapse",
@@ -147,7 +145,7 @@ end
         ("sort-first (CONTROL)", V_SORT_FIRST, "wi979.vsf"),
         ("ns-first", V_NS_FIRST, "wi979.vnf"),
     ] {
-        let mut interp = common::interp_for(src);
+        let mut interp = crate::common::interp_for(src);
         assert!(
             matches!(interp.call(&format!("{ns}.drive"), &[]), Ok(Value::Int(2))),
             "{label}: bare `Red(…)` must resolve through the variant-exposure link",
@@ -174,8 +172,8 @@ end
 /// and no program reaches a KB built from it.
 #[test]
 fn entity_then_sort_body_is_refused_by_059_r1_and_still_unwired() {
-    common::expect_load_errors(
-        common::try_load_kb_with(r#"
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(r#"
 namespace wi979.es
   import anthill.prelude.Int64
   entity Rec(n: Int64)
@@ -205,7 +203,7 @@ fn both_orders_dispatch_the_secondary_entrys_member() {
     // a receiver built from the main entry's constructor. Asserting the VALUE, not
     // that the file loaded — a `twice` that resolved to nothing would fail here.
     for (label, src, _ns) in cases() {
-        let mut interp = common::interp_for(src);
+        let mut interp = crate::common::interp_for(src);
         let got = interp
             .call(&format!("{_ns}.drive"), &[])
             .unwrap_or_else(|e| panic!("{label}: drive() failed: {e:?}"));

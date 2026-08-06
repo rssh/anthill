@@ -31,8 +31,6 @@ use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, TypeChild, TypeNod
 use anthill_core::kb::term::Term;
 use anthill_core::span::{SourceId, SourceSpan};
 
-mod common;
-
 const SRC: &str = r#"
 namespace test.wi1025
   sort Item
@@ -69,7 +67,7 @@ fn box_sym(interp: &mut Interpreter) -> Symbol {
 /// answers.
 #[test]
 fn a_parameterized_type_occurrence_names_its_base_sort() {
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     let sym = box_sym(&mut interp);
     let v_param = interp.kb_mut().intern("V");
 
@@ -116,7 +114,7 @@ fn a_parameterized_type_occurrence_names_its_base_sort() {
     // By CONTENT, not length: two DIFFERENT sorts with one fact each would agree on
     // a count. Each head is identified by the sort it names.
     let names = |interp: &Interpreter, list: &Value| -> Vec<Option<Symbol>> {
-        common::list_heads(list).iter().map(|h| value_functor(interp.kb(), h)).collect()
+        crate::common::list_heads(list).iter().map(|h| value_functor(interp.kb(), h)).collect()
     };
     let occ_names = names(&interp, &via_occ);
     assert_eq!(occ_names.len(), 1, "premise: the fixture asserts exactly one Box fact");
@@ -161,7 +159,7 @@ fn facts_of(interp: &mut Interpreter, sort: Value) -> Result<Value, String> {
 ///    one level in.
 #[test]
 fn a_nullary_constructor_matches_on_every_carrier_of_its_name() {
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     let empty = interp.kb_mut().resolve_qualified_name_sym("test.wi1025.Item.Empty");
     let ref_tid = interp.kb_mut().alloc(Term::Ref(empty));
     let carriers: Vec<(&str, Value)> = vec![
@@ -228,8 +226,8 @@ fn constructor_pattern(interp: &mut Interpreter, ctor: Symbol) -> Rc<NodeOccurre
 /// nested row does too.
 #[test]
 fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
-    let mut interp = common::interp_for(SRC);
-    common::register_modify_handler(&mut interp);
+    let mut interp = crate::common::interp_for(SRC);
+    crate::common::register_modify_handler(&mut interp);
     let sym = box_sym(&mut interp);
     // The RESOURCE, on the carrier `resource_key` has always accepted.
     let resource = Value::SymbolRef(sym);
@@ -309,8 +307,8 @@ fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
 /// self-reference inside the literal is silently stored.
 #[test]
 fn the_cycle_walk_descends_a_head_that_presents_no_shape() {
-    let mut interp = common::interp_for(SRC);
-    common::register_modify_handler(&mut interp);
+    let mut interp = crate::common::interp_for(SRC);
+    crate::common::register_modify_handler(&mut interp);
     let sym = box_sym(&mut interp);
     let v_param = interp.kb_mut().intern("V");
     let set = interp.kb_mut().intern("set");

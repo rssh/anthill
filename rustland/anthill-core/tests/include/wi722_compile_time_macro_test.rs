@@ -13,8 +13,6 @@
 //! `trigger(5)` to `wrapped(5)` at compile time (via the occurrence BUILD builtin
 //! `make_apply`), so the program loads AND `wrapped(5)` evaluates to `105`.
 
-mod common;
-
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
@@ -62,11 +60,11 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
 /// proof.)
 #[test]
 fn macro_rewrites_consumer_body_at_compile_time() {
-    let kb = common::load_kb_with(SRC);
+    let kb = crate::common::load_kb_with(SRC);
     let consumer = sym(&kb, "test.wi722.consumer");
     let body = kb.op_body_node(consumer).expect("consumer has a body node");
     assert_eq!(
-        common::head_short(&kb, &body),
+        crate::common::head_short(&kb, &body),
         "wrapped",
         "the macro should have rewritten the consumer body to `wrapped(...)` at compile time",
     );
@@ -76,7 +74,7 @@ fn macro_rewrites_consumer_body_at_compile_time() {
 /// runs its ordinary body `add(5, 100)` → `105`.
 #[test]
 fn macro_output_re_types_and_evaluates() {
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     let got = interp
         .call("test.wi722.consumer", &[])
         .expect("consumer evaluates");
@@ -93,7 +91,7 @@ fn macro_output_re_types_and_evaluates() {
 #[test]
 fn classifier_is_signature_directed() {
     use anthill_core::kb::typing::is_macro;
-    let kb = common::load_kb_with(SRC);
+    let kb = crate::common::load_kb_with(SRC);
     assert!(is_macro(&kb, sym(&kb, "test.wi722.wrap")), "wrap is occ->occ");
     assert!(!is_macro(&kb, sym(&kb, "test.wi722.wrapped")), "wrapped is Int64->Int64");
     assert!(!is_macro(&kb, sym(&kb, "test.wi722.trigger")), "trigger is Int64->Int64");
@@ -124,7 +122,7 @@ namespace test.wi722bad
     make_apply("test.wi722bad.wrapped", cons(x, nil()), x)
 end
 "#;
-    let errs = match common::try_load_kb_with(BAD) {
+    let errs = match crate::common::try_load_kb_with(BAD) {
         Err(errs) => errs,
         Ok(_) => panic!("an impure macro must be rejected at load, but the spec loaded"),
     };

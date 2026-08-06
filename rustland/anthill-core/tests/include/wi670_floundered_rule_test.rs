@@ -9,8 +9,6 @@
 //!      (kept — the case a naive "drop any un-opened rule-goal residual" fix
 //!      would wrongly discard).
 
-mod common;
-
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term, Var};

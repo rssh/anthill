@@ -35,10 +35,8 @@ use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal, TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
 
-mod common;
-
 fn interp() -> Interpreter {
-    common::interp_for("namespace test.wi1019.empty\nend\n")
+    crate::common::interp_for("namespace test.wi1019.empty\nend\n")
 }
 
 fn resolve(interp: &Interpreter, qn: &str) -> Symbol {

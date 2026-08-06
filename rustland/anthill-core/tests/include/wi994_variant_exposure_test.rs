@@ -22,8 +22,6 @@
 //! `wi979_declaration_order_test` the same backout fails
 //! `variant_exposure_is_order_independent_wi994` alone.
 
-mod common;
-
 use anthill_core::eval::{Interpreter, Value};
 
 /// The entity a driven call built, by qualified functor name — which is what says
@@ -46,7 +44,7 @@ fn assert_built(interp: &Interpreter, got: &Value, qualified: &str, why: &str) {
 fn a_pre_registered_sorts_variants_are_exposed_to_its_namespace() {
     // `merge` / `empty_row` are variants of `enum anthill.prelude.EffectExpression`,
     // whose symbol the Rust bootstrap pre-registers.
-    let mut interp = common::interp_for(
+    let mut interp = crate::common::interp_for(
         r#"
 namespace wi994.boot
   import anthill.prelude.*
@@ -70,7 +68,7 @@ end
 /// took the fresh arm and always had its exposure link.
 #[test]
 fn a_freshly_declared_prelude_sorts_variants_were_always_exposed() {
-    let mut interp = common::interp_for(
+    let mut interp = crate::common::interp_for(
         r#"
 namespace wi994.ctrl
   import anthill.prelude.*
@@ -97,8 +95,8 @@ end
 /// SORTS; this makes the two wildcard-imported NAMESPACES agree with it.
 #[test]
 fn one_variant_name_exposed_by_two_namespaces_is_ambiguous() {
-    common::expect_load_errors(
-        common::try_load_kb_with(
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(
             r#"
 namespace wi994.amb
   import anthill.prelude.*
@@ -144,7 +142,7 @@ end
 /// that broke `guarded` generally.
 #[test]
 fn one_wildcard_import_still_resolves_guarded_uniquely() {
-    let mut interp = common::interp_for(
+    let mut interp = crate::common::interp_for(
         r#"
 namespace wi994.uniq
   import anthill.reflect.*

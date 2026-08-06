@@ -13,8 +13,6 @@
 //! This exercises the derivation engine + seam directly; the end-to-end SMT emit
 //! and z3 discharge live in `anthill-smt-gen/tests/wi687_match_headed_test.rs`.
 
-mod common;
-
 use std::rc::Rc;
 
 use anthill_core::intern::Symbol;
@@ -112,7 +110,7 @@ fn head_short(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
 #[test]
 fn generic_match_synth_declines() {
     // Baseline: the abstract-parameter derivation cannot reduce a match body.
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let pick = op_sym(&kb, "pick");
     assert!(kb.op_defining_equations(pick).is_none(), "generic match derivation declines");
     assert!(kb.synthesize_op_defining_rule(pick).is_none(), "generic synth declines");
@@ -166,7 +164,7 @@ fn some_wraps_debruijn(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) 
 
 #[test]
 fn per_call_site_specializes_match_on_param() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let pick = op_sym(&kb, "pick");
     kb.synthesize_body_derived_defrules("test.wi687.ob_pick_some");
 
@@ -187,7 +185,7 @@ fn per_call_site_specializes_match_on_param() {
 
 #[test]
 fn per_call_site_specializes_none_arm() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let pick = op_sym(&kb, "pick");
     kb.synthesize_body_derived_defrules("test.wi687.ob_pick_none");
 
@@ -210,7 +208,7 @@ fn per_call_site_specializes_none_arm() {
 
 #[test]
 fn per_call_site_specializes_match_on_field() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let pickf = op_sym(&kb, "pickf");
     kb.synthesize_body_derived_defrules("test.wi687.ob_pickf_some");
 
@@ -234,7 +232,7 @@ fn per_call_site_specializes_match_on_field() {
 fn per_call_site_declines_bare_variable_argument() {
     // A bare `?o` argument gives no constructor shape, so the match can't reduce
     // — the op is left un-synthesized (the emitter would then fail loudly).
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let pick = op_sym(&kb, "pick");
     kb.synthesize_body_derived_defrules("test.wi687.ob_pick_abstract");
     assert!(

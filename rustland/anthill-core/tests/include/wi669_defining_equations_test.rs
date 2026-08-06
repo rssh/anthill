@@ -11,8 +11,6 @@
 //!     expression, leaving the same equations as the let-free form;
 //!   - a `match` body → loud decline (ADT defining equations are future).
 
-mod common;
-
 use std::rc::Rc;
 
 use anthill_core::intern::Symbol;
@@ -77,12 +75,12 @@ fn op_sym(kb: &KnowledgeBase, short: &str) -> Symbol {
 
 #[test]
 fn single_arm_body_yields_one_unconditional_equation() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let d = op_sym(&kb, "double");
     let eqs = kb.op_defining_equations(d).expect("double must derive an equation");
     assert_eq!(eqs.len(), 1, "one arm for a single-expression body");
     assert!(eqs[0].guards.is_empty(), "an unconditional body has no guards");
-    assert_eq!(common::head_short(&kb, &eqs[0].result), "add", "result is the body `add(?0, ?0)`");
+    assert_eq!(crate::common::head_short(&kb, &eqs[0].result), "add", "result is the body `add(?0, ?0)`");
     if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
         assert_eq!(pos_args.len(), 2);
     }
@@ -90,7 +88,7 @@ fn single_arm_body_yields_one_unconditional_equation() {
 
 #[test]
 fn if_body_yields_two_guarded_arms() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let c = op_sym(&kb, "clamp");
     let eqs = kb.op_defining_equations(c).expect("clamp must derive equations");
     assert_eq!(eqs.len(), 2, "then-arm and else-arm");
@@ -98,25 +96,25 @@ fn if_body_yields_two_guarded_arms() {
     // then-arm: guarded by `gte(?0, 0)` (not negated).
     assert_eq!(eqs[0].guards.len(), 1);
     assert!(!eqs[0].guards[0].negated, "then-arm holds when the condition is true");
-    assert_eq!(common::head_short(&kb, &eqs[0].guards[0].cond), "gte");
+    assert_eq!(crate::common::head_short(&kb, &eqs[0].guards[0].cond), "gte");
 
     // else-arm: the SAME condition, negated.
     assert_eq!(eqs[1].guards.len(), 1);
     assert!(eqs[1].guards[0].negated, "else-arm holds when the condition is false");
-    assert_eq!(common::head_short(&kb, &eqs[1].guards[0].cond), "gte");
+    assert_eq!(crate::common::head_short(&kb, &eqs[1].guards[0].cond), "gte");
 }
 
 #[test]
 fn let_binding_inlines_into_condition() {
     // WI-679: `let nonneg = gte(x, 0)` in the body must inline so the derived
     // equations match `clamp`'s exactly — two arms, each guarded by `gte`.
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let c = op_sym(&kb, "clamp_let");
     let eqs = kb.op_defining_equations(c).expect("clamp_let must derive equations");
     assert_eq!(eqs.len(), 2, "the inlined `let` leaves the same then/else arms as clamp");
     assert_eq!(eqs[0].guards.len(), 1);
     assert!(!eqs[0].guards[0].negated);
-    assert_eq!(common::head_short(&kb, &eqs[0].guards[0].cond), "gte", "the let-bound guard inlined");
+    assert_eq!(crate::common::head_short(&kb, &eqs[0].guards[0].cond), "gte", "the let-bound guard inlined");
     assert!(eqs[1].guards[0].negated, "else-arm negates the same inlined guard");
 }
 
@@ -124,16 +122,16 @@ fn let_binding_inlines_into_condition() {
 fn let_binding_inlines_into_nested_expression() {
     // WI-679: `let y = add(x, x)` inlines into `add(y, x)`, yielding one
     // unconditional arm whose result is `add(add(x, x), x)`.
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let s = op_sym(&kb, "shifted");
     let eqs = kb.op_defining_equations(s).expect("shifted must derive an equation");
     assert_eq!(eqs.len(), 1, "no branches — one unconditional arm");
     assert!(eqs[0].guards.is_empty());
-    assert_eq!(common::head_short(&kb, &eqs[0].result), "add", "outer body is `add(y, x)`");
+    assert_eq!(crate::common::head_short(&kb, &eqs[0].result), "add", "outer body is `add(y, x)`");
     // The first argument is the inlined `y = add(x, x)`, not a residual binder ref.
     if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
         assert_eq!(
-            common::head_short(&kb, &pos_args[0]), "add",
+            crate::common::head_short(&kb, &pos_args[0]), "add",
             "the let value `add(x, x)` was spliced into the first argument"
         );
     }
@@ -146,7 +144,7 @@ fn destructuring_let_declines_loudly() {
     // the un-projected whole value. The single-var gate is a `Pattern::Var`
     // check, not a binder-count check (which `some(a)` — one binder — would slip
     // through).
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let f = op_sym(&kb, "destructure_let");
     assert!(
         kb.op_defining_equations(f).is_none(),
@@ -156,7 +154,7 @@ fn destructuring_let_declines_loudly() {
 
 #[test]
 fn match_body_declines_loudly() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let f = op_sym(&kb, "first_or");
     assert!(
         kb.op_defining_equations(f).is_none(),
@@ -195,7 +193,7 @@ end
 
 #[test]
 fn effectful_op_declines_defining_equations_but_pure_twin_derives() {
-    let mut kb = common::load_kb_with(EFFECTFUL_SRC);
+    let mut kb = crate::common::load_kb_with(EFFECTFUL_SRC);
     let bump = op_sym(&kb, "bump");
     let bump_pure = op_sym(&kb, "bump_pure");
     // Declined at every request site (all route through `defining_equations`).
@@ -217,7 +215,7 @@ fn effectful_op_declines_defining_equations_but_pure_twin_derives() {
 
 #[test]
 fn effect_row_blocking_equations_names_the_row() {
-    let kb = common::load_kb_with(EFFECTFUL_SRC);
+    let kb = crate::common::load_kb_with(EFFECTFUL_SRC);
     let bump = op_sym(&kb, "bump");
     let bump_pure = op_sym(&kb, "bump_pure");
     // The predicate the LOUD decline renders through names the offending row …
@@ -251,7 +249,7 @@ fn synth_body_rhs(kb: &mut KnowledgeBase, op: Symbol) -> Rc<NodeOccurrence> {
 
 #[test]
 fn synth_single_arm_body_is_bare_result_no_if() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let d = op_sym(&kb, "double");
     let rid = kb.synthesize_op_defining_rule(d).expect("double synthesizes");
     // head `double(?0, ?result)`: one param + the result slot.
@@ -264,17 +262,17 @@ fn synth_single_arm_body_is_bare_result_no_if() {
     );
     // A single-expression body refolds to its bare result — no `if`.
     let rhs = synth_body_rhs(&mut kb, d);
-    assert_eq!(common::head_short(&kb, &rhs), "add", "double's body is `add(?0, ?0)`, no conditional");
+    assert_eq!(crate::common::head_short(&kb, &rhs), "add", "double's body is `add(?0, ?0)`, no conditional");
 }
 
 #[test]
 fn synth_if_body_refolds_to_ite() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let c = op_sym(&kb, "clamp");
     let rhs = synth_body_rhs(&mut kb, c);
     match rhs.as_expr() {
         Some(Expr::If { condition, .. }) => {
-            assert_eq!(common::head_short(&kb, condition), "gte", "clamp's guard is `gte(x, 0)`");
+            assert_eq!(crate::common::head_short(&kb, condition), "gte", "clamp's guard is `gte(x, 0)`");
         }
         other => panic!("clamp's body must refold to an `Expr::If`, got {other:?}"),
     }
@@ -282,7 +280,7 @@ fn synth_if_body_refolds_to_ite() {
 
 #[test]
 fn synth_nested_if_refolds_with_and_not() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let g = op_sym(&kb, "grade");
     let rhs = synth_body_rhs(&mut kb, g);
     // grade: if x>=0 then (if x>=5 then 2 else 1) else 0. Three arms refold to
@@ -291,15 +289,15 @@ fn synth_nested_if_refolds_with_and_not() {
     let Some(Expr::If { condition, else_branch, .. }) = rhs.as_expr() else {
         panic!("grade must refold to a nested `Expr::If`");
     };
-    assert_eq!(common::head_short(&kb, condition), "and", "the outer arm's guard is a conjunction");
+    assert_eq!(crate::common::head_short(&kb, condition), "and", "the outer arm's guard is a conjunction");
     let Some(Expr::If { condition: inner_cond, .. }) = else_branch.as_expr() else {
         panic!("grade's else must be the next `Expr::If`");
     };
     // inner condition is `and(gte(x,0), not(gte(x,5)))` — assert the `not` appears.
-    assert_eq!(common::head_short(&kb, inner_cond), "and", "the middle arm's guard is a conjunction");
+    assert_eq!(crate::common::head_short(&kb, inner_cond), "and", "the middle arm's guard is a conjunction");
     if let Some(Expr::Apply { pos_args, .. }) = inner_cond.as_expr() {
         assert!(
-            pos_args.iter().any(|a| common::head_short(&kb, a) == "not"),
+            pos_args.iter().any(|a| crate::common::head_short(&kb, a) == "not"),
             "the middle arm negates the inner guard"
         );
     }
@@ -307,7 +305,7 @@ fn synth_nested_if_refolds_with_and_not() {
 
 #[test]
 fn synth_match_body_declines() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let f = op_sym(&kb, "first_or");
     assert!(
         kb.synthesize_op_defining_rule(f).is_none(),
@@ -317,7 +315,7 @@ fn synth_match_body_declines() {
 
 #[test]
 fn synth_is_idempotent() {
-    let mut kb = common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(SRC);
     let c = op_sym(&kb, "clamp");
     let first = kb.synthesize_op_defining_rule(c).expect("first synth");
     let second = kb.synthesize_op_defining_rule(c).expect("second synth");
@@ -347,7 +345,7 @@ end
 
 #[test]
 fn transitive_seam_synthesizes_op_called_one_level_down() {
-    let mut kb = common::load_kb_with(SEAM_SRC);
+    let mut kb = crate::common::load_kb_with(SEAM_SRC);
     let twice = op_sym(&kb, "twice");
     // Before: `twice` has only its op body — no relational defining rule.
     assert!(

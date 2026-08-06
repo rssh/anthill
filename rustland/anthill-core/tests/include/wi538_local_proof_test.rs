@@ -16,8 +16,6 @@
 //! (effect discharge, WI-067), which is deferred; the discharge logic
 //! itself is exercised directly here via `prove_from_gamma`.
 
-mod common;
-
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::Expr;
@@ -54,7 +52,7 @@ fn in_body_proof_short_form_loads_as_expr_proof_and_types() {
     // `conclude` (the proposal-025 short proof). Loads as `Expr::Proof`
     // and the op types (the proof is transparent to types: its type is
     // the continuation's).
-    let kb = common::load_kb_with(
+    let kb = crate::common::load_kb_with(
         r#"
         namespace wi538.short
           sort Box
@@ -91,7 +89,7 @@ fn in_body_proof_conclude_form_loads_as_expr_proof_and_types() {
     // <body>` — `P` is an inline goal over a local parameter (the
     // guard-discharge case, no rule to name). Loads with the conclude
     // occurrence and the op types.
-    let kb = common::load_kb_with(
+    let kb = crate::common::load_kb_with(
         r#"
         namespace wi538.concl
           sort Box
@@ -118,7 +116,7 @@ fn in_body_proof_conclude_form_loads_as_expr_proof_and_types() {
 fn in_body_proofs_compose_in_sequence() {
     // Two in-body proofs in a row, then the continuation — the proof is a
     // statement that sequences like `let`, so they nest right.
-    let kb = common::load_kb_with(
+    let kb = crate::common::load_kb_with(
         r#"
         namespace wi538.seq
           sort Box
@@ -159,7 +157,7 @@ fn proof_is_transparent_to_simp_rewriting() {
     // during typing (no `special` op exists). Wrapped in a proof, the
     // STORED continuation must be the rewritten `regular(...)`, not the
     // original `dot_apply(...)`.
-    let kb = common::load_kb_with(
+    let kb = crate::common::load_kb_with(
         r#"
         namespace wi538.simp
           sort Box
@@ -198,7 +196,7 @@ fn discharged_conclusion_becomes_a_downstream_gamma_fact() {
     // `Expr::Proof` handler wires it: a goal proved from a Γ-seeded
     // premise is `assume`d into Γ, so downstream code finds it as a fact
     // (symmetric to a call's `ensures`).
-    let mut kb = common::load_kb_with("namespace wi538.feed\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi538.feed\nend\n");
     let neq = neq_sym(&mut kb);
     let b = param(&mut kb, "?b");
     let neq_b_0 = goal(neq, vec![b, Value::Int(0)]);

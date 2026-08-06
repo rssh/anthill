@@ -9,8 +9,6 @@
 //! `Failed(Unknown(..))` — never silently `Discharged`. Tier-B (`by z3`) and
 //! open obligations are left Pending for the cli gate.
 
-mod common;
-
 use anthill_core::kb::proof_verify::{verify_proofs, ProofVerdict};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
@@ -77,7 +75,7 @@ fn functor_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
 
 #[test]
 fn top_level_by_derivation_is_discharged_with_real_witness() {
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace test.verify.simple
           entity Light(state: String)
@@ -118,7 +116,7 @@ fn top_level_by_derivation_is_discharged_with_real_witness() {
 
 #[test]
 fn top_level_by_derivation_that_does_not_derive_is_failed_not_discharged() {
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace test.verify.fail
           entity Light(state: String)
@@ -151,7 +149,7 @@ fn top_level_by_derivation_that_does_not_derive_is_failed_not_discharged() {
 
 #[test]
 fn tier_b_by_z3_is_left_pending_not_silently_discharged() {
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace test.verify.tierb
           entity Light(state: String)

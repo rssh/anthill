@@ -81,8 +81,6 @@
 //!   * [`plain_namespace_provision_still_derives_its_carrier`] — passes either
 //!     way. It pins the arm the fix must NOT have widened.
 
-mod common;
-
 use anthill_core::kb::KnowledgeBase;
 
 /// One spec with one unbackable operation, shared by every fixture.
@@ -141,7 +139,7 @@ fn backing_absent_is_refused() {
             let ns = format!("wi978.u{spelling}{i}");
             let src = fixture(&ns, main_entry, claim_in_entry, false);
             let want = format!("'{ns}.Rec' provides '{ns}.Show' but backs no operation '{ns}.Show.show'");
-            match common::try_load_kb_with(&src) {
+            match crate::common::try_load_kb_with(&src) {
                 Err(errs) if errs.join("\n").contains(&want) => {}
                 Err(errs) => bad.push(format!(
                     "{spelling} carrier, claim {placement}: refused, but not with the \
@@ -177,7 +175,7 @@ fn backing_present_is_accepted_and_recorded() {
             let src = fixture(&ns, main_entry, claim_in_entry, true);
             // `load_kb_with` panics on a load error, so "accepted" is asserted by
             // getting here at all; the recorded provision is the other half.
-            let kb = common::load_kb_with(&src);
+            let kb = crate::common::load_kb_with(&src);
             let got = provision_carriers(&kb, &ns);
             if got != vec![format!("{ns}.Rec")] {
                 bad.push(format!(
@@ -194,10 +192,10 @@ fn backing_present_is_accepted_and_recorded() {
 /// ticket asks for "the same message it gives one level out".
 #[test]
 fn both_placements_report_identically() {
-    let inside = common::try_load_kb_with(&fixture("wi978.same", ENTITY, true, false))
+    let inside = crate::common::try_load_kb_with(&fixture("wi978.same", ENTITY, true, false))
         .err()
         .expect("claim in the secondary entry, unbacked: refused");
-    let outside = common::try_load_kb_with(&fixture("wi978.same", ENTITY, false, false))
+    let outside = crate::common::try_load_kb_with(&fixture("wi978.same", ENTITY, false, false))
         .err()
         .expect("claim one level out, unbacked: refused");
     assert_eq!(
@@ -246,7 +244,7 @@ end
         // Passes either way, by design: the control.
         ("namespace first", ns_first, "wi978.o.nf"),
     ] {
-        let errs = common::try_load_kb_with(src)
+        let errs = crate::common::try_load_kb_with(src)
             .err()
             .unwrap_or_else(|| panic!("{label}: an unbacked claim must be refused whichever declaration is written first"));
         assert!(
@@ -282,7 +280,7 @@ namespace wi978.plain
   fact Show[T = Rec]
 end
 "#;
-    let kb = common::load_kb_with(src);
+    let kb = crate::common::load_kb_with(src);
     assert_eq!(
         provision_carriers(&kb, "wi978.plain"),
         vec!["wi978.plain.Rec".to_string()],
@@ -295,7 +293,7 @@ end
 
 /// The carrier of every provision the loader recorded under `ns` — i.e. what
 /// every downstream reader (the backing obligation, coherence, dispatch)
-/// consults. Filters `common::sort_provisions`, which is the shared walk over
+/// consults. Filters `crate::common::sort_provisions`, which is the shared walk over
 /// `SortProvidesInfo` its own doc asks new readers to call.
 ///
 /// Reading the KB rather than the load verdict is deliberate: pre-fix the backed
@@ -303,7 +301,7 @@ end
 /// and accepted" from "never recorded, so never checked".
 fn provision_carriers(kb: &KnowledgeBase, ns: &str) -> Vec<String> {
     let prefix = format!("{ns}.");
-    let mut out: Vec<String> = common::sort_provisions(kb)
+    let mut out: Vec<String> = crate::common::sort_provisions(kb)
         .into_iter()
         .map(|(carrier, _spec)| carrier)
         .filter(|c| c.starts_with(&prefix))

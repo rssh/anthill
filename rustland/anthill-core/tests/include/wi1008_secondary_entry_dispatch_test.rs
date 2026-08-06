@@ -75,8 +75,6 @@
 //!   * [`direct_call_is_unchanged`] — pins the route that was never broken, in all
 //!     four fixtures.
 
-mod common;
-
 use anthill_core::eval::{self, Interpreter, Value};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::Term;
@@ -115,7 +113,7 @@ fn eval_int(src: &str, op: &str) -> Result<i64, String> {
 /// [`eval_int`] over several files — the cross-file half of "placement is not
 /// order" (059: a secondary entry is legal in another file).
 fn eval_int_files(srcs: &[&str], op: &str) -> Result<i64, String> {
-    let kb = common::try_load_kb_with_files(srcs)
+    let kb = crate::common::try_load_kb_with_files(srcs)
         .unwrap_or_else(|errs| panic!("fixture must load clean; got {errs:#?}"));
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp)
@@ -324,7 +322,7 @@ fn sort_info_operations(kb: &KnowledgeBase, sort_qn: &str) -> Vec<String> {
 /// connection to the prose above.
 #[test]
 fn sort_info_lists_the_secondary_entrys_operation() {
-    let mut kb = common::load_kb_with(&secondary_entry_fixture());
+    let mut kb = crate::common::load_kb_with(&secondary_entry_fixture());
     assert_eq!(
         sort_info_operations(&kb, "test.wi1008.Rec"),
         vec!["test.wi1008.Rec.show".to_string()],
@@ -363,8 +361,8 @@ namespace test.wi1008
 end
 "#
     );
-    common::expect_load_errors(
-        common::try_load_kb_with(&src),
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(&src),
         &["'test.wi1008.Rec' provides 'test.wi1008.Show' but backs no operation"],
     );
 }
@@ -382,7 +380,7 @@ end
 /// that a stale index would be holding.
 #[test]
 fn rerunning_the_pass_rewrites_nothing() {
-    let mut kb = common::load_kb_with(&secondary_entry_fixture());
+    let mut kb = crate::common::load_kb_with(&secondary_entry_fixture());
     let si = kb.try_resolve_symbol("anthill.reflect.SortInfo").expect("SortInfo");
     let snapshot = |kb: &KnowledgeBase| -> Vec<(anthill_core::kb::RuleId, _)> {
         kb.rules_by_functor(si).iter().map(|rid| (*rid, kb.rule_head(*rid))).collect()

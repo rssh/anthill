@@ -23,8 +23,6 @@
 //! So `eponymous_sort_still_loads` is not decoration: it is the row that fails
 //! first if anyone re-keys this on a symbol.
 
-mod common;
-
 use anthill_core::eval::Value;
 
 /// §6.3's eponymous constructor — the shape the key exists to protect.
@@ -40,7 +38,7 @@ namespace wi997.epo
   operation drive() -> Int64 = Vec3(x: 7).x
 end
 "#;
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     assert!(
         matches!(interp.call("wi997.epo.drive", &[]), Ok(Value::Int(7))),
         "the eponymous constructor must stay legal AND keep constructing",
@@ -63,7 +61,7 @@ namespace wi997.sec
   operation drive() -> Int64 = Rec(n: 5).twice()
 end
 "#;
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     assert!(
         matches!(interp.call("wi997.sec.drive", &[]), Ok(Value::Int(5))),
         "a secondary entry adds members without redefining the type",
@@ -85,8 +83,8 @@ namespace wi997.reopen
   end
 end
 "#;
-    common::expect_load_errors(
-        common::try_load_kb_with(SRC),
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(SRC),
         &["type 'Colour' is declared more than once in scope 'wi997.reopen': `sort` at 4:3, `sort` at 7:3"],
     );
 }
@@ -106,8 +104,8 @@ namespace wi997.sib
   end
 end
 "#;
-    common::expect_load_errors(
-        common::try_load_kb_with(SRC),
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(SRC),
         &[
             // The R1 refusal itself, naming BOTH keywords and BOTH lines.
             "type 'Rec' is declared more than once in scope 'wi997.sib': `entity` at 4:3, `sort` at 5:3",
@@ -139,8 +137,8 @@ namespace wi997.enu
   end
 end
 "#;
-    common::expect_load_errors(
-        common::try_load_kb_with(SRC),
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(SRC),
         &["type 'Colour' is declared more than once in scope 'wi997.enu': `enum` at 4:3, `enum` at 7:3"],
     );
 }
@@ -166,7 +164,7 @@ namespace wi997.xf
   end
 end
 "#;
-    let errs = match common::try_load_kb_with_files(&[A, B]) {
+    let errs = match crate::common::try_load_kb_with_files(&[A, B]) {
         Err(e) => e,
         Ok(_) => panic!("a cross-file duplicate type must be refused, but the load succeeded"),
     };
@@ -203,7 +201,7 @@ namespace wi997.b
   operation drive() -> Int64 = Rec(n: 3).n
 end
 "#;
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     assert!(
         matches!(interp.call("wi997.b.drive", &[]), Ok(Value::Int(3))),
         "one name in two scopes is two types, not a duplicate",

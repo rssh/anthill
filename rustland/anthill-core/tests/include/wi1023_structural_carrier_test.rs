@@ -32,8 +32,6 @@ use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::{ClauseKind, KnowledgeBase};
 use anthill_core::span::{SourceId, SourceSpan};
 
-mod common;
-
 // ── (A) `is_duplicate_projection` — one σ-injection gadget, every carrier ────
 //
 // `resolve_sort_instantiation_param(SortView(T: <v>), T, ?out)` binds `?out` to
@@ -83,7 +81,7 @@ fn solutions_for_rows(build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<Value>>)
 fn fixture(
     build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<Value>>,
 ) -> (KnowledgeBase, TermId) {
-    let (kb, _q, goal) = common::one_goal_carrier_fixture("wi1023_p", build);
+    let (kb, _q, goal) = crate::common::one_goal_carrier_fixture("wi1023_p", build);
     (kb, goal)
 }
 
@@ -240,7 +238,7 @@ fn two_genuinely_different_bindings_are_two_answers() {
 /// case can show the guard works.
 #[test]
 fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
-    let interp = common::interp_for("namespace test.wi1023_op\nend\n");
+    let interp = crate::common::interp_for("namespace test.wi1023_op\nend\n");
     let (a, b) = (tuple_of(opaque_value(&interp, 1)), tuple_of(opaque_value(&interp, 2)));
     let n = solutions_for(move |kb| {
         // PREMISE, asserted: the CHILD is opaque and the PARENT is not. If the
@@ -273,7 +271,7 @@ fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
 /// against `ViewHead::Opaque`): 1 solution where 2 is right.
 #[test]
 fn an_opaque_nested_under_a_local_var_disables_dedup() {
-    let interp = common::interp_for("namespace test.wi1023_nested\nend\n");
+    let interp = crate::common::interp_for("namespace test.wi1023_nested\nend\n");
     let (c1, c2) = (opaque_value(&interp, 1), opaque_value(&interp, 2));
     let n = solutions_for_rows(move |_| {
         vec![
@@ -298,7 +296,7 @@ fn an_opaque_nested_under_a_local_var_disables_dedup() {
 /// distinguished only by a binding outside the goal, is DROPPED.
 #[test]
 fn an_opaque_binding_outside_the_goal_disables_dedup() {
-    let interp = common::interp_for("namespace test.wi1023_ext\nend\n");
+    let interp = crate::common::interp_for("namespace test.wi1023_ext\nend\n");
     let (c1, c2) = (opaque_value(&interp, 1), opaque_value(&interp, 2));
     let n = solutions_for_rows(move |_| vec![vec![c1, Value::Int(1)], vec![c2, Value::Int(1)]]);
     assert_eq!(n, 2, "two external rows, one projection — the rows are the answers");

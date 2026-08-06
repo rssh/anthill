@@ -16,12 +16,10 @@
 /// WRITTEN bare `red` already lowered to `Ref(red)` directly and so was never
 /// affected; the reproducing surface is the Fn-built `red()`.
 
-mod common;
-
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term, Var, Literal};
 use anthill_core::kb::resolve::ResolveConfig;
-use common::load_kb_bare as load_kb;
+use crate::common::load_kb_bare as load_kb;
 use smallvec::SmallVec;
 
 /// Declares the sort (`enum Color`), the fact shape (`entity Paint`), and the

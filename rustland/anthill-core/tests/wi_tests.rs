@@ -973,3 +973,75 @@ mod wi1010_defaulted_op_instance_fact_test;
 
 #[path = "include/wi1013_call_type_args_view_test.rs"]
 mod wi1013_call_type_args_view_test;
+
+// Moved out of tests/*.rs (WI-244 convention, 2026-08-06): each of these was its
+// own test binary; they are ordinary per-WI tests with no reason to be separate.
+
+#[path = "include/wi1008_secondary_entry_dispatch_test.rs"]
+mod wi1008_secondary_entry_dispatch_test;
+
+#[path = "include/wi1016_symbol_carrier_test.rs"]
+mod wi1016_symbol_carrier_test;
+
+#[path = "include/wi1019_native_carrier_view_test.rs"]
+mod wi1019_native_carrier_view_test;
+
+#[path = "include/wi1023_structural_carrier_test.rs"]
+mod wi1023_structural_carrier_test;
+
+#[path = "include/wi1024_value_functor_test.rs"]
+mod wi1024_value_functor_test;
+
+#[path = "include/wi1025_occurrence_referent_test.rs"]
+mod wi1025_occurrence_referent_test;
+
+#[path = "include/wi537_local_interpretation_test.rs"]
+mod wi537_local_interpretation_test;
+
+#[path = "include/wi538_local_proof_test.rs"]
+mod wi538_local_proof_test;
+
+#[path = "include/wi539_contract_proof_test.rs"]
+mod wi539_contract_proof_test;
+
+#[path = "include/wi558_proof_verify_test.rs"]
+mod wi558_proof_verify_test;
+
+#[path = "include/wi577_dictionary_test.rs"]
+mod wi577_dictionary_test;
+
+#[path = "include/wi669_defining_equations_test.rs"]
+mod wi669_defining_equations_test;
+
+#[path = "include/wi670_floundered_rule_test.rs"]
+mod wi670_floundered_rule_test;
+
+#[path = "include/wi687_match_specialization_test.rs"]
+mod wi687_match_specialization_test;
+
+#[path = "include/wi720_ctor_order_test.rs"]
+mod wi720_ctor_order_test;
+
+#[path = "include/wi722_compile_time_macro_test.rs"]
+mod wi722_compile_time_macro_test;
+
+#[path = "include/wi722_read_builtins_test.rs"]
+mod wi722_read_builtins_test;
+
+#[path = "include/wi978_secondary_entry_provision_test.rs"]
+mod wi978_secondary_entry_provision_test;
+
+#[path = "include/wi979_declaration_order_test.rs"]
+mod wi979_declaration_order_test;
+
+#[path = "include/wi994_variant_exposure_test.rs"]
+mod wi994_variant_exposure_test;
+
+#[path = "include/wi997_declaration_ledger_test.rs"]
+mod wi997_declaration_ledger_test;
+
+// Guards this very layout: every include/ file registered exactly once, across
+// anthill-core, anthill-cli and anthill-todo. An unregistered file is compiled
+// never and run never, silently.
+#[path = "include/include_registration_test.rs"]
+mod include_registration_test;

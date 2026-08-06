@@ -17,15 +17,13 @@ use anthill_core::eval::{Interpreter, Value};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::term::Term;
 
-mod common;
-
 const DICT: &str = "anthill.realization.runtime.Dictionary";
 const OPREF: &str = "anthill.realization.runtime.OpRef";
 
 fn interp() -> Interpreter {
     // Stdlib alone (with the eval builtins registered) — we construct the
     // requirement values by hand.
-    common::interp_for("namespace test.wi577.empty\nend\n")
+    crate::common::interp_for("namespace test.wi577.empty\nend\n")
 }
 
 fn resolve(interp: &Interpreter, qn: &str) -> Symbol {
@@ -211,7 +209,7 @@ fn opref_backed_by_builtin_is_callable() {
                import anthill.prelude.{Int64, Function}\n\
                operation applyUnary(f: Function[Int64, Int64], x: Int64) -> Int64 = f(x)\n\
                end\n";
-    let mut interp = common::interp_for(src);
+    let mut interp = crate::common::interp_for(src);
     let abs = resolve(&interp, "anthill.prelude.Int64.abs");
     // `named: None` — a bare ref names its own op (WI-857).
     let opref = Value::OpRef { op: abs, dict: None, named: None };
@@ -248,7 +246,7 @@ fn resolve_op_remembers_the_named_spec_op() {
                operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
                end\n\
                end\n";
-    let mut interp = common::interp_for(src);
+    let mut interp = crate::common::interp_for(src);
     let desc = resolve(&interp, "test.wi577.named.Descending");
     // A LAYOUT-VALID `Ordered[Int64]` dictionary supplied by `Descending`: the spec
     // half is `Ordered`'s two entries; `Descending` declares no `requires`.
@@ -324,7 +322,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
                operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
                end\n\
                end\n";
-    let mut interp = common::interp_for(src);
+    let mut interp = crate::common::interp_for(src);
     let desc = resolve(&interp, "test.wi577.namedop.Descending");
     let mut subs: SmallVec<[_; 1]> = SmallVec::new();
     subs.push(interp.alloc_requirement(desc, SmallVec::new()));

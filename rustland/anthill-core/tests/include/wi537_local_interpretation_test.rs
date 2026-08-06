@@ -16,8 +16,6 @@
 //! *populates* Γ from a branch condition is additive (read only by WI-067
 //! discharge) and is covered by the full suite staying green.
 
-mod common;
-
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
@@ -67,7 +65,7 @@ fn flow_env_assume_is_copy_on_write() {
     // The logical storage: `assume` extends Γ, returning a narrowed env; the
     // parent FlowEnv is unchanged (the per-Visit clone of the iterative typer
     // must not see a sibling branch's narrowing).
-    let mut kb = common::load_kb_with("namespace wi537.cow\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.cow\nend\n");
     let neq = neq_sym(&mut kb);
     let fact = goal(neq, vec![Value::Int(7), Value::Int(0)]);
 
@@ -84,7 +82,7 @@ fn prove_from_gamma_proves_a_fact_in_gamma_over_a_symbolic_parameter() {
     // Γ = { neq(b, 0) } with `b` a symbolic parameter. The bridge resolves
     // `neq(b, 0)` over KB ∪ Γ; the Γ fact is found as an `Assumption` candidate
     // by the SLD resolver — the then-branch case.
-    let mut kb = common::load_kb_with("namespace wi537.gamma\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.gamma\nend\n");
     let neq = neq_sym(&mut kb);
     let b = param(&mut kb, "?b");
     let neq_b_0 = goal(neq, vec![b, Value::Int(0)]);
@@ -103,7 +101,7 @@ fn gamma_fact_over_one_parameter_does_not_discharge_another() {
     // a wildcard (it would over-match); `gamma_candidates_for`'s identity filter
     // (`views_structurally_equal`) closes that, so a fact about `b` discharges
     // only `b`. With no Γ match, neq(c,0) → not(eq(c,0)) flounders → unproven.
-    let mut kb = common::load_kb_with("namespace wi537.distinct\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.distinct\nend\n");
     let neq = neq_sym(&mut kb);
     let b = param(&mut kb, "?b");
     let c = param(&mut kb, "?c");
@@ -119,7 +117,7 @@ fn symbolic_goal_with_empty_gamma_stays_unproven_via_floundering() {
     // No Γ fact, `b` symbolic: `neq(b, 0)` → `not(eq(b, 0))`, eq(b,0) is
     // non-ground, so NAF flounders and `definite_only` drops it — UNPROVEN.
     // This is the soundness guard: failure-to-prove never becomes a "drop".
-    let mut kb = common::load_kb_with("namespace wi537.flounder\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.flounder\nend\n");
     let neq = neq_sym(&mut kb);
     let b = param(&mut kb, "?b");
     let neq_b_0 = goal(neq, vec![b, Value::Int(0)]);
@@ -135,7 +133,7 @@ fn refute_guard_discharges_an_eq_guard_from_a_neq_fact() {
     // The 048 discharge shape: a guarded effect `Error :- eq(b, 0)` at a call
     // under `if neq(b, 0)`. Γ = { neq(b, 0) }; refuting the guard eq(b, 0)
     // proves its negation neq(b, 0) from Γ (eq ⇄ neq functor swap, open Q C).
-    let mut kb = common::load_kb_with("namespace wi537.refute\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.refute\nend\n");
     let eq_sym = kb.eq_functor();
     let neq = neq_sym(&mut kb);
     let b = param(&mut kb, "?b");
@@ -154,7 +152,7 @@ fn refute_guard_discharges_an_eq_guard_from_a_neq_fact() {
 fn refute_guard_keeps_the_effect_when_the_guard_is_symbolic() {
     // Same guard, but no Γ fact: eq(b, 0) cannot be refuted over a symbolic b,
     // so the effect is conservatively KEPT (refute returns false).
-    let mut kb = common::load_kb_with("namespace wi537.keep\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.keep\nend\n");
     let eq_sym = kb.eq_functor();
     let b = param(&mut kb, "?b");
     let guard = goal(eq_sym, vec![b, Value::Int(0)]);
@@ -195,7 +193,7 @@ fn match_case_0_carries_neq_into_the_wildcard_arm() {
     // discharge case. Arm 0 (`case 0`) carries the pattern fact eq(s, 0); the
     // wildcard arm carries the earlier-arm negation neq(s, 0), which refutes a
     // later `div`'s eq(s, 0) guard straight from Γ — no branch test written.
-    let mut kb = common::load_kb_with("namespace wi537.match0\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.match0\nend\n");
     let s = param(&mut kb, "?s");
     let arms = vec![(lit_pat(0), false), (wildcard_pat(), false)];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
@@ -222,7 +220,7 @@ fn match_negation_indexes_a_node_scrutinee() {
     // (indexable), so the negation it forms is stored and matched — this pins
     // that the `Value::Node` carrier the producer actually uses round-trips
     // (the existing bridge tests use a bare `Var::Global`).
-    let mut kb = common::load_kb_with("namespace wi537.matchnode\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.matchnode\nend\n");
     let b = kb.intern("b");
     let scrutinee = Value::Node(NodeOccurrence::new_expr(
         anthill_core::kb::node_occurrence::Expr::Ref(b),
@@ -249,7 +247,7 @@ fn match_negation_indexes_a_varref_scrutinee() {
     // (head `Functor{var_ref}`, one `name` child) → indexable. (This is the test
     // the `Ref`-scrutinee one above should have been: a `Ref` is always
     // indexable, so it never exercised the binder path that was actually dead.)
-    let mut kb = common::load_kb_with("namespace wi537.varref\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.varref\nend\n");
     let b = kb.intern("b");
     let scrutinee =
         Value::Node(NodeOccurrence::new_expr(Expr::VarRef { name: b }, span(), None));
@@ -269,7 +267,7 @@ fn match_guarded_earlier_arm_contributes_no_negation() {
     // `case 0 | g -> …` matches only when g holds, so a later arm cannot
     // conclude s ≠ 0 — a guarded earlier arm excludes nothing. The wildcard arm
     // therefore carries NO negation.
-    let mut kb = common::load_kb_with("namespace wi537.matchguarded\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.matchguarded\nend\n");
     let s = param(&mut kb, "?s");
     let arms = vec![(lit_pat(0), true), (wildcard_pat(), false)];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
@@ -285,7 +283,7 @@ fn match_nullary_ctor_arms_accumulate_negations() {
     // whose name is in the scrutinee's constructor set is a nullary constructor
     // (the `collect_covered_entities` disambiguation), so each arm narrows the
     // next: green's arm knows s ≠ red, and the wildcard arm knows s ∉ {red,green}.
-    let mut kb = common::load_kb_with("namespace wi537.matchenum\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.matchenum\nend\n");
     let red = kb.intern("red");
     let green = kb.intern("green");
     let s = param(&mut kb, "?s");
@@ -316,7 +314,7 @@ fn match_binding_arm_carries_alias_fact_but_no_negation() {
     // load-bearing: it bridges an earlier arm's narrowing of `s` to a guard over
     // `x` (`case 0 -> …; case x -> div(a, x)` discharges via neq(s,0) ∧ x≡s). But a
     // non-ground binding excludes NO value from later arms, so it adds no negation.
-    let mut kb = common::load_kb_with("namespace wi537.matchbind\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.matchbind\nend\n");
     let x = kb.intern("x");
     let s = param(&mut kb, "?s");
     // `x` is NOT in the (empty) constructor set ⇒ a binding.
@@ -342,7 +340,7 @@ fn match_constructor_binder_arm_carries_destructure_fact() {
     // its reference twin, so a body guard over `x` can relate it to the scrutinee.
     // This is the producer the WI-537 era deferred (a binder headed `Opaque`, and a
     // fresh existential matched nothing); a per-site binder identity makes it live.
-    let mut kb = common::load_kb_with("namespace wi537.matchctor\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi537.matchctor\nend\n");
     let some = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
     let none = kb.try_resolve_symbol("anthill.prelude.Option.none").expect("Option.none");
     let x = kb.intern("x");
@@ -371,7 +369,7 @@ fn binding_gamma_fact_relates_a_let_binder_to_its_value() {
     // `let x = 0` ⟹ Γ ∪ { eq(var_ref(x), 0) } (proposal 050 binding rule). The
     // fact is indexable (the binder reads as its `var_ref` twin) and round-trips
     // through the bridge — so a later guard over `x` can be discharged from it.
-    let mut kb = common::load_kb_with("namespace wi550.letfact\nend\n");
+    let mut kb = crate::common::load_kb_with("namespace wi550.letfact\nend\n");
     let x = kb.intern("x");
     let value = Value::Node(NodeOccurrence::new_expr(
         Expr::Const(Literal::Int(0)),
@@ -415,7 +413,7 @@ fn shadowed_let_binders_get_distinct_symbols() {
     // the INNER binder. So their Γ binding facts (`x₁ ≡ 0`, `x₂ ≡ 1`) key off
     // different symbols and never collide, and `x` reads only `x₂` (no stale
     // `x₁ ≡ 0` match) — without a Γ-retract on rebind.
-    let kb = common::load_kb_with(
+    let kb = crate::common::load_kb_with(
         r#"
         namespace wi550.shadow
           sort Box

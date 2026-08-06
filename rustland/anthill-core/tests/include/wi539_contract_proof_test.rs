@@ -12,8 +12,6 @@
 //! here; an ABSTRACT op's `ensures` is a spec axiom callers USE (WI-539 Part 1),
 //! left Deferred — never silently Discharged.
 
-mod common;
-
 use anthill_core::kb::proof_verify::{verify_proofs, ProofReport, ProofVerdict};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
@@ -85,7 +83,7 @@ fn predicate_ensures_by_field_projection_discharges() {
     // `x ↦ c`, bind `result ↦ box(value: c)`; the goal `eq(box(value: c).value,
     // c)` projects to `eq(c, c)` ⇒ proved. The contract discharges, with a real
     // contract-derivation witness (not the Pending placeholder).
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.box
           sort Box
@@ -127,7 +125,7 @@ fn predicate_ensures_by_field_projection_discharges() {
 fn reflexive_ensures_discharges() {
     // `ensures eq(result, box(value: x))` with the matching body — `result` binds
     // to exactly that construction, so the goal is reflexive.
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.refl
           sort Box
@@ -148,7 +146,7 @@ fn reflexive_ensures_discharges() {
 fn false_ensures_is_failed_not_discharged() {
     // The body yields `result.value = x`, so `ensures eq(result.value, 0)` does
     // NOT hold. Conservative: Failed, never silently Discharged.
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.bad
           sort Box
@@ -181,7 +179,7 @@ fn requires_premise_enables_ensures() {
     // straight from Γ ⇒ discharged. `no_pre` lacks the premise, so the SAME
     // ensures is NOT derivable ⇒ Failed. The contrast shows requires→Γ is
     // load-bearing.
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.pre
           rule known(?x) :- eq(?x, 0)
@@ -214,7 +212,7 @@ fn abstract_op_ensures_is_deferred_not_discharged() {
     // An abstract op (no body) `ensures` is a spec axiom that callers USE
     // (WI-539 Part 1), not proved here. Left Deferred / Pending — never silently
     // Discharged (proposal 025: prove only in concrete form).
-    let mut kb = common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.abstr
           sort Thing

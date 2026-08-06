@@ -34,8 +34,6 @@ use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::Term;
 use anthill_core::span::{SourceId, SourceSpan};
 
-mod common;
-
 const SRC: &str = r#"
 namespace test.wi1024
   sort Item
@@ -90,7 +88,7 @@ fn applied_node(functor: Symbol, arg: Symbol) -> Value {
 /// answer-for-answer identical for them" is asserted rather than argued.
 #[test]
 fn value_functor_answers_by_what_the_head_denotes() {
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     let sym = box_sym(&mut interp);
     let dict_sym = interp.kb().resolve_symbol("anthill.realization.runtime.Dictionary");
     let ident_tid = interp.kb_mut().alloc(Term::Ident(sym));
@@ -196,7 +194,7 @@ fn value_functor_answers_by_what_the_head_denotes() {
 #[test]
 fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
     use anthill_core::kb::term_view::{TermView, ViewHead};
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     let sym = box_sym(&mut interp);
     // Carriers deliberately NOT routed: the two with no faithful term form.
     // Anything else with a naming head must be routed.
@@ -248,7 +246,7 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
 /// end-to-end claim is "one sort, one answer", not one carrier measured alone.
 #[test]
 fn facts_of_reads_the_sort_through_every_naming_carrier() {
-    let mut interp = common::interp_for(SRC);
+    let mut interp = crate::common::interp_for(SRC);
     let sym = box_sym(&mut interp);
     let carriers: Vec<(&str, Value)> = vec![
         ("term", Value::term(interp.kb_mut().resolve_qualified_name_term("test.wi1024.Item.Box"))),
@@ -259,7 +257,7 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
         let list = interp
             .call("anthill.reflect.KB.facts_of", &[Value::Unit, v])
             .unwrap_or_else(|e| panic!("{name}: facts_of should resolve the sort, got {e:?}"));
-        let heads: Vec<String> = common::list_heads(&list)
+        let heads: Vec<String> = crate::common::list_heads(&list)
             .iter()
             .map(|h| format!("{:?}", value_functor(interp.kb(), h)))
             .collect();

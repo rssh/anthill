@@ -19,13 +19,11 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::{ClauseKind, KnowledgeBase};
 
-mod common;
-
 const DICT: &str = "anthill.realization.runtime.Dictionary";
 const MAP: &str = "anthill.prelude.Map";
 
 fn interp() -> Interpreter {
-    common::interp_for("namespace test.wi1016\nend\n")
+    crate::common::interp_for("namespace test.wi1016\nend\n")
 }
 
 fn resolve(interp: &Interpreter, qn: &str) -> Symbol {
@@ -115,7 +113,7 @@ fn a_symbol_key_read_back_out_of_a_map_addresses_its_own_slot() {
         .expect("Map.put");
 
     let keys = interp.call(&format!("{MAP}.keys"), &[m.clone()]).expect("Map.keys");
-    let first = common::list_heads(&keys).into_iter().next().expect("one key");
+    let first = crate::common::list_heads(&keys).into_iter().next().expect("one key");
     assert!(
         matches!(first, Value::SymbolRef(_)),
         "a symbol key spells itself carrier-free on the way out, got {first:?}",
@@ -279,13 +277,13 @@ fn add_term_route(kb: &mut KnowledgeBase, answer: Symbol) {
 /// `SymbolRef`-binding rule alone. Returns `(kb, the `?q` var TERM, the goal
 /// term, the answered symbol)`; [`add_term_route`] supplies the second route.
 ///
-/// The rule shape is `common::one_goal_carrier_fixture` (WI-1023 lifted it there
+/// The rule shape is `crate::common::one_goal_carrier_fixture` (WI-1023 lifted it there
 /// on its second use — it needs the same gadget for every carrier, and this file
 /// is the special case with one `Value::SymbolRef` slot).
 fn dedup_fixture(
 ) -> (KnowledgeBase, anthill_core::kb::term::TermId, anthill_core::kb::term::TermId, Symbol) {
     let answer_name = "wi1016_answer";
-    let (mut kb, q_term, goal) = common::one_goal_carrier_fixture("wi1016_dup", |kb| {
+    let (mut kb, q_term, goal) = crate::common::one_goal_carrier_fixture("wi1016_dup", |kb| {
         let answer = kb.intern(answer_name);
         vec![vec![Value::SymbolRef(answer)]]
     });
