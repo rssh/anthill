@@ -13960,6 +13960,7 @@ impl<'a> Loader<'a> {
             loader: self,
             timing,
             requires_seen: HashMap::new(),
+            provides_seen: HashMap::new(),
             carrier_stack: Vec::new(),
         };
         walk_scopes(&mut pass, items, root);
@@ -17125,7 +17126,7 @@ impl<'a> Loader<'a> {
     /// a Discharged ProofRecord at the substitution and emits
     /// `Specialization` ProofRecords pointing at the supporting
     /// proofs.
-    fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: Symbol) {
+    fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: Symbol, clause: usize) {
         let provides_sort = ClauseKind::Requirement;
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
         let spec_value = self.sort_inst_to_value(&pc.spec);
@@ -17157,7 +17158,7 @@ impl<'a> Loader<'a> {
         // referent `direct_requires` already uses for the sort-level half — the two are
         // separate per-functor scans, so they cannot interleave.
         if !pc.conditions.is_empty() {
-            self.load_provides_conditions(pc, domain, domain_term, &spec_value);
+            self.load_provides_conditions(pc, domain, clause, domain_term, &spec_value);
         }
         self.kb.assert_metadata_fact_carrier(
             provides_sym,
@@ -17182,6 +17183,7 @@ impl<'a> Loader<'a> {
         &mut self,
         pc: &ProvidesClause,
         domain: Symbol,
+        clause: usize,
         domain_term: crate::kb::term::TermId,
         provided: &crate::eval::value::Value,
     ) {
@@ -17204,10 +17206,14 @@ impl<'a> Loader<'a> {
         let sort_ref_sym = self.kb.intern("sort_ref");
         let provided_sym = self.kb.intern("provided");
         let condition_sym = self.kb.intern("condition");
+        let clause_sym = self.kb.intern("clause");
         self.kb.register_entity_fields(
             cond_sym,
-            vec![sort_ref_sym, provided_sym, condition_sym],
+            vec![sort_ref_sym, provided_sym, condition_sym, clause_sym],
         );
+        let clause_term = self.kb.alloc(crate::kb::term::Term::Const(
+            crate::kb::term::Literal::Int(clause as i64),
+        ));
         for c in &pc.conditions {
             let v = self.sort_inst_to_value(c);
             let v = self.lower_value_or_gate(v, "provides condition", c);
@@ -17232,6 +17238,7 @@ impl<'a> Loader<'a> {
                     (sort_ref_sym, Value::term(domain_term)),
                     (provided_sym, provided.clone()),
                     (condition_sym, v),
+                    (clause_sym, Value::term(clause_term)),
                 ],
                 ClauseKind::Requirement,
                 domain,
@@ -18025,6 +18032,13 @@ struct LoadPass<'l, 'a> {
     /// not, so a named slot's index covers the whole list. Keyed by scope: the
     /// walk covers many scopes, and each item is offered to exactly one of them.
     requires_seen: HashMap<ScopeId, usize>,
+    /// WI-1033 — the same per-scope counter for `provides` CLAUSES. A provision's
+    /// conditions are a conjunction WITHIN one clause and a disjunction ACROSS clauses,
+    /// so the reader has to know which clause a condition came from — and two clauses
+    /// can provide one spec at one application (`provides Lo[D] :- SA[P]` beside
+    /// `provides Lo[D] :- SB[Q]`, two ways for `Lo[D]` to hold), where neither the
+    /// provided VIEW nor fact adjacency separates them.
+    provides_seen: HashMap<ScopeId, usize>,
     /// WI-201: the carrier bindings each enclosing SORT displaced, innermost
     /// last. A stack because sort bodies nest and each must get its own back.
     carrier_stack: Vec<HashMap<(Symbol, Symbol), TermId>>,
@@ -18097,7 +18111,13 @@ impl ScopePass for LoadPass<'_, '_> {
             }
             Item::Describe(d) => { self.loader.load_describe(d, domain); "Describe" }
             Item::Proof(p) => { self.loader.load_proof(p, domain); "Proof" }
-            Item::ProvidesClause(pc) => { self.loader.load_provides_clause(pc, domain); "ProvidesClause" }
+            Item::ProvidesClause(pc) => {
+                let seen = self.provides_seen.entry(scope).or_insert(0);
+                let clause = *seen;
+                *seen += 1;
+                self.loader.load_provides_clause(pc, domain, clause);
+                "ProvidesClause"
+            }
             Item::ProvidesBlock(pb) => { self.loader.load_provides_block(pb, domain); "ProvidesBlock" }
             // Routed to `enter_scope`/`exit_scope` by `walk_scopes`.
             Item::Namespace(_) | Item::SortWithBody(_) => {

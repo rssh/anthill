@@ -1105,9 +1105,10 @@ pub struct KnowledgeBase {
 
     /// WI-869 — memoized DICTIONARY chain per carrier: the sort's own `requires`
     /// chain followed by its conditional provisions' `:- goals` (`typing::
-    /// provider_dict_chain`). Derived from `requires_tree` exactly as the two caches
-    /// above are, so it shares their lifetime and is cleared by the same
-    /// `invalidate_requires_chain_cache`.
+    /// provider_dict_chain`). Cleared by `invalidate_requires_chain_cache` alongside
+    /// the two caches above, whose `requires_tree` it derives from — and, WI-1033, ALSO
+    /// from `ProvidesConditionInfo` facts, which nothing retracts or re-asserts after
+    /// the load that emits them.
     pub(crate) provider_dict_chain_cache:
         RefCell<HashMap<Symbol, Rc<crate::kb::typing::ProviderDictChain>>>,
 

@@ -9337,8 +9337,13 @@ fn classify_pin_or_apply_within(
         // the pre-WI-829 behaviour (inherit or the WI-415 Direct-call dict).
         let dispatch_dict = match &resolved_tree {
             Some(tree) if impl_sort != enclosing_sort => {
+                // WI-1033: the enclosing sort's DICTIONARY chain, which is the list
+                // this tree's `FromScope` indices point into.
+                let caller = enclosing_sort
+                    .map(|s| provider_dict_entries(kb, s))
+                    .unwrap_or_else(DictChain::empty);
                 let dict = ProjectionSyms::resolve(kb)
-                    .and_then(|syms| emit_tree_as_projection(kb, enclosing_sort, tree, &syms));
+                    .and_then(|syms| emit_tree_as_projection(kb, &caller, tree, &syms));
                 // A cross-sort constructing tree that fails to emit would degrade
                 // to `None` → plain apply → the callee's own `requires` reads an
                 // absent frame dict at eval — the wrong-dict class WI-829 fixes.
@@ -12947,7 +12952,6 @@ impl ProjectionSyms {
 fn build_dispatching_dict_direct(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
-    caller_sort: Option<Symbol>,
     caller_requires: &DictChain,
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
@@ -12968,7 +12972,7 @@ fn build_dispatching_dict_direct(
     // would be short of what `synth_req_names` names.
     let callee_chain = provider_dict_entries(kb, callee_spec_sort);
     build_dispatching_dict_from_chain(
-        kb, callee_spec_sort, &callee_chain, caller_sort, caller_requires, syms, false,
+        kb, callee_spec_sort, &callee_chain, caller_requires, syms, false,
         // WI-419: req-insertion diagnostic path — the call-site subst is gone
         // here, so Strategy 1 keeps its first-match behavior.
         None,
@@ -13218,7 +13222,8 @@ fn build_dispatching_dict_from_chain(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
     chain: &[RequiresEntry],
-    caller_sort: Option<Symbol>,
+    // WI-1033: no `caller_sort` beside this — the caller's slot NAMES now come off the
+    // chain itself, so there is no second way to spell "whose slots are these".
     caller_requires: &DictChain,
     syms: &ProjectionSyms,
     require_complete: bool,
@@ -13251,7 +13256,7 @@ fn build_dispatching_dict_from_chain(
         let s3_slot = (require_complete && (disambig.is_some() || pinned_witness.is_some()))
             .then_some(&mut s3_failure);
         match build_dep_projection(
-            kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms, disambig,
+            kb, dep, caller_requires, &caller_sub_chains, syms, disambig,
             s3_slot, selected,
         ) {
             Some(t) => proj_terms.push(t),
@@ -13383,7 +13388,7 @@ fn build_concrete_dispatch_dict(
     // params (forward the dict for the element this call actually uses).
     let disambig = SigmaCtx { subst, param_rigids };
     build_dispatching_dict_from_chain(
-        kb, callee_spec_sort, &concrete_chain, caller_sort, caller_requires, &syms, true,
+        kb, callee_spec_sort, &concrete_chain, caller_requires, &syms, true,
         Some(&disambig), selected,
     )
 }
@@ -13508,7 +13513,6 @@ fn wrap_dispatch_channel(kb: &mut KnowledgeBase, dict_term: TermId) -> TermId {
 pub fn build_dep_projection(
     kb: &mut KnowledgeBase,
     dep: &RequiresEntry,
-    caller_sort: Option<Symbol>,
     // WI-1033: a `DictChain`, so the slot NAMES this function reads come off the very
     // list it indexes. The pair used to be `(&[RequiresEntry], caller_sort)` and
     // `req_insertion::chain_for` — the second producer of this list — was one of the
@@ -13662,7 +13666,7 @@ pub fn build_dep_projection(
         selected,
     };
     match resolve(kb, &goal, &scope) {
-        ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_sort, &tree, syms),
+        ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_requires, &tree, syms),
         failure => {
             if let Some(out) = s3_failure_out {
                 *out = Some(failure);
@@ -14183,13 +14187,18 @@ const NO_PROVIDER_NAME: &str = "anthill.reflect.NoProvider";
 /// enclosing op's parent sort, used to name `FromScope` chain slots.
 fn emit_tree_as_projection(
     kb: &mut KnowledgeBase,
-    caller_sort: Option<Symbol>,
+    // WI-1033: the caller's `DictChain`, not its Symbol. `FromScope`'s `scope_index`
+    // indexes `ResolutionScope.available_requires` — which IS this chain — so naming it
+    // from a separately-passed sort was the last place a name could come from a
+    // different list than the index did. It is also what made `DictChain::unnamed`'s
+    // "cannot produce a mis-indexed dictionary" true: through this path it was false.
+    caller: &DictChain,
     tree: &ResolvedRequiresNode,
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
     match tree {
         ResolvedRequiresNode::FromScope { scope_index, .. } => {
-            let name = req_name_for_chain_index(kb, caller_sort?, *scope_index)?;
+            let name = caller.name_at(kb, *scope_index)?;
             Some(build_req_var_ref(kb, syms, name))
         }
         ResolvedRequiresNode::Leaf { impl_sort, .. } => {
@@ -14204,7 +14213,7 @@ fn emit_tree_as_projection(
         ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
             let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
             for sub in sub_resolutions {
-                sub_terms.push(emit_tree_as_projection(kb, caller_sort, sub, syms)?);
+                sub_terms.push(emit_tree_as_projection(kb, caller, sub, syms)?);
             }
             let list = kb.build_list(&sub_terms);
             Some(build_construct_requirement(kb, syms, *impl_sort, list))
@@ -14536,7 +14545,6 @@ pub(crate) fn record_apply_within_concrete(
     fn_target_sym: Symbol,
     callee_spec_sort: Symbol,
     spec_op_sym: Symbol,
-    caller_sort: Option<Symbol>,
     caller_requires: &DictChain,
     resolved_tree: Option<&ResolvedRequiresNode>,
 ) -> bool {
@@ -14558,12 +14566,12 @@ pub(crate) fn record_apply_within_concrete(
         None => return false,
     };
     let dict_term = match resolved_tree {
-        Some(tree) => match emit_tree_as_projection(kb, caller_sort, tree, &syms) {
+        Some(tree) => match emit_tree_as_projection(kb, caller_requires, tree, &syms) {
             Some(t) => t,
             None => return false,
         },
         None => match build_dispatching_dict_direct(
-            kb, callee_spec_sort, caller_sort, caller_requires, &syms,
+            kb, callee_spec_sort, caller_requires, &syms,
         ) {
             Some(t) => t,
             None => return false,
@@ -18816,76 +18824,130 @@ pub fn validate_rigid_projection_formations(
 /// The question [`check_provider_requires`]' self-provision arm has to answer once
 /// conditions are per-provision. `outer` is the provision being checked and `inner` is
 /// one the spec of `outer` requires and the carrier supplies itself; certifying `outer`
-/// on the strength of `inner` is only sound where `outer` holding forces `inner` to.
+/// on the strength of `inner` is only sound where every way `outer` can hold forces
+/// some way `inner` can.
 ///
-/// A condition `c_p` entails `c_q` when `c_p`'s spec IS or transitively REQUIRES
-/// `c_q`'s ([`sort_refines`], the same relation `refines/2` names) and the two constrain
-/// the same thing — compared on the set of type-param binding VALUES, which for a
-/// condition written over the carrier's own parameters are those parameters. So
-/// `Ordered[A]` entails `Eq[A]` (`Ordered requires Eq[T]`) while `PartialOrd[A]` does
-/// not (it requires `PartialEq`, and no chain from there reaches `Eq`).
+/// THE QUANTIFIERS, because getting them wrong is what the first cut did twice. For
+/// EVERY clause of `outer` there must EXIST a clause of `inner` ALL of whose conditions
+/// are entailed — conjunction within a clause, disjunction across clauses. A sort-level
+/// `requires` conditions every clause, so it is always among the entailing candidates
+/// and never among the things to be entailed. An unconditioned `inner` is entailed by
+/// anything; an unconditioned `outer` beside a conditioned `inner` is the interesting
+/// refusal, since it claims more than the carrier's own `inner` provision supports.
 ///
-/// An UNCONDITIONED `inner` is entailed by anything — it holds outright. An
-/// unconditioned `outer` beside a conditioned `inner` is the interesting refusal: it
-/// claims more than the carrier's own `inner` provision supports.
+/// Returns the first unentailed condition, rendered, so the refusal can name it.
 fn conditions_entail(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
     outer: Symbol,
     inner: Symbol,
 ) -> Result<(), String> {
-    let dict = provider_dict_chain(kb, carrier);
-    // The slot LIST is shared; `strict_mask` is what says which slots belong to which
-    // provision, so the two condition sets are read off the one chain that already
-    // records the ownership — not re-derived from the facts a second time.
-    let (outer_mask, inner_mask) =
-        (dict.strict_mask(kb, outer), dict.strict_mask(kb, inner));
-    if inner_mask.is_empty() {
-        // No conditional provision on this carrier at all — the pre-WI-869 world,
-        // where the arm's original justification holds by construction.
+    let groups = provision_conditions(kb, carrier);
+    let clauses = |spec: Symbol, kb: &KnowledgeBase| -> Vec<Vec<Value>> {
+        groups
+            .iter()
+            .filter(|g| same_sort_canonical(kb, g.provided, spec))
+            .map(|g| g.conditions.clone())
+            .collect()
+    };
+    let inner_clauses = clauses(inner, kb);
+    if inner_clauses.is_empty() {
+        // `inner` holds outright — including the whole pre-WI-869 world, where no
+        // carrier has a conditional provision at all.
         return Ok(());
     }
-    // A slot is a CONDITION of `inner` when it is `inner`'s and NOT unconditional; a
-    // sort-level `requires` is in every mask and conditions `outer` too, so it can
-    // never be what makes the two differ.
-    let owned = |mask: &[bool], i: usize| mask.get(i).copied().unwrap_or(true);
-    let entries = Rc::clone(&dict.entries);
-    for (i, q) in entries.iter().enumerate() {
-        if !owned(&inner_mask, i) || owned(&outer_mask, i) {
-            continue;
+    let mut outer_clauses = clauses(outer, kb);
+    if outer_clauses.is_empty() {
+        // Unconditioned: ONE alternative, which supplies nothing of its own.
+        outer_clauses.push(Vec::new());
+    }
+    let sort_level = direct_requires_chain(kb, carrier);
+    let entry_of = |kb: &KnowledgeBase, spec: &Value| {
+        spec_base_functor(kb, spec)
+            .map(|required_sort| RequiresEntry { required_sort, spec: spec.clone() })
+    };
+    let mut unentailed: Option<String> = None;
+    for o in &outer_clauses {
+        let mut available = sort_level.clone();
+        available.extend(o.iter().filter_map(|s| entry_of(kb, s)));
+        let mut satisfied = false;
+        for i in &inner_clauses {
+            let mut all = true;
+            for q_spec in i {
+                let Some(q) = entry_of(kb, q_spec) else { continue };
+                if !available.iter().any(|pc| condition_entails(kb, &pc.clone(), &q)) {
+                    all = false;
+                    if unentailed.is_none() {
+                        unentailed = Some(render_requires_entry(kb, &q));
+                    }
+                    break;
+                }
+            }
+            if all {
+                satisfied = true;
+                break;
+            }
         }
-        let q_bindings = binding_values(kb, &q.spec);
-        let entailed = entries.iter().enumerate().any(|(j, pc)| {
-            owned(&outer_mask, j)
-                && (same_sort_canonical(kb, pc.required_sort, q.required_sort)
-                    || sort_refines(kb, pc.required_sort, q.required_sort))
-                && binding_values(kb, &pc.spec) == q_bindings
-        });
-        if !entailed {
-            return Err(render_requires_entry(kb, q));
+        if !satisfied {
+            return Err(unentailed.unwrap_or_else(|| kb.qualified_name_of(inner).to_string()));
         }
     }
     Ok(())
 }
 
-/// The type-param binding VALUES of a spec view — "what does this condition
-/// constrain". SORTED by raw id so two conditions are compared as SETS: `Eq[A]` and
-/// `Ordered[A]` bind different PARAMETER NAMES of different specs to the same value,
-/// and it is the value that says they are about the same thing.
+/// WI-1033 — does the available condition `pc` force `q`?
 ///
-/// Ground by construction here: a condition is written over the declaring sort's own
-/// parameters, which lower to `Ref`s.
-fn binding_values(kb: &KnowledgeBase, spec: &Value) -> Vec<u32> {
+/// When `q` IS `pc`, or is one of `pc`'s spec's transitive `requires` INSTANTIATED at
+/// `pc`'s own bindings. Instantiating is the whole of it, and the first cut skipped it:
+/// it tested `sort_refines` (does `pc`'s spec require `q`'s spec, ANYWHERE) and then
+/// compared the two conditions' binding VALUES as a sorted set. That is wrong both ways.
+/// With `Big[X, Y] requires Small[X, Y]`, it accepted `Big[P, Q]` as entailing
+/// `Small[Q, P]` — the values are the same set, the PAIRING is swapped, and `Big[P,Q]`
+/// does not imply `Small[Q,P]`. And with `M2[K, V] requires E1[K]`, it REFUSED `M2[P, Q]`
+/// as entailing `E1[P]`, which it plainly does, because `{P,Q} != {P}`. Both measured.
+///
+/// The composition — `build_child_subst_map` over a `requires_chain` entry — is the one
+/// `explain_dep_refusal` already uses to put a caller's sub-chain into the caller's own
+/// terms.
+fn condition_entails(kb: &mut KnowledgeBase, pc: &RequiresEntry, q: &RequiresEntry) -> bool {
+    if requires_entries_agree(kb, pc, q) {
+        return true;
+    }
+    let map = build_child_subst_map(kb, pc);
+    for sub in requires_chain(kb, pc.required_sort) {
+        let composed = RequiresEntry {
+            required_sort: sub.required_sort,
+            spec: substitute_in_spec(kb, &sub.spec, &map),
+        };
+        if requires_entries_agree(kb, &composed, q) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Same required spec, and the same value bound to EACH of its type parameters — which
+/// is what "at the same bindings" means. Per parameter, never as a set of values.
+fn requires_entries_agree(kb: &KnowledgeBase, a: &RequiresEntry, b: &RequiresEntry) -> bool {
+    same_sort_canonical(kb, a.required_sort, b.required_sort)
+        && binding_map(kb, &a.spec) == binding_map(kb, &b.spec)
+}
+
+/// A spec view's type-param bindings as `(param short name, value)` pairs, sorted by
+/// name. Short name and not `Symbol`, for the reason `provider_requires_subgoals` gives:
+/// the two sides reach here through different decoders, and the shared short name is
+/// the only key both spell the same way.
+fn binding_map(kb: &KnowledgeBase, spec: &Value) -> Vec<(String, u32)> {
     let Some((base, bindings)) = unwrap_spec_view_value(kb, spec) else {
         return Vec::new();
     };
     let qn = kb.qualified_name_of(base).to_string();
-    let mut out: Vec<u32> = bindings
+    let mut out: Vec<(String, u32)> = bindings
         .into_iter()
         .filter(|(k, _)| is_type_param_binding(kb, *k, &qn))
-        .map(|(_, v)| v.raw())
+        .map(|(k, v)| (kb.local_name_of(k).to_string(), v.raw()))
         .collect();
-    out.sort_unstable();
+    out.sort();
     out
 }
 
@@ -34763,10 +34825,17 @@ impl ProviderDictChain {
 /// [`direct_requires`] uses for the sort-level half — they are separate per-functor
 /// scans, so they cannot interleave.
 ///
-/// Grouping BY BASE merges two provisions of one spec at two applications (`Console
-/// provides Effect` three times) into one group. That is consistent rather than lossy:
-/// `ProviderDictChain::conditions_for` records an owner as a spec BASE symbol, so two
-/// such provisions were never distinguishable there either.
+/// Grouped per CLAUSE — the `clause` field — and NOT per provided base. The first cut
+/// merged by base and it was WRONG for the one reader that refuses: a provision's
+/// conditions are a CONJUNCTION within a clause and a DISJUNCTION across clauses, so
+/// `provides Lo[D] :- SA[P]` beside `provides Lo[D] :- SB[Q]` is two ways for `Lo[D]`
+/// to hold, and merging them demanded both. MEASURED: adding the second clause — which
+/// can only WIDEN where `Lo[D]` holds — turned a clean load into a
+/// `ProvisionConditionsTooWeak` refusal.
+///
+/// [`ProviderDictChain::conditions_for`] still keys an owner by spec BASE, which is
+/// right for it: the strictness mask asks "is this slot this DISPATCH's business", and
+/// a dispatch of `Lo` is every `Lo` clause's business.
 fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionConditions> {
     let mut out: Vec<ProvisionConditions> = Vec::new();
     let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") else {
@@ -34797,10 +34866,22 @@ fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionCo
             continue;
         };
         let Some(provided_base) = spec_base_functor(kb, &provided) else { continue };
-        match out.iter_mut().find(|g| same_sort_canonical(kb, g.provided, provided_base)) {
+        // The clause index is what separates two provisions of one spec at one
+        // application; without it they merge and their conditions read as a conjunction.
+        let clause = super::op_info::head_field_term(kb, head, "clause")
+            .and_then(|t| match kb.get_term(t) {
+                Term::Const(Literal::Int(n)) => Some(*n),
+                _ => None,
+            })
+            .unwrap_or(-1);
+        match out
+            .iter_mut()
+            .find(|g| g.clause == clause && same_sort_canonical(kb, g.provided, provided_base))
+        {
             Some(g) => g.conditions.push(condition),
             None => out.push(ProvisionConditions {
                 provided: provided_base,
+                clause,
                 conditions: vec![condition],
             }),
         }
@@ -34815,7 +34896,10 @@ struct ProvisionConditions {
     /// Base sort of the spec this provision provides — the owner a slot's strictness
     /// is keyed on.
     provided: Symbol,
-    /// The condition views, in fact order.
+    /// Which `provides` clause of the carrier, in source order. Two clauses may provide
+    /// one spec, and their condition lists are ALTERNATIVES.
+    clause: i64,
+    /// The condition views of THIS clause, in fact order. A conjunction.
     conditions: Vec<Value>,
 }
 
@@ -34915,11 +34999,22 @@ pub(crate) fn sort_reads_requirement_slots(kb: &mut KnowledgeBase, sort: Symbol)
 /// four producers kept reading `direct_requires_chain`. Three were invisible to a green
 /// suite. A newtype over the entries ALONE would not have caught them — no site *passes*
 /// a chain to the namer, each one *calls* it with a `Symbol` and the namer re-derives —
-/// so the fix is that the chain OWNS its namer: [`Self::names`] and [`Self::entries`]
-/// come from the same value, and [`provider_dict_entries`] is the only way to make one.
+/// so the fix is that the chain OWNS its namer: [`Self::names`] answers for the same
+/// `owner` [`Self::entries`] was built from, and a caller cannot spell one without the
+/// other.
 ///
-/// `owner: None` is the no-enclosing-sort case: entries empty, names empty, nothing to
-/// disagree about.
+/// EXACTLY WHAT THAT BUYS, stated precisely because a looser version of this comment
+/// said "come from the same value" and "`provider_dict_entries` is the only way to make
+/// one", and both were false. `names()` RE-DERIVES from `owner` through the memoized
+/// `provider_dict_chain`; it agrees with `entries` because both memos are cleared
+/// together by `invalidate_requires_chain_cache`, which has no production caller — a
+/// `DictChain` snapshot held across a pass (`req_insertion::chain_for`,
+/// `TypingEnv.enclosing`) is therefore stable, and would need re-examining if
+/// invalidation ever ran mid-pass. And `unnamed`/`empty` are constructors too; what no
+/// constructor offers is a chain whose entries and names come from DIFFERENT sorts.
+///
+/// `owner: None` is the no-enclosing-sort case: names empty, so every `name_at` is
+/// `None`.
 #[derive(Clone)]
 pub struct DictChain {
     owner: Option<Symbol>,
@@ -34935,12 +35030,13 @@ impl DictChain {
     /// A chain whose slots have NO NAMES — a caller with no enclosing sort, and the
     /// synthetic callers the projection tests build.
     ///
-    /// Not a back door. The invariant this type carries is "entries and names come from
-    /// one chain", and an unnamed chain keeps it in the strongest way available: every
-    /// [`Self::name_at`] answers `None`, so a projection that needs a name falls through
-    /// LOUDLY instead of indexing a naming that belongs to a different list. Smuggling a
-    /// declared `requires` chain through here therefore cannot produce the WI-869 defect
-    /// — it produces no dictionary at all.
+    /// Every [`Self::name_at`] answers `None`, so a projection that needs a name falls
+    /// through instead of indexing a naming that belongs to a different list: through
+    /// this constructor a wrong chain yields no dictionary rather than a mis-indexed
+    /// one. That claim was written before it was true — the `FromScope` path named its
+    /// slot from a separately-passed `caller_sort` and would happily have indexed the
+    /// other list; `emit_tree_as_projection` takes the chain now, which is what closed
+    /// the last of the three naming paths.
     pub fn unnamed(entries: Vec<RequiresEntry>) -> Self {
         DictChain { owner: None, entries: Rc::new(entries) }
     }

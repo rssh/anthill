@@ -121,7 +121,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 record_apply_within_concrete(
                     kb, apply_term, &named_args, &pos_args,
                     fn_target_sym, callee_spec_sort, spec_op_sym,
-                    enclosing_sort, &caller_requires, resolved_tree.as_ref(),
+                    &caller_requires, resolved_tree.as_ref(),
                 );
             }
             CallClass::DeferToRequirement {

@@ -728,10 +728,15 @@ namespace anthill.reflect
   -- the two are joined on it; `condition` is a view of the same shape a
   -- SortRequiresInfo.spec holds, because a condition IS a requirement — one
   -- scoped to a provision instead of to the sort.
+  -- `clause` separates two provisions of ONE spec at ONE application: a provision's
+  -- conditions are a CONJUNCTION within a clause and a DISJUNCTION across clauses
+  -- (`provides Lo[D] :- SA[P]` beside `provides Lo[D] :- SB[Q]` is two ways for
+  -- `Lo[D]` to hold), and neither the provided view nor fact adjacency separates them.
   entity ProvidesConditionInfo(
     sort_ref  : Term,                               -- the providing sort
     provided  : Term,                               -- the provision's spec view
-    condition : Term                                -- one condition's spec view
+    condition : Term,                               -- one condition's spec view
+    clause    : Int64                               -- which `provides` clause
   )
 
   -- ================================================================

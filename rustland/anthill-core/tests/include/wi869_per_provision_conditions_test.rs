@@ -720,3 +720,96 @@ fn each_condition_is_joined_to_its_own_provision() {
         "each condition must be joined to ITS OWN provision; found {pairs:?}",
     );
 }
+
+// ── WI-1033 review: the entailment rule's quantifiers and pairing ────
+//
+// Three shapes the FIRST cut of `conditions_entail` got wrong, each measured. They are
+// here rather than in prose because every one of them loaded (or refused) silently.
+
+/// A two-parameter tower, so the check cannot pass by comparing binding values as a
+/// SET. `Big[X, Y] requires Small[X, Y]`; `Hi` requires `Lo`.
+fn permuted(inner_cond: &str) -> String {
+    format!(
+        "\nnamespace wi1033.perm\n  import anthill.prelude.{{Int64}}\n\
+  sort Small\n    sort X = ?\n    sort Y = ?\n    operation sm(a: X, b: Y) -> Int64\n  end\n\
+  sort Big\n    sort X = ?\n    sort Y = ?\n    requires Small[X = X, Y = Y]\n    \
+    operation bg(a: X, b: Y) -> Int64\n  end\n\
+  sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
+  sort Hi\n    sort T = ?\n    requires Lo[T = T]\n    operation hi(x: T) -> Int64\n  end\n\
+  enum C\n    sort P = ?\n    sort Q = ?\n    entity c(p: P, q: Q)\n    \
+    provides Hi[T = C] :- Big[X = P, Y = Q]\n    \
+    provides Lo[T = C] :- {inner_cond}\n    \
+    operation hi(x: C) -> Int64 = 1\n    operation lo(x: C) -> Int64 = 1\n  end\nend\n"
+    )
+}
+
+/// A PERMUTED inner condition must be REFUSED: `Big[X=P, Y=Q]` requires
+/// `Small[X=P, Y=Q]`, not `Small[X=Q, Y=P]`. The first cut compared the two conditions'
+/// binding VALUES as a sorted set — `{P,Q} == {Q,P}` — and accepted it, certifying `Hi`
+/// on an `Lo` its own condition does not imply.
+#[test]
+fn a_permuted_inner_condition_is_not_entailed() {
+    let errs = load_errs(&permuted("Small[X = Q, Y = P]"));
+    assert!(
+        errs.iter().any(|e| e.contains("do not entail")),
+        "swapping the inner condition's parameters must break entailment; got {errs:?}",
+    );
+    // THE CONTROL: the same tower with the pairing intact loads. Without it this arm
+    // would pass for a check that refused every two-parameter condition.
+    if let Err(errs) = crate::common::try_load_kb_with(&permuted("Small[X = P, Y = Q]")) {
+        panic!("the correctly-paired condition IS entailed and must load; got {errs:?}");
+    }
+}
+
+/// AN OUTER CONDITION WITH MORE PARAMETERS THAN THE INNER still entails it:
+/// `Big[X=P, Y=Q]` transitively requires `Small[X=P, Y=Q]`, so it entails a `Small`
+/// condition even though the two mention different numbers of the carrier's params.
+/// The set comparison refused this (`[P,Q] != [P]` for the one-param case), which is a
+/// FALSE refusal of a correct program.
+#[test]
+fn an_outer_condition_richer_than_the_inner_still_entails_it() {
+    let src = "\nnamespace wi1033.rich\n  import anthill.prelude.{Int64}\n\
+  sort E1\n    sort K = ?\n    operation e1(x: K) -> Int64\n  end\n\
+  sort M2\n    sort K = ?\n    sort V = ?\n    requires E1[K = K]\n    \
+    operation m2(a: K, b: V) -> Int64\n  end\n\
+  sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
+  sort Hi\n    sort T = ?\n    requires Lo[T = T]\n    operation hi(x: T) -> Int64\n  end\n\
+  enum D\n    sort P = ?\n    sort Q = ?\n    entity d(p: P, q: Q)\n    \
+    provides Hi[T = D] :- M2[K = P, V = Q]\n    \
+    provides Lo[T = D] :- E1[K = P]\n    \
+    operation hi(x: D) -> Int64 = 1\n    operation lo(x: D) -> Int64 = 1\n  end\nend\n";
+    if let Err(errs) = crate::common::try_load_kb_with(src) {
+        panic!("`M2[K=P, V=Q]` requires `E1[K=P]`, so it entails it; got {errs:?}");
+    }
+}
+
+/// TWO CLAUSES PROVIDING ONE SPEC ARE ALTERNATIVES, not a conjunction. Adding a second
+/// way for `Lo[D]` to hold can only WIDEN where it holds, so it must never turn a clean
+/// load into a refusal — which is what grouping conditions by the provided BASE did.
+#[test]
+fn a_second_clause_for_one_spec_only_widens() {
+    let tower = |extra: &str| format!(
+        "\nnamespace wi1033.alt\n  import anthill.prelude.{{Int64}}\n\
+  sort SA\n    sort T = ?\n    operation sa(x: T) -> Int64\n  end\n\
+  sort SB\n    sort T = ?\n    operation sb(x: T) -> Int64\n  end\n\
+  sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
+  sort Hi\n    sort T = ?\n    requires Lo[T = T]\n    operation hi(x: T) -> Int64\n  end\n\
+  enum D\n    sort P = ?\n    sort Q = ?\n    entity d(p: P, q: Q)\n    \
+    provides Hi[T = D] :- SA[T = P]\n    \
+    provides Lo[T = D] :- SA[T = P]\n{extra}    \
+    operation hi(x: D) -> Int64 = 1\n    operation lo(x: D) -> Int64 = 1\n  end\nend\n"
+    );
+    // The control: one adequate clause loads.
+    if let Err(errs) = crate::common::try_load_kb_with(&tower("")) {
+        panic!("the adequate clause alone must load; got {errs:?}");
+    }
+    // …and a second, independent way for `Lo[D]` to hold must not break it.
+    if let Err(errs) =
+        crate::common::try_load_kb_with(&tower("    provides Lo[T = D] :- SB[T = Q]\n"))
+    {
+        panic!(
+            "a second `Lo` clause is an ALTERNATIVE — it can only widen where `Lo[D]` \
+             holds, so it cannot make the program refuse; got {errs:?}"
+        );
+    }
+}

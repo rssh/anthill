@@ -189,7 +189,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     // enclosing sort; Strategy 1/2 won't fire anyway (binding mismatch),
     // so the name lookup is never reached.
     let projection = build_dep_projection(
-        &mut kb, &dep, None,
+        &mut kb, &dep,
         &anthill_core::kb::typing::DictChain::unnamed(caller_requires.clone()),
         &caller_sub_chains, &syms, None, None, &[],
     )

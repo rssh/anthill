@@ -187,7 +187,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep, None,
+        &mut kb, &dep,
         &anthill_core::kb::typing::DictChain::unnamed(caller_requires.clone()),
         &caller_sub_chains, &syms, None, None, &[],
     );
@@ -252,7 +252,7 @@ fn ground_dep_emits_construct_requirement() {
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep, None,
+        &mut kb, &dep,
         &anthill_core::kb::typing::DictChain::unnamed(caller_requires.clone()),
         &caller_sub_chains, &syms, None, None, &[],
     )
