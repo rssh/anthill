@@ -1001,6 +1001,9 @@ mod wi1025_occurrence_referent_test;
 #[path = "include/wi1027_bodyless_supplier_tie_test.rs"]
 mod wi1027_bodyless_supplier_tie_test;
 
+#[path = "include/wi1032_provision_dedup_test.rs"]
+mod wi1032_provision_dedup_test;
+
 #[path = "include/wi537_local_interpretation_test.rs"]
 mod wi537_local_interpretation_test;
 

@@ -218,6 +218,14 @@ end
 /// This is what makes admitting the cell honest rather than a hole: the composition
 /// the grouping waves through is refused by a check that can see the thing the
 /// grouping cannot — that two candidates supply the SAME op.
+///
+/// WHICH check that is CHANGED at WI-1032, and this test was the one that could not tell:
+/// its assertions used to be `"ambiguous dispatch of …"` plus the carrier's name, and both
+/// substrings appear in BOTH `unselected_instance_message` and
+/// `ambiguous_spec_op_dispatch_message` — so it passed while its mechanism flipped
+/// underneath it. It was `DispatchAmbiguous`, printing `(Leaf, Leaf)` — one carrier twice,
+/// with a repair that cannot apply. It is now WI-1027's supplier tie, and the assertion
+/// names the ROUTES so a future flip fails here instead of passing silently.
 #[test]
 fn a_fact_rivalling_the_carriers_own_member_is_still_refused() {
     let src = r#"namespace test.wi859.rival
@@ -248,12 +256,15 @@ end
     assert!(
         errs.iter().any(|e| {
             e.contains("ambiguous dispatch of `test.wi859.rival.Desc.describe`")
-                && e.contains("test.wi859.rival.Leaf")
+                && e.contains("the carrier's own member 'test.wi859.rival.Leaf.describe'")
+                && e.contains(
+                    "an instance fact binding `describe = test.wi859.rival.rivalDescribe`",
+                )
         }),
-        "the rival pair must be refused, naming the op whose two suppliers tie — \
-         MEASURED, that refusal is tier 3's `UnselectedInstance` at the CALL \
-         (`DispatchAmbiguous`), which is a different mechanism from the grouping and \
-         fires with or without WI-859: {errs:?}"
+        "the rival pair must be refused, naming the op whose two suppliers tie AND each \
+         supplier by its SUPPLY ROUTE — the refusal is WI-1027's `AmbiguousSpecOpDispatch` \
+         at the CALL, a different mechanism from the grouping, firing with or without \
+         WI-859: {errs:?}"
     );
 }
 

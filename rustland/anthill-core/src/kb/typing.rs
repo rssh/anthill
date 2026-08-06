@@ -11288,13 +11288,15 @@ fn check_apply_iter(
             // provider symbols and its own `TieRepair` (a bracket binding the DISPATCH
             // slot), and `DispatchNoMatch` says the dispatch resolved nothing at all.
             //
-            // RECORDED, because the `Ambiguous` exclusion leaves a known bad rendering
-            // standing: when the carrier ALSO self-provides the spec, the same
-            // route-1-vs-route-2 tie reaches `Ambiguous` instead and prints `Leaf, Leaf`
-            // with `TieRepair::ValueDirected` — the exact rendering WI-1012 gave this tie
-            // its own variant to avoid, still reachable on the body-less half. It REFUSES,
-            // so it is a wording defect and not a silence, and fixing it belongs to
-            // `TieRepair`'s owner (WI-843 / WI-855) rather than to a side effect here.
+            // THE EXCLUSION USED TO COST SOMETHING, and WI-1032 closed it — kept here
+            // because the shape is the one a reader will try next. When the carrier ALSO
+            // self-provides the spec, this route-1-vs-route-2 tie used to reach `Ambiguous`
+            // instead and print `Leaf, Leaf` with `TieRepair::ValueDirected`, the exact
+            // rendering WI-1012 gave the supplier tie its own variant to avoid. The repair
+            // was NOT to reword `render_instance_tie`: the two provisions AGREE as
+            // provisions (an op binding is not a type-param binding, so it reaches no
+            // `Candidate` field), so `collect_provides_candidates` now collapses them to
+            // one and the conflict arrives HERE, where the routes can be named.
             let outcome_raises_on_its_own_account = match outcome {
                 DispatchOutcome::Ambiguous(_) | DispatchOutcome::NoMatch => true,
                 DispatchOutcome::NoCandidates
@@ -12396,6 +12398,16 @@ pub enum TieRepair {
     /// the witness to declare a NAMED slot the caller binds in the key's value
     /// position (`fold[Monoid = ListM[O = MyEq]]`).
     SubGoal,
+    /// WI-1032 — every candidate is the SAME provider, reached through two provisions
+    /// that are not identical. A bracket names a PROVIDER, so no spelling separates them;
+    /// and the repair is not "keep one" either, because the provisions may agree (one
+    /// binding `A`, another `B`, merged by `provider_spec_view_bindings` into one view).
+    /// What the author has to do is make them ONE provision.
+    ///
+    /// DRIVEN by `wi1032_provision_dedup_test::one_carrier_two_disagreeing_provisions_
+    /// names_it_once`. Before it existed this rendered as [`Self::ValueDirected`] and
+    /// printed the carrier TWICE — advising a pin on a carrier that is already pinned.
+    OneProviderTwoProvisions,
 }
 
 /// WI-843 — §4.4 check 3's criterion, with ONE owner: is `sort` a provider whose
@@ -12418,14 +12430,40 @@ fn is_value_directed_provider(
 /// WI-843 — render a tie for a diagnostic: its candidates, and the one repair that
 /// actually applies. The `sorts_with_constructors` scan lives HERE, at the render
 /// boundary, so the resolver pays nothing for ties whose result is discarded.
+///
+/// WI-1032 — IT DOES NOT DEDUP THE NAMES, and that is a decision with a measurement
+/// behind it rather than an omission. This did once print one carrier twice
+/// (`2 instances provide Desc (Leaf, Leaf)`), because two provisions saying the same
+/// thing reached `pick_most_specific` as two candidates. That was fixed at the COLLECTOR
+/// — equal candidates are one candidate — not here, since the duplicate name was the
+/// symptom and a program with a single implementation being refused was the defect.
+/// The one remaining way two candidates could share an `impl_sort` is differing in a
+/// TYPE-param binding, and that does not tie: the ground binding raises
+/// `head_specificity` and tier 2 picks it (MEASURED, in
+/// `wi1032_provision_dedup_test::a_specificity_ordered_pair_still_takes_the_more_specific`).
+/// With no driver left, a dedup here would be untested code.
 fn render_instance_tie(kb: &KnowledgeBase, tie: &InstanceTie) -> (Vec<String>, TieRepair) {
-    let candidates: Vec<String> = tie
-        .candidates
-        .iter()
-        .map(|s| kb.qualified_name_of(*s).to_string())
-        .collect();
+    // WI-1032 — BY CANONICAL PROVIDER, not one entry per candidate. Two provisions of one
+    // carrier are two candidates whenever they are not byte-identical (the collector's
+    // dedup is structural), and rendering them per candidate printed the carrier TWICE.
+    // Deduping here is a RENDERING rule and cannot hide a rival: two distinct providers
+    // have distinct canonical symbols and both survive.
+    let mut candidates: Vec<String> = Vec::with_capacity(tie.candidates.len());
+    let mut seen: SmallVec<[Symbol; 2]> = SmallVec::new();
+    for s in &tie.candidates {
+        let canon = kb.canonical_sort_sym(*s);
+        if !seen.contains(&canon) {
+            seen.push(canon);
+            candidates.push(kb.qualified_name_of(*s).to_string());
+        }
+    }
     if !tie.at_call_goal {
         return (candidates, TieRepair::SubGoal);
+    }
+    // ONE provider reached twice: no bracket separates a provider from itself, and
+    // `ValueDirected`'s "pin the carrier" is advice for a carrier that is already pinned.
+    if candidates.len() == 1 {
+        return (candidates, TieRepair::OneProviderTwoProvisions);
     }
     let concrete = super::load::sorts_with_constructors(kb);
     let repair = match tie
@@ -12459,6 +12497,8 @@ pub(crate) fn unselected_instance_message(
     candidates: &[String],
     repair: &TieRepair,
 ) -> String {
+    // WI-1032: `candidates` is per PROVIDER (deduped at `render_instance_tie`), so the
+    // count says how many distinct providers — never one provider named twice.
     let head = format!(
         "ambiguous dispatch of `{op}`: {} instances provide `{spec}` ({}) and the call \
          selects none",
@@ -12481,6 +12521,12 @@ pub(crate) fn unselected_instance_message(
              call-site bracket reaches (§4.5) — give the conditional provider a NAMED \
              requirement slot and bind it in the value position (`f[Spec = W[Slot = \
              Chosen]]`), or keep a single provider of `{spec}`"
+        ),
+        TieRepair::OneProviderTwoProvisions => format!(
+            "{head}: it is ONE provider reached through several provisions of `{spec}` \
+             that are not identical. No bracket separates a provider from itself — write \
+             the provisions as ONE (a single `provides`/`fact` binding every parameter), \
+             since two that merely AGREE still tie here"
         ),
     }
 }
@@ -16912,6 +16958,7 @@ fn resolve_inner(
 /// A SortProvidesInfo candidate matched against a goal. Carries the
 /// impl sort + the impl-side substitution (impl param → resolved
 /// value) used to instantiate the impl's `requires_chain` subgoals.
+#[derive(PartialEq, Eq)]
 struct Candidate {
     /// The carrier sort symbol (e.g., `IntEq`, `EqList`).
     impl_sort: Symbol,
@@ -17540,12 +17587,90 @@ fn collect_provides_candidates(
         if !all_match {
             continue;
         }
-        out.push(Candidate {
+        let cand = Candidate {
             impl_sort,
             resolved_head_bindings,
             impl_subst,
             head_specificity,
-        });
+        };
+        // WI-1032 — TWO PROVISIONS THAT SAY THE SAME THING ARE ONE CANDIDATE. The rule
+        // was already written down, one layer over, at [`Provider::SelfProvider`]: "Two
+        // self-provisions of one spec by one carrier are therefore ONE candidate, which is
+        // right: they name one member set, and a disagreement between their BINDINGS is
+        // `ConflictingProvisionBindings`'s (WI-842), not a second dictionary." The LOAD
+        // grouping had it — `record` collapses duplicate `SelfProvider`s — and this
+        // collector did not.
+        //
+        // Structural equality is the whole criterion and it is SOUND BY CONSTRUCTION: a
+        // `Candidate` is `(impl_sort, resolved_head_bindings, impl_subst,
+        // head_specificity)`, and everything downstream — the resolved tree node, the
+        // subgoals `requires_chain(impl_sort)` instantiates through `impl_subst` — is a
+        // function of exactly those. Two equal candidates therefore resolve identically,
+        // so picking either is picking the same thing. This is NOT first-match: candidates
+        // that differ in ANY field are all kept, and `pick_most_specific` still refuses to
+        // choose among them.
+        //
+        // WHAT IT FIXES, measured: `sort Leaf { provides Desc[T = Leaf]; operation
+        // describe … }` beside a namespace `fact Desc[T = Leaf]` is ONE dictionary written
+        // in two places, and the CALL was refused — `2 instances provide Desc (Leaf,
+        // Leaf)`, naming one carrier twice and advising a repair that changes nothing. A
+        // program with a single implementation, rejected.
+        //
+        // WHICH COHERENCE CELL THAT IS, stated because the first cut of this comment got
+        // it WRONG and review measured it: NOT WI-859's (1 fact, 0 witnesses, 1
+        // self-provider). `Provider::Fact` is recorded only when the provision BINDS an op
+        // (`provision_binds_any_op` → `binding_op_symbol`, which demands a
+        // `SymbolKind::Operation` value), and a bare `fact Desc[T = Leaf]` binds a SORT. So
+        // both provisions classify as `SelfProvider(Leaf)`, `record` collapses them, and
+        // the group holds ONE — cell (0, 0, 1), which the size gate skips and
+        // `fact_beside_self_provider_is_one_carrier` never sees. WI-859's licence for its
+        // own cell was therefore never falsified by this; the shape that IS in (1, 0, 1) is
+        // the op-binding pair below, which genuinely has a conflict.
+        //
+        // AND IT IS IN THE COLLECTOR, not at `pick_most_specific`, because a SECOND
+        // consumer counts: `check_selection_bindings` refuses an unthreadable selection on
+        // `candidates.len() > 1`, and its own doc says why the sole-provider case is
+        // accepted — "with a sole provider the pin necessarily names it, so accepting is
+        // exact rather than lenient". Two provisions saying one thing ARE a sole provider,
+        // so deduping here makes that gate exact too; deduping at the tie would have left
+        // it refusing a selection that could not have differed.
+        //
+        // The op-binding leg is why the CONFLICTING pair collapses rather than merely
+        // rendering badly: the loop above `continue`s on any binding that is not a spec
+        // TYPE param, so a `fact Desc[T = Leaf, describe = otherDescribe]` differs from a
+        // bare `provides Desc[T = Leaf]` in nothing this struct records. As PROVISIONS they
+        // agree, so collapsing them is right, and it is what lets the genuine conflict
+        // reach the reader that can SEE it — WI-1027's supplier tie, which names the two
+        // texts by supply route instead of printing the carrier twice.
+        //
+        // ONE ASYMMETRY THIS CREATES, recorded because it is the WI-838 shape: for the
+        // `[SelfProvider, Fact]` pair the LOAD grouping still counts TWO (its `record`
+        // dedup is per-KIND and cannot merge a `SelfProvider(Symbol)` with a
+        // `Fact(TermId)`), while this collector now counts ONE. Benign today — the group
+        // is admitted by `fact_beside_self_provider_is_one_carrier` and the conflict lands
+        // on the supplier tie — but the two readers no longer agree about how many
+        // provisions a carrier has, and the arm's own justification ("the group cannot tell
+        // that shape from a rival, because the question is per-OP and a group is per-SPEC")
+        // described a symmetric ignorance that is now one-sided.
+        //
+        // CANONICAL, not raw, on the carrier: one qualified name can be interned under
+        // several `Symbol`s, and `push_supplier_deduped` dedups canonically for exactly
+        // that reason — "a raw compare would let ONE operation reached through two interned
+        // copies read as two candidates — refusing a correct program". No driver exists
+        // today (WI-838 measured every provision's carrier equal to its canonical symbol),
+        // so this is untested; it is spelled the strong way because the untested direction
+        // is refusing a correct program, and because the named owner of the rule spells it
+        // so. The other three fields compare raw: they hold per-call `TermId`s from ONE
+        // goal, so two provisions that agree produce identical ids by construction.
+        let cand_carrier = kb.canonical_sort_sym(cand.impl_sort);
+        if !out.iter().any(|c| {
+            kb.canonical_sort_sym(c.impl_sort) == cand_carrier
+                && c.resolved_head_bindings == cand.resolved_head_bindings
+                && c.impl_subst == cand.impl_subst
+                && c.head_specificity == cand.head_specificity
+        }) {
+            out.push(cand);
+        }
     }
     out
 }
@@ -19150,7 +19275,9 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         // f + w + s ≥ 2 (the size skip) — so f > 1, or f = 1 with w ≥ 1. The
         // `debug_assert` below ENFORCES that rather than leaving it argued, and is also
         // what makes the second admission arm load-bearing — DRIVEN: delete that arm and
-        // this fires on both wi837 `Pebble` fixtures.
+        // this fires on the two wi837 `Pebble` fixtures — and, since that was written, on
+        // `test.wi859.rival` and WI-1032's `test.wi1032.conflict` too, so "both" is a floor
+        // rather than the count.
         let spec_qn = kb.qualified_name_of(*spec).to_string();
         let carrier_qn = kb.qualified_name_of(*carrier).to_string();
         let facts = candidates.iter().filter(|c| matches!(c, Provider::Fact(_))).count();

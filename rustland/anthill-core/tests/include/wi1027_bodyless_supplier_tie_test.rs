@@ -283,13 +283,15 @@ fn a_rule_reaching_the_tie_through_an_operation_is_refused() {
 /// account, with `InstanceTie`'s provider symbols and its own `TieRepair`. The guard
 /// skips it deliberately; this test is what fails if that skip is dropped.
 ///
-/// It also RECORDS a known-bad rendering rather than silently leaving it: swap the
-/// witness for the instance fact and the same `Ambiguous` arm prints the carrier TWICE
-/// (`Leaf, Leaf`) with `TieRepair::ValueDirected` — the exact rendering WI-1012 gave the
-/// supplier tie its own variant to avoid, still reachable on this half when a
-/// self-provision puts the tie in front of the provision walk. Fixing THAT belongs to
-/// `TieRepair`'s owner (WI-843 / WI-855): the message is wrong, but the program is
-/// refused, so it is a wording defect and not a silence.
+/// This file originally RECORDED a bad rendering here rather than fixing it: swap the
+/// witness for the instance fact and the same `Ambiguous` arm printed the carrier TWICE
+/// (`Leaf, Leaf`) with `TieRepair::ValueDirected`. **WI-1032 closed it**, and not where
+/// this note expected — the two provisions AGREE as provisions, so the collector now
+/// collapses them and the conflict reaches the supplier guard above. Driving it also
+/// turned up the worse half: the same pair WITHOUT the op binding is one dictionary
+/// written twice, and it was REFUSED. See `wi1032_provision_dedup_test`. What survives
+/// here is the exclusion itself, which this test still pins: `Rival` is a distinct
+/// provider, so the tie is a real PROVIDER tie and `DispatchAmbiguous` owns it.
 #[test]
 fn a_provision_tie_is_still_reported_as_a_provider_tie() {
     let ns = "test.wi1027.provisiontie";
