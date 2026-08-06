@@ -1683,11 +1683,27 @@ impl KnowledgeBase {
     }
 
     /// WI-984 — the [`ScopeId`] of the scope a NAME TERM opens. The bridge for the
-    /// loader, which threads scope terms (a scope is also a domain, a fact
-    /// argument and a `SortAlias` subject — [`Self::name_term_sym`] is the same
-    /// projection the domain positions already use). Panics, loudly, on a term
-    /// that is not a bare identifier: a compound type expression never named a
-    /// scope, and silently keying one is how a scope resolves nothing.
+    /// loader, which threads scope terms because a scope is ALSO a domain, a fact
+    /// subject and a `SortAlias` subject ([`Self::name_term_sym`] is the same
+    /// projection the domain positions already use).
+    ///
+    /// EVERY CALLER IS AT A TWO-ROLE SITE, and that is the criterion — not a caller
+    /// count. WI-983's feedback: "a site can serve two roles at once, so 'how many
+    /// callers remain' is the wrong shape for a criterion; 'no caller is in role X,
+    /// and the rest are all role Y' is the right one". So: no caller passes a value
+    /// whose ONLY role is to be a scope — those take a [`ScopeId`] directly
+    /// (`scan_rule`, `scan_rule_goal`, `scan_operation_params`, `process_imports`,
+    /// `ensure_intermediate_namespaces`, and the whole `register_stdlib_scopes`
+    /// bootstrap, which minted 21 nullary terms whose only consumer was the
+    /// projection back to their own functor). What is left is 29 sites where the
+    /// same value is handed to `is_sort_scope`, `walk_scopes`,
+    /// `register_prelude_constructor`, `enter_sort_with_body` or `assert_fact` as a
+    /// TERM. Deleting this function therefore means converting the scope-finder
+    /// RETURN types and the `ScopePass` spine — WI-1028, not a sweep.
+    ///
+    /// Panics, loudly, on a term that is not a bare identifier: a compound type
+    /// expression never named a scope, and silently keying one is how a scope
+    /// resolves nothing (measured — `load_provides_block` did exactly that).
     pub fn scope_id_of(&self, name_term: TermId) -> ScopeId {
         self.symbols.scope_id(self.name_term_sym(name_term))
     }
