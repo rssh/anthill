@@ -83,6 +83,95 @@ namespace anthill.reflect.typing
     :- ProvidesConditionInfo(sort_ref: ?A, provided: ?S_inst, condition: ?C_inst)
 
   -- ================================================================
+  -- dispatch_carrier: the carrier a provision dispatches AT (058 §3.6)
+  -- ================================================================
+  -- Builtin: given a provision's `sort_ref` and its spec view, yields the
+  -- carrier that provision's dictionary dispatches at, as a type term.
+  --   sort ListOrd provides Ordered[T = List[T = E]]   ->  List[T = E]
+  --   sort Leaf    provides Desc[T = Leaf]             ->  Leaf
+  --   sort Leaf    provides Desc                       ->  Leaf
+  --   fact Desc[T = Leaf, describe = f]                ->  Leaf
+  -- A provision whose carrier IS its provider therefore answers the provider,
+  -- which is what lets `self_provides` below be a comparison rather than a
+  -- second copy of the criterion. One owner in the implementation
+  -- (`witness_dispatch_carrier_view`), shared with dispatch and with the
+  -- coherence grouping, so the relations here and the load checks cannot
+  -- disagree about what a witness is.
+  operation dispatch_carrier(sort_ref: Term, spec: Term) -> Term
+
+  -- ================================================================
+  -- Defaults (proposal 058 §3.6)
+  -- ================================================================
+  -- Whether SILENCE may pick a provider is not a property of the spec —
+  -- Monoid[Int64] has no canonical instance while Monoid[List] has
+  -- concatenation — so it is a per-(spec, carrier) partial function, carried
+  -- by relations rather than by grammar (the proposal-035 variance pattern).
+  --
+  --   a silent dispatch takes the carrier's own provision, or the one a
+  --   DefaultProvider fact names; two such rows for one carrier refuse to
+  --   load; no row means say which.
+  --
+  -- The DECLARED row. Marks an EXISTING provider as the fallback — typically a
+  -- witness for a carrier neither library owns, which is the application's act
+  -- when linking libraries that do not know each other. The CARRIER is not
+  -- stated: it is derived from the provider's own provision, which is why a
+  -- conditional provision (§3.8) yields a default at exactly the applications
+  -- where its chain discharges, with no extra rule.
+  --
+  -- `provider` is a sort reference in a fact argument, the same surface
+  -- `fact Covariant(sort: List, param: T)` rides.
+  entity DefaultProvider(spec: Symbol, provider: Symbol)
+
+  -- provision_carrier(P, S, C): sort P provides spec S at dispatch carrier C.
+  -- The join every rule below reads, so "which carrier" has one spelling.
+  rule provision_carrier(?P, ?S, ?C)
+    :- SortProvidesInfo(sort_ref: ?P_ref, spec: ?S_inst),
+       extract_sort_ref(?P_ref, ?P),
+       extract_sort_ref(?S_inst, ?S),
+       dispatch_carrier(?P_ref, ?S_inst, ?C)
+
+  -- self_provides(C, S): carrier C is its own provider of spec S.
+  -- Written as "the dispatch carrier's base IS the provider" — both sides come
+  -- back from extract_sort_ref, so the comparison is between two normalized
+  -- sort names and never between two spellings of one.
+  --
+  -- Deliberately NOT gated on C owning a member of S: a carrier whose spec ops
+  -- all have default bodies supplies a perfectly good dictionary made of those
+  -- defaults, and a default row that appeared and vanished as members were
+  -- added would not mean "this carrier's own instance".
+  rule self_provides(?C, ?S)
+    :- provision_carrier(?C, ?S, ?C_inst),
+       extract_sort_ref(?C_inst, ?C)
+
+  -- default_provider(S, C, W): silence at spec S on carrier C takes provider W.
+  -- DECLARED union INFERRED; consumers read THIS, never the entity, so the
+  -- inference layer and the declared rows stay one relation.
+  -- The mark's two fields are NORMALIZED through extract_sort_ref before the join:
+  -- a fact argument stores the name the author wrote, and `provision_carrier`
+  -- answers names minted by the same builtin. Joining the two spellings directly
+  -- unified nothing and the declared leg answered ZERO rows — measured, with the
+  -- inferred leg answering normally the whole time.
+  rule default_provider(?S, ?C, ?W)
+    :- DefaultProvider(spec: ?S_ref, provider: ?W_ref),
+       extract_sort_ref(?S_ref, ?S),
+       extract_sort_ref(?W_ref, ?W),
+       provision_carrier(?W, ?S, ?C)
+
+  -- The inference rule: the carrier's own provision is its default. This is
+  -- what lets the shipped library carry defaults with no edits — and what makes
+  -- NO-DISPLACEMENT derived rather than stated, since a rival marked for a
+  -- self-providing carrier then collides with this row under `one_default`.
+  rule default_provider(?S, ?C, ?C)
+    :- self_provides(?C, ?S)
+
+  -- `one_default` — any two answers for one carrier coincide — is a LOAD check
+  -- (`kb/defaults.rs`), not a constraint here, because it compares rows at
+  -- UNIFIABLE carriers: `List[T = E]` beside `List[T = Int64]` is two rows at
+  -- one family and is refused, while two disjoint ground rows are not. That is
+  -- a question about the row SET, and about term overlap, which an equality
+  -- goal over two answers cannot ask.
+
+  -- ================================================================
   -- type_compatible: can type A be used where type B is expected?
   -- ================================================================
 

@@ -1,6 +1,6 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); defaults (§3.6) are proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -66,7 +66,7 @@ An anonymous slot fixes nothing about the type: `List[T = Int64]` is one type no
 
 `f[Spec = W](…)` requires: `W` provides `Spec` at the call's bindings (else loud, naming both); the slot exists on the callee; and the dispatch is not value-directed on a concrete carrier — there the value decides, and an explicit witness is **refused**, not preferred.
 
-### 3.6 Defaults — one relation, one inference rule *(proposed)*
+### 3.6 Defaults — one relation, one inference rule *(the relations and their checks are delivered; §3.2's rung 2a, their only consumer, is not)*
 
 Whether silence may pick is **not a property of the spec** — `Monoid[Int64]` has no canonical instance while `Monoid[List]` has concatenation — so it is a per-`(spec, carrier)` partial function, expressed as reflect-layer facts (the variance pattern, proposal 035; **zero new grammar**):
 
@@ -75,14 +75,15 @@ entity DefaultProvider(spec: Symbol, provider: Symbol)
 
 rule default_provider(?S, ?C, ?W) :- DefaultProvider(spec: ?S, provider: ?W), …
 rule default_provider(?S, ?C, ?C) :- self_provides(?C, ?S)      -- the inference rule
-
-constraint one_default: eq(?W1, ?W2) :-
-  default_provider(?S, ?C, ?W1), default_provider(?S, ?C, ?W2)  -- refused at load
 ```
+
+`one_default` — *any two answers for one carrier name one provider* — is a **load check**, not a constraint written here: it compares rows at carriers that OVERLAP rather than at carriers that are equal, which is a question about the row set and about term overlap that an equality goal over two answers cannot ask.
 
 - **The carrier's own provision is its default**, inferred — the existing standard library needs no edits.
 - A `DefaultProvider` fact marks an *existing* provider (typically a witness for a foreign carrier) as the fallback — the **application's** act when linking libraries that don't know each other; the carrier is derived from the provider's provision.
-- **Conditionality composes for free.** The rule above joins the mark with `provides`, and a conditional provision (§3.8) provides only where its chain discharges — so marking `ListOrd` default for `Ordered` yields a default for `List[T = E]` at exactly those `E` whose `Ordered[E]` resolves. Two default rows whose carriers *unify* (a ground row beside a parametric one) are refused by `one_default`; layering defaults by specificity would be a widening needing its own measurement.
+- **A default row carries the carrier its provision WROTE**, which is all conditionality needs: marking `ListOrd` default for `Ordered` yields a row at `List[T = E]`, and a default only ever chooses among candidates that already resolved — a provision whose chain (§3.8) fails offers no candidate to prefer. The row itself is unconditional; the condition is the provision's, and holds where the provision is used.
+- Two default rows whose carriers **overlap** are refused by `one_default` — a ground row beside a parametric one for one family; two DISJOINT ground rows coexist. Layering defaults by specificity would be a widening needing its own measurement.
+- A `DefaultProvider` is a **fact**. Written as a rule it is refused: a derived mark would answer through `default_provider` while escaping `one_default`.
 - **Sugar *(proposed)*: a provision may mark itself** — `default provides X[…]`, one leading modifier (the `internal` pattern), desugaring to the same `DefaultProvider` row. (A trailing `[default]` annotation was considered and dropped: a bracket list right after a bracketed type invites a parse tie, and the `[simp]` precedent follows a rule body, not a type.) The reference-form fact keeps its own job — marking a provider you *cannot edit*. Discipline: mark inline when you own the carrier or ship its canonical companion; mark by reference as the assembler otherwise; `one_default` arbitrates all rows regardless of origin.
 - **No-displacement is derived, not stated**: for a self-providing carrier the inferred row already exists, so an explicit fact naming a rival violates `one_default`. *Fill silence, never overwrite speech* — no one line can flip what every linked library's bracket-less dispatch means.
 - No row means: say which (§3.2 tier 3). Deferred, same idiom: a `within:` field for sort-scoped defaults; a per-carrier `NoDefault` guard.

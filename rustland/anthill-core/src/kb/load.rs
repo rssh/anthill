@@ -504,6 +504,79 @@ pub enum LoadError {
         param: String,
         values: Vec<String>,
     },
+    /// WI-860 (proposal 058 §3.6) — `one_default`: two `default_provider` answers for one
+    /// carrier name DIFFERENT providers, so *what silence means* would be decided by
+    /// whichever row a reader happened to see first.
+    ///
+    /// Load-blocking, and it has to be: a default is consulted at sites that write
+    /// NOTHING (rung 2a fires exactly where the author said nothing), so there is no use
+    /// site to be loud at — the same argument that keeps [`Self::AmbiguousEqDispatch`] at
+    /// load, one relation over.
+    ///
+    /// It is also where **no-displacement** is enforced, without a rule of its own: a
+    /// self-providing carrier already HAS a row (inferred from its own provision), so an
+    /// explicit `fact DefaultProvider(…)` naming a rival for that carrier collides with
+    /// it here. *Fill silence, never overwrite speech* — no one line can flip what every
+    /// linked library's bracket-less dispatch means. Hence `providers` renders each row
+    /// with its ORIGIN: the inferred row is one the author never wrote, and a message
+    /// that listed it unlabelled would read as `one_default` firing on a single
+    /// declaration.
+    ///
+    /// Carriers are compared for OVERLAP, not equality (`defaults::carrier_views_overlap`),
+    /// so a ground row beside a parametric one for one family (`List[T = Int64]` beside
+    /// `List[T = E]`) is refused while two disjoint ground rows are not. Layering
+    /// defaults by specificity is a widening the ladder has no tier for.
+    AmbiguousDefaultProvider {
+        /// The spec whose default is ambiguous, qualified.
+        spec: String,
+        /// The FIRST row's carrier as written, rendered — `List[T = E]`, not just `List`.
+        /// The key for the two same-carrier arms; the overlapping arm reads both carriers
+        /// out of `providers` instead, since there the two differ and naming one would
+        /// describe the wrong program.
+        carrier: String,
+        /// The two colliding rows, each `'provider' at carrier 'C' (origin)`.
+        providers: Vec<String>,
+        /// WHICH collision — a typed answer, like [`Self::UnselectedInstance`]'s
+        /// [`super::typing::TieRepair`]: the three shapes have three different repairs,
+        /// and one paragraph covering all of them advertised a fix ("keep one row per
+        /// carrier") that is already satisfied in the overlapping case.
+        collision: super::defaults::DefaultCollision,
+    },
+    /// WI-860 (proposal 058 §3.5 check 1, re-read at load) — a
+    /// `fact DefaultProvider(spec: S, provider: W)` whose `W` does not provide `S` at
+    /// all.
+    ///
+    /// The same predicate a `[S = W]` bracket is validated against
+    /// (`check_witness_provides_spec`), because the mark IS that bracket written once
+    /// for every silent site. Refused rather than ignored for a reason beyond
+    /// tidiness: the row's CARRIER is derived from the provider's own provision of the
+    /// spec, so a mark on a non-provider names no carrier — it would produce no row and
+    /// vanish, leaving the author with a default that does nothing and no way to tell.
+    /// WI-860 — a `DefaultProvider` written as a RULE (`rule DefaultProvider(…) :- …`)
+    /// rather than as a fact.
+    ///
+    /// Refused because the two readers of 058 §3.6's defaults would DISAGREE about it:
+    /// the anthill relation resolves through SLD and would answer from the rule, while
+    /// the materialized index and both load checks read `SortProvidesInfo` /
+    /// `DefaultProvider` FACTS — so a derived mark would be a default nothing arbitrates,
+    /// silently exempt from `one_default` and from check 1. MEASURED before the refusal
+    /// existed: such a program loaded clean and the index held no row for it.
+    ///
+    /// A derived mark is also not a form 058 §3.6 has. If it ever becomes one, the fix is
+    /// to derive the index BY RESOLVING the relation, not to widen this reader — which is
+    /// exactly why the divergence is refused rather than papered over.
+    DerivedDefaultProvider {
+        /// The rule head as written, rendered.
+        head: String,
+    },
+    DefaultProviderDoesNotProvide {
+        spec: String,
+        provider: String,
+        /// The sorts that DO provide the spec, qualified — the candidate list the author
+        /// meant to pick from. Empty when nothing provides it at all, which is a
+        /// different mistake and reads as one.
+        provides: Vec<String>,
+    },
     /// WI-347: an operation override violates behavioral subtyping — a
     /// carrier's own operation that implements/overrides a spec operation does
     /// not *refine* it. `reason` names the specific violation: an effect not
@@ -1388,6 +1461,18 @@ impl LoadError {
                 format!("conflicting provisions: '{}' declares '{}' more than once, binding '{}' to {} different types ({}) — every reader of a carrier's provider view takes the first matching provision, so which one applies would be decided by the order the provisions are written; keep one `{}[…]` per carrier, or bind the differing parameter on distinct carriers",
                     carrier, spec, param, values.len(), values.join(", "), spec)
             }
+            // WI-860 — both faces read ONE owner in `defaults`, and neither variant is
+            // span-bearing, so the two are byte-identical by construction (pinned by
+            // `the_two_faces_of_each_refusal_are_one_message`).
+            LoadError::AmbiguousDefaultProvider { spec, carrier, providers, collision } => {
+                super::defaults::ambiguous_default_message(spec, carrier, providers, *collision)
+            }
+            LoadError::DerivedDefaultProvider { head } => {
+                super::defaults::derived_default_provider_message(head)
+            }
+            LoadError::DefaultProviderDoesNotProvide { spec, provider, provides } => {
+                super::defaults::default_provider_not_a_provider_message(spec, provider, provides)
+            }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
@@ -1802,6 +1887,17 @@ impl std::fmt::Display for LoadError {
             LoadError::ConflictingProvisionBindings { carrier, spec, param, values } => {
                 write!(f, "conflicting provisions: '{}' declares '{}' twice, binding '{}' to {} ({}) — the first provision written would silently win (keep one)",
                     carrier, spec, param, values.len(), values.join(", "))
+            }
+            LoadError::AmbiguousDefaultProvider { spec, carrier, providers, collision } => {
+                write!(f, "{}",
+                    super::defaults::ambiguous_default_message(spec, carrier, providers, *collision))
+            }
+            LoadError::DerivedDefaultProvider { head } => {
+                write!(f, "{}", super::defaults::derived_default_provider_message(head))
+            }
+            LoadError::DefaultProviderDoesNotProvide { spec, provider, provides } => {
+                write!(f, "{}",
+                    super::defaults::default_provider_not_a_provider_message(spec, provider, provides))
             }
             LoadError::IncompatibleOverride { carrier, spec, op, reason } => {
                 write!(f, "'{}' overrides '{}.{}' but does not refine it: {}", carrier, spec, op, reason)
@@ -5198,6 +5294,14 @@ fn load_phase_inner(
     // nothing for a carrier that declares neither. Load-blocking.
     all_errors.extend(super::typing::check_eq_noneq_exclusive(kb));
     mark!("check_eq_noneq_exclusive");
+    // WI-860 (058 §3.6): the DEFAULTS substrate — materialize `default_provider` into
+    // an index and run its two load checks (`one_default`; a mark on a non-provider).
+    // AFTER `eq_derive::run`, which is the last pass to assert `SortProvidesInfo`: both
+    // legs of the relation read the provision relation, so a derived provision must be
+    // in it before the rows are derived. Load-blocking — a default is consulted where
+    // the author wrote nothing, so there is no later site to be loud at.
+    all_errors.extend(super::defaults::build_default_provider_index(kb));
+    mark!("build_default_provider_index");
     // WI-644: use-site `requires Eq` — an entity field type `Map[K = Float]` (a
     // parametric sort `requires Eq[K]` bound to a `NonEq` carrier) is a load error,
     // not a silent wrong answer. After eq_derive so a Float-composite's derived

@@ -885,6 +885,9 @@ mod wi858_pair_orderings_test;
 #[path = "include/wi859_self_provider_candidate_test.rs"]
 mod wi859_self_provider_candidate_test;
 
+#[path = "include/wi860_default_provider_relations_test.rs"]
+mod wi860_default_provider_relations_test;
+
 #[path = "include/wi869_per_provision_conditions_test.rs"]
 mod wi869_per_provision_conditions_test;
 

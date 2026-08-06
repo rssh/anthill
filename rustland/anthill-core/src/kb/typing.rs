@@ -3449,7 +3449,12 @@ fn walk_pattern_field_type_deep(
 ///
 /// WI-702: shared with [`crate::kb::KnowledgeBase::effect_row_blocking_equations`]
 /// so the defining-equation request sites render a declined op's row identically.
-pub(crate) fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
+/// WI-860 made this `pub` (its `TermId` twin [`type_display_name`] already was): the
+/// answers of a reflect relation read through SLD arrive on BOTH carriers — a name
+/// normalized by `extract_sort_ref` as a `Value::Term`, a field read straight off a
+/// matched fact as a `Value::Node` — so anything comparing a relation's answers to a
+/// rendering needs the carrier-neutral face.
+pub fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
     match v {
         Value::Term { id: t, .. } => type_display_name(kb, *t),
         // WI-342 E2: render a `Value::Node` label to the SAME string
@@ -3594,6 +3599,30 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
             ..
         } if pos_args.is_empty() && named_args.is_empty() => {
             format!("{}.{}", type_display_name_occ(kb, receiver), kb.local_name_of(*name))
+        }
+        // WI-860 — a TYPE APPLICATION carried as an occurrence: `Box[T = E]` read off a
+        // matched `SortProvidesInfo` fact's carrier binding arrives as an `Expr::Apply`,
+        // not as a `TypeNode::Parameterized`. Rendered exactly as `type_display_name`'s
+        // generic `Fn{S, named}` arm renders the same type as a TERM — the two carriers
+        // of one type must name it identically, which is the standing rule for this pair
+        // of functions (WI-342 E2) and the sibling of the `Ref`/`Ident` arm above.
+        // Positional args stay on the `?` fallthrough: a type application has none, so an
+        // occurrence that carries them is some other expression.
+        NodeKind::Expr { expr: Expr::Apply { functor, pos_args, named_args, .. }, .. }
+            if pos_args.is_empty() =>
+        {
+            let base = kb.local_name_of(*functor).to_string();
+            if named_args.is_empty() {
+                base
+            } else {
+                let params: Vec<String> = named_args
+                    .iter()
+                    .map(|(p, c)| {
+                        format!("{} = {}", kb.local_name_of(*p), type_display_name_occ(kb, c))
+                    })
+                    .collect();
+                format!("{}[{}]", base, params.join(", "))
+            }
         }
         _ => "?".to_string(),
     }
@@ -17730,7 +17759,7 @@ fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) -> bool {
 /// deduped, the spec sort itself excluded). Used to resolve a nullary
 /// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
 /// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
-fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
+pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     // WI-660: the spec-base bucket (built index) or the full scan (pre-build); the
@@ -20454,10 +20483,196 @@ fn witness_dispatch_carrier(
     provider: Symbol,
     spec_view: TermId,
 ) -> Option<Symbol> {
-    let carrier_canon =
-        kb.canonical_sort_sym(provision_carrier_sort(kb, spec, &Value::term(spec_view))?);
+    witness_dispatch_carrier_view(kb, spec, provider, spec_view).map(|(_, base)| base)
+}
+
+/// WI-860 — [`witness_dispatch_carrier`] with the carrier's WRITTEN VIEW kept beside
+/// its base: `sort ListOrd provides Ordered[T = List[T = E]]` answers
+/// `(List[T = E], List)` where the symbol-only reader answers `List`.
+///
+/// The base alone is the right key for every DISPATCH reader — a dispatch is decided by
+/// the value's sort — but it is NOT enough to decide whether two 058 §3.6 default rows
+/// collide: `List[T = E]` beside `List[T = Int64]` is one family and two rows, while
+/// `List[T = Int64]` beside `List[T = String]` is one family and two DISJOINT rows.
+/// Both pairs share a base, so a base-keyed check would refuse the second with the
+/// first. Hence one function answering both, rather than a second walk in
+/// `defaults.rs` that would have to re-derive the criterion — the WI-838 shape.
+///
+/// `None` still means exactly what it means at the symbol reader: the provision's
+/// dispatch carrier IS the provider (a self-provision, an instance fact, or a
+/// bare / own-param-bound provision that names no other sort).
+///
+/// The TERM entry point. A spec view that is itself a `TermId` has `TermId` children, so
+/// the carrier view comes back term-carried by construction; a non-term answer would mean
+/// the decode invented a carrier out of a view that has none, which is a bug rather than
+/// a case, and it says so.
+pub(crate) fn witness_dispatch_carrier_view(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    provider: Symbol,
+    spec_view: TermId,
+) -> Option<(TermId, Symbol)> {
+    let (view, base) = witness_dispatch_carrier_value(kb, spec, provider, &Value::term(spec_view))?;
+    match view {
+        Value::Term { id, .. } => Some((id, base)),
+        other => panic!(
+            "witness_dispatch_carrier_view: a term-carried spec view yielded a \
+             non-term carrier {other:?}"
+        ),
+    }
+}
+
+/// WI-860 — the base SORT of a spec view, carrier-neutrally: `super::load::
+/// provides_spec_base_sym`'s answer for a `TermId`, and the same answer for the
+/// OCCURRENCE carrier the resolver hands a matched `SortProvidesInfo.spec` back on.
+///
+/// A `pub(crate)` door onto [`unwrap_spec_view_value`] rather than a fifth decode of the
+/// `SortView(base, …bindings)` shape — the builtin behind
+/// `anthill.reflect.typing.dispatch_carrier` needs the spec sort to ask the classifier
+/// anything, and deriving it any other way would be a second reading of what a spec view
+/// is. (Only the BASE is taken here, which is the half `unwrap_spec_view_value` reads
+/// identically on both carriers; the BINDINGS are not — see
+/// [`provision_carrier_binding`].)
+pub(crate) fn spec_view_base(kb: &KnowledgeBase, spec_view: &Value) -> Option<Symbol> {
+    unwrap_spec_view_value(kb, spec_view).map(|(base, _)| base)
+}
+
+/// WI-860 — THE OWNER of the witness criterion, over any carrier.
+///
+/// [`witness_dispatch_carrier`] and [`witness_dispatch_carrier_view`] are its two
+/// term-side entry points; the `dispatch_carrier` builtin is the third caller and the
+/// reason this flavour exists at all. A `SortProvidesInfo` fact's `spec` field reads as a
+/// `TermId` through `fact_head_named_args` (the LOAD path) and as a `Value::Node`
+/// OCCURRENCE when the resolver matches the same fact against a goal (the SLD path), so a
+/// classifier reachable only from a `TermId` is reachable only from half its callers.
+/// MEASURED: a first cut gated on `Value::Term` answered zero rows over 93 provisions,
+/// and a second one that routed the SLD path through a decoder which DROPS non-term
+/// bindings answered "self-provider" for every witness in the tree — both loading clean.
+/// The agreement test in `wi860_default_provider_relations_test` is what showed each.
+pub(crate) fn witness_dispatch_carrier_value(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    provider: Symbol,
+    spec_view: &Value,
+) -> Option<(Value, Symbol)> {
+    let (view, base) = provision_carrier_binding(kb, spec, spec_view)?;
+    let carrier_canon = kb.canonical_sort_sym(base);
     // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
-    (kb.canonical_sort_sym(provider) != carrier_canon).then_some(carrier_canon)
+    (kb.canonical_sort_sym(provider) != carrier_canon).then_some((view, carrier_canon))
+}
+
+/// WI-860 — one `anthill.reflect.SortProvidesInfo` fact as 058 §3.6's defaults substrate
+/// reads it. NAMED rather than a triple, because [`Provision`]'s own `carrier` field
+/// holds the `sort_ref` — i.e. the PROVIDER — and handing that misnomer out, or handing
+/// out an unlabelled `(Symbol, Symbol, TermId)`, would leave the pairing to a doc comment
+/// (WI-869's lesson: type the pairing).
+pub(crate) struct ProvisionRow {
+    /// The `sort_ref`: the providing sort for a `provides` clause, the DERIVED carrier
+    /// for a namespace-level instance fact.
+    pub provider: Symbol,
+    /// The spec's base sort.
+    pub spec: Symbol,
+    /// The full `SortView` term the provision carries.
+    pub spec_view: TermId,
+}
+
+/// WI-860 (058 §3.6) — do two carrier views describe any carrier IN COMMON? The
+/// `one_default` check's criterion: `List[T = E]` and `List[T = Int64]` overlap and are
+/// two defaults for one family, while `List[T = Int64]` and `List[T = String]` are
+/// disjoint and coexist.
+///
+/// NOT [`unify_types`], and not because of the carrier: a type PARAMETER is not a logic
+/// var in this substrate — `List[T = E]` stores `E` as a `Ref` to the param symbol — so
+/// the unifier reads `E` and `Int64` as different, which is the opposite of what a
+/// default row means by it. [`is_type_param_value`] is the established "abstract here"
+/// reading (the dispatch matcher's candidate leniency), applied at every level.
+///
+/// ENROLLED IN THE BINDING-KEY RULE (WI-726/764/768/769/825/826): the per-param lookup is
+/// [`binding_for_param`] under [`BindingKeyMatch::for_bases`], not a hand-rolled
+/// short-name `find`. Lives HERE rather than in `kb::defaults` for that reason — the rule
+/// and its base gate are this module's, and the enrollment list in `binding_for_param`'s
+/// doc is only honest if a new walk joins it instead of spelling a seventh copy. A
+/// label-only spelling would also miss the WI-726 pair (canonical `Relation.T` vs a
+/// written bare `T`), so two colliding defaults keyed by different producers would
+/// silently coexist.
+///
+/// The two shapes a carrier view takes are MEASURED, not assumed: over the stdlib, the
+/// Rust bindings and WI-860's fixtures every carrier is either a bare name (`Ref(S)` or
+/// the nullary `Fn{S}` a minted name term is — both occur, which is why the base is
+/// compared rather than the term id) or an application `Fn{S, named}` with no positional
+/// args. No carrier arrives `SortView`-wrapped, so no wrapper is peeled here.
+///
+/// An omitted binding means ANY (058 §3.4's omission-means-any, the reading
+/// `check_sort_type_args` enforces), so a view binding fewer parameters is the more
+/// general one and overlaps the other.
+///
+/// Structural, and deliberately WITHOUT a shared binding environment: `List[T = Pair[A =
+/// E, B = E]]` and `List[T = Pair[A = Int64, B = String]]` read as overlapping where a
+/// real unifier refuses them (one `E`, two values). That errs toward REFUSING a pair of
+/// default marks, so the cost is deleting one mark on a carrier that repeats a parameter
+/// — never a silent wrong answer. Stated rather than discovered.
+pub(crate) fn carrier_views_overlap(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+    if a == b {
+        // Hash-consed: identical structure is one id.
+        return true;
+    }
+    if is_type_param_value(kb, a) || is_type_param_value(kb, b) {
+        return true;
+    }
+    let (Some((base_a, args_a)), Some((base_b, args_b))) =
+        (carrier_view_parts(kb, a), carrier_view_parts(kb, b))
+    else {
+        return false;
+    };
+    // `for_bases` IS the base gate: `Label` exactly when the two bases are one canonical
+    // sort, which is also the mode the per-param lookup must run in (two views of one
+    // family may key one slot with the canonical param symbol and a bare last segment).
+    let key_match = BindingKeyMatch::for_bases(kb, base_a, base_b);
+    if !matches!(key_match, BindingKeyMatch::Label) {
+        return false;
+    }
+    args_a.iter().all(|(param, va)| {
+        match binding_for_param(kb, &args_b, *param, key_match) {
+            Some(vb) => carrier_views_overlap(kb, *va, *vb),
+            None => true,
+        }
+    })
+}
+
+/// A carrier view as `(base sort, named bindings)` — [`parameterized_parts`] widened by
+/// the BARE case, which that function answers `None` for (it requires named args, and a
+/// bare carrier has none). Positional args are dropped rather than compared because a
+/// carrier view has none; measured over the whole corpus at WI-860.
+fn carrier_view_parts(
+    kb: &KnowledgeBase,
+    t: TermId,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    if let Some((base, _, named)) = parameterized_parts(kb, t) {
+        return Some((base, named));
+    }
+    match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new())),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            Some((*functor, SmallVec::new()))
+        }
+        _ => None,
+    }
+}
+
+/// WI-860 — every provision, as [`ProvisionRow`]s.
+///
+/// A thin wrapper over [`collect_provisions`] so the defaults pass walks the provision
+/// relation through THIS module's decoder rather than spelling a fourth one.
+pub(crate) fn all_provisions(kb: &KnowledgeBase) -> Vec<ProvisionRow> {
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    collect_provisions(kb, provides_sym)
+        .into_iter()
+        .map(|p| ProvisionRow { provider: p.carrier, spec: p.spec, spec_view: p.spec_view })
+        .collect()
 }
 
 /// WI-450 — the concrete SORT the spec's carrier param (its first type parameter)
@@ -20492,17 +20707,57 @@ fn provision_carrier_sort(
     spec_sort: Symbol,
     spec_view: &Value,
 ) -> Option<Symbol> {
+    provision_carrier_binding(kb, spec_sort, spec_view).map(|(_, base)| base)
+}
+
+/// [`provision_carrier_sort`] before it throws the WRITTEN term away: the value bound to
+/// the spec's carrier param AND the sort-like base that value names, as one answer.
+///
+/// One function so the filter — the base must be a SORT or a free-standing entity — is
+/// applied to the view and to the symbol together. A caller that took the raw binding on
+/// its own would accept `Spec[T = OwnParam]`, whose binding names a TYPE PARAM and whose
+/// dispatch carrier is therefore the provider, not the param (WI-859 folds exactly that
+/// shape into the self-provider kind).
+///
+/// WI-860 — the BINDING is read over `TermView` rather than through
+/// [`unwrap_spec_view_value`], which drops any binding it cannot read as a `TermId`:
+/// right for its own callers, and wrong here for the reason
+/// [`witness_dispatch_carrier_value`] records. Only the binding — the view's SortView
+/// discriminant and the bound value's base still go through the shared owners
+/// ([`view_is_sort_view`], [`spec_view_base`]), which read the same on both carriers.
+fn provision_carrier_binding(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_view: &Value,
+) -> Option<(Value, Symbol)> {
     let params = sort_type_params_as_pairs(kb, spec_sort);
     let carrier_param = params.first()?.0;
     let carrier_short = short_name_of(kb.local_name_of(carrier_param));
-    let (_, bindings) = unwrap_spec_view_value(kb, spec_view)?;
-    let val = bindings
-        .iter()
-        .find_map(|(k, v)| (short_name_of(kb.local_name_of(*k)) == carrier_short).then_some(*v))?;
-    super::load::provides_spec_base_sym(kb, val).filter(|&s| {
-        matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
-            || kb.is_free_standing_entity(s)
-    })
+    // Bindings live on the `SortView(base, …named)` wrapper alone, asked through the one
+    // owner of that discriminant: a bare spec reference (`provides Store`) carries named
+    // args nowhere, and reading them off some other functor would invent a carrier.
+    if !view_is_sort_view(kb, spec_view) {
+        return None;
+    }
+    // The param's OWN symbol first, short name only as the fallback — `goal_binding_value`'s
+    // two-rung ladder, and here it is also what keeps the common case allocation-free:
+    // `named_keys` collects a `Vec`, `named_arg` does not.
+    let val = match spec_view.named_arg(kb, carrier_param) {
+        Some(item) => item.to_value(),
+        None => {
+            let key = spec_view
+                .named_keys(kb)
+                .into_iter()
+                .find(|k| short_name_of(kb.local_name_of(*k)) == carrier_short)?;
+            spec_view.named_arg(kb, key)?.to_value()
+        }
+    };
+    spec_view_base(kb, &val)
+        .filter(|&s| {
+            matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
+                || kb.is_free_standing_entity(s)
+        })
+        .map(|s| (val, s))
 }
 
 /// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a
@@ -23581,7 +23836,7 @@ fn dispatch_values_match(
 /// True iff `value` references an abstract type-parameter — directly as a
 /// `Term::Var`, or as a `Term::Ref` / `Term::Ident` to a sort-level type-param
 /// symbol (the loader signal for `sort T = ?`).
-fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
+pub(crate) fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
     match kb.get_term(value) {
         Term::Var(_) => true,
         Term::Ref(sym) | Term::Ident(sym) => is_sort_param_symbol(kb, *sym),
@@ -28936,6 +29191,12 @@ impl BindingKeyMatch {
 ///   establishes `Label`, so enrolling it is `binding_for_param(kb, &b.bindings, *k,
 ///   BindingKeyMatch::Label)` — left alone here only because changing its tie-breaking is a
 ///   behavior change outside WI-768's demonstrated defect.
+///
+/// WI-860 enrolled the DEFAULT-ROW carrier overlap ([`carrier_views_overlap`], 058
+/// §3.6's `one_default`): a same-family per-parameter walk of exactly the
+/// `sigma_pair_precise` shape, so `Label` is again `for_bases`' verdict under the base
+/// gate it already applies and enrolling only adds the identity-first pass. It lives in
+/// this module rather than in `kb::defaults` so it could.
 ///
 /// Related, kept in situ: `matches_variance_fact` bridges a variance fact's bare-written
 /// `param` against either key spelling via sort-gated [`same_label`] (WI-764-annotated).

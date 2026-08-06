@@ -17,6 +17,7 @@ pub mod typing;
 pub(crate) mod region;
 pub(crate) mod flow_derive;
 pub(crate) mod eq_derive;
+pub mod defaults;
 pub mod op_info;
 pub mod op_requirements;
 pub mod req_insertion;
@@ -1182,6 +1183,13 @@ pub struct KnowledgeBase {
     // index alongside it, unlike `host_op_mappings`: a const is a value source read
     // by `force_const`, not a dispatch target the typer routes on.
     host_const_mappings: Vec<load::HostConstMapping>,
+    // WI-860 (058 §3.6) — the materialized `default_provider` relation. Written by
+    // `defaults::build_default_provider_index` once every `SortProvidesInfo` fact is
+    // asserted. `None` on a KB that never ran that pass, which is NOT the same as an
+    // empty index and is why this is an `Option`: a bare hand-built KB must not read as
+    // "measured, and no carrier has a default". Nothing consumes it yet — 058 rung 2a
+    // is WI-861.
+    default_providers: Option<defaults::DefaultProviderIndex>,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -1306,6 +1314,7 @@ impl KnowledgeBase {
             interpreter_mapped_ops: std::collections::HashSet::new(),
             host_op_mappings: Vec::new(),
             host_const_mappings: Vec::new(),
+            default_providers: None,
         }
     }
 
@@ -3982,6 +3991,20 @@ impl KnowledgeBase {
     /// carrier has no own `eq` (structural equality is its instance).
     pub(crate) fn eq_dispatch_target(&self, functor: Symbol) -> Option<Symbol> {
         self.sort_ops.eq_dispatch.get(&functor).copied()
+    }
+
+    /// WI-860 — install the materialized `default_provider` relation (058 §3.6).
+    /// Called only by `defaults::build_default_provider_index`.
+    pub(crate) fn set_default_provider_index(&mut self, index: defaults::DefaultProviderIndex) {
+        self.default_providers = Some(index);
+    }
+
+    /// WI-860 — the materialized `default_provider` relation, or `None` on a KB whose
+    /// load never built it. Callers must NOT read `None` as "no defaults": the two are
+    /// different answers, and 058 rung 2a (WI-861) must fall through to tier 3 on the
+    /// first while taking the silent answer on an empty second.
+    pub fn default_provider_index(&self) -> Option<&defaults::DefaultProviderIndex> {
+        self.default_providers.as_ref()
     }
 
     /// WI-616 — whether ANY carrier in the KB overrides `eq` (the dispatch
@@ -6816,6 +6839,9 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.reflect.not", BuiltinTag::Not);
         self.register_builtin_tag("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
         self.register_builtin_tag("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
+        // WI-860 (058 §3.6) — the provision classifier behind `self_provides` /
+        // `default_provider`.
+        self.register_builtin_tag("anthill.reflect.typing.dispatch_carrier", BuiltinTag::DispatchCarrier);
         self.register_builtin_tag("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
         self.register_builtin_tag("anthill.reflect.scope", BuiltinTag::Scope);
         self.register_builtin_tag("anthill.reflect.kind", BuiltinTag::Kind);
