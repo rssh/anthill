@@ -549,20 +549,9 @@ fn build_cons_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
         Some(s) => s,
         None => resolve_or_intern(kb, "cons"),
     };
-    let head_sym = kb.intern("head");
-    let tail_sym = kb.intern("tail");
-    let mut list = kb.alloc(Term::Fn {
-        functor: nil_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    for &item in items.iter().rev() {
-        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named.push((head_sym, item));
-        named.push((tail_sym, list));
-        list = kb.make_entity_term(cons_sym, SmallVec::new(), named);
-    }
-    list
+    // The SYMBOL POLICY is all this function is; the spine is shared with
+    // `KnowledgeBase::build_list`, whose only difference is that it resolves-or-panics.
+    kb.build_list_with(nil_sym, cons_sym, items)
 }
 
 /// Convert a string value, handling `?name` variables, `\?` escapes, and (WI-501)

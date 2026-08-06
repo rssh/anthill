@@ -4116,7 +4116,16 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     // `named_arity` `type_node_head` reports. A full load interns these via the
     // reflect entity defs; this makes lighter `register_prelude` setups agree.
     // WI-791 added `Arrow.arity`; it is read through the same walk, so it interns here too.
-    for &k in &["value", "param", "result", "effects", "arity", "effects_expr", "fields"] {
+    // WI-1013 adds `name` / `head` / `tail` for the same reason: an `Expr::Apply`'s
+    // CALL-SITE TYPE-ARGUMENT bracket rides as a named child holding a `List[type_arg]`,
+    // whose cells key on `name`/`value`/`head`/`tail`, and the view resolves every one
+    // of them eagerly. (The SLOT's own key is not here — it is the RESOLVED
+    // `anthill.reflect.type_arg` symbol, defined below, precisely so it is not a name
+    // anyone can intern.)
+    for &k in &[
+        "value", "param", "result", "effects", "arity", "effects_expr", "fields",
+        "name", "head", "tail",
+    ] {
         kb.intern(k);
     }
     // WI-320 (proposal 045 §2.0.1) — emit the EffectsRuntime ↔ effects_rows
@@ -4635,6 +4644,14 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // anthill.reflect standalone entities for expressions
     kb.symbols.define("MatchBranch", "anthill.reflect.MatchBranch", SymbolKind::Entity, reflect_term.raw());
     kb.symbols.define("ApplyArg", "anthill.reflect.ApplyArg", SymbolKind::Entity, reflect_term.raw());
+    // WI-1013: `type_arg(name, value)` — the cell of a call's CALL-SITE TYPE-ARGUMENT
+    // list, which `TermView` now presents as an `Expr::Apply`'s `type_args` child and
+    // `try_occurrence_to_term` builds as its term twin. Pre-registered beside
+    // `ApplyArg` for the same reason: the typer's `synthesize_field_access` mints a
+    // `field_access[Name = …]` Apply while typing ARBITRARY source, including a
+    // bootstrap/test KB that never loads reflect.anthill, and the view resolves this
+    // constructor eagerly (it PANICS rather than degrading — WI-1014 Part C).
+    kb.symbols.define("type_arg", "anthill.reflect.type_arg", SymbolKind::Entity, reflect_term.raw());
     // WI-445: a `case Foo(field: pat)` named sub-pattern rides a NamedPattern
     // (the same reflect entity `named_tuple_pattern` uses); register it
     // programmatically so `ExprBuilderSyms` can resolve it during load.
@@ -6085,9 +6102,13 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let nil_sym = match kb.try_resolve_symbol("anthill.prelude.List.nil") {
         Some(s) => s, None => return,
     };
-    let cons_sym = match kb.try_resolve_symbol("anthill.prelude.List.cons") {
-        Some(s) => s, None => return,
-    };
+    // The `cons` guard STAYS even though nothing below binds the symbol: the list is
+    // built by `KnowledgeBase::build_list`, which resolves `cons` itself and PANICS on
+    // a miss. Dropping this check would turn "this KB has no prelude List, emit no
+    // witness" from a graceful skip into a panic.
+    if kb.try_resolve_symbol("anthill.prelude.List.cons").is_none() {
+        return;
+    }
 
     let rule_arg = kb.intern("rule");
     let strategy_arg = kb.intern("strategy");
@@ -6098,8 +6119,6 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let witness_arg = kb.intern("witness");
     let state_hash_arg = kb.intern("state_hash");
     let parametric_context_arg = kb.intern("parametric_context");
-    let head_arg = kb.intern("head");
-    let tail_arg = kb.intern("tail");
     let parametric_arg = kb.intern("parametric");
     let substitution_arg = kb.intern("substitution");
     let instances_arg = kb.intern("instances");
@@ -6173,8 +6192,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
                     ]),
                 })
             }).collect();
-            let substitution_list = build_cons_list(
-                kb, &binding_terms, nil_sym, cons_sym, head_arg, tail_arg);
+            let substitution_list = kb.build_list(&binding_terms);
             let instances_list = kb.alloc(Term::Fn {
                 functor: nil_sym,
                 pos_args: SmallVec::new(),
@@ -7050,33 +7068,6 @@ fn sort_view_substitution(
     sub
 }
 
-/// Build a cons/nil list using explicit functor symbols. Mirrors
-/// `build_list` but accepts pre-resolved nil/cons/head/tail symbols
-/// — useful when the caller already resolved them once and wants
-/// to avoid re-lookups in inner loops.
-pub(crate) fn build_cons_list(
-    kb: &mut KnowledgeBase,
-    items: &[TermId],
-    nil_sym: Symbol,
-    cons_sym: Symbol,
-    head_arg: Symbol,
-    tail_arg: Symbol,
-) -> TermId {
-    let mut list = kb.alloc(Term::Fn {
-        functor: nil_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    for &item in items.iter().rev() {
-        list = kb.alloc(Term::Fn {
-            functor: cons_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(head_arg, item), (tail_arg, list)]),
-        });
-    }
-    list
-}
-
 /// True iff a SortInfo fact's `kind` field is `"enum"` — the v0
 /// detection criterion for "needs an induction principle". The
 /// loader emits `kind` as `Term::Ident(intern("enum"))` (see
@@ -7439,33 +7430,8 @@ fn is_callback_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
     )
 }
 
-/// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.
-/// Uses the `anthill.prelude.List` constructors so list operations work.
-fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
-    let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
-    let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
-    let head_sym = kb.intern("head");
-    let tail_sym = kb.intern("tail");
-
-    let mut list = kb.alloc(Term::Fn {
-        functor: nil_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-
-    for &item in items.iter().rev() {
-        list = kb.alloc(Term::Fn {
-            functor: cons_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(head_sym, item), (tail_sym, list)]),
-        });
-    }
-
-    list
-}
-
 /// WI-348 — build a carrier-agnostic cons/nil list of `Value`s, the value-fact
-/// twin of [`build_list`]. Used for an `OperationInfo` effects list that carries
+/// twin of [`KnowledgeBase::build_list`]. Used for an `OperationInfo` effects list that carries
 /// a `Value::Node` label (`Modify[c]`), which cannot live in a `TermId` list.
 /// `cons`/`nil` cells are `Value::Entity`s over the same prelude constructors,
 /// so the result decomposes into the same `DiscrimKey`s as a term list.
@@ -7512,7 +7478,7 @@ fn value_or_ground_list(
                 _ => unreachable!("all_ground"),
             })
             .collect();
-        Value::term(build_list(kb, &terms))
+        Value::term(kb.build_list(&terms))
     } else {
         build_value_list(kb, items)
     };
@@ -9511,7 +9477,7 @@ impl<'a> Loader<'a> {
                         let some_name = build_some(self.kb, arg_name);
                         arg_terms.push(self.mk_apply_arg(some_name, value));
                     }
-                    let args_list = build_list(self.kb, &arg_terms);
+                    let args_list = self.kb.build_list(&arg_terms);
                     let (dot, k_receiver, k_name, k_args) = {
                         let s = &self.expr_syms;
                         (s.dot_apply, s.k_receiver, s.k_name, s.k_args)
@@ -9548,7 +9514,7 @@ impl<'a> Loader<'a> {
                         // `Term` field — its omitted optionals stay vars, not `none()`.
                         .map(|&id| self.convert_arg_value(id, elem_expected))
                         .collect();
-                    let kb_id = build_list(self.kb, &items);
+                    let kb_id = self.kb.build_list(&items);
                     self.term_map.insert(parse_id.raw(), kb_id);
                     if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
                         let desc_texts = desc_texts.clone();
@@ -10939,7 +10905,7 @@ impl<'a> Loader<'a> {
             LoadBuildFrame::MatchExpr { outer_parse_id, branch_count } => {
                 let drain_start = results.len() - (branch_count + 1);
                 let scrutinee = results[drain_start];
-                let branches = build_list(self.kb, &results[drain_start + 1..]);
+                let branches = self.kb.build_list(&results[drain_start + 1..]);
                 results.truncate(drain_start);
                 let s = &self.expr_syms;
                 let kb_id = self.kb.alloc(Term::Fn {
@@ -11158,7 +11124,7 @@ impl<'a> Loader<'a> {
                 }
                 let using_terms: Vec<TermId> =
                     using.iter().map(|s| self.kb.alloc(Term::Ident(*s))).collect();
-                let using_list = build_list(self.kb, &using_terms);
+                let using_list = self.kb.build_list(&using_terms);
                 named.push((self.expr_syms.k_using, using_list));
                 named.push((k_body, body));
                 if let Some(c) = conclude {
@@ -11191,7 +11157,7 @@ impl<'a> Loader<'a> {
                 let named_count = named_fields.len();
                 let drain_start = results.len() - sub_pattern_count - named_count;
                 let pos_end = drain_start + sub_pattern_count;
-                let args_list = build_list(self.kb, &results[drain_start..pos_end]);
+                let args_list = self.kb.build_list(&results[drain_start..pos_end]);
                 // WI-445: each named sub-pattern becomes a reflect
                 // `NamedPattern(name: Ref(field), pattern: sub)`, collected under
                 // the `named` key — mirroring `named_tuple_pattern`'s
@@ -11211,7 +11177,7 @@ impl<'a> Loader<'a> {
                 let mut np: SmallVec<[(Symbol, TermId); 2]> =
                     SmallVec::from_slice(&[(s.k_name, name_ref), (s.k_args, args_list)]);
                 if named_count > 0 {
-                    let named_list = build_list(self.kb, &named_subs);
+                    let named_list = self.kb.build_list(&named_subs);
                     let k_named = self.expr_syms.k_named;
                     np.push((k_named, named_list));
                 }
@@ -11229,7 +11195,7 @@ impl<'a> Loader<'a> {
             }
             LoadBuildFrame::PatternTuple { outer_parse_id, element_count } => {
                 let drain_start = results.len() - element_count;
-                let elements_list = build_list(self.kb, &results[drain_start..]);
+                let elements_list = self.kb.build_list(&results[drain_start..]);
                 results.truncate(drain_start);
                 let s = &self.expr_syms;
                 let kb_id = self.kb.alloc(Term::Fn {
@@ -11299,7 +11265,7 @@ impl<'a> Loader<'a> {
                     arg_terms.push(self.mk_apply_arg(some_name, value));
                 }
                 results.truncate(drain_start);
-                let args_list = build_list(self.kb, &arg_terms);
+                let args_list = self.kb.build_list(&arg_terms);
                 let name_ref = self.kb.alloc(Term::Ref(kb_functor));
 
                 // WI-342: the occurrence type-args (carrier-agnostic `Value`s) are
@@ -11400,7 +11366,7 @@ impl<'a> Loader<'a> {
                     arg_terms.push(self.mk_apply_arg(some_name, value));
                 }
                 results.truncate(drain_start);
-                let args_list = build_list(self.kb, &arg_terms);
+                let args_list = self.kb.build_list(&arg_terms);
                 let s = &self.expr_syms;
                 let kb_id = self.kb.alloc(Term::Fn {
                     functor: s.dot_apply,
@@ -11562,7 +11528,7 @@ impl<'a> Loader<'a> {
         if term_entries.is_empty() {
             None
         } else {
-            Some(build_list(self.kb, &term_entries))
+            Some(self.kb.build_list(&term_entries))
         }
     }
 
@@ -14355,10 +14321,10 @@ impl<'a> Loader<'a> {
             self.kb.alloc(Term::Var(Var::Global(vid)))
         };
 
-        let ctors_list = build_list(self.kb, ctor_refs);
-        let ops_list = build_list(self.kb, op_refs);
-        let params_list = build_list(self.kb, param_refs);
-        let requires_list = build_list(self.kb, req_terms);
+        let ctors_list = self.kb.build_list(ctor_refs);
+        let ops_list = self.kb.build_list(op_refs);
+        let params_list = self.kb.build_list(param_refs);
+        let requires_list = self.kb.build_list(req_terms);
 
         // Sort by declared field-list order so rule-body partial-named-arg
         // queries (which use the same order via convert_term) unify against
@@ -15926,7 +15892,7 @@ impl<'a> Loader<'a> {
 
         // name: Ref to operation symbol
         let name_ref = self.kb.alloc(Term::Ref(functor));
-        let type_params_list = build_list(self.kb, &type_param_var_terms);
+        let type_params_list = self.kb.build_list(&type_param_var_terms);
 
         // WI-348: assemble the OperationInfo named args ONCE, carrier-agnostically.
         // Only `effects` varies by carrier: when every label is a ground
@@ -15998,7 +15964,7 @@ impl<'a> Loader<'a> {
                     let sym = self.kb.intern(&name);
                     self.kb.alloc(Term::Ref(sym))
                 }).collect();
-                let params_list_impl = build_list(self.kb, &param_syms);
+                let params_list_impl = self.kb.build_list(&param_syms);
 
                 let op_impl = self.kb.alloc(Term::Fn {
                     functor: op_impl_sym,
@@ -16557,7 +16523,7 @@ impl<'a> Loader<'a> {
         ));
         let strat_sym = self.kb.resolve_symbol("anthill.realization.ProofStrategyKind");
         let arg_ids: Vec<TermId> = s.args.iter().map(|&t| self.convert_term(t)).collect();
-        let args_list = build_list(self.kb, &arg_ids);
+        let args_list = self.kb.build_list(&arg_ids);
         let name_arg = self.kb.symbols.intern("name");
         let args_arg = self.kb.symbols.intern("args");
         self.kb.alloc(Term::Fn {
@@ -16612,7 +16578,7 @@ impl<'a> Loader<'a> {
                 self.kb.alloc(Term::Const(super::term::Literal::String(qn)))
             })
             .collect();
-        build_list(self.kb, &strs)
+        self.kb.build_list(&strs)
     }
 
     /// Encode one structured-proof step rule into a ProofStep Term.
@@ -16641,7 +16607,7 @@ impl<'a> Loader<'a> {
         let body_ids: Vec<TermId> = step.rule.body.as_ref()
             .map(|terms| terms.iter().map(|&t| self.convert_term(t)).collect())
             .unwrap_or_default();
-        let body_list = build_list(self.kb, &body_ids);
+        let body_list = self.kb.build_list(&body_ids);
 
         let using_list = self.encode_step_using_list(&step.using, parent_proof_qn, step_labels);
         let tactic_term = self.encode_strategy(&step.strategy);
@@ -16764,7 +16730,7 @@ impl<'a> Loader<'a> {
             }
             Some(ProofBody::Hints(hints)) => {
                 let hint_ids: Vec<TermId> = hints.iter().map(|&t| self.convert_term(t)).collect();
-                let list = build_list(self.kb, &hint_ids);
+                let list = self.kb.build_list(&hint_ids);
                 let h_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyHints");
                 let hints_arg = self.kb.symbols.intern("hints");
                 self.kb.alloc(Term::Fn {
@@ -16794,7 +16760,7 @@ impl<'a> Loader<'a> {
                 let step_terms: Vec<TermId> = steps.iter()
                     .map(|s| self.encode_proof_step(s, &parent_proof_qn, &step_labels))
                     .collect();
-                let steps_list = build_list(self.kb, &step_terms);
+                let steps_list = self.kb.build_list(&step_terms);
                 let conclude_term = match conclude {
                     Some(c) => self.encode_proof_conclude(c, &parent_proof_qn, &step_labels),
                     None => self.kb.alloc(Term::Bottom),
@@ -16844,7 +16810,7 @@ impl<'a> Loader<'a> {
                                 ]),
                             })
                         }).collect();
-                        build_list(self.kb, &entries)
+                        self.kb.build_list(&entries)
                     }
                 };
                 let q_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyQuery");
@@ -16910,7 +16876,7 @@ impl<'a> Loader<'a> {
             };
             self.kb.alloc(Term::Const(super::term::Literal::String(qn)))
         }).collect();
-        let using_list = build_list(self.kb, &using_qns);
+        let using_list = self.kb.build_list(&using_qns);
 
         // Phase α.2 placeholder values for witness, state_hash, and
         // parametric_context. A Pending ProofRecord carries
@@ -17312,7 +17278,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
-        let carrier_list = build_list(self.kb, &carrier_terms);
+        let carrier_list = self.kb.build_list(&carrier_terms);
 
         // namespace_map: cons-list of NamespaceMapping terms.
         let nm_sym = self.kb.resolve_symbol("anthill.realization.NamespaceMapping");
@@ -17337,7 +17303,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
-        let nm_list = build_list(self.kb, &nm_terms);
+        let nm_list = self.kb.build_list(&nm_terms);
 
         // Assemble the Implementation fact.
         let impl_sym = self.kb.resolve_symbol("anthill.realization.Implementation");
@@ -17460,7 +17426,7 @@ impl<'a> Loader<'a> {
             })
             .collect();
         clause_terms.extend_from_slice(extra_terms);
-        build_list(self.kb, &clause_terms)
+        self.kb.build_list(&clause_terms)
     }
 
     /// WI-320 / proposal 045 §6 Phase 0 — auto-requires inference for an

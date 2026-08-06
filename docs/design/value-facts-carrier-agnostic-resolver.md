@@ -455,13 +455,35 @@ Three consequences worth having written down:
   recompute, so a stash would have paid a `GoalKey` deep clone per *assert* (plus
   16 bytes on every `RuleEntry`, nearly all `None`) to save five walks.
 
-**One hole the guard does not close, inherited and recorded rather than fixed.**
-`occ_head`'s `Expr::Apply` arm drops `type_args`, so two `Apply`s differing only
-there fingerprint identically with no `Opaque` token — `is_opaque_free` answers
-`true` on a key that is not injective. That is why the predicate is named for what
-it CHECKS. Unreachable while no producer mints a `type_args`-bearing `Apply` at a
-head or goal position; it also affects `seen_goals` and `views_structurally_equal`,
-so it is filed separately as **WI-1013** rather than patched here.
+**The one hole the guard did not close is closed (WI-1013).** `occ_head`'s
+`Expr::Apply` arm dropped `type_args`, so two `Apply`s differing only there
+fingerprinted identically with no `Opaque` token and `is_opaque_free` answered
+`true` on a key that was not injective. A call's `[T = …]` bracket is now a named
+child on both carriers — the occurrence view synthesizes the `List[type_arg]` the
+loader's own `type_args_term_handle` encodes, and `try_occurrence_to_term` builds
+the same slot — so the key is faithful and `seen_goals` / `views_structurally_equal`
+inherit the repair. The slot's key is the RESOLVED `anthill.reflect.type_arg` symbol
+rather than the interned name `type_args`, because an argument LABEL is always an
+`intern_map` symbol and WI-839 decided that `f[T = Int64](type_args: n)` must keep
+loading "without a reserved-name rule".
+
+**Both reasons the hole was called unreachable were wrong, which is the transferable
+part.** WI-472 wrote "no producer mints a `type_args`-bearing `Apply`": the typer
+mints one on every field projection (WI-759's `synthesize_field_access` rewrites
+`?x.y` to `field_access[Name = …](?x, "y")` — 23 in the stdlib). WI-1013's own filing
+wrote that WI-839 was what would make it reachable: WI-839 *refused* the bracket
+everywhere except an operation-body call, narrowing the surface. The thing that
+actually kept a fact from being dropped was neither — a value-fact head comes from a
+fact/rule position, and a bracket there is a load error. A gap whose stated reason
+for being unreachable is wrong is still unreachable only by accident.
+
+Measured before landing, over the stdlib corpus: stored clause heads 169 → 169
+candidates with 0 self-misses and 1214 → 1214 `GoalKey` tokens; rule-body atoms
+8 → 8 with 46 → 46 tokens; operation-body applies 205 → 205 with 198 → 198 distinct
+keys. The only delta is 1695 → 2353 tokens across the 23 `field_access` calls, which
+carry their bracket now. Nothing separates that did not before, because
+`field_access` supplies the projected name twice and the positional copy already
+distinguished them.
 
 ## References
 

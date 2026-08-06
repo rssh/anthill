@@ -225,10 +225,6 @@ fn reflect_ctor_sym(kb: &KnowledgeBase, qname: &str, form: &str) -> Symbol {
     })
 }
 
-fn dot_apply_key(kb: &KnowledgeBase, k: &str) -> Symbol {
-    reflect_field_key(kb, k, "dot_apply")
-}
-
 /// A synthesized constructor-occurrence child, carrying the parent's span and
 /// owner. Every view arm that must present a term twin's *wrapper* node — an
 /// `ApplyArg`, a `cons`/`nil` cell, an `Option.some`/`none`, a `NamedPattern` —
@@ -250,54 +246,171 @@ fn synth_ctor(
 /// Synthesize a DotApply occurrence's `args` child — the `List[ApplyArg]`
 /// occurrence mirroring the loader's `mk_apply_arg` + `build_list` encoding:
 /// a positional call arg rides as `ApplyArg(name: none(), value: …)`, a named
-/// one as `ApplyArg(name: some(value: Ref(k)), value: …)`, on a cons/nil
-/// spine over the prelude List constructors. The arg-value children are the
-/// existing occurrences (shared `Rc`s); only the spine is fresh per call —
-/// same cost class as the `name` child's synthesized `Ref`. Panics on an
-/// unresolvable constructor for the same reason as [`dot_apply_key`].
-///
-/// NOT `build_occurrence_cons_list`: that helper follows the bare-pattern
-/// convention — nullary `nil` as an `Expr::Ref` leaf, matching how a bare
-/// `nil` in source loads (`Term::Ref`) — whereas the dot_apply term twin's
-/// `build_list` emits a nullary `Fn{nil}`, which reads as a `Functor` head.
-/// Reusing it would re-open exactly the cross-carrier key divergence this
-/// function exists to close (the Ref ≡ nullary-Fn identification is WI-436).
+/// one as `ApplyArg(name: some(value: Ref(k)), value: …)`. Built through
+/// [`optionally_named_cell_list`], which owns the spine and the wrappers.
 fn dot_apply_args_child(
     occ: &NodeOccurrence,
     kb: &KnowledgeBase,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Rc<NodeOccurrence> {
-    let resolve = |q: &str| reflect_ctor_sym(kb, q, "dot_apply");
+    let cells = pos_args
+        .iter()
+        .map(|v| (None, Rc::clone(v)))
+        .chain(named_args.iter().map(|(k, v)| (Some(*k), Rc::clone(v))))
+        .collect::<Vec<_>>();
+    optionally_named_cell_list(occ, kb, "dot_apply", "anthill.reflect.ApplyArg", &cells)
+}
+
+/// The `List[C]` spine both reflect call channels use, where `C(name: Option[Symbol],
+/// value: …)` — `ApplyArg` for a call's ARGUMENTS ([`dot_apply_args_child`]) and
+/// `type_arg` for its CALL-SITE TYPE ARGUMENTS ([`apply_type_args_child`]). Their
+/// encodings were identical down to the field keys, so they are one function: a `None`
+/// name rides as `none()`, a `Some(k)` as `some(value: Ref(k))`. Panics on an
+/// unresolvable constructor for the same reason as [`reflect_field_key`]; `form` names
+/// the twin in that message.
+///
+/// The value children are the caller's existing occurrences (shared `Rc`s); only the
+/// spine and the wrappers are fresh per call — the same cost class as the `name`
+/// child's synthesized `Ref`.
+///
+/// NOT `build_occurrence_cons_list`: that helper follows the bare-pattern convention —
+/// nullary `nil` as an `Expr::Ref` leaf, matching how a bare `nil` in source loads
+/// (`Term::Ref`) — whereas these term twins' `build_list` emits a nullary `Fn{nil}`,
+/// which reads as a `Functor` head. Reusing it would re-open exactly the cross-carrier
+/// key divergence these functions exist to close (the Ref ≡ nullary-Fn identification
+/// is WI-436).
+fn optionally_named_cell_list(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    form: &str,
+    cell_qname: &str,
+    cells: &[(Option<Symbol>, Rc<NodeOccurrence>)],
+) -> Rc<NodeOccurrence> {
+    let resolve = |q: &str| reflect_ctor_sym(kb, q, form);
     let cons = resolve("anthill.prelude.List.cons");
     let nil = resolve("anthill.prelude.List.nil");
     let some = resolve("anthill.prelude.Option.some");
     let none = resolve("anthill.prelude.Option.none");
-    let apply_arg = resolve("anthill.reflect.ApplyArg");
-    let (k_head, k_tail) = (dot_apply_key(kb, "head"), dot_apply_key(kb, "tail"));
-    let (k_name, k_value) = (dot_apply_key(kb, "name"), dot_apply_key(kb, "value"));
-    let mk = |name: Symbol, named: Vec<(Symbol, Rc<NodeOccurrence>)>| {
-        synth_ctor(occ, name, named)
-    };
+    let cell = resolve(cell_qname);
+    let key = |k: &str| reflect_field_key(kb, k, form);
+    let (k_head, k_tail) = (key("head"), key("tail"));
+    let (k_name, k_value) = (key("name"), key("value"));
+    let mk = |name: Symbol, named: Vec<(Symbol, Rc<NodeOccurrence>)>| synth_ctor(occ, name, named);
     let none_occ = mk(none, Vec::new());
-    let mut items: Vec<Rc<NodeOccurrence>> =
-        Vec::with_capacity(pos_args.len() + named_args.len());
-    for value in pos_args {
-        items.push(mk(
-            apply_arg,
-            vec![(k_name, Rc::clone(&none_occ)), (k_value, Rc::clone(value))],
-        ));
-    }
-    for (arg_sym, value) in named_args {
-        let name_ref = NodeOccurrence::new_expr(Expr::Ref(*arg_sym), occ.span, occ.owner);
-        let some_occ = mk(some, vec![(k_value, name_ref)]);
-        items.push(mk(apply_arg, vec![(k_name, some_occ), (k_value, Rc::clone(value))]));
+    let mut items: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(cells.len());
+    for (name, value) in cells {
+        let name_child = match name {
+            Some(k) => {
+                let name_ref = NodeOccurrence::new_expr(Expr::Ref(*k), occ.span, occ.owner);
+                mk(some, vec![(k_value, name_ref)])
+            }
+            None => Rc::clone(&none_occ),
+        };
+        items.push(mk(cell, vec![(k_name, name_child), (k_value, Rc::clone(value))]));
     }
     let mut list = mk(nil, Vec::new());
     for item in items.into_iter().rev() {
         list = mk(cons, vec![(k_head, item), (k_tail, list)]);
     }
     list
+}
+
+// ── Apply's CALL-SITE TYPE ARGUMENTS (WI-1013) ──────────────────
+//
+// `f[T = Int64](x)` and `f[T = String](x)` are DIFFERENT calls, and until WI-1013
+// they presented an identical view: `occ_head`'s `Expr::Apply` arm destructured
+// `{ functor, pos_args, named_args, .. }` and the `..` was `type_args`, so the
+// bracket reached neither `pos_arg` nor `named_arg` nor `named_keys`. Three
+// consumers inherited it, each with its own failure mode — `goal_fingerprint`
+// (`seen_goals` answer-dedup DROPS the second answer; `query_cache` may serve one
+// goal's candidates for another), `GoalKey::is_opaque_free` (fact dedup then
+// answers TRUE on a key that is not injective, and over-dedup DROPS A FACT), and
+// `views_structurally_equal` (two bracket-distinct occurrences report EQUAL, which
+// is what WI-762's receiver-divergence guard reads).
+//
+// NOT hypothetical, and the ticket's own reachability claim was wrong about why.
+// WI-1013 recorded the gap as unreachable-until-WI-839 "populates" the channel;
+// WI-839 in fact REFUSED a written bracket everywhere except an operation body's
+// call and a rule head's bare `[T]` introducer. The live population is a different
+// producer entirely: the TYPER's `synthesize_field_access` (WI-759) rewrites every
+// `?x.y` into `field_access[Name = denoted("y")](?x, "y")` — 23 such occurrences in
+// the stdlib alone, before a single user bracket is written.
+//
+// THE SHAPE IS THE LOADER'S, not an invention: `type_args_term_handle` (load.rs)
+// already encodes the channel as a `List[type_arg]` of
+// `type_arg(name: Option[Symbol], value: Type)`, declared in `reflect.anthill`, and
+// `try_occurrence_to_term`'s `Expr::Apply` arm now builds exactly that under the
+// same `type_args` key — so the occurrence and its term twin stay isomorphic
+// (WI-425: a view that disagrees with its twin is a wrong answer, not a precision
+// loss). The key is DECLARED ONLY WHEN THE CHANNEL IS NON-EMPTY, exactly as the
+// twin emits it and as `pattern_shape` treats `labels` / `named` / `type_ann`
+// (WI-819) — which is what keeps an ordinary bracket-less call keying byte-for-byte
+// as before.
+//
+// THE KEY IS THE RESOLVED `type_arg` SYMBOL, NOT THE INTERNED NAME `type_args`, and
+// that is the whole of how the slot avoids colliding with a user's argument LABEL.
+// The two live in DIFFERENT tables: a label is `SymbolTable::intern(<bare
+// identifier>)` (the `intern_map`), while `anthill.reflect.type_arg` is
+// `SymbolTable::define`d into `by_qualified_name` and never enters `intern_map` — so
+// no label a user can write is this symbol. That matters because WI-839 DECIDED the
+// opposite rule deliberately: `f[T = Int64](type_args: n)` must keep loading, and it
+// chose to discriminate the channel "without a reserved-name rule". Keying the slot
+// on a name a user could also write would have put two same-keyed children on one
+// head — a repeated label defeats key-addressed children (every reader takes the
+// FIRST match, WI-805/808/809), and `views_structurally_equal` would then report two
+// DIFFERENT calls equal. Refusing the program instead would reverse WI-839's decision
+// as a side effect of this one. `wi839_call_bracket_channel_test`'s
+// `a_parameter_named_type_args_does_not_shadow_the_channel` is that pin, and it stays
+// green.
+
+/// The named-arg key a call's CALL-SITE TYPE ARGUMENTS ride under on the DIRECT
+/// spelling: the RESOLVED `anthill.reflect.type_arg` constructor — the cell type of
+/// the very list the slot holds — chosen because it cannot be spelled as an argument
+/// label (see the WI-1013 note above), not because the slot constructs one.
+///
+/// Panics when unresolved, for [`reflect_ctor_sym`]'s reason: a KB holding a
+/// `type_args`-bearing `Expr::Apply` was built either by the loader or by the typer's
+/// `synthesize_field_access`, and `register_prelude` pre-registers this name for the
+/// bootstrap KBs that never load reflect.anthill. Degrading instead would be the
+/// WI-1014 Part C defect on the surface WI-815 made a soundness one.
+fn apply_type_args_key(kb: &KnowledgeBase) -> Symbol {
+    reflect_ctor_sym(kb, "anthill.reflect.type_arg", "apply")
+}
+
+/// A `Value` as a child occurrence. An occurrence-carried value IS the occurrence —
+/// never re-wrapped, since [`Value::node`]'s contract is that no walker meets a
+/// doubly-wrapped carrier — and anything else rides as `Expr::Spliced`, which
+/// `occ_head` reads THROUGH to the value's own head (WI-714).
+fn value_child(occ: &NodeOccurrence, v: &Value) -> Rc<NodeOccurrence> {
+    match v {
+        Value::Node(inner) => Rc::clone(inner),
+        other => NodeOccurrence::new_expr(Expr::Spliced(other.clone()), occ.span, occ.owner),
+    }
+}
+
+/// Synthesize an `Expr::Apply`'s type-args child — the `List[type_arg]` occurrence
+/// mirroring `type_args_term_handle`'s encoding, through the same
+/// [`optionally_named_cell_list`] that builds a call's `List[ApplyArg]`. The bound
+/// types are the existing `Value`s (a cheap clone / `Rc` share).
+///
+/// ONE DELIBERATE DIVERGENCE FROM THE LOADER'S HANDLE, stated because it is real:
+/// `type_args_term_handle` OMITS a `Value::Node` (value-in-type) entry, on the
+/// grounds that a hash-consed term cannot hold one. It can — WI-390 gave a
+/// denoted-bearing value a lossless `occurrence_to_term` lowering — and omitting an
+/// entry HERE would be the very loss this function exists to close, so every entry
+/// is carried. The two do not have to agree: that handle hangs on the path-A
+/// WRAPPED twin (`Fn{Expr.apply, …}`), which this view does not read.
+fn apply_type_args_child(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    type_args: &[(Option<Symbol>, Value)],
+) -> Rc<NodeOccurrence> {
+    let cells: Vec<(Option<Symbol>, Rc<NodeOccurrence>)> = type_args
+        .iter()
+        .map(|(param, bound)| (*param, value_child(occ, bound)))
+        .collect();
+    optionally_named_cell_list(occ, kb, "apply", "anthill.reflect.type_arg", &cells)
 }
 
 // ── VarRef ↔ `var_ref(name)` term isomorphism (WI-537) ──────────
@@ -932,9 +1045,15 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         }
     }
     match occ.as_expr() {
-        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-            functor_view_head(kb, *functor, pos_args.len(), named_args.len())
-        }
+        // WI-1013: a CALL-SITE TYPE-ARGUMENT bracket is one extra named child under
+        // `type_args`, declared only when the channel is non-empty — see the WI-1013
+        // note above. A bracket-less call heads exactly as before.
+        Some(Expr::Apply { functor, pos_args, named_args, type_args }) => functor_view_head(
+            kb,
+            *functor,
+            pos_args.len(),
+            named_args.len() + usize::from(!type_args.is_empty()),
+        ),
         // WI-520: `Instantiation` (`Name{bindings}`) is shaped exactly like
         // `Constructor` and `occurrence_to_term` materializes BOTH via the same
         // `Term::Fn{name, …}` twin — so it reads the same `Functor` head (a
@@ -1107,8 +1226,18 @@ fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Opt
         }
     }
     let named = match occ.as_expr()? {
-        Expr::Apply { named_args, .. }
-        | Expr::Constructor { named_args, .. }
+        // WI-1013: the `type_args` child, when the bracket channel is non-empty.
+        // Checked BEFORE the argument slice so the synthesized key wins over a
+        // same-named user argument — which `convert.rs` refuses outright, so this
+        // ordering decides nothing today and exists only to keep `named_keys`'
+        // promise readable from one place.
+        Expr::Apply { named_args, type_args, .. } => {
+            if !type_args.is_empty() && sym == apply_type_args_key(kb) {
+                return Some(apply_type_args_child(occ, kb, type_args));
+            }
+            named_args
+        }
+        Expr::Constructor { named_args, .. }
         // WI-520: `Instantiation` reads like `Constructor`.
         | Expr::Instantiation { named_args, .. } => named_args,
         // WI-1014: a tuple literal's children are ALL named — the declared ones
@@ -1150,8 +1279,17 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         }
     }
     match occ.as_expr() {
-        Some(Expr::Apply { named_args, .. })
-        | Some(Expr::Constructor { named_args, .. })
+        // WI-1013: the arguments' own labels, then `type_args` when the bracket
+        // channel is non-empty — the same list, same order, that `occ_head` counted
+        // and `try_occurrence_to_term` builds, so arity and keys cannot disagree.
+        Some(Expr::Apply { named_args, type_args, .. }) => {
+            let mut keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+            if !type_args.is_empty() {
+                keys.push(apply_type_args_key(kb));
+            }
+            keys
+        }
+        Some(Expr::Constructor { named_args, .. })
         // WI-520: `Instantiation` reads like `Constructor`.
         | Some(Expr::Instantiation { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
@@ -1598,11 +1736,19 @@ impl GoalKey {
     /// This is what fact-dedup needs (WI-815): dedup DROPS the duplicate, so a key
     /// two distinct heads share silently discards one of them, and `Opaque` is the
     /// one token that erases a difference. See
-    /// [`KnowledgeBase::value_fact_dedup_key`], which carries the full argument —
-    /// **including the one known way a key can still under-determine its view**
-    /// (`occ_head`'s `Expr::Apply` arm drops `type_args`). That caveat is why this
-    /// is named for what it CHECKS rather than "is_injective": injectivity is what
-    /// the check is FOR, not a guarantee this predicate can make on its own.
+    /// [`KnowledgeBase::value_fact_dedup_key`], which carries the full argument.
+    ///
+    /// THE ONE KNOWN COUNTEREXAMPLE IS CLOSED (WI-1013): `occ_head`'s `Expr::Apply`
+    /// arm used to drop `type_args`, so two calls differing only in a `[T = …]`
+    /// bracket produced ONE `Opaque`-free key and this predicate answered `true` on a
+    /// key that was not injective. The bracket is a child now, on both carriers.
+    ///
+    /// THE NAME STAYS `is_opaque_free`, and not as an oversight. It says what the
+    /// function CHECKS; "is_injective" would claim a property no single predicate can
+    /// establish — injectivity is a joint property of this check AND every view arm
+    /// presenting its whole structure, and the WI-1013 hole is exactly what a
+    /// promising name would have hidden. A view that drops a field is a defect at the
+    /// view, not something to rename this after.
     ///
     /// Named for the property rather than a consumer because two consumers need
     /// different amounts of it — [`Self::is_cacheable`] additionally excludes flex

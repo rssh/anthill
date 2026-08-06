@@ -12774,9 +12774,7 @@ fn build_dispatching_dict_from_chain(
             None => {}
         }
     }
-    let sub_reqs_list = super::load::build_cons_list(
-        kb, &proj_terms, syms.nil, syms.cons, syms.head, syms.tail,
-    );
+    let sub_reqs_list = kb.build_list(&proj_terms);
     Ok(Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list)))
 }
 
@@ -12966,14 +12964,8 @@ fn resolve_param_value_via_subst(
 
 /// Wrap a single dispatching-dict expression in the single-entry
 /// cons-list shape used for `apply_within.requirements` under Model 1.
-fn wrap_dispatch_channel(
-    kb: &mut KnowledgeBase,
-    dict_term: TermId,
-    syms: &ProjectionSyms,
-) -> TermId {
-    super::load::build_cons_list(
-        kb, &[dict_term], syms.nil, syms.cons, syms.head, syms.tail,
-    )
+fn wrap_dispatch_channel(kb: &mut KnowledgeBase, dict_term: TermId) -> TermId {
+    kb.build_list(&[dict_term])
 }
 
 /// WI-227: recursively search for an IR projection that delivers a
@@ -13692,9 +13684,7 @@ fn emit_tree_as_projection(
             for sub in sub_resolutions {
                 sub_terms.push(emit_tree_as_projection(kb, caller_sort, sub, syms)?);
             }
-            let list = super::load::build_cons_list(
-                kb, &sub_terms, syms.nil, syms.cons, syms.head, syms.tail,
-            );
+            let list = kb.build_list(&sub_terms);
             Some(build_construct_requirement(kb, syms, *impl_sort, list))
         }
     }
@@ -13740,9 +13730,7 @@ fn build_empty_bundle(
     syms: &ProjectionSyms,
     functor: Symbol,
 ) -> TermId {
-    let nil_list = super::load::build_cons_list(
-        kb, &[], syms.nil, syms.cons, syms.head, syms.tail,
-    );
+    let nil_list = kb.build_list(&[]);
     build_construct_requirement(kb, syms, functor, nil_list)
 }
 
@@ -14050,7 +14038,7 @@ pub(crate) fn record_apply_within_concrete(
             None => return false,
         },
     };
-    let requirements_list = wrap_dispatch_channel(kb, dict_term, &syms);
+    let requirements_list = wrap_dispatch_channel(kb, dict_term);
 
     let fn_ref = kb.alloc(Term::Ref(fn_target_sym));
     let fn_field = kb.intern("fn");
@@ -14127,7 +14115,7 @@ pub(crate) fn record_apply_within_rewrite(
     for &k in proj_path {
         dict_expr = build_req_at_sort(kb, &syms, dict_expr, k);
     }
-    let requirements_list = wrap_dispatch_channel(kb, dict_expr, &syms);
+    let requirements_list = wrap_dispatch_channel(kb, dict_expr);
 
     let fn_ref = kb.alloc(Term::Ref(spec_op_sym));
     let fn_field = kb.intern("fn");

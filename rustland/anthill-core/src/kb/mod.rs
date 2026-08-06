@@ -2618,17 +2618,22 @@ impl KnowledgeBase {
     /// reduces to [`GoalKey::is_opaque_free`](term_view::GoalKey::is_opaque_free) —
     /// `Opaque` being the one token that carries no payload.
     ///
-    /// **ONE KNOWN HOLE, inherited and NOT closed here** (WI-472 recorded it and it
-    /// must not be lost): `occ_head`'s `Expr::Apply` arm drops `type_args`, so two
-    /// `Apply`s differing ONLY there fingerprint identically with no `Opaque` token
-    /// — `is_opaque_free` answers `true` on a key that is not injective. Still
-    /// unreachable for the same reason as before: no producer mints a
-    /// `type_args`-bearing `Apply` inside a value-fact head. Closing it belongs to
-    /// `occ_head` (the same `TermView` gap `Self::incref_value_ground` documents),
-    /// not here — filed as **WI-1013**, which also covers the two OTHER consumers
-    /// that inherit it (`seen_goals` answer-dedup and `views_structurally_equal`)
-    /// and notes that WI-839 is what would make it reachable. This is why the
-    /// predicate is named for what it CHECKS.
+    /// **THE ONE KNOWN HOLE IS CLOSED (WI-1013), and how it was described was wrong
+    /// twice.** `occ_head`'s `Expr::Apply` arm dropped `type_args`, so two `Apply`s
+    /// differing ONLY there fingerprinted identically with no `Opaque` token and
+    /// `is_opaque_free` answered `true` on a key that was not injective. Both
+    /// dismissals of it were false. (1) "No producer mints a `type_args`-bearing
+    /// `Apply`" (WI-472): the TYPER does, on every field projection — WI-759's
+    /// `synthesize_field_access` rewrites `?x.y` into `field_access[Name = …](?x, "y")`,
+    /// 23 times in the stdlib alone. (2) "WI-839 is what would make it reachable"
+    /// (WI-1013's own filing): WI-839 REFUSED a written bracket at every position
+    /// except an operation-body call, so it narrowed the surface rather than widening
+    /// it. What kept the hole from costing a dropped FACT here was narrower than
+    /// either claim — a value-fact head is built from a fact/rule position, and a
+    /// bracket there is a load error. The bracket is a child on both carriers now, so
+    /// the question no longer arises. Closing it belonged to `occ_head` (the same
+    /// `TermView` layer `Self::incref_value_ground` documents), and that is where it
+    /// happened.
     ///
     /// THE OLD `Bottom` REJECTION, MADE TOTAL. Scanning the whole key rather than
     /// the root catches a lossy child nested in an `Entity` (`value_to_term`'s
@@ -3101,10 +3106,16 @@ impl KnowledgeBase {
     /// head through `TermView` — the same surface the discrimination tree
     /// indexes — so the owned set matches what is searched.
     ///
-    /// Known gap (deferred to the value-fact payoff phase): a Type/EffectExpr
-    /// occurrence's `type_args`, and any field key not yet interned, are not
-    /// surfaced by `TermView` and so are not owned here. Symmetric with
-    /// `release_value_ground`, so balanced regardless.
+    /// Known gap (deferred to the value-fact payoff phase): a field key not yet
+    /// interned is not surfaced by `TermView` and so is not owned here. Symmetric
+    /// with `release_value_ground`, so balanced regardless.
+    ///
+    /// A CALL's `type_args` used to be named here too, and no longer belongs: WI-1013
+    /// made an `Expr::Apply`'s `[T = …]` bracket a `TermView` child, so its ground
+    /// leaves are walked and owned like any other. That is inert today rather than a
+    /// fix anyone can observe — a value-fact head is built from a fact/rule position
+    /// and a bracket there is a load error (WI-839) — but the gap is gone rather than
+    /// deferred, and leaving it listed would send the next reader looking for it.
     fn incref_value_ground(&mut self, v: &crate::eval::value::Value) {
         for t in self.collect_value_ground_terms(v) {
             self.terms.incref(t);
@@ -5653,13 +5664,67 @@ impl KnowledgeBase {
 
     // ── List construction ────────────────────────────────────────
 
-    /// Build a cons-list term from a slice of TermIds.
+    /// Build a cons-list term from a slice of TermIds — `cons(head:, tail:)` over a
+    /// nullary `nil`, the shape every `List[T]` in the term carrier takes.
+    ///
+    /// THE SINGLE OWNER of the STRICT policy — resolve the prelude `List`
+    /// constructors, panicking if they are absent. Three more copies of this loop
+    /// existed (`load::build_list`, `load::build_cons_list`,
+    /// `node_occurrence::build_list_termid` — the last one's own doc calling itself a
+    /// "mirror of `load.rs::build_list`"), and a shape with four constructors is one
+    /// edit away from four shapes. Only the symbol POLICY genuinely varied, so that is
+    /// all that is left: this function and `term_ser::build_cons_list` (which falls
+    /// back to a bare `intern` for a schema-less deserialize) each pick their symbols
+    /// and hand the spine to [`Self::build_list_with`].
+    ///
+    /// The three merged copies allocated `Fn{cons, [(head, x), (tail, acc)]}` RAW,
+    /// while the spine goes through [`Self::make_entity_term`] and so canonicalizes
+    /// the pair first. That step is a no-op — `cons`'s declared field order IS
+    /// `head, tail` — but it is the no-op that cannot rot: a schema-less `cons` falls
+    /// back to INTERNING order, and the raw form would then disagree with every rule
+    /// pattern the loader built through the canonicalizing path. The `debug_assert`
+    /// below is what makes "no-op" a measurement rather than a claim: it stayed silent
+    /// across the whole suite, and was verified to FIRE when inverted, so the merge is
+    /// byte-preserving and any future reorder is loud.
+    ///
+    /// A nullary `nil` allocs as the bare `Ref(nil)` via [`Self::alloc`]'s WI-511
+    /// canon, which is what lets a built list match a pattern spelled with a bare
+    /// `nil` (WI-436) — the reason the occurrence-side `build_occurrence_cons_list`
+    /// deliberately does NOT share this code: it follows the bare-pattern convention
+    /// on purpose.
     pub fn build_list(&mut self, items: &[TermId]) -> TermId {
         let nil_sym = self.resolve_symbol("anthill.prelude.List.nil");
         let cons_sym = self.resolve_symbol("anthill.prelude.List.cons");
+        debug_assert!(
+            {
+                let (h, t) = (self.intern("head"), self.intern("tail"));
+                let mut probe = [(h, ()), (t, ())];
+                self.canonicalize_record_named_args(cons_sym, &mut probe);
+                probe.iter().map(|(s, _)| *s).eq([h, t])
+            },
+            "cons(head, tail) must already be canonical — the raw-alloc list builders \
+             merged into this function relied on it, so a reorder here means the merge \
+             changed stored bytes",
+        );
+        self.build_list_with(nil_sym, cons_sym, items)
+    }
+
+    /// The cons/nil spine, over CALLER-SUPPLIED constructors — the one loop behind
+    /// both list-building policies (see [`Self::build_list`] for which they are and
+    /// why only the symbol lookup differs).
+    ///
+    /// Named args go through [`Self::make_entity_term`], so a `cons` with a registered
+    /// schema stores its pair in DECLARED order and a schema-less one in interning
+    /// order — the same rule every other record builder follows, rather than a
+    /// hand-rolled order that only happens to agree.
+    pub(crate) fn build_list_with(
+        &mut self,
+        nil_sym: Symbol,
+        cons_sym: Symbol,
+        items: &[TermId],
+    ) -> TermId {
         let head_sym = self.intern("head");
         let tail_sym = self.intern("tail");
-
         let mut list = self.alloc(Term::Fn {
             functor: nil_sym,
             pos_args: SmallVec::new(),

@@ -2500,8 +2500,11 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         Some(Expr::Const(lit)) => kb.alloc(Term::Const(lit.clone())),
         Some(Expr::Ref(s)) => kb.alloc(Term::Ref(*s)),
         Some(Expr::Ident(s)) => kb.alloc(Term::Ident(*s)),
-        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-            return occ_build_fn(kb, *functor, pos_args, named_args);
+        // WI-1013: a CALL-SITE TYPE-ARGUMENT bracket lowers to ONE extra named arg
+        // under `type_args`, so the twin carries what the view now presents (WI-425).
+        // Byte-identical to `occ_build_fn` when the channel is empty.
+        Some(Expr::Apply { functor, pos_args, named_args, type_args }) => {
+            return occ_build_apply(kb, *functor, pos_args, named_args, type_args);
         }
         Some(Expr::Constructor { name, pos_args, named_args, .. })
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
@@ -2522,7 +2525,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             let recv = try_occurrence_to_term(kb, receiver)?;
             let dot_apply = kb.resolve_symbol("anthill.reflect.Expr.dot_apply");
             let name_ref = kb.alloc(Term::Ref(*name));
-            let args_nil = build_list_termid(kb, &[]);
+            let args_nil = kb.build_list(&[]);
             let (k_receiver, k_name, k_args) =
                 (kb.intern("receiver"), kb.intern("name"), kb.intern("args"));
             kb.alloc(Term::Fn {
@@ -2673,6 +2676,20 @@ fn occ_build_fn(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<TermId> {
+    occ_build_fn_with(kb, functor, pos_args, named_args, None)
+}
+
+/// [`occ_build_fn`] with one already-lowered named arg APPENDED after the occurrence
+/// children — the shape `Expr::Apply`'s type-args slot needs (WI-1013) and the only
+/// thing that distinguishes its twin from a plain call's. Appended, not merged into a
+/// canonical order, exactly as `occ_build_fn` stores its own named args verbatim.
+fn occ_build_fn_with(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    extra: Option<(Symbol, TermId)>,
+) -> Option<TermId> {
     let mut pos: smallvec::SmallVec<[TermId; 4]> = smallvec::SmallVec::new();
     for c in pos_args {
         pos.push(try_occurrence_to_term(kb, c)?);
@@ -2681,7 +2698,77 @@ fn occ_build_fn(
     for (s, c) in named_args {
         named.push((*s, try_occurrence_to_term(kb, c)?));
     }
+    named.extend(extra);
     Some(kb.alloc(Term::Fn { functor, pos_args: pos, named_args: named }))
+}
+
+/// WI-1013: an `Expr::Apply`'s term twin — [`occ_build_fn`] plus, when the CALL-SITE
+/// TYPE-ARGUMENT channel is non-empty, ONE extra named arg `type_args:
+/// List[type_arg]`. That is the slot `reflect.anthill` declares and the loader's
+/// `type_args_term_handle` already builds for the WRAPPED twin, reused here so the
+/// DIRECT spelling carries the same information the occurrence does — the view
+/// (`term_view::apply_type_args_child`) presents byte-identically what this builds,
+/// which is the WI-425 isomorphism the fix turns on.
+///
+/// Empty channel ⇒ IDENTICAL to `occ_build_fn`, so every bracket-less call keeps its
+/// existing `TermId` and its existing discrim keying.
+///
+/// `None` when a bound type is one of `value_to_term`'s honest residues (an opaque
+/// runtime handle, `Unit`/`Tuple`) — the same recursive try-contract the arg children
+/// already have. A partial twin would announce `named_arity` children and supply a ⊥,
+/// which is the shape defect WI-815 hardened `fingerprint_into` against.
+fn occ_build_apply(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    type_args: &[(Option<Symbol>, Value)],
+) -> Option<TermId> {
+    let slot = if type_args.is_empty() {
+        None
+    } else {
+        let list = type_args_list_term(kb, type_args)?;
+        // The RESOLVED `type_arg` constructor, not the interned name `type_args` — the
+        // key must not be spellable as an argument label, or a call carrying both a
+        // bracket and a `type_args:` argument (which WI-839 pinned as legal) would grow
+        // two same-keyed children. `term_view::apply_type_args_key` is the other half
+        // and must agree.
+        Some((kb.resolve_symbol("anthill.reflect.type_arg"), list))
+    };
+    occ_build_fn_with(kb, functor, pos_args, named_args, slot)
+}
+
+/// WI-1013: the `List[type_arg]` term for a call's type-argument bindings — one
+/// `type_arg(name: some(value: Ref(k)) | none(), value: <bound type>)` per entry, in
+/// written order, on the prelude cons/nil spine. The same encoding
+/// `type_args_term_handle` uses, minus its `Value::Node` omission: WI-390 made a
+/// denoted-bearing value lowerable, so dropping one here would re-open the loss.
+fn type_args_list_term(
+    kb: &mut KnowledgeBase,
+    entries: &[(Option<Symbol>, Value)],
+) -> Option<TermId> {
+    let type_arg_sym = kb.resolve_symbol("anthill.reflect.type_arg");
+    let (k_name, k_value) = (kb.intern("name"), kb.intern("value"));
+    let mut cells: Vec<TermId> = Vec::with_capacity(entries.len());
+    for (param, bound) in entries {
+        let name_term = match param {
+            Some(p) => {
+                let name_ref = kb.alloc(Term::Ref(*p));
+                crate::kb::load::build_some(kb, name_ref)
+            }
+            None => crate::kb::load::build_none(kb),
+        };
+        let value_term = value_to_term(kb, bound).ok()?;
+        cells.push(kb.alloc(Term::Fn {
+            functor: type_arg_sym,
+            pos_args: smallvec::SmallVec::new(),
+            named_args: smallvec::SmallVec::from_slice(&[
+                (k_name, name_term),
+                (k_value, value_term),
+            ]),
+        }));
+    }
+    Some(kb.build_list(&cells))
 }
 
 // ── WI-390: faithful Value/occurrence → Term lowering ───────────
@@ -3538,7 +3625,7 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                 .iter()
                 .map(|c| pattern_to_term(kb, c))
                 .collect();
-            let args_list = build_list_termid(kb, &args);
+            let args_list = kb.build_list(&args);
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern");
             let mut na: SmallVec<[(Symbol, TermId); 2]> =
                 SmallVec::from_slice(&[(name_key, name_ref), (args_key, args_list)]);
@@ -3551,7 +3638,7 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                         build_named_pattern_term(kb, *field, sub_term)
                     })
                     .collect();
-                let named_list = build_list_termid(kb, &elems);
+                let named_list = kb.build_list(&elems);
                 na.push((named_key, named_list));
             }
             with_ann(kb, functor, na)
@@ -3576,7 +3663,7 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                 .iter()
                 .map(|c| pattern_to_term(kb, c))
                 .collect();
-            let elements_list = build_list_termid(kb, &elements);
+            let elements_list = kb.build_list(&elements);
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern");
             let mut na: SmallVec<[(Symbol, TermId); 2]> =
                 SmallVec::from_slice(&[(elements_key, elements_list)]);
@@ -3584,36 +3671,12 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
                 let labels_key = kb.intern("labels");
                 let label_terms: Vec<TermId> =
                     labels.iter().map(|&l| kb.alloc(Term::Ref(l))).collect();
-                let labels_list = build_list_termid(kb, &label_terms);
+                let labels_list = kb.build_list(&label_terms);
                 na.push((labels_key, labels_list));
             }
             with_ann(kb, functor, na)
         }
     }
-}
-
-/// Internal helper: build a cons-list TermId from a slice of element
-/// TermIds (mirror of `load.rs::build_list` over the same `cons`/`nil`
-/// shape).
-fn build_list_termid(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
-    use smallvec::SmallVec;
-    let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
-    let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
-    let head_key = kb.intern("head");
-    let tail_key = kb.intern("tail");
-    let mut acc = kb.alloc(Term::Fn {
-        functor: nil_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    for &item in items.iter().rev() {
-        acc = kb.alloc(Term::Fn {
-            functor: cons_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(head_key, item), (tail_key, acc)]),
-        });
-    }
-    acc
 }
 
 pub fn substitute_occurrence(
@@ -5356,10 +5419,15 @@ mod tests {
             "a goal-shaped occurrence's key carries a payload at every leaf, so \
              `value_fact_dedup_key` may use it",
         );
-        // Deliberately NOT phrased as "injective": this fixture is an `Expr::Apply`,
-        // the one shape whose view is documented as under-determining its own key
-        // (`occ_head` drops `type_args` — WI-1013). Opaque-freedom is what the
-        // predicate checks and what dedup admits; injectivity is what it is FOR.
+        // Still deliberately NOT phrased as "injective", though the reason has changed:
+        // WI-1013 closed the `Expr::Apply` hole this used to name (`occ_head` dropped
+        // `type_args`, so two bracket-distinct calls shared one Opaque-free key). What
+        // remains is the general point — opaque-freedom is what the predicate CHECKS
+        // and what dedup admits; injectivity is a joint property of that check and
+        // every view arm presenting its whole structure, which no single assertion
+        // here can establish. This fixture has no bracket, so the two questions
+        // coincide for it; `wi1013_call_type_args_view_test` drives the case where
+        // they did not.
 
         // (4) and no term was allocated to answer any of it: the whole point of
         //     retiring `cached_term` is that the question needs `&kb`, not `&mut kb`

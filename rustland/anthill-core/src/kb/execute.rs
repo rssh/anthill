@@ -996,15 +996,27 @@ mod tests {
     }
 
     /// WI-678 regression: a Global living ONLY in an occurrence goal's
-    /// type-position field (`p[T = ?b](?a)`) must NOT become a synth head
-    /// parameter. `collect_goal_view_vars` (head params) and `append_synth_key`
-    /// (memo key) both read through `TermView`, which does not expose `type_args`,
-    /// so `?b` is uniformly absent from both — head arity and the key positions
-    /// stay in lockstep. The type-arg-AWARE `collect_value_head_vars` (the right
-    /// tool for a STORED rule, where `?b` must be closed as a body-local var) would
-    /// instead count `?b`; using it for the synth head — as the first draft did —
-    /// inflated head arity past what the key encoded, so two bodies differing only
-    /// in a type-arg var collided onto one synth rule with a mismatched arity.
+    /// type-position field (`p[T = ?b](?a)`) must be seen by `collect_goal_view_vars`
+    /// (head params) and `append_synth_key` (memo key) THE SAME WAY — head arity and
+    /// key positions in lockstep. Using the type-arg-AWARE `collect_value_head_vars`
+    /// for the head while the key stayed type-arg-BLIND, as WI-678's first draft did,
+    /// inflated head arity past what the key encoded, so two bodies differing only in
+    /// a type-arg var collided onto one synth rule with a mismatched arity.
+    ///
+    /// WI-1013 MOVED WHERE THE LOCKSTEP SITS, and the invariant is what survives. Both
+    /// of these read through `TermView`, which used to drop `type_args` — so `?b` was
+    /// uniformly ABSENT from both and the head was arity-1. `TermView` now surfaces the
+    /// bracket, so `?b` is uniformly PRESENT in both and the head is arity-2; the two
+    /// view-side collectors have converged with `collect_value_head_vars` instead of
+    /// diverging from it. The failure the original test guards against — one side
+    /// counting `?b` and the other not — is still what the assertions below check, and
+    /// backing WI-1013 out flips every count here back rather than breaking the shape.
+    ///
+    /// The `register_prelude` is not incidental: this KB is hand-built, and reading a
+    /// bracket through the view resolves the `List[type_arg]` encoding's constructors
+    /// and field keys eagerly, PANICKING on a miss rather than degrading (WI-1014
+    /// Part C). `register_prelude` is what a bootstrap KB gets; a loaded one gets the
+    /// same names from reflect.anthill.
     #[test]
     fn synth_head_ignores_type_position_only_var() {
         use crate::kb::node_occurrence::{Expr, NodeOccurrence};
@@ -1012,6 +1024,7 @@ mod tests {
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
 
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         let p = kb.intern("p");
         let t_param = kb.intern("T");
         let (a_sym, b_sym) = (kb.intern("a"), kb.intern("b"));
@@ -1031,21 +1044,23 @@ mod tests {
             None,
         ));
 
-        // Synth head params (the fix): ONLY the structural `?a` — `?b` is absent.
+        // Synth head params: `?a` structurally, and — since WI-1013 — `?b` through the
+        // now-visible bracket. In first-occurrence order, `?a` before `?b`.
         let mut free_vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
         kb.collect_goal_view_vars(&goal, &mut free_vars, &mut seen);
-        assert_eq!(free_vars, vec![a], "type-position ?b must not be a synth head param");
+        assert_eq!(free_vars, vec![a, b], "the view collector counts the type-arg var");
 
-        // The type-arg-aware stored-rule collector DOES see `?b` — confirming the
-        // divergence the fix sidesteps (that collector stays correct for a stored
-        // body, where `?b` is closed as a body-local De Bruijn var).
+        // The type-arg-aware stored-rule collector agrees — the two are no longer
+        // divergent readings of one goal (pre-WI-1013 this answered `[a, b]` while the
+        // view collector answered `[a]`, and keeping THAT gap in lockstep with the key
+        // was the whole of WI-678's fix).
         let (mut occ_vars, mut occ_seen) = (Vec::new(), std::collections::HashSet::new());
         kb.collect_value_head_vars(&goal, &mut occ_vars, &mut occ_seen);
-        assert_eq!(occ_vars, vec![a, b], "occurrence collector counts the type-arg var");
+        assert_eq!(occ_vars, free_vars, "both collectors read one goal the same way");
 
-        // The memo key references only `Var(0)` (=`?a`) and never the `RawVar`
-        // fallback: key positions and `free_vars` are in lockstep, no arity gap.
+        // The memo key references `Var(0)` (=`?a`) and `Var(1)` (=`?b`) and never the
+        // `RawVar` fallback: key positions and `free_vars` are in lockstep, no arity gap.
         let mut key = Vec::new();
         kb.append_synth_key(&goal, &free_vars, &mut key);
         assert!(
@@ -1055,6 +1070,10 @@ mod tests {
         assert!(
             key.iter().any(|t| matches!(t, SynthKey::Var(0))),
             "?a keyed at position 0: {key:?}"
+        );
+        assert!(
+            key.iter().any(|t| matches!(t, SynthKey::Var(1))),
+            "?b keyed at position 1 — the bracket reaches the memo key too: {key:?}"
         );
         assert!(
             key.iter().all(|t| !matches!(t, SynthKey::Var(pos) if *pos >= free_vars.len() as u32)),
