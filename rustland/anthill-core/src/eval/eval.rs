@@ -1001,11 +1001,21 @@ impl Interpreter {
     /// pass ([`Self::resolve_spec_op_target_by_value`] the body-less one,
     /// [`Self::resolve_carrier_override_by_value`] the runnable-only one). WI-1010
     /// created that twin — before it, the override reader was four lines and shared
-    /// nothing — and these are the tree's only two constructions of
-    /// `AmbiguousSpecOpDispatch`, so a copy would mean the refusal's wording, fields
-    /// and candidate rendering had to be edited in two places with a half-edit
-    /// compiling clean. `provision_supplier`'s doc names that shape as what produced
-    /// WI-838's blind spot.
+    /// nothing — so a copy would mean the refusal's wording, fields and candidate
+    /// rendering had to be edited in two places with a half-edit compiling clean.
+    /// `provision_supplier`'s doc names that shape as what produced WI-838's blind spot.
+    ///
+    /// WI-1012 — this is now the tree's only VALUE-DIRECTED construction of
+    /// `AmbiguousSpecOpDispatch`, not its only construction: the typer raises the same
+    /// refusal at LOAD for a statically concrete carrier. What kept that third site
+    /// from re-introducing the copy is that the parts a half-edit would desynchronize
+    /// moved to owners both call —
+    /// [`crate::kb::typing::render_suppliers`] for the candidate list,
+    /// [`crate::kb::typing::supplier_tie_repair`] for which repair applies, and
+    /// [`crate::kb::typing::ambiguous_spec_op_dispatch_message`] for the wording.
+    /// The `repair` field is why the last of those takes an argument: the two readers
+    /// here disagree about it, since only a BODY-LESS op has a dispatch slot a
+    /// `[Spec = Witness]` bracket could bind.
     fn sole_supplier_by_value(
         &self,
         spec_op: Symbol,
@@ -1032,7 +1042,8 @@ impl Interpreter {
             _ => Err(EvalError::AmbiguousSpecOpDispatch {
                 op: op_qn.to_string(),
                 carrier: self.kb.qualified_name_of(carrier).to_string(),
-                candidates: cands.iter().map(|c| c.render(&self.kb, op_short)).collect(),
+                candidates: crate::kb::typing::render_suppliers(&self.kb, &cands, op_short),
+                repair: crate::kb::typing::supplier_tie_repair(&self.kb, spec_op, &cands),
             }),
         }
     }

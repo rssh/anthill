@@ -37,7 +37,7 @@ An unselected spec-op dispatch resolves, in order:
 1. **Explicit selection** written at the use site (§3.3).
 2. **The unique provider** for `(spec, carrier)` — the pre-existing rule, unchanged.
    - *2a (proposed):* **the default provider** (§3.6), when exactly one of the tied most-specific candidates is it. Specificity ranks first — a strictly-more-specific candidate wins silently; a default is a fallback, not a competitor.
-3. Otherwise: a **loud error at that use site**, naming every candidate and the repair (the bracket to write, or the reason none applies — a value-directed tie has no bracket; a sub-goal's tie is reported at its own level, never re-attributed to the outer spec).
+3. Otherwise: a **loud error at that use site**, naming every candidate and the repair (the bracket to write, or the reason none applies — a value-directed site carries no bracket, though a witness among its rivals is still nameable at a site that does; a sub-goal's tie is reported at its own level, never re-attributed to the outer spec). "At that use site" fixes the **blame**, not the phase: when the use site's carrier is known statically the error is raised while loading, still naming the call.
 
 ### 3.3 Selection surface
 

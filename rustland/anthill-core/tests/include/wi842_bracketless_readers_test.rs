@@ -110,7 +110,7 @@ fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
 fn a_two_provider_value_directed_dispatch_names_both_candidates() {
     let ns = "wi842.vd.tie";
     let err = probe_leaf(ns, RIVAL).unwrap_err();
-    let EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates } = &err else {
+    let EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair } = &err else {
         panic!(
             "expected AmbiguousSpecOpDispatch; got {err:?} — `Ok(Int(1))` here is the \
              pre-WI-842 behaviour (first match: the carrier's own member), and \
@@ -134,6 +134,25 @@ fn a_two_provider_value_directed_dispatch_names_both_candidates() {
     for want in ["Desc.describe", "Leaf", "Rival"] {
         assert!(rendered.contains(want), "the rendered diagnostic must mention `{want}`: {rendered}");
     }
+    // WI-1012 — THE REPAIR THIS TIE HAS, and the control the message had been missing.
+    // `Rival` is a WITNESS sort: a nameable provider distinct from the carrier, and
+    // `Desc.describe` is BODY-LESS, so it has the `Dispatch` requirement slot a
+    // `[Desc = Rival]` bracket binds (`callee_requirement_slots`). No such bracket can
+    // be written HERE — that is what "bracket-less read" means and why this refuses —
+    // but routing the call through an operation that can write one IS a repair, and it
+    // is the ONE tie shape the corpus drives. Asserted because a shared message is
+    // exactly where it can be lost: WI-1012's first cut told this author "no bracket
+    // names any of them", which is true only of a DEFAULTED op's tie.
+    assert_eq!(
+        *repair,
+        anthill_core::kb::typing::SupplierTieRepair::NameableWitness,
+        "a witness rival on a body-less op is nameable at a bracket-capable call",
+    );
+    assert!(
+        rendered.contains("route the call through an operation that can write \
+                           `[Spec = Witness]`"),
+        "the witness repair must survive into the rendered message: {rendered}",
+    );
 }
 
 /// ABSENCE CONTROL — the identical program with ONE provider still dispatches and

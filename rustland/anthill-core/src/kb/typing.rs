@@ -134,6 +134,51 @@ pub enum TypeError {
         /// scan it needs) happens at `format` / `to_load_error`, not here.
         tie: InstanceTie,
     },
+    /// WI-1012 — the STATIC face of [`crate::eval::EvalError::AmbiguousSpecOpDispatch`]:
+    /// a statically CONCRETE carrier has two or more runnable suppliers of one spec op
+    /// ([`carrier_override_suppliers`]), so the WI-444 override pin declines and the
+    /// program has not said which implementation to run. Same name as the eval variant
+    /// on purpose — one refusal with two faces, like `MacroRejected` (WI-757).
+    ///
+    /// WHY IT IS NOT [`Self::DispatchAmbiguous`], verified rather than assumed: that
+    /// variant's [`InstanceTie`] carries PROVIDER symbols, and for a route-1-vs-route-2
+    /// tie both providers canonicalize to the SAME carrier — `render_instance_tie`
+    /// would print `Leaf, Leaf` and, both being concrete, choose
+    /// [`TieRepair::ValueDirected`], whose message ("each is a CONCRETE provider …
+    /// pin the carrier through the call's receiver") describes a different failure
+    /// entirely. This tie is between TEXTS supplying one carrier, so its candidates
+    /// are rendered by SUPPLY ROUTE ([`SpecOpSupplier::render`]) — the only wording
+    /// that can name an instance fact, which has no name of its own (058 §4.3).
+    ///
+    /// WHY AT LOAD AT ALL, given eval refuses it too: raising only at the call means
+    /// `anthill check` passes on a program the interpreter will refuse, a tie in a
+    /// branch that never runs never reports, and — the reason this exists — on the SLD
+    /// path the refusal DEGRADES TO SILENCE, since `resolve.rs`'s bridge residualizes
+    /// `AmbiguousSpecOpDispatch` to `None` and the enclosing rule simply stops
+    /// answering. The eval site STAYS: the WI-444 block fires only on a statically
+    /// concrete carrier, so an unpinnable one still needs the late refusal. That is an
+    /// argument for SHARING the message body
+    /// ([`ambiguous_spec_op_dispatch_message`]), not for having only one site.
+    ///
+    /// Candidates are rendered at CONSTRUCTION, unlike `DispatchAmbiguous`'s symbols,
+    /// for a reason stronger than the one first written here: [`SpecOpSupplier`] and
+    /// [`SupplyRoute`] are `pub(crate)` while this enum is `pub`, so carrying them
+    /// would leak a private type through a public interface. (The eval face also has
+    /// no `&KnowledgeBase` at `Display` time, which is what fixes the shared body's
+    /// `&[String]` signature — but that alone would not rule out symbols HERE.)
+    /// What pre-rendering does discard is the routes, so the repair that depends on
+    /// them is computed at the same moment and carried beside the strings.
+    AmbiguousSpecOpDispatch {
+        span: Option<Span>,
+        /// The spec op being dispatched, e.g. `ns.Desc.describe`.
+        op: Symbol,
+        /// The one carrier every candidate supplies an implementation FOR.
+        carrier: Symbol,
+        /// Each supplier rendered by its route — see [`render_suppliers`].
+        candidates: Vec<String>,
+        /// Whether any rival can be NAMED — see [`SupplierTieRepair`].
+        repair: SupplierTieRepair,
+    },
     /// `op[bindings](args)` named a binding key that doesn't correspond
     /// to any of the op's declared type-parameters. Replaces the
     /// WI-269 Phase D silent-drop site in `seed_op_type_args`.
@@ -611,6 +656,17 @@ impl TypeError {
                     &repair,
                 )
             }
+            // WI-1012: rendered by the channel's own owner, shared with the eval
+            // `Display` and both `LoadError` renderings (the `MacroRejected` /
+            // `unselected_instance_message` discipline).
+            TypeError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair, .. } => {
+                ambiguous_spec_op_dispatch_message(
+                    kb.qualified_name_of(*op),
+                    kb.qualified_name_of(*carrier),
+                    candidates,
+                    *repair,
+                )
+            }
             TypeError::NoSuchTypeParam { op, name, .. } => {
                 format!(
                     "{} has no type parameter named '{}'",
@@ -831,6 +887,7 @@ impl TypeError {
             | TypeError::UnreducedEquationFunctor { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
+            | TypeError::AmbiguousSpecOpDispatch { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
             | TypeError::DuplicateCallTypeArg { span, .. }
@@ -967,6 +1024,20 @@ impl TypeError {
                     spec: kb.qualified_name_of(tie.spec).to_string(),
                     candidates,
                     repair,
+                    span: self.span(kb),
+                }
+            }
+            // WI-1012: its OWN variant for WI-843's reason one ticket over — the
+            // "expected X, got Y" frame has no room for the candidate list, which is
+            // the whole diagnostic (the author has to know which of three syntaxes to
+            // delete). Spanned: the typer holds the call's span at the moment it
+            // declines to pin.
+            TypeError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair, .. } => {
+                LoadError::AmbiguousSpecOpDispatch {
+                    op: kb.qualified_name_of(*op).to_string(),
+                    carrier: kb.qualified_name_of(*carrier).to_string(),
+                    candidates: candidates.clone(),
+                    repair: *repair,
                     span: self.span(kb),
                 }
             }
@@ -10768,33 +10839,72 @@ fn check_apply_iter(
                 };
                 if let Some(carrier_sym) = carrier {
                     let op_qn = kb.qualified_name_of(fn_sym).to_string();
-                    let op_short_sym = kb.intern(short_name_of(&op_qn));
+                    let op_short = short_name_of(&op_qn).to_string();
+                    let op_short_sym = kb.intern(&op_short);
                     // WI-1010: the impl may arrive by ANY of the three supply routes,
                     // not just the carrier's own member — a WI-431 instance fact's
                     // op-valued binding fills the same gap and must win over the
-                    // default for the same reason. On a TIE this pins nothing and
-                    // defers: eval's read raises `AmbiguousSpecOpDispatch`, which is
-                    // the one wording that can name a route with no name of its own
-                    // (an instance fact, 058 §4.3) — see [`carrier_override_suppliers`].
+                    // default for the same reason. See [`carrier_override_suppliers`].
                     let cands = carrier_override_suppliers(
                         kb, spec_sort, carrier_sym, fn_sym, op_short_sym,
                     );
-                    if let [only] = cands.as_slice() {
-                        let impl_op = only.target;
-                        let derived = dispatched_impl_effects(
-                            kb, impl_op, &op.params, &subst, pos_args, named_args,
-                            pos_results, named_results,
-                        );
-                        merge_effects_into(kb, &mut effects, &derived);
-                        classify_pin_or_apply_within(
-                            kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
-                        );
-                        return Ok(TypeResult {
-                            ty: resolved_ret,
-                            env: env.clone(),
-                            effects,
-                            node: Rc::clone(occ),
-                        });
+                    match cands.as_slice() {
+                        [only] => {
+                            let impl_op = only.target;
+                            let derived = dispatched_impl_effects(
+                                kb, impl_op, &op.params, &subst, pos_args, named_args,
+                                pos_results, named_results,
+                            );
+                            merge_effects_into(kb, &mut effects, &derived);
+                            classify_pin_or_apply_within(
+                                kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
+                            );
+                            return Ok(TypeResult {
+                                ty: resolved_ret,
+                                env: env.clone(),
+                                effects,
+                                node: Rc::clone(occ),
+                            });
+                        }
+                        // WI-1012 — a TIE on a STATICALLY CONCRETE carrier is refused
+                        // HERE, at load. WI-1010 left it to eval, which costs three
+                        // things: `anthill check` passes on a program the interpreter
+                        // will refuse; a tie in a branch that never runs never reports;
+                        // and on the SLD path the refusal degrades to SILENCE, because
+                        // `resolve.rs`'s bridge residualizes `AmbiguousSpecOpDispatch`
+                        // to `None` and the enclosing rule just stops answering
+                        // (MEASURED: the rule below answered `[]`, and the program
+                        // loaded clean). Everything the diagnostic needs is in hand at
+                        // the moment this declines to pin — the span, the carrier and
+                        // the route-rendered candidate list — so declining silently was
+                        // a fallback, not a deferral.
+                        //
+                        // Eval's read STAYS and shares this wording: this block fires
+                        // only on a concrete carrier, so an abstract-spec receiver still
+                        // needs the late refusal.
+                        //
+                        // REACH, stated because it is narrower than the block around it
+                        // and nothing else records it: this arm can only fire on the
+                        // CARRIER-PARAM shape (`describe(x: T)`). For a SELF-RECEIVER
+                        // spec (`head(s: Stream)`) `provision_carrier_sort` files every
+                        // provision under the spec's FIRST TYPE PARAM — `Stream`'s `T`,
+                        // the element — so no route-2/3 supplier reaches such a carrier
+                        // and `cands` never holds two. That is WI-450's carrier-as-
+                        // artifact limit (058 §12), and closing it would silently widen
+                        // a LOAD refusal over the stdlib's largest defaulted-op family;
+                        // it must be a decision taken there, not a side effect.
+                        [_, _, ..] => {
+                            return Err(TypeError::AmbiguousSpecOpDispatch {
+                                span,
+                                op: fn_sym,
+                                carrier: carrier_sym,
+                                candidates: render_suppliers(kb, &cands, &op_short),
+                                repair: supplier_tie_repair(kb, fn_sym, &cands),
+                            });
+                        }
+                        // NO supplier: the gap a default exists to fill. Fall through
+                        // and run the spec's default body.
+                        [] => {}
                     }
                 }
             }
@@ -12315,6 +12425,112 @@ pub(crate) fn unselected_instance_message(
              Chosen]]`), or keep a single provider of `{spec}`"
         ),
     }
+}
+
+/// WI-1012 — whether a supplier tie has a candidate the author could NAME, the typed
+/// discriminator [`ambiguous_spec_op_dispatch_message`] branches on. The
+/// [`TieRepair`] discipline, one refusal over: "every way of reaching this diagnostic
+/// must say which it is, so a new one cannot quietly inherit" the wrong repair — and
+/// here the danger runs the other way, inheriting "no bracket helps" for a tie where
+/// one does.
+///
+/// Both arms are DRIVEN: [`Self::KeepOne`] by WI-1012's load and abstract-carrier
+/// tests, [`Self::NameableWitness`] by WI-842's `a_two_provider_value_directed_
+/// dispatch_names_both_candidates`, which is the only tie shape the corpus drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupplierTieRepair {
+    /// Nothing here can be named at any site, so deleting a text is the whole repair.
+    /// Either the op carries a DEFAULT body — then it has no `Dispatch` requirement
+    /// slot ([`callee_requirement_slots`] pushes one only for a body-less spec op), so
+    /// no bracket binds anything at any call — or every rival is the carrier's OWN
+    /// member or an INSTANCE FACT, and neither has a name (058 §4.3).
+    KeepOne,
+    /// A body-less spec op with a WITNESS SORT among the rivals. That witness is a
+    /// nameable provider distinct from the carrier, and `op[Spec = W](…)` selects it
+    /// through the `Dispatch` slot — just not HERE, since a value-directed read is
+    /// bracket-less by construction. So routing the call through a site that can write
+    /// the bracket is a real second repair, and dropping it (as one shared sentence
+    /// did) is the mistake [`super::load::LoadError::CallTypeArgsNotSupportedHere`]
+    /// carries a `position` field to avoid, mirror-imaged.
+    NameableWitness,
+}
+
+/// WI-1012 — classify a tie for [`ambiguous_spec_op_dispatch_message`]. Asked of the
+/// candidates rather than of the call site, so the three construction sites cannot
+/// each reason it out and drift: the typer's WI-444 arm is body-less-gated shut and so
+/// always answers [`SupplierTieRepair::KeepOne`], but it asks anyway.
+pub(crate) fn supplier_tie_repair(
+    kb: &KnowledgeBase,
+    spec_op: Symbol,
+    candidates: &[SpecOpSupplier],
+) -> SupplierTieRepair {
+    let bracket_dispatchable = lookup_spec_op_dispatch(kb, spec_op).is_some();
+    let has_witness = candidates.iter().any(|c| matches!(c.route, SupplyRoute::Witness(_)));
+    if bracket_dispatchable && has_witness {
+        SupplierTieRepair::NameableWitness
+    } else {
+        SupplierTieRepair::KeepOne
+    }
+}
+
+/// WI-1012 — the one message body for "several texts supply one spec op's
+/// implementation FOR one carrier, and nothing selects among them" (058 §4.9),
+/// shared by [`TypeError::AmbiguousSpecOpDispatch`],
+/// [`super::load::LoadError::AmbiguousSpecOpDispatch`]'s two renderings, and
+/// [`crate::eval::EvalError::AmbiguousSpecOpDispatch`] — the same refusal raised at
+/// LOAD when the carrier is statically concrete and at the CALL when it is not, so
+/// the two faces must not drift apart (the [`unselected_instance_message`] /
+/// `macro_rejection_message` discipline).
+///
+/// `candidates` are pre-rendered by [`render_suppliers`], which names each by its
+/// SUPPLY ROUTE because the three are written in three different syntaxes and the
+/// author has to know which text to delete.
+///
+/// THE REPAIR VARIES AND IS THEREFORE PASSED, not inferred from the strings: the
+/// first cut of this function asserted "no bracket at this site can choose between
+/// them" unconditionally, which is true of a DEFAULTED op (no `Dispatch` slot to bind)
+/// and FALSE of a body-less one whose rival is a witness sort — the one tie shape the
+/// corpus actually drives (WI-842). See [`SupplierTieRepair`].
+pub(crate) fn ambiguous_spec_op_dispatch_message(
+    op: &str,
+    carrier: &str,
+    candidates: &[String],
+    repair: SupplierTieRepair,
+) -> String {
+    let head = format!(
+        "ambiguous dispatch of `{op}` on carrier `{carrier}`: {} implementations are \
+         supplied for that carrier ({}) and nothing here selects one",
+        candidates.len(),
+        candidates.join(", "),
+    );
+    match repair {
+        SupplierTieRepair::KeepOne => format!(
+            "{head} — keep exactly one and delete the rest. No bracket names any of \
+             them: a `[Spec = Witness]` bracket binds a body-less spec op's dispatch \
+             slot to a PROVIDER, and here there is no such slot or no rival with a \
+             name (a carrier's own member and an instance fact have none)"
+        ),
+        SupplierTieRepair::NameableWitness => format!(
+            "{head} — keep exactly one and delete the rest, or route the call through \
+             an operation that can write `[Spec = Witness]`: a witness sort among the \
+             rivals IS nameable there, and this read is bracket-less, which is why it \
+             has to refuse rather than pick"
+        ),
+    }
+}
+
+/// WI-1012 — render every candidate of a supplier tie by its SUPPLY ROUTE. The THIRD
+/// construction of `AmbiguousSpecOpDispatch` (the typer's) made this a copy, which is
+/// exactly what [`crate::eval::Interpreter::sole_supplier_by_value`]'s doc says the
+/// shared body exists to prevent, so the rendering moved here rather than the doc's
+/// claim being narrowed. `op_short` is the spec op's short name, so the fact leg can
+/// echo the binding the author wrote (`describe = leafDescribe`).
+pub(crate) fn render_suppliers(
+    kb: &KnowledgeBase,
+    candidates: &[SpecOpSupplier],
+    op_short: &str,
+) -> Vec<String> {
+    candidates.iter().map(|c| c.render(kb, op_short)).collect()
 }
 
 /// WI-672 — sort identity by CANONICAL symbol: `a` and `b` name the same sort iff their

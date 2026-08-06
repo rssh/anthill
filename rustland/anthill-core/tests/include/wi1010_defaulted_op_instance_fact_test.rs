@@ -27,15 +27,22 @@
 //! | `an_unrunnable_own_member_is_not_a_supplier` | ok | ok | **FAILS** |
 //! | `an_abstract_receiver_reaches_the_fact_bound_impl` | ok | **FAILS** | **FAILS** |
 //! | `a_fact_bound_impls_effects_reach_the_call_site` | **FAILS** | ok | **FAILS** |
-//! | `an_own_member_rivalled_by_a_fact_binding_is_refused_at_the_call` | **FAILS** | **FAILS** | **FAILS** |
+//! | `an_own_member_rivalled_by_a_fact_binding_is_refused` | **FAILS** | ok | **FAILS** |
 //! | `the_carriers_own_member_still_beats_the_default` | ok | ok | ok |
 //! | `a_carrier_with_no_supplier_still_runs_the_default` | ok | ok | ok |
 //!
 //! So each half is separately load-bearing, and the two tests that prove it are the
 //! ones the redundancy does NOT cover: only the typer's static pin can surface a
 //! bound impl's EFFECTS at the call, and only the eval read sees a carrier the typer
-//! could not pin. The tie needs both, since either half left un-widened selects
-//! silently on its own.
+//! could not pin.
+//!
+//! The tie row moved (RE-MEASURED for WI-1012, all four runs, not carried over): it
+//! read `FAILS | FAILS | FAILS` while the refusal was eval's, because either half
+//! left un-widened selected silently on its own. Now that a statically concrete
+//! carrier is refused at LOAD, reverting the EVAL half alone leaves the typer to
+//! refuse and the test passes — the eval half's own control for a tie is
+//! `a_tie_on_an_abstract_carrier_is_still_refused_at_the_call`, in
+//! `wi1012_static_supplier_tie_test`.
 //!
 //! `an_unrunnable_own_member_is_not_a_supplier` has a SECOND control, orthogonal to
 //! this table and stated at the test: deleting the interpretability filter (with both
@@ -56,7 +63,7 @@
 //!
 //! REFERENCE: WI-444; WI-431; WI-842; `docs/design/058-implementation.md` §11, §12.
 
-use anthill_core::eval::{EvalError, Value};
+use anthill_core::eval::Value;
 
 /// Load `src` and answer `{ns}.probe` as an Int.
 ///
@@ -75,7 +82,15 @@ fn probe(ns: &str, src: &str) -> i64 {
 /// The ticket's program shape: a spec whose `describe` has a DEFAULT BODY (1), and a
 /// `Leaf` carrier whose implementation (7) arrives however `supply` writes it. The
 /// two answers disagree on purpose — 1 is the default firing, 7 is the supplied impl.
-fn program(ns: &str, leaf_body: &str, supply: &str) -> String {
+///
+/// `pub(crate)` because `wi1012_static_supplier_tie_test` refuses THIS program (WI-1012
+/// turns its tie case into a load error), and the two tickets asserting different
+/// things about one fixture is the point — a copy there would let the shape drift
+/// under the successor's feet. Sibling-module reuse is the house pattern
+/// (`wi859_self_provider_candidate_test` reads three helpers out of
+/// `wi837_witness_eq_dispatch_test`). `tail` appends extra namespace items; every
+/// caller in THIS file passes `""`.
+pub(crate) fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
@@ -91,7 +106,7 @@ fn program(ns: &str, leaf_body: &str, supply: &str) -> String {
 {leaf_body}  end
 {supply}
   operation probe() -> Int64 = Desc.describe(leaf())
-end
+{tail}end
 "#
     )
 }
@@ -107,6 +122,7 @@ fn a_fact_bound_impl_beats_the_spec_default() {
         "",
         "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  \
          fact Desc[T = Leaf, describe = leafDescribe]\n",
+        "",
     );
     assert_eq!(
         probe(ns, &src),
@@ -128,6 +144,7 @@ fn a_fact_completing_a_type_only_provision_beats_the_default() {
         "    provides Desc[T = Leaf]\n",
         "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  \
          fact Desc[T = Leaf, describe = leafDescribe]\n",
+        "",
     );
     assert_eq!(probe(ns, &src), 7, "a type-only provision beside the fact changes nothing");
 }
@@ -144,6 +161,7 @@ fn a_witness_supplied_impl_beats_the_spec_default() {
         "\n  sort LeafDesc\n    import anthill.prelude.Int64\n    \
          provides Desc[T = Leaf]\n    \
          operation describe(x: Leaf) -> Int64 = 7\n  end\n",
+        "",
     );
     assert_eq!(probe(ns, &src), 7, "a witness sort's member is an implementation, not a gap");
 }
@@ -158,6 +176,7 @@ fn the_carriers_own_member_still_beats_the_default() {
         ns,
         "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n",
         "",
+        "",
     );
     assert_eq!(probe(ns, &src), 7, "WI-444's own answer, unchanged");
 }
@@ -168,7 +187,7 @@ fn the_carriers_own_member_still_beats_the_default() {
 #[test]
 fn a_carrier_with_no_supplier_still_runs_the_default() {
     let ns = "test.wi1010.gap";
-    let src = program(ns, "    provides Desc[T = Leaf]\n", "");
+    let src = program(ns, "    provides Desc[T = Leaf]\n", "", "");
     assert_eq!(probe(ns, &src), 1, "nothing supplies `describe` — the default fills the gap");
 }
 
@@ -218,42 +237,43 @@ end
 }
 
 /// THE SECOND CANDIDATE. The carrier's own member and a fact binding a DIFFERENT
-/// operation are two implementations, and this read SELECTS one — so 058 §4.9 makes
-/// it loud rather than letting route order decide. Before the fix the fact was
-/// invisible here and the own member answered 7 silently.
+/// operation are two implementations, and the reader that consults both SELECTS one —
+/// so 058 §4.9 makes it loud rather than letting route order decide. Before this
+/// ticket the fact was invisible here and the own member answered 7 silently.
 ///
-/// Raised at the CALL, in eval, not at load: this is a bracket-less site (nothing
-/// later can name a selection), and `TypeError::DispatchAmbiguous` cannot describe
-/// this tie at all — its `InstanceTie` carries PROVIDER SYMBOLS, and an instance
-/// fact has no name (058 §4.3). `EvalError::AmbiguousSpecOpDispatch` renders the
-/// ROUTE of each candidate, so the fact leg can echo the binding the author wrote.
+/// WI-1012 MOVED WHERE IT IS RAISED, not whether. This program's `Leaf` is statically
+/// concrete, so the typer reaches the same two candidates at the moment it declines to
+/// pin and refuses at LOAD; the eval refusal is kept for a carrier the typer cannot
+/// pin (`a_tie_on_an_abstract_carrier_is_still_refused_at_the_call`), and the two
+/// quote one sentence. `TypeError::DispatchAmbiguous` could not have carried it: its
+/// `InstanceTie` holds PROVIDER SYMBOLS, and here both routes canonicalize to the same
+/// carrier — the candidates have to be rendered by ROUTE, the only wording that can
+/// name an instance fact, which has no name (058 §4.3).
 #[test]
-fn an_own_member_rivalled_by_a_fact_binding_is_refused_at_the_call() {
+fn an_own_member_rivalled_by_a_fact_binding_is_refused() {
     let ns = "test.wi1010.tie";
     let src = program(
         ns,
         "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n",
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
          fact Desc[T = Leaf, describe = otherDescribe]\n",
+        "",
     );
-    // The pair is legal to DECLARE — `interp_for` panics on a load error, so reaching
-    // the call at all is that assertion; the refusal belongs to the call, not the load.
-    let err = crate::common::interp_for(&src)
-        .call(&format!("{ns}.probe"), &[])
-        .expect_err("two implementations, no selection — the call must be refused");
-    let EvalError::AmbiguousSpecOpDispatch { carrier, candidates, .. } = &err else {
-        panic!("expected AmbiguousSpecOpDispatch, got {err:?}");
-    };
-    assert!(carrier.ends_with(".Leaf"), "the tie is per CARRIER: {carrier}");
+    let errs = crate::common::try_load_kb_with(&src)
+        .err()
+        .expect("two implementations, no selection — the program must be refused");
+    let msg = errs.join("\n");
     assert!(
-        candidates.iter().any(|c| c.contains("own member") && c.ends_with("Leaf.describe'")),
-        "route 1 must be named: {candidates:?}",
+        msg.contains("ambiguous dispatch") && msg.contains(".Leaf`"),
+        "the tie is per CARRIER: {msg}",
     );
     assert!(
-        candidates.iter().any(|c| c.contains("instance fact binding")
-            && c.contains("describe = ")
-            && c.ends_with("otherDescribe`")),
-        "the nameless fact must be quoted by its BINDING: {candidates:?}",
+        msg.contains("the carrier's own member") && msg.contains("Leaf.describe'"),
+        "route 1 must be named: {msg}",
+    );
+    assert!(
+        msg.contains("an instance fact binding `describe = ") && msg.contains("otherDescribe`"),
+        "the nameless fact must be quoted by its BINDING: {msg}",
     );
 }
 
@@ -337,6 +357,7 @@ fn an_unrunnable_own_member_is_not_a_supplier() {
         "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64\n",
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 7\n\n  \
          fact Desc[T = Leaf, describe = otherDescribe]\n",
+        "",
     );
     assert_eq!(
         probe(ns, &src),

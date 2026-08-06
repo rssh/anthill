@@ -381,6 +381,45 @@ pub enum LoadError {
         carrier: String,
         providers: Vec<String>,
     },
+    /// WI-1012 (proposal 058 §4.9) — the LOAD face of
+    /// [`crate::eval::EvalError::AmbiguousSpecOpDispatch`]: a call whose carrier the
+    /// typer can pin STATICALLY found two or more runnable suppliers of one spec op
+    /// and pinned none. Same name as the eval variant on purpose — one refusal, two
+    /// faces, rendered by one owner
+    /// ([`super::typing::ambiguous_spec_op_dispatch_message`]), the `MacroRejected`
+    /// discipline.
+    ///
+    /// Distinct from [`Self::AmbiguousEqDispatch`] in WHY it is at load: that one has
+    /// no use site at all (equality dispatches from unification), whereas this one has
+    /// a use site AND an eval twin. It is here because deferring is a fallback — the
+    /// typer already holds the span, the carrier and the candidate list when it
+    /// declines to pin, `anthill check` would otherwise pass on a program the
+    /// interpreter refuses, and inside SLD the eval refusal residualizes to `None`, so
+    /// a rule body calling such an op reports the tie by ANSWERING NOTHING.
+    ///
+    /// Distinct from [`Self::UnselectedInstance`] in WHAT tied: that is a tie between
+    /// nameable PROVIDERS of a spec, always repairable with a `[Spec = Witness]`
+    /// bracket. This is a tie between the TEXTS that supply one carrier's
+    /// implementation, where a bracket separates them only in the one shape
+    /// [`super::typing::SupplierTieRepair::NameableWitness`] names — hence
+    /// route-rendered candidates and a repair of its own rather than
+    /// [`super::typing::TieRepair`].
+    ///
+    /// Load-blocking and span-bearing.
+    AmbiguousSpecOpDispatch {
+        /// The spec op being dispatched, qualified (`ns.Desc.describe`).
+        op: String,
+        /// The one carrier every candidate supplies an implementation for.
+        carrier: String,
+        /// Each supplier rendered by its SUPPLY ROUTE — see
+        /// [`super::typing::render_suppliers`].
+        candidates: Vec<String>,
+        /// Whether any rival can be NAMED at a bracket-capable call — a typed answer,
+        /// like [`Self::UnselectedInstance`]'s [`super::typing::TieRepair`]; see
+        /// [`super::typing::SupplierTieRepair`].
+        repair: super::typing::SupplierTieRepair,
+        span: Option<Span>,
+    },
     /// WI-843 (proposal 058 §4.1 **tier 3**) — the refusal that REPLACED the
     /// load-time two-witness one. Several providers answer a spec-op dispatch at
     /// this call's bindings and the call names none of them, so the program does
@@ -1132,6 +1171,7 @@ impl LoadError {
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
             | LoadError::UnselectedInstance { span, .. }
+            | LoadError::AmbiguousSpecOpDispatch { span, .. }
             | LoadError::TypedPatternNotEnforced { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
@@ -1309,6 +1349,15 @@ impl LoadError {
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
                     providers.len(), carrier, providers.join("; "))
+            }
+            LoadError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair, span } => {
+                let msg = super::typing::ambiguous_spec_op_dispatch_message(
+                    op, carrier, candidates, *repair,
+                );
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
             }
             LoadError::ConflictingProvisionBindings { carrier, spec, param, values } => {
                 format!("conflicting provisions: '{}' declares '{}' more than once, binding '{}' to {} different types ({}) — every reader of a carrier's provider view takes the first matching provision, so which one applies would be decided by the order the provisions are written; keep one `{}[…]` per carrier, or bind the differing parameter on distinct carriers",
@@ -1707,6 +1756,15 @@ impl std::fmt::Display for LoadError {
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 write!(f, "ambiguous semantic equality: {} distinct `eq` implementations for carrier '{}' ({}) — `eq` dispatches from unification, with no call site to select at (keep exactly one)",
                     providers.len(), carrier, providers.join("; "))
+            }
+            LoadError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair, span } => {
+                let msg = super::typing::ambiguous_spec_op_dispatch_message(
+                    op, carrier, candidates, *repair,
+                );
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::ConflictingProvisionBindings { carrier, spec, param, values } => {
                 write!(f, "conflicting provisions: '{}' declares '{}' twice, binding '{}' to {} ({}) — the first provision written would silently win (keep one)",

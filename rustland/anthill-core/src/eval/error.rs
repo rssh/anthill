@@ -125,9 +125,21 @@ pub enum EvalError {
     /// own rather than [`Self::Internal`].
     ///
     /// Each candidate is rendered by its SUPPLY ROUTE
-    /// ([`crate::kb::typing::SpecOpSupplier::render`]) because the three are written
+    /// ([`crate::kb::typing::render_suppliers`]) because the three are written
     /// in three syntaxes and the author must know which text to delete.
-    AmbiguousSpecOpDispatch { op: String, carrier: String, candidates: Vec<String> },
+    ///
+    /// WI-1012 gave this refusal a LOAD face
+    /// ([`crate::kb::typing::TypeError::AmbiguousSpecOpDispatch`]) for a statically
+    /// concrete carrier; this one keeps the carriers the typer cannot pin, and the two
+    /// share one message body. `repair` is what that sharing made explicit: whether a
+    /// rival can be NAMED differs between the two value-directed readers below, so it
+    /// is a typed field rather than a sentence each site assumes.
+    AmbiguousSpecOpDispatch {
+        op: String,
+        carrier: String,
+        candidates: Vec<String>,
+        repair: crate::kb::typing::SupplierTieRepair,
+    },
     /// WI-757 — the WI-722 macro contract's DIAGNOSTIC channel for a HOST macro:
     /// it read its argument occurrences, found them definitively untranslatable,
     /// and says why. An anthill-written macro reaches the same channel by
@@ -238,14 +250,17 @@ impl std::fmt::Display for EvalError {
                  through an operation that can write one, or keep a single provision",
                 candidates.join(", "),
             ),
-            EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates } => write!(
+            // WI-1012: rendered by the channel's own owner
+            // (`kb::typing::ambiguous_spec_op_dispatch_message`), shared with
+            // `TypeError::AmbiguousSpecOpDispatch` and both `LoadError` renderings —
+            // the same tie is refused at LOAD when the carrier is statically concrete
+            // and here when it is not, so the two faces must quote one sentence.
+            EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair } => write!(
                 f,
-                "value-directed dispatch of `{op}` on carrier `{carrier}`: {} supply an \
-                 implementation ({}) and this call selects none — value-directed \
-                 dispatch carries no `[Spec = Witness]` bracket, so route the call \
-                 through an operation that can write one, or keep a single provision",
-                candidates.len(),
-                candidates.join(", "),
+                "{}",
+                crate::kb::typing::ambiguous_spec_op_dispatch_message(
+                    op, carrier, candidates, *repair,
+                ),
             ),
             // WI-757: the same sentence the typer renders into a load error, so a
             // macro invoked at runtime and one expanded at compile time report the
