@@ -414,11 +414,12 @@ mod tests {
         );
 
         // A symbol classified `OpResult` is recognised.
+        let root_scope = kb.global_scope();
         let real = kb.symbols.define(
             "Cell.new.result",
             "Cell.new.result",
             crate::intern::SymbolKind::OpResult,
-            0,
+            root_scope,
         );
         assert!(
             is_result_region_sym(&kb, real),

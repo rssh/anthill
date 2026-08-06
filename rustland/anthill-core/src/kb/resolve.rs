@@ -5672,24 +5672,21 @@ impl KnowledgeBase {
             return BuiltinResult::Failure;
         };
 
-        let scope_raw = match self.symbols.get(sym) {
-            crate::intern::SymbolDef::Resolved { scope_raw, .. } => *scope_raw,
-            _ => return BuiltinResult::Failure,
+        // WI-984 — the scope, then its OWNER. `None` here means the symbol is
+        // unresolved and so has no scope at all; the second failure this had — a
+        // scope whose stored TERM was not a nullary `Fn` — cannot happen off a
+        // `ScopeId`. See `intern::ScopeId` for the mechanism and the measurement.
+        let Some(scope) = self.symbols.declaring_scope(sym) else {
+            return BuiltinResult::Failure;
         };
-
-        let scope_tid = super::term::TermId::from_raw(scope_raw);
-        // The scope term is a Fn term — return it directly
-        match self.terms.get(scope_tid) {
-            Term::Fn { functor, .. } => {
-                let f = *functor;
-                // Check if scope is _global (top-level, no meaningful parent)
-                if self.symbols.local_name(f) == "_global" {
-                    return BuiltinResult::Failure;
-                }
-                self.finish_result(target, scope_tid)
-            }
-            _ => BuiltinResult::Failure,
+        // `_global` is the top level: no meaningful parent to answer with. Compared
+        // as a SCOPE, not by short name (`local_name(owner) == "_global"`), now that
+        // scopes have an identity to compare.
+        if scope == self.global_scope() {
+            return BuiltinResult::Failure;
         }
+        let scope_tid = self.make_name_term_from_sym(scope.owner());
+        self.finish_result(target, scope_tid)
     }
 
     /// `kind(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
@@ -10230,8 +10227,8 @@ mod tests {
         let mut kb = kb_with_prelude();
 
         // Define a symbol "foo.Bar" via the symbol table
-        let global = kb.make_name_term("_global");
-        kb.symbols.define("Bar", "foo.Bar", crate::intern::SymbolKind::Sort, global.raw());
+        let g = kb.global_scope();
+        kb.symbols.define("Bar", "foo.Bar", crate::intern::SymbolKind::Sort, g);
 
         // Look up the symbol and build: qualified_name(Ref(Bar), ?result)
         let bar_sym = *kb.symbols.by_qualified_name.get("foo.Bar").unwrap();
@@ -10263,8 +10260,8 @@ mod tests {
     fn builtin_short_name_binds_result() {
         let mut kb = kb_with_prelude();
 
-        let global = kb.make_name_term("_global");
-        kb.symbols.define("Baz", "alpha.beta.Baz", crate::intern::SymbolKind::Sort, global.raw());
+        let g = kb.global_scope();
+        kb.symbols.define("Baz", "alpha.beta.Baz", crate::intern::SymbolKind::Sort, g);
 
         let baz_sym = *kb.symbols.by_qualified_name.get("alpha.beta.Baz").unwrap();
         let baz_ref = kb.alloc(Term::Ref(baz_sym));
@@ -10293,8 +10290,8 @@ mod tests {
     fn builtin_lookup_symbol_finds_existing() {
         let mut kb = kb_with_prelude();
 
-        let global = kb.make_name_term("_global");
-        kb.symbols.define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, global.raw());
+        let g = kb.global_scope();
+        kb.symbols.define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, g);
         let qux_sym = *kb.symbols.by_qualified_name.get("ns.Qux").unwrap();
 
         let name_str = kb.alloc(Term::Const(Literal::String("ns.Qux".into())));
@@ -10364,8 +10361,8 @@ mod tests {
         use crate::span::{SourceId, SourceSpan};
 
         let mut kb = kb_with_prelude();
-        let global = kb.make_name_term("_global");
-        kb.symbols.define("Quux", "ns.Quux", crate::intern::SymbolKind::Sort, global.raw());
+        let g = kb.global_scope();
+        kb.symbols.define("Quux", "ns.Quux", crate::intern::SymbolKind::Sort, g);
         let quux_sym = *kb.symbols.by_qualified_name.get("ns.Quux").unwrap();
 
         let result_sym = kb.intern("?result");

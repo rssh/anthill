@@ -140,5 +140,9 @@ Integration tests in `anthill-core/tests/` follow:
   `intern::positional_label(i)` and read via `positional_label_index` /
   `is_positional_label_at` (WI-790). Anything else `_`-prefixed (`_0`, `_01`,
   `_b`) is a USER label, reachable only by name and never re-slotted positionally.
+- A scope is a `ScopeId`, never a raw. Mint it with `SymbolTable::scope_id(owner_symbol)`
+  — or `KnowledgeBase::scope_id_of(name_term)` where the loader already holds the scope
+  TERM — and read its owner with `ScopeId::owner()`. Never key a scope on a `TermId`:
+  the owner projection is total off the symbol and was not off the term (WI-984).
 - `assert_rule_debruijn_with_nodes` for rules (converts vars; term bodies first go through `term_body_to_nodes`), `assert_fact` for ground facts (arity 0).
 - `FnArg` is `Copy` (both `TermId` and `Symbol` are `Copy`).

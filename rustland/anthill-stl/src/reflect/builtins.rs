@@ -776,7 +776,23 @@ fn lookup_symbol_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, E
 fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("scope", args)?;
     let sym = expect_symbol(interp.kb(), s, "scope")?;
-    let scope_sym = interp.kb().scope_of(sym);
+    // WI-984 — THE DECLARED CONTRACT, which this did not implement: `reflect.anthill`
+    // says "Symbol → enclosing scope symbol (None for top-level)". It used to call
+    // `KnowledgeBase::scope_of`, a scan for a SIBLING sort/namespace/operation
+    // sharing the symbol's scope — a different question with different answers.
+    // MEASURED on `sort Tank { entity Full(litres: Int64); operation fill(…) }`:
+    // this op answered `none` for `Tank.Full.litres`, `Tank.fill` and `Tank`, and
+    // `Tank.fill` (a sibling operation!) for `Tank.Full`, while the SLD builtin
+    // backing the SAME QN answered `Full`, `Tank`, `wi984s` and `Tank`. One
+    // operation, two backings, no shared answer. Now both read the declaring scope.
+    //
+    // `_global` is the top level, so it is the `None` the declaration promises —
+    // the same rule `resolve::builtin_scope` applies.
+    let global = interp.kb_mut().global_scope();
+    let scope_sym = interp
+        .kb()
+        .declaring_scope_symbol(sym)
+        .filter(|&owner| owner != global.owner());
     // Lookup Option.some / Option.none every call — not hot path; keeping
     // these out of ReflectSyms because this op is reachable even with a
     // stripped reflect stdlib (it's a namespace-level op, not a KB method).
@@ -1620,19 +1636,29 @@ end
         // must not be able to drift into checking different op sets.
         assert_symbol_ops(&mut interp, sym_val.clone(), "test.wi1016_seam.Color", "Color", "Sort");
 
-        // `scope` is asserted only to ACCEPT the carrier and answer whatever
-        // `KnowledgeBase::scope_of` answers — not pinned to a particular symbol.
-        // That reader returns a SIBLING sort/namespace/operation sharing the
-        // symbol's `scope_raw`, not the parent (`scope_of(anthill.prelude.Int64)`
-        // is `anthill.prelude.List`), so pinning it here would be pinning an
-        // unrelated function's behaviour. `Shape` above is what gives `Color` a
-        // sibling to find at all.
+        // `scope` on the minted carrier — and since WI-984 it is worth pinning WHICH
+        // symbol. This used to answer whatever `KnowledgeBase::scope_of` did, a scan
+        // for a SIBLING sort/namespace/operation sharing the symbol's declaring
+        // scope, so only the `some`/`none` shape could be asserted. It now answers
+        // the DECLARING SCOPE its own stdlib signature promises ("Symbol → enclosing
+        // scope symbol"), which for `Color` is the namespace that declares it.
+        let scope_answer = interp
+            .call("anthill.reflect.scope", &[sym_val.clone()])
+            .expect("scope must answer on a minted Symbol");
         assert_eq!(
-            interp.call("anthill.reflect.scope", &[sym_val.clone()])
-                .map(|v| anthill_core::eval::value_functor(interp.kb(), &v)
-                    .map(|f| interp.kb().local_name_of(f).to_string()))
-                .expect("scope must answer on a minted Symbol"),
+            anthill_core::eval::value_functor(interp.kb(), &scope_answer)
+                .map(|f| interp.kb().local_name_of(f).to_string()),
             Some("some".to_string()),
+        );
+        let inner = match &scope_answer {
+            Value::Entity { named, .. } => named[0].1.clone(),
+            other => panic!("expected `some(value: …)`, got {other:?}"),
+        };
+        assert_eq!(
+            anthill_core::eval::value_functor(interp.kb(), &inner)
+                .map(|f| interp.kb().qualified_name_of(f).to_string()),
+            Some("test.wi1016_seam".to_string()),
+            "`scope` answers the DECLARING scope, not a sibling",
         );
 
         // The fifth reader, whose `param` argument is the Symbol: a `SortView`

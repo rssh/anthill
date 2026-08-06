@@ -480,7 +480,7 @@ fn query_pattern_written_empty_effect_row_lowers() {
     let errs = load::scan_definitions(&mut kb, &[&parsed]);
     assert!(errs.is_empty(), "the CLI query-pattern scan must be clean: {:?}",
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
-    let global_raw = kb.make_name_term("_global").raw();
+    let global_scope = kb.global_scope();
     let mut var_map = HashMap::new();
     let mut term = None;
     for item in &parsed.items {
@@ -491,7 +491,7 @@ fn query_pattern_written_empty_effect_row_lowers() {
                 &parsed.terms,
                 &parsed.symbols,
                 f.term,
-                global_raw,
+                global_scope,
                 &mut var_map,
             ));
         }

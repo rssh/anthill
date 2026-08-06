@@ -9587,16 +9587,11 @@ fn internal_field_hidden_from(kb: &mut KnowledgeBase, scope: Option<Symbol>, cto
         return false;
     }
     match scope {
-        Some(s) => {
-            let scope = kb
-                .alloc(Term::Fn {
-                    functor: s,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::new(),
-                })
-                .raw();
-            !kb.symbols.internal_visible_from(ctor, scope)
-        }
+        // WI-984: the enclosing sort's scope, straight off its symbol. Was an
+        // `alloc(Fn{s}).raw()`, which for a sort with an eponymous constructor
+        // canonicalizes to `Term::Ref` (WI-511) and so keyed a scope that holds
+        // nothing — every `internal` field of such a sort read as visible.
+        Some(s) => !kb.symbols.internal_visible_from(ctor, kb.symbols.scope_id(s)),
         None => false,
     }
 }
@@ -10722,7 +10717,7 @@ fn check_apply_iter(
         // bare-interned) against it — so only the eval channel is translated,
         // making the two keyings agree on the op-scoped identity.
         if !op.type_params.is_empty() {
-            let op_scope_raw = kb.make_name_term_from_sym(fn_sym).raw();
+            let op_scope = kb.symbols.scope_id(fn_sym);
             let mut resolved: Vec<(Symbol, TermId)> = Vec::with_capacity(op.type_params.len());
             for (name, var) in &op.type_params {
                 let var_term = type_param_var_term(kb, *var);
@@ -10732,7 +10727,7 @@ fn check_apply_iter(
                 // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
                 // rather than a stale unresolved var.
                 let walked = surface_node_binding_to_term(kb, &subst, walked);
-                let key = op_scoped_type_param_symbol(kb, op_scope_raw, *name);
+                let key = op_scoped_type_param_symbol(kb, op_scope, *name);
                 resolved.push((key, walked));
             }
             occ.set_resolved_type_args(resolved);
@@ -14431,14 +14426,14 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
 /// to, exactly as before WI-708.
 fn op_scoped_type_param_symbol(
     kb: &KnowledgeBase,
-    op_scope_raw: u32,
+    op_scope: crate::intern::ScopeId,
     declared: Symbol,
 ) -> Symbol {
     let short = kb.local_name_of(declared).to_string();
-    if !kb.symbols.is_type_param(op_scope_raw, &short) {
+    if !kb.symbols.is_type_param(op_scope, &short) {
         return declared;
     }
-    match kb.symbols.resolve_in_scope(&short, op_scope_raw) {
+    match kb.symbols.resolve_in_scope(&short, op_scope) {
         crate::intern::ResolveResult::Found(s) => s,
         _ => declared,
     }
@@ -28908,12 +28903,11 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
 /// (which IS a type-param) from `sort Term = ?` at namespace level
 /// (which is a top-level abstract sort, not a type parameter).
 pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
-    use crate::intern::SymbolDef;
-    let SymbolDef::Resolved { scope_raw, .. } = kb.symbols.get(sym) else {
+    let Some(scope) = kb.symbols.declaring_scope(sym) else {
         return false;
     };
     let short_name = kb.local_name_of(sym);
-    kb.symbols.is_type_param(*scope_raw, short_name)
+    kb.symbols.is_type_param(scope, short_name)
 }
 
 /// The alias target of `SortAlias(<sym>, target)`, matched on EXACT symbol identity.
@@ -40431,7 +40425,8 @@ mod p4_tests {
         .into_iter()
         .enumerate()
         {
-            let s = kb.symbols.define(&format!("p{i}"), &format!("wi470.test.p{i}"), kind, 0);
+            let scope = kb.global_scope();
+            let s = kb.symbols.define(&format!("p{i}"), &format!("wi470.test.p{i}"), kind, scope);
             let r = NodeOccurrence::new_expr(Expr::Ref(s), span(), None);
             assert!(
                 !denoted_value_is_closed(&kb, &r),
@@ -40441,7 +40436,8 @@ mod p4_tests {
 
         // Closed: a ref to a GLOBAL identity (Sort/Entity/Operation) — the `store` of
         // `Modify[store]` (a global resource), compared by symbol identity, not alignment.
-        let store = kb.symbols.define("store", "wi470.test.store", SymbolKind::Entity, 0);
+        let scope = kb.global_scope();
+        let store = kb.symbols.define("store", "wi470.test.store", SymbolKind::Entity, scope);
         let global_ref = NodeOccurrence::new_expr(Expr::Ref(store), span(), None);
         assert!(denoted_value_is_closed(&kb, &global_ref), "a global (non-place) ref is closed");
     }
@@ -40468,10 +40464,10 @@ mod p4_tests {
         // (`assert_sort_alias`). Built directly because `register_prelude` loads no
         // parametric stdlib sort, so `type_param_vid_in_sort` has nothing to resolve.
         let global = kb.make_name_term("_global");
-        let global_raw = global.raw();
+        let global_scope = kb.scope_id_of(global);
         let global_domain = kb.name_term_sym(global);
-        kb.symbols.define_qualified_only("Box", "Box", SymbolKind::Sort, global_raw);
-        kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, global_raw);
+        kb.symbols.define_qualified_only("Box", "Box", SymbolKind::Sort, global_scope);
+        kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, global_scope);
         let box_sym = kb.resolve_symbol("Box");
         let box_t = kb.resolve_symbol("Box.T");
         // SortAlias(Fn{Box.T}, Var::Global(vid)) — pos[0] is the nullary `Fn` head
@@ -41113,11 +41109,12 @@ mod wi617_canonical_provider_match_tests {
         // The reflection functor `spec_has_any_providers` resolves by QN. Defined
         // (not merely interned) so `try_resolve_symbol` finds it AND so the fact's
         // head functor is canonical (satisfying the WI-581 assert on assert_fact).
+        let root_scope = kb.global_scope();
         let provides_sym = kb.define_symbol(
             "SortProvidesInfo",
             "anthill.reflect.SortProvidesInfo",
             SymbolKind::Entity,
-            0,
+            root_scope,
         );
 
         // S_alt: an unresolved scan-time interning of the spec's QN. Interned
@@ -41130,7 +41127,7 @@ mod wi617_canonical_provider_match_tests {
             "FiniteCollection",
             "test.finite.FiniteCollection",
             SymbolKind::Sort,
-            0,
+            root_scope,
         );
 
         // Precondition that makes the test discriminate raw `==` from canonical:
@@ -41183,7 +41180,7 @@ mod wi617_canonical_provider_match_tests {
             "Unrelated",
             "test.finite.Unrelated",
             SymbolKind::Sort,
-            0,
+            root_scope,
         );
         assert!(
             !spec_has_any_providers(&kb, unrelated),
@@ -41229,7 +41226,7 @@ mod wi621_carrier_neutral_goal_subst {
     fn kb() -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
-        let global = kb.make_name_term("_global").raw();
+        let global = kb.global_scope();
         kb.symbols.define_qualified_only(
             "var_ref",
             "anthill.reflect.Expr.var_ref",

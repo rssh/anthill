@@ -88,8 +88,8 @@ fn kb_importing(namespaces: &[&str]) -> KnowledgeBase {
     load_kb_with(&src)
 }
 
-fn global_raw(kb: &mut KnowledgeBase) -> u32 {
-    kb.make_name_term("_global").raw()
+fn global_scope(kb: &mut KnowledgeBase) -> anthill_core::intern::ScopeId {
+    kb.global_scope()
 }
 
 /// THE DEFECT AT A REFERENCE. Two `Widget917`s in scope, and the citation loaded CLEAN —
@@ -135,7 +135,7 @@ fn a_single_import_still_resolves_the_identical_dotted_path() {
 #[test]
 fn an_ambiguous_dotted_head_at_a_query_pattern_reads_as_ambiguous() {
     let mut kb = kb_importing(&["wi917.alpha", "wi917.beta"]);
-    let scope = global_raw(&mut kb);
+    let scope = global_scope(&mut kb);
 
     let verdict = load::resolve_name_in_kb(&kb, "SortInfo.si917a", scope);
 
@@ -181,7 +181,7 @@ fn an_ambiguous_dotted_host_name_is_refused_as_ambiguous_not_absent() {
 #[test]
 fn a_contested_name_is_found_in_every_position_wi863_tolerates() {
     let mut kb = kb_importing(&["wi917.alpha", "wi917.beta"]);
-    let scope = global_raw(&mut kb);
+    let scope = global_scope(&mut kb);
     let contested = kb.resolve_symbol("wi917.alpha.SortInfo");
 
     for pattern in [
@@ -214,7 +214,7 @@ fn a_contested_name_is_found_in_every_position_wi863_tolerates() {
 #[test]
 fn an_absent_name_in_a_tolerated_position_is_still_tolerated() {
     let mut kb = kb_importing(&["wi917.alpha", "wi917.beta"]);
-    let scope = global_raw(&mut kb);
+    let scope = global_scope(&mut kb);
 
     for pattern in [
         "push_choice(w917a(v: ?x), no_such_thing917(?z))",

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{positional_label, positional_label_index, Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
+use crate::intern::{positional_label, positional_label_index, ScopeId, Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
 use crate::parse::pratt;
 use crate::span::{LineIndex, Span, SourceId, SourceSpan};
@@ -2077,7 +2077,7 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // symbol, not `rules_by_functor` — rules aren't asserted until the load phase.)
     for p in pending {
         match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
-            Some(sym) => kb.symbols.add_import(p.scope_raw, &p.short, sym),
+            Some(sym) => kb.symbols.add_import(p.scope, &p.short, sym),
             // WI-745: stamp with the file the import was written in (sub-pass 4
             // runs outside the per-file loop, so `p` carries its own provenance).
             None => errors.push(
@@ -2333,6 +2333,26 @@ fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
 /// If the name has no dots, returns `(full_name, outer_scope)` unchanged.
 ///
 /// `prefix` is the fully-qualified path of the enclosing scope. Intermediate
+
+/// The NAMESPACE already declared as `qualified` DIRECTLY IN `scope`, if any —
+/// the "several files contribute to one namespace" reuse test, asked identically
+/// by the implicit-namespace walk and by `DefinePass`'s `Namespace` arm. Both
+/// spelled it inline before WI-984, and both had to be edited in step when the
+/// scope key changed type.
+///
+/// Scope-DIRECT and kind-checked: a same-named namespace elsewhere, or a sort of
+/// that name here, is not this one.
+fn existing_namespace_in_scope(
+    kb: &KnowledgeBase,
+    qualified: &str,
+    scope: ScopeId,
+) -> Option<Symbol> {
+    kb.symbols.by_qualified_name.get(qualified).copied().filter(|&sym| {
+        kb.symbols.declaring_scope(sym) == Some(scope)
+            && kb.symbols.get(sym).has_kind(SymbolKind::Namespace)
+    })
+}
+
 /// namespaces get qualified names prepended with this prefix.
 fn ensure_intermediate_namespaces(
     kb: &mut KnowledgeBase,
@@ -2351,16 +2371,11 @@ fn ensure_intermediate_namespaces(
         let path: String = segments[..=i].join(".");
         let qualified_path = make_qualified(prefix, &path);
         let short = segments[i];
+        // Re-derived per iteration: `current_scope` walks down the namespace path.
+        let current_scope_id = kb.scope_id_of(current_scope);
 
         // Check if this namespace already exists in the current scope
-        let existing = kb.symbols.by_qualified_name.get(&qualified_path).copied().filter(|&sym| {
-            matches!(
-                kb.symbols.get(sym),
-                SymbolDef::Resolved { scope_raw, .. }
-                if *scope_raw == current_scope.raw()
-                    && kb.symbols.get(sym).has_kind(SymbolKind::Namespace)
-            )
-        });
+        let existing = existing_namespace_in_scope(kb, &qualified_path, current_scope_id);
 
         let ns_term = if let Some(sym) = existing {
             // Reuse existing namespace
@@ -2371,16 +2386,15 @@ fn ensure_intermediate_namespaces(
             })
         } else {
             // Create implicit namespace
-            let sym = kb.symbols.define(short, &qualified_path, SymbolKind::Namespace, current_scope.raw());
+            let sym = kb.symbols.define(short, &qualified_path, SymbolKind::Namespace, current_scope_id);
             let ns_term = kb.alloc(Term::Fn {
                 functor: sym,
                 pos_args: SmallVec::new(),
                 named_args: SmallVec::new(),
             });
             // Enclosing scope is visible from within this namespace
-            kb.symbols.add_parent(ns_term.raw(), ScopeInclusion {
-                parent_scope_raw: current_scope.raw(),
-                instantiation_term_raw: current_scope.raw(),
+            kb.symbols.add_parent(kb.scope_id_of(ns_term), ScopeInclusion {
+                parent_scope: current_scope_id,
                 is_enclosing: true,
             });
             ns_term
@@ -2457,9 +2471,11 @@ fn scan_operation_params(
     // Allocate the scope term unconditionally so paramless ops still
     // resolve `result`.
     let op_term = kb.make_name_term_from_sym(op_sym);
-    kb.symbols.add_parent(op_term.raw(), ScopeInclusion {
-        parent_scope_raw: enclosing_scope.raw(),
-        instantiation_term_raw: enclosing_scope.raw(),
+    // Loop-invariant: the op frame's scope, derived once for the param,
+    // type-param and result mints below.
+    let op_scope = kb.scope_id_of(op_term);
+    kb.symbols.add_parent(op_scope, ScopeInclusion {
+        parent_scope: kb.scope_id_of(enclosing_scope),
         is_enclosing: true,
     });
 
@@ -2470,8 +2486,8 @@ fn scan_operation_params(
     for tp in &op.type_params {
         let tp_name = parse_sym.local_name(tp.name);
         let qualified = make_qualified(prefix, tp_name);
-        kb.symbols.define(tp_name, &qualified, SymbolKind::Sort, op_term.raw());
-        kb.symbols.add_type_param(op_term.raw(), tp_name);
+        kb.symbols.define(tp_name, &qualified, SymbolKind::Sort, op_scope);
+        kb.symbols.add_type_param(op_scope, tp_name);
     }
 
     // WI-352: the op's ordered argument-place symbols, recorded on the op
@@ -2489,7 +2505,7 @@ fn scan_operation_params(
         // WI-352: an op parameter's `SymbolKind::Param` *is* its place
         // classification (provenance `input`) — no side-table.
         let param_sym =
-            kb.symbols.define(param_name, &qualified, SymbolKind::Param, op_term.raw());
+            kb.symbols.define(param_name, &qualified, SymbolKind::Param, op_scope);
         op_arg_places.push(param_sym);
 
         // WI-352: a callback-typed parameter contributes its own places — a
@@ -2507,7 +2523,7 @@ fn scan_operation_params(
                 parse_sym,
                 params,
                 return_type,
-                op_term.raw(),
+                op_scope,
                 prefix,
                 param_name,
             );
@@ -2520,7 +2536,7 @@ fn scan_operation_params(
     // WI-352: the reserved result binder carries its role in its kind —
     // `OpResult` (provenance `op_result`). `is_result_binder` and WI-314 region
     // masking key on this kind; no side-table registration.
-    kb.symbols.define("result", &result_qualified, SymbolKind::OpResult, op_term.raw());
+    kb.symbols.define("result", &result_qualified, SymbolKind::OpResult, op_scope);
 
     // WI-262: `result.<field>` per-component projection (`Modify[result.a]`) is
     // now lowered uniformly by the type-level projection path — the dotted name's
@@ -2541,14 +2557,14 @@ fn scan_operation_params(
 /// (`f.g.x`, `f.result.z`) all resolve to a place. Param names are read off the
 /// parse-IR arrow (WI-355 preserves them); unnamed params fall back to the
 /// 1-based positional `_{i+1}` matching the arrow-type lowering (spec §4.5). All
-/// places share the operation's scope (`op_scope_raw`) and qualified `prefix`.
+/// places share the operation's scope (`op_scope`) and qualified `prefix`.
 /// Recursion terminates with the (finite) parse tree — no cycles to bound.
 fn register_callback_places(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
     params: &[(Option<Symbol>, TypeExpr)],
     return_type: &TypeExpr,
-    op_scope_raw: u32,
+    op_scope: ScopeId,
     prefix: &str,
     rel_path: &str,
 ) {
@@ -2571,23 +2587,23 @@ fn register_callback_places(
         let sub_path = format!("{}.{}", rel_path, cb_name);
         let qualified = make_qualified(prefix, &sub_path);
         let cb_sym =
-            kb.symbols.define(&sub_path, &qualified, SymbolKind::CallbackParam, op_scope_raw);
+            kb.symbols.define(&sub_path, &qualified, SymbolKind::CallbackParam, op_scope);
         cb_arg_places.push(cb_sym);
         // A param that is itself a callback — descend.
         if let TypeExpr::Arrow { params: inner, return_type: inner_ret, .. } = cb_ty {
             register_callback_places(
-                kb, parse_sym, inner, inner_ret, op_scope_raw, prefix, &sub_path,
+                kb, parse_sym, inner, inner_ret, op_scope, prefix, &sub_path,
             );
         }
     }
     // The callback's own result place — `<op>.<rel_path>.result`.
     let res_path = format!("{}.result", rel_path);
     let qualified = make_qualified(prefix, &res_path);
-    kb.symbols.define(&res_path, &qualified, SymbolKind::CallbackResult, op_scope_raw);
+    kb.symbols.define(&res_path, &qualified, SymbolKind::CallbackResult, op_scope);
     // A result that is itself a callback (a curried op) — descend.
     if let TypeExpr::Arrow { params: inner, return_type: inner_ret, .. } = return_type {
         register_callback_places(
-            kb, parse_sym, inner, inner_ret, op_scope_raw, prefix, &res_path,
+            kb, parse_sym, inner, inner_ret, op_scope, prefix, &res_path,
         );
     }
     // Publish the ordered arg places on this callback's symbol (`<op>.<rel_path>`).
@@ -2614,7 +2630,7 @@ fn scan_rule(
     if let Some(ref label) = r.label {
         let name = join_segments(parse_sym, &label.segments);
         let qualified = make_qualified(prefix, &name);
-        kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
+        kb.symbols.define(&name, &qualified, SymbolKind::Rule, kb.scope_id_of(scope));
     }
 }
 
@@ -2677,11 +2693,11 @@ fn scan_rule_goal(
     else {
         return;
     };
-    if name_denotes_for_rule_head(kb, functor_name, scope.raw()) {
+    if name_denotes_for_rule_head(kb, functor_name, kb.scope_id_of(scope)) {
         return;
     }
     let qualified = make_qualified(prefix, functor_name);
-    kb.symbols.define(functor_name, &qualified, introduced_by.symbol_kind(), scope.raw());
+    kb.symbols.define(functor_name, &qualified, introduced_by.symbol_kind(), kb.scope_id_of(scope));
 }
 
 /// WI-898 — WHICH HEAD SHAPE introduced the name, and therefore WHICH KIND the
@@ -2858,23 +2874,16 @@ fn duplicate_type_message(name: &str, scope_name: &str, sites: &[(&'static str, 
     )
 }
 
-/// WI-997 — the QUALIFIED name of a scope, given the raw scope id the ledger keys
-/// on. A scope id is a `TermId` of the `Fn{sym, [], []}` the scope's own symbol
-/// hash-conses to, so this is a functor read. Qualified rather than local because
-/// R1's key is `(scope, local name)` and a bare `Rec` in the message would not say
-/// WHICH `Rec` — the whole point of the pair.
-fn scope_qualified_name(kb: &KnowledgeBase, scope_raw: u32) -> String {
-    match kb.get_term(TermId::from_raw(scope_raw)) {
-        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-            kb.qualified_name_of(*functor).to_string()
-        }
-        // Not reachable from pass 1 — every scope it threads is the `Fn{sym,[],[]}`
-        // a `namespace`/`sort` allocates, and the top level is `_global`'s own such
-        // term. Named `_unknown` rather than guessed as `_global` (the convention
-        // `Loader::scope_display_name` already uses): a label that names the wrong
-        // scope is worse than one that admits it does not know.
-        _ => "_unknown".to_owned(),
-    }
+/// WI-997 — the QUALIFIED name of a scope the ledger keys on. Qualified rather
+/// than local because R1's key is `(scope, local name)` and a bare `Rec` in the
+/// message would not say WHICH `Rec` — the whole point of the pair.
+///
+/// WI-984 — one projection, no arms. This used to fetch the scope's TERM and match
+/// three carriers, with an `_unknown` fallback for a shape it argued was
+/// unreachable; a [`ScopeId`] carries its owner, so there is nothing left to
+/// misread and no label that could name the wrong scope.
+fn scope_qualified_name(kb: &KnowledgeBase, scope: ScopeId) -> String {
+    kb.qualified_name_of(scope.owner()).to_string()
 }
 
 /// WI-997 / proposal 059 — ONE TYPE DECLARATION, AS PASS 1 MADE IT.
@@ -2903,7 +2912,7 @@ struct TypeDecl {
 /// post-hoc walk can find it. The duplication is only visible while pass 1 is
 /// making it, which is why this records each declaration as it goes.
 ///
-/// THE KEY IS `(scope_raw, local name)` — THE DECLARATION AS WRITTEN, NOT THE
+/// THE KEY IS `(scope, local name)` — THE DECLARATION AS WRITTEN, NOT THE
 /// ADDRESS IT ENDS AT, and §6.3's eponymous constructor is why. `sort Vec3 {
 /// entity Vec3(…) }` collapses the constructor onto the sort's own symbol
 /// (WI-926), so BOTH declarations end at address `ns.Vec3`; keyed by address
@@ -2936,13 +2945,13 @@ struct TypeDecl {
 /// consumes it inside the pass.
 #[derive(Default)]
 struct DeclLedger {
-    types: HashMap<(u32, String), Vec<TypeDecl>>,
+    types: HashMap<(ScopeId, String), Vec<TypeDecl>>,
 }
 
 impl DeclLedger {
-    fn record_type(&mut self, scope_raw: u32, local: &str, keyword: &'static str, span: Span, file_idx: usize) {
+    fn record_type(&mut self, scope: ScopeId, local: &str, keyword: &'static str, span: Span, file_idx: usize) {
         self.types
-            .entry((scope_raw, local.to_string()))
+            .entry((scope, local.to_string()))
             .or_default()
             .push(TypeDecl { keyword, span, file_idx });
     }
@@ -2954,9 +2963,13 @@ impl DeclLedger {
         // Sorted so the diagnostic order is the ledger's content, not HashMap
         // iteration order — two runs over one corpus must report identically.
         let mut keys: Vec<_> = self.types.iter().filter(|(_, v)| v.len() > 1).collect();
-        keys.sort_by(|(a, _), (b, _)| a.cmp(b));
+        // By the scope OWNER's symbol index, then the local name — `ScopeId` is an
+        // identity, not an order, so the tie-break is spelled rather than derived.
+        keys.sort_by(|((sa, la), _), ((sb, lb), _)| {
+            sa.owner().index().cmp(&sb.owner().index()).then_with(|| la.cmp(lb))
+        });
         keys.into_iter()
-            .map(|((scope_raw, local), decls)| {
+            .map(|((scope, local), decls)| {
                 let sites = decls
                     .iter()
                     .map(|d| {
@@ -2967,7 +2980,7 @@ impl DeclLedger {
                     .collect();
                 LoadError::DuplicateTypeDeclaration {
                     name: local.clone(),
-                    scope_name: scope_qualified_name(kb, *scope_raw),
+                    scope_name: scope_qualified_name(kb, *scope),
                     sites,
                 }
             })
@@ -3194,7 +3207,7 @@ impl ScopePass for DefinePass<'_> {
                 // a declaration R1 governs.
                 if !s.is_type_param {
                     ledger.record_type(
-                        actual_scope.raw(),
+                        kb.scope_id_of(actual_scope),
                         &short,
                         s.kind.keyword(),
                         s.span,
@@ -3205,7 +3218,7 @@ impl ScopePass for DefinePass<'_> {
                 let (sym, is_new) = if let Some(&existing) = kb.symbols.by_qualified_name.get(qualified) {
                     (existing, false)
                 } else {
-                    (kb.symbols.define(&short, qualified, SymbolKind::Sort, actual_scope.raw()), true)
+                    (kb.symbols.define(&short, qualified, SymbolKind::Sort, kb.scope_id_of(actual_scope)), true)
                 };
                 // WI-979 — recorded from the DECLARATION, not from which arm above
                 // produced the symbol. `define` accumulates categories (WI-926), but
@@ -3229,9 +3242,8 @@ impl ScopePass for DefinePass<'_> {
                 });
                 if is_new {
                     // Implicit parent: the enclosing scope is visible from within the sort
-                    kb.symbols.add_parent(sort_term.raw(), ScopeInclusion {
-                        parent_scope_raw: actual_scope.raw(),
-                        instantiation_term_raw: actual_scope.raw(),
+                    kb.symbols.add_parent(kb.scope_id_of(sort_term), ScopeInclusion {
+                        parent_scope: kb.scope_id_of(actual_scope),
                         is_enclosing: true,
                     });
                 }
@@ -3257,7 +3269,7 @@ impl ScopePass for DefinePass<'_> {
                 for item in &s.items {
                     if let Item::Entity(e) = item {
                         let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
-                        kb.symbols.add_exposed(sort_term.raw(), vshort);
+                        kb.symbols.add_exposed(kb.scope_id_of(sort_term), vshort);
                         has_variant = true;
                     }
                 }
@@ -3287,9 +3299,8 @@ impl ScopePass for DefinePass<'_> {
                 // `load_incremental` re-scans files already in the KB, so an un-gated
                 // link is re-offered on every reload.
                 if has_variant {
-                    kb.symbols.add_parent(actual_scope.raw(), ScopeInclusion {
-                        parent_scope_raw: sort_term.raw(),
-                        instantiation_term_raw: sort_term.raw(),
+                    kb.symbols.add_parent(kb.scope_id_of(actual_scope), ScopeInclusion {
+                        parent_scope: kb.scope_id_of(sort_term),
                         is_enclosing: false,
                     });
                 }
@@ -3300,21 +3311,15 @@ impl ScopePass for DefinePass<'_> {
                 // SortAlias → Var backing var is emitted in `load_sort_with_body`).
                 // An UNMARKED `sort F { … }` stays a concrete nested sort.
                 if s.is_type_param && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(scope.raw(), &short);
+                    kb.symbols.add_type_param(kb.scope_id_of(scope), &short);
                 }
                 Some(sort_term)
             }
             ScopeDecl::Namespace(_) => {
                 // Reuse existing namespace symbol if already defined in the same scope
                 // (multiple files can contribute items to the same namespace).
-                let existing = kb.symbols.by_qualified_name.get(qualified).copied().filter(|&sym| {
-                    matches!(
-                        kb.symbols.get(sym),
-                        SymbolDef::Resolved { scope_raw, .. }
-                        if *scope_raw == actual_scope.raw()
-                            && kb.symbols.get(sym).has_kind(SymbolKind::Namespace)
-                    )
-                });
+                let existing =
+                    existing_namespace_in_scope(kb, qualified, kb.scope_id_of(actual_scope));
                 let (_sym, ns_term) = if let Some(sym) = existing {
                     let ns_term = kb.alloc(Term::Fn {
                         functor: sym,
@@ -3323,16 +3328,15 @@ impl ScopePass for DefinePass<'_> {
                     });
                     (sym, ns_term)
                 } else {
-                    let sym = kb.symbols.define(&short, qualified, SymbolKind::Namespace, actual_scope.raw());
+                    let sym = kb.symbols.define(&short, qualified, SymbolKind::Namespace, kb.scope_id_of(actual_scope));
                     let ns_term = kb.alloc(Term::Fn {
                         functor: sym,
                         pos_args: SmallVec::new(),
                         named_args: SmallVec::new(),
                     });
                     // Implicit parent: the enclosing scope is visible from within the namespace
-                    kb.symbols.add_parent(ns_term.raw(), ScopeInclusion {
-                        parent_scope_raw: actual_scope.raw(),
-                        instantiation_term_raw: actual_scope.raw(),
+                    kb.symbols.add_parent(kb.scope_id_of(ns_term), ScopeInclusion {
+                        parent_scope: kb.scope_id_of(actual_scope),
                         is_enclosing: true,
                     });
                     (sym, ns_term)
@@ -3352,11 +3356,11 @@ impl ScopePass for DefinePass<'_> {
                 let name = join_segments(parse_sym, &s.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                let abstract_sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
+                let abstract_sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, kb.scope_id_of(actual_scope));
                 record_internal(kb, abstract_sym, s.visibility);
                 // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(scope.raw(), &short);
+                    kb.symbols.add_type_param(kb.scope_id_of(scope), &short);
                 }
             }
             Item::Entity(e) => {
@@ -3372,7 +3376,7 @@ impl ScopePass for DefinePass<'_> {
                 // ledger's key exists to preserve, and the reason it is keyed on the
                 // declaration as written rather than on the address the two share
                 // after WI-926's collapse.
-                ledger.record_type(actual_scope.raw(), &short, "entity", e.span, file_idx);
+                ledger.record_type(kb.scope_id_of(actual_scope), &short, "entity", e.span, file_idx);
                 // §6.3 (WI-926): an eponymous constructor IS its sort — reuse the
                 // sort's symbol rather than minting a nested `…Project.Project`.
                 // Checked BEFORE the by-qualified-name reuse below so the nested
@@ -3390,7 +3394,7 @@ impl ScopePass for DefinePass<'_> {
                     // Reuse existing entity symbol if already defined (e.g. by register_prelude)
                     existing
                 } else {
-                    kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw())
+                    kb.symbols.define(&short, &qualified, SymbolKind::Entity, kb.scope_id_of(actual_scope))
                 };
                 // §6.3 — record every role this ONE written name plays, so the two
                 // spellings of one declaration carry the same SET of categories.
@@ -3443,9 +3447,15 @@ impl ScopePass for DefinePass<'_> {
                 // is not a constructor OF something — it IS the sort, so there is
                 // no parent/child relation to record, and marking it would flip
                 // the sort's own nullary term through the WI-511
-                // `Fn{c,[],[]}`→`Ref(c)` canon — but that term is the sort's SCOPE
-                // KEY (`add_parent`/`current_scope` key on its `.raw()`) and
-                // `is_sort_scope` matches only the `Fn` spelling. The "is this a
+                // `Fn{c,[],[]}`→`Ref(c)` canon, which [`is_sort_scope`] matches
+                // only in its `Fn` spelling.
+                //
+                // WI-984 RETIRED THE OTHER HALF OF THIS REASON. It also said that
+                // term is the sort's SCOPE KEY, keyed on its `.raw()`; scopes are
+                // `ScopeId`s now, minted from the owning SYMBOL through
+                // `name_term_sym`, which reads `Fn` and `Ref` alike — so the canon
+                // no longer touches scope keying at all. `is_sort_scope` is the one
+                // mechanism left holding this decision up. The "is this a
                 // constructor application" question is answered for this shape the
                 // same way it already is for a free-standing `entity` (WI-490):
                 // by its registered field schema.
@@ -3457,7 +3467,7 @@ impl ScopePass for DefinePass<'_> {
                 let name = join_segments(parse_sym, &o.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                let op_sym = kb.symbols.define(&short, &qualified, SymbolKind::Operation, actual_scope.raw());
+                let op_sym = kb.symbols.define(&short, &qualified, SymbolKind::Operation, kb.scope_id_of(actual_scope));
                 record_internal(kb, op_sym, o.visibility);
                 scan_operation_params(kb, parse_sym, o, op_sym, actual_scope, &qualified);
             }
@@ -3469,14 +3479,14 @@ impl ScopePass for DefinePass<'_> {
                 let name = join_segments(parse_sym, &c.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                let const_sym = kb.symbols.define(&short, &qualified, SymbolKind::Const, actual_scope.raw());
+                let const_sym = kb.symbols.define(&short, &qualified, SymbolKind::Const, kb.scope_id_of(actual_scope));
                 record_internal(kb, const_sym, c.visibility);
             }
             Item::OperationBlock(ob) => {
                 for op in &ob.entries {
                     let name = join_segments(parse_sym, &op.name.segments);
                     let qualified = make_qualified(prefix, &name);
-                    let op_sym = kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope.raw());
+                    let op_sym = kb.symbols.define(&name, &qualified, SymbolKind::Operation, kb.scope_id_of(scope));
                     record_internal(kb, op_sym, op.visibility);
                     scan_operation_params(kb, parse_sym, op, op_sym, scope, &qualified);
                 }
@@ -3552,11 +3562,11 @@ impl ScopePass for ImportPass<'_> {
                     let req_scope = resolve_name_to_scope(kb, &req_sort_name, scope)
                         .or_else(|| find_scope_by_name(kb, &req_sort_name));
                     if let Some(req_scope) = req_scope {
-                        // Create instantiation term
-                        let inst_term = build_instantiation_term(kb, parse_sym, &r.type_expr, scope);
-                        kb.symbols.add_parent(scope.raw(), ScopeInclusion {
-                            parent_scope_raw: req_scope.raw(),
-                            instantiation_term_raw: inst_term.raw(),
+                        // THE FIELD IS DEAD; THIS CALL IS NOT — the walk is kept for
+                        // its INTERNING, measured at its own doc comment (WI-984).
+                        build_instantiation_term(kb, parse_sym, &r.type_expr, scope);
+                        kb.symbols.add_parent(kb.scope_id_of(scope), ScopeInclusion {
+                            parent_scope: kb.scope_id_of(req_scope),
                             is_enclosing: false,
                         });
                     }
@@ -3629,7 +3639,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
 /// Resolve a name in the given scope context, returning a scope TermId.
 /// Uses the full scope-aware resolution chain (locals, imports, parents).
 fn resolve_name_to_scope(kb: &mut KnowledgeBase, name: &str, scope: TermId) -> Option<TermId> {
-    match kb.symbols.resolve_in_scope(name, scope.raw()) {
+    match kb.symbols.resolve_in_scope(name, kb.scope_id_of(scope)) {
         crate::intern::ResolveResult::Found(sym) => {
             Some(kb.alloc(Term::Fn {
                 functor: sym,
@@ -3690,7 +3700,24 @@ fn find_in_nested_scope(
     if matches.len() == 1 { Some(matches[0]) } else { None }
 }
 
-/// Build an instantiation term for `requires Eq[T]`.
+/// Walk a `requires Eq[T = Int64]` type expression, INTERNING the names it
+/// mentions and allocating the terms it builds.
+///
+/// A PRODUCER WITH NO CONSUMER, and that is deliberate. Its result used to fill
+/// `ScopeInclusion.instantiation_term_raw`; WI-984 retired that field (written by
+/// 18 sites, read by nothing but a derived `PartialEq`) and the sole non-recursive
+/// caller now drops the value. The WALK is kept because it takes `&mut kb` and has
+/// EFFECTS the field's deadness says nothing about.
+///
+/// MEASURED over the stdlib load, with the call deleted: the `by_qualified_name`
+/// NAME SET is unchanged (2602 both ways, no name gained or lost, so no resolution
+/// answer moves), but 10 symbols stop existing — the short names of `requires`d
+/// specs (`Eq`, `Ordered`, `PartialEq`, `Numeric`, …) — and 202 of 3336 surviving
+/// symbols change RANK. Interning order is the fallback key for named-arg
+/// canonicalization on a schema-less functor (`canonicalize_record_named_args`),
+/// and the term ids this advances name the requirement slots
+/// (`__req_partialeq_14996` becomes `__req_partialeq_14975`). Retiring the walk is
+/// therefore its own measurable change, not a consequence of retiring the field.
 fn build_instantiation_term(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
@@ -3708,7 +3735,7 @@ fn build_instantiation_term(
             // type-params take this path; concrete sort names keep the
             // scope-lookup so their shape is unchanged.
             if let crate::intern::ResolveResult::Found(sym) =
-                kb.symbols.resolve_in_scope(&n, current_scope.raw())
+                kb.symbols.resolve_in_scope(&n, kb.scope_id_of(current_scope))
             {
                 if super::typing::is_sort_param_symbol(kb, sym) {
                     return kb.alloc(Term::Ref(sym));
@@ -3745,12 +3772,12 @@ fn build_instantiation_term(
             // Variable in type position → just use a placeholder name term
             kb.make_name_term("?")
         }
-        // WI-302/WI-366: a value-in-type binding in this free-fn path. The result
-        // feeds only `ScopeInclusion.instantiation_term_raw`, which is vestigial
-        // (written but never read) and carries no value-in-types — so a denoted
-        // binding lowers to the same `?` placeholder as a bare `?` variable above
-        // (no `make_denoted`). The faithful value rides on the SortRequiresInfo /
-        // SortProvidesInfo value fact built by `sort_inst_to_value`.
+        // WI-302/WI-366: a value-in-type binding in this free-fn path. It carries no
+        // value-in-types, so a denoted binding lowers to the same `?` placeholder as
+        // a bare `?` variable above (no `make_denoted`) — costless, since nothing
+        // reads the result (see this function's doc). The faithful value rides on
+        // the SortRequiresInfo / SortProvidesInfo value fact `sort_inst_to_value`
+        // builds.
         TypeExpr::Denoted(_) => kb.make_name_term("?"),
         TypeExpr::Tuple(fields) => {
             let tuple_sym = kb.symbols.by_qualified_name.get("anthill.reflect.TupleLiteral").copied()
@@ -3803,9 +3830,8 @@ fn build_instantiation_term(
         // and assemble the canonical `effects_rows(EffectExpression)` Type — the
         // same builder the typer/loader use elsewhere. A value-in-type label
         // (`Modify[c]`) degrades to its ground form here (this path predates
-        // occurrences; see the `Denoted` arm above), which is acceptable for the
-        // instantiation-term slot (`instantiation_term_raw`, written-never-read);
-        // the faithful occurrence form rides via `type_expr_to_child`.
+        // occurrences; see the `Denoted` arm above); the faithful occurrence form
+        // rides via `type_expr_to_child`.
         TypeExpr::EffectRow(effects) => {
             let effect_ts: Vec<TermId> = effects
                 .iter()
@@ -3821,7 +3847,7 @@ fn build_instantiation_term(
 /// sub-pass 3 (`scan_rule_goal`), so cross-namespace predicate imports are
 /// deferred and re-resolved by `scan_definitions`'s post-pass-3 retry.
 struct PendingImport {
-    scope_raw: u32,
+    scope: ScopeId,
     short: String,
     qualified: String,
     span: Span,
@@ -3841,11 +3867,11 @@ fn forbid_internal_import(
     kb: &KnowledgeBase,
     sym: Symbol,
     short: &str,
-    scope: TermId,
+    scope: ScopeId,
     span: Span,
     errors: &mut Vec<LoadError>,
 ) -> bool {
-    if kb.symbols.internal_visible_from(sym, scope.raw()) {
+    if kb.symbols.internal_visible_from(sym, scope) {
         return false;
     }
     let declared_in = match kb.symbols.get(sym) {
@@ -3855,13 +3881,11 @@ fn forbid_internal_import(
             .unwrap_or_else(|| qualified_name.clone()),
         SymbolDef::Unresolved { name } => name.clone(),
     };
-    let scope_name = match kb.get_term(scope) {
-        Term::Fn { functor, .. } => match kb.symbols.get(*functor) {
-            SymbolDef::Resolved { local_name, .. } => local_name.clone(),
-            SymbolDef::Unresolved { name } => name.clone(),
-        },
-        _ => "_unknown".to_owned(),
-    };
+    // WI-984 — one projection, no arms. The third site carrying the `Term::Fn`
+    // match plus an `_unknown` fallback, alongside `scope_qualified_name` and
+    // `Loader::scope_display_name`; with the scope's owner in hand there is nothing
+    // left to misread, and `_unknown` now has no producer anywhere.
+    let scope_name = kb.local_name_of(scope.owner()).to_owned();
     errors.push(LoadError::ForbiddenInternalAccess {
         name: short.to_owned(),
         declared_in,
@@ -3883,6 +3907,9 @@ fn process_imports(
     pending: &mut Vec<PendingImport>,
     file_idx: usize,
 ) {
+    // Loop-invariant: `scope` is a parameter, so derive its `ScopeId` once rather
+    // than per import and per selective name.
+    let scope_id = kb.scope_id_of(scope);
     for imp in imports {
         let raw_path = join_segments(parse_sym, &imp.path.segments);
         // Implicit-prelude fallback: a single-segment path like `Modify` that
@@ -3913,14 +3940,13 @@ fn process_imports(
                     let short = last_segment(&path);
                     // WI-369: a plain import of an `internal` name across scopes
                     // is a forbidden reference.
-                    if !forbid_internal_import(kb, original_sym, short, scope, imp.path.span, errors) {
-                        kb.symbols.add_import(scope.raw(), short, original_sym);
+                    if !forbid_internal_import(kb, original_sym, short, scope_id, imp.path.span, errors) {
+                        kb.symbols.add_import(scope_id, short, original_sym);
                     }
                 }
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
-                    kb.symbols.add_parent(scope.raw(), ScopeInclusion {
-                        parent_scope_raw: target_scope.raw(),
-                        instantiation_term_raw: target_scope.raw(),
+                    kb.symbols.add_parent(scope_id, ScopeInclusion {
+                        parent_scope: kb.scope_id_of(target_scope),
                         is_enclosing: false,
                     });
                 } else if found.is_none() {
@@ -3961,7 +3987,7 @@ fn process_imports(
                     let original_sym = kb.symbols.by_qualified_name.get(&qualified).copied()
                         .or_else(|| {
                             base_scope.and_then(|bs| {
-                                match kb.symbols.resolve_in_scope(&short, bs.raw()) {
+                                match kb.symbols.resolve_in_scope(&short, kb.scope_id_of(bs)) {
                                     crate::intern::ResolveResult::Found(sym) => Some(sym),
                                     _ => None,
                                 }
@@ -3971,8 +3997,8 @@ fn process_imports(
                     if let Some(sym) = original_sym {
                         // WI-369: a selective import of an `internal` name into a
                         // scope that can't see it is a forbidden reference.
-                        if !forbid_internal_import(kb, sym, &short, scope, name.span, errors) {
-                            kb.symbols.add_import(scope.raw(), &short, sym);
+                        if !forbid_internal_import(kb, sym, &short, scope_id, name.span, errors) {
+                            kb.symbols.add_import(scope_id, &short, sym);
                         }
                     } else {
                         // WI-295: a rule-defined predicate's head-functor symbol
@@ -3981,7 +4007,7 @@ fn process_imports(
                         // to scan_definitions's post-pass-3 retry, which
                         // re-resolves it (erroring only if still unbound).
                         pending.push(PendingImport {
-                            scope_raw: scope.raw(),
+                            scope: scope_id,
                             short,
                             qualified,
                             span: name.span,
@@ -3992,9 +4018,8 @@ fn process_imports(
             }
             ImportKind::Wildcard => {
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
-                    kb.symbols.add_parent(scope.raw(), ScopeInclusion {
-                        parent_scope_raw: target_scope.raw(),
-                        instantiation_term_raw: target_scope.raw(),
+                    kb.symbols.add_parent(scope_id, ScopeInclusion {
+                        parent_scope: kb.scope_id_of(target_scope),
                         is_enclosing: false,
                     });
                 } else {
@@ -4027,11 +4052,11 @@ pub const IMPLICIT_PRELUDE_EFFECTS: &[&str] =
 /// qualified symbols already exist. Idempotent: re-adding an existing
 /// import is harmless.
 pub fn register_implicit_prelude_effects(kb: &mut KnowledgeBase) {
-    let global_raw = kb.make_name_term("_global").raw();
+    let global_scope = kb.global_scope();
     for &short in IMPLICIT_PRELUDE_EFFECTS {
         let qualified = format!("anthill.prelude.{short}");
         if let Some(&sym) = kb.symbols.by_qualified_name.get(&qualified) {
-            kb.symbols.add_import(global_raw, short, sym);
+            kb.symbols.add_import(global_scope, short, sym);
         }
     }
 }
@@ -4149,20 +4174,19 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[
 /// 3911 load-entry arrivals pre-bootstrapped, but it removes the bare KB entirely
 /// rather than defining it, so the smoke tests above would have nothing to pin.)
 pub fn register_prelude(kb: &mut KnowledgeBase) {
-    let global = kb.make_name_term("_global");
-    let global_raw = global.raw();
+    let global_scope = kb.global_scope();
     for &name in KERNEL_META_SORTS {
         kb.symbols
-            .define_qualified_only(name, name, SymbolKind::Sort, global_raw);
+            .define_qualified_only(name, name, SymbolKind::Sort, global_scope);
     }
     for &(short, qualified) in KERNEL_FUNCTORS {
         kb.symbols
-            .define_qualified_only(short, qualified, SymbolKind::Entity, global_raw);
+            .define_qualified_only(short, qualified, SymbolKind::Entity, global_scope);
     }
     // Stdlib scope hierarchy: create scopes with correct qualified names
     // so the loader's resolve_symbol() finds names in the right scopes.
     // Idempotent: skipped on re-entry or when stdlib has already been scanned.
-    register_stdlib_scopes(kb, global_raw);
+    register_stdlib_scopes(kb, global_scope);
     // Register builtin operations (eq, gt, add, etc.) for the resolver.
     kb.register_builtin_tags();
     // WI-348: the Type-occurrence field keys (`Denoted.value`, `Arrow.param/
@@ -4311,54 +4335,54 @@ fn register_prelude_constructor(kb: &mut KnowledgeBase, ctor_sym: Symbol, parent
 /// and `stdlib/anthill/reflect/reflect.anthill` so that `resolve_symbol("anthill.prelude.List.cons")`
 /// etc. return properly-scoped symbols. When the real stdlib is loaded,
 /// `scan_definitions` reuses these symbols (idempotent by qualified name).
-fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
+fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     // Guard: if "anthill" already exists, the whole hierarchy is set up
     if kb.symbols.by_qualified_name.contains_key("anthill") {
         return;
     }
 
     // anthill namespace
-    let anthill_sym = kb.symbols.define("anthill", "anthill", SymbolKind::Namespace, global_raw);
+    let anthill_sym = kb.symbols.define("anthill", "anthill", SymbolKind::Namespace, global_scope);
     let anthill_term = kb.alloc(Term::Fn {
         functor: anthill_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(anthill_term.raw(), ScopeInclusion {
-        parent_scope_raw: global_raw,
-        instantiation_term_raw: global_raw,
+    let anthill_scope = kb.scope_id_of(anthill_term);
+    kb.symbols.add_parent(anthill_scope, ScopeInclusion {
+        parent_scope: global_scope,
         is_enclosing: true,
     });
 
     // anthill.prelude namespace
-    let prelude_sym = kb.symbols.define("prelude", "anthill.prelude", SymbolKind::Namespace, anthill_term.raw());
+    let prelude_sym = kb.symbols.define("prelude", "anthill.prelude", SymbolKind::Namespace, anthill_scope);
     let prelude_term = kb.alloc(Term::Fn {
         functor: prelude_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(prelude_term.raw(), ScopeInclusion {
-        parent_scope_raw: anthill_term.raw(),
-        instantiation_term_raw: anthill_term.raw(),
+    let prelude_scope = kb.scope_id_of(prelude_term);
+    kb.symbols.add_parent(prelude_scope, ScopeInclusion {
+        parent_scope: anthill_scope,
         is_enclosing: true,
     });
 
     // anthill.prelude.List sort
-    let list_sym = kb.symbols.define("List", "anthill.prelude.List", SymbolKind::Sort, prelude_term.raw());
+    let list_sym = kb.symbols.define("List", "anthill.prelude.List", SymbolKind::Sort, prelude_scope);
     let list_term = kb.alloc(Term::Fn {
         functor: list_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(list_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let list_scope = kb.scope_id_of(list_term);
+    kb.symbols.add_parent(list_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
     // WI-521: defined (registers in `by_qualified_name`) but NOT `_global`-imported
     // — the prelude resolves these via the `prelude_qualified` fallback.
-    let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
-    let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
+    let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_scope);
+    let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_scope);
     // WI-719: register List's constructors as constructors NOW, at bootstrap,
     // so `is_constructor_symbol(nil/cons)` answers true before any project file
     // loads. Without this the alloc canon (`Fn{c,[],[]}`→`Ref(c)`, gated on
@@ -4379,13 +4403,13 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // a bare `sort Type = ?` with NO constructors. Kept pre-registered so
     // `make_sort_ref_by_name("anthill.prelude.Type")` and the `Eq`/`Lattice`
     // facts riding Type's nominal identity resolve at bootstrap.
-    let type_sort_sym = kb.symbols.define("Type", "anthill.prelude.Type", SymbolKind::Sort, prelude_term.raw());
+    let type_sort_sym = kb.symbols.define("Type", "anthill.prelude.Type", SymbolKind::Sort, prelude_scope);
     let type_sort_term = kb.alloc(Term::Fn {
         functor: type_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(type_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let type_sort_scope = kb.scope_id_of(type_sort_term);
+    kb.symbols.add_parent(type_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
 
@@ -4399,26 +4423,26 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // parameterized type `Fn{S, named}`), never built by the engine, so they
     // need no pre-registration here — only the `extract` builtin mints them,
     // post-load, resolving against the stdlib declaration.
-    let type_extractor_sort_sym = kb.symbols.define("TypeExtractor", "anthill.prelude.TypeExtractor", SymbolKind::Sort, prelude_term.raw());
+    let type_extractor_sort_sym = kb.symbols.define("TypeExtractor", "anthill.prelude.TypeExtractor", SymbolKind::Sort, prelude_scope);
     let type_extractor_sort_term = kb.alloc(Term::Fn {
         functor: type_extractor_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(type_extractor_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let type_extractor_sort_scope = kb.scope_id_of(type_extractor_sort_term);
+    kb.symbols.add_parent(type_extractor_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("Arrow", "anthill.prelude.TypeExtractor.Arrow", SymbolKind::Entity, type_extractor_sort_term.raw());
-    kb.symbols.define("TypeVar", "anthill.prelude.TypeExtractor.TypeVar", SymbolKind::Entity, type_extractor_sort_term.raw());
-    kb.symbols.define("NamedTuple", "anthill.prelude.TypeExtractor.NamedTuple", SymbolKind::Entity, type_extractor_sort_term.raw());
-    kb.symbols.define("Nothing", "anthill.prelude.TypeExtractor.Nothing", SymbolKind::Entity, type_extractor_sort_term.raw());
-    kb.symbols.define("Denoted", "anthill.prelude.TypeExtractor.Denoted", SymbolKind::Entity, type_extractor_sort_term.raw());
-    kb.symbols.define("ExprCarried", "anthill.prelude.TypeExtractor.ExprCarried", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("Arrow", "anthill.prelude.TypeExtractor.Arrow", SymbolKind::Entity, type_extractor_sort_scope);
+    kb.symbols.define("TypeVar", "anthill.prelude.TypeExtractor.TypeVar", SymbolKind::Entity, type_extractor_sort_scope);
+    kb.symbols.define("NamedTuple", "anthill.prelude.TypeExtractor.NamedTuple", SymbolKind::Entity, type_extractor_sort_scope);
+    kb.symbols.define("Nothing", "anthill.prelude.TypeExtractor.Nothing", SymbolKind::Entity, type_extractor_sort_scope);
+    kb.symbols.define("Denoted", "anthill.prelude.TypeExtractor.Denoted", SymbolKind::Entity, type_extractor_sort_scope);
+    kb.symbols.define("ExprCarried", "anthill.prelude.TypeExtractor.ExprCarried", SymbolKind::Entity, type_extractor_sort_scope);
     // WI-320 — variant-7 substrate: the EffectExpression-into-Type bridge.
-    kb.symbols.define("EffectsRows", "anthill.prelude.TypeExtractor.EffectsRows", SymbolKind::Entity, type_extractor_sort_term.raw());
+    kb.symbols.define("EffectsRows", "anthill.prelude.TypeExtractor.EffectsRows", SymbolKind::Entity, type_extractor_sort_scope);
     // Standalone record for a named-tuple element (anthill.prelude.NamedTupleElement) —
     // built by make_named_tuple_type; lives at prelude scope (not inside an enum).
-    kb.symbols.define("NamedTupleElement", "anthill.prelude.NamedTupleElement", SymbolKind::Entity, prelude_term.raw());
+    kb.symbols.define("NamedTupleElement", "anthill.prelude.NamedTupleElement", SymbolKind::Entity, prelude_scope);
 
     // WI-307 — v1a row-substrate: the EffectExpression algebra entities, the
     // payload `effects_rows` wraps. Pre-registered so `make_arrow_type` can
@@ -4426,20 +4450,20 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // form for the arrow.effects field without depending on stdlib load
     // order. The stdlib `sort.anthill` re-declares the enum; the loader's
     // existing `if defined` guards make the re-declare idempotent.
-    let effect_expr_sort_sym = kb.symbols.define("EffectExpression", "anthill.prelude.EffectExpression", SymbolKind::Sort, prelude_term.raw());
+    let effect_expr_sort_sym = kb.symbols.define("EffectExpression", "anthill.prelude.EffectExpression", SymbolKind::Sort, prelude_scope);
     let effect_expr_sort_term = kb.alloc(Term::Fn {
         functor: effect_expr_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(effect_expr_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let effect_expr_sort_scope = kb.scope_id_of(effect_expr_sort_term);
+    kb.symbols.add_parent(effect_expr_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("empty_row", "anthill.prelude.EffectExpression.empty_row", SymbolKind::Entity, effect_expr_sort_term.raw());
-    kb.symbols.define("present", "anthill.prelude.EffectExpression.present", SymbolKind::Entity, effect_expr_sort_term.raw());
-    kb.symbols.define("absent", "anthill.prelude.EffectExpression.absent", SymbolKind::Entity, effect_expr_sort_term.raw());
-    kb.symbols.define("open", "anthill.prelude.EffectExpression.open", SymbolKind::Entity, effect_expr_sort_term.raw());
-    kb.symbols.define("merge", "anthill.prelude.EffectExpression.merge", SymbolKind::Entity, effect_expr_sort_term.raw());
+    kb.symbols.define("empty_row", "anthill.prelude.EffectExpression.empty_row", SymbolKind::Entity, effect_expr_sort_scope);
+    kb.symbols.define("present", "anthill.prelude.EffectExpression.present", SymbolKind::Entity, effect_expr_sort_scope);
+    kb.symbols.define("absent", "anthill.prelude.EffectExpression.absent", SymbolKind::Entity, effect_expr_sort_scope);
+    kb.symbols.define("open", "anthill.prelude.EffectExpression.open", SymbolKind::Entity, effect_expr_sort_scope);
+    kb.symbols.define("merge", "anthill.prelude.EffectExpression.merge", SymbolKind::Entity, effect_expr_sort_scope);
 
     // anthill.prelude.EffectsRuntime — variant-7 kind anchor (WI-320).
     // Pre-registered so the bridge-fact emission below can resolve the
@@ -4448,31 +4472,31 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // `sort Effects = ?` parameter; the re-declare is idempotent (the
     // loader's existing `if defined` guards skip the symbol). No
     // entities, no operations — scope A is a pure kind anchor.
-    let er_sort_sym = kb.symbols.define("EffectsRuntime", "anthill.prelude.EffectsRuntime", SymbolKind::Sort, prelude_term.raw());
+    let er_sort_sym = kb.symbols.define("EffectsRuntime", "anthill.prelude.EffectsRuntime", SymbolKind::Sort, prelude_scope);
     let er_sort_term = kb.alloc(Term::Fn {
         functor: er_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(er_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let er_sort_scope = kb.scope_id_of(er_sort_term);
+    kb.symbols.add_parent(er_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
 
     // anthill.prelude.Option sort
-    let option_sym = kb.symbols.define("Option", "anthill.prelude.Option", SymbolKind::Sort, prelude_term.raw());
+    let option_sym = kb.symbols.define("Option", "anthill.prelude.Option", SymbolKind::Sort, prelude_scope);
     let option_term = kb.alloc(Term::Fn {
         functor: option_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(option_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let option_scope = kb.scope_id_of(option_term);
+    kb.symbols.add_parent(option_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
     // WI-521: defined but NOT `_global`-imported (prelude_qualified fallback).
-    let some_sym = kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
-    let none_sym = kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
+    let some_sym = kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_scope);
+    let none_sym = kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_scope);
     // WI-719: pre-register Option's constructors at bootstrap (see the List
     // block above). `none` is the load-bearing case — it is NULLARY, so a bare
     // `none` fact field converted before option.anthill loads keys `Fn{none,0,0}`
@@ -4492,129 +4516,130 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // fallback resolve to the same symbols the stdlib .anthill files reuse.
 
     // anthill.prelude.PartialEq sort (operations: eq, neq)
-    let partial_eq_sort_sym = kb.symbols.define("PartialEq", "anthill.prelude.PartialEq", SymbolKind::Sort, prelude_term.raw());
+    let partial_eq_sort_sym = kb.symbols.define("PartialEq", "anthill.prelude.PartialEq", SymbolKind::Sort, prelude_scope);
     let partial_eq_sort_term = kb.alloc(Term::Fn {
         functor: partial_eq_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(partial_eq_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let partial_eq_sort_scope = kb.scope_id_of(partial_eq_sort_term);
+    kb.symbols.add_parent(partial_eq_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("eq", "anthill.prelude.PartialEq.eq", SymbolKind::Operation, partial_eq_sort_term.raw());
-    kb.symbols.define("neq", "anthill.prelude.PartialEq.neq", SymbolKind::Operation, partial_eq_sort_term.raw());
+    kb.symbols.define("eq", "anthill.prelude.PartialEq.eq", SymbolKind::Operation, partial_eq_sort_scope);
+    kb.symbols.define("neq", "anthill.prelude.PartialEq.neq", SymbolKind::Operation, partial_eq_sort_scope);
 
     // anthill.prelude.Eq — lawful marker (requires PartialEq; no own operations)
-    let eq_sort_sym = kb.symbols.define("Eq", "anthill.prelude.Eq", SymbolKind::Sort, prelude_term.raw());
+    let eq_sort_sym = kb.symbols.define("Eq", "anthill.prelude.Eq", SymbolKind::Sort, prelude_scope);
     let eq_sort_term = kb.alloc(Term::Fn {
         functor: eq_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(eq_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let eq_sort_scope = kb.scope_id_of(eq_sort_term);
+    kb.symbols.add_parent(eq_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
 
     // anthill.prelude.PartialOrd sort (operations: gt, lt, gte, lte)
-    let partial_ord_sort_sym = kb.symbols.define("PartialOrd", "anthill.prelude.PartialOrd", SymbolKind::Sort, prelude_term.raw());
+    let partial_ord_sort_sym = kb.symbols.define("PartialOrd", "anthill.prelude.PartialOrd", SymbolKind::Sort, prelude_scope);
     let partial_ord_sort_term = kb.alloc(Term::Fn {
         functor: partial_ord_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(partial_ord_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let partial_ord_sort_scope = kb.scope_id_of(partial_ord_sort_term);
+    kb.symbols.add_parent(partial_ord_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("gt", "anthill.prelude.PartialOrd.gt", SymbolKind::Operation, partial_ord_sort_term.raw());
-    kb.symbols.define("lt", "anthill.prelude.PartialOrd.lt", SymbolKind::Operation, partial_ord_sort_term.raw());
-    kb.symbols.define("gte", "anthill.prelude.PartialOrd.gte", SymbolKind::Operation, partial_ord_sort_term.raw());
-    kb.symbols.define("lte", "anthill.prelude.PartialOrd.lte", SymbolKind::Operation, partial_ord_sort_term.raw());
+    kb.symbols.define("gt", "anthill.prelude.PartialOrd.gt", SymbolKind::Operation, partial_ord_sort_scope);
+    kb.symbols.define("lt", "anthill.prelude.PartialOrd.lt", SymbolKind::Operation, partial_ord_sort_scope);
+    kb.symbols.define("gte", "anthill.prelude.PartialOrd.gte", SymbolKind::Operation, partial_ord_sort_scope);
+    kb.symbols.define("lte", "anthill.prelude.PartialOrd.lte", SymbolKind::Operation, partial_ord_sort_scope);
 
     // anthill.prelude.Ordered sort (total; operations: compare, max, min; the
     // gt/lt/gte/lte comparison surface is inherited from PartialOrd)
-    let ord_sort_sym = kb.symbols.define("Ordered", "anthill.prelude.Ordered", SymbolKind::Sort, prelude_term.raw());
+    let ord_sort_sym = kb.symbols.define("Ordered", "anthill.prelude.Ordered", SymbolKind::Sort, prelude_scope);
     let ord_sort_term = kb.alloc(Term::Fn {
         functor: ord_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(ord_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let ord_sort_scope = kb.scope_id_of(ord_sort_term);
+    kb.symbols.add_parent(ord_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("compare", "anthill.prelude.Ordered.compare", SymbolKind::Operation, ord_sort_term.raw());
+    kb.symbols.define("compare", "anthill.prelude.Ordered.compare", SymbolKind::Operation, ord_sort_scope);
 
     // anthill.prelude.Numeric sort (operations: add, sub, mul)
-    let num_sort_sym = kb.symbols.define("Numeric", "anthill.prelude.Numeric", SymbolKind::Sort, prelude_term.raw());
+    let num_sort_sym = kb.symbols.define("Numeric", "anthill.prelude.Numeric", SymbolKind::Sort, prelude_scope);
     let num_sort_term = kb.alloc(Term::Fn {
         functor: num_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(num_sort_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
+    let num_sort_scope = kb.scope_id_of(num_sort_term);
+    kb.symbols.add_parent(num_sort_scope, ScopeInclusion {
+        parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("add", "anthill.prelude.Numeric.add", SymbolKind::Operation, num_sort_term.raw());
-    kb.symbols.define("sub", "anthill.prelude.Numeric.sub", SymbolKind::Operation, num_sort_term.raw());
-    kb.symbols.define("mul", "anthill.prelude.Numeric.mul", SymbolKind::Operation, num_sort_term.raw());
+    kb.symbols.define("add", "anthill.prelude.Numeric.add", SymbolKind::Operation, num_sort_scope);
+    kb.symbols.define("sub", "anthill.prelude.Numeric.sub", SymbolKind::Operation, num_sort_scope);
+    kb.symbols.define("mul", "anthill.prelude.Numeric.mul", SymbolKind::Operation, num_sort_scope);
 
     // Proposal 038: register primitive sorts at anthill.prelude scope so
     // stdlib's `sort anthill.prelude.Int64 { ... }` reuses the same Symbol,
     // alias the bare QN for try_resolve_symbol("Int64"), import into _global.
     for &name in PRELUDE_SORTS {
         let qualified = format!("anthill.prelude.{name}");
-        let sym = kb.symbols.define(name, &qualified, SymbolKind::Sort, prelude_term.raw());
+        let sym = kb.symbols.define(name, &qualified, SymbolKind::Sort, prelude_scope);
         let sort_term = kb.alloc(Term::Fn {
             functor: sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
         });
-        kb.symbols.add_parent(sort_term.raw(), ScopeInclusion {
-            parent_scope_raw: prelude_term.raw(),
-            instantiation_term_raw: prelude_term.raw(),
+        let sort_scope = kb.scope_id_of(sort_term);
+        kb.symbols.add_parent(sort_scope, ScopeInclusion {
+            parent_scope: prelude_scope,
             is_enclosing: true,
         });
         kb.symbols.by_qualified_name.insert(name.to_string(), sym);
-        kb.symbols.add_import(global_raw, name, sym);
+        kb.symbols.add_import(global_scope, name, sym);
     }
     // BigInt conversion operations — pre-registered so stdlib body reuses them.
     let bigint_sym = kb.symbols.by_qualified_name["anthill.prelude.BigInt"];
     let bigint_term = kb.alloc(Term::Fn {
         functor: bigint_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.define("to_bigint", "anthill.prelude.BigInt.to_bigint", SymbolKind::Operation, bigint_term.raw());
-    kb.symbols.define("to_int", "anthill.prelude.BigInt.to_int", SymbolKind::Operation, bigint_term.raw());
+    let bigint_scope = kb.scope_id_of(bigint_term);
+    kb.symbols.define("to_bigint", "anthill.prelude.BigInt.to_bigint", SymbolKind::Operation, bigint_scope);
+    kb.symbols.define("to_int", "anthill.prelude.BigInt.to_int", SymbolKind::Operation, bigint_scope);
 
     // anthill.reflect namespace
-    let reflect_sym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind::Namespace, anthill_term.raw());
+    let reflect_sym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind::Namespace, anthill_scope);
     let reflect_term = kb.alloc(Term::Fn {
         functor: reflect_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(reflect_term.raw(), ScopeInclusion {
-        parent_scope_raw: anthill_term.raw(),
-        instantiation_term_raw: anthill_term.raw(),
+    let reflect_scope = kb.scope_id_of(reflect_term);
+    kb.symbols.add_parent(reflect_scope, ScopeInclusion {
+        parent_scope: anthill_scope,
         is_enclosing: true,
     });
     // WI-521: the reflection `*Info` sorts are defined (registered in
     // `by_qualified_name`) but NOT `_global`-imported — reflection code reaches
     // them by explicit import (`reflect/typing.anthill`) or self-scope.
-    kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_scope);
     let member_info = kb.symbols.define(
         "MemberInfo",
         "anthill.reflect.MemberInfo",
         SymbolKind::Entity,
-        reflect_term.raw(),
+        reflect_scope,
     );
     let description_info = kb.symbols.define(
         "DescriptionInfo",
         "anthill.reflect.DescriptionInfo",
         SymbolKind::Entity,
-        reflect_term.raw(),
+        reflect_scope,
     );
     let member_info_fields = vec![kb.intern("name"), kb.intern("kind"), kb.intern("parent")];
     kb.register_entity_fields(member_info, member_info_fields);
@@ -4629,79 +4654,79 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         "MemberKind",
         "anthill.reflect.MemberKind",
         SymbolKind::Sort,
-        reflect_term.raw(),
+        reflect_scope,
     );
     let member_kind_term = kb.make_name_term_from_sym(member_kind);
-    kb.symbols.add_parent(member_kind_term.raw(), ScopeInclusion {
-        parent_scope_raw: reflect_term.raw(),
-        instantiation_term_raw: reflect_term.raw(),
+    let member_kind_scope = kb.scope_id_of(member_kind_term);
+    kb.symbols.add_parent(member_kind_scope, ScopeInclusion {
+        parent_scope: reflect_scope,
         is_enclosing: true,
     });
     for variant in ["Constructor", "Operation", "Rule", "Sort", "Enum", "Namespace", "Const"] {
         let qualified = format!("anthill.reflect.MemberKind.{variant}");
-        kb.symbols.define(variant, &qualified, SymbolKind::Entity, member_kind_term.raw());
+        kb.symbols.define(variant, &qualified, SymbolKind::Entity, member_kind_scope);
     }
     // WI-040: the literal carriers are DEFINED here (registers them in
     // `by_qualified_name`) but NOT `_global`-imported — they resolve directly via
     // `kernel_vocab_qualified`. So the returned symbols are intentionally unused.
-    kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("ListLiteral", "anthill.reflect.ListLiteral", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("ListLiteral", "anthill.reflect.ListLiteral", SymbolKind::Entity, reflect_scope);
     // WI-390 — Positioned(pos, internal): a local-binder reference carried with its
     // absolute binding-site identity (`pos`) so two distinct locals don't collide as
     // hash-consed terms. Built by `make_positioned`; leaf-only; unifies structurally.
-    kb.symbols.define("Positioned", "anthill.reflect.Positioned", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("Positioned", "anthill.reflect.Positioned", SymbolKind::Entity, reflect_scope);
 
     // anthill.reflect.Expr sort + entities
-    let expr_sym = kb.symbols.define("Expr", "anthill.reflect.Expr", SymbolKind::Sort, reflect_term.raw());
+    let expr_sym = kb.symbols.define("Expr", "anthill.reflect.Expr", SymbolKind::Sort, reflect_scope);
     let expr_term = kb.alloc(Term::Fn {
         functor: expr_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(expr_term.raw(), ScopeInclusion {
-        parent_scope_raw: reflect_term.raw(),
-        instantiation_term_raw: reflect_term.raw(),
+    let expr_scope = kb.scope_id_of(expr_term);
+    kb.symbols.add_parent(expr_scope, ScopeInclusion {
+        parent_scope: reflect_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("match_expr", "anthill.reflect.Expr.match_expr", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("if_expr", "anthill.reflect.Expr.if_expr", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("let_expr", "anthill.reflect.Expr.let_expr", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("lambda_expr", "anthill.reflect.Expr.lambda_expr", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("proof_stmt", "anthill.reflect.Expr.proof_stmt", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("apply", "anthill.reflect.Expr.apply", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("ho_apply", "anthill.reflect.Expr.ho_apply", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("dot_apply", "anthill.reflect.Expr.dot_apply", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("var_ref", "anthill.reflect.Expr.var_ref", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("int_lit", "anthill.reflect.Expr.int_lit", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("bigint_lit", "anthill.reflect.Expr.bigint_lit", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("float_lit", "anthill.reflect.Expr.float_lit", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("string_lit", "anthill.reflect.Expr.string_lit", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("bool_lit", "anthill.reflect.Expr.bool_lit", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("match_expr", "anthill.reflect.Expr.match_expr", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("if_expr", "anthill.reflect.Expr.if_expr", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("let_expr", "anthill.reflect.Expr.let_expr", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("lambda_expr", "anthill.reflect.Expr.lambda_expr", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("proof_stmt", "anthill.reflect.Expr.proof_stmt", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("apply", "anthill.reflect.Expr.apply", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("ho_apply", "anthill.reflect.Expr.ho_apply", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("dot_apply", "anthill.reflect.Expr.dot_apply", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("var_ref", "anthill.reflect.Expr.var_ref", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("int_lit", "anthill.reflect.Expr.int_lit", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("bigint_lit", "anthill.reflect.Expr.bigint_lit", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("float_lit", "anthill.reflect.Expr.float_lit", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("string_lit", "anthill.reflect.Expr.string_lit", SymbolKind::Entity, expr_scope);
+    kb.symbols.define("bool_lit", "anthill.reflect.Expr.bool_lit", SymbolKind::Entity, expr_scope);
 
     // anthill.reflect.Pattern sort + entities
-    let pattern_sym = kb.symbols.define("Pattern", "anthill.reflect.Pattern", SymbolKind::Sort, reflect_term.raw());
+    let pattern_sym = kb.symbols.define("Pattern", "anthill.reflect.Pattern", SymbolKind::Sort, reflect_scope);
     let pattern_term = kb.alloc(Term::Fn {
         functor: pattern_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(pattern_term.raw(), ScopeInclusion {
-        parent_scope_raw: reflect_term.raw(),
-        instantiation_term_raw: reflect_term.raw(),
+    let pattern_scope = kb.scope_id_of(pattern_term);
+    kb.symbols.add_parent(pattern_scope, ScopeInclusion {
+        parent_scope: reflect_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("var_pattern", "anthill.reflect.Pattern.var_pattern", SymbolKind::Entity, pattern_term.raw());
-    kb.symbols.define("tuple_pattern", "anthill.reflect.Pattern.tuple_pattern", SymbolKind::Entity, pattern_term.raw());
-    kb.symbols.define("named_tuple_pattern", "anthill.reflect.Pattern.named_tuple_pattern", SymbolKind::Entity, pattern_term.raw());
-    kb.symbols.define("constructor_pattern", "anthill.reflect.Pattern.constructor_pattern", SymbolKind::Entity, pattern_term.raw());
-    kb.symbols.define("literal_pattern", "anthill.reflect.Pattern.literal_pattern", SymbolKind::Entity, pattern_term.raw());
-    kb.symbols.define("wildcard", "anthill.reflect.Pattern.wildcard", SymbolKind::Entity, pattern_term.raw());
+    kb.symbols.define("var_pattern", "anthill.reflect.Pattern.var_pattern", SymbolKind::Entity, pattern_scope);
+    kb.symbols.define("tuple_pattern", "anthill.reflect.Pattern.tuple_pattern", SymbolKind::Entity, pattern_scope);
+    kb.symbols.define("named_tuple_pattern", "anthill.reflect.Pattern.named_tuple_pattern", SymbolKind::Entity, pattern_scope);
+    kb.symbols.define("constructor_pattern", "anthill.reflect.Pattern.constructor_pattern", SymbolKind::Entity, pattern_scope);
+    kb.symbols.define("literal_pattern", "anthill.reflect.Pattern.literal_pattern", SymbolKind::Entity, pattern_scope);
+    kb.symbols.define("wildcard", "anthill.reflect.Pattern.wildcard", SymbolKind::Entity, pattern_scope);
 
     // anthill.reflect standalone entities for expressions
-    kb.symbols.define("MatchBranch", "anthill.reflect.MatchBranch", SymbolKind::Entity, reflect_term.raw());
-    kb.symbols.define("ApplyArg", "anthill.reflect.ApplyArg", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("MatchBranch", "anthill.reflect.MatchBranch", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("ApplyArg", "anthill.reflect.ApplyArg", SymbolKind::Entity, reflect_scope);
     // WI-1013: `type_arg(name, value)` — the cell of a call's CALL-SITE TYPE-ARGUMENT
     // list, which `TermView` now presents as an `Expr::Apply`'s `type_args` child and
     // `try_occurrence_to_term` builds as its term twin. Pre-registered beside
@@ -4709,69 +4734,69 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // `field_access[Name = …]` Apply while typing ARBITRARY source, including a
     // bootstrap/test KB that never loads reflect.anthill, and the view resolves this
     // constructor eagerly (it PANICS rather than degrading — WI-1014 Part C).
-    kb.symbols.define("type_arg", "anthill.reflect.type_arg", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("type_arg", "anthill.reflect.type_arg", SymbolKind::Entity, reflect_scope);
     // WI-445: a `case Foo(field: pat)` named sub-pattern rides a NamedPattern
     // (the same reflect entity `named_tuple_pattern` uses); register it
     // programmatically so `ExprBuilderSyms` can resolve it during load.
-    kb.symbols.define("NamedPattern", "anthill.reflect.NamedPattern", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("NamedPattern", "anthill.reflect.NamedPattern", SymbolKind::Entity, reflect_scope);
 
     // anthill.reflect.TypedExpr sort
-    let typed_expr_sym = kb.symbols.define("TypedExpr", "anthill.reflect.TypedExpr", SymbolKind::Sort, reflect_term.raw());
+    let typed_expr_sym = kb.symbols.define("TypedExpr", "anthill.reflect.TypedExpr", SymbolKind::Sort, reflect_scope);
     let typed_expr_term = kb.alloc(Term::Fn {
         functor: typed_expr_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(typed_expr_term.raw(), ScopeInclusion {
-        parent_scope_raw: reflect_term.raw(),
-        instantiation_term_raw: reflect_term.raw(),
+    let typed_expr_scope = kb.scope_id_of(typed_expr_term);
+    kb.symbols.add_parent(typed_expr_scope, ScopeInclusion {
+        parent_scope: reflect_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("typed", "anthill.reflect.TypedExpr.typed", SymbolKind::Entity, typed_expr_term.raw());
+    kb.symbols.define("typed", "anthill.reflect.TypedExpr.typed", SymbolKind::Entity, typed_expr_scope);
 
     // anthill.reflect.typing namespace
-    let typing_sym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind::Namespace, reflect_term.raw());
+    let typing_sym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind::Namespace, reflect_scope);
     let typing_term = kb.alloc(Term::Fn {
         functor: typing_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(typing_term.raw(), ScopeInclusion {
-        parent_scope_raw: reflect_term.raw(),
-        instantiation_term_raw: reflect_term.raw(),
+    let typing_scope = kb.scope_id_of(typing_term);
+    kb.symbols.add_parent(typing_scope, ScopeInclusion {
+        parent_scope: reflect_scope,
         is_enclosing: true,
     });
 
     // anthill.reflect.feed namespace (WI-352) — created here so the `provenance`
     // builtin can register before stdlib/anthill/reflect/feed.anthill loads.
-    let feed_sym = kb.symbols.define("feed", "anthill.reflect.feed", SymbolKind::Namespace, reflect_term.raw());
+    let feed_sym = kb.symbols.define("feed", "anthill.reflect.feed", SymbolKind::Namespace, reflect_scope);
     let feed_term = kb.alloc(Term::Fn {
         functor: feed_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(feed_term.raw(), ScopeInclusion {
-        parent_scope_raw: reflect_term.raw(),
-        instantiation_term_raw: reflect_term.raw(),
+    let feed_scope = kb.scope_id_of(feed_term);
+    kb.symbols.add_parent(feed_scope, ScopeInclusion {
+        parent_scope: reflect_scope,
         is_enclosing: true,
     });
 
     // anthill.kernel namespace — resolver primitives (proposal 033).
     // Pre-declared here so that the loader's resolve_symbol calls find
     // these names with proper scoping when stdlib/anthill/kernel/ loads.
-    let kernel_sym = kb.symbols.define("kernel", "anthill.kernel", SymbolKind::Namespace, anthill_term.raw());
+    let kernel_sym = kb.symbols.define("kernel", "anthill.kernel", SymbolKind::Namespace, anthill_scope);
     let kernel_term = kb.alloc(Term::Fn {
         functor: kernel_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(kernel_term.raw(), ScopeInclusion {
-        parent_scope_raw: anthill_term.raw(),
-        instantiation_term_raw: anthill_term.raw(),
+    let kernel_scope = kb.scope_id_of(kernel_term);
+    kb.symbols.add_parent(kernel_scope, ScopeInclusion {
+        parent_scope: anthill_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("push_choice", "anthill.kernel.push_choice", SymbolKind::Operation, kernel_term.raw());
-    kb.symbols.define("or", "anthill.kernel.or", SymbolKind::Operation, kernel_term.raw());
+    kb.symbols.define("push_choice", "anthill.kernel.push_choice", SymbolKind::Operation, kernel_scope);
+    kb.symbols.define("or", "anthill.kernel.or", SymbolKind::Operation, kernel_scope);
 
     // WI-521: the user-facing PRELUDE (cons / nil / some / none, the arithmetic
     // and comparison operator targets eq / neq / gt / lt / gte / lte / add / sub /
@@ -7682,17 +7707,11 @@ pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: Term
         {
             if let Some(op_s) = op_sym {
                 // Check if the operation's scope is the sort
-                let op_scope_matches = match kb.symbols.get(op_s) {
-                    SymbolDef::Resolved { scope_raw, .. } => {
-                        // The operation's scope_raw should point to a term whose functor is sort_sym
-                        let scope_tid = TermId::from_raw(*scope_raw);
-                        match kb.get_term(scope_tid) {
-                            Term::Fn { functor, .. } => *functor == sort_sym,
-                            _ => false,
-                        }
-                    }
-                    _ => false,
-                };
+                // WI-984 — the operation's scope is OWNED BY `sort_sym`. Was a term
+                // fetch that matched `Term::Fn` only, so a sort whose eponymous
+                // constructor makes it a `Term::Ref` (WI-511) answered `false` here.
+                let op_scope_matches =
+                    kb.declaring_scope_symbol(op_s) == Some(sort_sym);
 
                 if op_scope_matches {
                     let op_name = kb.local_name_of(op_s);
@@ -7839,7 +7858,7 @@ pub(crate) fn build_some(kb: &mut KnowledgeBase, value: TermId) -> TermId {
 /// Convert a parse-time term (from `SimpleTermStore`) into the KB's
 /// hash-consed `TermStore`, resolving symbols through the KB's scope chain.
 ///
-/// `scope_raw` is the scope in which to resolve names (typically `_global`).
+/// `scope` is the scope in which to resolve names (typically `_global`).
 /// `var_map` preserves variable identity: two `?x` in a query share the same
 /// `VarId`. Pass an empty map on the first call; reuse the same map across
 /// multiple terms that should share variables.
@@ -7848,7 +7867,7 @@ pub fn convert_query_term(
     parse_terms: &SimpleTermStore,
     parse_symbols: &crate::intern::SymbolTable,
     parse_id: TermId,
-    scope_raw: u32,
+    scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
 ) -> TermId {
     let parse_term = parse_terms.get(parse_id).clone();
@@ -7874,17 +7893,17 @@ pub fn convert_query_term(
         }
         Term::Fn { functor, pos_args, named_args } => {
             let functor_name = parse_symbols.local_name(functor);
-            let kb_functor = resolve_query_name(kb, functor_name, scope_raw);
+            let kb_functor = resolve_query_name(kb, functor_name, scope);
             let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                 .iter()
-                .map(|&id| convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
+                .map(|&id| convert_query_term(kb, parse_terms, parse_symbols, id, scope, var_map))
                 .collect();
             let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                 .iter()
                 .map(|&(sym, id)| {
                     let n = parse_symbols.local_name(sym);
                     let kb_sym = kb.intern(n);
-                    (kb_sym, convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
+                    (kb_sym, convert_query_term(kb, parse_terms, parse_symbols, id, scope, var_map))
                 })
                 .collect();
 
@@ -7947,7 +7966,7 @@ pub fn convert_query_term(
         }
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
-            match resolve_name_in_kb(kb, name, scope_raw) {
+            match resolve_name_in_kb(kb, name, scope) {
                 ResolveResult::Found(resolved) => kb.alloc(Term::Ref(resolved)),
                 ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
                     let kb_sym = kb.intern(name);
@@ -7957,7 +7976,7 @@ pub fn convert_query_term(
         }
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
-            let kb_sym = resolve_query_name(kb, name, scope_raw);
+            let kb_sym = resolve_query_name(kb, name, scope);
             kb.alloc(Term::Ref(kb_sym))
         }
         Term::Bottom => kb.alloc(Term::Bottom),
@@ -7998,8 +8017,8 @@ pub fn convert_query_term(
 /// clause, so the query matches nothing — because this position has no error channel to
 /// tell them apart in. What differs is the DIAGNOSIS, and that is the CLI's
 /// (`report_unknown_functor_name`).
-fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Symbol {
-    match resolve_name_in_kb(kb, name, scope_raw) {
+fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Symbol {
+    match resolve_name_in_kb(kb, name, scope) {
         ResolveResult::Found(sym) => sym,
         ResolveResult::Ambiguous(_) | ResolveResult::NotFound => kb.intern(name),
     }
@@ -8029,16 +8048,16 @@ fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
 /// query` could bind the same dotted text to a DIFFERENT symbol than the program it
 /// queries. Queries run at `_global`, where the two readings almost always coincide —
 /// which is exactly why the divergence survived four fixes unnoticed.
-pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> ResolveResult {
+pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
     kb.symbols
-        .resolve_in_scope(name, scope_raw)
+        .resolve_in_scope(name, scope)
         // WI-917: the dotted rung answers in this same vocabulary, so `or_else` carries
         // the stop to it too — a contested HEAD SEGMENT is returned rather than folded
         // into "unresolved". Not for the tier's sake, which is keyed on a name's LAST
         // SEGMENT (`kernel_vocab_qualified`) and can never answer a dotted one, but
         // because `NotFound` is what sends every caller to its ABSENCE handling: the
         // false "no rule, fact, or declaration is in scope for it".
-        .or_else(|| resolve_dotted_in_kb(kb, name, scope_raw, DottedVisibility::VisibleOnly))
+        .or_else(|| resolve_dotted_in_kb(kb, name, scope, DottedVisibility::VisibleOnly))
         // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit prelude
         // resolve directly to their qualified home in query patterns too — parity with
         // `remap_name_str`, so a reflection query naming `field_access` / `ListLiteral`
@@ -8050,7 +8069,7 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Res
         .or_else(|| resolve_implicit(kb, name).map_or(ResolveResult::NotFound, ResolveResult::Found))
 }
 
-/// WI-900: does `name` ALREADY DENOTE something at `scope_raw` — the question the MINT
+/// WI-900: does `name` ALREADY DENOTE something at `scope` — the question the MINT
 /// GUARD ([`scan_rule_goal`]) asks before letting a rule head introduce a name? A head
 /// that names something introduces nothing; it is a CLAUSE ABOUT that thing.
 ///
@@ -8070,8 +8089,8 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Res
 /// ambiguous candidates, so the conflict the author has to see would be silently decided
 /// in their favour. Pinned by
 /// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
-fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> bool {
-    resolve_name_in_kb(kb, name, scope_raw).denotes()
+fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> bool {
+    resolve_name_in_kb(kb, name, scope).denotes()
 }
 
 // ---------------------------------------------------------------------------
@@ -8154,7 +8173,7 @@ enum DottedVisibility {
 fn resolve_dotted_in_kb(
     kb: &KnowledgeBase,
     name: &str,
-    scope: u32,
+    scope: ScopeId,
     vis: DottedVisibility,
 ) -> ResolveResult {
     // DOTTED-ONLY, decided ONCE for both rungs: a spelled-out PATH identifies itself,
@@ -8408,7 +8427,8 @@ struct Loader<'a> {
     // Current scope for scope-aware resolution
     current_scope: TermId,
     // Cache: type param name → TermId (Var) per scope, so all references to T share the same Var
-    type_param_vars: HashMap<(u32, String), TermId>,
+    /// Keyed by the SCOPE a type param was written in, not a raw (WI-984).
+    type_param_vars: HashMap<(ScopeId, String), TermId>,
     // WI-341 loader binder context: while loading a callback PARAMETER's arrow
     // type, its arrow param names (`a`, `t`) are bound here to their registered
     // `CallbackParam` place symbols (`<op>.f.a`), so a self-referential arrow
@@ -8937,7 +8957,7 @@ impl<'a> Loader<'a> {
                 if binder_lead
                     && !bound.contains(name)
                     && !matches!(
-                        self.kb.symbols.resolve_in_scope(name, self.current_scope.raw()),
+                        self.kb.symbols.resolve_in_scope(name, self.current_scope_id()),
                         ResolveResult::Found(_)
                     )
                 {
@@ -9109,17 +9129,27 @@ impl<'a> Loader<'a> {
         new_sym
     }
 
+    /// WI-984 — the [`ScopeId`] the loader is currently resolving in. Derived
+    /// rather than carried: `current_scope` is the scope TERM (it is also a domain,
+    /// a fact argument and a `SortAlias` subject), and a second field holding the
+    /// same fact would have to be updated at each of its seven assignments or
+    /// silently disagree.
+    fn current_scope_id(&self) -> ScopeId {
+        self.kb.scope_id_of(self.current_scope)
+    }
+
     /// Human-readable name for the current scope (for error messages).
     fn scope_display_name(&self) -> String {
-        match self.kb.get_term(self.current_scope) {
-            Term::Fn { functor, .. } => {
-                match self.kb.symbols.get(*functor) {
-                    SymbolDef::Resolved { local_name, .. } => local_name.clone(),
-                    SymbolDef::Unresolved { name } => name.clone(),
-                }
-            }
-            _ => "_unknown".to_owned(),
-        }
+        // WI-984 — the scope's OWNER, total. Was a `Term::Fn` match with an
+        // `_unknown` arm for every other carrier, the same non-total query
+        // `declaring_scope_symbol` and `scope_qualified_name` carried.
+        //
+        // `current_scope` is a NAME TERM at every one of its seven assignments —
+        // and only just: `load_provides_block` used to assign the APPLIED spec term
+        // (`Stack[T = Int64]`), which this projection aborts on. That was the
+        // phantom-scope bug WI-984 exposed; see `wi984_param_provides_test`. Adding
+        // an eighth assignment means answering the same question there.
+        self.kb.local_name_of(self.current_scope_id().owner()).to_string()
     }
 
     /// WI-369: if `name` (resolved while IGNORING the `internal` filter) names an
@@ -9128,7 +9158,7 @@ impl<'a> Loader<'a> {
     /// from a genuinely-unknown name, so they can emit a precise
     /// `ForbiddenInternalAccess` instead of a bare `UnresolvedName`.
     fn hidden_internal(&self, name: &str) -> Option<Symbol> {
-        let scope = self.current_scope.raw();
+        let scope = self.current_scope_id();
         if let ResolveResult::Found(sym) =
             self.kb.symbols.resolve_in_scope_ignoring_internal(name, scope)
         {
@@ -9255,7 +9285,7 @@ impl<'a> Loader<'a> {
         if let Some(local) = self.lookup_local_name(name) {
             return local;
         }
-        let scope = self.current_scope.raw();
+        let scope = self.current_scope_id();
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
             // An ambiguity ENDS the ladder (kernel-language.md §8.6). This is the
@@ -9307,7 +9337,7 @@ impl<'a> Loader<'a> {
     /// and the rationale for both; this is only the binding of `kb` and `scope`, so no
     /// loader position can express the ladder differently by accident.
     fn resolve_dotted(&self, name: &str, vis: DottedVisibility) -> ResolveResult {
-        resolve_dotted_in_kb(self.kb, name, self.current_scope.raw(), vis)
+        resolve_dotted_in_kb(self.kb, name, self.current_scope_id(), vis)
     }
 
     /// THE DOTTED STEP for a position that HAS an error channel: the ladder, plus the two
@@ -9374,7 +9404,7 @@ impl<'a> Loader<'a> {
     /// here points at the use site instead of `Span::default()` (byte 0).
     fn remap_symbol_strict(&mut self, sym: Symbol, span: Span) -> Symbol {
         let name = self.parsed.symbols.local_name(sym);
-        let scope = self.current_scope.raw();
+        let scope = self.current_scope_id();
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
             ResolveResult::Ambiguous(candidates) => {
@@ -9412,7 +9442,7 @@ impl<'a> Loader<'a> {
         } else {
             join_segments(&self.parsed.symbols, &name.segments)
         };
-        let scope = self.current_scope.raw();
+        let scope = self.current_scope_id();
         match self.kb.symbols.resolve_in_scope(&lookup_name, scope) {
             ResolveResult::Found(resolved) => resolved,
             ResolveResult::Ambiguous(candidates) => {
@@ -10899,7 +10929,7 @@ impl<'a> Loader<'a> {
     fn qualified_name_resolves(&self, name: &str) -> bool {
         self.kb
             .symbols
-            .resolve_in_scope(name, self.current_scope.raw())
+            .resolve_in_scope(name, self.current_scope_id())
             // WI-752: THE dotted ladder, read in the SAME order as every resolving
             // position. This gate used to rank the absolute rung FIRST while the
             // resolver it gates ranks it LAST — harmless for the boolean itself, but a
@@ -10949,7 +10979,7 @@ impl<'a> Loader<'a> {
     /// and the WI-280 field-access re-route ([`Self::field_access_root_is_value`]).
     fn dot_receiver_binder(&self, head: &str) -> Option<Symbol> {
         self.lookup_local_name(head).or_else(|| {
-            match self.kb.symbols.resolve_in_scope(head, self.current_scope.raw()) {
+            match self.kb.symbols.resolve_in_scope(head, self.current_scope_id()) {
                 ResolveResult::Found(s)
                     if self.kb.symbols.get(s).has_kind(SymbolKind::Param) => Some(s),
                 _ => None,
@@ -11191,7 +11221,7 @@ impl<'a> Loader<'a> {
     /// it reaches `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the
     /// name actually is.
     fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
-        let scope = self.current_scope.raw();
+        let scope = self.current_scope_id();
         // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
         // now come from `resolve_dotted_in_kb` like everywhere else). Without the
         // absolute rung a root-shadowing declaration suppressed the RULE-REFERENCE
@@ -12300,7 +12330,7 @@ impl<'a> Loader<'a> {
             return kb_id;
         }
         if let ResolveResult::Found(sym) =
-            self.kb.symbols.resolve_in_scope(&name, self.current_scope.raw())
+            self.kb.symbols.resolve_in_scope(&name, self.current_scope_id())
         {
             if self.kb.symbols.get(sym).has_kind(SymbolKind::Param) {
                 let kb_vid = self.kb.fresh_var(sym);
@@ -12516,7 +12546,7 @@ impl<'a> Loader<'a> {
     /// [`Self::type_expr_to_child`] (the sole, carrier-agnostic type lowering) to
     /// build the type-param `Var` directly.
     fn type_param_var(&mut self, sort_sym: Symbol, short_name: &str) -> TermId {
-        let key = (self.current_scope.raw(), short_name.to_owned());
+        let key = (self.current_scope_id(), short_name.to_owned());
         if let Some(&cached) = self.type_param_vars.get(&key) {
             return cached;
         }
@@ -12635,7 +12665,7 @@ impl<'a> Loader<'a> {
         let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
             local
         } else {
-            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
+            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope_id()) {
                 ResolveResult::Found(s) => s,
                 _ => return None,
             };
@@ -12745,7 +12775,7 @@ impl<'a> Loader<'a> {
         let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
             local
         } else {
-            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope.raw()) {
+            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope_id()) {
                 ResolveResult::Found(s) => s,
                 _ => return None,
             };
@@ -13024,7 +13054,7 @@ impl<'a> Loader<'a> {
         // bare-spec rule).
         if head_declares_member {
             if let ResolveResult::Found(member_resolved) =
-                self.kb.symbols.resolve_in_scope(member_name, self.current_scope.raw())
+                self.kb.symbols.resolve_in_scope(member_name, self.current_scope_id())
             {
                 let m_qn = self.kb.qualified_name_of(member_resolved).to_owned();
                 if self
@@ -13068,7 +13098,7 @@ impl<'a> Loader<'a> {
         // qualified ref — leave it to `remap_name`.
         let joined = format!("{head_name}.{member_name}");
         if !matches!(
-            self.kb.symbols.resolve_in_scope(&joined, self.current_scope.raw()),
+            self.kb.symbols.resolve_in_scope(&joined, self.current_scope_id()),
             ResolveResult::NotFound
         ) || self.kb.symbols.by_qualified_name.contains_key(&joined)
         {
@@ -13279,7 +13309,7 @@ impl<'a> Loader<'a> {
                 // A type-param name is a ground logic Var (no denoted) — build it
                 // via the shared `type_param_var` helper (NOT `type_expr_to_value`,
                 // which this fn must not call, see the wrapper note on it).
-                if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
+                if self.kb.symbols.is_type_param(self.current_scope_id(), &short_name) {
                     return node_occurrence::TypeChild::Ground(
                         self.type_param_var(sort_sym, &short_name),
                     );
@@ -13844,7 +13874,7 @@ impl<'a> Loader<'a> {
                 // canonicalizes to `Ref(S)` separately (WI-391, `sort_binding_to_value`).
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.local_name_of(sort_sym).to_owned();
-                if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
+                if self.kb.symbols.is_type_param(self.current_scope_id(), &short_name) {
                     Value::term(self.kb.make_sort_ref(sort_sym))
                 } else {
                     Value::term(self.name_to_sort_term(name))
@@ -14483,7 +14513,7 @@ impl<'a> Loader<'a> {
             existing
         } else {
             self.kb.symbols.define(
-                "induction", &induction_name, SymbolKind::Goal, sort_term.raw(),
+                "induction", &induction_name, SymbolKind::Goal, self.kb.scope_id_of(sort_term),
             )
         };
 
@@ -14580,7 +14610,7 @@ impl<'a> Loader<'a> {
                 } else {
                     join_segments(&self.parsed.symbols, &n.segments)
                 };
-                match self.kb.symbols.resolve_in_scope(&lookup, self.current_scope.raw()) {
+                match self.kb.symbols.resolve_in_scope(&lookup, self.current_scope_id()) {
                     ResolveResult::Found(s) => s == sort_functor,
                     // Preserve remap_name's qualified-name fallback so a
                     // fully-qualified self-reference (`t: my.ns.Tree` inside
@@ -14737,7 +14767,7 @@ impl<'a> Loader<'a> {
                 let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
                     existing
                 } else {
-                    self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, ctor_term.raw())
+                    self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, self.kb.scope_id_of(ctor_term))
                 };
                 let name_term = self.kb.alloc(Term::Ref(field_sym));
                 match type_value {
@@ -15739,7 +15769,7 @@ impl<'a> Loader<'a> {
             return None;
         }
         if !matches!(
-            self.kb.symbols.resolve_in_scope(&ret_str, self.current_scope.raw()),
+            self.kb.symbols.resolve_in_scope(&ret_str, self.current_scope_id()),
             ResolveResult::NotFound
         ) {
             return None;
@@ -15791,8 +15821,8 @@ impl<'a> Loader<'a> {
         domain: Symbol,
     ) -> crate::eval::value::Value {
         let qualified = format!("{op_qualified}.{carrier}");
-        let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, op_scope.raw());
-        self.kb.symbols.add_type_param(op_scope.raw(), carrier);
+        let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, self.kb.scope_id_of(op_scope));
+        self.kb.symbols.add_type_param(self.kb.scope_id_of(op_scope), carrier);
         let c_sort_term = self.kb.alloc(Term::Fn {
             functor: c_sym,
             pos_args: SmallVec::new(),
@@ -15967,7 +15997,7 @@ impl<'a> Loader<'a> {
         for tp in &o.type_params {
             let tp_name = self.parsed.symbols.local_name(tp.name).to_owned();
             let tp_sym = self.kb.intern(&tp_name);
-            let cache_key = (op_scope.raw(), tp_name.clone());
+            let cache_key = (self.kb.scope_id_of(op_scope), tp_name.clone());
             let var_tid = if let Some(&cached) = self.type_param_vars.get(&cache_key) {
                 cached
             } else {
@@ -16002,7 +16032,7 @@ impl<'a> Loader<'a> {
         // resolved concretely. Keyed by the SAME `result` symbol that
         // `try_denoted_value_path` resolves (`resolve_in_scope` from the op scope).
         if let ResolveResult::Found(result_sym) =
-            self.kb.symbols.resolve_in_scope("result", op_scope.raw())
+            self.kb.symbols.resolve_in_scope("result", self.kb.scope_id_of(op_scope))
         {
             self.signature_place_types.insert(result_sym, return_value.clone());
         }
@@ -16025,7 +16055,7 @@ impl<'a> Loader<'a> {
                 let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
                     existing
                 } else {
-                    self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope.raw())
+                    self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope_id())
                 };
                 // WI-727: record a conforming variadic capture parameter under its FIELD
                 // symbol — the same key the typer's `op.params` carries, so argument
@@ -16760,7 +16790,7 @@ impl<'a> Loader<'a> {
             // NOT `type_params_of_sort`, which re-FINDS the body scope by scanning
             // every qualified name in the symbol table: the enclosing scope is
             // already in hand here, so the scan would buy nothing.
-            let enclosing_owns = self.kb.symbols.is_type_param(enclosing.raw(), name);
+            let enclosing_owns = self.kb.symbols.is_type_param(self.kb.scope_id_of(enclosing), name);
             let enclosing_qn = self.kb.qualified_name_of(self.kb.name_term_sym(enclosing));
             let enclosing_short = last_segment(enclosing_qn);
             let shadowed = if captured.iter().any(|s| s == name) {
@@ -16791,7 +16821,7 @@ impl<'a> Loader<'a> {
     /// of that name would shadow. A namespace declares no type parameters, so it
     /// answers `false` without a kind test.
     fn enclosing_is_spec(&self, enclosing: TermId) -> bool {
-        self.kb.symbols.scope(enclosing.raw())
+        self.kb.symbols.scope(self.kb.scope_id_of(enclosing))
             .is_some_and(|s| !s.type_params_ordered.is_empty())
     }
 
@@ -17010,7 +17040,7 @@ impl<'a> Loader<'a> {
         // string, which is nobody's scope name, and the dotted ladder stands down under
         // an ambiguous head. Loud, imprecise, and the same shape as WI-911's.
         let ResolveResult::Found(op_sym) =
-            resolve_name_in_kb(&self.kb, &prefix_name, self.current_scope.raw())
+            resolve_name_in_kb(&self.kb, &prefix_name, self.current_scope_id())
         else {
             return None;
         };
@@ -17315,17 +17345,27 @@ impl<'a> Loader<'a> {
         // PARAMETERIZED spec — `provides Stack[T = Int64] language rust … end`, the
         // form the grammar's own doc comment shows — lowers to a SortView
         // APPLICATION, not a bare name, so unwrapping it aborted the loader. The
-        // scope above still rides the full applied term (it is a scope IDENTITY, and
-        // `Stack[T = Int64]` and `Stack[T = String]` must not share one); the domain
-        // is the sort a clause BELONGS to, which is `Stack` either way.
+        // domain is the sort a clause BELONGS to, which is `Stack` either way.
         let spec_domain = match &pb.spec {
             TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => self.remap_name(name),
             _ => self.kb.intern("?"),
         };
         // Resolved ABOVE the scope switch: `remap_name` resolves in `current_scope`,
-        // and inside the block that is the spec term itself.
+        // and inside the block that is the spec sort.
         let prev_scope = self.current_scope;
-        self.current_scope = spec_term;
+        // WI-984 — AND SO IS THE SCOPE: the base sort, not the applied term. It used
+        // to be `spec_term`, argued as a per-instantiation scope IDENTITY so that
+        // `Stack[T = Int64]` and `Stack[T = String]` could not share one. That
+        // identity was VACUOUS — nothing is ever `define`d into an applied term's
+        // scope and no `add_parent` links one, so both instantiations resolved
+        // against an empty scope with no parents, while the BARE `provides Stack`
+        // next to them resolved against `Stack`'s real scope. A `ScopeId` is owned by
+        // a SYMBOL and `Stack[T = Int64]` is not one, which is the type reporting
+        // that the phantom was never a scope; the two forms now agree, matching the
+        // domain, which already collapses both to `Stack`. Driven by
+        // `wi984_param_provides_test` — before this the parameterized form aborted
+        // the load on `name_term_sym`.
+        self.current_scope = self.kb.make_name_term_from_sym(spec_domain);
 
         for item in &pb.items {
             match item {
@@ -18036,7 +18076,7 @@ struct LoadPass<'l, 'a> {
     /// WI-840: source-order position among a SCOPE's `requires` items, named or
     /// not, so a named slot's index covers the whole list. Keyed by scope: the
     /// walk covers many scopes, and each item is offered to exactly one of them.
-    requires_seen: HashMap<u32, usize>,
+    requires_seen: HashMap<ScopeId, usize>,
     /// WI-201: the carrier bindings each enclosing SORT displaced, innermost
     /// last. A stack because sort bodies nest and each must get its own back.
     carrier_stack: Vec<HashMap<(Symbol, Symbol), TermId>>,
@@ -18087,7 +18127,7 @@ impl ScopePass for LoadPass<'_, '_> {
             Item::Operation(o) => { self.loader.load_operation(o, domain); "Operation" }
             Item::Const(c) => { self.loader.load_const(c, domain); "Const" }
             Item::RequiresDecl(r) => {
-                let seen = self.requires_seen.entry(scope.raw()).or_insert(0);
+                let seen = self.requires_seen.entry(self.loader.kb.scope_id_of(scope)).or_insert(0);
                 let index = *seen;
                 *seen += 1;
                 self.loader.load_requires_decl(r, domain, index);

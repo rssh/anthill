@@ -24,6 +24,94 @@ impl Symbol {
     }
 }
 
+// ── ScopeId ─────────────────────────────────────────────────────
+
+/// WI-984 — A SCOPE, AS A TYPE. The lexical scope a `namespace`, a `sort` body,
+/// an operation frame or the top-level `_global` opens, identified by THE SYMBOL
+/// THAT OWNS IT.
+///
+/// IT WRAPS THE SYMBOL, NOT THE TERM, and that is the whole design. Scope keys
+/// used to be the `TermId` raw of the owner's nullary name term, which made the
+/// owner projection a QUERY — fetch the term, match a nullary `Term::Fn`, answer
+/// `Option` — and that query is not total: [`crate::kb::KnowledgeBase::alloc`]
+/// rewrites a CONSTRUCTOR symbol's nullary `Fn` to a `Term::Ref` (WI-511), so
+/// every scope owned by a constructor answered `None`. MEASURED over a stdlib
+/// load before this change: 227 of 2602 resolved symbols — every entity FIELD,
+/// whose declaring scope is its constructor — got `None` from
+/// `declaring_scope_symbol`, and `scope(?sym, ?r)` failed on each. Off the
+/// symbol the projection is TOTAL and no representation can make it fail.
+///
+/// WHAT THIS TYPE CLOSES: a scope can no longer be built from a bare integer, a
+/// `TermId`, or an arbitrary index — [`SymbolTable::scope_id`] is the only
+/// constructor and it takes a `Symbol`. "This raw is a scope" stopped being a
+/// promise each caller carries.
+///
+/// WHAT IT DOES NOT CLOSE, stated rather than implied. TWO HOLES, both about
+/// PROVENANCE — nothing here says WHERE the owning symbol came from.
+///
+///  1. WHICH TABLE issued it (WI-1004). The loader threads two symbol tables — the
+///     KB's and the parse-side `ParsedFile`'s — and a `Symbol` carries no table of
+///     its own (the term store and the discrimination tree key on it and have no
+///     table to speak of). Scala closes this with a path-dependent `opaque type`
+///     member; Rust has no path-dependent types, so the mint's range check is all
+///     that is available here, and it catches only the direction where the foreign
+///     table is the LARGER one. Asserted, not papered over — see
+///     `scope_id_refuses_a_symbol_this_table_never_issued`. Closing it properly
+///     needs the symbol TAGGED with its table, which is WI-1004's question, not
+///     this type's.
+///  2. [`Symbol::from_raw`] is `pub const`, so `st.scope_id(Symbol::from_raw(3))`
+///     compiles and, in range, succeeds. The compile errors below say a scope
+///     cannot be built from an integer *in a scope position*; they do not say an
+///     integer can never reach one, and that hop is one call long.
+///
+/// THE REFUSALS, AS COMPILE ERRORS — WI-984's acceptance criterion, spelled so a
+/// change that re-admits any of them fails the build instead of passing quietly.
+///
+/// A raw integer is not a scope:
+/// ```compile_fail
+/// use anthill_core::intern::{SymbolTable, SymbolKind};
+/// let mut st = SymbolTable::new();
+/// st.define("x", "A.x", SymbolKind::Operation, 10u32);
+/// ```
+///
+/// Nor a term's raw id — the same rejection as above, since `TermId::raw()` IS a
+/// `u32`, kept because "a scope is not a term" is the half of the criterion a
+/// reader comes here to check:
+/// ```compile_fail
+/// use anthill_core::kb::KnowledgeBase;
+/// use anthill_core::intern::SymbolKind;
+/// let mut kb = KnowledgeBase::new();
+/// let t = kb.make_name_term("_global");
+/// kb.define_symbol("x", "A.x", SymbolKind::Operation, t.raw());
+/// ```
+///
+/// And one cannot be conjured without a table to issue its owner:
+/// ```compile_fail
+/// use anthill_core::intern::{ScopeId, Symbol};
+/// let _ = ScopeId(Symbol::from_raw(3));
+/// ```
+///
+/// What DOES work is the one mint:
+/// ```
+/// use anthill_core::intern::{SymbolTable, SymbolKind};
+/// let mut st = SymbolTable::new();
+/// let owner = st.intern("A");
+/// let scope = st.scope_id(owner);
+/// let x = st.define("x", "A.x", SymbolKind::Operation, scope);
+/// assert_eq!(st.declaring_scope(x).map(|s| s.owner()), Some(owner));
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ScopeId(Symbol);
+
+impl ScopeId {
+    /// The symbol that OWNS this scope — `Tank` for the scope `Tank.fill` is
+    /// declared in. A TOTAL projection: no fetch, no match, no `Option`. The
+    /// reason this newtype wraps the symbol.
+    pub fn owner(self) -> Symbol {
+        self.0
+    }
+}
+
 // ── Symbol metadata ─────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +283,10 @@ pub enum SymbolDef {
         /// two readings coincide for every symbol carrying ONE category and only a
         /// site-by-site judgement can tell which was meant.
         kinds: SmallVec<[SymbolKind; 2]>,
-        scope_raw: u32,
+        /// The scope this name was DECLARED IN. A [`ScopeId`] since WI-984 — it
+        /// was a bare `u32` (the owner's name-term raw), which made it one type
+        /// with an arbitrary term and an arbitrary index.
+        scope: ScopeId,
         /// WI-352 — for a *callable* place (an operation, or a callback-typed
         /// parameter), the ordered argument-place symbols it binds: an op's
         /// param places (`reduce.xs`, `reduce.z`, `reduce.f`) or a callback's
@@ -250,13 +341,24 @@ impl SymbolDef {
     }
 }
 
+/// A scope's link to a parent scope — an enclosing body, a `requires`, an import.
+///
 /// WI-994: `PartialEq` is what makes [`SymbolTable::add_parent`] idempotent — a
-/// scope's parents are a SET, and two links differing in `instantiation_term_raw`
-/// (the same spec `requires`d at two instantiations) are genuinely two.
+/// scope's parents are a SET.
+///
+/// WI-984 removed a third field, `instantiation_term_raw: u32`: the `TermId` raw
+/// of the type expression a `requires` was written with. It was written by 18
+/// sites and read by NOTHING except this derived `PartialEq`, where it split
+/// `requires Eq[T = Int]` and `requires Eq[T = String]` on one scope into two
+/// links. That split was never observable — [`SymbolTable::resolve_in_scope`] and
+/// [`SymbolTable::internal_visible_from`] read only `parent_scope` and
+/// `is_enclosing`, so both links resolve identically — so the field's departure
+/// merges them and leaves every resolution answer alone. The faithful
+/// instantiation still rides on the `SortRequiresInfo` / `SortProvidesInfo` value
+/// facts, which is where a reader should look for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopeInclusion {
-    pub parent_scope_raw: u32,
-    pub instantiation_term_raw: u32,
+    pub parent_scope: ScopeId,
     /// If true, this is an enclosing-scope relationship (sort/namespace body)
     /// and the variant-exposure (`exposed`-set) filter is bypassed.
     pub is_enclosing: bool,
@@ -332,8 +434,8 @@ pub struct SymbolTable {
     pub(crate) intern_map: HashMap<String, Symbol>,
     /// Qualified name → unique resolved Symbol
     pub by_qualified_name: HashMap<String, Symbol>,
-    /// All per-scope data: scope_raw → Scope
-    scopes: HashMap<u32, Scope>,
+    /// All per-scope data, keyed by the scope's owning symbol.
+    scopes: HashMap<ScopeId, Scope>,
     /// WI-369: symbols declared `internal` — hidden from cross-scope resolution
     /// (kernel-language.md §8.6). A name is visible by default; only `internal`
     /// hides it. Recorded by raw symbol index; the empty set is the all-visible
@@ -344,6 +446,27 @@ pub struct SymbolTable {
 impl SymbolTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// WI-984 — mint the [`ScopeId`] of the scope `owner` opens. THE ONLY
+    /// constructor: a scope cannot be built from a raw integer, a `TermId`, or an
+    /// arbitrary index, and that refusal is a compile error rather than a comment.
+    ///
+    /// The bound check is the one provenance guard Rust affords here, and it is
+    /// LOAD-BEARING rather than defensive: every reader indexes `defs` by the
+    /// owner, so a symbol this table never issued reaches a raw index panic in a
+    /// display path with no hint of where it came from. It catches only the
+    /// direction where the FOREIGN table is the larger one — see [`ScopeId`] for
+    /// what that leaves open and why Rust cannot close it.
+    pub fn scope_id(&self, owner: Symbol) -> ScopeId {
+        assert!(
+            (owner.index() as usize) < self.defs.len(),
+            "scope_id: Symbol({}) was never issued by this SymbolTable (it holds {} \
+             symbols) — a scope owner from another table cannot name a scope here",
+            owner.index(),
+            self.defs.len(),
+        );
+        ScopeId(owner)
     }
 
     /// Intern a name, returning a Symbol. Creates an Unresolved entry
@@ -397,10 +520,10 @@ impl SymbolTable {
         local_name: &str,
         qualified_name: &str,
         kind: SymbolKind,
-        scope_raw: u32,
+        scope: ScopeId,
     ) -> Symbol {
-        let scope = self.scopes.entry(scope_raw).or_default();
-        if let Some(&existing) = scope.locals.get(local_name) {
+        let scope_data = self.scopes.entry(scope).or_default();
+        if let Some(&existing) = scope_data.locals.get(local_name) {
             // Re-declaring a name already bound in this scope RECORDS the added
             // category instead of discarding it. The early return is unchanged —
             // one name in one scope is still one symbol — but the second
@@ -414,10 +537,10 @@ impl SymbolTable {
             local_name: local_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
             kinds: SmallVec::from_elem(kind, 1),
-            scope_raw,
+            scope,
             arg_places: Vec::new(),
         });
-        scope.locals.insert(local_name.to_owned(), sym);
+        scope_data.locals.insert(local_name.to_owned(), sym);
         self.by_qualified_name
             .insert(qualified_name.to_owned(), sym);
         sym
@@ -440,7 +563,7 @@ impl SymbolTable {
         local_name: &str,
         qualified_name: &str,
         kind: SymbolKind,
-        scope_raw: u32,
+        scope: ScopeId,
     ) -> Symbol {
         if let Some(&existing) = self.by_qualified_name.get(qualified_name) {
             // Same accumulation as `define`: a repeated declaration ADDS its role
@@ -453,7 +576,7 @@ impl SymbolTable {
             local_name: local_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
             kinds: SmallVec::from_elem(kind, 1),
-            scope_raw,
+            scope,
             arg_places: Vec::new(),
         });
         self.by_qualified_name
@@ -493,23 +616,21 @@ impl SymbolTable {
         self.internal_syms.contains(&sym.0)
     }
 
-    /// WI-369: is `sym` visible from `from_scope_raw`? A non-`internal` symbol
+    /// WI-369: is `sym` visible from `from_scope`? A non-`internal` symbol
     /// is visible everywhere (the default). An `internal` symbol is visible only
     /// within its declaring scope and that scope's lexical descendants — i.e.
-    /// `from_scope_raw` is the declaring scope, or reaches it by following
+    /// `from_scope` is the declaring scope, or reaches it by following
     /// `is_enclosing` parent links (the sort/namespace body chain). Crossing any
     /// non-enclosing edge (`import`/`requires`/wildcard/variant exposure) leaves
     /// the lexical scope, so the internal name is hidden there.
-    pub fn internal_visible_from(&self, sym: Symbol, from_scope_raw: u32) -> bool {
+    pub fn internal_visible_from(&self, sym: Symbol, from_scope: ScopeId) -> bool {
         if !self.is_internal(sym) {
             return true;
         }
-        let decl_scope = match self.defs.get(sym.0 as usize) {
-            Some(SymbolDef::Resolved { scope_raw, .. }) => *scope_raw,
-            _ => return true, // unresolved/unknown — nothing to hide
-        };
-        // Walk the enclosing-parent chain up from `from_scope_raw`.
-        let mut stack = vec![from_scope_raw];
+        // Unresolved/unknown — nothing to hide.
+        let Some(decl_scope) = self.declaring_scope(sym) else { return true };
+        // Walk the enclosing-parent chain up from `from_scope`.
+        let mut stack = vec![from_scope];
         let mut visited = HashSet::new();
         while let Some(s) = stack.pop() {
             if s == decl_scope {
@@ -521,7 +642,7 @@ impl SymbolTable {
             if let Some(scope) = self.scopes.get(&s) {
                 for p in &scope.parents {
                     if p.is_enclosing {
-                        stack.push(p.parent_scope_raw);
+                        stack.push(p.parent_scope);
                     }
                 }
             }
@@ -531,33 +652,33 @@ impl SymbolTable {
 
     /// Mark a name as exposed from a scope to its enclosing scope via the
     /// variant-exposure parent link (populated from entity variants only).
-    pub fn add_exposed(&mut self, scope_raw: u32, name: &str) {
+    pub fn add_exposed(&mut self, scope: ScopeId, name: &str) {
         self.scopes
-            .entry(scope_raw)
+            .entry(scope)
             .or_default()
             .exposed
             .insert(name.to_owned());
     }
 
     /// Check if a name is a type parameter of the given scope.
-    pub fn is_type_param(&self, scope_raw: u32, name: &str) -> bool {
-        self.scopes.get(&scope_raw)
+    pub fn is_type_param(&self, scope: ScopeId, name: &str) -> bool {
+        self.scopes.get(&scope)
             .map_or(false, |s| s.type_params.contains(name))
     }
 
     /// Record a type parameter name for a scope (excluded from parent lookups).
-    pub fn add_type_param(&mut self, scope_raw: u32, name: &str) {
-        let scope = self.scopes.entry(scope_raw).or_default();
-        if scope.type_params.insert(name.to_owned()) {
-            scope.type_params_ordered.push(name.to_owned());
+    pub fn add_type_param(&mut self, scope: ScopeId, name: &str) {
+        let data = self.scopes.entry(scope).or_default();
+        if data.type_params.insert(name.to_owned()) {
+            data.type_params_ordered.push(name.to_owned());
         }
     }
 
     /// Record an imported name alias in a scope.
     /// Makes `local_name` resolve to `sym` locally in the given scope.
-    pub fn add_import(&mut self, scope_raw: u32, local_name: &str, sym: Symbol) {
+    pub fn add_import(&mut self, scope: ScopeId, local_name: &str, sym: Symbol) {
         self.scopes
-            .entry(scope_raw)
+            .entry(scope)
             .or_default()
             .imports
             .insert(local_name.to_owned(), sym);
@@ -577,25 +698,26 @@ impl SymbolTable {
     /// second load, and unbounded in the number of loads. `is_new` had been
     /// suppressing that as a side effect of answering a different question.
     ///
-    /// The dedup is on the WHOLE inclusion, so two links differing only in
-    /// `instantiation_term_raw` — one spec `requires`d at two instantiations — both
-    /// stand. O(P) per push against P in the tens, paid at load, against an O(P)
-    /// every lookup pays forever.
-    pub fn add_parent(&mut self, scope_raw: u32, inclusion: ScopeInclusion) {
-        let parents = &mut self.scopes.entry(scope_raw).or_default().parents;
+    /// The dedup is on the WHOLE inclusion — since WI-984 that is `(parent_scope,
+    /// is_enclosing)`, exactly the pair [`Self::resolve_in_scope_recursive`] and
+    /// [`Self::internal_visible_from`] read, so two links this call cannot tell
+    /// apart are two no walk could tell apart either. O(P) per push against P in
+    /// the tens, paid at load, against an O(P) every lookup pays forever.
+    pub fn add_parent(&mut self, scope: ScopeId, inclusion: ScopeInclusion) {
+        let parents = &mut self.scopes.entry(scope).or_default().parents;
         if !parents.contains(&inclusion) {
             parents.push(inclusion);
         }
     }
 
-    /// Get a scope by its raw id.
-    pub fn scope(&self, scope_raw: u32) -> Option<&Scope> {
-        self.scopes.get(&scope_raw)
+    /// Get a scope's data.
+    pub fn scope(&self, scope: ScopeId) -> Option<&Scope> {
+        self.scopes.get(&scope)
     }
 
-    /// Get or create a scope by its raw id.
-    pub fn scope_mut(&mut self, scope_raw: u32) -> &mut Scope {
-        self.scopes.entry(scope_raw).or_default()
+    /// Get or create a scope's data.
+    pub fn scope_mut(&mut self, scope: ScopeId) -> &mut Scope {
+        self.scopes.entry(scope).or_default()
     }
 
     /// Resolve a name within a scope. Resolution order:
@@ -604,7 +726,7 @@ impl SymbolTable {
     /// 2. Parent scopes: check parent inclusions (exposed variants only across
     ///    a variant-exposure link, excluding type params)
     /// 3. NotFound if nothing matches
-    pub fn resolve_in_scope(&self, name: &str, scope_raw: u32) -> ResolveResult {
+    pub fn resolve_in_scope(&self, name: &str, scope: ScopeId) -> ResolveResult {
         // WI-369: resolve IGNORING `internal`, then drop any matched symbol not
         // visible from the ENTRY scope (kernel-language.md §8.6). Visibility is
         // applied as a post-filter on the resolved symbol(s), not as a per-hop
@@ -614,8 +736,8 @@ impl SymbolTable {
         // descendant's imports must be hidden the same as a direct member.
         // Filtering at collection time also keeps internal names from polluting
         // the candidate set with a spurious ambiguity (the spec's step-3 intent).
-        let raw = self.resolve_in_scope_ignoring_internal(name, scope_raw);
-        self.filter_internal_visibility(raw, scope_raw)
+        let raw = self.resolve_in_scope_ignoring_internal(name, scope);
+        self.filter_internal_visibility(raw, scope)
     }
 
     /// WI-369 diagnostic twin of [`Self::resolve_in_scope`] that does NOT apply
@@ -624,9 +746,9 @@ impl SymbolTable {
     /// apart from a forbidden access to an `internal` symbol, so the loader can
     /// emit a precise `ForbiddenInternalAccess` rather than a bare
     /// `UnresolvedName`.
-    pub fn resolve_in_scope_ignoring_internal(&self, name: &str, scope_raw: u32) -> ResolveResult {
+    pub fn resolve_in_scope_ignoring_internal(&self, name: &str, scope: ScopeId) -> ResolveResult {
         let mut visited = std::collections::HashSet::new();
-        self.resolve_in_scope_recursive(name, scope_raw, &mut visited)
+        self.resolve_in_scope_recursive(name, scope, &mut visited)
     }
 
     /// WI-369: drop matched symbols not visible from `from_scope` (the entry
@@ -634,7 +756,7 @@ impl SymbolTable {
     /// (the loader then probes [`Self::resolve_in_scope_ignoring_internal`] to
     /// emit a precise `ForbiddenInternalAccess`); an ambiguity keeps only its
     /// visible candidates, so an `internal` name never shadows a visible peer.
-    fn filter_internal_visibility(&self, r: ResolveResult, from_scope: u32) -> ResolveResult {
+    fn filter_internal_visibility(&self, r: ResolveResult, from_scope: ScopeId) -> ResolveResult {
         match r {
             ResolveResult::Found(sym) => {
                 if self.internal_visible_from(sym, from_scope) {
@@ -661,23 +783,23 @@ impl SymbolTable {
     fn resolve_in_scope_recursive(
         &self,
         name: &str,
-        scope_raw: u32,
-        visited: &mut std::collections::HashSet<u32>,
+        scope: ScopeId,
+        visited: &mut std::collections::HashSet<ScopeId>,
     ) -> ResolveResult {
-        if !visited.insert(scope_raw) {
+        if !visited.insert(scope) {
             return ResolveResult::NotFound; // cycle
         }
 
         // Collect eligible parent scopes (filter + extract) while holding
         // the borrow on self.scopes, then drop it before recursing.
-        let eligible_parents: SmallVec<[u32; 4]> = if let Some(scope) = self.scopes.get(&scope_raw) {
+        let eligible_parents: SmallVec<[ScopeId; 4]> = if let Some(data) = self.scopes.get(&scope) {
             // 1. Local: check locals defined in this scope — O(1) lookup
-            if let Some(&sym) = scope.locals.get(name) {
+            if let Some(&sym) = data.locals.get(name) {
                 return ResolveResult::Found(sym);
             }
 
             // 1b. Imported name aliases (from selective/plain imports)
-            if let Some(&sym) = scope.imports.get(name) {
+            if let Some(&sym) = data.imports.get(name) {
                 return ResolveResult::Found(sym);
             }
 
@@ -688,9 +810,9 @@ impl SymbolTable {
             // `exposed` holds a sort's entity variants (proposal 044 job 2): a
             // non-empty set leaks only those variants to the enclosing scope; an
             // empty set (specs, namespaces) is fully visible via requires/wildcard.
-            scope.parents.iter().filter_map(|p| {
+            data.parents.iter().filter_map(|p| {
                 if !p.is_enclosing {
-                    if let Some(parent) = self.scopes.get(&p.parent_scope_raw) {
+                    if let Some(parent) = self.scopes.get(&p.parent_scope) {
                         if parent.type_params.contains(name) {
                             return None;
                         }
@@ -699,7 +821,7 @@ impl SymbolTable {
                         }
                     }
                 }
-                Some(p.parent_scope_raw)
+                Some(p.parent_scope)
             }).collect()
         } else {
             return ResolveResult::NotFound;
@@ -757,30 +879,17 @@ impl SymbolTable {
         matches!(&self.defs[sym.0 as usize], SymbolDef::Resolved { .. })
     }
 
-    /// Scope symbol that owns `sym` (the symbol whose body contains it as a
-    /// local). `None` at the top-level `_global` scope or for unresolved
-    /// symbols. Linear scan over defs — fine at introspection rates.
-    pub fn scope_of(&self, sym: Symbol) -> Option<Symbol> {
-        let scope_raw = match self.get(sym) {
-            SymbolDef::Resolved { scope_raw, .. } => *scope_raw,
-            SymbolDef::Unresolved { .. } => return None,
-        };
-        for (i, def) in self.defs.iter().enumerate() {
-            if let SymbolDef::Resolved { scope_raw: sraw, .. } = def {
-                if *sraw != scope_raw { continue; }
-                // Any of these roles qualifies — asked as membership, so a name
-                // that both IS a sort and constructs still answers as a sort.
-                if [SymbolKind::Sort, SymbolKind::Namespace, SymbolKind::Operation]
-                    .iter()
-                    .any(|k| def.has_kind(*k))
-                {
-                    let candidate = Symbol::from_raw(i as u32);
-                    if candidate != sym { return Some(candidate); }
-                }
-            }
+    /// WI-984 — THE SCOPE `sym` WAS DECLARED IN. `None` only for an unresolved
+    /// symbol, which has no scope at all; there is no second way to fail, because
+    /// [`ScopeId::owner`] is total. The stored-representation reader every caller
+    /// wanting the declaring scope (or its owner) should go through.
+    pub fn declaring_scope(&self, sym: Symbol) -> Option<ScopeId> {
+        match self.defs.get(sym.0 as usize) {
+            Some(SymbolDef::Resolved { scope, .. }) => Some(*scope),
+            _ => None,
         }
-        None
     }
+
 
 }
 
@@ -876,8 +985,10 @@ mod tests {
     #[test]
     fn define_creates_new_entry_different_scopes() {
         let mut st = SymbolTable::new();
-        let s1 = st.define("foo", "A.foo", SymbolKind::Operation, 10);
-        let s2 = st.define("foo", "B.foo", SymbolKind::Operation, 20);
+        let a = scope(&mut st, "A");
+        let b = scope(&mut st, "B");
+        let s1 = st.define("foo", "A.foo", SymbolKind::Operation, a);
+        let s2 = st.define("foo", "B.foo", SymbolKind::Operation, b);
         assert_ne!(s1, s2);
         assert_eq!(st.local_name(s1), "foo");
         assert_eq!(st.local_name(s2), "foo");
@@ -885,19 +996,28 @@ mod tests {
         assert!(st.is_resolved(s2));
     }
 
+    /// The scope `owner` opens. Tests used to pass bare integers here — the very
+    /// thing WI-984 makes impossible.
+    fn scope(st: &mut SymbolTable, owner: &str) -> ScopeId {
+        let sym = st.intern(owner);
+        st.scope_id(sym)
+    }
+
     #[test]
     fn define_same_scope_reuses() {
         let mut st = SymbolTable::new();
-        let s1 = st.define("Foo", "A.Foo", SymbolKind::Sort, 10);
-        let s2 = st.define("Foo", "A.Foo", SymbolKind::Namespace, 10);
+        let a = scope(&mut st, "A");
+        let s1 = st.define("Foo", "A.Foo", SymbolKind::Sort, a);
+        let s2 = st.define("Foo", "A.Foo", SymbolKind::Namespace, a);
         assert_eq!(s1, s2, "same local_name in same scope should reuse");
     }
 
     #[test]
     fn resolve_in_scope_local() {
         let mut st = SymbolTable::new();
-        let s = st.define("eq", "Eq.eq", SymbolKind::Operation, 100);
-        match st.resolve_in_scope("eq", 100) {
+        let eq = scope(&mut st, "Eq");
+        let s = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
+        match st.resolve_in_scope("eq", eq) {
             ResolveResult::Found(found) => assert_eq!(found, s),
             other => panic!("expected Found, got {:?}", other),
         }
@@ -906,19 +1026,15 @@ mod tests {
     #[test]
     fn resolve_in_scope_parent() {
         let mut st = SymbolTable::new();
-        // Define "eq" in scope 100 (Eq)
-        let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, 100);
-        st.add_exposed(100, "eq");
+        let eq = scope(&mut st, "Eq");
+        let ordered = scope(&mut st, "Ordered");
+        let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
+        st.add_exposed(eq, "eq");
 
-        // Scope 200 (Ordered) includes scope 100 (Eq)
-        st.add_parent(200, ScopeInclusion {
-            parent_scope_raw: 100,
-            instantiation_term_raw: 0,
-            is_enclosing: false,
-        });
+        // `Ordered` includes `Eq`
+        st.add_parent(ordered, ScopeInclusion { parent_scope: eq, is_enclosing: false });
 
-        // "eq" should resolve in scope 200 via parent
-        match st.resolve_in_scope("eq", 200) {
+        match st.resolve_in_scope("eq", ordered) {
             ResolveResult::Found(found) => assert_eq!(found, eq_sym),
             other => panic!("expected Found, got {:?}", other),
         }
@@ -927,30 +1043,26 @@ mod tests {
     #[test]
     fn resolve_excludes_type_params() {
         let mut st = SymbolTable::new();
-        // Define "T" as a sort in scope 100
-        st.define("T", "Eq.T", SymbolKind::Sort, 100);
-        st.add_exposed(100, "T");
-        st.add_type_param(100, "T");
+        let eq = scope(&mut st, "Eq");
+        let ordered = scope(&mut st, "Ordered");
+        // "T" is a type param of `Eq`
+        st.define("T", "Eq.T", SymbolKind::Sort, eq);
+        st.add_exposed(eq, "T");
+        st.add_type_param(eq, "T");
 
-        // Define "eq" in scope 100
-        let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, 100);
-        st.add_exposed(100, "eq");
+        let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
+        st.add_exposed(eq, "eq");
 
-        // Scope 200 includes scope 100
-        st.add_parent(200, ScopeInclusion {
-            parent_scope_raw: 100,
-            instantiation_term_raw: 0,
-            is_enclosing: false,
-        });
+        st.add_parent(ordered, ScopeInclusion { parent_scope: eq, is_enclosing: false });
 
         // "T" should NOT resolve from parent (it's a type param)
-        match st.resolve_in_scope("T", 200) {
+        match st.resolve_in_scope("T", ordered) {
             ResolveResult::NotFound => {}
             other => panic!("expected NotFound for type param, got {:?}", other),
         }
 
         // "eq" should resolve normally
-        match st.resolve_in_scope("eq", 200) {
+        match st.resolve_in_scope("eq", ordered) {
             ResolveResult::Found(found) => assert_eq!(found, eq_sym),
             other => panic!("expected Found, got {:?}", other),
         }
@@ -959,25 +1071,18 @@ mod tests {
     #[test]
     fn resolve_ambiguous() {
         let mut st = SymbolTable::new();
-        // Define "foo" in two different parent scopes
-        st.define("foo", "A.foo", SymbolKind::Operation, 100);
-        st.add_exposed(100, "foo");
-        st.define("foo", "B.foo", SymbolKind::Operation, 200);
-        st.add_exposed(200, "foo");
+        let a = scope(&mut st, "A");
+        let b = scope(&mut st, "B");
+        let c = scope(&mut st, "C");
+        st.define("foo", "A.foo", SymbolKind::Operation, a);
+        st.add_exposed(a, "foo");
+        st.define("foo", "B.foo", SymbolKind::Operation, b);
+        st.add_exposed(b, "foo");
 
-        // Scope 300 includes both
-        st.add_parent(300, ScopeInclusion {
-            parent_scope_raw: 100,
-            instantiation_term_raw: 0,
-            is_enclosing: false,
-        });
-        st.add_parent(300, ScopeInclusion {
-            parent_scope_raw: 200,
-            instantiation_term_raw: 0,
-            is_enclosing: false,
-        });
+        st.add_parent(c, ScopeInclusion { parent_scope: a, is_enclosing: false });
+        st.add_parent(c, ScopeInclusion { parent_scope: b, is_enclosing: false });
 
-        match st.resolve_in_scope("foo", 300) {
+        match st.resolve_in_scope("foo", c) {
             ResolveResult::Ambiguous(candidates) => assert_eq!(candidates.len(), 2),
             other => panic!("expected Ambiguous, got {:?}", other),
         }
@@ -986,22 +1091,16 @@ mod tests {
     #[test]
     fn local_shadows_parent() {
         let mut st = SymbolTable::new();
-        // Define "foo" in parent scope 100
-        st.define("foo", "A.foo", SymbolKind::Operation, 100);
-        st.add_exposed(100, "foo");
+        let a = scope(&mut st, "A");
+        let b = scope(&mut st, "B");
+        st.define("foo", "A.foo", SymbolKind::Operation, a);
+        st.add_exposed(a, "foo");
 
-        // Define "foo" locally in scope 200
-        let local_foo = st.define("foo", "B.foo", SymbolKind::Operation, 200);
-
-        // Scope 200 includes 100
-        st.add_parent(200, ScopeInclusion {
-            parent_scope_raw: 100,
-            instantiation_term_raw: 0,
-            is_enclosing: false,
-        });
+        let local_foo = st.define("foo", "B.foo", SymbolKind::Operation, b);
+        st.add_parent(b, ScopeInclusion { parent_scope: a, is_enclosing: false });
 
         // Local should win
-        match st.resolve_in_scope("foo", 200) {
+        match st.resolve_in_scope("foo", b) {
             ResolveResult::Found(found) => assert_eq!(found, local_foo),
             other => panic!("expected Found (local), got {:?}", other),
         }
@@ -1060,22 +1159,64 @@ mod tests {
     #[test]
     fn add_parent_is_idempotent_per_distinct_inclusion() {
         let mut syms = SymbolTable::new();
-        let link = ScopeInclusion {
-            parent_scope_raw: 7,
-            instantiation_term_raw: 7,
-            is_enclosing: false,
-        };
-        syms.add_parent(1, link.clone());
-        syms.add_parent(1, link.clone());
-        syms.add_parent(1, link.clone());
-        assert_eq!(syms.scope(1).unwrap().parents.len(), 1, "one link, offered thrice");
+        let child = scope(&mut syms, "Child");
+        let parent = scope(&mut syms, "Parent");
+        let link = ScopeInclusion { parent_scope: parent, is_enclosing: false };
+        syms.add_parent(child, link.clone());
+        syms.add_parent(child, link.clone());
+        syms.add_parent(child, link.clone());
+        assert_eq!(syms.scope(child).unwrap().parents.len(), 1, "one link, offered thrice");
 
-        // …and the dedup is on the WHOLE inclusion, so a second instantiation of
-        // one parent scope is a SECOND link, not a repeat of the first. Without
-        // this row the guard could be narrowed to `parent_scope_raw` and nothing
-        // here would notice.
-        syms.add_parent(1, ScopeInclusion { instantiation_term_raw: 9, ..link.clone() });
-        syms.add_parent(1, ScopeInclusion { is_enclosing: true, ..link });
-        assert_eq!(syms.scope(1).unwrap().parents.len(), 3, "three DISTINCT links");
+        // …and the dedup is on the WHOLE inclusion, so the same parent scope reached
+        // by an ENCLOSING edge is a SECOND link, not a repeat of the first. Without
+        // this row the guard could be narrowed to `parent_scope` and nothing here
+        // would notice.
+        syms.add_parent(child, ScopeInclusion { is_enclosing: true, ..link });
+        assert_eq!(syms.scope(child).unwrap().parents.len(), 2, "two DISTINCT links");
+    }
+
+    /// WI-984's rider, said as an assertion rather than left silent: dropping
+    /// `instantiation_term_raw` MERGED a distinction `add_parent` used to keep. One
+    /// spec `requires`d at two instantiations — `Eq[T = Int]` and `Eq[T = String]`
+    /// on one scope — offered two links that differed only in that field and now
+    /// offers one. Nothing observes the loss: `resolve_in_scope` and
+    /// `internal_visible_from` read `parent_scope` and `is_enclosing` only, so the
+    /// two links always resolved identically. Before WI-984 this read 2.
+    #[test]
+    fn two_instantiations_of_one_spec_are_one_link() {
+        let mut syms = SymbolTable::new();
+        let child = scope(&mut syms, "Stack");
+        let eq = scope(&mut syms, "Eq");
+        syms.add_parent(child, ScopeInclusion { parent_scope: eq, is_enclosing: false });
+        syms.add_parent(child, ScopeInclusion { parent_scope: eq, is_enclosing: false });
+        assert_eq!(syms.scope(child).unwrap().parents.len(), 1);
+    }
+
+    /// WI-984 — the mint refuses a symbol its table never issued. This is the ONLY
+    /// provenance check Rust affords (Scala closes it with a path-dependent member,
+    /// WI-1004), and it catches only the direction where the FOREIGN table is the
+    /// larger one — a symbol from a SMALLER table is in range and passes silently.
+    /// Asserted rather than implied, so the hole is on the record.
+    #[test]
+    fn scope_id_refuses_a_symbol_this_table_never_issued() {
+        let mut small = SymbolTable::new();
+        let mut large = SymbolTable::new();
+        small.intern("only");
+        for n in ["a", "b", "c", "d"] {
+            large.intern(n);
+        }
+        let foreign_from_large = large.intern("d");
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                small.scope_id(foreign_from_large)
+            }))
+            .is_err(),
+            "a symbol past the end of this table's `defs` is refused",
+        );
+
+        // THE HOLE, driven: the foreign symbol is in range, so it passes — and names
+        // whatever `small` happens to hold at that index.
+        let foreign_from_small = small.intern("only");
+        let _accepted: ScopeId = large.scope_id(foreign_from_small);
     }
 }

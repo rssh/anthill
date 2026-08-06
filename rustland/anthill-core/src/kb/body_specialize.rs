@@ -1159,8 +1159,10 @@ impl KnowledgeBase {
         });
 
         let rule_sort = ClauseKind::Rule;
-        let global_scope = self.make_name_term("_global");
-        let global_domain = self.name_term_sym(global_scope);
+        // The `_global` TERM is the rule's DOMAIN; the `_global` SCOPE (below, for
+        // the label) is a different thing and now a different type.
+        let global_term = self.make_name_term("_global");
+        let global_domain = self.name_term_sym(global_term);
         let rid = self.assert_rule_debruijn_with_nodes(
             head,
             vec![body_node],
@@ -1173,8 +1175,9 @@ impl KnowledgeBase {
         let op_qn = self.qualified_name_of(op).to_string();
         let defeq_qn = format!("{op_qn}__defeq");
         let short = defeq_qn.rsplit('.').next().unwrap_or(&defeq_qn).to_string();
+        let global_scope = self.global_scope();
         let label_sym =
-            self.define_symbol(&short, &defeq_qn, SymbolKind::Rule, global_scope.raw());
+            self.define_symbol(&short, &defeq_qn, SymbolKind::Rule, global_scope);
         self.set_rule_label(rid, label_sym);
         Some(rid)
     }

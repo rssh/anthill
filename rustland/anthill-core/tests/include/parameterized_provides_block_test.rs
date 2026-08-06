@@ -7,20 +7,34 @@
 //! lowers to a SortView APPLICATION (`SortView(Stack, T = Int64)`), not a bare
 //! name, and the new domain derivation unwrapped it as one.
 //!
-//! Two things are pinned here, and they pull in opposite directions:
+//! Two things are pinned here:
 //!
 //!   * the DOMAIN of the block's inner clauses is the BASE sort (`Stack`) — a
 //!     clause belongs to the sort, not to one instantiation of it;
-//!   * the SCOPE is the full applied term, so `Stack[T = Int64]` and
-//!     `Stack[T = String]` stay distinct identities.
+//!   * so is the SCOPE the block's body resolves in.
 //!
-//! The unparameterized block is kept beside it as the control: it took the same
+//! THE SECOND ONE USED TO SAY THE OPPOSITE — "the SCOPE is the full applied term,
+//! so `Stack[T = Int64]` and `Stack[T = String]` stay distinct identities" —
+//! and WI-984 retired it. That identity was VACUOUS: nothing is ever declared
+//! into an applied term's scope and no parent link reaches one, so BOTH
+//! instantiations resolved against an empty scope with no parents, while the bare
+//! `provides Stack` beside them resolved against `Stack`'s real scope. Keying
+//! scopes on the owning SYMBOL made the phantom unrepresentable.
+//!
+//! The rows below stopped short of finding that: with only `language`/`artifact`
+//! clauses, no name is ever resolved inside the block, so nothing asks what the
+//! scope is. `*_resolves_a_spec_scoped_name` adds a body that does.
+//!
+//! The unparameterized block is kept beside each as the control: it took the same
 //! code path before and after, so if IT breaks the cause is not the spec shape.
 
 use anthill_core::kb::KnowledgeBase;
 
-use crate::common::try_load_kb_with;
-use anthill_core::kb::ClauseKind;
+use crate::common::{load_kb_with, try_load_kb_with};
+use anthill_core::intern::Symbol;
+use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Literal, Term};
+use smallvec::SmallVec;
 
 /// Load `source` over the full stdlib, returning the load errors as strings.
 /// The stdlib is REQUIRED, not incidental: the `Implementation` fact this block
@@ -107,4 +121,65 @@ fn both_spec_shapes_file_the_implementation_fact_under_the_base_sort() {
     assert_eq!(param.len(), 1, "expected one Implementation fact, got {param:?}");
     assert_eq!(param, domain_of(UNPARAMETERIZED), "domain must not depend on the spec shape");
     assert!(param[0].ends_with("Stack"), "domain should be the base sort, got {param:?}");
+}
+
+// ── WI-984: the block's BODY resolves in the spec's scope ────────────────────
+
+/// `is_full` is declared inside `Stack` and reachable ONLY through the block's
+/// scope. If that scope is the applied term's empty phantom, `is_full` falls
+/// through to a bare intern that heads no clause and the goal yields ZERO
+/// solutions — so a passing row is evidence about the scope, not about the parse.
+fn with_body(spec: &str) -> String {
+    format!(
+        r#"
+namespace test.pbody
+  sort Stack
+    sort T = ?
+    rule is_full(?s) :- eq(?s, ?s)
+  end
+
+  provides {spec} language anthill
+    rule stack_provided(?x) :- is_full(?x)
+  end
+end
+"#
+    )
+}
+
+/// `stack_provided(7)` — one solution iff the body resolved `is_full` to the
+/// clause `Stack` declares.
+fn solutions_for_stack_provided(kb: &mut KnowledgeBase) -> usize {
+    // A standalone `provides` block's head functor is bare-interned rather than
+    // given a qualified definition (pre-existing, and the same for both
+    // spellings), so it is reached by the name the loader actually minted.
+    let goal_sym: Symbol = kb
+        .lookup_symbol("stack_provided")
+        .expect("the provides block's rule head must exist");
+    let seven = kb.alloc(Term::Const(Literal::Int(7)));
+    let goal = kb.alloc(Term::Fn {
+        functor: goal_sym,
+        pos_args: SmallVec::from_elem(seven, 1),
+        named_args: SmallVec::new(),
+    });
+    kb.resolve(&[goal], &ResolveConfig::default()).len()
+}
+
+/// THE CONTROL — passes before and after WI-984: the bare form always had
+/// `Stack`'s real scope.
+#[test]
+fn unparameterized_provides_body_resolves_a_spec_scoped_name() {
+    let mut kb = load_kb_with(&with_body("Stack"));
+    assert_eq!(solutions_for_stack_provided(&mut kb), 1);
+}
+
+/// Aborts the load (`name_term_sym: … is not a name term`) when WI-984's scope
+/// change is backed out — the applied term is not a name and cannot own a scope.
+#[test]
+fn parameterized_provides_body_resolves_a_spec_scoped_name() {
+    let mut kb = load_kb_with(&with_body("Stack[T = Int64]"));
+    assert_eq!(
+        solutions_for_stack_provided(&mut kb),
+        1,
+        "an instantiated spec resolves in the same scope its bare spelling does",
+    );
 }

@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use anthill_core::codegen::generate_rust;
 use anthill_core::fs_util;
-use anthill_core::intern::ResolveResult;
+use anthill_core::intern::{ResolveResult, ScopeId};
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
@@ -1391,7 +1391,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
             print_program_clause_results(&kb, &results, args.max_results);
         }
         QueryMode::Pattern => {
-            let (global_raw, queries) = collect_queries(args, &mut kb)?;
+            let (global_scope, queries) = collect_queries(args, &mut kb)?;
             let multi = queries.len() > 1;
 
             // WI-754: an unknown-functor query is reported as it is met but does
@@ -1412,7 +1412,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                     // undefined functor (WI-754 — resolution can still succeed, so the
                     // refusal must wait), a name the loader could not read has no single
                     // reading for the run to be an answer TO.
-                    if report_contested_query_names(&kb, global_raw, qt) {
+                    if report_contested_query_names(&kb, global_scope, qt) {
                         any_unknown = true;
                         continue;
                     }
@@ -1432,7 +1432,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // Head-only for an UNKNOWN name, that is: a contested one was
                         // refused above, in both modes, because it is a defect of the
                         // pattern rather than of what the pattern finds (WI-917).
-                        if results.is_empty() && report_if_unknown_functor(&kb, global_raw, qt) {
+                        if results.is_empty() && report_if_unknown_functor(&kb, global_scope, qt) {
                             any_unknown = true;
                             continue;
                         }
@@ -1480,7 +1480,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         let unknown = kb.undefined_query_goal_functors(qt);
                         if !unknown.is_empty() {
                             for &sym in &unknown {
-                                report_unknown_functor_name(&kb, global_raw, sym);
+                                report_unknown_functor_name(&kb, global_scope, sym);
                             }
                             any_unknown = true;
                             continue;
@@ -1589,13 +1589,13 @@ fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(),
 fn collect_queries(
     args: &QueryArgs,
     kb: &mut KnowledgeBase,
-) -> Result<(u32, Vec<(String, Vec<anthill_core::kb::term::TermId>)>), i32> {
+) -> Result<(ScopeId, Vec<(String, Vec<anthill_core::kb::term::TermId>)>), i32> {
     // WI-853: the `-i` flags are supplied on their OWN sources — the pattern / file
     // below is parsed with nothing prepended to it — and they entered `_global` in
     // `run_query` before this, so the query text scanned here resolves against them.
     // (WI-914 hoisted the supply out of here: the listing modes name into `_global`
     // too, so the imports cannot belong to the pattern path alone.)
-    let global_raw = kb.make_name_term("_global").raw();
+    let global_scope = kb.global_scope();
 
     if let Some(ref pattern) = args.pattern {
         // The query IR reaches a pattern term through a `fact`.
@@ -1612,7 +1612,7 @@ fn collect_queries(
                     &parsed.terms,
                     &parsed.symbols,
                     fact.term,
-                    global_raw,
+                    global_scope,
                     &mut var_map,
                 );
                 terms.push(tid);
@@ -1622,7 +1622,7 @@ fn collect_queries(
             eprintln!("error: no valid query pattern found");
             return Err(1);
         }
-        Ok((global_raw, vec![(pattern.clone(), terms)]))
+        Ok((global_scope, vec![(pattern.clone(), terms)]))
     } else if let Some(ref query_file) = args.query_file {
         let file_source = match fs::read_to_string(query_file) {
             Ok(s) => s,
@@ -1660,7 +1660,7 @@ fn collect_queries(
                     &parsed.terms,
                     &parsed.symbols,
                     fact.term,
-                    global_raw,
+                    global_scope,
                     &mut var_map,
                 );
                 let label = TermPrinter::new(kb).print_term(tid);
@@ -1671,7 +1671,7 @@ fn collect_queries(
             eprintln!("error: no fact declarations found in {}", query_file.display());
             return Err(1);
         }
-        Ok((global_raw, queries))
+        Ok((global_scope, queries))
     } else {
         unreachable!()
     }
@@ -1703,7 +1703,7 @@ fn collect_queries(
 /// no clause and is reported.
 fn report_if_unknown_functor(
     kb: &KnowledgeBase,
-    global_raw: u32,
+    global_scope: ScopeId,
     qt: anthill_core::kb::term::TermId,
 ) -> bool {
     let Some(sym) = kb.undefined_query_functor(qt) else {
@@ -1712,7 +1712,7 @@ fn report_if_unknown_functor(
     if !kb.browse_program_clauses_matching(&qt).is_empty() {
         return false;
     }
-    report_unknown_functor_name(kb, global_raw, sym);
+    report_unknown_functor_name(kb, global_scope, sym);
     true
 }
 
@@ -1727,12 +1727,12 @@ fn report_if_unknown_functor(
 /// undefined-functor walk — and a contested nested name are refused identically.
 fn report_contested_query_names(
     kb: &KnowledgeBase,
-    global_raw: u32,
+    global_scope: ScopeId,
     qt: anthill_core::kb::term::TermId,
 ) -> bool {
-    let contested = kb.ambiguous_query_names(qt, global_raw);
+    let contested = kb.ambiguous_query_names(qt, global_scope);
     for &sym in &contested {
-        report_unknown_functor_name(kb, global_raw, sym);
+        report_unknown_functor_name(kb, global_scope, sym);
     }
     !contested.is_empty()
 }
@@ -1745,7 +1745,7 @@ fn report_contested_query_names(
 /// WI-907: a name the pattern could not bind is not always an ABSENT one — it is also
 /// how an AMBIGUOUS one arrives here, since the ladder stops at an ambiguity rather than
 /// guessing past it and the conversion then interns the bare name. Re-reading the ladder
-/// (`global_raw` is the scope the pattern was converted in) is what tells the two apart;
+/// (`global_scope` is the scope the pattern was converted in) is what tells the two apart;
 /// without it an author with two same-named imports is told that nothing declares the
 /// name, when two things do.
 ///
@@ -1757,7 +1757,7 @@ fn report_contested_query_names(
 /// truth — WI-863's tolerance is about an ABSENT name, and does not transfer.
 fn report_unknown_functor_name(
     kb: &KnowledgeBase,
-    global_raw: u32,
+    global_scope: ScopeId,
     sym: anthill_core::intern::Symbol,
 ) {
     // What makes re-reading the ladder faithful: the name asked about is the text the
@@ -1770,7 +1770,7 @@ fn report_unknown_functor_name(
         kb.local_name_of(sym),
     );
     let name = kb.local_name_of(sym);
-    let read = load::resolve_name_in_kb(kb, name, global_raw);
+    let read = load::resolve_name_in_kb(kb, name, global_scope);
     report_unresolved_name(kb, name, &read, "query pattern", "functor");
 }
 

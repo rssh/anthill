@@ -944,9 +944,12 @@ fn synthesize_step_rule(
 ) {
     use anthill_core::intern::SymbolKind;
     let short_name = step_qn.rsplit('.').next().unwrap_or(step_qn);
-    let global_scope = kb.make_name_term("_global");
-    let global_domain = kb.name_term_sym(global_scope);
-    let label_sym = kb.define_symbol(short_name, step_qn, SymbolKind::Rule, global_scope.raw());
+    // The `_global` TERM (the rule's domain) and the `_global` SCOPE (where the
+    // label is defined) are different things and now have different types.
+    let global_term = kb.make_name_term("_global");
+    let global_domain = kb.name_term_sym(global_term);
+    let global_scope = kb.global_scope();
+    let label_sym = kb.define_symbol(short_name, step_qn, SymbolKind::Rule, global_scope);
     if kb.rule_id_by_qn(step_qn).is_some() {
         return;
     }

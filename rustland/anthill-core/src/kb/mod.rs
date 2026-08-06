@@ -40,7 +40,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{ResolveResult, SymbolTable, SymbolDef, SymbolKind, Symbol};
+use crate::intern::{ResolveResult, ScopeId, SymbolTable, SymbolDef, SymbolKind, Symbol};
 use crate::span::{SourceRegistry, SourceSpan};
 use term::{Term, TermId, TermStore, TermSource, Var, VarId};
 use node_occurrence::NodeOccurrence;
@@ -1591,9 +1591,9 @@ impl KnowledgeBase {
         short_name: &str,
         qualified_name: &str,
         kind: crate::intern::SymbolKind,
-        scope_raw: u32,
+        scope: ScopeId,
     ) -> Symbol {
-        self.symbols.define(short_name, qualified_name, kind, scope_raw)
+        self.symbols.define(short_name, qualified_name, kind, scope)
     }
 
     /// Allocate a fresh logic variable id, carrying the display name.
@@ -1663,26 +1663,33 @@ impl KnowledgeBase {
         self.symbols.get(sym).has_kind(kind)
     }
 
-    /// Scope symbol that owns `sym`. Delegates to the symbol table.
-    pub fn scope_of(&self, sym: Symbol) -> Option<Symbol> {
-        self.symbols.scope_of(sym)
+    /// The symbol that owns the lexical scope in which `sym` was declared
+    /// (`Tank` for `Tank.fill`). `None` only for an UNRESOLVED symbol, which has
+    /// no scope at all.
+    ///
+    /// WI-984 — the `None` used to have a second cause, and it was the common one.
+    /// See [`ScopeId`] for the mechanism and the measurement.
+    pub fn declaring_scope_symbol(&self, sym: Symbol) -> Option<Symbol> {
+        self.symbols.declaring_scope(sym).map(|s| s.owner())
     }
 
-    /// The symbol that owns the lexical scope in which `sym` was declared.
-    ///
-    /// `scope_raw` is currently stored internally as the raw id of the owning
-    /// nullary name term. Keep that representation private: callers need the
-    /// owner (`Tank` for `Tank.fill`), never its term-store identity.
-    pub fn declaring_scope_symbol(&self, sym: Symbol) -> Option<Symbol> {
-        let scope_raw = match self.symbols.get(sym) {
-            SymbolDef::Resolved { scope_raw, .. } => *scope_raw,
-            SymbolDef::Unresolved { .. } => return None,
-        };
-        match self.terms.get(TermId::from_raw(scope_raw)) {
-            Term::Fn { functor, pos_args, named_args }
-                if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
-            _ => None,
-        }
+    /// WI-984 — the TOP-LEVEL scope, `_global`. One spelling: the incantation was
+    /// otherwise written 19 times across five files in two forms (a
+    /// `make_name_term("_global")` round trip through the term store, and a bare
+    /// `intern` + mint), under four different local names.
+    pub fn global_scope(&mut self) -> ScopeId {
+        let sym = self.symbols.intern("_global");
+        self.symbols.scope_id(sym)
+    }
+
+    /// WI-984 — the [`ScopeId`] of the scope a NAME TERM opens. The bridge for the
+    /// loader, which threads scope terms (a scope is also a domain, a fact
+    /// argument and a `SortAlias` subject — [`Self::name_term_sym`] is the same
+    /// projection the domain positions already use). Panics, loudly, on a term
+    /// that is not a bare identifier: a compound type expression never named a
+    /// scope, and silently keying one is how a scope resolves nothing.
+    pub fn scope_id_of(&self, name_term: TermId) -> ScopeId {
+        self.symbols.scope_id(self.name_term_sym(name_term))
     }
 
     /// Type-parameter names declared inside a sort's body (`sort T = ?`
@@ -1701,13 +1708,10 @@ impl KnowledgeBase {
             .find_map(|(child_qn, child_sym)| {
                 if !child_qn.starts_with(&prefix) { return None; }
                 if child_qn[prefix.len()..].contains('.') { return None; }
-                match self.symbols.get(*child_sym) {
-                    SymbolDef::Resolved { scope_raw, .. } => Some(*scope_raw),
-                    _ => None,
-                }
+                self.symbols.declaring_scope(*child_sym)
             });
-        let Some(scope_raw) = body_scope else { return Vec::new() };
-        let Some(scope) = self.symbols.scope(scope_raw) else { return Vec::new() };
+        let Some(body_scope) = body_scope else { return Vec::new() };
+        let Some(scope) = self.symbols.scope(body_scope) else { return Vec::new() };
         // Source-order, not alphabetical: positional sort bindings rely
         // on declaration order (`Map[String, Int]` mapping index 0→K,
         // 1→V follows the order K and V were declared, not their
@@ -2906,14 +2910,14 @@ impl KnowledgeBase {
     }
 
     /// WI-917: every functor in query pattern `tid` whose name the citing scope
-    /// `scope_raw` resolves to TWO OR MORE symbols — the pattern position's half of
+    /// `scope` resolves to TWO OR MORE symbols — the pattern position's half of
     /// the load error a reference gets, and the answer to the tolerance question
     /// stated at [`Self::undefined_query_goal_functors`].
     ///
     /// A contested name arrives here as the WI-476 bare intern: the pattern position
     /// has no error channel, so `load::resolve_query_name` gives an ambiguity and an
     /// absence the SAME term (a symbol that heads no clause) and leaves the DIAGNOSIS
-    /// to the caller. Re-reading the ladder at `scope_raw` is what tells them apart —
+    /// to the caller. Re-reading the ladder at `scope` is what tells them apart —
     /// the same re-read the CLI's head reporter does, here extended to every node.
     ///
     /// EVERY node: a bare disjunction branch, a quantifier body, a data slot — the
@@ -2922,9 +2926,9 @@ impl KnowledgeBase {
     /// is where the two diverge most sharply: an absent data name's bare intern is
     /// what the FACT's loader produced too, so pattern and fact match; a contested
     /// one's matches neither reading.
-    pub fn ambiguous_query_names(&self, tid: TermId, scope_raw: u32) -> SmallVec<[Symbol; 4]> {
+    pub fn ambiguous_query_names(&self, tid: TermId, scope: ScopeId) -> SmallVec<[Symbol; 4]> {
         let mut out = SmallVec::new();
-        self.collect_ambiguous_query_names(tid, scope_raw, &mut out);
+        self.collect_ambiguous_query_names(tid, scope, &mut out);
         out
     }
 
@@ -2935,7 +2939,7 @@ impl KnowledgeBase {
     fn collect_ambiguous_query_names(
         &self,
         tid: TermId,
-        scope_raw: u32,
+        scope: ScopeId,
         out: &mut SmallVec<[Symbol; 4]>,
     ) {
         // The SAME candidate test as the undefined walk — a scoping marker and a
@@ -2946,7 +2950,7 @@ impl KnowledgeBase {
         // rare and the tree walk is the expensive half.
         if let Some(sym) = self.undefined_query_functor(tid) {
             let ambiguous = matches!(
-                load::resolve_name_in_kb(self, self.local_name_of(sym), scope_raw),
+                load::resolve_name_in_kb(self, self.local_name_of(sym), scope),
                 ResolveResult::Ambiguous(_)
             );
             if ambiguous
@@ -2957,7 +2961,7 @@ impl KnowledgeBase {
             }
         }
         for child in self.get_term(tid).subterms() {
-            self.collect_ambiguous_query_names(child, scope_raw, out);
+            self.collect_ambiguous_query_names(child, scope, out);
         }
     }
 
@@ -5626,8 +5630,8 @@ impl KnowledgeBase {
     /// (`load::resolve_implicit` — `SortInfo`, `cons`, …, which is short-name keyed and
     /// still answers here). The absolute rung is dotted-only, per WI-476.
     pub fn resolve_name_in_global(&mut self, name: &str) -> ResolveResult {
-        let global = self.make_name_term("_global");
-        crate::kb::load::resolve_name_in_kb(self, name, global.raw())
+        let global = self.global_scope();
+        crate::kb::load::resolve_name_in_kb(self, name, global)
     }
 
     /// Check if a qualified name has a defined symbol in the symbol table.
@@ -6764,8 +6768,8 @@ impl KnowledgeBase {
             } else {
                 None
             };
-            let scope_raw = if let Some(ns_sym) = ns_sym_opt {
-                self.make_name_term_from_sym(ns_sym).raw()
+            let scope = if let Some(ns_sym) = ns_sym_opt {
+                self.symbols.scope_id(ns_sym)
             } else {
                 panic!(
                     "register_builtin_tag: namespace prefix for '{}' not found. \
@@ -6773,7 +6777,7 @@ impl KnowledgeBase {
                     qualified_name
                 )
             };
-            self.symbols.define(short, qualified_name, SymbolKind::Operation, scope_raw)
+            self.symbols.define(short, qualified_name, SymbolKind::Operation, scope)
         };
         self.builtins.insert(sym, tag);
     }
@@ -9874,7 +9878,8 @@ mod wi518_occurrence_guard_resolution_tests {
     /// them identically.
     fn lq_ctor(kb: &mut KnowledgeBase, short: &str) -> Symbol {
         let qn = format!("anthill.reflect.LogicalQuery.{short}");
-        kb.symbols.define(short, &qn, SymbolKind::Operation, 0)
+        let root_scope = kb.global_scope();
+        kb.symbols.define(short, &qn, SymbolKind::Operation, root_scope)
     }
 
     /// Build `no_q(condition: pattern_query(term: <leaf>), body: empty_query)` — a
@@ -10138,7 +10143,8 @@ mod wi628_guard_truncation_tests {
     /// / the wi518 `lq_ctor`, so `LogicalQuerySymbols::resolve` finds it).
     fn lq_ctor(kb: &mut KnowledgeBase, short: &str) -> Symbol {
         let qn = format!("anthill.reflect.LogicalQuery.{short}");
-        kb.symbols.define(short, &qn, SymbolKind::Operation, 0)
+        let root_scope = kb.global_scope();
+        kb.symbols.define(short, &qn, SymbolKind::Operation, root_scope)
     }
 
     /// Assert `loop(?x) :- loop(?x)` — a non-terminating recursion that TRUNCATES at

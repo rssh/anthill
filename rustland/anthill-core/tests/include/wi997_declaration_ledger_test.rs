@@ -5,7 +5,7 @@
 //! control for the ledger's KEY, not a measure of the rule.
 //!
 //! THE KEY'S CONTROL, MEASURED by mutation rather than argued. Two candidate keys
-//! are both "as written" and both work: `(scope_raw, local name)` — what ships —
+//! are both "as written" and both work: `(scope, local name)` — what ships —
 //! and the nested qualified name pass 1 computes (`…Vec3.Vec3` for the eponymous
 //! constructor, since the collapse has not happened yet at that point). The key
 //! that FAILS is the address the declaration ENDS AT — the qualified name of the

@@ -726,12 +726,12 @@ pub fn query_pattern_term(
     let errs = load::scan_definitions(kb, &[&parsed]);
     assert!(errs.is_empty(), "query pattern `{pattern}` failed to scan: {:?}",
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
-    let global_raw = kb.make_name_term("_global").raw();
+    let global_scope = kb.global_scope();
     let mut var_map = std::collections::HashMap::new();
     for item in &parsed.items {
         if let anthill_core::parse::ir::Item::Fact(f) = item {
             return load::convert_query_term(
-                kb, &parsed.terms, &parsed.symbols, f.term, global_raw, &mut var_map,
+                kb, &parsed.terms, &parsed.symbols, f.term, global_scope, &mut var_map,
             );
         }
     }

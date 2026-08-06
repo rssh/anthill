@@ -1944,7 +1944,8 @@ mod tests {
     /// is dotted-only (WI-908).
     fn define(kb: &mut KnowledgeBase, qname: &str) -> Symbol {
         let short = qname.rsplit('.').next().unwrap();
-        kb.symbols.define_qualified_only(short, qname, SymbolKind::Sort, 0)
+        let root_scope = kb.global_scope();
+        kb.symbols.define_qualified_only(short, qname, SymbolKind::Sort, root_scope)
     }
 
     #[test]
