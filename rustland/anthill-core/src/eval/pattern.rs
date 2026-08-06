@@ -298,6 +298,11 @@ fn constructor_sub_values(
     expected: Symbol,
     scrutinee: &Value,
 ) -> Option<Vec<Value>> {
+    // The same carrier-algebra cancellation `value_functor` applies, at the same
+    // place: the `MatchDispatch` pre-filter reads that function, so a wrapper it
+    // sees through and this one does not is an arm promised and then declined
+    // (WI-1025).
+    let scrutinee = scrutinee.carried();
     match scrutinee {
         Value::Entity { functor, pos, named, .. } => {
             if !functor_matches(kb, expected, *functor) { return None; }
@@ -323,14 +328,31 @@ fn constructor_sub_values(
             }
             _ => None,
         },
-        // The nullary-constructor arm above, on the other carrier. Without it the
-        // head PROMISES the arm can match — `MatchDispatch`'s pre-filter reads
-        // `value_functor`, which accepts this carrier — and the destructure then
-        // declines, so the arm is skipped silently or the match fails outright.
+        // The nullary-constructor arm above, on the other TWO carriers of a name.
+        // Without them the head PROMISES the arm can match — `MatchDispatch`'s
+        // pre-filter reads `value_functor`, which accepts these carriers — and the
+        // destructure then declines, so the arm is skipped silently or the match
+        // fails outright. WI-1016 added `SymbolRef`; WI-1025 added the occurrence
+        // when `value_functor` began accepting it.
         Value::SymbolRef(sym) => {
             if !functor_matches(kb, expected, *sym) { return None; }
             Some(Vec::new())
         }
+        Value::Node(occ) => match occ.as_expr() {
+            Some(crate::kb::node_occurrence::Expr::Ref(sym))
+            | Some(crate::kb::node_occurrence::Expr::Ident(sym)) => {
+                if !functor_matches(kb, expected, *sym) { return None; }
+                Some(Vec::new())
+            }
+            // An APPLIED occurrence is deliberately not destructured here: its
+            // children are sub-occurrences, and binding them would make a `case`
+            // arm destructure reflect SYNTAX rather than data — a capability, not
+            // a carrier fix. It costs nothing today, and that is measured rather
+            // than assumed: the pre-filter only ever SKIPS a branch whose functor
+            // differs, and such a branch reaches this `None` anyway, so the
+            // outcome is identical with or without the skip.
+            _ => None,
+        },
         _ => None,
     }
 }

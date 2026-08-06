@@ -302,6 +302,50 @@ fn detect_cycle(
         Value::SymbolRef(sym) => {
             if *sym == target { Err(EvalError::CyclicReference) } else { Ok(()) }
         }
+        // WI-1025: `value_functor` accepts an occurrence too, so this guard has to
+        // see through one or the same `_ => Ok(())` silently reports no cycle for a
+        // key `resource_key` accepted. Both halves of the `Entity` arm above, read
+        // carrier-neutrally: the head names the target, or a child references it.
+        Value::Node(_) => {
+            use crate::kb::term_view::{TermView, ViewItem};
+            if crate::eval::eval::value_functor(interp.kb(), value) == Some(target) {
+                return Err(EvalError::CyclicReference);
+            }
+            // NO `Value::carried()` here, unlike the two readers this arm pairs
+            // with: `occ_view_pos_arg` / `named_arg` / `named_keys` each begin with
+            // `spliced_value(occ)` and read THROUGH the wrapper, so the walk below
+            // already sees a wrapped value's children. Measured, not assumed —
+            // adding the cancellation changed no test either way, which is the
+            // definition of a line that protects nothing.
+            let kb = interp.kb();
+            let as_value = |item: ViewItem| match item {
+                ViewItem::Term(t) => Value::term(t),
+                ViewItem::Value(v) => v.clone(),
+                ViewItem::Owned(v) => v,
+                ViewItem::Node(occ) => Value::Node(occ),
+            };
+            // Children are walked by INDEX, not by the head's arity — the
+            // `Entity`/`Tuple` arms above walk unconditionally and this must too.
+            // Gating on `ViewHead::Functor` silently dropped every child of an
+            // occurrence that heads `Opaque` (a list/set/tuple literal in a KB
+            // without the reflect constructors loaded), which is the `_ => Ok(())`
+            // this arm exists to remove, one level in.
+            let mut child_values: Vec<Value> = Vec::new();
+            let mut i = 0;
+            while let Some(item) = value.pos_arg(kb, i) {
+                child_values.push(as_value(item));
+                i += 1;
+            }
+            for s in value.named_keys(kb) {
+                if let Some(item) = value.named_arg(kb, s) {
+                    child_values.push(as_value(item));
+                }
+            }
+            for v in child_values {
+                detect_cycle(interp, target, &v, depth + 1)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }

@@ -255,6 +255,38 @@ impl Value {
         Value::Node(occ)
     }
 
+    /// WI-1025 — the READ counterpart of [`Self::node`]'s normalization: `self`
+    /// with any `Node(Spliced(v))` wrapping cancelled, borrowed, iteratively.
+    ///
+    /// `Value::node` is the constructor that keeps a carrier from wrapping another,
+    /// and its doc says to prefer it over a raw `Value::Node`. In practice **124
+    /// sites build the raw form and one uses it**, so a reader that must not be
+    /// fooled by a doubly-wrapped carrier cancels here instead of assuming the
+    /// producer did. It matters because `occ_head` reads THROUGH a top-level
+    /// `Spliced`, so the wrapper presents the INNER value's head while every
+    /// by-`Expr` reader sees `Expr::Spliced` and falls through — which is exactly
+    /// how a reader pair comes to accept a value it then cannot destructure.
+    ///
+    /// ITERATIVE, not recursive: this is `pub` and reachable from host code, and a
+    /// wrapper chain is data. Every step strips one `Rc<NodeOccurrence>` layer, so
+    /// it terminates on any finite occurrence.
+    ///
+    /// The `Expr::Var` half of `node`'s normalization is deliberately NOT mirrored:
+    /// it changes the carrier (`Node → Value::Var`) rather than removing a wrapper,
+    /// so it cannot be done by borrowing, and no reader needs it — a var occurrence
+    /// and a `Value::Var` already view identically (`ViewHead::Var`).
+    pub fn carried(&self) -> &Value {
+        use crate::kb::node_occurrence::Expr;
+        let mut cur = self;
+        while let Value::Node(occ) = cur {
+            match occ.as_expr() {
+                Some(Expr::Spliced(inner)) => cur = inner,
+                _ => break,
+            }
+        }
+        cur
+    }
+
     /// Scalar-leaf equality. Tuples / Entities / Closures / Streams
     /// compare as unequal here. For shape-aware, CARRIER-AGNOSTIC structural
     /// compare on any two `Value`s — including the cross-carrier `Value::Term`

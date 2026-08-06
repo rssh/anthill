@@ -389,23 +389,42 @@ consumer already guards on it (`GoalKey::is_opaque_free` for fact dedup,
 `is_cacheable` for the query cache), so an opaque carrier degrades to no-dedup
 rather than merging. `Value::FactRef` is the type case.
 
-**A STRUCTURAL HEAD NAMES THE ENCODING, NOT A REFERENT (WI-1024).** These two
-carriers now head as `Functor{OpRef}` / `Functor{Dictionary}` — their own sort
-symbols, so that they unify, index and fingerprint. That is not the same as
-*referencing* a sort, and a reader asking "which sort does this value reference?"
-must not read it off the head. `eval::value_functor` is that reader (`KB.facts_of`,
-`stored_facts_of`, `is_modifiable`, `sort_query` lowering, the `MatchDispatch`
-pre-filter, eight anthill-stl bridge sites): routing these two through
+**A VIEW-ONLY HEAD NAMES NOTHING A REFERENCE-READER MAY ANSWER WITH
+(WI-1024/WI-1025).** These two carriers now head as `Functor{OpRef}` /
+`Functor{Dictionary}` — their own sort symbols, so that they unify, index and
+fingerprint. But neither LOWERS: `alloc_from_value` and `value_to_term` both answer
+`UnsupportedVariant`, so there is no stored term behind that head. A reader asking
+"which sort does this value reference?" must therefore refuse them.
+`eval::value_functor` is that reader (`KB.facts_of`, `stored_facts_of`,
+`is_modifiable`, `sort_query` lowering, the `MatchDispatch` pre-filter, `Modify`'s
+resource key, eight anthill-stl bridge sites): routing these two through
 `ViewHead::functor_sym` would answer `Some(Dictionary)` for
 `facts_of(kb, <a dictionary>)` and hand back an empty list — a silent reply to a
-type error, where the excluded form raises `TypeMismatch`. Only `Term` / `Entity` /
-`SymbolRef` route through the head, because for them the head IS the referent.
+type error, where the excluded form raises `TypeMismatch`.
 
-The same rule keeps `Value::Node` out, one level harder: `Expr::Spliced(v)` reads
-*through* to `v.head(kb)`, so an occurrence wrapping a dictionary would launder
-this exclusion straight back in. Driven by `wi1024_value_functor_test`'s
-`node-spliced-dict` row. (The rest of the `Node` question — a bare `Expr::Ref`
-genuinely does name a symbol — is WI-1025.)
+**The rule is "has a faithful term form", NOT "encoding vs referent"** — WI-1024
+tried the latter and WI-1025 replaced it. Under that earlier wording `Value::Node`
+was excluded too, because an occurrence's head can be a reflect constructor
+(`Arrow`, `Denoted`, a `Lambda`). But the TERM carrier has always answered
+`Some(Arrow)` for `Fn{Arrow, …}` and nobody calls that wrong — a reflect
+constructor IS a real constructor. Excluding the occurrence made the two carriers
+of one thing disagree, and reachably so: a parameterized type with a `denoted`
+binding cannot hash-cons, so it is FORCED onto `TypeNode::Parameterized`, whose
+head is its base sort by design (WI-361). `Term` / `Entity` / `SymbolRef` / `Node`
+— exactly `value_to_term`'s structural subset — all route through the head.
+
+One shape still needs the carrier algebra: `occ_head` reads *through* a top-level
+`Expr::Spliced`, so a raw `Value::Node(Spliced(<a dictionary>))` would present the
+excluded head. `Value::node` cancels that (`node(Spliced(v)) = v`), and the reader
+applies the same cancellation because 124 sites build the raw `Value::Node` and one
+uses the normalizing constructor. Driven by `wi1024_value_functor_test`'s
+`node-spliced-dict` row.
+
+Admitting a carrier obliges its paired readers (WI-1016's rule at
+`eval/pattern.rs`): `constructor_sub_values` and `effects::detect_cycle` both
+gained a `Value::Node` arm with WI-1025, or the `MatchDispatch` pre-filter would
+promise an arm that then declines and `Modify`'s guard would report no cycle for a
+key it had just accepted.
 
 `runtime_carrier_sort` is unaffected either way: it gives `OpRef` → `Function`,
 `Requirement` → `Dictionary` and `Node` → none from its own fixed arms *before* it

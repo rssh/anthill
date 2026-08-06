@@ -2940,38 +2940,63 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
 /// `OpRef` / `Requirement` fell into it again when WI-1019 gave them structural
 /// heads. Every variant is listed now, so the next one is a compile error here.
 ///
-/// **A STRUCTURAL HEAD IS NOT A REFERENT, and that is the rule the two `None`
-/// groups share** — the point at which WI-1024's own premise ("`functor_sym` is
-/// the question it asks") is REFUTED. `OpRef` / `Requirement` head as
-/// `Functor{OpRef}` / `Functor{Dictionary}`: WI-1019 gave them shapes so they
-/// would unify and fingerprint, and those name the value's ENCODING, not anything
-/// it references. Routing them through `functor_sym` would turn
+/// **READ THE HEAD WHEN THE CARRIER HAS A FAITHFUL TERM FORM; REFUSE WHEN THE HEAD
+/// IS VIEW-ONLY.** That is the rule (WI-1025), and it replaces the
+/// "encoding-vs-referent" one WI-1024 reached for, which did not survive contact
+/// with the term carrier.
+///
+/// `Term` / `Entity` / `SymbolRef` / `Node` all lower — they are the carriers
+/// [`crate::kb::node_occurrence::value_to_term`] accepts whose head can name a
+/// functor at all — so their head is a head some stored term also has, and reading
+/// it answers the same for every carrier of one thing. (That reader accepts the
+/// scalars and `Var` too; they are listed with the refusals below only because
+/// `functor_sym` answers `None` for a `Const`/`Var` head either way, so routing
+/// them would change nothing. And an `Entity` can still fail to lower —
+/// `OverArityConstructor` — so "lowers" is a partition of CARRIERS, not a promise
+/// about every value.) `OpRef` / `Requirement` do NOT lower:
+/// [`KnowledgeBase::alloc_from_value`] and `value_to_term` both answer
+/// `UnsupportedVariant`, so the `Functor{OpRef}` / `Functor{Dictionary}` head
+/// WI-1019 gave them is a presentation invented for unification with no stored
+/// term behind it. Routing those through `functor_sym` turns
 /// `facts_of(kb, <a dictionary>)` from a LOUD `TypeMismatch` into
 /// `rules_by_functor(Dictionary)` — a silently empty answer to a type error.
 ///
-/// **`Value::Node` stays `None`, and the reason is the same rule one level
-/// harder.** A bare `Expr::Ref(s)` occurrence really does name `s` — it is the
-/// third carrier of a name, and [`KnowledgeBase::value_symbol`]'s doc says so — so
-/// the temptation is to admit it. But no single head test separates referent from
-/// encoding on THIS carrier: `occ_head` answers `Functor{Some(..)}` with the
-/// REFLECT CONSTRUCTOR symbol for a `Lambda` / `If` / pattern / arrow occurrence
-/// (an encoding, exactly like `Dictionary`); `Expr::Spliced(v)` reads THROUGH to
-/// `v.head(kb)`, so a `Node(Spliced(Requirement))` would launder the excluded
-/// carrier back in; and restricting to `ViewHead::Ref` would answer `None` for an
-/// applied sort occurrence whose TERM twin answers `Some` — `facts_of(kb,
-/// List[T = Int64])` is a live consumer of exactly that shape (WI-707). Admitting
-/// it also obliges the two sites that pair with this reader, per the rule WI-1016
-/// wrote at `eval/pattern.rs`: a carrier this function accepts must be
-/// destructurable by `match_constructor_pattern` (else the `MatchDispatch`
-/// pre-filter promises an arm that then declines) and walkable by
-/// `effects::detect_cycle`. That is a capability change with its own controls, not
-/// a line in this match — WI-1025.
+/// **WHY "ENCODING VS REFERENT" WAS THE WRONG LINE.** WI-1024 excluded
+/// `Value::Node` because `occ_head` answers `Functor{Some(<reflect ctor>)}` for a
+/// `Lambda` / `Arrow` / `Denoted` occurrence, and called that an encoding rather
+/// than a referent. But the TERM carrier has always answered `Some(Arrow)` for
+/// `Fn{Arrow, …}` — a reflect constructor IS a real constructor symbol, and no
+/// consumer treats that as wrong. So the exclusion made the two carriers of ONE
+/// thing disagree, which is the defect this reader exists to prevent, not the fix.
+/// Reachable, not theoretical: `facts_of(kb, Cell[V = …])` rides as
+/// `TypeNode::Parameterized`, whose head IS the base sort (WI-361) — its term twin
+/// `Fn{Cell, bindings}` answered `Some(Cell)` while the occurrence answered `None`.
+///
+/// **THE ONE SHAPE THAT NEEDS CARE IS THE CARRIER ALGEBRA.** `occ_head` reads
+/// THROUGH a top-level `Expr::Spliced`, so a raw `Value::Node(Spliced(<a
+/// dictionary>))` would present the excluded carrier's head. [`Value::carried`]
+/// cancels exactly that, and the two paired readers below cancel at the same place
+/// — a first draft cancelled only HERE, which left `constructor_sub_values` seeing
+/// `Expr::Spliced` and declining a value this function had just accepted: the very
+/// accept-then-decline pair the change exists to avoid.
 ///
 /// The ticket also claimed a widening here would reach dynamic dispatch: it cannot.
 /// [`runtime_carrier_sort`] gives `OpRef`, `Requirement` AND `Node` fixed answers
 /// BEFORE it calls this, so none of them arrives here from the dispatch consumer.
+///
+/// ADMITTING A CARRIER OBLIGES ITS PAIRED READERS (the rule WI-1016 wrote at
+/// `eval/pattern.rs`): `constructor_sub_values` must be able to destructure it, or
+/// `MatchDispatch`'s pre-filter promises an arm that then declines, and
+/// `effects::detect_cycle` must be able to walk it, or `Modify`'s guard reports no
+/// cycle for a key `resource_key` accepted. Both gained a `Value::Node` arm with
+/// this change.
 pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     use crate::kb::term_view::TermView;
+    // Carrier algebra first, so an occurrence WRAPPING an excluded carrier cannot
+    // present that carrier's head — see [`Value::carried`], and note that the two
+    // readers paired with this one cancel at the same place, or one would accept
+    // what the other cannot destructure.
+    let value = value.carried();
     match value {
         // The carriers that reference a name or apply one. One view read, so
         // `Term::Ref(s)`, `Value::SymbolRef(s)` and a nullary-constructor
@@ -2979,9 +3004,11 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         Value::Entity { .. } | Value::Term { .. } | Value::SymbolRef(_) => {
             value.head(kb).functor_sym()
         }
-        // Structural heads that name a REFLECT ENCODING rather than a referenced
-        // sort — see the note above. Excluding them keeps the type error loud.
-        Value::OpRef { .. } | Value::Requirement(_) | Value::Node(_) => None,
+        // An occurrence lowers too, so its head is read the same way.
+        Value::Node(_) => value.head(kb).functor_sym(),
+        // No faithful term form — the head is a view-only presentation, so it names
+        // nothing this reader may answer with. See the note above.
+        Value::OpRef { .. } | Value::Requirement(_) => None,
         // No name to give: a scalar, a functor-less aggregate, an opaque runtime
         // handle, a logic variable. Listed rather than defaulted so a new `Value`
         // variant must decide here (the `runtime_carrier_sort` discipline).

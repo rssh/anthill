@@ -13,12 +13,15 @@
 //! THE RULE THE WHOLE FILE TURNS ON: **a structural head is not a referent.** A
 //! head naming the value's reflect ENCODING (`Dictionary`, `OpRef`, a `Lambda`
 //! occurrence's constructor) must not be read as a sort the value references —
-//! doing so turns a loud `TypeMismatch` into a silently empty answer. So the three
-//! naming carriers route through `ViewHead::functor_sym`, and the runtime handles
-//! and occurrences are an explicit `None`. `Value::Node` is the interesting `None`:
-//! a bare `Expr::Ref(s)` genuinely names `s`, but no head test separates that from
-//! an encoding on this carrier, and admitting it obliges two paired destructure
-//! sites — WI-1025.
+//! doing so turns a loud `TypeMismatch` into a silently empty answer.
+//!
+//! WI-1025 RESTATED THAT RULE MORE PRECISELY and moved the `Node` rows with it:
+//! read the head when the carrier has a faithful TERM FORM, refuse when the head
+//! is view-only. An occurrence lowers, so it is read like the rest; `OpRef` /
+//! `Requirement` do not (`alloc_from_value` answers `UnsupportedVariant`), so their
+//! WI-1019 head has no stored term behind it. The one row that stays `None` on the
+//! `Node` carrier is `node-spliced-dict` — the carrier algebra
+//! (`Value::node(Spliced(v)) = v`) applied at the reader.
 //!
 //! Each test states, MEASURED, what it reports when the change under it is backed
 //! out — and which pass either way BY DESIGN.
@@ -73,10 +76,14 @@ fn applied_node(functor: Symbol, arg: Symbol) -> Value {
 /// goes red.
 ///
 /// CONTROLS, each MEASURED:
-///  - move `OpRef | Requirement | Node` into the routed arm: `requirement`,
-///    `node-ref`, `node-apply` and `node-spliced-dict` all report `Some(..)` —
-///    each an encoding (or a laundered handle) read as a referent, which is the
-///    whole thing this file forbids. `opref` reports `Some(OpRef)` too.
+///  - move `OpRef | Requirement` into the routed arm: both report `Some(..)` — a
+///    view-only head read as a referent, which is what this file forbids.
+///  - drop the `Expr::Spliced` cancellation from the `Node` arm:
+///    `node-spliced-dict` reports `Some(Dictionary)`, laundering the carrier the
+///    row above just excluded.
+///  - drop the `Node` arm entirely (WI-1024's shape): `node-ref` and `node-apply`
+///    report `None` while their term twins report `Some` — one thing, two carriers,
+///    two answers.
 ///
 /// The `term-ref` / `symbolref` / `entity` / `term-app` rows pass EITHER WAY BY
 /// DESIGN — they are the pre-existing arms, here so "the rewrite is
@@ -125,13 +132,17 @@ fn value_functor_answers_by_what_the_head_denotes() {
             pos: std::rc::Rc::from(Vec::<Value>::new()),
             named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
         }, None),
-        // Structural heads that name an ENCODING, not a referent — and one that
-        // would launder an excluded carrier. `node-ref` is the row that is `None`
-        // even though it DOES name a symbol: see WI-1025.
+        // An occurrence lowers, so it reads like the other naming carriers
+        // (WI-1025) — a bare `Ref` names its symbol and an application its functor,
+        // exactly as the `term-ref` / `term-app` rows above.
+        ("node-ref", node(Expr::Ref(sym)), Some(sym)),
+        ("node-apply", applied_node(sym, string_sym), Some(sym)),
+        // No faithful term form: the WI-1019 head is a view-only presentation.
         ("requirement", dict.clone(), None),
         ("opref", Value::OpRef { op: sym, dict: None, named: None }, None),
-        ("node-ref", node(Expr::Ref(sym)), None),
-        ("node-apply", applied_node(sym, string_sym), None),
+        // …and the one way an excluded carrier's head could still arrive: an
+        // occurrence WRAPPING it. `occ_head` reads through a top-level `Spliced`,
+        // so the reader cancels the double wrap the way `Value::node` would have.
         ("node-spliced-dict", node(Expr::Spliced(dict)), None),
     ];
 
@@ -187,9 +198,9 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     let mut interp = common::interp_for(SRC);
     let sym = box_sym(&mut interp);
-    // Carriers deliberately NOT routed: the two runtime handles, and every
-    // occurrence form (WI-1025). Anything else with a naming head must be routed.
-    const DELIBERATE: &[&str] = &["requirement", "opref", "node-ref", "node-apply"];
+    // Carriers deliberately NOT routed: the two with no faithful term form.
+    // Anything else with a naming head must be routed.
+    const DELIBERATE: &[&str] = &["requirement", "opref"];
     let samples: Vec<(&str, Value)> = vec![
         ("requirement", Value::Requirement(interp.alloc_requirement(sym, SmallVec::new()))),
         ("opref", Value::OpRef { op: sym, dict: None, named: None }),
