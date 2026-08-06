@@ -4467,16 +4467,22 @@ impl KnowledgeBase {
     /// as Term::Ref>)` would store as two facts for one logical fact, and neither
     /// dedup would ever see the other (WI-815).
     ///
-    /// `lowers_to_leaf` IS NARROWER THAN "WHAT `alloc_from_value` ACCEPTS", and
-    /// that is a choice, not the answer. `alloc_from_value` also lowers
-    /// `Int`/`Str`/`Bool`/`Var`/`Entity`, and the disjoint-key-space argument
-    /// above applies verbatim to a scalar child — `f(Value::Int(1))` takes the
-    /// `Entity` path while `f(1)` built as a term keys `fact_dedup`. It is
-    /// unreachable today rather than harmless: every `assert_fact_carrier` caller
-    /// (`eq_derive.rs:281`, `load.rs:14991`, `typing.rs:40273`, and
-    /// `assert_metadata_fact_carrier`) passes `Value::term(..)` children. Widening
-    /// the set would RE-ROUTE existing heads between the two key spaces, so it
-    /// needs its own measurement — WI-1023.
+    /// THE TEST IS NOW `alloc_from_value`'S OWN LEAF SET (WI-1023), asked through
+    /// [`Value::lowers_to_leaf_term`] rather than restated here. The hand-written
+    /// `Value::Term | SymbolRef` was narrower by five carriers, and the
+    /// disjoint-key-space argument above applies verbatim to every one of them —
+    /// `f(Value::Int(1))` took the `Entity` path while `f(1)` built as a term keyed
+    /// `fact_dedup`. That was unreachable through `assert_fact_carrier`, whose four
+    /// callers all pass `Value::term(..)` children, but NOT through the other caller:
+    /// [`Self::reify`] hands this whatever σ bound, so a scalar-bound goal var
+    /// reified to a `Value::Entity` twin of a perfectly ordinary ground term.
+    ///
+    /// WHERE THE SET STOPS IS `LEAF`, not "what lowers" — a `Value::Entity` child
+    /// lowers too, and admitting it would (a) make this function's `Err` reachable
+    /// (`OverArityConstructor`), demoting a broken-invariant panic to a real failure
+    /// mode, and (b) change the carrier of every application with a compound child,
+    /// which is a different decision from this one. The three axes are recorded at
+    /// the predicate.
     ///
     /// This is the one place a `SymbolRef` is deliberately interned. It is not a
     /// transient: the term it becomes is a CHILD of a hash-consed application that
@@ -4489,16 +4495,14 @@ impl KnowledgeBase {
         named: Vec<(Symbol, crate::eval::value::Value)>,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        fn lowers_to_leaf(v: &Value) -> bool {
-            matches!(v, Value::Term { .. } | Value::SymbolRef(_))
-        }
         // `alloc_from_value` is the one owner of every carrier's lowering (it is
-        // where `SymbolRef → Term::Ref` is written); restating those two arms here
-        // would be a second, untied statement of the variant's whole contract. It
-        // cannot fail for a child `lowers_to_leaf` accepted, so the `Err` is a
-        // broken invariant — loud, exactly as the `expect_term` it replaces was.
-        let all_lower = pos.iter().all(lowers_to_leaf)
-            && named.iter().all(|(_, v)| lowers_to_leaf(v));
+        // where `SymbolRef → Term::Ref` is written); restating its arms here would
+        // be a second, untied statement of the variant's whole contract — which is
+        // exactly how the old two-arm list drifted. It cannot fail for a child
+        // `lowers_to_leaf_term` accepted, so the `Err` is a broken invariant —
+        // loud, exactly as the `expect_term` it replaces was.
+        let all_lower = pos.iter().all(Value::lowers_to_leaf_term)
+            && named.iter().all(|(_, v)| v.lowers_to_leaf_term());
         if all_lower {
             let lower = |kb: &mut Self, v: &Value| {
                 kb.alloc_from_value(v)

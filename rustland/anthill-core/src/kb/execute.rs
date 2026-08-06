@@ -256,6 +256,73 @@ impl LogicalQuerySymbols {
 
 // ── Public API on KnowledgeBase ────────────────────────────────
 
+impl Value {
+    /// WI-1023 — does [`KnowledgeBase::alloc_from_value`] lower `self` to a **LEAF**
+    /// term, losslessly and infallibly? The one reader of that half of its accept
+    /// set, stated HERE — against the function it describes — rather than at the
+    /// caller, which is how the old `Value::Term | SymbolRef` list came to miss five
+    /// carriers this answers `true` for.
+    ///
+    /// EXHAUSTIVENESS CATCHES A NEW VARIANT, NOT A MOVED ONE. Adding a `Value` arm
+    /// breaks compilation here and at `alloc_from_value` both; but moving an
+    /// existing variant between that function's `Ok` and `Err` groups would leave
+    /// this silently stale, and no type can see that. `leaf_lowering_agrees_with_alloc`
+    /// is what does — it drives every variant through both and compares.
+    ///
+    /// It is deliberately three questions collapsed into one BOOLEAN, and the
+    /// distinction is what the arms record:
+    ///
+    ///  - **LEAF.** `Value::Entity` lowers, and losslessly, but to an APPLICATION.
+    ///    A caller asking this is choosing between a hash-consed `Term::Fn` and a
+    ///    `Value::Entity` for the whole application; a compound child is exactly the
+    ///    case where that choice is not free.
+    ///  - **LOSSLESS.** `Value::Node` is excluded by `alloc_from_value` itself
+    ///    (`UnsupportedVariant`), and must be: lowering an occurrence drops its
+    ///    identity/span, which is why `value_to_term` — a DIFFERENT boundary, the
+    ///    `Node`-aware one — exists separately.
+    ///  - **INFALLIBLE.** No arm answering `true` has a failure mode, which is what
+    ///    lets [`KnowledgeBase::fn_value`] treat an `Err` as a broken invariant and
+    ///    panic. `Entity` would break that too: `positional_to_named_plan` can
+    ///    answer `OverArityConstructor` on real input.
+    ///
+    /// Exhaustive with no `_` arm, so a new `Value` variant is a compile error here
+    /// AND at `alloc_from_value` rather than a silent `false`.
+    pub(crate) fn lowers_to_leaf_term(&self) -> bool {
+        match self {
+            // The leaf arms of `alloc_from_value`, every one an infallible
+            // `Ok(alloc(<leaf>))`. `Term` returns its own id unchanged; `Var` and
+            // `SymbolRef` are the two round-trip-lossless non-scalar leaves
+            // (WI-109 / WI-1016).
+            Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Term { .. }
+            | Value::Var(_)
+            | Value::SymbolRef(_) => true,
+            // Lowers, but not to a leaf, and not infallibly — see above.
+            Value::Entity { .. } => false,
+            // `alloc_from_value` answers `UnsupportedVariant` for all of these: the
+            // interpreter-owned handles and the term-less aggregates have no
+            // faithful term form, and `Node` has one only through the separate
+            // occurrence-aware boundary.
+            Value::Unit
+            | Value::Tuple { .. }
+            | Value::Closure(_)
+            | Value::OpRef { .. }
+            | Value::Stream(_)
+            | Value::Substitution(_)
+            | Value::Map(_)
+            | Value::Cell(_)
+            | Value::Requirement(_)
+            | Value::FactRef(_)
+            | Value::Node(_)
+            | Value::Relation { .. } => false,
+        }
+    }
+}
+
 impl KnowledgeBase {
     /// Recursively promote a runtime `Value` into a hash-consed `TermId`.
     ///
@@ -922,6 +989,116 @@ impl KnowledgeBase {
 mod tests {
     use super::*;
     use crate::kb::term::{Var, VarId};
+
+    /// WI-1023 — [`Value::lowers_to_leaf_term`] agrees with what
+    /// [`KnowledgeBase::alloc_from_value`] actually DOES, variant by variant.
+    ///
+    /// The predicate restates that function's leaf arms, and exhaustiveness only
+    /// catches a variant being ADDED. This catches one being MOVED — an arm going
+    /// `Err` → `Ok`, or a leaf arm becoming a recursive one — which is the drift
+    /// that would put one logical fact in both of `assert_fact_value`'s disjoint
+    /// key spaces.
+    ///
+    /// One representative per `Value` variant, built by a `match` with NO `_` arm,
+    /// so a new variant fails to compile here too rather than going unsampled.
+    ///
+    /// CONTROL, MEASURED by moving `Value::Unit` from `alloc_from_value`'s `Err`
+    /// group to `Ok(self.terms.alloc(Term::Bottom))`: `disagreed: ["Unit"]`.
+    #[test]
+    fn leaf_lowering_agrees_with_alloc() {
+        let mut interp = crate::eval::Interpreter::new(KnowledgeBase::new());
+        let s = interp.kb_mut().intern("wi1023");
+        let tid = interp.kb_mut().alloc(Term::Ref(s));
+        let vid = VarId::new(1, s);
+        let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 1);
+        let samples: Vec<Value> = vec![
+            Value::Int(1),
+            Value::BigInt(2.into()),
+            Value::Float(1.0),
+            Value::Bool(true),
+            Value::Str("s".into()),
+            Value::Unit,
+            Value::Tuple { pos: Rc::from(vec![]), named: Rc::from(vec![]) },
+            Value::Entity { functor: s, pos: Rc::from(vec![]), named: Rc::from(vec![]) },
+            Value::OpRef { op: s, dict: None, named: None },
+            Value::Substitution(interp.alloc_subst(crate::kb::subst::Substitution::new())),
+            Value::Map(interp.alloc_map(crate::eval::map_arena::MapBody::new())),
+            Value::Cell(interp.alloc_cell(Value::Int(0))),
+            Value::Requirement(interp.alloc_requirement(s, SmallVec::new())),
+            Value::Relation { query: Rc::new(Value::Unit), columns: Rc::from(vec![]) },
+            Value::FactRef(crate::kb::extent::FactRef::resident(crate::kb::RuleId::from_raw(0))),
+            Value::term(tid),
+            Value::Var(Var::Global(vid)),
+            Value::SymbolRef(s),
+            Value::Node(NodeOccurrence::new_expr(
+                crate::kb::node_occurrence::Expr::Ref(s),
+                span,
+                None,
+            )),
+        ];
+        // Coverage is asserted, not eyeballed: `variant_name` below has no `_`
+        // arm, so a new `Value` variant fails to compile there, and this set
+        // comparison then fails until it is sampled. `Closure` and `Stream` are
+        // the two the unit level cannot mint — their handles come from evaluating a
+        // lambda / opening a stream — and both sit in `alloc_from_value`'s
+        // `UnsupportedVariant` group next to `Map`/`Cell`/`Substitution`/`FactRef`,
+        // which ARE sampled, so the group is driven even though those two are not.
+        let covered: std::collections::BTreeSet<&str> =
+            samples.iter().map(variant_name).collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "Int", "BigInt", "Float", "Bool", "Str", "Unit", "Tuple", "Entity", "OpRef",
+            "Substitution", "Map", "Cell", "Requirement", "Relation", "FactRef", "Term",
+            "Var", "SymbolRef", "Node",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(covered, expected, "every constructible Value variant is sampled");
+
+        let kb = interp.kb_mut();
+        let disagreed: Vec<&str> = samples
+            .iter()
+            .filter(|v| {
+                // "Lowers to a LEAF" = `alloc_from_value` succeeds AND the term it
+                // produced has no children — both halves read off the function
+                // itself rather than assumed.
+                let actual = match kb.alloc_from_value(v) {
+                    Ok(t) => !matches!(kb.get_term(t), Term::Fn { .. }),
+                    Err(_) => false,
+                };
+                v.lowers_to_leaf_term() != actual
+            })
+            .map(variant_name)
+            .collect();
+        assert!(disagreed.is_empty(), "predicate and alloc_from_value disagreed: {disagreed:?}");
+    }
+
+    /// The exhaustiveness anchor for [`leaf_lowering_agrees_with_alloc`] — no `_`
+    /// arm, so a new `Value` variant is a compile error here.
+    fn variant_name(v: &Value) -> &'static str {
+        match v {
+            Value::Int(_) => "Int",
+            Value::BigInt(_) => "BigInt",
+            Value::Float(_) => "Float",
+            Value::Bool(_) => "Bool",
+            Value::Str(_) => "Str",
+            Value::Unit => "Unit",
+            Value::Tuple { .. } => "Tuple",
+            Value::Entity { .. } => "Entity",
+            Value::Closure(_) => "Closure",
+            Value::OpRef { .. } => "OpRef",
+            Value::Stream(_) => "Stream",
+            Value::Substitution(_) => "Substitution",
+            Value::Map(_) => "Map",
+            Value::Cell(_) => "Cell",
+            Value::Requirement(_) => "Requirement",
+            Value::FactRef(_) => "FactRef",
+            Value::Term { .. } => "Term",
+            Value::Var(_) => "Var",
+            Value::SymbolRef(_) => "SymbolRef",
+            Value::Node(_) => "Node",
+            Value::Relation { .. } => "Relation",
+        }
+    }
 
     /// WI-109: `Value::Var` lowers back to `Term::Var` losslessly — the
     /// kind and id survive (`VarId` ignores the display name on compare).

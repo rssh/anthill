@@ -760,3 +760,115 @@ pub fn mount_extent(
     let src = InMemoryExtentSource::new(kb, name, key, vec![]).expect("no rows to key");
     kb.register_extent_owner(Box::new(src)).map(|_| ())
 }
+
+/// WI-1023 — a KB whose only rules are ALTERNATIVES FOR ONE GOAL, each binding
+/// the goal's var to an arbitrary `Value` carrier. Returns `(kb, the goal's var
+/// TERM, the goal TERM)`.
+///
+/// The gadget is `resolve_sort_instantiation_param(SortView(T: <v>), T, ?out)`,
+/// which hands `?out` the `SortView`'s `T` slot **in that value's own carrier**
+/// (`finish_result_value`, WI-1015). Splicing an arbitrary `Value` into that slot
+/// is how a test puts an arbitrary carrier into σ.
+///
+/// TWO PROPERTIES THE CALLERS DEPEND ON, both learned the hard way:
+///
+///  - **The alternatives are for ONE goal.** `is_duplicate_projection` fingerprints
+///    the NEAREST ancestor ChoicePoint's goal, so two routes reached through a
+///    disjunction in a rule BODY would be keyed on that body goal (whose two answers
+///    genuinely differ) and measure nothing — WI-1016's first shape. A builtin-only
+///    body pushes no ChoicePoint, so the nearest ancestor for every alternative here
+///    is the shared head goal.
+///  - **`build` mints inside THIS kb.** A `Symbol` indexes one KB's symbol table and
+///    a `TermId` one KB's term store, so a value built elsewhere names something
+///    else entirely — a mistake that reads as a green `assert_ne!` on carriers that
+///    were never the pair they claimed to be.
+///
+/// Each inner `Vec` is one alternative: its LAST value lands in the head var (so it
+/// is goal-reachable) and any earlier ones in rule-local vars the goal never
+/// mentions — the domain distinction answer dedup's two guards turn on.
+#[allow(dead_code)]
+pub fn one_goal_carrier_fixture(
+    functor_name: &str,
+    build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<eval::Value>>,
+) -> (KnowledgeBase, anthill_core::kb::term::TermId, anthill_core::kb::term::TermId) {
+    use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
+    use anthill_core::kb::term::{Term, Var};
+    use anthill_core::kb::ClauseKind;
+    use anthill_core::span::{SourceId, SourceSpan};
+    use eval::Value;
+    use smallvec::SmallVec;
+    use std::rc::Rc;
+
+    let mut kb = load_kb_with("namespace test.wi1023_fixture\nend\n");
+    let alternatives = build(&mut kb);
+    assert!(!alternatives.is_empty(), "a fixture with no alternative measures nothing");
+
+    let domain = kb.intern("test");
+    let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
+    let p = kb.intern(functor_name);
+    let sort_view = kb.intern("SortView");
+    let t_param = kb.intern("T");
+    let rsip = kb.resolve_symbol("anthill.reflect.resolve_sort_instantiation_param");
+
+    for slots in alternatives {
+        let v = {
+            let n = kb.intern("?v");
+            kb.fresh_var(n)
+        };
+        let v_term = kb.alloc(Term::Var(Var::Global(v)));
+        let head = kb.alloc(Term::Fn {
+            functor: p,
+            pos_args: SmallVec::from_elem(v_term, 1),
+            named_args: SmallVec::new(),
+        });
+        let last = slots.len() - 1;
+        let body: Vec<Rc<NodeOccurrence>> = slots
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                let out = if i == last {
+                    v
+                } else {
+                    let n = kb.intern("?w");
+                    kb.fresh_var(n)
+                };
+                let inst = Value::Entity {
+                    functor: sort_view,
+                    pos: Rc::from(Vec::<Value>::new()),
+                    named: Rc::from(vec![(t_param, slot)]),
+                };
+                NodeOccurrence::new_expr(
+                    Expr::Apply {
+                        functor: rsip,
+                        pos_args: vec![
+                            NodeOccurrence::new_expr(Expr::Spliced(inst), span, None),
+                            NodeOccurrence::new_expr(
+                                Expr::Spliced(Value::SymbolRef(t_param)),
+                                span,
+                                None,
+                            ),
+                            NodeOccurrence::new_expr(Expr::Var(Var::Global(out)), span, None),
+                        ],
+                        named_args: Vec::new(),
+                        type_args: Vec::new(),
+                    },
+                    span,
+                    None,
+                )
+            })
+            .collect();
+        kb.assert_rule_debruijn_with_nodes(Value::term(head), body, ClauseKind::Rule, domain, None);
+    }
+
+    let q = {
+        let n = kb.intern("?q");
+        kb.fresh_var(n)
+    };
+    let q_term = kb.alloc(Term::Var(Var::Global(q)));
+    let goal = kb.alloc(Term::Fn {
+        functor: p,
+        pos_args: SmallVec::from_elem(q_term, 1),
+        named_args: SmallVec::new(),
+    });
+    (kb, q_term, goal)
+}

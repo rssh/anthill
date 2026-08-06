@@ -77,6 +77,7 @@ impl ViewHead {
             _ => None,
         }
     }
+
 }
 
 /// WI-436 — canonicalize a functor application head: a **0-ary application of a
@@ -1590,6 +1591,42 @@ pub trait TermView {
             _ => None,
         }
     }
+
+    /// WI-1023 — does this view, or ANY structure beneath it, present
+    /// [`ViewHead::Opaque`]? The view-level twin of
+    /// [`GoalKey::is_opaque_free`]'s negation, for a reader that has a VALUE
+    /// rather than a key: an opaque nested in a `Tuple`/`Entity` erases a
+    /// difference exactly as a bare one does, so the test cannot be a head test.
+    ///
+    /// A reader asks THIS rather than listing carriers, and so cannot drift when a
+    /// carrier gains a structural head — as `OpRef` and `Requirement` did in
+    /// WI-1019, which is how the four hand-written lists WI-1023 removed got out
+    /// of step in the first place.
+    ///
+    /// A trait method rather than a free function so a carrier that can ANSWER
+    /// WITHOUT BUILDING A HEAD may say so — [`ViewHead`] owns a `Literal` by
+    /// value, so `head()` clones a `String`/`BigInt` payload it is about to drop,
+    /// and this runs once per σ binding per solution. [`TermIdView`] overrides it
+    /// to a constant `false`.
+    ///
+    /// Mirrors [`crate::kb::discrim::view_is_indexable`]'s recursion — the same
+    /// walk, a different verdict (that one additionally rejects a functor-less
+    /// aggregate, which keys here perfectly well).
+    fn bears_opaque(&self, kb: &KnowledgeBase) -> bool {
+        match self.head(kb) {
+            ViewHead::Opaque => true,
+            ViewHead::Functor { pos_arity, .. } => {
+                (0..pos_arity).any(|i| {
+                    self.pos_arg(kb, i).map_or(false, |a| a.bears_opaque(kb))
+                }) || self.named_keys(kb).into_iter().any(|s| {
+                    self.named_arg(kb, s).map_or(false, |a| a.bears_opaque(kb))
+                })
+            }
+            // Leaves: a var, a literal, a name, `⊥`. Nothing beneath them.
+            ViewHead::Var(_) | ViewHead::Const(_) | ViewHead::Ref(_) | ViewHead::Ident(_)
+            | ViewHead::Bottom => false,
+        }
+    }
 }
 
 /// Representation-independent structural equality between two term views.
@@ -1718,8 +1755,10 @@ impl GoalKey {
     /// `Bottom` is a real `⊥` leaf, an `Open` its functor and both arities, a
     /// `Var` its id, a `Const` its literal — and children are walked, so two keys
     /// that differ structurally differ token-wise. An `Opaque` (a
-    /// `Map`/`Cell`/`Closure`/`OpRef`/`Relation` carrier, or one of the occurrence
-    /// forms `occ_head` still declines to decompose) is payload-free and not even
+    /// `Map`/`Cell`/`Closure`/`Stream`/`Substitution`/`FactRef`/`Relation` carrier
+    /// — NOT `OpRef`, which WI-1019 gave a structural head, and this list said
+    /// otherwise until WI-1023 — or one of the occurrence forms `occ_head` still
+    /// declines to decompose) is payload-free and not even
     /// structurally self-comparable — `views_structurally_equal` answers `false`
     /// for it — so two genuinely distinct views differing only inside an `Opaque`
     /// child produce ONE key.
@@ -1956,6 +1995,16 @@ impl TermView for TermIdView {
                 "parse-only Term::ParseAux variant reached the KB-side TermIdView",
             ),
         }
+    }
+
+    /// A hash-consed term tree can hold NO opaque carrier: every arm of `head`
+    /// above is `Var`/`Const`/`Fn`/`Ref`/`Ident`/`Bottom`, and a `Term`'s children
+    /// are `TermId`s, so the recursion could only reach more of the same. Answering
+    /// `false` outright skips both the walk and — the reason this override exists —
+    /// the `Literal` clone `head` performs for a `Term::Const`, on a path that runs
+    /// per σ binding per solution (WI-1023).
+    fn bears_opaque(&self, _kb: &KnowledgeBase) -> bool {
+        false
     }
 
     fn pos_arg<'a>(&'a self, kb: &'a KnowledgeBase, i: usize) -> Option<ViewItem<'a>> {

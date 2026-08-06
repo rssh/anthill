@@ -198,8 +198,12 @@ fn a_symbolref_child_stores_one_fact_not_two() {
 /// and a disjunction inside the body would make that the body goal (whose two
 /// answers genuinely differ) rather than `dup(?q)`.
 ///
-/// CONTROL, MEASURED by dropping `| Value::SymbolRef(_)` from that test: 2
-/// solutions instead of 1 — fail-open, which is why nothing caught it.
+/// CONTROL, RE-MEASURED for WI-1023, which deleted the code the original control
+/// named: the by-carrier σ list is gone, so "drop `| Value::SymbolRef(_)`" no
+/// longer describes anything. The equivalent revert is the PRE-WI-1016 list —
+/// restore `is_duplicate_projection`'s σ scan as
+/// `!matches!(v, Value::Term { .. } | Value::Node(_))` — which reports 2 solutions
+/// instead of 1. Fail-open, which is why nothing caught it.
 #[test]
 fn a_symbolref_binding_does_not_disable_answer_dedup() {
     use anthill_core::kb::resolve::ResolveConfig;
@@ -274,59 +278,18 @@ fn add_term_route(kb: &mut KnowledgeBase, answer: Symbol) {
 /// The KB for [`a_symbolref_binding_does_not_disable_answer_dedup`]: the
 /// `SymbolRef`-binding rule alone. Returns `(kb, the `?q` var TERM, the goal
 /// term, the answered symbol)`; [`add_term_route`] supplies the second route.
+///
+/// The rule shape is `common::one_goal_carrier_fixture` (WI-1023 lifted it there
+/// on its second use — it needs the same gadget for every carrier, and this file
+/// is the special case with one `Value::SymbolRef` slot).
 fn dedup_fixture(
 ) -> (KnowledgeBase, anthill_core::kb::term::TermId, anthill_core::kb::term::TermId, Symbol) {
-    use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
-    use anthill_core::kb::term::Var;
-    use anthill_core::span::{SourceId, SourceSpan};
-    use std::rc::Rc;
-
-    let mut kb = common::load_kb_with("namespace test.wi1016_dedup\nend\n");
-    let domain = kb.intern("test");
-    let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
-    let dup = kb.intern("wi1016_dup");
-    let sort_view = kb.intern("SortView");
-    let t_param = kb.intern("T");
-    let answer = kb.intern("wi1016_answer");
-
-    // `dup(?v) :- resolve_sort_instantiation_param(SortView(T: <sym>), T, ?v)`,
-    // where the `SortView`'s `T` binding is the value carrier of the same symbol.
-    let v = { let n = kb.intern("?v"); kb.fresh_var(n) };
-    let v_term = kb.alloc(Term::Var(Var::Global(v)));
-    let head = kb.alloc(Term::Fn {
-        functor: dup,
-        pos_args: SmallVec::from_elem(v_term, 1),
-        named_args: SmallVec::new(),
+    let answer_name = "wi1016_answer";
+    let (mut kb, q_term, goal) = common::one_goal_carrier_fixture("wi1016_dup", |kb| {
+        let answer = kb.intern(answer_name);
+        vec![vec![Value::SymbolRef(answer)]]
     });
-    let inst = Value::Entity {
-        functor: sort_view,
-        pos: Rc::from(Vec::<Value>::new()),
-        named: Rc::from(vec![(t_param, Value::SymbolRef(answer))]),
-    };
-    let rsip = kb.resolve_symbol("anthill.reflect.resolve_sort_instantiation_param");
-    let body = vec![NodeOccurrence::new_expr(
-        Expr::Apply {
-            functor: rsip,
-            pos_args: vec![
-                NodeOccurrence::new_expr(Expr::Spliced(inst), span, None),
-                NodeOccurrence::new_expr(Expr::Spliced(Value::SymbolRef(t_param)), span, None),
-                NodeOccurrence::new_expr(Expr::Var(Var::Global(v)), span, None),
-            ],
-            named_args: Vec::new(),
-            type_args: Vec::new(),
-        },
-        span,
-        None,
-    )];
-    kb.assert_rule_debruijn_with_nodes(Value::term(head), body, ClauseKind::Rule, domain, None);
-
-    let q = { let n = kb.intern("?q"); kb.fresh_var(n) };
-    let q_term = kb.alloc(Term::Var(Var::Global(q)));
-    let goal = kb.alloc(Term::Fn {
-        functor: dup,
-        pos_args: SmallVec::from_elem(q_term, 1),
-        named_args: SmallVec::new(),
-    });
+    let answer = kb.intern(answer_name);
     (kb, q_term, goal, answer)
 }
 

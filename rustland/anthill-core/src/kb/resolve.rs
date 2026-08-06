@@ -2825,39 +2825,44 @@ impl SearchStream {
     /// is carrier-agnostic: a `Value::Node` answer keys by its structure, with
     /// no `TermId` materialization and no `TermStore` growth.
     ///
-    /// Skipped when σ carries a binding with no structural fingerprint — a
-    /// genuinely external-row / opaque value (`Value::Str`/`Value::Entity` from
-    /// a stream, a closure). A `Value::Node` does NOT disable dedup (it
-    /// fingerprints structurally); only those opaque rows do, which would
-    /// otherwise collapse genuinely distinct rows to one key.
+    /// TWO GUARDS SKIP DEDUP, AND THEY COVER DIFFERENT DOMAINS (WI-1023). Both
+    /// fail OPEN — a skipped dedup yields a duplicate answer, where a wrong dedup
+    /// DROPS one (the direction `value_fact_dedup_key`'s doc names as the unsafe
+    /// one), so each is deliberately the conservative side of its question.
     ///
-    /// `Value::SymbolRef` is on the fingerprinting side for the reason the variant
-    /// exists (WI-1016): it views as `ViewHead::Ref(s)`, INDISTINGUISHABLE from
-    /// the `Term::Ref(s)` twin already listed, so leaving it out would turn answer
-    /// dedup on or off according to which carrier the symbol arrived on — a
-    /// `qualified_name(?s, ?n)` answer deduped and a `Dictionary.impl(d) = ?s` one
-    /// not. Fail-open (duplicate answers survive), which is why no test caught it.
+    ///  - **σ-wide**: any binding that BEARS an opaque anywhere inside it
+    ///    ([`TermView::bears_opaque`]) — a closure, a stream, a `Map`/`Cell`
+    ///    handle, or one nested under a `Tuple`/`Entity`. Scanned over ALL of σ,
+    ///    not just the goal-reachable part, because that is the half the key
+    ///    cannot reach: a solution distinguished only by an opaque binding the
+    ///    goal never mentions fingerprints identically to its sibling, and
+    ///    collapsing those is the "genuinely external row" loss proposal 026.1
+    ///    §"Lineage-preserving bindings" names. TRANSITIVE and not a head test:
+    ///    a `Tuple{[Cell]}` presents `Functor{None, 1, 0}`, so a shallow scan
+    ///    passes it while its key is `[Open(None,1,0), Opaque]` for every cell.
+    ///  - **the goal itself**: `key.is_opaque_free()` — the SAME predicate and the
+    ///    same reason as [`KnowledgeBase::value_fact_dedup_key`], reused rather
+    ///    than restated. Its unique domain is an opaque reachable from
+    ///    `original_goal` with NO σ binding to scan — a value spliced straight into
+    ///    the goal — which no σ scan, however deep, can see.
     ///
-    /// WHY THIS STAYS A BY-CARRIER ALLOW-LIST and does not become
-    /// `GoalKey::is_opaque_free` or a per-binding `head(kb) != Opaque`: the DOMAINS
-    /// differ. The fingerprint below is taken of `original_goal` through σ, so it
-    /// sees only goal-reachable vars; this scan is over ALL of σ, which is the
-    /// point — the doc's "genuinely external row" is a solution distinguished by a
-    /// binding the goal never mentions. A content predicate would start collapsing
-    /// those, and here over-dedup DROPS AN ANSWER (the direction
-    /// `value_fact_dedup_key`'s doc names as the unsafe one).
+    /// THE BY-CARRIER ALLOW-LIST IS GONE, and its ORIGINAL REASON WITH IT. WI-038
+    /// wrote it when the key was `kb.reify` to a hash-consed `TermId`, which walked
+    /// bindings through `resolve_with_term` and **could not see a non-`Term` one at
+    /// all** — so every external row reified to the same id and dedup collapsed
+    /// them. WI-348 replaced that key with [`goal_fingerprint`], which resolves
+    /// through `resolve_as_value` and reads any carrier through `TermView`; the
+    /// blindness the list compensated for no longer exists, and what remains is
+    /// exactly `Opaque`, which the key itself reports.
     ///
-    /// THE LIST IS INCOMPLETE, and this is its owner rather than its excuse:
-    /// `Value::Requirement` and `Value::OpRef` became structural in WI-1019 (the
-    /// commit before this one) and `Value::Var` fingerprints as a `Var` token, yet
-    /// all three still switch dedup off here. Same fail-open direction, reachable
-    /// by the same route the WI-1016 test drives. Adding them widens in the
-    /// answer-DROPPING direction, so it needs its own measured change — WI-1023,
-    /// which also proposes replacing all four sites with one named predicate.
+    /// The list had drifted three ways by the time it was replaced, all fail-open:
+    /// `Value::Requirement` / `Value::OpRef` gained structural heads in WI-1019 and
+    /// `Value::Var` fingerprints as a `Var` token, yet all three switched dedup off.
+    /// The doc's own example was wrong too — it called `Value::Str` a value "with no
+    /// structural fingerprint", when it views as `ViewHead::Const(String)` and keys
+    /// as faithfully as the `Term::Const` twin.
     fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
-        let has_value_binding = sol.subst.iter()
-            .any(|(_, v)| !matches!(v, Value::Term { .. } | Value::Node(_) | Value::SymbolRef(_)));
-        if has_value_binding {
+        if sol.subst.iter().any(|(_, v)| v.bears_opaque(kb)) {
             return false;
         }
         for frame in self.stack.iter_mut().rev() {
@@ -2866,7 +2871,10 @@ impl SearchStream {
                 // through σ — keys a `Value::Node` answer by its structure, with
                 // no `TermId` materialization and no `TermStore` growth (WI-348).
                 let key = goal_fingerprint(kb, &*original_goal, &sol.subst);
-                return !seen_goals.insert(key);
+                // `&&` order matters: a lossy key must never reach `seen_goals`,
+                // or the NEXT solution would dedup against a key that cannot tell
+                // it apart.
+                return key.is_opaque_free() && !seen_goals.insert(key);
             }
         }
         false // no ChoicePoint ancestor — no dedup

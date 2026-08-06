@@ -21,6 +21,7 @@ use imbl::{HashMap as ImHashMap, Vector as ImVector};
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
 use crate::kb::term::{Term, TermId};
+use crate::kb::term_view::{TermView, ViewHead};
 
 use super::value::Value;
 
@@ -65,22 +66,44 @@ impl MapKey {
     ///  - `Term::Ident(s)` — a widening here MERGES KEYS. `Ident(s)` and `Ref(s)`
     ///    are distinct terms today, so collapsing them makes one `put` silently
     ///    overwrite the other's entry. This is the case that decides the reader.
-    ///  - a non-canonicalized nullary constructor `Fn{c,[],[]}` (which
-    ///    `resolve_qualified_name_term` mints by bypassing `alloc`'s canon) — this
-    ///    one IS the same name as `Ref(c)`, so declining it accepts a key SPLIT
-    ///    rather than avoiding a merge. Narrow (that mint has few callers and none
-    ///    feeds a `Map` today) but not free — WI-1023.
     ///  - `Value::Node(Expr::Ref(s))` — not keyed at all: `None`, so `Map.put`
     ///    hard-errors. A REFUSAL, which is the right failure mode for a carrier
     ///    whose occurrence identity a map key cannot represent.
+    ///
+    /// THE `Term` ARM ASKS `ViewHead`, NOT `Term::Ref` (WI-1023) — "is this term a
+    /// NAME", not "is it spelled `Ref`". `resolve_qualified_name_term` deliberately
+    /// bypasses [`KnowledgeBase::alloc`]'s WI-511 canon, so a non-canonicalized
+    /// nullary constructor `Fn{c,[],[]}` exists in the store; it IS the same name as
+    /// `Ref(c)` and `functor_view_head` already reads it as `ViewHead::Ref(c)`, so
+    /// the by-spelling match declined it and accepted a key SPLIT — the mirror image
+    /// of the `Ident` merge, and the wrong direction for the same reason. Reading
+    /// the head keeps `Ident` distinct for free: it heads as `ViewHead::Ident`, so
+    /// the widening reaches exactly the spellings of one name and no further.
+    ///
+    /// THE CANON IS GATED ON `is_constructor_symbol`, AND THAT GATE IS THE POINT,
+    /// not a residual gap. `functor_view_head` rewrites a nullary `Fn` only for a
+    /// registered CONSTRUCTOR; for a sort or type param, `Ref(s)` and `Fn{s,[],[]}`
+    /// are not two spellings of one name at all — they are WI-391's
+    /// wildcard-vs-concrete type-dispatch distinction, which `alloc`'s own canon
+    /// says outright it must not disturb. Merging those two would be the `Ident`
+    /// mistake with different symbols. So `resolve_qualified_name_term("…Color")`
+    /// (a sort) keeps its own key by design, while `…Color.red` (a constructor)
+    /// joins its name's; both are driven.
     pub fn try_from_value(kb: &KnowledgeBase, v: &Value) -> Option<Self> {
         match v {
             Value::Int(n) => Some(MapKey::Int(*n)),
             Value::Bool(b) => Some(MapKey::Bool(*b)),
             Value::Str(s) => Some(MapKey::Str(s.clone())),
             Value::SymbolRef(s) => Some(MapKey::Ref(*s)),
-            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
-                Term::Ref(s) => Some(MapKey::Ref(*s)),
+            // A literal is never a name, and it is the common `Value::Term` key —
+            // so answer it off the term and skip `head`, which would build a
+            // `ViewHead::Const` by CLONING the `String`/`BigInt` payload only to
+            // drop it (WI-1023). Every other spelling asks the view.
+            Value::Term { id: tid, .. } if matches!(kb.get_term(*tid), Term::Const(_)) => {
+                Some(MapKey::Term(*tid))
+            }
+            Value::Term { id: tid, .. } => match v.head(kb) {
+                ViewHead::Ref(s) => Some(MapKey::Ref(s)),
                 _ => Some(MapKey::Term(*tid)),
             },
             _ => None,
@@ -382,6 +405,92 @@ mod tests {
         assert_eq!(
             MapKey::try_from_value(&kb, &Value::term(int_tid)),
             Some(MapKey::Term(int_tid)),
+        );
+    }
+
+    /// WI-1023 — the THIRD spelling of one name keys with the other two.
+    ///
+    /// `resolve_qualified_name_term` mints `Fn{c,[],[]}` through `terms.alloc`,
+    /// deliberately bypassing the WI-511 canon that would rewrite it to `Ref(c)`.
+    /// It denotes the same constructor, and `functor_view_head` says so
+    /// (`ViewHead::Ref(c)`), so keying it as `Term(tid)` put one name in two slots.
+    ///
+    /// CONTROL, MEASURED by restoring `match kb.get_term(*tid) { Term::Ref(s) =>
+    /// … }`: `via_nullary_fn` comes back `Some(MapKey::Term(fn_tid))`, the
+    /// `assert_eq!` against `Ref(c)` fails, and the `MapBody` read below answers
+    /// `None` where the `put` stored under the canonical spelling.
+    ///
+    /// `Term::Ident` is the arm that must NOT move, and it is asserted here rather
+    /// than argued: widening it would MERGE two distinct terms and let one `put`
+    /// overwrite the other's entry.
+    #[test]
+    fn a_non_canonicalized_nullary_constructor_keys_as_its_name() {
+        let mut kb = KnowledgeBase::new();
+        let c = kb.intern("demo.Color.red");
+        kb.mark_constructor_symbol(c);
+
+        // The three spellings: the canonical `Ref`, the value carrier, and the
+        // nullary `Fn` `resolve_qualified_name_term` mints.
+        let ref_tid = kb.alloc(Term::Ref(c));
+        let fn_tid = kb.resolve_qualified_name_term("demo.Color.red");
+        assert_ne!(ref_tid, fn_tid, "premise: the mint really does bypass the canon");
+
+        let via_ref = MapKey::try_from_value(&kb, &Value::term(ref_tid));
+        let via_symbolref = MapKey::try_from_value(&kb, &Value::SymbolRef(c));
+        let via_nullary_fn = MapKey::try_from_value(&kb, &Value::term(fn_tid));
+        assert_eq!(via_ref, Some(MapKey::Ref(c)));
+        assert_eq!(via_symbolref, via_ref);
+        assert_eq!(
+            via_nullary_fn, via_ref,
+            "a nullary constructor names its symbol however it is spelled",
+        );
+
+        // One slot, reachable through the third spelling.
+        let mut body = MapBody::new();
+        body.insert(via_ref.clone().unwrap(), Value::Int(4));
+        assert_eq!(
+            body.get(&via_nullary_fn.unwrap()).and_then(|v| match v {
+                Value::Int(n) => Some(*n),
+                _ => None,
+            }),
+            Some(4),
+        );
+
+        // `Ident(c)` is a DIFFERENT term and stays a different key — the merge the
+        // by-spelling match was protecting against is still protected.
+        let ident_tid = kb.alloc(Term::Ident(c));
+        assert_eq!(
+            MapKey::try_from_value(&kb, &Value::term(ident_tid)),
+            Some(MapKey::Term(ident_tid)),
+            "an unresolved identifier is not the resolved name",
+        );
+
+        // AND THE GATE: for a NON-constructor the two spellings are not one name.
+        // `functor_view_head` rewrites a nullary `Fn` only for a registered
+        // constructor, because for a sort `Ref(s)` vs `Fn{s}` IS WI-391's
+        // wildcard-vs-concrete type distinction. Asserted so the widening's
+        // boundary is driven rather than assumed — this is the case that would
+        // silently merge if the `is_constructor_symbol` gate were dropped.
+        let sort = kb.intern("demo.Color");
+        assert!(!kb.is_constructor_symbol(sort), "premise: a sort is not a constructor");
+        let sort_fn = kb.resolve_qualified_name_term("demo.Color");
+        let sort_ref = kb.alloc(Term::Ref(sort));
+        assert_eq!(
+            MapKey::try_from_value(&kb, &Value::term(sort_fn)),
+            Some(MapKey::Term(sort_fn)),
+        );
+        assert_ne!(
+            MapKey::try_from_value(&kb, &Value::term(sort_fn)),
+            MapKey::try_from_value(&kb, &Value::term(sort_ref)),
+            "a sort's nullary application and its bare Ref are not one name",
+        );
+
+        // A `Term::Const` key takes the no-head fast path and must key identically
+        // to what the view would have said.
+        let str_tid = kb.alloc(Term::Const(crate::kb::term::Literal::String("s".into())));
+        assert_eq!(
+            MapKey::try_from_value(&kb, &Value::term(str_tid)),
+            Some(MapKey::Term(str_tid)),
         );
     }
 }

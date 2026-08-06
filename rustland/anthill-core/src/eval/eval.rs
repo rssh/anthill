@@ -2924,6 +2924,10 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
 /// the reflect host bridge (`anthill-stl`) reads an entity reference's functor
 /// through the SAME single source the interpreter uses (WI-551), instead of a
 /// hand-maintained twin.
+/// WI-1024: this is the fifth by-carrier list of the class WI-1023 removed, and
+/// `ViewHead::functor_sym` is the question it asks. Not converted there because
+/// the direction is opposite — those four fail open, this one would make values
+/// START naming a carrier sort, which is a dispatch change with its own controls.
 pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     match value {
         Value::Entity { functor, .. } => Some(*functor),

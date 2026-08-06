@@ -428,6 +428,16 @@ Three consequences worth having written down:
   `Value::Term`". This is the same rule as the `MapKey` canonicalization and the
   `TermPrinter::write_symbol_ref` one — two carriers of one symbol may not key
   differently in a store key — applied to the fact store.
+
+  **The test is `Value::lowers_to_leaf_term`, and its set is `alloc_from_value`'s
+  own leaf arms** (WI-1023): `Int` / `BigInt` / `Float` / `Bool` / `Str` / `Term` /
+  `Var` / `SymbolRef`. The rule above is per-CARRIER, not per-variant, so a
+  hand-written list at the caller drifts; this one is stated once, next to the
+  lowering it describes, and exhaustively (no `_` arm), so a new `Value` variant is
+  a compile error at both. It stops at LEAF and not at "what lowers": a
+  `Value::Entity` child lowers too, but to an application, and admitting it would
+  make `fn_value`'s `Err` reachable (`OverArityConstructor`) — demoting a
+  broken-invariant panic to a real failure mode.
 - **The lossy-key guard moved from the root to the whole key.** The old rule
   rejected a key whose ROOT reified to `Term::Bottom`; the new one rejects any key
   containing a payload-free `Opaque` token (`GoalKey::is_opaque_free`, sharing its
@@ -484,6 +494,43 @@ keys. The only delta is 1695 → 2353 tokens across the 23 `field_access` calls,
 carry their bracket now. Nothing separates that did not before, because
 `field_access` supplies the projected name twice and the positional copy already
 distinguished them.
+
+## Delivered — answer dedup: two guards, two domains (WI-1023)
+
+`is_duplicate_projection` keys a solution by the nearest ancestor ChoicePoint's
+goal fingerprinted through σ, and skips dedup when that key cannot be trusted.
+Over-dedup **drops an answer**, so both guards are the conservative side of their
+question — a skipped dedup only yields a duplicate.
+
+- **σ-wide** — any binding that BEARS an opaque anywhere inside it
+  (`TermView::bears_opaque`). Scanned over ALL of σ because that is the half the key
+  cannot reach: two solutions distinguished only by an opaque binding the goal
+  never mentions fingerprint identically. This is §"Lineage-preserving bindings"'
+  external row. **Transitive, not a head test** — a `Tuple{[Cell]}` presents
+  `Functor{None,1,0}`, so a shallow scan waves it through while its key is
+  `[Open(None,1,0), Opaque]` for every cell.
+- **the goal itself** — `GoalKey::is_opaque_free()`, the same predicate and the
+  same reason as `value_fact_dedup_key`. Its unique domain is an opaque reachable
+  from the goal with NO σ binding to scan — a value spliced straight into the goal
+  — which no σ scan, however deep, can see.
+
+`TermIdView` overrides `bears_opaque` to a constant `false`: a hash-consed term
+tree holds no opaque carrier, and `ViewHead` owns its `Literal` by value, so asking
+`head()` per σ binding would clone a `String`/`BigInt` payload only to drop it.
+
+**The by-carrier allow-list this replaces was a workaround for a blindness that no
+longer exists.** WI-038 wrote it when the key was `kb.reify` to a `TermId`, which
+read σ through `resolve_with_term` and could not see a non-`Term` binding at all,
+so every external row reified to one id. WI-348's `goal_fingerprint` reads any
+carrier through `TermView`; what remains is exactly `Opaque`, and the key reports
+it. By WI-1023 the list had drifted three ways, all fail-open: `Requirement` /
+`OpRef` were structural from WI-1019, and `Value::Var` fingerprints as a `Var`
+token, yet all three switched dedup off.
+
+Corpus effect, measured over the whole workspace: **29** solutions carry a
+newly-admitted binding, **0** of them newly dropped, **0** hits on the transitive
+guard. Both directions are therefore driven, not measured —
+`wi1023_structural_carrier_test`.
 
 ## References
 
