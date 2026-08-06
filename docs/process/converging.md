@@ -41,6 +41,70 @@ is smaller than raw creation/closure (1.07, §3).
 
 Lifetime: 861 close events, 539 co-filed → **b = 0.63**.
 
+#### Re-measured 2026-08-06 — the rise is real, the breach was not a step
+
+§4 q4 asked whether W31's 1.04 was signal or noise. It was signal, but not a level shift: W32
+comes in **below 1 and above every prior block**. The trend line, not the breach, is the finding.
+
+| block | closed | spinoffs | **b** | 1/(1−b) |
+|---|---|---|---|---|
+| W20–W23 | 163 | 73 | 0.45 | 1.8 |
+| W24–W27 | 284 | 146 | 0.51 | 2.0 |
+| W28–W31 | 281 | 196 | 0.70 | 3.3 |
+| W31 alone | 74 | 77 | 1.04 | — |
+| **W32 (Aug 3–6, partial)** | **60** | **53** | **0.88** | **8.3** |
+
+Lifetime now: 921 close events, 592 co-filed → **b = 0.643** (was 0.63).
+
+The four blocks above W32 reproduce the 2026-08-02 figures exactly, so the series is comparable and
+the re-run is a continuation rather than a second method. Per day, W32 is noisy around a high mean —
+Aug 3 **1.12**, Aug 4 0.65, Aug 5 **1.00**, Aug 6 0.71 — which is what a process sitting near
+criticality looks like: individual days breach, the window does not. At b=0.88 each ticket implies
+**8.3** descendants, against 3.3 one block earlier. The gate in §1 is further away than it was, and
+the marginal cost of the drift is now steep: b=0.90 gives 10, b=0.95 gives 20.
+
+**b DOES NOT DISTINGUISH A SPINOFF FIXED THE SAME HOUR FROM ONE PARKED FOR A MONTH**, and that gap
+matters more as b rises. It counts filings against closures in a window; a follow-up filed and
+delivered in the same session still lands in the numerator, exactly like one that joins the parked
+set. A delivery that finds three neighbours and *fixes* them scores b=3.0 for that commit if the
+three are filed first, and b=0 if they are simply fixed — same work, same day, same code. So b as
+defined measures **filing behaviour**, not accumulating debt; §3.4's 82–94% absorption is what says
+the debt is not accumulating. Pairing b with a median time-to-close for spinoffs would separate the
+two, and is the cheaper half of §4 q3's "how would we tell the difference".
+
+**A worked example, from the delivery that prompted this re-measurement (WI-1028, 2026-08-06).**
+Converting the loader's scope spine to `ScopeId` required reading every scope-carrying site. That
+reading surfaced three defects — a predicate reading a constructor flag through a term encoding, an
+ambiguous `requires` base standing the absolute rung up as if the ambiguity were a miss, and a
+per-member symbol re-derivation. **None was created by the ticket; all three were already true, and
+the delivery only made them visible.** That is §3.5's mechanism seen from the inside: discovery
+scales with how much of the subsystem a change has to read, not with how much it breaks.
+
+The filings, though, were not forced by that. Two of the three fixes were 6 and ~8 lines; the third
+turned out to be **no fix at all** (below). Each ticket *description* was longer than its diff. That
+suggests a threshold cheaper than judgement:
+
+> **If the ticket text would be longer than the diff, the ticket is the wrong container — fix it.**
+
+It would have caught all three. Note the economics run against the intuition: a ticket good enough
+to action later must explain itself to a stranger, so for small items filing costs *more* than
+fixing. Two forces push the other way and are worth naming because both are fixable — review is a
+**pump** (four agents over one diff returned ~30 findings; whatever is not applied wants somewhere
+to go, and "apply" and "file" are not held to the same size test), and for an agent, filing is
+defence against losing the finding at end-of-session, which argues for fixing *now* since code is
+the durable form. All three closed the same day.
+
+**And the third closed by being MEASURED, which is the outcome a ticket makes least likely.** It was
+filed as a perf item: ~750 `format!` + string-keyed `resolve_symbol` per stdlib load, hoistable, and
+the reviewer's note said it "dwarfs" everything else in the diff. True and irrelevant — it dwarfed a
+smaller negligible thing. Measured in release at n=25: median 0.0411s with the hoist against 0.0397s
+without, indistinguishable, and the arithmetic agrees at ~0.4% of a 40ms load. The hoist was written,
+measured, and reverted; what landed is a doc comment at the site recording the numbers so the next
+reader does not re-derive it from an operation count. A relative comparison between two negligible
+costs reads as significance — **"dwarfs X" is only a finding once X is known to matter.** Had this
+sat as an open ticket it would have read as pending work indefinitely, since the operation count is
+persuasive and nobody re-measures a backlog item.
+
 ### 3.2 The multiplier lives in a minority of deliveries
 
 Over 743 commits that closed at least one item:
@@ -135,9 +199,12 @@ Four gates are stated in prose only, invisible to the tracker:
    difference?** A pre-registered prediction (e.g. "b for the resolve cluster falls below 0.4 in the two
    weeks after the pass") is the cheapest test.
 
-4. **Is W31 signal or noise?** One week, 74 closes. The 4-week blocks (0.45 → 0.51 → 0.70) are the robust
-   part; b=1.04 is one point. Re-measure before acting on it. Note the last window is also biased low on
-   closes — W31-filed tickets that close in W32 are not yet counted.
+4. ~~**Is W31 signal or noise?**~~ **ANSWERED 2026-08-06 (§3.1).** Signal, but not a level shift: W32
+   is 0.88 — below 1, above every prior block. The series is 0.45 → 0.51 → 0.70 → 0.88 and the
+   question is no longer "was the breach real" but "what bends the trend". Successor question:
+   **should the gate be on b at all, or on b paired with spinoff time-to-close?** b cannot tell a
+   follow-up fixed the same hour from one parked for a month (§3.1), and as b rises that is most of
+   what one wants to know. Caveat carried forward: W32 is 4 days and partial.
 
 5. **Encode the four prose gates?** (§3.6) Adding the WI-294 and WI-128 edges makes `next` and the Open
    count honest — they currently report those as ready. Cost is near zero. Objection: WI-128's

@@ -46,6 +46,24 @@ impl Symbol {
 /// constructor and it takes a `Symbol`. "This raw is a scope" stopped being a
 /// promise each caller carries.
 ///
+/// AND THE LOADER CARRIES IT, not just the table (WI-1028). WI-984 typed the
+/// `SymbolTable` API but left the loader holding scope TERMS and projecting back at
+/// 89 sites; the `ScopePass` spine, `ScopeSite.enclosing`, `Loader::current_scope`
+/// and the scope finders are all `ScopeId` now, so a value in a scope position names
+/// a scope AT THE WRITE. What that buys is not throughput (measured at ~0.5% of a
+/// debug load, immaterial) — it is that the derivation was hiding a decision:
+/// `load_provides_block` assigned an APPLIED spec term as its scope, and "what scope
+/// does that name?" surfaced only when the projection aborted, 22 reads later.
+///
+/// GOING BACK THE OTHER WAY IS NOT FREE, and the rule reads as if it were.
+/// `make_name_term_from_sym(scope.owner())` is the same call that built the term the
+/// spine used to carry, so it yields the same hash-consed `TermId` — but it routes
+/// through the WI-511 canon, which spells a CONSTRUCTOR owner `Term::Ref` and every
+/// other owner `Term::Fn`. A caller that then matches the term's SHAPE is reading
+/// `is_constructor_symbol` without naming it — which is what `load::is_sort_scope`
+/// did until WI-1029, and what WI-926 leans on. Derive the term only to PUT it where
+/// a term goes; to ask a question about the scope, ask the owner.
+///
 /// WHAT IT DOES NOT CLOSE, stated rather than implied. TWO HOLES, both about
 /// PROVENANCE — nothing here says WHERE the owning symbol came from.
 ///

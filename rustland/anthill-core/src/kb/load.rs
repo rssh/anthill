@@ -2010,7 +2010,7 @@ impl std::error::Error for LoadError {}
 /// ordering or the cycle deadlocks. Pinned by
 /// `wi321_cross_file_mutual_recursion_test`.
 pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
-    let global = kb.make_name_term("_global");
+    let global = kb.global_scope();
 
     // Sub-pass 1: define all names
     //
@@ -2043,8 +2043,7 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
         // sort body) enter the scope the file's top level IS — `_global`, the
         // same scope its top-level `sort` / `fact` / `rule` are defined in.
         // Processed exactly like a namespace body's, one nesting level out.
-        let global_scope = kb.scope_id_of(global);
-        process_imports(kb, &file.symbols, &file.imports, global_scope, &mut file_errors, &mut pending, file_idx);
+        process_imports(kb, &file.symbols, &file.imports, global, &mut file_errors, &mut pending, file_idx);
         let mut pass = ImportPass {
             kb,
             parse_sym: &file.symbols,
@@ -2296,12 +2295,12 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
 /// Only a SORT body collapses. A namespace of the same name
 /// (`namespace Project { entity Project(…) }`) does not: §6.3's equivalence is
 /// between an entity and a single-constructor SORT, and a namespace is neither.
-fn eponymous_sort_symbol(kb: &KnowledgeBase, scope: TermId, name: &str, short: &str) -> Option<Symbol> {
+fn eponymous_sort_symbol(kb: &KnowledgeBase, scope: ScopeId, name: &str, short: &str) -> Option<Symbol> {
     if name != short || !is_sort_scope(kb, scope) {
         return None;
     }
-    let Term::Fn { functor, .. } = kb.get_term(scope) else { return None };
-    (kb.local_name_of(*functor) == short).then_some(*functor)
+    let owner = scope.owner();
+    (kb.local_name_of(owner) == short).then_some(owner)
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -2316,16 +2315,34 @@ fn sort_decl_kinds(kind: SortDeclKind) -> (SortKind, &'static str) {
     }
 }
 
-fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
-    if let Term::Fn { functor, pos_args, named_args } = kb.get_term(scope) {
-        if pos_args.is_empty() && named_args.is_empty() {
-            if kb.symbols.get(*functor).has_kind(SymbolKind::Sort) {
-                return true;
-            }
-        }
-    }
-    false
+/// Is `scope` a SORT's body — as opposed to a namespace, an operation frame or
+/// `_global`?
+///
+/// WI-1029 — ASKED OF THE OWNER, because that is what the question is about. This
+/// used to take the scope's name TERM and match `Term::Fn{f,[],[]}` + `has_kind(f,
+/// Sort)`, which is the same predicate written as a pattern-match on an ENCODING:
+/// [`KnowledgeBase::alloc`] rewrites a nullary `Fn` to `Ref` exactly when the functor
+/// is a registered constructor (WI-511), and the reader matched only `Fn` — so
+/// "the term is spelled `Fn`" WAS "the owner is not a constructor", spelled
+/// indirectly. Reading it off the symbol is the same answer with the referent named.
+///
+/// THE CONSTRUCTOR CLAUSE IS LOAD-BEARING, not defensive: §6.3 / WI-926 declines to
+/// mark an eponymous constructor precisely so `sort P { entity P(…) }` keeps
+/// answering `true` here. Dropping it would make an eponymous sort's own body stop
+/// reading as a sort body.
+///
+/// WI-1028's own text told the next reader NOT to convert this ("WI-983's feedback
+/// rules those out"). That citation does not hold: WI-983's criterion is "each needs
+/// a term BECAUSE A TERM IS WHAT GOES IN THAT POSITION", and it names four sites that
+/// all PUT a term somewhere. This one returns `bool` and puts no term anywhere. The
+/// generalization entered at WI-984's delivery record and was restated as an
+/// instruction without being re-checked.
+fn is_sort_scope(kb: &KnowledgeBase, scope: ScopeId) -> bool {
+    let owner = scope.owner();
+    !kb.is_constructor_symbol(owner) && kb.has_kind(owner, SymbolKind::Sort)
 }
+
+
 
 /// For a dotted name like `"a.b.C"`, create implicit intermediate namespaces
 /// `"a"` and `"a.b"` (if they don't already exist), returning the short name
@@ -2456,12 +2473,12 @@ fn scan_operation_params(
     enclosing_scope: ScopeId,
     prefix: &str,
 ) {
-    // Allocate the scope term unconditionally so paramless ops still
-    // resolve `result`.
-    let op_term = kb.make_name_term_from_sym(op_sym);
-    // Loop-invariant: the op frame's scope, derived once for the param,
-    // type-param and result mints below.
-    let op_scope = kb.scope_id_of(op_term);
+    // Unconditional, so paramless ops still resolve `result`. Loop-invariant: the
+    // op frame's scope, minted once for the param, type-param and result mints
+    // below. WI-1028 — from the op SYMBOL; it used to round-trip through the op's
+    // nullary name term, whose only consumer was the projection straight back to
+    // its own functor.
+    let op_scope = kb.symbols.scope_id(op_sym);
     kb.symbols.add_parent(op_scope, ScopeInclusion {
         parent_scope: enclosing_scope,
         is_enclosing: true,
@@ -3046,7 +3063,7 @@ struct ScopeSite<'a> {
     /// The ENCLOSING scope's qualified path, the same one `at_item` receives.
     prefix: &'a str,
     /// The scope the declaration is written in.
-    enclosing: TermId,
+    enclosing: ScopeId,
 }
 
 /// One pass over the scope spine.
@@ -3055,6 +3072,14 @@ struct ScopeSite<'a> {
 /// scope ([`Self::enter_scope`], which yields the scope to recurse into, and
 /// [`Self::exit_scope`], which runs after that subtree) and at every other item
 /// ([`Self::at_item`], in the scope that ENCLOSES it).
+///
+/// WI-1028 — A SCOPE IS A [`ScopeId`] THE WHOLE WAY DOWN, never the scope TERM; see
+/// [`ScopeId`] for what that buys and `load_provides_block` for the incident that
+/// paid for it. TWO sites want the scope's own TERM, both because a term is what
+/// goes in that position: the namespace FACT's subject ([`Loader::enter_namespace`])
+/// and the sort's description-fact subject ([`Loader::enter_sort_with_body`]). No
+/// PREDICATE derives one — WI-1029 retired the last of those, which was reading
+/// `is_constructor_symbol` through the WI-511 canon by matching the term's shape.
 trait ScopePass {
     /// The parse-time symbol table of the file being walked — names are file-local.
     fn parse_symbols(&self) -> &crate::intern::SymbolTable;
@@ -3062,17 +3087,17 @@ trait ScopePass {
     /// The child scope to recurse into, or `None` to abandon the subtree — which
     /// only ever happens because the scope could not be found, and
     /// [`lookup_defined`] has already reported that.
-    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId>;
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId>;
 
     /// Runs after the subtree, with `scope` still the child. The default is the
     /// three scan sub-passes' answer: nothing to do. The two loader-phase passes
     /// override it — [`DeclarePass`] to restore `current_scope`, [`LoadPass`]
     /// for that plus the per-sort emission that must read names the body has
     /// already loaded.
-    fn exit_scope(&mut self, _site: &ScopeSite<'_>, _scope: TermId) {}
+    fn exit_scope(&mut self, _site: &ScopeSite<'_>, _scope: ScopeId) {}
 
     /// Every item that does NOT open a scope, with the scope and prefix enclosing it.
-    fn at_item(&mut self, item: &Item, scope: TermId, prefix: &str);
+    fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str);
 }
 
 /// Walk `items` for one pass, starting from the scope `items` live in.
@@ -3080,14 +3105,14 @@ trait ScopePass {
 /// `prefix` is not a parameter: a walk always starts at the qualified path of
 /// `root`, and every entry point starts at the file's top level, whose path is
 /// empty. One fewer thing a pass can start differently from the others.
-fn walk_scopes<P: ScopePass + ?Sized>(pass: &mut P, items: &[Item], root: TermId) {
+fn walk_scopes<P: ScopePass + ?Sized>(pass: &mut P, items: &[Item], root: ScopeId) {
     walk_scope_items(pass, items, root, "");
 }
 
 fn walk_scope_items<P: ScopePass + ?Sized>(
     pass: &mut P,
     items: &[Item],
-    scope: TermId,
+    scope: ScopeId,
     prefix: &str,
 ) {
     for item in items {
@@ -3143,10 +3168,10 @@ fn lookup_defined(
 /// A miss here abandons the whole subtree: its imports unwired, its rule heads
 /// unregistered, its facts and rules never loaded.
 fn lookup_scope(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     site: &ScopeSite<'_>,
     errors: &mut Vec<LoadError>,
-) -> Option<TermId> {
+) -> Option<ScopeId> {
     let sym = lookup_defined(
         kb,
         site.qualified,
@@ -3154,7 +3179,7 @@ fn lookup_scope(
         "the declarations inside it cannot be loaded",
         errors,
     )?;
-    Some(kb.make_name_term_from_sym(sym))
+    Some(kb.symbols.scope_id(sym))
 }
 
 // ── Sub-pass 1: define names ───────────────────────────────────────────────
@@ -3173,7 +3198,7 @@ impl ScopePass for DefinePass<'_> {
         self.parse_sym
     }
 
-    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
         // WI-992: a DOTTED name declares into the namespace it names, not into
         // `site.enclosing` under its whole spelling. `scope` stays the enclosing
         // scope — the one the TYPE-PARAM marker is added to below — because that
@@ -3183,7 +3208,7 @@ impl ScopePass for DefinePass<'_> {
         let scope = site.enclosing;
         let qualified = site.qualified;
         let (short, actual_scope) =
-            ensure_intermediate_namespaces(kb, site.written, kb.scope_id_of(scope), site.prefix);
+            ensure_intermediate_namespaces(kb, site.written, scope, site.prefix);
         match site.decl {
             ScopeDecl::Sort(s) => {
                 // WI-997 / 059 R1 — recorded BEFORE the reuse-or-define split below,
@@ -3223,14 +3248,10 @@ impl ScopePass for DefinePass<'_> {
                 // below already carries, for exactly the same two-arm shape.
                 kb.symbols.add_kind(sym, SymbolKind::Sort);
                 record_internal(kb, sym, s.visibility);
-                let sort_term = kb.alloc(Term::Fn {
-                    functor: sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::new(),
-                });
+                let sort_scope = kb.symbols.scope_id(sym);
                 if is_new {
                     // Implicit parent: the enclosing scope is visible from within the sort
-                    kb.symbols.add_parent(kb.scope_id_of(sort_term), ScopeInclusion {
+                    kb.symbols.add_parent(sort_scope, ScopeInclusion {
                         parent_scope: actual_scope,
                         is_enclosing: true,
                     });
@@ -3257,7 +3278,7 @@ impl ScopePass for DefinePass<'_> {
                 for item in &s.items {
                     if let Item::Entity(e) = item {
                         let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
-                        kb.symbols.add_exposed(kb.scope_id_of(sort_term), vshort);
+                        kb.symbols.add_exposed(sort_scope, vshort);
                         has_variant = true;
                     }
                 }
@@ -3288,7 +3309,7 @@ impl ScopePass for DefinePass<'_> {
                 // link is re-offered on every reload.
                 if has_variant {
                     kb.symbols.add_parent(actual_scope, ScopeInclusion {
-                        parent_scope: kb.scope_id_of(sort_term),
+                        parent_scope: sort_scope,
                         is_enclosing: false,
                     });
                 }
@@ -3299,65 +3320,52 @@ impl ScopePass for DefinePass<'_> {
                 // SortAlias → Var backing var is emitted in `load_sort_with_body`).
                 // An UNMARKED `sort F { … }` stays a concrete nested sort.
                 if s.is_type_param && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(kb.scope_id_of(scope), &short);
+                    kb.symbols.add_type_param(scope, &short);
                 }
-                Some(sort_term)
+                Some(sort_scope)
             }
             ScopeDecl::Namespace(_) => {
                 // Reuse existing namespace symbol if already defined in the same scope
                 // (multiple files can contribute items to the same namespace).
                 let existing =
                     existing_namespace_in_scope(kb, qualified, actual_scope);
-                let (_sym, ns_term) = if let Some(sym) = existing {
-                    let ns_term = kb.alloc(Term::Fn {
-                        functor: sym,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::new(),
-                    });
-                    (sym, ns_term)
+                let ns_scope = if let Some(sym) = existing {
+                    kb.symbols.scope_id(sym)
                 } else {
                     let sym = kb.symbols.define(&short, qualified, SymbolKind::Namespace, actual_scope);
-                    let ns_term = kb.alloc(Term::Fn {
-                        functor: sym,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::new(),
-                    });
+                    let ns_scope = kb.symbols.scope_id(sym);
                     // Implicit parent: the enclosing scope is visible from within the namespace
-                    kb.symbols.add_parent(kb.scope_id_of(ns_term), ScopeInclusion {
+                    kb.symbols.add_parent(ns_scope, ScopeInclusion {
                         parent_scope: actual_scope,
                         is_enclosing: true,
                     });
-                    (sym, ns_term)
+                    ns_scope
                 };
                 // Model C / job 2 (proposal 044): namespace members are visible
                 // by default; the `export` statement was removed (WI-291).
-                Some(ns_term)
+                Some(ns_scope)
             }
         }
     }
 
-    fn at_item(&mut self, item: &Item, scope: TermId, prefix: &str) {
+    fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str) {
         let (kb, parse_sym, ledger) = (&mut *self.kb, self.parse_sym, &mut *self.ledger);
         let file_idx = self.file_idx;
-        // ONE derivation for the arms below. `scope` itself stays a TERM: the
-        // `Item::Entity` arm hands it to `is_sort_scope`/`eponymous_sort_symbol`,
-        // which read it AS a term — the two-role site WI-983's feedback leaves alone.
-        let scope_id = kb.scope_id_of(scope);
         match item {
             Item::AbstractSort(s) => {
                 let name = join_segments(parse_sym, &s.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope_id, prefix);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 let abstract_sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope);
                 record_internal(kb, abstract_sym, s.visibility);
                 // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(scope_id, &short);
+                    kb.symbols.add_type_param(scope, &short);
                 }
             }
             Item::Entity(e) => {
                 let name = join_segments(parse_sym, &e.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope_id, prefix);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 // WI-997 / 059 R1 — an `entity` is a TYPE declaration (§6.3: a
                 // free-standing one IS a single-constructor sort), so it shares the
@@ -3379,6 +3387,18 @@ impl ScopePass for DefinePass<'_> {
                 // it a constructor) must not be able to disagree — a divergence would
                 // mark the SORT's symbol, which is the failure the WI-926 note below
                 // describes.
+                // Decided ONCE, like `eponymous` below and for the same reason: the
+                // readings of "is this a sort body" in this arm must not be able to
+                // disagree.
+                //
+                // WORTH NAMING, because the answer can change under this arm's own
+                // feet: [`is_sort_scope`] reads `is_constructor_symbol(scope.owner())`,
+                // and `mark_constructor_symbol` runs further down. It marks the ENTITY,
+                // never `scope.owner()` — the eponymous case, the only one where those
+                // coincide, is gated on `eponymous.is_none()` — so no scope owner is
+                // ever marked while the walk is inside it. Marking one would stop this
+                // sort body from reading as one (§6.3 / WI-926).
+                let in_sort_body = is_sort_scope(kb, scope);
                 let eponymous = eponymous_sort_symbol(kb, scope, &name, &short);
                 let entity_sym = if let Some(sym) = eponymous {
                     sym
@@ -3415,7 +3435,7 @@ impl ScopePass for DefinePass<'_> {
                 // here where the `entity` keyword actually is.
                 kb.symbols.add_kind(entity_sym, SymbolKind::Entity);
                 // …and a free-standing one is its own single-constructor sort (§6.3).
-                if eponymous.is_none() && !is_sort_scope(kb, scope) {
+                if eponymous.is_none() && !in_sort_body {
                     kb.symbols.add_kind(entity_sym, SymbolKind::Sort);
                 }
                 record_internal(kb, entity_sym, e.visibility);
@@ -3436,28 +3456,28 @@ impl ScopePass for DefinePass<'_> {
                 // sort-body load.
                 //
                 // WI-926: an EPONYMOUS constructor is deliberately NOT marked. It
-                // is not a constructor OF something — it IS the sort, so there is
-                // no parent/child relation to record, and marking it would flip
-                // the sort's own nullary term through the WI-511
-                // `Fn{c,[],[]}`→`Ref(c)` canon, which [`is_sort_scope`] matches
-                // only in its `Fn` spelling.
+                // is not a constructor OF something — it IS the sort, so there is no
+                // parent/child relation to record.
                 //
-                // WI-984 RETIRED THE OTHER HALF OF THIS REASON. It also said that
-                // term is the sort's SCOPE KEY, keyed on its `.raw()`; scopes are
-                // `ScopeId`s now, minted from the owning SYMBOL through
-                // `name_term_sym`, which reads `Fn` and `Ref` alike — so the canon
-                // no longer touches scope keying at all. `is_sort_scope` is the one
-                // mechanism left holding this decision up. The "is this a
-                // constructor application" question is answered for this shape the
-                // same way it already is for a free-standing `entity` (WI-490):
-                // by its registered field schema.
-                if is_sort_scope(kb, scope) && eponymous.is_none() {
+                // AND MARKING IT WOULD BREAK ITS OWN BODY: [`is_sort_scope`] is
+                // false for a constructor-owned scope, so `sort P { entity P(…) }`
+                // would stop reading as a sort body from the inside. WI-926 stated
+                // that through the WI-511 `Fn`→`Ref` canon, because the predicate
+                // read the term's spelling; WI-1029 made it read
+                // `is_constructor_symbol` directly, so the dependency is now the
+                // plain sentence above rather than a fact about term shapes. (The
+                // other half of WI-926's original reason — that the term was the
+                // sort's SCOPE KEY — WI-984 retired: a scope is keyed on the owning
+                // SYMBOL.) The "is this a constructor application" question is
+                // answered for this shape the same way it already is for a
+                // free-standing `entity` (WI-490): by its registered field schema.
+                if in_sort_body && eponymous.is_none() {
                     kb.mark_constructor_symbol(entity_sym);
                 }
             }
             Item::Operation(o) => {
                 let name = join_segments(parse_sym, &o.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope_id, prefix);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 let op_sym = kb.symbols.define(&short, &qualified, SymbolKind::Operation, actual_scope);
                 record_internal(kb, op_sym, o.visibility);
@@ -3470,7 +3490,7 @@ impl ScopePass for DefinePass<'_> {
                 // type-params to scan. The declared type + body are recorded in
                 // the load phase (`load_const`).
                 let name = join_segments(parse_sym, &c.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope_id, prefix);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 let const_sym = kb.symbols.define(&short, &qualified, SymbolKind::Const, actual_scope);
                 record_internal(kb, const_sym, c.visibility);
@@ -3479,18 +3499,18 @@ impl ScopePass for DefinePass<'_> {
                 for op in &ob.entries {
                     let name = join_segments(parse_sym, &op.name.segments);
                     let qualified = make_qualified(prefix, &name);
-                    let op_sym = kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope_id);
+                    let op_sym = kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope);
                     record_internal(kb, op_sym, op.visibility);
-                    let enclosing = scope_id;
+                    let enclosing = scope;
                     scan_operation_params(kb, parse_sym, op, op_sym, enclosing, &qualified);
                 }
             }
             Item::Rule(r) => {
-                scan_rule(kb, r, parse_sym, scope_id, prefix);
+                scan_rule(kb, r, parse_sym, scope, prefix);
             }
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    scan_rule(kb, rule, parse_sym, scope_id, prefix);
+                    scan_rule(kb, rule, parse_sym, scope, prefix);
                 }
             }
             Item::Constraint(_) => {
@@ -3520,13 +3540,13 @@ impl ScopePass for ImportPass<'_> {
         self.parse_sym
     }
 
-    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
         let scope = lookup_scope(self.kb, site, self.errors)?;
         process_imports(
             self.kb,
             self.parse_sym,
             site.decl.imports(),
-            self.kb.scope_id_of(scope),
+            scope,
             self.errors,
             self.pending,
             self.file_idx,
@@ -3534,7 +3554,7 @@ impl ScopePass for ImportPass<'_> {
         Some(scope)
     }
 
-    fn at_item(&mut self, item: &Item, scope: TermId, _prefix: &str) {
+    fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
         let (kb, parse_sym) = (&mut *self.kb, self.parse_sym);
         match item {
             Item::RequiresDecl(r) => {
@@ -3551,13 +3571,34 @@ impl ScopePass for ImportPass<'_> {
                 // canonical name the skip must be explicit — matching every other subsystem's
                 // EffectsRuntime exemption (WI-703).
                 if req_sort_name != "anthill.prelude.EffectsRuntime" {
-                    // Use scope-aware resolution first (handles imported/aliased names),
-                    // falling back to qualified-name lookup.
-                    let req_scope = resolve_name_to_scope(kb, &req_sort_name, scope)
-                        .or_else(|| find_scope_by_name(kb, &req_sort_name));
-                    if let Some(req_scope) = req_scope {
-                        kb.symbols.add_parent(kb.scope_id_of(scope), ScopeInclusion {
-                            parent_scope: kb.scope_id_of(req_scope),
+                    // THE LADDER: scope-aware resolution (imports and aliases
+                    // included), then the absolute rung — `ResolveResult::or_else`, so
+                    // AN AMBIGUITY ENDS IT (§8.6) instead of standing the next rung up.
+                    //
+                    // WI-1030 — it used to collapse `Ambiguous` to `None` and fall
+                    // through on `Option::or_else`, which is the defect
+                    // `ResolveResult::or_else` exists to prevent (its own doc names
+                    // WI-917's site, "silently standing an ambiguity down as if it were
+                    // a miss"). DRIVEN: with `pa.Rival` and `pb.Rival` both wildcard-
+                    // imported and a third `Rival` at top level, `requires Rival` wired
+                    // THE TOP-LEVEL ONE — a sort nobody selected — and its members
+                    // became resolvable inside the requiring sort.
+                    //
+                    // The load already reported the ambiguity, so this was never
+                    // silent END TO END; what was silent is the ORDER. This wiring is
+                    // sub-pass 2 and the diagnostic is the load phase, and the loader
+                    // accumulates errors and keeps going — so sub-pass 3 and the whole
+                    // load phase resolved that scope's names against a spliced-in
+                    // stranger. One bad declaration corrupted the scope used to
+                    // diagnose the rest of itself.
+                    let resolved = kb.symbols.resolve_in_scope(&req_sort_name, scope)
+                        .or_else(|| match kb.try_resolve_symbol(&req_sort_name) {
+                            Some(sym) => ResolveResult::Found(sym),
+                            None => ResolveResult::NotFound,
+                        });
+                    if let ResolveResult::Found(sym) = resolved {
+                        kb.symbols.add_parent(scope, ScopeInclusion {
+                            parent_scope: kb.symbols.scope_id(sym),
                             is_enclosing: false,
                         });
                     }
@@ -3590,17 +3631,17 @@ impl ScopePass for RuleHeadPass<'_> {
         self.parse_sym
     }
 
-    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
         lookup_scope(self.kb, site, self.errors)
     }
 
-    fn at_item(&mut self, item: &Item, scope: TermId, prefix: &str) {
+    fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str) {
         let (kb, parse_sym, parse_terms) = (&mut *self.kb, self.parse_sym, self.parse_terms);
         match item {
-            Item::Rule(r) => scan_rule_goal(kb, r, parse_sym, parse_terms, kb.scope_id_of(scope), prefix),
+            Item::Rule(r) => scan_rule_goal(kb, r, parse_sym, parse_terms, scope, prefix),
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    scan_rule_goal(kb, rule, parse_sym, parse_terms, kb.scope_id_of(scope), prefix);
+                    scan_rule_goal(kb, rule, parse_sym, parse_terms, scope, prefix);
                 }
             }
             _ => {}
@@ -3627,30 +3668,14 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
     }
 }
 
-/// Resolve a name in the given scope context, returning a scope TermId.
-/// Uses the full scope-aware resolution chain (locals, imports, parents).
-fn resolve_name_to_scope(kb: &mut KnowledgeBase, name: &str, scope: TermId) -> Option<TermId> {
-    match kb.symbols.resolve_in_scope(name, kb.scope_id_of(scope)) {
-        crate::intern::ResolveResult::Found(sym) => {
-            Some(kb.alloc(Term::Fn {
-                functor: sym,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::new(),
-            }))
-        }
-        _ => None,
-    }
-}
-
-/// Find a scope TermId by looking up a qualified name in the symbol table,
-/// then reconstructing the nullary Fn term.
-fn find_scope_by_name(kb: &mut KnowledgeBase, qualified: &str) -> Option<TermId> {
+/// The scope a qualified name names, if the symbol table has that name at all.
+///
+/// WI-1028 — this used to reconstruct the nullary `Fn` term and hand THAT back as
+/// "the scope", so both callers that only wanted an existence test allocated a term
+/// to throw away, and the two that wanted a scope projected straight back out of it.
+fn find_scope_by_name(kb: &KnowledgeBase, qualified: &str) -> Option<ScopeId> {
     let sym = *kb.symbols.by_qualified_name.get(qualified)?;
-    Some(kb.alloc(Term::Fn {
-        functor: sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    }))
+    Some(kb.symbols.scope_id(sym))
 }
 
 /// Walk one level of nested scopes under `base_path` looking for a symbol
@@ -3763,14 +3788,13 @@ fn process_imports(
         // doesn't resolve at top level falls back to `anthill.prelude.<path>`.
         // Mirrors the global short-name visibility of post-WI-215 prelude
         // effect sorts (Modify, Error, Suspension, Branch, MatchFailed).
-        let path = if !raw_path.contains('.')
-            && kb.symbols.by_qualified_name.get(&raw_path).is_none()
-            && find_scope_by_name(kb, &raw_path).is_none()
-        {
+        // WI-1028 — ONE existence test, not two. Each of these used to ask
+        // `by_qualified_name` directly and then ask `find_scope_by_name`, which built
+        // a term off that same map hit; with the term gone the second conjunct is
+        // literally the first, `A && A` and `A || A`.
+        let path = if !raw_path.contains('.') && !kb.has_qualified_name(&raw_path) {
             let candidate = format!("anthill.prelude.{raw_path}");
-            if kb.symbols.by_qualified_name.contains_key(&candidate)
-                || find_scope_by_name(kb, &candidate).is_some()
-            {
+            if kb.has_qualified_name(&candidate) {
                 candidate
             } else {
                 raw_path
@@ -3793,7 +3817,7 @@ fn process_imports(
                 }
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
                     kb.symbols.add_parent(scope_id, ScopeInclusion {
-                        parent_scope: kb.scope_id_of(target_scope),
+                        parent_scope: target_scope,
                         is_enclosing: false,
                     });
                 } else if found.is_none() {
@@ -3834,7 +3858,7 @@ fn process_imports(
                     let original_sym = kb.symbols.by_qualified_name.get(&qualified).copied()
                         .or_else(|| {
                             base_scope.and_then(|bs| {
-                                match kb.symbols.resolve_in_scope(&short, kb.scope_id_of(bs)) {
+                                match kb.symbols.resolve_in_scope(&short, bs) {
                                     crate::intern::ResolveResult::Found(sym) => Some(sym),
                                     _ => None,
                                 }
@@ -3866,7 +3890,7 @@ fn process_imports(
             ImportKind::Wildcard => {
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
                     kb.symbols.add_parent(scope_id, ScopeInclusion {
-                        parent_scope: kb.scope_id_of(target_scope),
+                        parent_scope: target_scope,
                         is_enclosing: false,
                     });
                 } else {
@@ -4211,7 +4235,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    let list_scope = kb.scope_id_of(list_term);
+    let list_scope = kb.symbols.scope_id(list_sym);
     kb.symbols.add_parent(list_scope, ScopeInclusion {
         parent_scope: prelude_scope,
         is_enclosing: true,
@@ -4314,7 +4338,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    let option_scope = kb.scope_id_of(option_term);
+    let option_scope = kb.symbols.scope_id(option_sym);
     kb.symbols.add_parent(option_scope, ScopeInclusion {
         parent_scope: prelude_scope,
         is_enclosing: true,
@@ -5222,7 +5246,7 @@ fn declare_file_field_types(
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
 ) -> (SourceId, Vec<LoadError>) {
-    let global = kb.make_name_term("_global");
+    let global = kb.global_scope();
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, None);
     loader.declare_field_types(&parsed.items);
     let source_id = loader.source_id;
@@ -5238,7 +5262,7 @@ fn load_with_visited(
     loaded_paths: &mut HashSet<String>,
     source_id: SourceId,
 ) -> Result<LoadResult, Vec<LoadError>> {
-    let global = kb.make_name_term("_global");
+    let global = kb.global_scope();
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
     loader.load_items(&parsed.items);
     // WI-839: every honouring reader of the call-site bracket channel has now run,
@@ -8192,8 +8216,10 @@ struct Loader<'a> {
     // Map from parse-time VarId → KB VarId
     var_map: HashMap<u32, VarId>,
     errors: Vec<LoadError>,
-    // Current scope for scope-aware resolution
-    current_scope: TermId,
+    /// The scope this phase is currently resolving in (WI-1028). Was the scope
+    /// TERM, so every read projected back through `name_term_sym` — 20-odd times —
+    /// and an assignment that named no scope could not be caught at the write.
+    current_scope: ScopeId,
     // Cache: type param name → TermId (Var) per scope, so all references to T share the same Var
     /// Keyed by the SCOPE a type param was written in, not a raw (WI-984).
     type_param_vars: HashMap<(ScopeId, String), TermId>,
@@ -8520,7 +8546,7 @@ impl<'a> Loader<'a> {
         parsed: &'a ParsedFile,
         resolver: &'a dyn SourceResolver,
         loaded_paths: &'a mut HashSet<String>,
-        global_scope: TermId,
+        global_scope: ScopeId,
         source_id: Option<SourceId>,
     ) -> Self {
         // WI-745: register this file's real path + text so a whole-KB-pass error
@@ -8725,7 +8751,7 @@ impl<'a> Loader<'a> {
                 if binder_lead
                     && !bound.contains(name)
                     && !matches!(
-                        self.kb.symbols.resolve_in_scope(name, self.current_scope_id()),
+                        self.kb.symbols.resolve_in_scope(name, self.current_scope),
                         ResolveResult::Found(_)
                     )
                 {
@@ -8897,27 +8923,12 @@ impl<'a> Loader<'a> {
         new_sym
     }
 
-    /// WI-984 — the [`ScopeId`] the loader is currently resolving in. Derived
-    /// rather than carried: `current_scope` is the scope TERM (it is also a domain,
-    /// a fact argument and a `SortAlias` subject), and a second field holding the
-    /// same fact would have to be updated at each of its seven assignments or
-    /// silently disagree.
-    fn current_scope_id(&self) -> ScopeId {
-        self.kb.scope_id_of(self.current_scope)
-    }
-
     /// Human-readable name for the current scope (for error messages).
+    ///
+    /// WI-984 — the scope's OWNER, total. Was a `Term::Fn` match with an `_unknown`
+    /// arm for every other carrier.
     fn scope_display_name(&self) -> String {
-        // WI-984 — the scope's OWNER, total. Was a `Term::Fn` match with an
-        // `_unknown` arm for every other carrier, the same non-total query
-        // `declaring_scope_symbol` and `scope_qualified_name` carried.
-        //
-        // `current_scope` is a NAME TERM at every one of its seven assignments —
-        // and only just: `load_provides_block` used to assign the APPLIED spec term
-        // (`Stack[T = Int64]`), which this projection aborts on. That was the
-        // phantom-scope bug WI-984 exposed; see `wi984_param_provides_test`. Adding
-        // an eighth assignment means answering the same question there.
-        self.kb.local_name_of(self.current_scope_id().owner()).to_string()
+        self.kb.local_name_of(self.current_scope.owner()).to_string()
     }
 
     /// WI-369: if `name` (resolved while IGNORING the `internal` filter) names an
@@ -8926,7 +8937,7 @@ impl<'a> Loader<'a> {
     /// from a genuinely-unknown name, so they can emit a precise
     /// `ForbiddenInternalAccess` instead of a bare `UnresolvedName`.
     fn hidden_internal(&self, name: &str) -> Option<Symbol> {
-        let scope = self.current_scope_id();
+        let scope = self.current_scope;
         if let ResolveResult::Found(sym) =
             self.kb.symbols.resolve_in_scope_ignoring_internal(name, scope)
         {
@@ -9053,7 +9064,7 @@ impl<'a> Loader<'a> {
         if let Some(local) = self.lookup_local_name(name) {
             return local;
         }
-        let scope = self.current_scope_id();
+        let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
             // An ambiguity ENDS the ladder (kernel-language.md §8.6). This is the
@@ -9105,7 +9116,7 @@ impl<'a> Loader<'a> {
     /// and the rationale for both; this is only the binding of `kb` and `scope`, so no
     /// loader position can express the ladder differently by accident.
     fn resolve_dotted(&self, name: &str, vis: DottedVisibility) -> ResolveResult {
-        resolve_dotted_in_kb(self.kb, name, self.current_scope_id(), vis)
+        resolve_dotted_in_kb(self.kb, name, self.current_scope, vis)
     }
 
     /// THE DOTTED STEP for a position that HAS an error channel: the ladder, plus the two
@@ -9172,7 +9183,7 @@ impl<'a> Loader<'a> {
     /// here points at the use site instead of `Span::default()` (byte 0).
     fn remap_symbol_strict(&mut self, sym: Symbol, span: Span) -> Symbol {
         let name = self.parsed.symbols.local_name(sym);
-        let scope = self.current_scope_id();
+        let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
             ResolveResult::Ambiguous(candidates) => {
@@ -9210,7 +9221,7 @@ impl<'a> Loader<'a> {
         } else {
             join_segments(&self.parsed.symbols, &name.segments)
         };
-        let scope = self.current_scope_id();
+        let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(&lookup_name, scope) {
             ResolveResult::Found(resolved) => resolved,
             ResolveResult::Ambiguous(candidates) => {
@@ -10697,7 +10708,7 @@ impl<'a> Loader<'a> {
     fn qualified_name_resolves(&self, name: &str) -> bool {
         self.kb
             .symbols
-            .resolve_in_scope(name, self.current_scope_id())
+            .resolve_in_scope(name, self.current_scope)
             // WI-752: THE dotted ladder, read in the SAME order as every resolving
             // position. This gate used to rank the absolute rung FIRST while the
             // resolver it gates ranks it LAST — harmless for the boolean itself, but a
@@ -10747,7 +10758,7 @@ impl<'a> Loader<'a> {
     /// and the WI-280 field-access re-route ([`Self::field_access_root_is_value`]).
     fn dot_receiver_binder(&self, head: &str) -> Option<Symbol> {
         self.lookup_local_name(head).or_else(|| {
-            match self.kb.symbols.resolve_in_scope(head, self.current_scope_id()) {
+            match self.kb.symbols.resolve_in_scope(head, self.current_scope) {
                 ResolveResult::Found(s)
                     if self.kb.symbols.get(s).has_kind(SymbolKind::Param) => Some(s),
                 _ => None,
@@ -10989,7 +11000,7 @@ impl<'a> Loader<'a> {
     /// it reaches `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the
     /// name actually is.
     fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
-        let scope = self.current_scope_id();
+        let scope = self.current_scope;
         // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
         // now come from `resolve_dotted_in_kb` like everywhere else). Without the
         // absolute rung a root-shadowing declaration suppressed the RULE-REFERENCE
@@ -12098,7 +12109,7 @@ impl<'a> Loader<'a> {
             return kb_id;
         }
         if let ResolveResult::Found(sym) =
-            self.kb.symbols.resolve_in_scope(&name, self.current_scope_id())
+            self.kb.symbols.resolve_in_scope(&name, self.current_scope)
         {
             if self.kb.symbols.get(sym).has_kind(SymbolKind::Param) {
                 let kb_vid = self.kb.fresh_var(sym);
@@ -12265,13 +12276,13 @@ impl<'a> Loader<'a> {
             .filter(|t| matches!(kb.get_term(*t), Term::Var(_)))
     }
 
-    /// The DOMAIN of whatever is being loaded right now: the name of the
-    /// enclosing scope. `current_scope` is a namespace / sort TERM because that
-    /// is what keys the symbol table; a rule's domain is that scope's `Symbol`.
+    /// The DOMAIN of whatever is being loaded right now: the symbol that OWNS the
+    /// enclosing scope. A scope is owned by a symbol (WI-984) and a rule's domain is
+    /// that symbol, so this is a total projection rather than the term unwrap it was.
     /// Used by the emitters that reach for the scope directly rather than
     /// receiving a `domain` parameter (description facts).
     fn current_domain(&self) -> Symbol {
-        self.kb.name_term_sym(self.current_scope)
+        self.current_scope.owner()
     }
 
     fn name_to_sort_term(&mut self, name: &Name) -> TermId {
@@ -12314,7 +12325,7 @@ impl<'a> Loader<'a> {
     /// [`Self::type_expr_to_child`] (the sole, carrier-agnostic type lowering) to
     /// build the type-param `Var` directly.
     fn type_param_var(&mut self, sort_sym: Symbol, short_name: &str) -> TermId {
-        let key = (self.current_scope_id(), short_name.to_owned());
+        let key = (self.current_scope, short_name.to_owned());
         if let Some(&cached) = self.type_param_vars.get(&key) {
             return cached;
         }
@@ -12433,7 +12444,7 @@ impl<'a> Loader<'a> {
         let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
             local
         } else {
-            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope_id()) {
+            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope) {
                 ResolveResult::Found(s) => s,
                 _ => return None,
             };
@@ -12543,7 +12554,7 @@ impl<'a> Loader<'a> {
         let head_sym = if let Some(local) = self.lookup_local_name(&head_name) {
             local
         } else {
-            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope_id()) {
+            let resolved = match self.kb.symbols.resolve_in_scope(&head_name, self.current_scope) {
                 ResolveResult::Found(s) => s,
                 _ => return None,
             };
@@ -12822,7 +12833,7 @@ impl<'a> Loader<'a> {
         // bare-spec rule).
         if head_declares_member {
             if let ResolveResult::Found(member_resolved) =
-                self.kb.symbols.resolve_in_scope(member_name, self.current_scope_id())
+                self.kb.symbols.resolve_in_scope(member_name, self.current_scope)
             {
                 let m_qn = self.kb.qualified_name_of(member_resolved).to_owned();
                 if self
@@ -12866,7 +12877,7 @@ impl<'a> Loader<'a> {
         // qualified ref — leave it to `remap_name`.
         let joined = format!("{head_name}.{member_name}");
         if !matches!(
-            self.kb.symbols.resolve_in_scope(&joined, self.current_scope_id()),
+            self.kb.symbols.resolve_in_scope(&joined, self.current_scope),
             ResolveResult::NotFound
         ) || self.kb.symbols.by_qualified_name.contains_key(&joined)
         {
@@ -13077,7 +13088,7 @@ impl<'a> Loader<'a> {
                 // A type-param name is a ground logic Var (no denoted) — build it
                 // via the shared `type_param_var` helper (NOT `type_expr_to_value`,
                 // which this fn must not call, see the wrapper note on it).
-                if self.kb.symbols.is_type_param(self.current_scope_id(), &short_name) {
+                if self.kb.symbols.is_type_param(self.current_scope, &short_name) {
                     return node_occurrence::TypeChild::Ground(
                         self.type_param_var(sort_sym, &short_name),
                     );
@@ -13642,7 +13653,7 @@ impl<'a> Loader<'a> {
                 // canonicalizes to `Ref(S)` separately (WI-391, `sort_binding_to_value`).
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.local_name_of(sort_sym).to_owned();
-                if self.kb.symbols.is_type_param(self.current_scope_id(), &short_name) {
+                if self.kb.symbols.is_type_param(self.current_scope, &short_name) {
                     Value::term(self.kb.make_sort_ref(sort_sym))
                 } else {
                     Value::term(self.name_to_sort_term(name))
@@ -13920,36 +13931,60 @@ impl<'a> Loader<'a> {
     }
 
     /// The scope a namespace / sort declaration opens, as THIS phase names it:
-    /// the term its written name resolves to in the enclosing scope, which is
-    /// how every other name here resolves too.
+    /// what its written name resolves to in the enclosing scope, which is how every
+    /// other name here resolves too.
     ///
     /// WI-953: `remap_name` cannot fail — an unresolvable functor falls back to a
     /// bare `intern` — so a name sub-pass 1 never defined would load its whole
     /// subtree into a phantom scope, silently. The invariant is checked against
     /// the qualified key the DEFINING pass writes, from the helper every walk
     /// shares, and a miss abandons the subtree rather than misfiling it.
-    fn resolve_declared_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
-        lookup_defined(
-            self.kb,
+    ///
+    /// WI-1028 — TWO QUESTIONS, and now only one of them is spelled here.
+    /// [`lookup_scope`] is the GUARD (did sub-pass 1 define this key?), shared with
+    /// the two scan passes so the consequence string has one owner; `remap_name` is
+    /// the ANSWER (what does the written name mean HERE?), and the scope is minted
+    /// from the answer, because this phase must reach a scope the way it reaches the
+    /// members inside it.
+    ///
+    /// THE AGREEMENT BETWEEN THEM IS THE INVARIANT, and it is checked rather than
+    /// described. `remap_name` cannot fail — its `NotFound` arm bare-`intern`s — and
+    /// `scope_id` only range-checks, so a divergence would mint a scope over a symbol
+    /// that owns none and file the whole subtree there, with the guard satisfied
+    /// because it checked a different key. Measured clean over the corpus (4223
+    /// tests) before this ticket; a sentence saying so is not a guard, so the
+    /// sentence became the `debug_assert_eq!`.
+    fn resolve_declared_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
+        let defined = lookup_scope(self.kb, site, &mut self.errors)?;
+        let sym = self.remap_name(site.decl.name());
+        debug_assert_eq!(
+            defined.owner(), sym,
+            "the scope `{}` opens: sub-pass 1 defined `{}`, but the written name \
+             resolves to `{}` here — the body would load into a scope its own \
+             members are not in",
             site.qualified,
-            site.decl.name().span,
-            "the declarations inside it cannot be loaded",
-            &mut self.errors,
-        )?;
-        Some(self.name_to_sort_term(site.decl.name()))
+            self.kb.qualified_name_of(defined.owner()),
+            self.kb.qualified_name_of(sym),
+        );
+        Some(self.kb.symbols.scope_id(sym))
     }
 
     /// A namespace's own facts, and the scope its body loads in. The descent
     /// itself is [`walk_scopes`]'s.
-    fn enter_namespace(&mut self, n: &Namespace, ns_term: TermId) {
+    ///
+    /// WI-1028 — takes the [`ScopeId`] and derives the TERM it needs (a fact SUBJECT,
+    /// and the member facts' subject), rather than taking the term and projecting the
+    /// domain back out of it.
+    fn enter_namespace(&mut self, n: &Namespace, ns_scope: ScopeId) {
         let ns_sort = ClauseKind::Namespace;
+        let ns_domain = ns_scope.owner();
+        let ns_term = self.kb.make_name_term_from_sym(ns_domain);
 
         // Assert namespace as a fact — a namespace is its own domain.
-        let ns_domain = self.kb.name_term_sym(ns_term);
         self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
 
         // Set scope to namespace for member resolution
-        self.current_scope = ns_term;
+        self.current_scope = ns_scope;
 
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&n.items, ns_term);
@@ -14069,13 +14104,19 @@ impl<'a> Loader<'a> {
     fn enter_sort_with_body(
         &mut self,
         s: &SortWithBody,
-        sort_term: TermId,
+        sort_scope: ScopeId,
         parent_domain: Symbol,
     ) -> HashMap<(Symbol, Symbol), TermId> {
-        self.defined_sorts.push(self.kb.name_term_sym(sort_term));
+        // WI-1028 — the sort's SYMBOL is what this half is mostly about (the
+        // `defined_sorts` entry, the `register_sort` key, the domain its body's
+        // clauses are filed under), and it is the scope's owner. The TERM is derived
+        // once, for the positions that hold a term.
+        let sort_domain = sort_scope.owner();
+        let sort_term = self.kb.make_name_term_from_sym(sort_domain);
+        self.defined_sorts.push(sort_domain);
 
         let (sort_kind, _) = sort_decl_kinds(s.kind);
-        self.kb.register_sort(self.kb.name_term_sym(sort_term), sort_kind);
+        self.kb.register_sort(sort_domain, sort_kind);
 
         // Emit DescriptionInfo facts for all description blocks
         for desc_text in &s.descriptions {
@@ -14083,16 +14124,15 @@ impl<'a> Loader<'a> {
         }
 
         // Set scope to sort for child resolution
-        self.current_scope = sort_term;
+        self.current_scope = sort_scope;
 
         // Pre-load nested type-param SortAliases so they are in place before the
         // entity FieldInfo build reads field types that reference them — see
         // [`Self::preload_type_param_aliases`] for why, and WI-936 for the other
         // caller (the declaration pass, which lowers those field types and hits the
-        // same ordering requirement one phase earlier). Pass `sort_term` (the
+        // same ordering requirement one phase earlier). Pass `sort_domain` (the
         // enclosing sort's own domain) so the SortAlias fact lives in the same domain
         // the second pass would have used.
-        let sort_domain = self.kb.name_term_sym(sort_term);
         self.preload_type_param_aliases(&s.items, sort_domain);
 
         // Register direct entity children (entity → parent sort) and emit each
@@ -14122,8 +14162,7 @@ impl<'a> Loader<'a> {
                 // constructor — that flag drives the WI-511 alloc canon and would
                 // re-spell the sort's own scope key (WI-926).
                 if ctor_term == sort_term {
-                    let sym = self.kb.name_term_sym(sort_term);
-                    self.kb.register_self_sort(sym);
+                    self.kb.register_self_sort(sort_domain);
                 } else {
                     self.kb.register_entity_of(ctor_term, sort_term);
                 }
@@ -14150,7 +14189,7 @@ impl<'a> Loader<'a> {
     fn exit_sort_with_body(
         &mut self,
         s: &SortWithBody,
-        sort_term: TermId,
+        sort_scope: ScopeId,
         parent_domain: Symbol,
         prev_sort_carrier_bindings: HashMap<(Symbol, Symbol), TermId>,
     ) {
@@ -14162,13 +14201,13 @@ impl<'a> Loader<'a> {
 
         // Now collect constructors, operations, parameters, requires from child items
         // (after loading, so all names are resolved in sort scope). `sort_domain`
-        // in the entering half is this same symbol, taken once and loudly. The
-        // hand-rolled re-derivation this replaces fell back to a fabricated
-        // `_unknown` functor for a `Term::Ref` sort term (the WI-511 canon for a
-        // constructor-named symbol), emitting `SortInfo` under a name nothing
-        // resolves rather than failing — the silent-fallback family the rest of
-        // this migration removes.
-        let sort_functor = self.kb.name_term_sym(sort_term);
+        // in the entering half is this same symbol. The hand-rolled re-derivation
+        // this replaces fell back to a fabricated `_unknown` functor for a
+        // `Term::Ref` sort term (the WI-511 canon for a constructor-named symbol),
+        // emitting `SortInfo` under a name nothing resolves rather than failing —
+        // the silent-fallback family the rest of this migration removes. WI-1028
+        // retires the projection itself: a scope IS owned by a symbol.
+        let sort_functor = sort_scope.owner();
 
         let mut ctor_refs = Vec::new();
         let mut op_refs = Vec::new();
@@ -14235,7 +14274,7 @@ impl<'a> Loader<'a> {
             let entities: Vec<&Entity> = s.items.iter()
                 .filter_map(|i| if let Item::Entity(e) = i { Some(e) } else { None })
                 .collect();
-            self.emit_induction_rule(&entities, sort_term, sort_functor, parent_domain);
+            self.emit_induction_rule(&entities, sort_functor, parent_domain);
         }
     }
 
@@ -14256,7 +14295,6 @@ impl<'a> Loader<'a> {
     fn emit_induction_rule(
         &mut self,
         entities: &[&Entity],
-        sort_term: TermId,
         sort_functor: Symbol,
         parent_domain: Symbol,
     ) {
@@ -14281,7 +14319,7 @@ impl<'a> Loader<'a> {
             existing
         } else {
             self.kb.symbols.define(
-                "induction", &induction_name, SymbolKind::Goal, self.kb.scope_id_of(sort_term),
+                "induction", &induction_name, SymbolKind::Goal, self.kb.symbols.scope_id(sort_functor),
             )
         };
 
@@ -14378,7 +14416,7 @@ impl<'a> Loader<'a> {
                 } else {
                     join_segments(&self.parsed.symbols, &n.segments)
                 };
-                match self.kb.symbols.resolve_in_scope(&lookup, self.current_scope_id()) {
+                match self.kb.symbols.resolve_in_scope(&lookup, self.current_scope) {
                     ResolveResult::Found(s) => s == sort_functor,
                     // Preserve remap_name's qualified-name fallback so a
                     // fully-qualified self-reference (`t: my.ns.Tree` inside
@@ -14535,7 +14573,7 @@ impl<'a> Loader<'a> {
                 let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
                     existing
                 } else {
-                    self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, self.kb.scope_id_of(ctor_term))
+                    self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, self.kb.symbols.scope_id(ctor_functor))
                 };
                 let name_term = self.kb.alloc(Term::Ref(field_sym));
                 match type_value {
@@ -14649,7 +14687,7 @@ impl<'a> Loader<'a> {
         // this function already registers. Deliberately NO `register_sort` here
         // (WI-925): a second index asserting the same thing is one more pair that
         // can disagree, and `sort_of_head` needs none.
-        if !is_sort_scope(&self.kb, self.current_scope) {
+        if !is_sort_scope(self.kb, self.current_scope) {
             let ei_syms = self.entity_info_syms();
             let ctor_term = self.name_to_sort_term(&e.name);
             self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, domain);
@@ -14694,7 +14732,7 @@ impl<'a> Loader<'a> {
             // the enclosing NAMESPACE scope, which is where a free-standing entity's
             // own name resolves). The long form has emitted it since proposal 030;
             // its omission here was a straight one.
-            self.emit_induction_rule(&[e], ctor_term, functor, domain);
+            self.emit_induction_rule(&[e], functor, domain);
         }
     }
 
@@ -15537,7 +15575,7 @@ impl<'a> Loader<'a> {
             return None;
         }
         if !matches!(
-            self.kb.symbols.resolve_in_scope(&ret_str, self.current_scope_id()),
+            self.kb.symbols.resolve_in_scope(&ret_str, self.current_scope),
             ResolveResult::NotFound
         ) {
             return None;
@@ -15585,12 +15623,12 @@ impl<'a> Loader<'a> {
         carrier: &str,
         spec_atom: TermId,
         op_qualified: &str,
-        op_scope: TermId,
+        op_scope: ScopeId,
         domain: Symbol,
     ) -> crate::eval::value::Value {
         let qualified = format!("{op_qualified}.{carrier}");
-        let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, self.kb.scope_id_of(op_scope));
-        self.kb.symbols.add_type_param(self.kb.scope_id_of(op_scope), carrier);
+        let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, op_scope);
+        self.kb.symbols.add_type_param(op_scope, carrier);
         let c_sort_term = self.kb.alloc(Term::Fn {
             functor: c_sym,
             pos_args: SmallVec::new(),
@@ -15699,7 +15737,7 @@ impl<'a> Loader<'a> {
         // `result` name is resolvable in effects / ensures positions
         // (proposal 041).
         let prev_scope = self.current_scope;
-        let op_scope = self.kb.make_name_term_from_sym(functor);
+        let op_scope = self.kb.symbols.scope_id(functor);
         self.current_scope = op_scope;
 
         // WI-201: arm the bare-spec-member sugar for this operation's SIGNATURE. A bare
@@ -15765,7 +15803,7 @@ impl<'a> Loader<'a> {
         for tp in &o.type_params {
             let tp_name = self.parsed.symbols.local_name(tp.name).to_owned();
             let tp_sym = self.kb.intern(&tp_name);
-            let cache_key = (self.kb.scope_id_of(op_scope), tp_name.clone());
+            let cache_key = (op_scope, tp_name.clone());
             let var_tid = if let Some(&cached) = self.type_param_vars.get(&cache_key) {
                 cached
             } else {
@@ -15800,7 +15838,7 @@ impl<'a> Loader<'a> {
         // resolved concretely. Keyed by the SAME `result` symbol that
         // `try_denoted_value_path` resolves (`resolve_in_scope` from the op scope).
         if let ResolveResult::Found(result_sym) =
-            self.kb.symbols.resolve_in_scope("result", self.kb.scope_id_of(op_scope))
+            self.kb.symbols.resolve_in_scope("result", op_scope)
         {
             self.signature_place_types.insert(result_sym, return_value.clone());
         }
@@ -15823,7 +15861,7 @@ impl<'a> Loader<'a> {
                 let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
                     existing
                 } else {
-                    self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope_id())
+                    self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope)
                 };
                 // WI-727: record a conforming variadic capture parameter under its FIELD
                 // symbol — the same key the typer's `op.params` carries, so argument
@@ -16501,7 +16539,7 @@ impl<'a> Loader<'a> {
     fn check_op_type_param_shadowing(
         &mut self,
         o: &Operation,
-        enclosing: TermId,
+        enclosing: ScopeId,
         op_qualified: &str,
     ) {
         if o.type_params.is_empty() {
@@ -16558,8 +16596,8 @@ impl<'a> Loader<'a> {
             // NOT `type_params_of_sort`, which re-FINDS the body scope by scanning
             // every qualified name in the symbol table: the enclosing scope is
             // already in hand here, so the scan would buy nothing.
-            let enclosing_owns = self.kb.symbols.is_type_param(self.kb.scope_id_of(enclosing), name);
-            let enclosing_qn = self.kb.qualified_name_of(self.kb.name_term_sym(enclosing));
+            let enclosing_owns = self.kb.symbols.is_type_param(enclosing, name);
+            let enclosing_qn = self.kb.qualified_name_of(enclosing.owner());
             let enclosing_short = last_segment(enclosing_qn);
             let shadowed = if captured.iter().any(|s| s == name) {
                 ShadowedSlot::CapturedRequirementName
@@ -16588,8 +16626,8 @@ impl<'a> Loader<'a> {
     /// operation selects its dictionary by the SPEC's short name, which a parameter
     /// of that name would shadow. A namespace declares no type parameters, so it
     /// answers `false` without a kind test.
-    fn enclosing_is_spec(&self, enclosing: TermId) -> bool {
-        self.kb.symbols.scope(self.kb.scope_id_of(enclosing))
+    fn enclosing_is_spec(&self, enclosing: ScopeId) -> bool {
+        self.kb.symbols.scope(enclosing)
             .is_some_and(|s| !s.type_params_ordered.is_empty())
     }
 
@@ -16808,7 +16846,7 @@ impl<'a> Loader<'a> {
         // string, which is nobody's scope name, and the dotted ladder stands down under
         // an ambiguous head. Loud, imprecise, and the same shape as WI-911's.
         let ResolveResult::Found(op_sym) =
-            resolve_name_in_kb(&self.kb, &prefix_name, self.current_scope_id())
+            resolve_name_in_kb(&self.kb, &prefix_name, self.current_scope)
         else {
             return None;
         };
@@ -17131,9 +17169,13 @@ impl<'a> Loader<'a> {
         // a SYMBOL and `Stack[T = Int64]` is not one, which is the type reporting
         // that the phantom was never a scope; the two forms now agree, matching the
         // domain, which already collapses both to `Stack`. Driven by
-        // `wi984_param_provides_test` — before this the parameterized form aborted
-        // the load on `name_term_sym`.
-        self.current_scope = self.kb.make_name_term_from_sym(spec_domain);
+        // `parameterized_provides_body_resolves_a_spec_scoped_name` — before this the
+        // parameterized form aborted the load on `name_term_sym`.
+        //
+        // WI-1028 CLOSED THE SHAPE, not just this instance: `current_scope` is a
+        // `ScopeId`, so assigning `spec_term` here does not compile. The old fix was
+        // a correct value written into a slot that would have taken a wrong one.
+        self.current_scope = self.kb.symbols.scope_id(spec_domain);
 
         for item in &pb.items {
             match item {
@@ -17665,6 +17707,17 @@ impl<'a> Loader<'a> {
 
     // ── MemberInfo fact emission ───────────────────────────────
 
+    /// PER MEMBER, and MEASURED to be fine that way (WI-1031). This resolves the
+    /// `MemberInfo` symbol, interns three field names and builds
+    /// `format!("anthill.reflect.MemberKind.{kind_name}")` to resolve the kind — ~750
+    /// times over a stdlib load, which reads like an obvious hoist. It is not worth
+    /// one: at n=25 in release the whole stdlib load is min 0.0380s / median 0.0411s
+    /// WITH a per-scope hoist and min 0.0397s without, i.e. indistinguishable, and the
+    /// arithmetic agrees — 750 `format!`s are ~75µs of 40ms, 0.4%, under the noise
+    /// floor. The hoist was written, measured and REVERTED; do not re-derive it from
+    /// an operation count. (It also has to go somewhere: per SCOPE costs 7 kind
+    /// resolutions × ~147 scopes = MORE calls than it saves, so a real one would have
+    /// to cache per Loader.)
     fn emit_member_fact(&mut self, name_sym: Symbol, kind_name: &str, parent: TermId) {
         let member_sym = self.kb.resolve_symbol("anthill.reflect.MemberInfo");
         let member_sort = ClauseKind::Member;
@@ -17687,6 +17740,9 @@ impl<'a> Loader<'a> {
         self.kb.assert_metadata_fact(member_term, member_sort, parent_domain, None);
     }
 
+    /// WI-1028 deliberately left `parent` a TERM: it fills `MemberInfo`'s `parent`
+    /// FIELD, a subject position rather than a scope one, and both callers hold the
+    /// term already.
     fn emit_member_facts_for_items(&mut self, items: &[Item], parent: TermId) {
         let parent_sym = self.kb.name_term_sym(parent);
         for item in items {
@@ -17793,7 +17849,7 @@ impl ScopePass for DeclarePass<'_, '_> {
         &self.0.parsed.symbols
     }
 
-    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
         let scope = self.0.resolve_declared_scope(site)?;
         self.0.current_scope = scope;
         // Aliases first, at every level — see `declare_field_types`, which does
@@ -17803,11 +17859,11 @@ impl ScopePass for DeclarePass<'_, '_> {
         Some(scope)
     }
 
-    fn exit_scope(&mut self, site: &ScopeSite<'_>, _scope: TermId) {
+    fn exit_scope(&mut self, site: &ScopeSite<'_>, _scope: ScopeId) {
         self.0.current_scope = site.enclosing;
     }
 
-    fn at_item(&mut self, item: &Item, _scope: TermId, _prefix: &str) {
+    fn at_item(&mut self, item: &Item, _scope: ScopeId, _prefix: &str) {
         match item {
             Item::Entity(e) => self.0.register_declared_field_types(e),
             // `AbstractSort` is handled by the alias pre-load; the rest declare no
@@ -17855,14 +17911,14 @@ impl ScopePass for LoadPass<'_, '_> {
         &self.loader.parsed.symbols
     }
 
-    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<TermId> {
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
         let scope = self.loader.resolve_declared_scope(site)?;
         match site.decl {
             ScopeDecl::Namespace(n) => self.loader.enter_namespace(n, scope),
             ScopeDecl::Sort(s) => {
-                // The scope TERM keys the symbol table; the DOMAIN a rule/fact is
-                // stored under is that scope's NAME — see `at_item`.
-                let parent_domain = self.loader.kb.name_term_sym(site.enclosing);
+                // The DOMAIN a rule/fact is stored under is the enclosing scope's
+                // OWNER — see `at_item`.
+                let parent_domain = site.enclosing.owner();
                 let displaced = self.loader.enter_sort_with_body(s, scope, parent_domain);
                 self.carrier_stack.push(displaced);
             }
@@ -17870,32 +17926,31 @@ impl ScopePass for LoadPass<'_, '_> {
         Some(scope)
     }
 
-    fn exit_scope(&mut self, site: &ScopeSite<'_>, scope: TermId) {
+    fn exit_scope(&mut self, site: &ScopeSite<'_>, scope: ScopeId) {
         if let ScopeDecl::Sort(s) = site.decl {
             let displaced = self
                 .carrier_stack
                 .pop()
                 .expect("enter_scope pushes exactly one carrier frame per sort");
-            let parent_domain = self.loader.kb.name_term_sym(site.enclosing);
+            let parent_domain = site.enclosing.owner();
             self.loader.exit_sort_with_body(s, scope, parent_domain, displaced);
         }
         self.loader.current_scope = site.enclosing;
     }
 
-    fn at_item(&mut self, item: &Item, scope: TermId, _prefix: &str) {
+    fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
         let t0 = if self.timing { Some(std::time::Instant::now()) } else { None };
-        // The scope TERM keys the symbol table (`resolve_in_scope` takes
-        // `TermId::raw()`); the DOMAIN a rule/fact is stored under is its NAME.
-        // This is the one place a scope becomes a domain, so it is the one place
-        // the bridge is crossed — every `load_*` below takes the `Symbol`.
-        let domain = self.loader.kb.name_term_sym(scope);
+        // The DOMAIN a rule/fact is stored under is the scope's OWNER — the same
+        // symbol the `ScopeId` is minted from, so the bridge that used to be crossed
+        // here (scope TERM -> `name_term_sym`) is now a projection that cannot fail.
+        let domain = scope.owner();
         let kind = match item {
             Item::AbstractSort(s) => { self.loader.load_abstract_sort(s, domain); "AbstractSort" }
             Item::Rule(r) => { self.loader.load_rule(r, domain); "Rule" }
             Item::Operation(o) => { self.loader.load_operation(o, domain); "Operation" }
             Item::Const(c) => { self.loader.load_const(c, domain); "Const" }
             Item::RequiresDecl(r) => {
-                let seen = self.requires_seen.entry(self.loader.kb.scope_id_of(scope)).or_insert(0);
+                let seen = self.requires_seen.entry(scope).or_insert(0);
                 let index = *seen;
                 *seen += 1;
                 self.loader.load_requires_decl(r, domain, index);
@@ -18004,7 +18059,7 @@ end
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
         let file = parsed();
-        let global = kb.make_name_term("_global");
+        let global = kb.global_scope();
         let mut errors = Vec::new();
         let mut pending = Vec::new();
         let mut pass = ImportPass {
@@ -18028,7 +18083,7 @@ end
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
         let file = parsed();
-        let global = kb.make_name_term("_global");
+        let global = kb.global_scope();
         let mut errors = Vec::new();
         let mut pass = RuleHeadPass {
             kb: &mut kb,
@@ -18075,6 +18130,335 @@ end
         let errors = result.err().unwrap_or_default();
         assert_eq!(missed(&errors), Vec::<String>::new(),
             "nothing is missing when the defining pass has run: {errors:?}");
+    }
+}
+
+#[cfg(test)]
+mod wi1028_scope_id_spine_tests {
+    //! WI-1028 — WHAT THE WALK CARRIES IS A SCOPE. [`ScopePass`] used to hand every
+    //! pass the scope TERM; see [`ScopeId`] for what typing it buys.
+    //!
+    //! WHICH TEST FAILS WHEN THE CHANGE IS BACKED OUT, said plainly because the
+    //! answer is small. These two, and by NOT COMPILING: `site.enclosing.owner()`
+    //! and `resolve_in_scope(_, scope)` do not type-check against a `TermId` spine.
+    //! WI-1028 is a REPRESENTATION change with no intended behaviour change, so the
+    //! other 4223 tests pass either way BY DESIGN — they are the control for
+    //! "nothing moved", not evidence that anything is new.
+    //!
+    //! Beyond the types, each test pins the one thing a mis-threaded conversion
+    //! breaks at a place the conversion actually touched:
+    //!
+    //!  * `the_walk_delivers_the_scope_each_item_is_written_in` — `ScopeSite` and
+    //!    `at_item` carry DIFFERENT scopes for a sort body and the namespace around
+    //!    it. Honest limit: `walk_scope_items` itself is byte-identical apart from
+    //!    the types, so this half would pass on the old spine too.
+    //!  * `a_clause_is_filed_under_the_owner_of_the_scope_it_is_written_in` — a
+    //!    channel that WAS rewritten: `LoadPass::at_item`'s domain went from
+    //!    `name_term_sym(scope_term)` to `scope.owner()`. Measured discriminating —
+    //!    file every clause under the walk root instead and this fails while the
+    //!    first test still passes, which is why both are here.
+    use super::*;
+    use crate::intern::ResolveResult;
+    use crate::parse;
+
+    /// One rule on EACH side of the sort boundary, same shape, so the two must land
+    /// in different domains; plus a sort OPERATION, which resolves inside `Colour`
+    /// and not outside it (only entity variants are exposed outward, §8.6).
+    const SRC: &str = "\
+namespace demo
+  sort Colour
+    entity Red(shade: Int64)
+    operation blend(a: Int64) -> Int64
+    rule bright(?s) :- Red(shade: ?s)
+  end
+  rule reddish(?s) :- Red(shade: ?s)
+end
+";
+
+    /// Records the scope the walk delivers at each stop. The OWNER is not stored
+    /// beside it — that is the projection under test, taken at the assertion.
+    struct RecordPass<'a> {
+        kb: &'a KnowledgeBase,
+        parse_sym: &'a crate::intern::SymbolTable,
+        errors: &'a mut Vec<LoadError>,
+        /// `(the declaration's qualified name, the scope it is WRITTEN IN)`
+        entered: Vec<(String, ScopeId)>,
+        /// `(item kind, the scope enclosing it)`
+        items: Vec<(&'static str, ScopeId)>,
+    }
+
+    impl ScopePass for RecordPass<'_> {
+        fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+            self.parse_sym
+        }
+
+        fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
+            self.entered.push((site.qualified.to_owned(), site.enclosing));
+            lookup_scope(self.kb, site, self.errors)
+        }
+
+        fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
+            let kind = match item {
+                Item::Entity(_) => "entity",
+                Item::Operation(_) => "operation",
+                Item::Rule(_) => "rule",
+                other => unreachable!("fixture has no {other:?}"),
+            };
+            self.items.push((kind, scope));
+        }
+    }
+
+    #[test]
+    fn the_walk_delivers_the_scope_each_item_is_written_in() {
+        let mut kb = KnowledgeBase::new();
+        let file = parse::parse(SRC).expect("parse");
+        // The names must exist before a lookup pass can reach them; the ordinary
+        // two-phase contract, not a fixture trick.
+        let scan_errors = scan_definitions(&mut kb, &[&file]);
+        assert!(scan_errors.is_empty(), "fixture must scan clean: {scan_errors:?}");
+
+        let global = kb.global_scope();
+        let mut errors = Vec::new();
+        let mut pass = RecordPass {
+            kb: &kb,
+            parse_sym: &file.symbols,
+            errors: &mut errors,
+            entered: Vec::new(),
+            items: Vec::new(),
+        };
+        walk_scopes(&mut pass, &file.items, global);
+        let (entered, items) = (pass.entered, pass.items);
+        assert!(errors.is_empty(), "every scope was defined by the scan: {errors:?}");
+
+        let named = |scope: ScopeId| kb.qualified_name_of(scope.owner()).to_owned();
+
+        // A declaration is written in its PARENT's scope, and that scope's owner is
+        // the symbol `LoadPass` files the declaration's own clauses under.
+        assert_eq!(
+            entered.iter().map(|(q, s)| (q.as_str(), named(*s))).collect::<Vec<_>>(),
+            vec![("demo", "_global".to_owned()), ("demo.Colour", "demo".to_owned())],
+            "the enclosing scope of each declaration, by its owner",
+        );
+
+        // THE CROSSING CHECK: `Red` is inside `sort Colour`, `reddish` is beside it
+        // in `demo`. Threading `site.enclosing` where the child belongs (or the
+        // reverse) puts both under one owner.
+        assert_eq!(
+            items.iter().map(|(k, s)| (*k, named(*s))).collect::<Vec<_>>(),
+            vec![
+                ("entity", "demo.Colour".to_owned()),
+                ("operation", "demo.Colour".to_owned()),
+                ("rule", "demo.Colour".to_owned()),
+                ("rule", "demo".to_owned()),
+            ],
+            "a sort body's items are in the SORT's scope, not the namespace's",
+        );
+
+        // …and the value delivered is a scope in the sense that matters: it is what
+        // the body's names resolve against. TWO-SIDED on purpose — `blend` is a sort
+        // OPERATION, so it resolves inside `Colour` and NOT from `demo` (only entity
+        // variants are exposed outward, §8.6). The positive half alone does NOT
+        // discriminate, measured: with the descent crossed so every item gets
+        // `_global`, `resolve_in_scope("blend", _global)` still answers `Found` — it
+        // is the NEGATIVE half that fires, because the pair asserts the two scopes
+        // SEE DIFFERENT THINGS, which one scope handed out twice cannot satisfy.
+        let colour_scope = items[0].1;
+        let demo_scope = items[3].1;
+        assert!(
+            matches!(kb.symbols.resolve_in_scope("blend", colour_scope), ResolveResult::Found(_)),
+            "the ScopeId `at_item` handed inside the sort body is the scope its names resolve in",
+        );
+        assert!(
+            !matches!(kb.symbols.resolve_in_scope("blend", demo_scope), ResolveResult::Found(_)),
+            "…and the one it handed beside the sort is a DIFFERENT scope, which cannot see it",
+        );
+    }
+
+    /// WI-1029 — THE EQUIVALENCE, PINNED, because no corpus input can discriminate.
+    ///
+    /// [`is_sort_scope`] used to take the scope's name TERM and match
+    /// `Term::Fn{f,[],[]}` + `has_kind(f, Sort)`. Since `alloc` rewrites a nullary
+    /// `Fn` to `Ref` exactly for a registered constructor (WI-511), that was
+    /// `!is_constructor_symbol(owner) && has_kind(owner, Sort)` written as a
+    /// pattern-match on an encoding. The two forms are EQUAL, so backing the fold out
+    /// changes no answer and no test can be made to fail by it — measured during
+    /// WI-1028, the two readings never disagreed anywhere in the corpus, because no
+    /// scope owner reachable today is a marked constructor at all.
+    ///
+    /// So this does not pretend to be a discriminating test. It pins the RULE on both
+    /// shapes — constructor-owned and not — so a future change to the WI-511 canon, or
+    /// to what `mark_constructor_symbol` implies, breaks here loudly instead of
+    /// silently flipping whether `sort P { entity P(…) }` reads as a sort body from
+    /// the inside (§6.3 / WI-926, which is the one caller that depends on it).
+    #[test]
+    fn a_sort_scope_is_one_whose_owner_is_a_sort_and_not_a_constructor() {
+        let mut kb = KnowledgeBase::new();
+        // `define`, not `intern`: a kind lives on `SymbolDef::Resolved`, so an
+        // interned-only symbol carries none and every row below would read false for
+        // the same uninteresting reason.
+        let g = kb.global_scope();
+        let plain = kb.symbols.define("PlainSort", "PlainSort", SymbolKind::Sort, g);
+        let ctor = kb.symbols.define("CtorSort", "CtorSort", SymbolKind::Sort, g);
+        let ns = kb.symbols.define("SomeNamespace", "SomeNamespace", SymbolKind::Namespace, g);
+        kb.mark_constructor_symbol(ctor);
+
+        assert!(is_sort_scope(&kb, kb.symbols.scope_id(plain)),
+            "a Sort-kinded owner that is not a constructor opens a sort body");
+        assert!(!is_sort_scope(&kb, kb.symbols.scope_id(ctor)),
+            "a CONSTRUCTOR owner does not, even with SymbolKind::Sort set — this is \
+             what WI-926 leans on when it declines to mark an eponymous constructor");
+        assert!(!is_sort_scope(&kb, kb.symbols.scope_id(ns)),
+            "and a namespace never does");
+
+        // The old spelling, kept alive here as the oracle: build the owner's name
+        // term the way the loader used to and read its shape. Equal on all three.
+        for owner in [plain, ctor, ns] {
+            let term = kb.make_name_term_from_sym(owner);
+            let via_term = matches!(kb.get_term(term),
+                Term::Fn { functor, pos_args, named_args }
+                    if pos_args.is_empty() && named_args.is_empty()
+                        && kb.symbols.get(*functor).has_kind(SymbolKind::Sort));
+            assert_eq!(via_term, is_sort_scope(&kb, kb.symbols.scope_id(owner)),
+                "the term reading and the owner reading are the same predicate for {}",
+                kb.qualified_name_of(owner));
+        }
+    }
+
+    /// The channel WI-1028 actually rewrote: `LoadPass::at_item` used to unwrap the
+    /// scope TERM (`name_term_sym`) to get the domain and now reads `scope.owner()`.
+    /// Driven through a real `load`, so the assertion is on the KB, not on a
+    /// test-local pass.
+    #[test]
+    fn a_clause_is_filed_under_the_owner_of_the_scope_it_is_written_in() {
+        let mut kb = KnowledgeBase::new();
+        let file = parse::parse(SRC).expect("parse");
+        load(&mut kb, &file, &NullResolver).expect("fixture loads clean");
+
+        let domain_of = |kb: &KnowledgeBase, qn: &str| -> String {
+            let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol {qn}"));
+            let rid = *kb.rules_by_functor(sym).first()
+                .unwrap_or_else(|| panic!("no clause for {qn}"));
+            kb.qualified_name_of(kb.rule_domain(rid)).to_owned()
+        };
+
+        // The discriminating PAIR: `reddish` is written beside `sort Colour`, `blend`
+        // inside it, so the two must disagree. Reading the domain off the wrong end of
+        // the walk — `site.enclosing` where the child belongs, or the reverse —
+        // collapses them to one answer whichever way it slips.
+        assert_eq!(domain_of(&kb, "demo.reddish"), "demo",
+            "a namespace-level rule is filed under the namespace");
+        assert_eq!(domain_of(&kb, "demo.Colour.bright"), "demo.Colour",
+            "the same rule written one level in is filed under the SORT");
+    }
+}
+
+#[cfg(test)]
+mod wi1030_requires_ambiguity_tests {
+    //! WI-1030 — AN AMBIGUOUS `requires` BASE ENDS THE LADDER.
+    //!
+    //! `ImportPass`'s `RequiresDecl` arm wires the sort a requirement names as a
+    //! non-enclosing scope parent. It used to collapse `ResolveResult::Ambiguous` to
+    //! `None` and then try the absolute rung on `Option::or_else` — so an ambiguity
+    //! read as a MISS and the fallback wired whatever top-level symbol shared the
+    //! short name. §8.6: an ambiguity ENDS the ladder, which is what
+    //! `ResolveResult::or_else` is for.
+    //!
+    //! WHAT WAS AND WAS NOT SILENT, since it sets what these tests are for. The load
+    //! DID report `ambiguous symbol 'Rival' in scope 'User'` — from the LOAD phase.
+    //! The wiring is sub-pass 2, which runs first, and the loader accumulates errors
+    //! and continues by design. Between the two, sub-pass 3 and the whole load phase
+    //! resolved every name in that sort against a scope with a stranger spliced in:
+    //! one bad declaration corrupting the scope used to diagnose the rest of itself.
+    //!
+    //! TWO ROWS, AND NEITHER PINS THE FIX ALONE. Both directions measured:
+    //!
+    //!  * restore the old ladder (`Ambiguous` → miss → absolute rung) and
+    //!    `an_ambiguous_requires_wires_no_parent` FAILS while the control passes;
+    //!  * apply the cheapest WRONG fix — delete the absolute rung outright — and
+    //!    `an_unambiguous_requires_still_wires` FAILS while the first one passes.
+    //!
+    //! So the control is not ceremony here: it is the half that rejects the fix a
+    //! reader is most likely to reach for.
+    use super::*;
+    use crate::intern::ResolveResult;
+    use crate::parse;
+
+    /// Three sorts named `Rival` are visible as `Rival` inside `pc.User`. `zap`
+    /// belongs ONLY to the top-level one, so it is reachable exactly when the
+    /// absolute rung wired a sort nobody selected.
+    ///
+    /// THE TOP-LEVEL `sort Rival` IS LOAD-BEARING — do not tidy it into a namespace.
+    /// The absolute rung is `by_qualified_name[<base name>]`, so it can only hit a
+    /// name with no dots. Written as `namespace wi1030 { sort Rival … }` the lookup
+    /// misses, no parent is wired either way, and this test passes with the fix
+    /// backed out. Measured: it did exactly that on the first attempt.
+    const AMBIGUOUS: &str = "\
+sort Rival
+  operation zap(x: Int64) -> Int64
+end
+namespace wi1030.pa
+  sort Rival
+    operation aaa(x: Int64) -> Int64
+  end
+end
+namespace wi1030.pb
+  sort Rival
+    operation bbb(x: Int64) -> Int64
+  end
+end
+namespace wi1030.pc
+  import wi1030.pa.*
+  import wi1030.pb.*
+  sort User
+    requires Rival
+  end
+end
+";
+
+    /// THE CONTROL — one `Provider`, named by its qualified path. Unambiguous, and
+    /// reached by the ABSOLUTE rung, so it exercises the fallback this fix keeps.
+    const UNAMBIGUOUS: &str = "\
+namespace wi1030b.prov
+  sort Provider
+    operation pzap(x: Int64) -> Int64
+  end
+end
+namespace wi1030b.use
+  sort Client
+    requires wi1030b.prov.Provider
+  end
+end
+";
+
+    /// Load `src` (errors tolerated — the ambiguous fixture reports one by design)
+    /// and ask whether `member` resolves from inside `sort_qn`'s own scope. That is
+    /// reachable only through the `requires` parent link.
+    fn member_resolves_in(src: &str, sort_qn: &str, member: &str) -> bool {
+        let mut kb = KnowledgeBase::new();
+        let file = parse::parse(src).expect("parse");
+        let _ = load(&mut kb, &file, &NullResolver);
+        let sort = kb.try_resolve_symbol(sort_qn).unwrap_or_else(|| panic!("no {sort_qn}"));
+        let scope = kb.symbols.scope_id(sort);
+        matches!(kb.symbols.resolve_in_scope(member, scope), ResolveResult::Found(_))
+    }
+
+    #[test]
+    fn an_ambiguous_requires_wires_no_parent() {
+        assert!(
+            !member_resolves_in(AMBIGUOUS, "wi1030.pc.User", "zap"),
+            "an ambiguity ends the ladder, so no candidate is chosen and the \
+             top-level `Rival` does not become a scope parent of `User`",
+        );
+    }
+
+    #[test]
+    fn an_unambiguous_requires_still_wires() {
+        assert!(
+            member_resolves_in(UNAMBIGUOUS, "wi1030b.use.Client", "pzap"),
+            "THE CONTROL — a `requires` naming exactly one sort by qualified path \
+             still wires it. Deleting the absolute rung passes the test above and \
+             breaks this one",
+        );
     }
 }
 

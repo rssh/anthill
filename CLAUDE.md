@@ -123,3 +123,5 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
 
 # Work with anthill-todo
  - Prefer implement follow-ups after review immediatly instead firing follow-ups tickets. Fire follow-up only if it is a big task, which can't be implemented inline.
+ - If the size of code in change less then tocket description -- not open new ticket, make inline.
+ - Monitor the estimate number of tickets in queue

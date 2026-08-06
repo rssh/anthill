@@ -40463,9 +40463,8 @@ mod p4_tests {
         // `Var::Global` — the shape the loader emits for `sort T = ?`
         // (`assert_sort_alias`). Built directly because `register_prelude` loads no
         // parametric stdlib sort, so `type_param_vid_in_sort` has nothing to resolve.
-        let global = kb.make_name_term("_global");
-        let global_scope = kb.scope_id_of(global);
-        let global_domain = kb.name_term_sym(global);
+        let global_scope = kb.global_scope();
+        let global_domain = global_scope.owner();
         kb.symbols.define_qualified_only("Box", "Box", SymbolKind::Sort, global_scope);
         kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, global_scope);
         let box_sym = kb.resolve_symbol("Box");

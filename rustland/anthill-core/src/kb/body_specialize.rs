@@ -1159,10 +1159,9 @@ impl KnowledgeBase {
         });
 
         let rule_sort = ClauseKind::Rule;
-        // The `_global` TERM is the rule's DOMAIN; the `_global` SCOPE (below, for
-        // the label) is a different thing and now a different type.
-        let global_term = self.make_name_term("_global");
-        let global_domain = self.name_term_sym(global_term);
+        // WI-1028 — the rule's DOMAIN is the `_global` scope's owner. This used to
+        // mint the `_global` name term only to project back to its own functor.
+        let global_domain = self.global_scope().owner();
         let rid = self.assert_rule_debruijn_with_nodes(
             head,
             vec![body_node],
