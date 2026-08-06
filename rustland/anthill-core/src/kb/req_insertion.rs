@@ -29,7 +29,7 @@ use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child}
 use crate::kb::term::{Term, TermId};
 use crate::kb::typing::{
     record_apply_rewrite, record_apply_within_concrete,
-    record_apply_within_rewrite, CallClass, RequiresEntry, TypeError,
+    record_apply_within_rewrite, CallClass, TypeError,
 };
 use crate::kb::KnowledgeBase;
 
@@ -98,7 +98,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         .map(|raw| materialize_apply(kb, raw))
         .collect();
 
-    let mut chain_cache: HashMap<Symbol, Vec<RequiresEntry>> = HashMap::new();
+    let mut chain_cache: HashMap<Symbol, crate::kb::typing::DictChain> = HashMap::new();
 
     for entry in entries {
         let ClassifiedApply { apply_term, named_args, pos_args, class } = entry;
@@ -237,17 +237,17 @@ fn materialize_apply(kb: &mut KnowledgeBase, raw: RawClassified) -> ClassifiedAp
 /// `TypingEnv::set_enclosing_sort`, and the two must read one chain.
 fn chain_for(
     kb: &mut KnowledgeBase,
-    cache: &mut HashMap<Symbol, Vec<RequiresEntry>>,
+    cache: &mut HashMap<Symbol, crate::kb::typing::DictChain>,
     enclosing_sort: Option<Symbol>,
-) -> Vec<RequiresEntry> {
+) -> crate::kb::typing::DictChain {
     let s = match enclosing_sort {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return crate::kb::typing::DictChain::empty(),
     };
     if let Some(cached) = cache.get(&s) {
         return cached.clone();
     }
-    let chain = (*crate::kb::typing::provider_dict_entries(kb, s)).clone();
+    let chain = crate::kb::typing::provider_dict_entries(kb, s);
     cache.insert(s, chain.clone());
     chain
 }

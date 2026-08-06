@@ -263,6 +263,21 @@ pub enum LoadError {
         spec: String,
         required: String,
     },
+    /// WI-1033 (058 §3.8): a CONDITIONAL provision is certified by the carrier's own
+    /// conditional provision of the spec it requires, and the outer conditions do not
+    /// ENTAIL the inner ones — so the outer holds at bindings where the inner does not,
+    /// and the spec's own `requires` is broken there.
+    ///
+    /// Its own variant rather than an `UnsatisfiedProviderRequires`, because that one
+    /// says "does not provide" and advises `add a fact` — both false here. The carrier
+    /// DOES provide it; the condition is what is too weak, and naming the unentailed
+    /// condition is the whole repair.
+    ProvisionConditionsTooWeak {
+        carrier: String,
+        spec: String,
+        required: String,
+        unentailed: String,
+    },
     /// WI-363: a carrier provides a spec but does not back one of the spec's
     /// declared operations. The op-level twin of `UnsatisfiedProviderRequires`:
     /// `fact Spec[X]` is trusted by the typer, yet `Spec.op` has neither a
@@ -1312,6 +1327,16 @@ impl LoadError {
                 format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
                     carrier, spec, required, carrier, required, required)
             }
+            LoadError::ProvisionConditionsTooWeak { carrier, spec, required, unentailed } => {
+                format!(
+                    "'{carrier}' provides '{spec}', which requires '{required}' — and \
+                     '{carrier}' DOES provide '{required}', but only under the condition \
+                     `{unentailed}`, which the conditions of '{spec}' do not entail. So \
+                     '{spec}' would be claimed where '{required}' does not hold. \
+                     Strengthen `provides {spec}[…] :- …` to a condition that implies \
+                     `{unentailed}`, or weaken `provides {required}[…] :- …`."
+                )
+            }
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
                     carrier, spec, spec, op, spec, op, carrier, op, spec, op, carrier)
@@ -1713,6 +1738,14 @@ impl std::fmt::Display for LoadError {
             LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
                 write!(f, "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'",
                     carrier, spec, required, carrier, required)
+            }
+            LoadError::ProvisionConditionsTooWeak { carrier, spec, required, unentailed } => {
+                write!(
+                    f,
+                    "'{carrier}' provides '{spec}', which requires '{required}' — and \
+                     '{carrier}' DOES provide '{required}', but only under `{unentailed}`, \
+                     which the conditions of '{spec}' do not entail"
+                )
             }
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
@@ -2226,6 +2259,7 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.reflect.EntityInfo",
     "anthill.reflect.SortRequiresInfo",
     "anthill.reflect.SortProvidesInfo",
+    "anthill.reflect.ProvidesConditionInfo",
     "anthill.reflect.SortView",
 ];
 
@@ -4451,6 +4485,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_scope);
     kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_scope);
     kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_scope);
+    kb.symbols.define("ProvidesConditionInfo", "anthill.reflect.ProvidesConditionInfo", SymbolKind::Entity, reflect_scope);
     kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_scope);
     let member_info = kb.symbols.define(
         "MemberInfo",
@@ -17104,58 +17139,26 @@ impl<'a> Loader<'a> {
         // `check_provider_requires`.
         use crate::eval::value::Value;
         let spec_value = self.lower_value_or_gate(spec_value, "provides", &pc.spec);
-        // WI-869 (058 §3.8) — the `:- goals` tail, taken BEFORE the assert moves
-        // `spec_value` into the fact. Keyed by the spec's BASE sort, which is what
-        // makes a condition belong to one provision and not to the sort: the reader
-        // (`typing::provider_dict_chain`) matches a dispatch's goal spec against it.
-        //
-        // Each condition is lowered through the SAME path a `requires` spec takes
-        // (`sort_inst_to_value` + `lower_value_or_gate`), so the entries the dictionary
-        // chain builds out of them are indistinguishable from sort-level ones — which
-        // is the point: a per-provision chain is a second contributor to the provider
-        // half, not a second half.
-        if !pc.conditions.is_empty() {
-            match super::typing::spec_base_functor(self.kb, &spec_value) {
-                Some(spec_base) => {
-                    let mut specs: Vec<Value> = Vec::with_capacity(pc.conditions.len());
-                    for c in &pc.conditions {
-                        let v = self.sort_inst_to_value(c);
-                        let v = self.lower_value_or_gate(v, "provides condition", c);
-                        // LOUD at the DECLARATION, so `provider_dict_chain`'s decoder can
-                        // assert rather than skip: a condition whose spec has no readable
-                        // base would condition nothing while its author reads the file as
-                        // if it did.
-                        if super::typing::spec_base_functor(self.kb, &v).is_none() {
-                            self.errors.push(LoadError::Other {
-                                message: format!(
-                                    "`provides {} :- …` in `{}`: a condition has no                                      readable spec head, so it conditions nothing",
-                                    self.kb.qualified_name_of(spec_base),
-                                    self.kb.qualified_name_of(domain),
-                                ),
-                            });
-                            continue;
-                        }
-                        specs.push(v);
-                    }
-                    self.kb.record_provision_conditions(domain, spec_base, specs);
-                }
-                // LOUD, not a silent drop: the conditions were written and would
-                // otherwise condition nothing — the provision would keep its
-                // over-claiming shared-chain meaning while its author read the file as
-                // if it did not.
-                None => self.errors.push(LoadError::Other {
-                    message: format!(
-                        "`provides … :- …` in `{}`: the provided spec has no readable \
-                         base sort, so its {} condition(s) have no provision to scope \
-                         to",
-                        self.kb.qualified_name_of(domain),
-                        pc.conditions.len(),
-                    ),
-                }),
-            }
-        }
         // `sort_ref` is the providing sort as a term; the domain is its name.
         let domain_term = self.kb.make_name_term_from_sym(domain);
+        // WI-869 (058 §3.8) / WI-1033 — the `:- goals` tail, emitted BEFORE the
+        // provision's own assert moves `spec_value` into the fact. One
+        // `ProvidesConditionInfo` fact per goal, joined to the provision by the very
+        // view that provision carries, so a condition is observable to the same fact
+        // layer that reads the provision itself.
+        //
+        // Each condition is lowered through the SAME path a `requires` spec takes
+        // (`sort_inst_to_value` + `lower_value_or_gate`), so the dictionary-chain
+        // entries built out of them are indistinguishable from sort-level ones — which
+        // is the point: a per-provision chain is a second contributor to the provider
+        // half, not a second half.
+        //
+        // ORDER is the fact assertion order, which is source order here and is the SAME
+        // referent `direct_requires` already uses for the sort-level half — the two are
+        // separate per-functor scans, so they cannot interleave.
+        if !pc.conditions.is_empty() {
+            self.load_provides_conditions(pc, domain, domain_term, &spec_value);
+        }
         self.kb.assert_metadata_fact_carrier(
             provides_sym,
             Vec::new(),
@@ -17164,6 +17167,77 @@ impl<'a> Loader<'a> {
             domain,
             None,
         );
+    }
+
+    /// WI-1033 — emit one `ProvidesConditionInfo(sort_ref, provided, condition)` per
+    /// goal of a `provides X[…] :- goals` tail.
+    ///
+    /// A SEPARATE entity rather than a third `SortProvidesInfo` field: a provision has
+    /// MANY conditions, and "one fact per clause" is the shape `SortRequiresInfo`
+    /// already gives "one requirement of one sort" — a condition IS a requirement,
+    /// scoped to a provision instead of to the sort. It also leaves `SortProvidesInfo`
+    /// byte-identical, so none of the four places its field list is hard-coded, and no
+    /// reflect rule reading it, has to change.
+    fn load_provides_conditions(
+        &mut self,
+        pc: &ProvidesClause,
+        domain: Symbol,
+        domain_term: crate::kb::term::TermId,
+        provided: &crate::eval::value::Value,
+    ) {
+        use crate::eval::value::Value;
+        // LOUD, not a silent drop: the conditions were written and would otherwise
+        // condition nothing — the provision would keep its over-claiming shared-chain
+        // meaning while its author read the file as if it did not.
+        let Some(spec_base) = super::typing::spec_base_functor(self.kb, provided) else {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "`provides … :- …` in `{}`: the provided spec has no readable base \
+                     sort, so its {} condition(s) have no provision to scope to",
+                    self.kb.qualified_name_of(domain),
+                    pc.conditions.len(),
+                ),
+            });
+            return;
+        };
+        let cond_sym = self.kb.resolve_symbol("anthill.reflect.ProvidesConditionInfo");
+        let sort_ref_sym = self.kb.intern("sort_ref");
+        let provided_sym = self.kb.intern("provided");
+        let condition_sym = self.kb.intern("condition");
+        self.kb.register_entity_fields(
+            cond_sym,
+            vec![sort_ref_sym, provided_sym, condition_sym],
+        );
+        for c in &pc.conditions {
+            let v = self.sort_inst_to_value(c);
+            let v = self.lower_value_or_gate(v, "provides condition", c);
+            // LOUD at the DECLARATION, so the reader's decoder can assert rather than
+            // skip: a condition whose spec has no readable base would condition nothing
+            // while its author reads the file as if it did.
+            if super::typing::spec_base_functor(self.kb, &v).is_none() {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "`provides {} :- …` in `{}`: a condition has no readable spec \
+                         head, so it conditions nothing",
+                        self.kb.qualified_name_of(spec_base),
+                        self.kb.qualified_name_of(domain),
+                    ),
+                });
+                continue;
+            }
+            self.kb.assert_metadata_fact_carrier(
+                cond_sym,
+                Vec::new(),
+                vec![
+                    (sort_ref_sym, Value::term(domain_term)),
+                    (provided_sym, provided.clone()),
+                    (condition_sym, v),
+                ],
+                ClauseKind::Requirement,
+                domain,
+                None,
+            );
+        }
     }
 
     /// Standalone `provides Spec language X ... end`. Proposal 038.

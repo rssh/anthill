@@ -712,6 +712,28 @@ namespace anthill.reflect
     spec     : Term                                 -- the spec view (e.g. SortView(Ref(Eq), T = Int64()))
   )
 
+  -- ProvidesConditionInfo: ONE condition of ONE conditional provision
+  -- (proposal 058 §3.8, WI-869/WI-1033). Emitted per goal of a
+  -- `provides X[…] :- goals` tail, so the conditions are observable to the
+  -- same fact layer that reads the provision itself.
+  --
+  -- A SEPARATE entity rather than a third field on SortProvidesInfo, for two
+  -- reasons. A provision has MANY conditions, so a field would have to hold a
+  -- list — and the shape that already exists for "one requirement of one sort"
+  -- is SortRequiresInfo, one fact per clause. And SortProvidesInfo's field list
+  -- is hard-coded in four places, so widening it is four edits and four chances
+  -- to disagree; this leaves it byte-identical.
+  --
+  -- `provided` is the SAME view SortProvidesInfo carries for the provision, so
+  -- the two are joined on it; `condition` is a view of the same shape a
+  -- SortRequiresInfo.spec holds, because a condition IS a requirement — one
+  -- scoped to a provision instead of to the sort.
+  entity ProvidesConditionInfo(
+    sort_ref  : Term,                               -- the providing sort
+    provided  : Term,                               -- the provision's spec view
+    condition : Term                                -- one condition's spec view
+  )
+
   -- ================================================================
   -- Typing rules (see typing.anthill for active rules)
   -- ================================================================

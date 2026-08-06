@@ -483,7 +483,8 @@ end
     let multi_sym = interp.kb()
         .try_resolve_symbol("test.wi239.multi.Wi239Multi")
         .expect("Wi239Multi registered");
-    let names = anthill_core::kb::typing::synth_req_names(interp.kb_mut(), multi_sym);
+    let chain = anthill_core::kb::typing::provider_dict_entries(interp.kb_mut(), multi_sym);
+    let names = chain.names(interp.kb_mut());
     let resolved: Vec<String> = names
         .iter()
         .map(|s| interp.kb().local_name_of(*s).to_string())

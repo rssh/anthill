@@ -557,3 +557,166 @@ fn a_bracketless_sorted_set_of_pairs_sorts() {
         }
     }
 }
+
+// ── WI-1033: the conditions are FACTS, and they are checked ──────────
+
+/// A local tower with an EXTRA spec nothing requires, so the unsound spelling breaks
+/// ENTAILMENT and nothing else — `Ordered[E]` stays declared, so `compare`'s body keeps
+/// the evidence it reads and no coverage error muddies the measurement.
+fn cell_tower(eq_cond: &str) -> String {
+    format!(
+        "\nnamespace wi1033.cell\n  \
+         import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ordered}}\n\
+  sort Lawful\n    sort T = ?\n    operation witness(x: T) -> Int64\n  end\n\
+  enum Cell\n    sort E = ?\n    entity cell(v: E)\n    \
+    provides PartialEq[Cell] :- PartialEq[E]\n    \
+    provides Eq[Cell] :- {eq_cond}\n    \
+    provides PartialOrd[Cell] :- PartialOrd[E]\n    \
+    provides Ordered[Cell] :- Ordered[E]\n    \
+    operation eq(a: Cell, b: Cell) -> Bool =\n      \
+      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> PartialEq.eq(x, y)\n    \
+    operation compare(a: Cell, b: Cell) -> Int64 =\n      \
+      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> Ordered.compare(x, y)\n  end\nend\n"
+    )
+}
+
+/// A CONDITIONAL PROVISION CERTIFIED BY A CONDITIONAL ONE MUST ENTAIL IT. The
+/// self-provision arm of `check_provider_requires` accepts `Ordered[Cell]` because the
+/// carrier provides the `Eq[Cell]` that `Ordered` requires — and once conditions are
+/// per-provision, that is only sound where `Ordered[Cell]` HOLDING forces `Eq[Cell]` to.
+/// The arm's original justification ("the element-conditionality is already inherited
+/// from the outer provision") held by construction when a carrier had one chain; it is
+/// now a claim about two independent lists.
+///
+/// The unsound spelling conditions `Eq[Cell]` on a spec `Ordered` does not require, so
+/// `Ordered[Cell]` would be claimed where the `Eq` it needs does not hold.
+#[test]
+fn a_provision_certified_by_a_weaker_conditioned_one_is_refused() {
+    let errs = load_errs(&cell_tower("Lawful[E]"));
+    assert!(
+        errs.iter().any(|e| {
+            e.contains("provides 'anthill.prelude.Ordered', which requires \
+                        'anthill.prelude.Eq'")
+                && e.contains("DOES provide")
+                && e.contains("`wi1033.cell.Lawful[T = wi1033.cell.Cell.E]`")
+        }),
+        "the refusal must name the UNENTAILED condition, and must not say the carrier \
+         does not provide `Eq` — it does, just too weakly; got {errs:?}",
+    );
+}
+
+/// THE CONTROL, and it is what says the check discriminates rather than refusing every
+/// conditional tower: the same carrier with `Eq[Cell] :- Eq[E]` loads clean, because
+/// `Ordered[E]` transitively requires `Eq[E]` and so entails it.
+#[test]
+fn a_provision_whose_conditions_entail_the_inner_ones_loads() {
+    if let Err(errs) = crate::common::try_load_kb_with(&cell_tower("Eq[E]")) {
+        panic!(
+            "`Ordered[E]` requires `Eq[E]`, so it entails the `Eq[Cell]` condition and \
+             this must load; got {errs:?}"
+        );
+    }
+}
+
+/// THE CONDITIONS ARE OBSERVABLE TO THE REFLECT LAYER — the point of WI-1033, and
+/// asserted through an actual SLD QUERY over `anthill.reflect.typing.provides_when`
+/// rather than through the Rust fact API, because "observable" means observable to
+/// anthill. Before this they lived in a KB side table with exactly one Rust reader; no
+/// rule and no fact-walking check could see them.
+///
+/// Driven on the stdlib's own `Pair`, whose four provisions carry two conditions each.
+#[test]
+fn a_conditional_provisions_goals_answer_a_reflect_query() {
+    use anthill_core::kb::term::{Term, Var};
+    let mut kb = crate::common::load_stdlib_kb();
+    let pair = kb.resolve_qualified_name_term("anthill.prelude.Pair");
+    let mk_var = |kb: &mut anthill_core::kb::KnowledgeBase, n: &str| {
+        let sym = kb.intern(n);
+        let vid = kb.fresh_var(sym);
+        kb.alloc(Term::Var(Var::Global(vid)))
+    };
+    let (v_spec, v_cond) = (mk_var(&mut kb, "spec"), mk_var(&mut kb, "cond"));
+    let functor = kb.resolve_symbol("anthill.reflect.typing.provides_when");
+    let goal = kb.alloc(Term::Fn {
+        functor,
+        pos_args: smallvec::SmallVec::from_slice(&[pair, v_spec, v_cond]),
+        named_args: smallvec::SmallVec::new(),
+    });
+    let solutions = kb.resolve(&[goal], &Default::default());
+    // `Pair` writes four conditioned provisions of two goals each. Asserted as a COUNT
+    // and not merely `!is_empty()`: a rule that dropped the `provided` join would still
+    // answer, and would answer the same eight rows for every spec.
+    assert_eq!(
+        solutions.len(),
+        8,
+        "`provides_when(Pair, ?spec, ?cond)` must answer once per condition of each of \
+         `Pair`'s four provisions",
+    );
+}
+
+/// …and the same facts, read through the Rust API, are JOINED to their own provision.
+/// The control the query above cannot give: a count is blind to which condition landed
+/// under which provision.
+#[test]
+fn each_condition_is_joined_to_its_own_provision() {
+    use anthill_core::kb::term::Term;
+    let kb = crate::common::load_stdlib_kb();
+    let cond = kb
+        .try_resolve_symbol("anthill.reflect.ProvidesConditionInfo")
+        .expect("the entity must be registered");
+    let base_qn = |t| match kb.get_term(t) {
+        Term::Fn { functor, pos_args, .. } => match pos_args.first().map(|a| kb.get_term(*a)) {
+            // A `SortView(Base, …)` wrapper carries the base in pos_args[0].
+            Some(Term::Fn { functor: b, .. }) | Some(Term::Ref(b)) => {
+                Some(kb.qualified_name_of(*b).to_string())
+            }
+            _ => Some(kb.qualified_name_of(*functor).to_string()),
+        },
+        Term::Ref(f) | Term::Ident(f) => Some(kb.qualified_name_of(*f).to_string()),
+        _ => None,
+    };
+    let mut pairs: Vec<(String, String)> = kb
+        .rules_by_functor(cond)
+        .into_iter()
+        .filter(|rid| kb.is_fact(*rid))
+        .filter_map(|rid| kb.fact_head_named_args(rid))
+        .filter_map(|named| {
+            let get = |k: &str| {
+                named.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
+            };
+            let owner = match kb.get_term(get("sort_ref")?) {
+                Term::Fn { functor, .. } | Term::Ref(functor) => {
+                    kb.qualified_name_of(*functor).to_string()
+                }
+                _ => return None,
+            };
+            if owner != "anthill.prelude.Pair" {
+                return None;
+            }
+            Some((base_qn(get("provided")?)?, base_qn(get("condition")?)?))
+        })
+        .collect();
+    pairs.sort();
+    pairs.dedup();
+    // Each of `Pair`'s four provisions is conditioned on its OWN floor at both
+    // components — exactly the shape a shared chain could not express.
+    for spec in [
+        "anthill.prelude.PartialEq",
+        "anthill.prelude.Eq",
+        "anthill.prelude.PartialOrd",
+        "anthill.prelude.Ordered",
+    ] {
+        assert!(
+            pairs.iter().any(|(p, c)| p == spec && c == spec),
+            "`provides {spec}[Pair] :- {spec}[…]` must be readable as a fact; \
+             found {pairs:?}",
+        );
+    }
+    // …and NOT the cross pairing: a reader that ignored `provided` and merely listed
+    // every condition of the carrier would pass the loop above and fail here.
+    assert!(
+        !pairs.iter().any(|(p, c)| p == "anthill.prelude.PartialEq"
+            && c == "anthill.prelude.Ordered"),
+        "each condition must be joined to ITS OWN provision; found {pairs:?}",
+    );
+}

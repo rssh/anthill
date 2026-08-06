@@ -1368,7 +1368,8 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         let encl = enclosing_sort.ok_or_else(|| EvalError::Internal(
             "DeferToRequirement classification missing enclosing_sort".into()))?;
-        let caller_names = crate::kb::typing::synth_req_names(&mut self.kb, encl);
+        let caller_names = crate::kb::typing::provider_dict_entries(&mut self.kb, encl)
+            .names(&mut self.kb);
         let name_sym = *caller_names.get(slot).ok_or_else(|| EvalError::Internal(format!(
             "DeferToRequirement slot {slot} out of range for {} (chain len {})",
             self.kb.local_name_of(encl), caller_names.len())))?;
@@ -1474,7 +1475,8 @@ impl Interpreter {
             // `requires` chain to fill — `__req_self` alone.
             return Ok(reqs);
         };
-        let names = crate::kb::typing::synth_req_names(&mut self.kb, owner);
+        let names = crate::kb::typing::provider_dict_entries(&mut self.kb, owner)
+            .names(&mut self.kb);
         let Some(slots) = layout.slots_for(&self.kb, owner) else {
             // `resolve_op_target` can land on a THIRD sort — a same-short-name
             // default the provider merely inherits, or an instance-fact binding

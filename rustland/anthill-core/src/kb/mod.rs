@@ -603,40 +603,6 @@ pub struct NamedRequirementSlot {
     pub spec_base: Option<Symbol>,
 }
 
-/// WI-869 (058 §3.8) — one provision's `:- goals` tail: the conditions scoped to
-/// THAT provision rather than to the whole sort.
-///
-/// A loader-written record and NOT a fact — and the reason matters, because the first
-/// version of this comment gave a FALSE one. It said a widened `SortProvidesInfo` would
-/// silently stop `reflect/typing.anthill`'s `provides(?A, ?S) :- SortProvidesInfo(
-/// sort_ref: ?A, spec: ?S)` from matching. It would not: the loader expands a rule-body
-/// pattern that names fewer fields than the entity declares by filling the rest with
-/// fresh vars (WI-716), and the rule eleven lines below that one names 2 of `SortInfo`'s
-/// 7 fields and matches.
-///
-/// THE ACTUAL POSITION, which is a scope boundary rather than an obstacle: nothing on
-/// the FACT path reads a condition yet. `check_provider_requires` walks
-/// `SortProvidesInfo` facts, and the reflect `provides/2` rule reads the same facts, so
-/// both still see `Pair`'s provisions as UNCONDITIONAL — the conditions bind on the
-/// DICTIONARY path alone ([`crate::kb::typing::provider_dict_chain`], this record's one
-/// reader). Making them fact-observable — a `ProvidesConditionInfo(sort_ref, provided,
-/// condition)` entity, leaving `SortProvidesInfo` untouched — is what a positive
-/// use-site discharge and a condition-aware coherence check would need, and is a
-/// separate increment (058 §3.8 defers the related "a provider's chain does not
-/// discharge the spec's requirements" for the same reason).
-///
-/// Same shape as [`NamedRequirementSlot`] in the meantime.
-#[derive(Debug, Clone)]
-pub struct ProvisionConditions {
-    /// The base sort of the spec this provision provides — the key, beside the
-    /// carrier, that says WHICH provision these conditions belong to.
-    pub spec: Symbol,
-    /// The condition specs in written order, carried in the same `Value` form a
-    /// `SortRequiresInfo.spec` field holds, so `typing`'s `spec_base_functor` /
-    /// `substitute_in_spec` decoders read them unchanged.
-    pub specs: Vec<crate::eval::value::Value>,
-}
-
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
@@ -896,12 +862,6 @@ pub struct KnowledgeBase {
     /// phases 3-4 are where a name would have to reach it; it is not load-bearing
     /// today, and this comment says so rather than implying a reader that exists.
     pub(crate) named_requirement_slots: HashMap<Symbol, Vec<NamedRequirementSlot>>,
-
-    /// WI-869 (058 §3.8) — per-CARRIER, the conditional provisions that carrier
-    /// declares, in source order. Empty for every carrier that writes no `:- goals`
-    /// tail, which is what makes `typing::provider_dict_chain` fall back to the
-    /// sort's own `requires` chain unchanged.
-    pub(crate) provision_conditions: HashMap<Symbol, Vec<ProvisionConditions>>,
 
     /// WI-659 — the SortAlias resolution index (source sort → alias target), built
     /// once at type-check start by `typing::build_sort_alias_index`. `None` until
@@ -1314,7 +1274,6 @@ impl KnowledgeBase {
             op_records: HashMap::new(),
             op_capture_params: HashMap::new(),
             named_requirement_slots: HashMap::new(),
-            provision_conditions: HashMap::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             provides_index: None,
@@ -1493,35 +1452,6 @@ impl KnowledgeBase {
     /// overwhelmingly common all-anonymous owner.
     pub fn named_requirement_slots(&self, owner: Symbol) -> &[NamedRequirementSlot] {
         self.named_requirement_slots.get(&owner).map_or(&[], Vec::as_slice)
-    }
-
-    /// WI-869 (058 §3.8) — record that `carrier`'s provision of `spec` is conditioned
-    /// on `specs`. Called by the loader for a `provides X[…] :- goals` clause; an
-    /// unconditioned provision records nothing, so the common carrier keeps an absent
-    /// entry and `provision_conditions` reads back empty.
-    /// CANONICAL at the WRITE, like `insert_sort_op` — so the reader is one hash and
-    /// not a raw-then-canonical fallback. `canonical_sym`'s own doc states the rule: a
-    /// divergence between two interned copies of a name is fixed at the producer and
-    /// never papered over at the consumer, and a fallback here could not paper it
-    /// anyway (with both copies recording, the raw probe finds one bucket and stops).
-    pub fn record_provision_conditions(
-        &mut self,
-        carrier: Symbol,
-        spec: Symbol,
-        specs: Vec<crate::eval::value::Value>,
-    ) {
-        let key = self.canonical_sort_sym(carrier);
-        self.provision_conditions
-            .entry(key)
-            .or_default()
-            .push(ProvisionConditions { spec, specs });
-    }
-
-    /// WI-869 — `carrier`'s conditional provisions in declaration order; empty for
-    /// every carrier that writes no `:- goals` tail. Keyed CANONICALLY — pass
-    /// `canonical_sort_sym(carrier)`.
-    pub fn provision_conditions(&self, carrier: Symbol) -> &[ProvisionConditions] {
-        self.provision_conditions.get(&carrier).map_or(&[], Vec::as_slice)
     }
 
     /// WI-242 — record the value-typed body node for an operation.

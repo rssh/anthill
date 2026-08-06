@@ -3,7 +3,7 @@ namespace anthill.reflect.typing
   -- Sorts named in the variance facts below (`Covariant`/`Contravariant`).
   import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq}
 
-  import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, SortProvidesInfo, scope}
+  import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, SortProvidesInfo, ProvidesConditionInfo, scope}
 
   -- ================================================================
   -- Helper: cons-list membership
@@ -73,6 +73,14 @@ namespace anthill.reflect.typing
   -- relation, so a position demanding the spec is discharged by the
   -- supplying fact. `spec` is the SortView carrying the carrier bindings.
   rule provides(?A, ?S_inst) :- SortProvidesInfo(sort_ref: ?A, spec: ?S_inst)
+
+  -- provides_when: the CONDITIONAL half (058 §3.8, WI-869/WI-1033). `A` provides
+  -- `S_inst` only where `C_inst` holds; one row per condition of the provision, so a
+  -- provision with two goals answers twice. `provides` above still holds
+  -- unconditionally — the two are a pair, not alternatives: `provides` says the claim
+  -- was written, `provides_when` says under what.
+  rule provides_when(?A, ?S_inst, ?C_inst)
+    :- ProvidesConditionInfo(sort_ref: ?A, provided: ?S_inst, condition: ?C_inst)
 
   -- ================================================================
   -- type_compatible: can type A be used where type B is expected?

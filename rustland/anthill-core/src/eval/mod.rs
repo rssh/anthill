@@ -784,7 +784,7 @@ impl Interpreter {
         // §"Host-to-entry-op boundary".
         let parent_sym = crate::kb::typing::impl_parent_of_op(&self.kb, sym);
         let names = parent_sym
-            .map(|p| crate::kb::typing::synth_req_names(&mut self.kb, p));
+            .map(|p| crate::kb::typing::provider_dict_entries(&mut self.kb, p).names(&mut self.kb));
         let expected = names.as_ref().map_or(0, |n| n.len());
         if chain_dicts.len() != expected {
             return Err(EvalError::Internal(format!(
@@ -961,22 +961,19 @@ impl Interpreter {
         let Some(parent_sym) = crate::kb::typing::impl_parent_of_op(&self.kb, op_sym) else {
             return smallvec::SmallVec::new();
         };
-        // The `_rc` read (WI-657(12)): only `required_sort` is read per entry, so the
-        // owned clone of every `RequiresEntry` is pure cost.
-        // WI-869: `provider_dict_entries`, not `direct_requires_chain_rc` — the zip
-        // below pairs this with `synth_req_names`, which names the DICTIONARY slots
-        // (sort-level `requires` plus any conditional provision's `:- goals`).
+        // WI-1033: the names come OFF the chain, so the zip below cannot pair a
+        // dictionary chain with a declared-chain naming (WI-869 did exactly that at
+        // four producers). WI-657(12): no owned clone — only `required_sort` is read.
         let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, parent_sym);
-        let names = crate::kb::typing::synth_req_names(&mut self.kb, parent_sym);
+        let names = chain.names(&mut self.kb);
         let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
             smallvec::SmallVec::with_capacity(names.len() + 1);
         let self_slot = self.stand_in_requirement(parent_sym, parent_sym);
         out.push((self.fields.req_self, self_slot));
-        // `names` and `chain` are two reads of `provider_dict_chain(parent_sym)` — the
-        // SAME symbol, back to back, with no mutation between — so the zip cannot
-        // truncate. (`expand_dispatching_dict` checks its analogous pair at runtime
-        // because there the two sides come from DIFFERENT symbols, bridged by
-        // canonicalization.)
+        // `names` and `chain` are ONE `DictChain`, so the zip cannot truncate — that is
+        // now a property of the type rather than of these two lines being adjacent.
+        // (`expand_dispatching_dict` still checks its analogous pair at runtime, because
+        // there the two sides come from DIFFERENT symbols, bridged by canonicalization.)
         for (name, entry) in names.iter().zip(chain.iter()) {
             let slot = self.stand_in_requirement(entry.required_sort, parent_sym);
             out.push((*name, slot));
