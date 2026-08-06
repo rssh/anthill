@@ -803,7 +803,11 @@ impl Interpreter {
         // — so the check is what keeps it valid when 058 phase 7 gives those specs
         // chains.
         if let Some(p) = parent_sym {
-            let chain = crate::kb::typing::direct_requires_chain_rc(&mut self.kb, p);
+            // WI-869: the DICTIONARY chain, matching the `synth_req_names` count check
+            // above — the divergence this file's own comment warns about three lines up
+            // is precisely what a declared-chain read reintroduces here, silently
+            // validating fewer dicts than were supplied.
+            let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, p);
             for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
                 let want = crate::kb::typing::dict_layout(
                     &mut self.kb, entry.required_sort, dict.functor(),
@@ -959,13 +963,16 @@ impl Interpreter {
         };
         // The `_rc` read (WI-657(12)): only `required_sort` is read per entry, so the
         // owned clone of every `RequiresEntry` is pure cost.
-        let chain = crate::kb::typing::direct_requires_chain_rc(&mut self.kb, parent_sym);
+        // WI-869: `provider_dict_entries`, not `direct_requires_chain_rc` — the zip
+        // below pairs this with `synth_req_names`, which names the DICTIONARY slots
+        // (sort-level `requires` plus any conditional provision's `:- goals`).
+        let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, parent_sym);
         let names = crate::kb::typing::synth_req_names(&mut self.kb, parent_sym);
         let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
             smallvec::SmallVec::with_capacity(names.len() + 1);
         let self_slot = self.stand_in_requirement(parent_sym, parent_sym);
         out.push((self.fields.req_self, self_slot));
-        // `names` and `chain` are two reads of `direct_requires_chain(parent_sym)` — the
+        // `names` and `chain` are two reads of `provider_dict_chain(parent_sym)` — the
         // SAME symbol, back to back, with no mutation between — so the zip cannot
         // truncate. (`expand_dispatching_dict` checks its analogous pair at runtime
         // because there the two sides come from DIFFERENT symbols, bridged by

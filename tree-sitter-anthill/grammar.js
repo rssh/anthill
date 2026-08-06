@@ -650,9 +650,7 @@ module.exports = grammar({
     // v1b consumer), and `merge(E1, …, En)` union (sugar for the braced
     // set form, allowing nested effect-expressions).
     _effect_type: $ => choice(
-      $.simple_type,
-      $.application,
-      $.variable_term,
+      $._spec_instantiation,
       $.effect_presence,
       $.effect_absence,
       $.effect_merge,
@@ -943,10 +941,33 @@ module.exports = grammar({
     // reason `Ordered.compare`'s host implementation had to be keyed on the SPEC
     // op, where it shadowed every carrier that could not be a host scalar.
 
+    // WI-869 (proposal 058 §3.8, §4): the `:- goals` tail scopes a provision's
+    // conditions to THAT provision. A sort's `requires` chain is shared by every
+    // provision it makes, so a provider of two floors of one tower could not
+    // condition them at two strengths — `Pair` provides `PartialEq` where its
+    // components merely have the partial one and `Eq` only where they have the
+    // lawful one, and one chain must pick.
+    //
+    // The tail is a list of SPEC INSTANTIATIONS, not `rule_body` goals: every
+    // condition is `Spec[…]` over the sort's own parameters, which is what a
+    // dictionary slot can hold. Admitting `_goal` would accept `neq(b, 0)` here and
+    // then have nowhere to put it — the WI-839 silent-drop class, and the same
+    // reason `requires_body` is its own production.
+    //
+    // And BOTH the spec and its conditions are `_spec_instantiation`, not `_type`: an
+    // arrow or a tuple names no spec, so neither can ever be one, and admitting them is
+    // not merely useless — a trailing `:-` after `_type`'s arrow-with-effect-row arm is
+    // a real surface collision, because `guarded_effect` already claims `:-` after an
+    // effect (`(A) -> B @ E :- guard`), which surfaces as an unresolvable GLR fork of
+    // `_effect_type` against `_simple_effect`. Narrowing makes the illegal state
+    // unrepresentable AND keeps the parser conflict-free.
     provides_clause: $ => seq(
       'provides',
-      field('spec', $._type),
+      field('spec', $._spec_instantiation),
+      optional(seq(':-', field('conditions', $.provides_conditions))),
     ),
+
+    provides_conditions: $ => commaSep1($._spec_instantiation),
 
     provides_block: $ => seq(
       repeat(field('description', $.description_block)),
@@ -1529,11 +1550,26 @@ module.exports = grammar({
     // =========================================================
 
     _type: $ => choice(
+      $._spec_instantiation,
+      $.tuple_type,
+      $.arrow_type,
+    ),
+
+    // The forms that can NAME A SPEC: a bare name, an applied one, or a type variable.
+    // One owner, because three positions want exactly this set — `provides`' spec and
+    // its `:- goals` conditions (WI-869), and the first three arms of `_type` and
+    // `_effect_type`, which spelled it out a third and fourth time. A new spec-position
+    // form added to one copy and not the others is a silent omission.
+    //
+    // NOT used for `provides_block`'s spec or for `requires_declaration`'s type,
+    // deliberately: both would be correct restrictions by this same argument, but the
+    // house style is parse-permissive / convert-strict (WI-763 — "a located 'not a
+    // type' beats a bare syntax error"), and neither has a conflict forcing the
+    // narrowing. `provides_clause` does.
+    _spec_instantiation: $ => choice(
       $.simple_type,
       $.application,
       $.variable_term,
-      $.tuple_type,
-      $.arrow_type,
     ),
 
     // Arrow type: (A) -> B  or  (a: A, b: B) -> C  or  () -> A

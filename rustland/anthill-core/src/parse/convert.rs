@@ -4148,8 +4148,20 @@ impl<'a> Converter<'a> {
 
     fn convert_provides_clause(&mut self, node: Node) -> Option<ProvidesClause> {
         let spec = self.field(node, "spec").map(|n| self.convert_type(n))?;
+        // WI-869 (058 §3.8): the `:- goals` tail. Its children are all NAMED (every
+        // `_spec_instantiation` alternative is), so `named_children` is the whole list
+        // and no separator survives.
+        let conditions = self
+            .field(node, "conditions")
+            .map(|n| {
+                let mut cursor = n.walk();
+                n.named_children(&mut cursor)
+                    .map(|c| self.convert_type(c))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let span = self.span(node);
-        Some(ProvidesClause { spec, span })
+        Some(ProvidesClause { spec, conditions, span })
     }
 
     fn convert_provides_block(&mut self, node: Node) -> Option<ProvidesBlock> {

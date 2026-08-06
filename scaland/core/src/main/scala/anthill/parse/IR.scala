@@ -637,8 +637,16 @@ case class MappingEntry(source: Name, target: String)
 // ── Provides construct (proposal 025) ────────────────────────────
 
 /** `provides Spec[T = X]` inside a sort/enum body — declares the
-  * enclosing sort satisfies the spec. */
-case class ProvidesClause(spec: TypeExpr, span: Span)
+  * enclosing sort satisfies the spec.
+  *
+  * WI-869 (058 §3.8): `conditions` is the `:- goals` tail, scoping the provision's
+  * conditions to THAT provision instead of to the whole sort. Empty for the
+  * unconditioned form. */
+case class ProvidesClause(
+  spec: TypeExpr,
+  conditions: IndexedSeq[TypeExpr],
+  span: Span
+)
 
 /** Standalone `provides Spec language <lang> ... end` block. */
 case class ProvidesBlock(

@@ -1,21 +1,25 @@
 //! WI-858 (proposal 058 §3.2, §3.8, §5; implementation notes §8 phase 7) — 058's
 //! coexistence over `Pair`, and what the PRELUDE does and does not ship for it.
 //!
-//! WHAT THE PRELUDE SHIPS: componentwise `PartialEq`/`Eq` on `Pair`, and NOT an
-//! ordering. A pair has a canonical order (lexicographic `fst`-then-`snd`, as in every
-//! neighbouring language) and `Pair` should provide it — but today that would cost
-//! SEVEN operations in `pair.anthill` where one would do, because the eval builtins on
-//! `Ordered.compare` / `PartialOrd.gt` & co. compare host SCALARS only and a builtin on
-//! a SPEC op shadows every carrier. Six of those seven would be one-line restatements
-//! of "call `compare`, check the sign". That is WI-876's to remove, and `pair.anthill`'s
-//! header carries the measurement; the library stays free of the workaround.
+//! WHAT THE PRELUDE SHIPS — REWRITTEN AT WI-869/WI-877, because the answer changed.
+//! `Pair` now provides FOUR conditioned provisions: `PartialEq`, `Eq`, `PartialOrd`
+//! and `Ordered`, each with its own `:- goals` tail (058 §3.8), and the ordering is
+//! the canonical lexicographic `fst`-then-`snd`. When this file was written it
+//! provided only the two equality floors, for two reasons that are both now gone:
+//! ordering `Pair` cost SEVEN operations where one would do (WI-876 keyed host
+//! implementations per carrier, so `compare` alone suffices), and a sort's ONE
+//! `requires` chain could not condition `Ordered` without also demanding it of
+//! `PartialEq` (WI-869 scoped conditions to their own provision).
 //!
-//! WHICH LEAVES `Pair` A CARRIER THAT PROVIDES NO ORDERING — and that is exactly the
-//! shape 058's coexistence wants. Two orderings are declared HERE, by the program that
-//! wants them, and selected by name. Same story as `wi844_sorted_set_driver_test` tells
-//! over `String`, but cleaner: `String` already has a host `Ordered` provider, so its
-//! ties are three-way and a bracket-less compare there is unavoidably an error. `Pair`
-//! has none, so two witnesses tie exactly two ways and every repair is writable.
+//! WHICH CHANGES THE COEXISTENCE STORY BELOW, and the arms record the new shape
+//! rather than being deleted. `Pair` is now a THIRD `Ordered` provider, so the two
+//! witnesses declared here tie three ways at a bracket-less compare — the same
+//! configuration `wi844_sorted_set_driver_test` has over `String`, whose host
+//! `Ordered` provider makes its ties three-way. Every repair here is still writable
+//! for the two LOCAL witnesses; naming the prelude's own is not (058 §3.5 check 3
+//! refuses `[Ordered = Pair]` because `Pair` is a CONCRETE provider — WI-861's rung
+//! 2a is what would close that, and WI-877 records the decision to keep the order as
+//! `Pair`'s own identity anyway).
 //!
 //! WHY THE PRELUDE COULD HAVE CARRIED AN ORDERING (and what still holds): obstacle B —
 //! `Ordered requires Eq[T]`, and in a binding-free `stdlib/` load no primitive's `Eq`
@@ -29,7 +33,7 @@
 use anthill_core::eval::Value;
 
 /// Imports only — no ordering is declared here, because whether a program declares a
-/// rival is exactly what several assertions below turn on.
+/// rival TO THE PRELUDE'S is exactly what several assertions below turn on.
 fn program(ns: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
@@ -204,7 +208,17 @@ fn the_prelude_makes_a_pair_lawful_with_no_language_binding() {
             }
         })
         .collect();
-    for spec in ["anthill.prelude.PartialEq", "anthill.prelude.Eq"] {
+    // WI-869/WI-877: all FOUR floors, not just the two equality ones. `Ordered
+    // requires Eq` and `PartialOrd requires PartialEq`, so the ordering provisions
+    // are exactly what the equality ones make prelude-expressible — asserting only
+    // the equality half would leave the tower's upper floors unpinned in the very
+    // load (bindings-free) that is their precondition.
+    for spec in [
+        "anthill.prelude.PartialEq",
+        "anthill.prelude.Eq",
+        "anthill.prelude.PartialOrd",
+        "anthill.prelude.Ordered",
+    ] {
         assert!(
             pair_provides.iter().any(|s| s == spec),
             "`Pair` must provide {spec} in a BINDING-FREE load — that is the property \
@@ -263,9 +277,12 @@ fn swapping_the_brackets_swaps_the_answers() {
 /// is the configuration every phase before 3b refused at the DECLARATION; it is now
 /// refused at the one call that has to choose, with the repair spelled out.
 ///
-/// It is also why the prelude ships NO ordering for `Pair` (see this file's header):
-/// were one of these two in `pair.anthill`, every downstream program declaring the other
-/// would inherit this error without opting in.
+/// WI-869/WI-877 UPDATED THIS ARM rather than deleting it: the prelude now ships
+/// `Pair`'s own lexicographic order, so the tie is THREE-way and names
+/// `anthill.prelude.Pair` beside the two locals. That cost was taken knowingly —
+/// WI-877's feedback measured it and chose the canonical order as `Pair`'s identity —
+/// and asserting the prelude's name HERE is what keeps the choice visible: were the
+/// provision withdrawn, this arm reports it instead of quietly passing on two.
 #[test]
 fn a_bracketless_compare_with_two_orderings_names_both() {
     let src = program(
@@ -283,6 +300,12 @@ fn a_bracketless_compare_with_two_orderings_names_both() {
     assert!(
         tie[0].contains("wi858.bare.ByFst") && tie[0].contains("wi858.bare.BySnd"),
         "the tie must name BOTH declared orderings: {}",
+        tie[0]
+    );
+    assert!(
+        tie[0].contains("anthill.prelude.Pair"),
+        "…and the PRELUDE's own, which WI-877 added: a two-way tie here would mean \
+         `Pair` stopped providing its canonical order: {}",
         tie[0]
     );
 }
@@ -405,11 +428,20 @@ fn pair_equality_is_componentwise() {
 /// and WI-835's use-site check refuses a `NonEq` carrier at a parameter whose sort
 /// `requires Eq`. A pair of floats is an ordinary value and must keep loading.
 ///
-/// The residue is pinned by the second arm rather than hidden: `provides Eq[Pair]`
-/// rides that same one chain, so a NaN reaches a LAWFUL-KEY position inside a pair,
-/// which `Set[T = Float]` itself is refused for. Per-provision conditions (058 §3.8's
-/// `provides X[…] :- goals`) separate the two — WI-869 — and the composite `NonEq`
-/// derivation `eq.anthill` already calls a follow-up is the other half.
+/// THE RESIDUE, AND WI-869 RE-ATTRIBUTED IT. This arm used to say the second half is
+/// still red because `provides Eq[Pair]` rides one shared chain and so over-claims.
+/// That half is DONE: `pair.anthill` now writes `provides Eq[Pair] :- Eq[A], Eq[B]`
+/// and the goal `Eq[Pair[Float, Int64]]` genuinely does not resolve — measured by its
+/// sibling floor in `wi869_per_provision_conditions_test`, where the same shape
+/// refuses `Ordered.compare` on a float pair naming `Ordered[Float]`.
+///
+/// `Set[T = Pair[Float, Int64]]` STILL LOADS, for a different and now-measured
+/// reason: there is NO POSITIVE use-site check for `requires Eq`. The only refusal at
+/// a written type site is the `NonEq` one below, and `Pair` provides no `NonEq` — so
+/// does `Set[T = <a sort that provides nothing at all>]`, which MEASURED loads clean
+/// too. The remaining halves are therefore the composite `NonEq` derivation
+/// `eq.anthill` calls a follow-up, and a positive use-site discharge; neither is
+/// about the provision's condition any more.
 #[test]
 fn a_pair_of_floats_loads_and_that_has_a_recorded_cost() {
     loads_clean(
@@ -417,8 +449,11 @@ fn a_pair_of_floats_loads_and_that_has_a_recorded_cost() {
             "wi858.float",
             "  sort Use\n    operation tag(p: Pair[Float, Int64]) -> Int64 = 1\n  end",
         ),
-        "`Pair`'s chain is `PartialEq`, which `Float` provides — an `Eq` chain refused \
-         this (MEASURED), and `Pair` would have stopped being a general product",
+        "`Pair`'s equality condition is `PartialEq`, which `Float` provides — an `Eq` \
+         one refused this (MEASURED), and `Pair` would have stopped being a general \
+         product. After WI-869 it is the PROVISION's condition, not a sort-level \
+         chain, and `provides Eq[Pair] :- Eq[A], Eq[B]` sits beside it without \
+         reaching this declaration",
     );
 
     let as_key = program(
@@ -436,11 +471,29 @@ fn a_pair_of_floats_loads_and_that_has_a_recorded_cost() {
         "the CONTROL: `Float` itself is refused as a lawful key, so the arm below is \
          about the PAIR hiding it and not about `Set` accepting anything",
     );
+    // THE SECOND CONTROL, added at WI-869 because it is what re-attributed the gap: a
+    // key that provides NOTHING is accepted too. So `Set` is not consulting whether
+    // `Eq[key]` HOLDS at all — the only written-site refusal is the `NonEq` one above
+    // — and the pair below is not a special case of over-claiming, it is the general
+    // absence of a positive discharge.
+    loads_clean(
+        &program(
+            "wi858.opaquekey",
+            "  import anthill.prelude.{Set}\n  \
+             sort Opaque\n    entity opaque\n  end\n  \
+             sort Use\n    operation tag(s: Set[T = Opaque]) -> Int64 = 1\n  end",
+        ),
+        "a key providing NEITHER `Eq` nor `NonEq` is accepted, which is what makes \
+         the pair arm below a case of the missing positive check and not of `Pair`",
+    );
     if crate::common::try_load_kb_with(&as_key).is_err() {
         panic!(
             "RECORDED COST FIXED: a NaN-bearing pair is no longer accepted as a lawful \
-             key. That is the wanted behaviour — delete this arm and close WI-869's \
-             composite half."
+             key. That is the wanted behaviour — delete this arm and the opaque-key \
+             control beside it. WI-869 closed the provision half (the `Eq[Pair]` \
+             provision is conditioned now); what remains is the composite `NonEq` \
+             derivation and a positive use-site discharge, so whichever of those lands \
+             is what this reports."
         );
     }
 }

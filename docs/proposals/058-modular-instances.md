@@ -112,14 +112,14 @@ end
 
 The chain does double duty: it *conditions* the provision and it *supplies the evidence* the provider's bodies dispatch through.
 
-***(proposed)* A CONDITION BELONGS TO ITS PROVISION, not to the sort.** A sort's `requires` chain is shared by every provision it makes, so a provider of two floors of one tower cannot condition them at two strengths — and that is not hypothetical, it is what the shipped `Pair` needs:
+**A CONDITION BELONGS TO ITS PROVISION, not to the sort** *(delivered — WI-869)*. A sort's `requires` chain is shared by every provision it makes, so a provider of two floors of one tower cannot condition them at two strengths — and that is not hypothetical, it is what the shipped `Pair` needs:
 
 ```anthill
 provides PartialEq[Pair[A, B]] :- PartialEq[A], PartialEq[B]
 provides Eq[Pair[A, B]]        :- Eq[A], Eq[B]        -- STRICTLY stronger condition
 ```
 
-With one chain the weaker condition must win — `Pair` takes `requires PartialEq[…]`, since an `Eq` chain would make `Pair[A = Float, B = Int64]` a load error and stop `Pair` being a general product — and the stronger provision then **over-claims**: `Eq[Pair]` asserts lawful equality wherever the components merely have the partial one. The rule is that a `:- goals` tail scopes its conditions to the one provision; a sort-level `requires` keeps its present meaning (every provision, plus the bodies' evidence), and the two compose. Not new machinery: a per-provision chain is a second contributor to the dictionary's **provider half**, not a new half.
+With one chain the weaker condition must win — `Pair` takes `requires PartialEq[…]`, since an `Eq` chain would make `Pair[A = Float, B = Int64]` a load error and stop `Pair` being a general product — and the stronger provision then **over-claims**: `Eq[Pair]` asserts lawful equality wherever the components merely have the partial one. The rule is that a `:- goals` tail scopes its conditions to the one provision; a sort-level `requires` keeps its present meaning (every provision, plus the bodies' evidence), and the two compose. Not new machinery: a per-provision chain is a second contributor to the dictionary's **provider half**, not a new half. As delivered the provider half is ONE slot set per sort — the `requires` chain then the provisions' conditions, deduplicated, because a body is owned by the sort and not by a provision — and it is STRICTNESS that is per-provision: a slot is demanded at a dispatch when it is sort-level or a condition of the provision dispatched, otherwise left unfilled, and reading an unfilled slot is refused at the read.
 
 Two boundaries: **a condition admits, it never ranks** — it shrinks where a provision applies, and provisions still applicable after their conditions resolve by the ladder (§3.2), which is the line between this and the predicate-directed selection §7 rejects; and a provider's chain does **not** discharge the *spec's* own requirements (`Eq[List[E]]` must come from `List`'s provision, not from the witness's chain) — lifting that is a separate, deferred increment.
 
@@ -149,7 +149,7 @@ operation biFold[T](xs: List[T]) -> T
   requires plus: Monoid[T], times: Monoid[T]    -- op-level: two slots of one spec, one name each
 ```
 
-*(proposed)* **One more**: a `:- goals` tail on a provision, scoping its conditions to that provision (§3.8) — the same arrow a rule body already uses, in the one place a provision could not say "only where":
+*(delivered — WI-869)* **One more**: a `:- goals` tail on a provision, scoping its conditions to that provision (§3.8) — the same arrow a rule body already uses, in the one place a provision could not say "only where". The tail is a list of SPEC INSTANTIATIONS, not `rule_body` goals: a condition must be something a dictionary slot can hold, and admitting `_goal` would accept `neq(b, 0)` here with nowhere to put it.
 
 ```anthill
 provides Eq[Pair[A, B]] :- Eq[A], Eq[B]

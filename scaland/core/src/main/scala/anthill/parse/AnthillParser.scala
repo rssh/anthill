@@ -2544,21 +2544,32 @@ private class AnthillParserImpl(
         ConcludeClause(using0.getOrElse(IndexedSeq.empty), strat, span)
     }
 
-  /** `provides Spec` (clause) or `provides Spec language X ... end` (block).
+  /** `provides Spec` (clause), `provides Spec :- goals` (conditional clause, WI-869 /
+    * 058 §3.8) or `provides Spec language X ... end` (block).
     * Disambiguated by checking for the `language` keyword after the spec. */
   private def providesDecl[$: P]: P[Item] =
     P(located(keyword("provides") ~/ typeExpr ~ providesRest)).map {
-      case ((spec, Left(())), span) =>
-        Item.ProvidesClauseItem(ProvidesClause(spec, span))
+      case ((spec, Left(conds)), span) =>
+        Item.ProvidesClauseItem(ProvidesClause(spec, conds, span))
       case ((spec, Right((lang, items))), span) =>
         Item.ProvidesBlockItem(ProvidesBlock(spec, lang, items, span))
     }
 
-  private def providesRest[$: P]: P[Either[Unit, (TermSymbol, IndexedSeq[ProvidesItem])]] =
+  private def providesRest[$: P]
+    : P[Either[IndexedSeq[TypeExpr], (TermSymbol, IndexedSeq[ProvidesItem])]] =
     P(
       (keyword("language") ~/ ident ~ providesContent.rep ~ keyword("end"))
         .map { case (lang, items) => Right((lang, items.toIndexedSeq)) } |
-      Pass.map(_ => Left(()))
+      providesConditions.map(Left(_))
+    )
+
+  /** WI-869: the `:- goals` tail. Each goal is a SPEC INSTANTIATION over the
+    * declaring sort's own parameters, never a rule-body goal — a condition must be
+    * something a dictionary slot can hold. */
+  private def providesConditions[$: P]: P[IndexedSeq[TypeExpr]] =
+    P(
+      (":-" ~/ typeExpr.rep(1, sep = ",")).map(_.toIndexedSeq) |
+      Pass.map(_ => IndexedSeq.empty[TypeExpr])
     )
 
   private def providesContent[$: P]: P[ProvidesItem] =

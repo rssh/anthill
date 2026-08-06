@@ -901,6 +901,10 @@ pub struct MappingEntry {
 #[derive(Debug)]
 pub struct ProvidesClause {
     pub spec: TypeExpr,
+    /// WI-869 (058 §3.8) — the `:- goals` tail: conditions scoped to THIS provision
+    /// instead of to the whole sort. Empty for the unconditioned form, which is what
+    /// keeps every existing provision byte-identical.
+    pub conditions: Vec<TypeExpr>,
     pub span: Span,
 }
 

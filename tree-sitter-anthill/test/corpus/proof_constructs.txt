@@ -647,3 +647,46 @@ end
           (named_arg
             name: (identifier)
             value: (string_literal)))))))
+
+=====================================
+Conditional provision (WI-869, 058 §3.8)
+=====================================
+
+namespace test
+  sort Pair
+    provides Eq[Pair] :- Eq[A], Eq[B]
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (provides_clause
+        spec: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier)))))
+        conditions: (provides_conditions
+          (application
+            name: (name
+              (identifier))
+            (sort_binding
+              type: (simple_type
+                (name
+                  (identifier)))))
+          (application
+            name: (name
+              (identifier))
+            (sort_binding
+              type: (simple_type
+                (name
+                  (identifier))))))))))

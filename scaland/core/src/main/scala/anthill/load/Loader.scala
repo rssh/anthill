@@ -539,6 +539,16 @@ object Loader:
         case Item.RequiresDeclItem(req) =>
           processRequires(kb, req, fileSym, scope, errors)
 
+        // WI-869: a provision's conditions are linked HERE, in the same scan pass and
+        // by the same resolution as `requires` — not at the phase-2 load, where the
+        // first cut put them. A `requires` links a parent scope, that IS what a
+        // requirement does in scaland, and a condition is written in the same
+        // vocabulary. Measured: moving `pair.anthill`'s two `requires PartialEq`
+        // clauses into conditions removed two parent links from scaland's `Pair` scope
+        // until this arm existed.
+        case Item.ProvidesClauseItem(pc) if pc.conditions.nonEmpty =>
+          processProvidesConditions(kb, pc, fileSym, scope, errors)
+
         // WI-727 (proposal 056): "at most one variadic capture parameter, and
         // trailing" is checked HERE and not in the parser — the diagnostic quotes the
         // QUALIFIED operation name, which only the loader has. Mirrors rustland's
@@ -838,7 +848,35 @@ object Loader:
     // a base name that did not resolve from inside a top-level DOTTED declaration. That
     // was WI-992's gap in the scope graph, fixed at [[ensureNamespacePath]], and the arm
     // now goes through the same one rung order as the bare form.
-    (req.typeExpr match
+    linkSpecScope(kb, req.typeExpr, req.span, "requires", fileSym, scope, errors)
+
+  /** WI-869 (058 §3.8) — a provision's `:- goals` tail, linked exactly as a `requires`
+    * is. A condition is a spec instantiation over the declaring sort's parameters, and
+    * "link the spec's scope as a parent" is [[processRequires]]'s whole effect in
+    * scaland, so the two share it rather than one silently doing less. */
+  private def processProvidesConditions(
+    kb: KnowledgeBase,
+    pc: anthill.parse.ProvidesClause,
+    fileSym: SymbolTable,
+    scope: kb.ScopeId,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    pc.conditions.foreach(c =>
+      linkSpecScope(kb, c, pc.span, "provides … :-", fileSym, scope, errors))
+
+  /** Resolve a spec instantiation by its BASE NAME and link the spec's scope as a
+    * parent of `scope`. Shared by `requires` and by a provision's `:- goals`;
+    * `clause` names the writer for the diagnostic. */
+  private def linkSpecScope(
+    kb: KnowledgeBase,
+    typeExpr: TypeExpr,
+    span: Span,
+    clause: String,
+    fileSym: SymbolTable,
+    scope: kb.ScopeId,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    (typeExpr match
       case TypeExpr.Simple(name) => Some(name)
       case TypeExpr.Parameterized(name, _) => Some(name)
       case _ => None
@@ -856,7 +894,7 @@ object Loader:
           case ResolveResult.Found(sym) =>
             // A requirement names an algebraic SPEC (§5.2), and a spec is a sort.
             parentScopeOf(kb, sym, Set(SymbolKind.Sort),
-              s"`requires $nameStr`", name.span, errors)
+              s"`$clause $nameStr`", name.span, errors)
               .foreach(p => kb.symbols.addParent(scope, p, isEnclosing = false))
           case ResolveResult.Ambiguous(candidates) =>
             errors += LoadError.AmbiguousSymbol(
@@ -864,9 +902,15 @@ object Loader:
               name.span, kb.scopeDisplayName(scope))
           case ResolveResult.NotFound =>
             errors += LoadError.UnresolvedName(nameStr, name.span, kb.scopeDisplayName(scope))
-      case None => // Every other `TypeExpr` — an arrow, a tuple, a bare `?T` — is a type
-                   // and not a spec; those are refused by the parser's `requires`
-                   // production, so there is no reachable arm here to raise from.
+      case None =>
+        // Every other `TypeExpr` — an arrow, a tuple, a bare `?T` — is a type and not a
+        // spec. Unreachable from `requires`, whose production refuses them; REACHABLE
+        // from a provision's `:- goals`, where this parser takes the full `typeExpr`
+        // while tree-sitter narrows to a spec instantiation. Parse-permissive,
+        // convert-strict (WI-763): a located refusal beats a bare syntax error.
+        errors += LoadError.Other(
+          s"`$clause …` names a type and not a spec, so it can resolve no instance",
+          span)
 
   // ── Phase 2: Load items into KB ─────────────────────────────
 
@@ -1071,6 +1115,15 @@ object Loader:
     // Lossy: parameterized bindings (e.g. `Stack[T = Int]` vs `Stack[T = String]`)
     // collapse to the bare spec name. The witness pipeline (WI-157) replaces
     // this with a structured term that preserves bindings.
+    // WI-869 (058 §3.8) — `pc.conditions` is consumed in SCAN PASS 2, by
+    // `processProvidesConditions`, which links each condition's spec scope exactly as a
+    // `requires` does. Nothing more is recorded HERE because scaland records no
+    // requirement BINDINGS for any requirement — `processRequires` resolves the base
+    // name and links the parent, and that is the whole of what a requirement does in
+    // this implementation. The DICTIONARY half (one slot set per sort, strictness per
+    // provision) has no peer at all: scaland has no `DictLayout` and no dispatch
+    // resolution. See rustland's `typing::provider_dict_chain` for the rule, and wire it
+    // in when scaland grows something that reads a dictionary.
     val specStr = specName(fileSym, pc.spec)
     val specTerm = kb.alloc(Term.Const(Literal.StringLit(specStr)))
     val provSym = kb.intern("provides_clause")

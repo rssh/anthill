@@ -1382,14 +1382,33 @@ impl Interpreter {
             // fault was the value-directed-dispatched IMPL's (`WrapDesc.describe`),
             // not the op-scoped caller's (`Holder.probe`). The running op and its
             // requires-chain owner are both in hand here; print them.
-            let running_op = self.kb.qualified_name_of(top.op).to_string();
             find_requirement(&top.requirements, name_sym)
-                .ok_or_else(|| EvalError::Internal(format!(
-                    "DeferToRequirement: requirement param `{}` not bound in caller frame \
-                     (running `{running_op}`, requires-chain owner `{}`)",
-                    self.kb.local_name_of(name_sym),
-                    self.kb.qualified_name_of(encl),
-                )))?
+                .ok_or_else(|| {
+                    // Built INSIDE the closure: this is the per-deferred-dispatch path,
+                    // and the strings are read only on the error edge. (`running_op` was
+                    // eager too; WI-869 moved both rather than adding a third.)
+                    let running_op = self.kb.qualified_name_of(top.op);
+                    // WI-869: the frame's ACTUAL slot names, because "not bound" alone
+                    // cannot distinguish a frame built from a DIFFERENT chain — the shape
+                    // a conditional provision introduces, where a producer bundled the
+                    // sort's `requires` while the callee reads the dictionary chain —
+                    // from a frame that was never given requirements at all. That is the
+                    // distinction that located three of this ticket's four missed
+                    // producers.
+                    let bound: Vec<&str> = top
+                        .requirements
+                        .iter()
+                        .map(|(n, _)| self.kb.local_name_of(*n))
+                        .collect();
+                    EvalError::Internal(format!(
+                        "DeferToRequirement: requirement param `{}` not bound in caller \
+                         frame (running `{running_op}`, requires-chain owner `{}`; frame \
+                         binds {:?})",
+                        self.kb.local_name_of(name_sym),
+                        self.kb.qualified_name_of(encl),
+                        bound,
+                    ))
+                })?
                 .clone()
         };
         // WI-239: descend into the direct requirement's bundled value for

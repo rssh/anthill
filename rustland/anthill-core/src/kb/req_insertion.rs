@@ -28,7 +28,7 @@ use crate::intern::Symbol;
 use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child};
 use crate::kb::term::{Term, TermId};
 use crate::kb::typing::{
-    direct_requires_chain, record_apply_rewrite, record_apply_within_concrete,
+    record_apply_rewrite, record_apply_within_concrete,
     record_apply_within_rewrite, CallClass, RequiresEntry, TypeError,
 };
 use crate::kb::KnowledgeBase;
@@ -224,10 +224,17 @@ fn materialize_apply(kb: &mut KnowledgeBase, raw: RawClassified) -> ClassifiedAp
     }
 }
 
-/// WI-232 — fetch the caller's **direct** `requires` chain for
-/// `enclosing_sort`, computing it at most once per sort across the whole
-/// pass. WI-239: direct (not flat-transitive) so the `caller_requires`
-/// indices fed to `build_dep_projection` align with `synth_req_names`.
+/// WI-232 — fetch the caller's DICTIONARY chain for `enclosing_sort`, computing it at
+/// most once per sort across the whole pass. WI-239: direct (not flat-transitive) so
+/// the `caller_requires` indices fed to `build_dep_projection` align with
+/// `synth_req_names`.
+///
+/// WI-869: and for the same alignment reason it is `provider_dict_entries`, not
+/// `direct_requires_chain` — `synth_req_names` names the sort's `requires` chain
+/// FOLLOWED BY its conditional provisions' `:- goals`, so a producer reading only the
+/// declared half hands `build_dep_projection` indices that no longer point at the slot
+/// they name. This is the SECOND producer of that positional list; the first is
+/// `TypingEnv::set_enclosing_sort`, and the two must read one chain.
 fn chain_for(
     kb: &mut KnowledgeBase,
     cache: &mut HashMap<Symbol, Vec<RequiresEntry>>,
@@ -240,7 +247,7 @@ fn chain_for(
     if let Some(cached) = cache.get(&s) {
         return cached.clone();
     }
-    let chain = direct_requires_chain(kb, s);
+    let chain = (*crate::kb::typing::provider_dict_entries(kb, s)).clone();
     cache.insert(s, chain.clone());
     chain
 }

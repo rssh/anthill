@@ -17104,6 +17104,56 @@ impl<'a> Loader<'a> {
         // `check_provider_requires`.
         use crate::eval::value::Value;
         let spec_value = self.lower_value_or_gate(spec_value, "provides", &pc.spec);
+        // WI-869 (058 §3.8) — the `:- goals` tail, taken BEFORE the assert moves
+        // `spec_value` into the fact. Keyed by the spec's BASE sort, which is what
+        // makes a condition belong to one provision and not to the sort: the reader
+        // (`typing::provider_dict_chain`) matches a dispatch's goal spec against it.
+        //
+        // Each condition is lowered through the SAME path a `requires` spec takes
+        // (`sort_inst_to_value` + `lower_value_or_gate`), so the entries the dictionary
+        // chain builds out of them are indistinguishable from sort-level ones — which
+        // is the point: a per-provision chain is a second contributor to the provider
+        // half, not a second half.
+        if !pc.conditions.is_empty() {
+            match super::typing::spec_base_functor(self.kb, &spec_value) {
+                Some(spec_base) => {
+                    let mut specs: Vec<Value> = Vec::with_capacity(pc.conditions.len());
+                    for c in &pc.conditions {
+                        let v = self.sort_inst_to_value(c);
+                        let v = self.lower_value_or_gate(v, "provides condition", c);
+                        // LOUD at the DECLARATION, so `provider_dict_chain`'s decoder can
+                        // assert rather than skip: a condition whose spec has no readable
+                        // base would condition nothing while its author reads the file as
+                        // if it did.
+                        if super::typing::spec_base_functor(self.kb, &v).is_none() {
+                            self.errors.push(LoadError::Other {
+                                message: format!(
+                                    "`provides {} :- …` in `{}`: a condition has no                                      readable spec head, so it conditions nothing",
+                                    self.kb.qualified_name_of(spec_base),
+                                    self.kb.qualified_name_of(domain),
+                                ),
+                            });
+                            continue;
+                        }
+                        specs.push(v);
+                    }
+                    self.kb.record_provision_conditions(domain, spec_base, specs);
+                }
+                // LOUD, not a silent drop: the conditions were written and would
+                // otherwise condition nothing — the provision would keep its
+                // over-claiming shared-chain meaning while its author read the file as
+                // if it did not.
+                None => self.errors.push(LoadError::Other {
+                    message: format!(
+                        "`provides … :- …` in `{}`: the provided spec has no readable \
+                         base sort, so its {} condition(s) have no provision to scope \
+                         to",
+                        self.kb.qualified_name_of(domain),
+                        pc.conditions.len(),
+                    ),
+                }),
+            }
+        }
         // `sort_ref` is the providing sort as a term; the domain is its name.
         let domain_term = self.kb.make_name_term_from_sym(domain);
         self.kb.assert_metadata_fact_carrier(

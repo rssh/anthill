@@ -113,9 +113,17 @@ pub enum TypeError {
     /// Spec-op dispatch found no impl whose per-call bindings match the
     /// inferred type arguments. `op` is the qualified spec-op symbol
     /// (e.g. `anthill.prelude.Numeric.add`).
+    ///
+    /// WI-869 — `unmet` is the goal the search actually failed on, as the search
+    /// itself rendered it (never re-derived here; the WI-828 rule). For a
+    /// CONDITIONAL provision that is the condition, not the call: `Ordered.compare`
+    /// on a `Pair[Float, Int64]` is refused because `Ordered[T = Float]` has no
+    /// provider, and without naming it the message says only that the pair has no
+    /// ordering — true, and useless for finding out why.
     DispatchNoMatch {
         span: Option<Span>,
         op: Symbol,
+        unmet: Option<Box<DispatchFailure>>,
     },
     /// Spec-op dispatch found multiple impls and the call selected none —
     /// proposal 058 §4.1 **tier 3**, the refusal WI-843 moved here from load time.
@@ -641,10 +649,11 @@ impl TypeError {
             TypeError::UnreducedEquationFunctor { functor, census, .. } => {
                 unreduced_equation_functor_message(kb.qualified_name_of(*functor), *census)
             }
-            TypeError::DispatchNoMatch { op, .. } => {
+            TypeError::DispatchNoMatch { op, unmet, .. } => {
                 format!(
-                    "dispatch failed: no impl of {} for the per-call bindings",
+                    "dispatch failed: no impl of {} for the per-call bindings{}",
                     kb.qualified_name_of(*op),
+                    render_unmet(unmet),
                 )
             }
             TypeError::DispatchAmbiguous { op, tie, .. } => {
@@ -1004,12 +1013,16 @@ impl TypeError {
                     census: *census,
                 }
             }
-            TypeError::DispatchNoMatch { op, .. } => LoadError::TypeMismatch {
+            TypeError::DispatchNoMatch { op, unmet, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "dispatch".to_string(),
                 expected_type: "matching impl for per-call bindings".to_string(),
-                actual_type: "no impl matches".to_string(),
+                // WI-869: the unmet goal is APPENDED, never substituted — several
+                // suites assert on the "no impl matches" text, and a conditional
+                // provision's refusal is an addition to that story, not a different
+                // one.
+                actual_type: format!("no impl matches{}", render_unmet(unmet)),
                 span: self.span(kb),
             },
             // WI-843: its OWN variant, not a `TypeMismatch` — nothing here is a
@@ -1518,10 +1531,16 @@ impl TypingEnv {
     /// produce line up with `synth_req_names` (also direct). A transitive
     /// spec reached through a direct require is located by
     /// `find_requires_location` instead.
+    /// WI-869: the snapshot is the DICTIONARY chain (`provider_dict_chain`), not the
+    /// declared `requires` chain. A conditional provision's `:- goals` are the
+    /// evidence that provision's own member bodies dispatch through — `Pair.compare`
+    /// reads `Ordered[A]` from a slot only `provides Ordered[Pair] :- Ordered[A], …`
+    /// put there — so they must be in scope here, at the slot index `synth_req_names`
+    /// gives them. Identical for a sort with no conditional provision.
     pub fn set_enclosing_sort(&mut self, kb: &mut KnowledgeBase, sort: Option<Symbol>) {
         self.enclosing = sort.map(|s| EnclosingSort {
             sort: s,
-            requires: direct_requires_chain_rc(kb, s),
+            requires: provider_dict_entries(kb, s),
         });
     }
 
@@ -5764,9 +5783,11 @@ fn attach_eta_dispatch_dict(
         occ.set_classification(CallClass::EtaOpRef { dict: None });
         return Ok(());
     };
-    // WI-657(12): emptiness test only — take the shared `Rc` (bump) rather than
-    // `direct_requires_chain`'s Vec clone.
-    if direct_requires_chain_rc(kb, parent).is_empty() {
+    // WI-869: the same "does this callee read requirement slots" question the three
+    // classification sites ask, through the one owner — and the fourth site that asked
+    // it inline. An eta'd op on a carrier whose requirements are all provision
+    // conditions would otherwise mint a dict-less `OpRef` for a body that reads them.
+    if !sort_reads_requirement_slots(kb, parent) {
         // Requires-free op — eval forwards the caller's reqs. WI-700: MARK the eta
         // (dict None) regardless, so a nullary eta mints an `OpRef` at eval.
         occ.set_classification(CallClass::EtaOpRef { dict: None });
@@ -9293,7 +9314,7 @@ fn classify_pin_or_apply_within(
     resolved_tree: Option<ResolvedRequiresNode>,
 ) {
     let impl_sort = impl_parent_of_op(kb, impl_op);
-    let needs_reqs = impl_sort.map(|s| !requires_chain(kb, s).is_empty()).unwrap_or(false);
+    let needs_reqs = impl_sort.map(|s| sort_reads_requirement_slots(kb, s)).unwrap_or(false);
     let class = if needs_reqs {
         // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
         // requirement dictionary (a `resolved_tree` with a `FromScope` — the
@@ -10988,7 +11009,10 @@ fn check_apply_iter(
                 // resolve — the same escape the normal `NoCandidates` arm takes.
                 if provider_spec_view_bindings(kb, c, spec_sort).is_none() {
                     if spec_warrants_abstract_check(kb, spec_sort) {
-                        return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
+                        // WI-869: no search ran here — the obligation is discharged
+                        // by the ABSENCE of a provision fact — so there is no unmet
+                        // goal to name.
+                        return Err(TypeError::DispatchNoMatch { span, op: fn_sym, unmet: None });
                     }
                     return Ok(TypeResult {
                         ty: resolved_ret.clone(),
@@ -11298,7 +11322,7 @@ fn check_apply_iter(
             // `Candidate` field), so `collect_provides_candidates` now collapses them to
             // one and the conflict arrives HERE, where the routes can be named.
             let outcome_raises_on_its_own_account = match outcome {
-                DispatchOutcome::Ambiguous(_) | DispatchOutcome::NoMatch => true,
+                DispatchOutcome::Ambiguous(_) | DispatchOutcome::NoMatch { .. } => true,
                 DispatchOutcome::NoCandidates
                 | DispatchOutcome::Unique(_)
                 | DispatchOutcome::Deferred => false,
@@ -11572,7 +11596,7 @@ fn check_apply_iter(
                         );
                     }
                 }
-                DispatchOutcome::NoMatch => {
+                DispatchOutcome::NoMatch { unmet } => {
                     // WI-562: op-scoped `requires` coverage (WI-448). An ABSTRACT
                     // spec-op call in an operation body — `List.member`'s
                     // `eq(head, x)` on the abstract element `T` — does not pin a
@@ -11596,7 +11620,7 @@ fn check_apply_iter(
                             node: Rc::clone(occ),
                         });
                     }
-                    return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
+                    return Err(TypeError::DispatchNoMatch { span, op: fn_sym, unmet });
                 }
                 DispatchOutcome::Ambiguous(tie) => {
                     return Err(TypeError::DispatchAmbiguous { span, op: fn_sym, tie });
@@ -11640,7 +11664,7 @@ fn check_apply_iter(
             // `apply_within(fn = Ref(fn_sym), …)` rewrite. Otherwise no
             // tag and the call stays as plain apply.
             if let Some(parent_sym) = impl_parent_of_op(kb, fn_sym) {
-                if !requires_chain(kb, parent_sym).is_empty() {
+                if sort_reads_requirement_slots(kb, parent_sym) {
                     // WI-415: build the parent-bundle dispatching dict NOW,
                     // while the per-call subst still pins `parent_sym`'s type
                     // params (`member(2, …)` ⇒ `List.T := Int`). A cross-sort /
@@ -12931,7 +12955,10 @@ fn build_dispatching_dict_direct(
     // and the single list above is exactly the layout. Unchanged by that ticket for
     // that reason; the consumer computes the same one-list layout from the
     // classification's `spec_op_sym`, which on this route is the callee itself.
-    let callee_chain = direct_requires_chain(kb, callee_spec_sort);
+    // WI-869: the DICTIONARY chain — a callee whose parent declares a conditional
+    // provision reads its `:- goals` slots by name too, so a chain short of them
+    // would be short of what `synth_req_names` names.
+    let callee_chain = (*provider_dict_entries(kb, callee_spec_sort)).clone();
     build_dispatching_dict_from_chain(
         kb, callee_spec_sort, &callee_chain, caller_sort, caller_requires, syms, false,
         // WI-419: req-insertion diagnostic path — the call-site subst is gone
@@ -13316,7 +13343,9 @@ fn build_concrete_dispatch_dict(
     // three defer/FromScope gates, and it was the one not enumerated: MEASURED, a
     // sibling call `S.inner[Monoid = AnyM](a, b)` inside `S` computed the SEARCHED
     // answer, silently, because control returned here before `selected` was read.
-    let abstract_chain = direct_requires_chain(kb, callee_spec_sort);
+    // WI-869: the DICTIONARY chain, for `build_dispatching_dict_direct`'s reason —
+    // this list must have one slot per name `synth_req_names(callee_spec_sort)` gives.
+    let abstract_chain = (*provider_dict_entries(kb, callee_spec_sort)).clone();
     let pins_this_chain = abstract_chain
         .iter()
         .any(|e| pinned_witness_for(kb, selected, e.required_sort).is_some());
@@ -14327,12 +14356,21 @@ pub(crate) fn resolve_bridge_requirements(
     let Some(parent) = impl_parent_of_op(kb, op) else {
         return BridgeRequirements::NoneNeeded;
     };
-    // WI-822: the `_rc` read, not `direct_requires_chain`'s owned clone. This is now
-    // on the per-dispatch path (every value-directed spec-op call reaches it), where
-    // the dominant case is a LEAF impl that only needs `is_empty()` — and paying a
-    // full `Vec<RequiresEntry>` clone to answer that is the whole cost. Holding the
-    // `Rc` alongside `&mut kb` is fine: the arena owns the chain, not the borrow.
-    let chain = direct_requires_chain_rc(kb, parent);
+    // WI-822: the `_rc` read, not an owned clone. This is on the per-dispatch path
+    // (every value-directed spec-op call reaches it), where the dominant case is a LEAF
+    // impl that only needs `is_empty()` — and paying a full `Vec<RequiresEntry>` clone
+    // to answer that is the whole cost. Holding the `Rc` alongside `&mut kb` is fine:
+    // the arena owns the chain, not the borrow.
+    //
+    // WI-869: the DICTIONARY chain, because the loop below ZIPS it against
+    // `synth_req_names(parent)` — the producer and the namer must read one list. With
+    // the declared chain a carrier whose requirements are all provision conditions
+    // (`Pair`) answered `NoneNeeded` here and its body was entered with an EMPTY frame
+    // while reading the slots its provisions put there. MEASURED: `PartialOrd.gt` on a
+    // pair — whose default body value-directs `Ordered.compare` to `Pair.compare` —
+    // died `__req_ordered not bound in caller frame`, while a `compare` the TYPER
+    // dispatched worked, because that route fills the frame from `dict_layout`.
+    let chain = provider_dict_entries(kb, parent);
     if chain.is_empty() {
         return BridgeRequirements::NoneNeeded;
     }
@@ -15093,6 +15131,14 @@ fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -> Vec<Calle
     // about what that symbol is, is how a later index turns into a silent wrong list.
     // WI-956: it is now literally the same gate, `impl_parent_sort_of_op`.
     if let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) {
+        // WI-869: the DECLARED `requires` chain, deliberately NOT the dictionary chain
+        // (`provider_dict_chain`) the layout readers use. This list is the set of slots
+        // a CALL-SITE BRACKET can name (058 §4.5/§4.7), and a provision's `:- goals`
+        // condition has no binder syntax and so no name — the tail is a bare list of
+        // spec instantiations. Nothing positional rides on this list either: it feeds
+        // selection validation, never a dictionary index, so the two chains disagreeing
+        // here cannot shift a slot. Pinning a provider for a provision's condition from
+        // a call site is a further increment, not a silent omission.
         let sort_entries = direct_requires_chain(kb, parent);
         push_slots(kb, parent, sort_entries, CalleeSlotSource::SortRequires, &mut out);
         // The spec-op's own dispatch target. Only for a BODY-LESS spec op: a member
@@ -16185,7 +16231,19 @@ pub enum DispatchOutcome {
     Unique(Symbol),
     /// Candidates exist but none match the inferred bindings.
     /// User likely forgot to declare an impl at the right binding.
-    NoMatch,
+    ///
+    /// WI-869 — `unmet` is the failure the SEARCH observed, verbatim from it (the
+    /// reason WI-828 gives one level over: a second walk can disagree with the one that
+    /// failed). For a conditional provision the goal it names is a CONDITION and not the
+    /// call's own goal, which is the whole diagnostic.
+    ///
+    /// A STRUCT and not a bare `String`, because the first cut was a bare one and it
+    /// silently dropped `ResolutionResult::NoMatch.hint` — the actionable half ("add
+    /// `fact X[…]` or `requires X[…]` in scope") at the one site whose purpose is
+    /// actionability. `InstanceTie`'s doc records the same lesson from the other side:
+    /// pre-rendering what the emitter should render is how a message loses what it was
+    /// added to carry.
+    NoMatch { unmet: Option<Box<DispatchFailure>> },
     /// Two or more candidates match and the call selected none — 058 §4.1 tier 3.
     /// The payload is the tie itself, forwarded from the level that observed it.
     Ambiguous(InstanceTie),
@@ -16858,7 +16916,7 @@ fn resolve_inner(
     let chosen_impl_subst = chosen.impl_subst.clone();
     drop(candidates);
 
-    let (sub_goals, spec_half_len) = dict_sub_goals(
+    let (sub_goals, spec_half_len, provider_strict) = dict_sub_goals(
         kb, goal, chosen_impl_sort, &chosen_impl_subst, &chosen_bindings,
     );
     // WI-857 — the producer/consumer contract, asserted at the producer: this list IS
@@ -16897,6 +16955,18 @@ fn resolve_inner(
                 spec_sort: sg.spec_sort,
                 bindings: SmallVec::new(),
             });
+            continue;
+        }
+        // WI-869 — A SIBLING PROVISION'S CONDITION IS NOT THIS DISPATCH'S BUSINESS, and
+        // that is decided BEFORE the search, not after it. Deciding after would make the
+        // slot's content depend on whether the sibling's goal HAPPENED to resolve —
+        // `Pair.eq`'s dictionary would really carry `Ordered[Int64]` for an int pair and
+        // a marker for a float one — which is exactly the evidence the strictness rule
+        // says a provision did not earn. It also runs the search: `Pair` has 8 slots of
+        // which any one dispatch is strict on 2, so six full sub-resolutions per dispatch
+        // were computed and then kept or discarded by accident.
+        if !provider_slot_is_ours(i, spec_half_len, &provider_strict) {
+            sub_resolutions.push(ResolvedRequiresNode::Unavailable { spec_sort: sg.spec_sort });
             continue;
         }
         // WI-857, the LOCALITY rule (058 §3.8): the sub-goals of `chosen_impl_sort`'s
@@ -17421,7 +17491,13 @@ fn nullary_carrier_impl_op(
         return None;
     }
     let impl_parent = impl_parent_of_op(kb, impl_op)?;
-    if !requires_chain(kb, impl_parent).is_empty() {
+    // WI-869: the DICTIONARY chain (`sort_reads_requirement_slots`), which is the same
+    // question the two `classify_pin_or_apply_within` sites ask — "would this callee
+    // read requirement slots this path cannot fill". A sort whose only requirements are
+    // its provisions' conditions declares no `requires` at all, so the old spelling
+    // said "no slots" and this path handed back a dict-less classification for a body
+    // that reads them.
+    if sort_reads_requirement_slots(kb, impl_parent) {
         return None;
     }
     Some(impl_op)
@@ -18544,7 +18620,7 @@ fn dict_sub_goals(
     impl_sort: Symbol,
     impl_subst: &[(Symbol, TermId)],
     head_bindings: &[(Symbol, TermId)],
-) -> (Vec<SortGoal>, usize) {
+) -> (Vec<SortGoal>, usize, Vec<bool>) {
     let mut out: Vec<SortGoal> = Vec::new();
     if !same_sort_canonical(kb, impl_sort, goal.spec_sort) {
         // σ keyed by the spec's short param name — `provider_requires_subgoals`'
@@ -18557,21 +18633,49 @@ fn dict_sub_goals(
         out.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma));
     }
     let spec_len = out.len();
-    out.extend(candidate_provider_sub_goals(kb, impl_sort, impl_subst));
-    (out, spec_len)
+    let (provider_goals, strict) =
+        candidate_provider_sub_goals(kb, impl_sort, impl_subst, goal.spec_sort);
+    out.extend(provider_goals);
+    (out, spec_len, strict)
 }
 
-/// The PROVIDER half of [`dict_sub_goals`]: the impl sort's own `requires` chain,
+/// WI-869 — is sub-goal `i` a slot THIS dispatch must answer? True for every spec-half
+/// slot and for a provider-half slot that is either a sort-level `requires` or a
+/// condition of the provision being dispatched; false for a SIBLING provision's
+/// condition, which `resolve_inner` fills with `Unavailable` without searching.
+///
+/// Reads out of range as OURS, which is not a lenient default but the empty-mask
+/// encoding: `candidate_provider_sub_goals` returns an EMPTY mask for a carrier with no
+/// conditional provision at all — the universal case — rather than a vector of `true`.
+fn provider_slot_is_ours(i: usize, spec_half_len: usize, mask: &[bool]) -> bool {
+    i < spec_half_len || mask.get(i - spec_half_len).copied().unwrap_or(true)
+}
+
+/// The PROVIDER half of [`dict_sub_goals`]: the impl sort's own dictionary chain
+/// (WI-869 — its `requires` plus its conditional provisions' `:- goals`),
 /// instantiated at the substitution matching its head against the goal — the
 /// conditional evidence the provider's own member body reads.
+///
+/// Returns a parallel STRICTNESS mask: a slot is strict for this dispatch when it is
+/// a sort-level `requires` (which conditions every provision) or a condition of the
+/// very provision being dispatched. A slot contributed by a SIBLING provision is not
+/// this dispatch's business — `Pair`'s `Ordered[A]` must not be demanded of
+/// `PartialEq.eq` — and `resolve_inner` places `Unavailable` for it instead.
 fn candidate_provider_sub_goals(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
     impl_subst: &[(Symbol, TermId)],
-) -> Vec<SortGoal> {
-    let chain = direct_requires_chain(kb, impl_sort);
+    goal_spec: Symbol,
+) -> (Vec<SortGoal>, Vec<bool>) {
+    let dict = provider_dict_chain(kb, impl_sort);
+    // The `Rc` is an independent owner, so iterating it does not borrow `kb` and the
+    // entries need no copy — `direct_requires_chain_rc` exists to avoid exactly this
+    // clone, and the old `direct_requires_chain(kb, impl_sort)` call this replaced paid
+    // it only because it returned by value.
+    let chain = Rc::clone(&dict.entries);
+    let strict = dict.strict_mask(kb, goal_spec);
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
-    for entry in &chain {
+    for entry in chain.iter() {
         let required_sort = entry.required_sort;
         // WI-857: the synthetic `requires EffectsRuntime[E]` that every effect-row
         // param (`effects ES = ?`) contributes KEEPS ITS SLOT, and `resolve_inner`
@@ -18617,7 +18721,11 @@ fn candidate_provider_sub_goals(
             carrier: None,
         });
     }
-    out
+    debug_assert!(
+        strict.is_empty() || strict.len() == out.len(),
+        "WI-869: a non-empty strictness mask must be parallel to the provider half",
+    );
+    (out, strict)
 }
 
 /// WI-343/WI-356 — provider-side requires coverage. For every satisfaction
@@ -22686,6 +22794,31 @@ pub fn dispatch_spec_op_with_tree(
 /// the deeper dictionary is constructed. The gate runs BEFORE the memo, and only
 /// the (σ-independent) `resolve_at_goal` result is cached, so σ never taints the
 /// cache key.
+/// WI-869 — what a dispatch search failed on, carried out of the resolution that saw
+/// it. Pre-rendered rather than kept as a `SortGoal` for the reason
+/// `RequirementRefusal` gives: a goal's `TermId`s are arena-refcounted and a
+/// diagnostic outlives the resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchFailure {
+    /// The goal, as `format_goal` rendered it — a CONDITION when a conditional
+    /// provision is what declined.
+    pub goal_text: String,
+    /// The repair the search itself proposed. Empty when it had none.
+    pub hint: String,
+}
+
+/// WI-869 — render a [`TypeError::DispatchNoMatch`]'s failure as a trailing clause, or
+/// nothing. One owner because two renderers use it — the `TypeError` message and the
+/// `LoadError` lowering — and a check whose two texts disagree is worse than one that
+/// says less (WI-886).
+fn render_unmet(unmet: &Option<Box<DispatchFailure>>) -> String {
+    match unmet {
+        Some(f) if f.hint.is_empty() => format!(" \u{2014} unresolved: {}", f.goal_text),
+        Some(f) => format!(" \u{2014} unresolved: {} ({})", f.goal_text, f.hint),
+        None => String::new(),
+    }
+}
+
 pub fn dispatch_spec_op_cached(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -22835,7 +22968,7 @@ fn resolve_at_goal(
                 // string concatenation, no try/catch fallback here.
                 match kb.sort_ops_lookup(*impl_sort, op_short_sym) {
                     Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
-                    None => (DispatchOutcome::NoMatch, None),
+                    None => (DispatchOutcome::NoMatch { unmet: None }, None),
                 }
             }
             ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),
@@ -22844,15 +22977,34 @@ fn resolve_at_goal(
             // itself at the top level and only substitutes the marker when placing a
             // sub-goal. Reaching here would mean a dispatch pinned no impl at all,
             // which `NoMatch` is the answer to.
-            ResolvedRequiresNode::Unavailable { .. } => (DispatchOutcome::NoMatch, None),
+            ResolvedRequiresNode::Unavailable { .. } => (DispatchOutcome::NoMatch { unmet: None }, None),
         },
-        ResolutionResult::NoMatch { .. } => (DispatchOutcome::NoMatch, None),
+        // WI-869: the failure rides out with the verdict — for a conditional provision
+        // the goal it names is the unmet CONDITION, which is the only thing that
+        // explains the refusal. WHOLE, hint included: the hint is the repair.
+        ResolutionResult::NoMatch { goal_text, hint } => (
+            DispatchOutcome::NoMatch {
+                unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+            },
+            None,
+        ),
         // WI-843: the tie is FORWARDED, not restamped. Tier 3's diagnostic is the
         // only one the author now gets, and only `resolve_inner` knows which level
         // tied — substituting `goal.spec_sort` here is exactly the bug that made a
         // conditional witness's subgoal tie report the outer spec.
         ResolutionResult::Ambiguous { tie, .. } => (DispatchOutcome::Ambiguous(tie), None),
-        ResolutionResult::Cyclic { .. } => (DispatchOutcome::NoMatch, None),
+        // A CYCLE has its own account, and `describe_resolution_failure` is its owner —
+        // "construction is cyclic: a -> b -> c" instead of a bare "no impl matches".
+        cyclic @ ResolutionResult::Cyclic { .. } => {
+            let goal_text = format_goal(kb, goal);
+            let hint = describe_resolution_failure(kb, &cyclic);
+            (
+                DispatchOutcome::NoMatch {
+                    unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                },
+                None,
+            )
+        }
     }
 }
 
@@ -34409,6 +34561,173 @@ pub fn direct_requires_chain_rc(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<
     rc
 }
 
+/// WI-869 (058 §3.8) — **THE** dictionary chain of a carrier: what its dictionaries
+/// are laid out by and what its bodies read requirement evidence from.
+///
+/// It is `direct_requires_chain(carrier)` followed by the conditions of every
+/// conditional provision the carrier declares — because 058's rule is that a
+/// per-provision chain is "a second contributor to the dictionary's **provider
+/// half**, not a new half". The sort-level chain keeps its present meaning (it
+/// conditions EVERY provision and supplies every body's evidence); a `:- goals` tail
+/// conditions only its own provision.
+///
+/// ONE list, per SORT, deliberately — even though the conditions are per PROVISION.
+/// The frame layout is per-sort everywhere it is read ([`synth_req_names`],
+/// [`DictLayout::slots_for`], eval's frame push), so a per-provision layout would
+/// have to split those too, and a body owned by the carrier would then read a
+/// different frame depending on which of its sort's provisions dispatched to it.
+/// Instead the SLOT SET is uniform and the STRICTNESS is per-provision: a slot
+/// contributed by a provision other than the one being dispatched is placed as
+/// `Unavailable` (see `resolve_inner`), which is refused at any use — so `Pair.eq`
+/// cannot read the `Ordered[A]` evidence that only `Pair.compare` is entitled to,
+/// and cannot do so LOUDLY rather than by the slot's absence.
+///
+/// For a carrier with NO conditional provisions this is `direct_requires_chain`
+/// verbatim — the same `Rc`, so the pre-WI-869 behaviour is not merely preserved but
+/// shared.
+#[derive(Debug)]
+pub(crate) struct ProviderDictChain {
+    /// The slots, in layout order: sort-level `requires` first, then the
+    /// provisions' conditions in declaration order.
+    pub(crate) entries: Rc<Vec<RequiresEntry>>,
+    /// Parallel to `entries` — or EMPTY, which is the no-conditional-provision
+    /// carrier and reads as "every slot is sort-level". Per slot, an empty owner list
+    /// likewise means a sort-level `requires`, which conditions every provision;
+    /// otherwise it holds the base sorts of the provisions whose `:- goals` tail
+    /// declared the slot — plural because a condition written by two provisions is
+    /// ONE slot (deduplicated: two equal entries would otherwise collide in
+    /// [`synth_req_names`], whose disambiguator keys on the spec's hash-cons id and
+    /// so cannot tell two identical entries apart).
+    conditions_for: Vec<SmallVec<[Symbol; 2]>>,
+}
+
+impl ProviderDictChain {
+    /// Per slot: must the dispatch of `goal_spec` answer it? True for every sort-level
+    /// `requires` (which conditions every provision) and for a condition of `goal_spec`'s
+    /// own provision; false for a SIBLING provision's condition.
+    ///
+    /// EMPTY for a carrier with no conditional provision — the universal case — which
+    /// [`provider_slot_is_ours`] reads as "every slot is ours". That is the one
+    /// allocation and the one canonicalization this whole mechanism costs a sort that
+    /// does not use it: none.
+    fn strict_mask(&self, kb: &KnowledgeBase, goal_spec: Symbol) -> Vec<bool> {
+        if self.conditions_for.is_empty() {
+            return Vec::new();
+        }
+        // ONCE, not once per owner per slot — the same reason `resolve_inner`
+        // canonicalizes its local provider before the candidate loop.
+        let goal_canon = kb.canonical_sort_sym(goal_spec);
+        self.conditions_for
+            .iter()
+            .map(|owners| {
+                owners.is_empty()
+                    || owners.iter().any(|s| kb.canonical_sort_sym(*s) == goal_canon)
+            })
+            .collect()
+    }
+}
+
+/// [`ProviderDictChain`] for `sort_sym`, memoized on `provider_dict_chain_cache`
+/// (same lifetime as the `requires_tree` / `requires_chain` caches it derives from).
+fn provider_dict_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<ProviderDictChain> {
+    if let Some(cached) = kb.provider_dict_chain_cache.borrow().get(&sort_sym) {
+        return cached.clone();
+    }
+    let base = direct_requires_chain_rc(kb, sort_sym);
+    // ONE canonical probe, because the RECORDER canonicalizes too
+    // (`record_provision_conditions`). A raw-then-canonical fallback here would be the
+    // "papered over at the consumer" shape `canonical_sym`'s own doc refuses — and it
+    // could not even paper correctly: with two interned copies each recording, the raw
+    // probe finds one bucket and stops.
+    //
+    // A borrow, not a clone: everything in the build loop takes `&KnowledgeBase`.
+    let conditional = kb.provision_conditions(kb.canonical_sort_sym(sort_sym));
+    let built = if conditional.is_empty() {
+        // The overwhelmingly common carrier: the SAME `Rc`, so nothing is copied and
+        // nothing downstream can observe that this function ran at all.
+        ProviderDictChain { entries: base, conditions_for: Vec::new() }
+    } else {
+        let mut entries: Vec<RequiresEntry> = (*base).clone();
+        let mut conditions_for: Vec<SmallVec<[Symbol; 2]>> =
+            vec![SmallVec::new(); entries.len()];
+        for prov in conditional {
+            for spec in &prov.specs {
+                // Loud, not a skip: the loader refuses a condition whose spec has no
+                // readable base (`load_provides_clause`), so reaching here is an
+                // internal disagreement between the two decoders — the same shape, and
+                // the same `debug_assert`, as the twin in `candidate_provider_sub_goals`.
+                let Some(required_sort) = spec_base_functor(kb, spec) else {
+                    debug_assert!(
+                        false,
+                        "WI-869: a `provides … :- …` condition of `{}` has no readable \
+                         spec head, so it conditions nothing",
+                        kb.qualified_name_of(sort_sym),
+                    );
+                    continue;
+                };
+                let entry = RequiresEntry { required_sort, spec: spec.clone() };
+                // Dedup against everything already placed — a sort-level `requires` AND
+                // a sibling provision's identical condition are both the same slot.
+                // STRUCTURALLY (`views_structurally_equal`, WI-486's single owner), NOT
+                // through `RequiresEntry`'s own `PartialEq`: that one is the
+                // `resolve_cache` KEY, which identifies a denoted spec by its `Rc`
+                // ALLOCATION and is documented as preferring a false miss. A false miss
+                // here is a DUPLICATED SLOT, which `synth_req_names` cannot name apart —
+                // the collision this dedup exists to prevent.
+                match entries.iter().position(|e| {
+                    e.required_sort == entry.required_sort
+                        && crate::kb::term_view::views_structurally_equal(kb, &e.spec, &entry.spec)
+                }) {
+                    Some(i) => {
+                        // Only a slot that is ALREADY provision-scoped gains a second
+                        // owner; a sort-level slot stays unconditional (its empty
+                        // owner list means "strict for every provision"), which is the
+                        // right answer when a provision restates it.
+                        if !conditions_for[i].is_empty()
+                            && !conditions_for[i].contains(&prov.spec)
+                        {
+                            conditions_for[i].push(prov.spec);
+                        }
+                    }
+                    None => {
+                        entries.push(entry);
+                        conditions_for.push(SmallVec::from_elem(prov.spec, 1));
+                    }
+                }
+            }
+        }
+        ProviderDictChain { entries: Rc::new(entries), conditions_for }
+    };
+    let rc = Rc::new(built);
+    kb.provider_dict_chain_cache
+        .borrow_mut()
+        .insert(sort_sym, rc.clone());
+    rc
+}
+
+/// WI-869 — does a body owned by `sort` READ requirement slots, i.e. must a call
+/// into it thread a dictionary? The gate every "does this callee need a dict" test
+/// asks, in ONE place because there are three of them and they must agree with what
+/// [`synth_req_names`] names.
+///
+/// Was spelled `!requires_chain(s).is_empty()` — the TRANSITIVE chain, whose
+/// emptiness is the direct chain's (transitive ⊇ direct, and it is built by
+/// descending from direct), so the swap changes nothing for a sort with no
+/// conditional provision. It changes everything for one that has ONLY conditional
+/// provisions: `Pair` declares no sort-level `requires` at all, so the old test said
+/// "needs no dictionary" and its bodies got an EMPTY frame while reading the slots
+/// its provisions' `:- goals` put there.
+pub(crate) fn sort_reads_requirement_slots(kb: &mut KnowledgeBase, sort: Symbol) -> bool {
+    !provider_dict_entries(kb, sort).is_empty()
+}
+
+/// The [`provider_dict_chain`] ENTRIES alone — the drop-in for the
+/// `direct_requires_chain_rc` reads that are dictionary LAYOUT rather than a sort's
+/// declared contract. Identical `Rc` for a carrier with no conditional provisions.
+pub(crate) fn provider_dict_entries(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<RequiresEntry>> {
+    provider_dict_chain(kb, sort_sym).entries.clone()
+}
+
 /// Synthesize the requirement-param name for each entry of
 /// `parent_sort`'s **direct** `requires` chain (WI-239). Returns
 /// `Rc<Vec<Symbol>>` in chain order — index `k` is direct-require slot
@@ -34439,7 +34758,10 @@ pub fn synth_req_names(kb: &mut KnowledgeBase, parent_sort: Symbol) -> Rc<Vec<Sy
     if let Some(cached) = kb.synth_req_names_cache.borrow().get(&parent_sort) {
         return cached.clone();
     }
-    let chain = direct_requires_chain(kb, parent_sort);
+    // WI-869: the DICTIONARY chain, not the declared `requires` chain — a conditional
+    // provision's `:- goals` occupy slots too, and this list names the slots.
+    // Identical for every sort that declares no conditional provision.
+    let chain = (*provider_dict_entries(kb, parent_sort)).clone();
     let mut bases: Vec<String> = Vec::with_capacity(chain.len());
     for entry in &chain {
         let mut s = String::from("__req_");
@@ -34499,8 +34821,11 @@ pub fn req_name_for_chain_index(
 ///    value, and `k` indexes the required spec's OWN chain), and what a body owned
 ///    by `S` itself reads when dispatch lands on the spec's op because `P`
 ///    contributes no member.
-/// 2. **the provider half** — `direct_requires_chain(P)` at the matched impl
+/// 2. **the provider half** — [`provider_dict_chain`]`(P)` at the matched impl
 ///    substitution: `P`'s conditional evidence, which `P`'s own member body reads.
+///    WI-869 widened this from `direct_requires_chain(P)` to include `P`'s
+///    conditional provisions' `:- goals`; the two coincide for a `P` that declares
+///    none, and they are the same read [`synth_req_names`] names.
 ///
 /// The spec half is the PREFIX so that reader — a projection path computed from
 /// `requires_tree`, where a node's children are the required spec's chain — needs no
@@ -34511,7 +34836,11 @@ pub fn req_name_for_chain_index(
 /// dictionary (`build_dispatching_dict_from_chain`, WI-415), which is not a spec
 /// instance at all but the frame bundle of a directly-called op's parent sort, so
 /// its "spec" and its provider are the same sort and its single list is that sort's
-/// chain, exactly as before this ticket.
+/// chain, exactly as before this ticket. WI-869 reads that single list off the
+/// **provider** rather than the spec, which is what `dict_sub_goals` actually
+/// produces there (it skips the spec half entirely and emits only
+/// `candidate_provider_sub_goals`); the two differ only when the same sort is reached
+/// through two interned copies, and the provider is the one the sub-goals came from.
 #[derive(Clone, Copy, Debug)]
 pub struct DictLayout {
     spec: Symbol,
@@ -34552,12 +34881,17 @@ pub(crate) fn is_effects_runtime(kb: &KnowledgeBase, spec: Symbol) -> bool {
 
 /// Compute [`DictLayout`] for a dictionary of `spec` supplied by `provider`.
 pub fn dict_layout(kb: &mut KnowledgeBase, spec: Symbol, provider: Symbol) -> DictLayout {
+    // WI-869: BOTH halves come from the chain the dictionary is actually laid out by.
+    // The self case (a self-provision, or a parent bundle) is the provider's own
+    // dictionary chain: `dict_sub_goals` skips the spec half entirely there and emits
+    // only `candidate_provider_sub_goals`, so counting the spec's DECLARED chain would
+    // be short by the provision conditions that half produces.
+    if same_sort_canonical(kb, spec, provider) {
+        let n = provider_dict_entries(kb, provider).len();
+        return DictLayout { spec, provider, spec_len: n, provider_len: 0 };
+    }
     let spec_len = direct_requires_chain_rc(kb, spec).len();
-    let provider_len = if same_sort_canonical(kb, spec, provider) {
-        0
-    } else {
-        direct_requires_chain_rc(kb, provider).len()
-    };
+    let provider_len = provider_dict_entries(kb, provider).len();
     DictLayout { spec, provider, spec_len, provider_len }
 }
 

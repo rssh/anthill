@@ -501,6 +501,28 @@ class ParserIntegrationTest extends munit.FunSuite:
       case other => fail(s"expected Parameterized spec, got $other")
   }
 
+  test("WI-869: a `provides Spec :- goals` tail parses and its conditions are kept") {
+    val src =
+      """sort Pair
+        |  provides PartialEq[Pair] :- PartialEq[A], PartialEq[B]
+        |  provides Eq[Pair]
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<conditional-provides>").toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    val provides = sort.items.collect { case Item.ProvidesClauseItem(pc) => pc }
+    assertEquals(provides.length, 2)
+    // The CONDITIONED one keeps both goals, each a spec instantiation…
+    assertEquals(provides.head.conditions.length, 2)
+    val condNames = provides.head.conditions.map {
+      case TypeExpr.Parameterized(n, _) => pf.symbols.name(n.last)
+      case other                        => fail(s"expected Parameterized condition, got $other")
+    }
+    assertEquals(condNames.toList, List("PartialEq", "PartialEq"))
+    // …and the UNCONDITIONED sibling keeps none, which is the control: a tail that
+    // leaked across clauses would give this one two as well.
+    assertEquals(provides(1).conditions.length, 0)
+  }
+
   test("proposal 025: standalone `provides Spec language anthill ... end` block parses") {
     val src =
       """provides Stack[T = Int]
@@ -1333,6 +1355,25 @@ class ParserIntegrationTest extends munit.FunSuite:
     * in the `wi992.*` fixture above, which has no second route; this asserts the link
     * itself, on the real declaration, and fails when the parameterized arm is backed
     * out. */
+  test("WI-869: a provision's `:- goals` link the spec scope, as a `requires` does") {
+    val kb = kbWithStdlib()
+    val scopeOf = (qn: String) =>
+      kb.symbols.byQualifiedName.get(qn).map(kb.symbols.scopeOf)
+        .getOrElse(fail(s"$qn should be registered"))
+    val pairScope = scopeOf("anthill.prelude.Pair")
+    val parents = kb.symbols.scope(pairScope).map(_.parents.map(_.parent).toSet)
+      .getOrElse(fail("anthill.prelude.Pair should have a scope"))
+    // `Pair` declares NO sort-level `requires` — every one of its four requirements is
+    // a provision condition. MEASURED: before conditions were routed through the same
+    // resolution, moving `requires PartialEq[A]` into `provides PartialEq[Pair] :-
+    // PartialEq[A]` removed these links silently and `sbt test` stayed green.
+    for (spec <- List("anthill.prelude.PartialEq", "anthill.prelude.Eq",
+                      "anthill.prelude.PartialOrd", "anthill.prelude.Ordered"))
+      assert(parents.contains(scopeOf(spec)),
+        s"`provides … :- $spec[…]` should link $spec; parents = " +
+        parents.map(p => kb.scopeDisplayName(p)).mkString(", "))
+  }
+
   test("WI-992: stdlib `sort anthill.prelude.Eq` has PartialEq as a parent scope") {
     val kb = kbWithStdlib()
     val eqScope = kb.symbols.byQualifiedName.get("anthill.prelude.Eq")
