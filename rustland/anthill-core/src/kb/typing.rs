@@ -10008,6 +10008,11 @@ fn check_apply_iter(
         } else {
             carrier_param_receiver(kb, &op, fn_sym, pos_args, named_args, pos_results, named_results)
         };
+        // WI-1027 — the ONE projection of that 7-tuple's carrier field, read by three
+        // sites (the WI-496/598 abstract-spec deferral and both `statically_pinned_carrier`
+        // calls). The tuple is positional and seven wide, so a `|(_, c, ..)|` pattern keeps
+        // compiling with the WRONG element if a field is ever inserted before the carrier.
+        let carrier_param_sym: Option<Symbol> = carrier_param_info.as_ref().map(|(_, c, ..)| *c);
         let carrier_bound = match self_recv_spec {
             Some(spec_sort) => match receiver_carrier(
                 kb, &op, spec_sort, named_args, pos_results, named_results,
@@ -10810,32 +10815,24 @@ fn check_apply_iter(
         // call this cannot pin.
         if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
             if let Some(spec_sort) = spec_op_parent_sort(kb, fn_sym) {
-                let carrier = match self_recv_spec {
-                    Some(_) => match receiver_carrier(
-                        kb, &op, spec_sort, named_args, pos_results, named_results,
-                    ) {
-                        ReceiverCarrier::Concrete(c) => Some(c),
-                        _ => None,
-                    },
-                    // WI-608: an ABSTRACT-SPEC carrier (a `FiniteCollection`-typed
-                    // receiver) has no concrete member to statically pin — its runtime
-                    // value is some concrete provider that eval's value-directed dispatch
-                    // resolves, so defer (as the gate below does via
-                    // `carrier_is_abstract_spec`). Otherwise a qualified `Iterable.map(src)`
-                    // on a `FiniteCollection` would mis-pin to FiniteCollection's OWN `map`
-                    // (a different op). A CONCRETE carrier — direct OR transitive — keeps
-                    // its static override pin (WI-444/496 typeclass-default semantics): a
-                    // real member wins, and a concrete carrier with no SUPPLIER at all
-                    // yields an empty `carrier_override_suppliers` list (WI-1010 — it is
-                    // no longer route 1 alone) and defers at the gate below anyway.
-                    None => carrier_param_info.as_ref().and_then(|(_, c, _, _, _, _, _)| {
-                        (!carrier_is_abstract_spec(kb, *c)).then_some(*c)
-                    }),
-                };
+                // WI-1027 moved the two-shape rule (and WI-608's abstract-spec exclusion)
+                // into [`statically_pinned_carrier`], shared with the body-less guard.
+                // A concrete carrier with no SUPPLIER at all yields an empty
+                // `carrier_override_suppliers` list (WI-1010 — it is no longer route 1
+                // alone) and defers at the gate below anyway.
+                // `receiver_carrier` answers `NotApplicable` by itself when there is no
+                // self-receiver param — `self_receiver_spec_sort` IS `spec_op_parent_sort`
+                // plus that same param lookup, and `spec_sort` is that parent here — so a
+                // `match self_recv_spec` wrapper around it would be a third gate that only
+                // LOOKS authoritative.
+                let carrier = statically_pinned_carrier(
+                    kb,
+                    receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results),
+                    carrier_param_sym,
+                );
                 if let Some(carrier_sym) = carrier {
                     let op_qn = kb.qualified_name_of(fn_sym).to_string();
-                    let op_short = short_name_of(&op_qn).to_string();
-                    let op_short_sym = kb.intern(&op_short);
+                    let op_short_sym = kb.intern(short_name_of(&op_qn));
                     // WI-1010: the impl may arrive by ANY of the three supply routes,
                     // not just the carrier's own member — a WI-431 instance fact's
                     // op-valued binding fills the same gap and must win over the
@@ -10888,14 +10885,27 @@ fn check_apply_iter(
                         // artifact limit (058 §12), and closing it would silently widen
                         // a LOAD refusal over the stdlib's largest defaulted-op family;
                         // it must be a decision taken there, not a side effect.
+                        //
+                        // WI-1027 built the BODY-LESS half's guard out of the same
+                        // construction ([`supplier_tie_error`]), which is where the
+                        // `NameableWitness` repair this arm can never reach becomes
+                        // reachable — a body-less op HAS the dispatch slot a bracket binds.
+                        //
+                        // AND WHY THIS ARM STAYS A BARE COUNT while that one carries two
+                        // narrowing clauses — stated here because the symmetry is tempting
+                        // and copying them over would be WRONG. This block and the
+                        // body-less one are mutually exclusive branches on
+                        // `lookup_spec_op_dispatch`, and THIS branch never runs
+                        // `dispatch_spec_op_cached` at all: no `resolve_at_goal`, so no
+                        // tier-2 specificity, and `callee_requirement_slots` pushes no
+                        // dispatch slot for a defaulted op, so no tier-1 bracket can bind
+                        // one either. Nothing arbitrates on this path, so two suppliers
+                        // genuinely ARE a tie. The clauses over there exist because
+                        // something does.
                         [_, _, ..] => {
-                            return Err(TypeError::AmbiguousSpecOpDispatch {
-                                span,
-                                op: fn_sym,
-                                carrier: carrier_sym,
-                                candidates: render_suppliers(kb, &cands, &op_short),
-                                repair: supplier_tie_repair(kb, fn_sym, &cands),
-                            });
+                            return Err(supplier_tie_error(
+                                kb, fn_sym, carrier_sym, &cands, span,
+                            ));
                         }
                         // NO supplier: the gap a default exists to fill. Fall through
                         // and run the spec's default body.
@@ -11203,10 +11213,18 @@ fn check_apply_iter(
             // is some concrete provider (a `FiniteMappedStream`), so defer to eval's
             // value-directed dispatch exactly as the abstract self-receiver arm
             // (`carrier == Abstract`) above does — the carrier-param analogue of it.
+            //
+            // WI-1027 — the abstract-spec half of that test is asked THROUGH
+            // [`statically_pinned_carrier`], and the answer is kept, because the two
+            // consumers of it in this frame must not each pay for it: `carrier_is_abstract_-
+            // spec` reaches `sort_has_constructors`, which `format!`s a prefix and SCANS
+            // every qualified name in the KB. One evaluation per call site, shared with the
+            // supplier-tie guard below. (The self-receiver arm passes `None` for the carrier
+            // param, so it cannot reach the predicate at all.)
+            let carrier_sym = statically_pinned_carrier(kb, carrier, None);
+            let pinned_carrier = statically_pinned_carrier(kb, carrier, carrier_param_sym);
             if matches!(&carrier_param_info, Some((.., true, _)))
-                || carrier_param_info
-                    .as_ref()
-                    .is_some_and(|(_, c, _, _, _, _, _)| carrier_is_abstract_spec(kb, *c))
+                || (carrier_param_sym.is_some() && pinned_carrier.is_none())
             {
                 return Ok(TypeResult {
                     ty: resolved_ret.clone(),
@@ -11215,10 +11233,6 @@ fn check_apply_iter(
                     node: Rc::clone(occ),
                 });
             }
-            let carrier_sym = match carrier {
-                ReceiverCarrier::Concrete(c) => Some(c),
-                ReceiverCarrier::NotApplicable | ReceiverCarrier::Abstract => None,
-            };
 
             // WI-829: thread the call-site σ into the dispatch defer trigger so a
             // sole coarse cover whose compound element σ-disagrees (shallow-vs-deep)
@@ -11251,6 +11265,55 @@ fn check_apply_iter(
             } else {
                 outcome
             };
+            // WI-1027 — the BODY-LESS half of WI-1012's load refusal, raised ONCE above
+            // the outcome arms rather than at each of them (the "refuse above the returns,
+            // do not enumerate them" discipline WI-839's review adopted and WI-841's
+            // `check_selection_bindings` placement follows). The rule, the two narrowing
+            // clauses and the measurements are at [`refuse_unarbitrated_supplier_tie`];
+            // what has to be said HERE is only what is local to this frame.
+            //
+            // THE CARRIER IS NOT `carrier_sym`. That reading made the whole guard inert on
+            // its own fixtures — MEASURED, and it read as "loads clean". `carrier_sym` is
+            // the SELF-RECEIVER carrier, which `dispatch_spec_op_cached` takes because that
+            // is the shape the per-call subst does NOT pin; every fixture this ticket
+            // drives is the CARRIER-PARAM shape (`describe(x: T)`), whose carrier is
+            // `carrier_param_sym`. `statically_pinned_carrier` is asked for both.
+            //
+            // EXHAUSTIVE, not a guarded wildcard, and for the reason `resolve_inner` states
+            // 5500 lines below in this same file: a `!matches!(…)` test would default a
+            // sixth `DispatchOutcome` to GUARDED, so a new variant that raises on its own
+            // account would silently have its targeted diagnostic pre-empted by this
+            // general one, with no reachability lint. The two excluded outcomes each name
+            // something this refusal cannot — a provision tie carries `InstanceTie`'s
+            // provider symbols and its own `TieRepair` (a bracket binding the DISPATCH
+            // slot), and `DispatchNoMatch` says the dispatch resolved nothing at all.
+            //
+            // RECORDED, because the `Ambiguous` exclusion leaves a known bad rendering
+            // standing: when the carrier ALSO self-provides the spec, the same
+            // route-1-vs-route-2 tie reaches `Ambiguous` instead and prints `Leaf, Leaf`
+            // with `TieRepair::ValueDirected` — the exact rendering WI-1012 gave this tie
+            // its own variant to avoid, still reachable on the body-less half. It REFUSES,
+            // so it is a wording defect and not a silence, and fixing it belongs to
+            // `TieRepair`'s owner (WI-843 / WI-855) rather than to a side effect here.
+            let outcome_raises_on_its_own_account = match outcome {
+                DispatchOutcome::Ambiguous(_) | DispatchOutcome::NoMatch => true,
+                DispatchOutcome::NoCandidates
+                | DispatchOutcome::Unique(_)
+                | DispatchOutcome::Deferred => false,
+            };
+            // TIER 1 outranks this refusal, as it outranks BOTH defer triggers for the same
+            // reason: the author named a provider, so nothing here is unselected. Reads the
+            // `pinned_spec` the WI-841 pre-check already computed rather than asking again
+            // — `pinned_witness_for`'s own doc records "one statement said four times" as
+            // this file's standing hazard, and a re-ask would keep the old semantics with
+            // no compile error once 058 phase 3b makes the gate slot-precise.
+            if !outcome_raises_on_its_own_account && !pinned_spec {
+                if let Some(pinned_carrier) = pinned_carrier {
+                    refuse_unarbitrated_supplier_tie(
+                        kb, spec_sort, pinned_carrier, fn_sym, op_short_sym, span,
+                    )?;
+                }
+            }
             match outcome {
                 DispatchOutcome::NoCandidates => {
                     // WI-606: a CONCRETE receiver carrier that statically declares a
@@ -12465,6 +12528,165 @@ pub(crate) fn supplier_tie_repair(
         SupplierTieRepair::NameableWitness
     } else {
         SupplierTieRepair::KeepOne
+    }
+}
+
+/// WI-1027 — the carrier a spec-op call pins STATICALLY, whichever of the two receiver
+/// shapes classified it: the SELF-RECEIVER form (`collect(s: Stream)`, whose carrier is
+/// the receiver argument's concrete sort) or the CARRIER-PARAM form (`describe(x: T)`,
+/// whose carrier is what filled the spec's own param). `None` when nothing static pins
+/// one — which is the signal to leave the call to eval's value-directed dispatch.
+///
+/// Extracted at WI-1027 because a SECOND site had to ask the same question, and the two
+/// answering it separately is the shape this tree keeps paying for: the WI-444 arm's copy
+/// carries the WI-608 rule below, and a body-less guard that re-derived the carrier from
+/// [`ReceiverCarrier`] alone answered `None` for every carrier-param call — MEASURED, it
+/// made the whole refusal silently inert while its tests read as ordinary "loads clean".
+///
+/// WI-608: an ABSTRACT-SPEC carrier param (a `FiniteCollection`-typed receiver) is NOT a
+/// static pin — its runtime value is some concrete provider, so a qualified
+/// `Iterable.map(src)` on it would otherwise mis-pin to `FiniteCollection`'s OWN `map`, a
+/// different operation. A concrete carrier — direct OR transitive — does pin.
+///
+/// That leg is what the body-less block's WI-496/WI-598 deferral now ASKS rather than
+/// spells: its arm reads this function's answer instead of calling
+/// `carrier_is_abstract_spec` itself, so the predicate has one owner AND one evaluation
+/// per call site. That matters for cost, not only for tidiness — it reaches
+/// `KnowledgeBase::sort_has_constructors`, which builds a `format!` prefix and scans every
+/// qualified name in the symbol table, so a second ask is far dearer than the provision
+/// walk the guard it feeds performs.
+///
+/// The two inputs are never both informative: `carrier_param_receiver` is consulted only
+/// when there is no self-receiver (the shapes are mutually exclusive at the classifier),
+/// so the fallback runs exactly when the first arm is `NotApplicable`.
+fn statically_pinned_carrier(
+    kb: &KnowledgeBase,
+    self_receiver: ReceiverCarrier,
+    carrier_param: Option<Symbol>,
+) -> Option<Symbol> {
+    match self_receiver {
+        ReceiverCarrier::Concrete(c) => Some(c),
+        ReceiverCarrier::Abstract | ReceiverCarrier::NotApplicable => {
+            carrier_param.filter(|&c| !carrier_is_abstract_spec(kb, c))
+        }
+    }
+}
+
+/// WI-1027 — refuse a BODY-LESS spec op whose statically pinned carrier has two suppliers
+/// that nothing arbitrated between. The load face of
+/// [`crate::eval::EvalError::AmbiguousSpecOpDispatch`] for the half WI-1012 did not cover.
+///
+/// **"TWO SUPPLIERS" IS NOT THE CONDITION**, which is the ticket's own premise and is
+/// FALSE at the typer — measured: a bare `cands.len() >= 2` guard refused SIX delivered
+/// programs (wi817 ×1, wi843 ×2, wi857 ×2, wi858 ×1). The count is sound for eval's
+/// [`crate::eval::Interpreter::resolve_spec_op_target_by_value`] because that read is
+/// BRACKET-LESS BY CONSTRUCTION — no call site, so nothing could ever have selected. Here
+/// a call site exists and 058 §4.1 gives it two ways to arbitrate that a count cannot see:
+///
+///   * TIER 1, an explicit `f[Spec = W](…)` — `wi857`'s `Ordered.compare[Ordered =
+///     Descending](7, 3)` has two suppliers for `Int64` and is a correct program. Applied
+///     by the CALLER, which holds the selections.
+///   * TIER 2, SPECIFICITY — `pick_most_specific` takes the ground provision over the
+///     parametric one and the call runs with no diagnostic. WI-843 pinned that
+///     deliberately and recorded that making it loud "amounts to a new coherence rule", so
+///     refusing it here would overturn a delivered decision as a side effect.
+///
+/// **SO THE CONDITION IS WHAT THE ARBITRATION COULD NOT WEIGH.** `resolve_inner` weighs
+/// PROVISIONS and projects each to an operation through `sort_ops_lookup(impl_sort,
+/// op_short)`. A WITNESS provision survives that projection intact — its supplier IS the
+/// lookup's answer — so a tie among witnesses is broken by tier 1 or tier 2, or raised as
+/// `Ambiguous`, all before this runs. The other two routes do not:
+///
+///   * [`SupplyRoute::Own`] contributes NO provision, so it is never a distinguishable
+///     candidate — the arbitration can never compare it against a rival. Note this does
+///     NOT mean it cannot win: when the chosen provision is carrier-keyed its `impl_sort`
+///     IS the carrier, so `sort_ops_lookup` returns the carrier's own member and route 1
+///     wins by riding on someone else's provision, never having been weighed. That is
+///     fixture 2 below answering 7.
+///   * [`SupplyRoute::Fact`] IS weighed as a provision, but its op-valued BINDING is not
+///     what `sort_ops_lookup` returns, so the projection is lossy exactly where it matters
+///     — a provision the arbitration DID select still loses its binding to a same-named
+///     member of the carrier.
+///
+/// **COUPLING, stated because nothing else enforces it.** The `Fact` leg is a property of
+/// two lines elsewhere, not of the route: `collect_provides_candidates` drops op-valued
+/// bindings, and `resolve_at_goal` projects through `sort_ops_lookup`. Make the `Unique`
+/// resolution consult the resolved provision's own op binding — the natural deeper fix for
+/// fixture 2, and a plausible future ticket — and `Fact` becomes arbitrated, at which
+/// point [`SupplyRoute::weighed_by_provision_arbitration`] must say so or this refusal
+/// starts firing on a legitimate selection. That is why the classification is a method on
+/// the route with its mechanism in its doc, and not a `matches!` here.
+///
+/// MEASURED, the three fixtures, before any of this existed
+/// (`wi1027_bodyless_supplier_tie_test`): an own member DECLARED-but-unrunnable beside a
+/// fact binding loaded clean and refused at the CALL (WI-1012's cost 1); the same member
+/// given a body answered 7, the loader-certified `describe = otherDescribe` meaning
+/// nothing (WI-1010's defect one half over); and with a witness rival instead it answered
+/// 9, the carrier's own member silently losing. BLAST RADIUS: across `stdlib` +
+/// `anthill-stl` there is no (body-less spec op, carrier) pair with two suppliers at all —
+/// a whole-KB scan reported 0 — so the corpus reaches this only through fixtures.
+///
+/// COST: this is a THIRD caller of [`spec_op_suppliers_for_carrier`], and the first on the
+/// BODY-LESS population, which is far larger than the two defaulted-op sites WI-1011
+/// bounded ("per apply-site-per-load, negligible"). The walk is per call site with a
+/// pinned carrier and is not short-circuitable — skipping it on an own-member hit is the
+/// first-match blindness the design removes. Unmeasured here; **WI-1011** owns the memo.
+///
+/// Reads [`spec_op_suppliers_for_carrier`] and NOT [`carrier_override_suppliers`]: the
+/// interpretability filter is the defaulted half's own (WI-1010 — there a default is the
+/// fallback, so a member eval cannot call is not a supplier). A body-less op has no
+/// fallback, and this question is a coherence one — "did the author supply two
+/// implementations?" — which must not change answer with the host backend (WI-886).
+/// Driven by the unrunnable-member fixture, which has two suppliers here and one there.
+fn refuse_unarbitrated_supplier_tie(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let cands = spec_op_suppliers_for_carrier(kb, spec_sort, carrier, spec_op, op_short_sym);
+    // Count first: the route scan is skipped for the 0- and 1-supplier case, which the
+    // blast-radius scan measured as every call in the tree.
+    if cands.len() >= 2
+        && cands.iter().any(|c| !c.route.weighed_by_provision_arbitration())
+    {
+        return Err(supplier_tie_error(kb, spec_op, carrier, &cands, span));
+    }
+    Ok(())
+}
+
+/// WI-1027 — build the load-time supplier-tie refusal from a candidate list the caller
+/// already has. The TWO typer sites that decline to select — WI-1012's defaulted-op arm
+/// and WI-1027's body-less guard — construct one error out of `(span, op, carrier)` plus
+/// the two derived fields, and both derivations are easy to get subtly wrong: the
+/// candidate list must be route-rendered against the op's SHORT name (so the fact leg can
+/// echo `describe = otherDescribe`), and the repair must be ASKED rather than assumed
+/// (WI-1012's own first cut hard-coded `KeepOne`, which is false for a witness rival on a
+/// body-less op — see [`SupplierTieRepair`]). Sharing the construction is what keeps the
+/// two halves of one mechanism from drifting the way WI-1010's four route enumerations
+/// did; the message body below is already shared with eval for the same reason.
+///
+/// Takes the candidates rather than re-deriving them: the WI-1012 arm computes
+/// [`carrier_override_suppliers`] to find its single pin and must not walk the provisions
+/// twice, and the WI-1027 guard reads the wider [`spec_op_suppliers_for_carrier`] — the
+/// interpretability filter is the defaulted half's own (WI-1010), so the two lists are
+/// deliberately not the same query.
+pub(crate) fn supplier_tie_error(
+    kb: &KnowledgeBase,
+    spec_op: Symbol,
+    carrier: Symbol,
+    cands: &[SpecOpSupplier],
+    span: Option<Span>,
+) -> TypeError {
+    let op_qn = kb.qualified_name_of(spec_op).to_string();
+    TypeError::AmbiguousSpecOpDispatch {
+        span,
+        op: spec_op,
+        carrier,
+        candidates: render_suppliers(kb, cands, short_name_of(&op_qn)),
+        repair: supplier_tie_repair(kb, spec_op, cands),
     }
 }
 
@@ -19661,6 +19883,39 @@ pub(crate) enum SupplyRoute {
     /// A WITNESS SORT's own member (`sort CEq provides PartialEq[T = C]` with
     /// `CEq.eq`), WI-450.
     Witness(Symbol),
+}
+
+impl SupplyRoute {
+    /// WI-1027 — could `resolve_inner`'s provision arbitration have WEIGHED this supplier
+    /// against a rival? The predicate [`refuse_unarbitrated_supplier_tie`] turns into a
+    /// verdict, kept here and EXHAUSTIVE so a fourth route cannot inherit an answer by
+    /// silence — the whole cost of getting it wrong is refusing correct programs at load,
+    /// which is what the six-fixture measurement in that function's doc discovered.
+    ///
+    /// The mechanism, per route, because it is a fact about the DISPATCH PATH and not
+    /// about the syntax each route is written in:
+    ///
+    ///   * [`Self::Witness`] — TRUE. The provision is a candidate, and
+    ///     `resolve_at_goal`'s `sort_ops_lookup(impl_sort, op_short)` projects it to the
+    ///     witness's own member, which IS this supplier. Nothing is lost, so tier 1,
+    ///     tier 2 and `DispatchOutcome::Ambiguous` all see it.
+    ///   * [`Self::Own`] — FALSE. It contributes no provision at all
+    ///     (`build_sort_ops_table` pass 1 records the carrier's member whatever the
+    ///     provisions say), so it is never a distinguishable candidate. It can still WIN,
+    ///     by being what the lookup returns when the chosen provision is carrier-keyed —
+    ///     winning without ever having been weighed is exactly the defect.
+    ///   * [`Self::Fact`] — FALSE, and for a different reason worth keeping apart: the
+    ///     provision IS weighed, but `collect_provides_candidates` drops op-valued
+    ///     bindings and the `sort_ops_lookup` projection returns a same-named member of
+    ///     the carrier in preference to the binding. Lossy projection, not absence. If
+    ///     that projection is ever taught to consult the binding, this arm becomes TRUE
+    ///     and must be changed with it.
+    pub(crate) fn weighed_by_provision_arbitration(&self) -> bool {
+        match self {
+            SupplyRoute::Witness(_) => true,
+            SupplyRoute::Own | SupplyRoute::Fact => false,
+        }
+    }
 }
 
 /// WI-837 — ONE supplier of a spec op's impl for a carrier.

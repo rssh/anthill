@@ -65,13 +65,15 @@
 
 use anthill_core::eval::Value;
 
-/// Load `src` and answer `{ns}.probe` as an Int.
+/// Load `src` and answer `{ns}.probe` as an Int. `pub(crate)` alongside [`program`], for
+/// WI-1027's body-less half — the reasoning below is why there is no second load-clean
+/// assertion, and it should be documented at one copy, not paraphrased at two.
 ///
 /// No separate load-clean assertion: `interp_for` goes through `expect_loaded`, which
 /// is WI-966's one owner of "a load error fails the test" and already panics naming
 /// every error. Asserting it here again would re-implement that policy AND pay a
 /// second full stdlib `load_all` per call.
-fn probe(ns: &str, src: &str) -> i64 {
+pub(crate) fn probe(ns: &str, src: &str) -> i64 {
     let op = format!("{ns}.probe");
     match crate::common::interp_for(src).call(&op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
         Value::Int(i) => i,

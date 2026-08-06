@@ -99,17 +99,23 @@ fn two_suppliers(ns: &str, tail: &str) -> String {
 
 /// The load errors of `src`, joined — panics if it loads CLEAN, which is the pre-fix
 /// behaviour and must never read as a pass.
-fn refusal(src: &str) -> String {
+///
+/// `pub(crate)` for WI-1027, the body-less half of this same refusal: the panic text IS
+/// the contract ("loaded clean" must never read as a pass), and two copies of it can be
+/// relaxed independently. Sibling-module reuse is the house pattern in this cluster —
+/// this file already imports wi1010's fixture builder for the same reason.
+pub(crate) fn refusal(src: &str) -> String {
     crate::common::try_load_kb_with(src)
         .err()
         .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
         .join("\n")
 }
 
-/// Split a load error's `line:col: ` prefix from its message body. Panics unless the
+/// Split a load error's `line:col: ` prefix from its message body. `pub(crate)` with
+/// [`refusal`], so the ONE rendering (`load.rs`'s `line:col: message`) has ONE parser. Panics unless the
 /// prefix is really a location — the span is half of what raising at the typer buys,
 /// so a locationless rendering must fail rather than be silently accepted as the body.
-fn located(msg: &str) -> (&str, &str) {
+pub(crate) fn located(msg: &str) -> (&str, &str) {
     let (loc, body) = msg
         .split_once(": ")
         .unwrap_or_else(|| panic!("expected a `line:col: message` rendering, got: {msg}"));
