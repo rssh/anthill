@@ -1685,7 +1685,7 @@ fn collect_queries(
 /// rule body, so in no functor table) answer normally when it is TRUE, and keeps a
 /// KNOWN functor with no matching row at `no solutions`. A non-functor head (`?x`,
 /// a literal) and a resolver scoping marker (`forall_in` / …) are never reported —
-/// `undefined_query_functor` returns `None`.
+/// `undefined_functor` returns `None`.
 ///
 /// Returns a bool rather than `Err` so the caller can attempt EVERY query in a
 /// `--query-file` before failing: one unknown pattern must not silently drop the
@@ -1693,7 +1693,7 @@ fn collect_queries(
 /// have run).
 ///
 /// The discrim-index check is the backstop for the one case
-/// `undefined_query_functor` cannot see: a TOP-LEVEL arity-0 rule head that
+/// `undefined_functor` cannot see: a TOP-LEVEL arity-0 rule head that
 /// evaluated to FALSE (so resolution is empty) sits in neither enumeration table
 /// — it matches only through the discrimination tree, under a symbol the bare
 /// query re-interns — yet it IS declared. `browse_program_clauses_matching`
@@ -1706,7 +1706,7 @@ fn report_if_unknown_functor(
     global_scope: ScopeId,
     qt: anthill_core::kb::term::TermId,
 ) -> bool {
-    let Some(sym) = kb.undefined_query_functor(qt) else {
+    let Some(sym) = kb.undefined_functor(&qt) else {
         return false;
     };
     if !kb.browse_program_clauses_matching(&qt).is_empty() {

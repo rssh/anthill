@@ -69,6 +69,9 @@ fn proof_record_is_emitted_with_strategy() {
 fn proof_with_no_strategy_is_open_obligation() {
     let src = r#"
         namespace test.proof_load_open
+          -- `bar` is scaffolding for `foo`'s body; it needs a clause because
+          -- WI-1034 refuses a rule-body goal whose functor names nothing.
+          fact bar(1)
           rule foo(?x) :- bar(?x)
           proof foo end
         end
@@ -103,6 +106,7 @@ fn proof_with_query_keeps_text() {
 fn no_regression_without_proof() {
     let src = r#"
         namespace test.proof_load_none
+          fact bar(1)
           rule foo(?x) :- bar(?x)
         end
     "#;

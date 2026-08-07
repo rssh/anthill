@@ -17,7 +17,7 @@
 //!     silently treating it as a free/uninterpreted relation (which would
 //!     leave `?d` unconstrained and flip the verdict to a spurious `sat`).
 
-use super::common::{load_kb_with, run_z3, z3_available};
+use super::common::{load_kb_with, load_kb_with_lenient, run_z3, z3_available};
 use anthill_smt_gen::{emit_satisfiability_check_with, ProofConfig};
 
 /// The shared `…common` namespace: the two-level `position_distance`
@@ -149,7 +149,19 @@ fn unresolved_functor_is_a_loud_error() {
     // the common-namespace rule. smt-gen must surface this loudly rather
     // than silently emitting an uninterpreted relation (which would leave
     // ?d free and the violation spuriously `sat`).
-    let kb = load_kb_with(&source_without_import());
+    //
+    // WI-1034 moved the FIRST refusal earlier — the loader now names this goal
+    // and its span, so the fixture no longer loads clean. Both are asserted, in
+    // that order, because they are different guards at different distances from
+    // the author: the load refusal is what a user of ANY backend now gets, and
+    // the smt-gen one is the backstop for a KB assembled some other way. Take
+    // either away and the other still fires, which is why the lenient load is
+    // NAMED rather than a discarded `Err`.
+    let (kb, load_errs) = load_kb_with_lenient(&source_without_import());
+    assert!(
+        load_errs.iter().any(|e| e.contains("position_distance") && e.contains("names nothing")),
+        "WI-1034: the LOADER must refuse the un-imported goal first, got: {load_errs:?}",
+    );
     let err = emit_satisfiability_check_with(
         &kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
         .expect_err("an unresolved body-goal functor must be a loud error");

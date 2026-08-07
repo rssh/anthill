@@ -253,6 +253,27 @@ pub enum LoadError {
         /// rides this layer unchanged rather than being flattened and rebuilt.
         census: super::simp_rewrite::ClauseCensus,
     },
+    /// WI-1034: a RULE-BODY goal whose functor names nothing — no clause indexes it
+    /// and no declaration of any kind (sort / entity / operation / const / builtin)
+    /// carries it. The goal can never match, so the conjunction it sits in is dead
+    /// and every rule containing it silently answers the empty set — a result
+    /// indistinguishable from "the facts do not hold". Load-blocking: there is no
+    /// later site to be loud at, because nothing goes wrong at run time; the rule
+    /// simply never fires.
+    ///
+    /// Its own variant rather than an [`Self::UnresolvedName`] because the two are
+    /// raised by different readers and mean different things: `UnresolvedName` is a
+    /// REFERENCE the loader could not resolve, and a rule-body predicate that names
+    /// nothing resolves perfectly well — to a bare intern (WI-476), which is exactly
+    /// why it stayed silent. What is wrong is that nothing was ever declared under it.
+    UndefinedRuleBodyGoal {
+        /// The goal's functor, qualified — the spelling that locates (or fails to
+        /// locate) a declaration.
+        functor: String,
+        /// Where the goal is written. Not `Option`: every body occurrence carries a
+        /// span, and a synthesized one carries its origin's.
+        span: Span,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -1253,6 +1274,7 @@ impl LoadError {
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
+            | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -1409,6 +1431,9 @@ impl LoadError {
                      Strengthen `provides {spec}[…] :- …` to a condition that implies \
                      `{unentailed}`, or weaken `provides {required}[…] :- …`."
                 )
+            }
+            LoadError::UndefinedRuleBodyGoal { functor, span } => {
+                format!("{}: {}", loc.format_start(*span), undefined_rule_body_goal_message(functor))
             }
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
@@ -1831,6 +1856,12 @@ impl std::fmt::Display for LoadError {
                      '{carrier}' DOES provide '{required}', but only under `{unentailed}`, \
                      which the conditions of '{spec}' do not entail"
                 )
+            }
+            LoadError::UndefinedRuleBodyGoal { functor, span } => {
+                // ONE message body, rendered by `undefined_rule_body_goal_message` for
+                // both faces — the located `format_with_source` above and this
+                // span-less `Display` — so the two cannot drift into two wordings.
+                write!(f, "{} at {}..{}", undefined_rule_body_goal_message(functor), span.start, span.end)
             }
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
@@ -4848,6 +4879,82 @@ pub fn load_all_per_file(
     load_phase_inner(kb, files, resolver)
 }
 
+/// WI-1034 — the ONE wording of [`LoadError::UndefinedRuleBodyGoal`], shared by the
+/// located `format_with_source` rendering and the span-less `Display`.
+///
+/// Names the SYMPTOM first ("can never match … answers nothing") because the symptom
+/// is what the author actually observed: an empty query result with no diagnostic
+/// anywhere. Both repairs are given because both were the real cause in the corpus
+/// this was measured on — `observed_pose_at` was declared nowhere at all, and
+/// `distance_at_step` is a rule in a namespace the citing file forgot to import.
+///
+/// It names the GOAL and not the citing rule, deliberately. The obvious extra context
+/// — "…so rule `R` never fires" — is MISLEADING on a `-:` rule: the multi-head form
+/// desugars to one clause per conclusion, so `… -: gte(?d, ?lo), lte(?d, ?hi)` gives
+/// two rules headed `PartialOrd.gte` and `PartialOrd.lte`, and the message then reads
+/// as though a PRELUDE rule were broken. Measured on `safety_gps.anthill:347`. The
+/// span already points at the goal's own text, which is where the author must look.
+fn undefined_rule_body_goal_message(functor: &str) -> String {
+    format!(
+        "rule-body goal `{functor}` names nothing: no rule, fact, operation, entity, \
+         const or builtin is declared under that name, so this goal can NEVER match and \
+         the rule it is written in can never fire. Fix the spelling, or import the \
+         namespace that declares `{functor}`."
+    )
+}
+
+/// WI-1034 — refuse every rule-body goal whose functor names nothing.
+///
+/// The walk and its exemptions belong to
+/// [`KnowledgeBase::undefined_rule_body_goals`]; this is the LOAD-side half — one
+/// error per goal, located in the file the goal is written in.
+///
+/// ORDERING: must run after every clause is asserted and after the typer, and it
+/// does — it is one of the last passes in [`load_phase_inner`]. A functor DECLARED
+/// but not yet carrying facts is cleared by `undefined_functor`'s `kind_of` disjunct
+/// regardless of when this runs, so the entity case needs no ordering at all
+/// (WI-1034's ticket predicted otherwise — that `anthill.reflect.typing.DefaultProvider`
+/// would need its facts first — and that was a property of a clauses-only predicate,
+/// not of the one in the KB). What DOES need the ordering is a rule-defined predicate
+/// in a file loaded later, and the typer's body rewrites (`type_rule_bodies`): a dot
+/// is not an `Apply` until it has been dispatched.
+///
+/// PER LOAD PHASE, over ALL live rules — so a phase-1 rule that forward-references a
+/// name only phase 2 declares IS refused at phase 1. That is the ordering promise
+/// made explicit rather than a limitation discovered later: the normal path hands
+/// every file to one `load_all` (cross-file mutual recursion is what
+/// `scan_definitions` exists for), and `load_incremental`'s phase 1 is the stdlib,
+/// which references nothing a user file supplies. A caller that genuinely needs the
+/// forward reference must load both files in one phase.
+fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // Keyed by (functor, where it is written), so ONE goal in the text reports ONCE.
+    // Load-bearing, not tidiness: a `-:` multi-head rule desugars to one clause per
+    // conclusion sharing the body, so `safety_gps.anthill:347`'s single
+    // `distance_at_step(?k, ?d)` arrives here through TWO `RuleId`s. These errors are
+    // returned from `load_phase_inner` without passing through `dedup_load_errors`, so
+    // the producer is the only place that can collapse them.
+    let mut seen: HashSet<(Symbol, crate::span::SourceSpan)> = HashSet::new();
+    let mut errors = Vec::new();
+    for rid in kb.live_rule_ids_iter() {
+        if kb.is_fact(rid) {
+            continue; // facts have no body
+        }
+        for (functor, span) in kb.undefined_rule_body_goals(rid) {
+            if !seen.insert((functor, span)) {
+                continue;
+            }
+            errors.push(
+                LoadError::UndefinedRuleBodyGoal {
+                    functor: kb.qualified_name_of(functor).to_string(),
+                    span: span.span,
+                }
+                .located_in_kb_source(kb, span.source),
+            );
+        }
+    }
+    errors
+}
+
 /// Proposal 039 / WI-084 — the const purity gate. An anthill-bodied `const`
 /// must fold to a value PURELY: its body may not invoke an effectful operation
 /// (one with a non-empty declared effect row — e.g. an allocator's
@@ -5331,6 +5438,14 @@ fn load_phase_inner(
     // row is queryable.
     all_errors.extend(check_macro_purity(kb));
     mark!("check_macro_purity");
+    // WI-1034: a rule-body goal whose functor names nothing can never match, so the
+    // rule silently answers the empty set. Load-blocking — nothing fails at run time,
+    // which is precisely why there is no later site to be loud at. LAST of the
+    // whole-KB checks: it reads the FINAL rule bodies (post-typer, post-`[simp]`,
+    // post-`req_insertion`) and the FINAL clause set, so a name that any earlier pass
+    // was still going to declare or index is already there.
+    all_errors.extend(check_rule_body_goals(kb));
+    mark!("check_rule_body_goals");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.

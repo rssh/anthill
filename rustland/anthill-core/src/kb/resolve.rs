@@ -7854,12 +7854,14 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 /// two recognitions never drift (a marker missing from the refutation set would
 /// be mistaken for a 0-candidate goal and falsely refute a rule that uses it).
 ///
-/// `pub(crate)` so `KnowledgeBase::undefined_query_functor` (WI-754) shares this
+/// `pub(crate)` so `KnowledgeBase::undefined_functor` (WI-754) shares this
 /// ONE authority: a marker carries no rule/fact/declaration, so without consulting
 /// it a well-formed `(forall … )` query would be mis-refused as an unknown functor
 /// — yet a mis-arity marker name MUST be refused. Routing both the CLI exemption
 /// and the resolver dispatch through this one predicate keeps them in LOCKSTEP
-/// (WI-878): tighten the arity here and both tighten together.
+/// (WI-878): tighten the arity here and both tighten together. WI-1034 added the
+/// third consumer — the loader's rule-body goal check — through the same
+/// `undefined_functor`, so a marker in a rule body is exempt for this one reason.
 pub(crate) fn is_scoping_marker(name: &str, pos_arity: usize) -> bool {
     match name {
         "forall_impl" | "forall_in" | "some_in" => pos_arity == 3,

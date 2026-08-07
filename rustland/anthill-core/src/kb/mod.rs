@@ -2772,27 +2772,26 @@ impl KnowledgeBase {
         }
     }
 
-    /// Positional arity of the head application at `tid` — 0 for a bare
-    /// `Ref` / `Ident` or any non-`Fn` head. Companion to [`Self::head_functor`]
-    /// for the arity-aware scoping-marker check (WI-878): a marker NAME at a
-    /// non-marker arity (`some_in/1`) is a user typo, not the resolver's 3-ary
-    /// quantifier, so it must NOT take the marker exemption in
-    /// [`Self::undefined_query_functor`].
-    pub(crate) fn head_pos_arity(&self, tid: TermId) -> usize {
-        match self.get_term(tid) {
-            Term::Fn { pos_args, .. } => pos_args.len(),
-            _ => 0,
-        }
-    }
-
-    /// The head functor of a query pattern `tid` WHEN it is a concrete name the
+    /// The head functor of goal `view` WHEN it is a concrete name the
     /// KB does not define — no rule or fact indexes it and no declaration of any
     /// kind (sort / entity constructor / operation / const / builtin) names it.
-    /// `Some(sym)` is the caller's cue to refuse the query LOUDLY rather than hand
+    /// `Some(sym)` is the caller's cue to refuse LOUDLY rather than hand
     /// it to resolution, which answers an undefined predicate with a silent empty
     /// set indistinguishable from a known functor that merely has no matching
     /// facts — reading as "no such fact" when the truth is "that name resolves to
     /// nothing" (WI-754).
+    ///
+    /// # The ONE head test, for both positions a goal is written in
+    ///
+    /// WI-1034: a rule BODY atom asks exactly this question and must get exactly
+    /// this answer, so this is generic over [`TermView`] rather than taking a
+    /// `TermId` — a query pattern rides as a hash-consed term, a rule body rides
+    /// as `Rc<NodeOccurrence>` (`rule_body_nodes`), and the two must not grow two
+    /// notions of "names nothing". It was `undefined_query_functor` while queries
+    /// were its only caller; the `query` in the name is what would have decayed
+    /// into a second copy for the loader. What legitimately DOES differ between
+    /// the two callers is DESCENT, and that is why they have separate walks —
+    /// see [`Self::undefined_rule_body_goals`].
     ///
     /// `None` is returned for the three cases that must NOT be refused:
     ///   * a head with no functor at all (`Var` / `Const` / `Bottom` — a bare
@@ -2820,10 +2819,12 @@ impl KnowledgeBase {
     /// only through a rule body (an arity-0 proposition) can resolve to a
     /// solution while sitting in neither table, so the CLI resolves FIRST and
     /// consults this only to explain a genuinely empty result — never to refuse
-    /// before resolution (WI-754).
-    pub fn undefined_query_functor(&self, tid: TermId) -> Option<Symbol> {
-        let sym = self.head_functor(tid)?;
-        if crate::kb::resolve::is_scoping_marker(self.local_name_of(sym), self.head_pos_arity(tid)) {
+    /// before resolution (WI-754). Every caller that REFUSES on this pairs it with
+    /// the discrimination-tree backstop (`browse_program_clauses_matching`), which
+    /// is what clears that case.
+    pub fn undefined_functor<V: term_view::TermView>(&self, view: &V) -> Option<Symbol> {
+        let (sym, pos_arity) = self.goal_head_sym_arity(view)?;
+        if crate::kb::resolve::is_scoping_marker(self.local_name_of(sym), pos_arity) {
             return None;
         }
         let defined =
@@ -2831,10 +2832,41 @@ impl KnowledgeBase {
         (!defined).then_some(sym)
     }
 
+    /// The `(functor symbol, positional arity)` of a GOAL's head, or `None` for a head
+    /// with no functor at all (`Var` / `Const` / `Bottom` — a bare `?x` or a literal).
+    ///
+    /// The one head read for every goal question the KB asks — [`Self::undefined_functor`]
+    /// asks "does this name exist", the rule-body walk asks "is this a connective, and
+    /// what are its goal children". `ViewHead::functor_sym` is NOT that read: it answers
+    /// for `Functor` and `Ref` and NOT for `Ident`, so a BARE UNRESOLVED name — precisely
+    /// the shape a rule-body goal that names nothing arrives in — reads as functor-less
+    /// through it. That divergence is not hypothetical: the `forall_impl` hypothesis scan
+    /// was written on `functor_sym` and silently found no hypotheses, because every
+    /// antecedent it was looking for is an `Ident`.
+    ///
+    /// One behaviour differs from the `Term`-shape read this replaced
+    /// (`head_functor` + the retired `head_pos_arity`): a `Term::ParseAux` used to
+    /// answer `None` here and now PANICS inside `TermView::head`. That is the
+    /// codebase's own stated invariant, not a new exposure — the loader strips
+    /// `ParseAux` before allocation (`kb/term.rs`), and both `TermId` views already
+    /// assert it, as does `browse_program_clauses_matching`, which every refusing
+    /// caller runs over the same term one line later.
+    fn goal_head_sym_arity<V: term_view::TermView>(&self, view: &V) -> Option<(Symbol, usize)> {
+        match term_view::TermView::head(view, self) {
+            term_view::ViewHead::Functor { functor: Some(s), pos_arity, .. } => {
+                Some((s, pos_arity))
+            }
+            // `Ref(c) ≡ Fn{c}` at arity 0 (WI-436) — the canonical spelling of a
+            // 0-ary application, and the shape a bare proposition arrives as.
+            term_view::ViewHead::Ref(s) | term_view::ViewHead::Ident(s) => Some((s, 0)),
+            _ => None,
+        }
+    }
+
     /// Every concrete functor in query pattern `tid` that the KB does not define
     /// AND that sits in a position COMMITTED to its truth — the top-level goal, or
     /// anywhere inside a `not` — so refusing it is correct (WI-863). Generalises
-    /// [`Self::undefined_query_functor`] (head only) to catch a nested undefined
+    /// [`Self::undefined_functor`] (head only) to catch a nested undefined
     /// predicate whose emptiness NAF would otherwise launder into a WRONG answer:
     /// `not(P)` over an undefined `P` resolves the inner goal to a complete-empty
     /// search, and NAF flips that to a confident `true`, asserting a negation for
@@ -2899,7 +2931,7 @@ impl KnowledgeBase {
         under_not: bool,
         out: &mut SmallVec<[Symbol; 4]>,
     ) {
-        if let Some(sym) = self.undefined_query_functor(tid) {
+        if let Some(sym) = self.undefined_functor(&tid) {
             // Discrim backstop, per node — an arity-0 proposition reachable only
             // through a rule body is in no functor table but matches the tree.
             // Ord cheap-check first: skip the tree walk for a name already
@@ -2953,12 +2985,12 @@ impl KnowledgeBase {
         out: &mut SmallVec<[Symbol; 4]>,
     ) {
         // The SAME candidate test as the undefined walk — a scoping marker and a
-        // defined functor are dropped by `undefined_query_functor`, and the
+        // defined functor are dropped by `undefined_functor`, and the
         // discrimination-tree backstop clears an arity-0 proposition that is declared
         // but sits in no functor table — so the two refusals cannot disagree about
         // which symbols are even askable. Ord ladder-read first: an ambiguity is
         // rare and the tree walk is the expensive half.
-        if let Some(sym) = self.undefined_query_functor(tid) {
+        if let Some(sym) = self.undefined_functor(&tid) {
             let ambiguous = matches!(
                 load::resolve_name_in_kb(self, self.local_name_of(sym), scope),
                 ResolveResult::Ambiguous(_)
@@ -3003,7 +3035,14 @@ impl KnowledgeBase {
                     .map(|&body| self.tuple_goal_termids(body))
                     .unwrap_or_default();
             }
-            "or" | "and" => return pos_args.iter().take(2).copied().collect(),
+            // `or` alone: it is the kernel disjunction RULE (`a | b` lowers to
+            // `or(a, b)`, `kernel.anthill:48`) and so is missed by `builtin_of`.
+            // `and` used to be listed here as its "conjunction" twin — MEASURED FALSE
+            // (WI-1034): no kernel rule defines it, there is no `BuiltinTag::And`, and
+            // the surface `a & b` lowers to `anthill.prelude.Bool.and`, a boolean
+            // OPERATION whose arguments are VALUES. Following them walked an
+            // operation's data as goals.
+            "or" => return pos_args.iter().take(2).copied().collect(),
             _ => {}
         }
         match self.builtin_of(*functor) {
@@ -3023,6 +3062,286 @@ impl KnowledgeBase {
                 pos_args.iter().copied().collect()
             }
             _ => SmallVec::from_elem(tid, 1),
+        }
+    }
+
+    /// WI-1034 — the span a goal with no source location of its own is reported at,
+    /// used only to seed a SYMBOL-only descent (see [`Self::value_span`]). Never
+    /// rendered into a diagnostic: the reporting path inherits its parent's real span.
+    fn unspanned() -> SourceSpan {
+        SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0)
+    }
+
+    /// WI-1034 / WI-895 — every goal in rule `rid`'s BODY whose functor names nothing,
+    /// with the goal's own span, so the loader can refuse it and say where. The
+    /// rule-body peer of [`Self::undefined_query_goal_functors`], sharing its head test
+    /// ([`Self::undefined_functor`] plus the discrimination-tree backstop) AND its
+    /// descent rule.
+    ///
+    /// Such a goal can never match: the name interned to a symbol with no clause, no
+    /// operation record and no builtin, so the conjunction it sits in is dead and the
+    /// rule silently answers nothing. The kernel spec §5.3 already legislates it — "in
+    /// a rule *body* it is not yet refused — it interns bare and silently fails to
+    /// match: a known gap (WI-895), not the intended design" — so this is the design
+    /// arriving, not a new policy. MEASURED on WI-1026's fixture, which is where
+    /// WI-1034 was filed from: `rule answer(?r) :- describe(leaf(), ?r)` loaded clean
+    /// and answered `[]` with ONE unambiguous supplier present, indistinguishable from
+    /// a dispatch verdict.
+    ///
+    /// This closes the GOAL-position half of WI-895. An un-imported functor in an
+    /// ARGUMENT position — `holds894(ite(true, 10, 20))`, a `[simp]` redex that never
+    /// fires — is a data slot, is not walked here, and stays open; that half's pin is
+    /// `wi894_rule_functor_scope_test::a_rule_body_does_not_yet_refuse_an_unimported_functor`.
+    ///
+    /// # The descent is the query walk's, to the position
+    ///
+    /// The body's top-level atoms, and everything inside a `not`. A BARE `or` /
+    /// `push_choice` branch and a bounded quantifier's body are NOT entered, for the
+    /// reason WI-863 states for query patterns and which transfers unchanged: such a
+    /// branch may fail while its sibling succeeds, so an unmatched name there does not
+    /// corrupt the answer, and refusing it would reject a program that computes the
+    /// right one. That is not a hypothetical — `push_choice_test`'s two semantics
+    /// fixtures name an undefined branch on purpose, which is exactly the shape WI-863
+    /// promised would keep loading.
+    ///
+    /// The wider reading — every goal position, on the argument that "a typo in an `or`
+    /// branch is still a typo" — was implemented and MEASURED first. It reports the
+    /// same ZERO over stdlib + rust bindings, + anthill-testcases and + anthill-todo,
+    /// so the corpus does not choose between them; the fixtures above do, and one
+    /// descent rule for both positions is what keeps the two walks from growing two
+    /// answers to one question.
+    ///
+    /// # The exemptions, and where each lives
+    ///
+    /// A DATA slot is never walked (a constructor's arguments are data, not goals), so
+    /// `Widget(id: absent(42))` is not a candidate. Beyond that:
+    ///
+    ///   * a resolver SCOPING MARKER (`forall_impl` at arity 3, …) carries no clause
+    ///     by design and is dropped inside `undefined_functor`, via the shared
+    ///     [`crate::kb::resolve::is_scoping_marker`]. Not hypothetical: the loader
+    ///     SYNTHESIZES `forall_impl` for every induction proof, 17 of them in stdlib.
+    ///   * a functor that is DECLARED but carries no clause yet — an entity whose
+    ///     facts are asserted later in the load — is dropped by `undefined_functor`'s
+    ///     `kind_of` disjunct. It needs no ordering promise from the caller.
+    ///   * an arity-0 proposition that sits in no functor table is cleared by the
+    ///     discrimination-tree backstop, exactly as in the query walk.
+    ///   * a functor this rule ASSUMES — see [`Self::assumed_body_functors`].
+    ///
+    /// Read AFTER the typer, which is what makes the body's dots and `[simp]` redexes
+    /// already rewritten into the `Apply` forms the resolver will actually run
+    /// (`type_rule_bodies`, WI-282/WI-1026); an undispatched `DotApply` has no functor
+    /// symbol to test and is not a candidate.
+    ///
+    /// # Carrier-neutral, and why that is not decoration
+    ///
+    /// The walk carries `(Value, SourceSpan)` rather than `Rc<NodeOccurrence>`. A goal
+    /// child is NOT always an occurrence: `occ_view_pos_arg` delegates through
+    /// `spliced_value`, so a `Expr::Spliced` connective answers its children as
+    /// `ViewItem::Term` / `Value` / `Owned`. An occurrence-only walk drops exactly
+    /// those — a `not(…)` interior escaping the check, and, worse,
+    /// [`Self::assumed_body_functors`] collecting ZERO hypotheses from a spliced
+    /// discharge and so FALSELY REFUSING a legitimate rule. `Value` is `TermView`, so
+    /// the head test, the discrim backstop and the descent all read it identically; a
+    /// child that carries its own span (an occurrence) contributes it, and any other
+    /// carrier inherits its parent's — a degraded location, never a dropped check.
+    pub fn undefined_rule_body_goals(&self, rid: RuleId) -> Vec<(Symbol, SourceSpan)> {
+        // `Value::node` is the NORMALIZING constructor (WI-1025): a `Spliced` body
+        // node unwraps to the value it carries here, rather than riding as a carrier
+        // wrapping a carrier that every reader below would have to see through.
+        let body: Vec<(crate::eval::Value, SourceSpan)> = self
+            .rule_body_nodes(rid)
+            .iter()
+            .map(|n| (crate::eval::Value::node(Rc::clone(n)), n.span))
+            .collect();
+        let mut assumed = Vec::new();
+        for (goal, _) in &body {
+            self.assumed_body_functors(goal, &mut assumed);
+        }
+        let mut out = Vec::new();
+        for (goal, span) in &body {
+            // The body's top-level atoms are committed to; `under_not` turns true the
+            // moment the walk steps through a `not`, exactly as the query walk's does.
+            self.collect_undefined_body_goals(goal, *span, false, &assumed, &mut out);
+        }
+        out
+    }
+
+    /// Every functor this rule body introduces as a HYPOTHESIS — the antecedents of a
+    /// `forall_impl(binders, antecedents, consequent)`, the hereditary-Harrop form
+    /// `(forall(?x), P(?x) -: Q(?x))` lowers to (spec §5.3).
+    ///
+    /// An antecedent is a BINDING occurrence: the resolver assumes it into the frame
+    /// (`AssumedFact`) and the consequent discharges against it, so a predicate that
+    /// exists only as a hypothesis legitimately carries no clause anywhere. Refusing
+    /// one would reject the very construct — `t4_assumption_lets_step_case_use_ih`'s
+    /// `t4_property` has no rule in the KB, and that IS the test.
+    ///
+    /// Per RULE, not per scope, and deliberately not narrowed to the goals inside the
+    /// discharge: the question this exemption answers is "does this name exist for this
+    /// rule", and an antecedent is what makes it exist. WHERE the assumption is in
+    /// scope is a different question, owned by the resolver, and
+    /// `t4_assumption_does_not_leak_to_next_body_goal` is the test that asks it — a
+    /// rule that assumes `false_assumption` inside a discharge and then asks it again
+    /// OUTSIDE, which must load (the name exists) and must fail (the scope ended).
+    /// Narrowing this to the discharge's interior would refuse that canary and take the
+    /// scoping invariant's only driver with it.
+    fn assumed_body_functors(&self, goal: &crate::eval::Value, out: &mut Vec<Symbol>) {
+        // Head read through `goal_head_sym_arity`, NOT an `Expr` shape match: the SAME
+        // connective arrives as an `Apply` when the loader lowered it from source and
+        // as a `Constructor` when it was materialized from a term (`forall_impl` names
+        // no operation), and a bare antecedent heads as `Ident`, which
+        // `ViewHead::functor_sym` does not answer for. A shape match found NOTHING —
+        // measured on `t4_assumption_does_not_leak_to_next_body_goal`.
+        if let Some((functor, 3)) = self.goal_head_sym_arity(goal) {
+            if self.local_name_of(functor) == "forall_impl" {
+                let args = self.positional_children(goal, Self::unspanned());
+                if let Some((antecedents, _)) = args.get(1) {
+                    for (antecedent, _) in self.tuple_goal_children(antecedents) {
+                        if let Some((sym, _)) = self.goal_head_sym_arity(&antecedent) {
+                            if !out.contains(&sym) {
+                                out.push(sym);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // A discharge can be nested inside another goal connective, so the search for
+        // hypotheses follows the same goal children the check itself walks.
+        for (child, _) in self.body_goal_children(goal, Self::unspanned()) {
+            self.assumed_body_functors(&child, out);
+        }
+    }
+
+    /// Recursive worker for [`Self::undefined_rule_body_goals`]. Every node reached is
+    /// in a position COMMITTED to its truth, so its head is tested; the gating is on
+    /// DESCENT, and it is [`Self::collect_undefined_goal_functors`]'s gate exactly — a
+    /// bare connective (`under_not` false and head not `not`) is left to resolution.
+    /// Dedups by symbol so one missing name used five times reports once, keeping the
+    /// FIRST span. Terminates because every goal child is a strict sub-structure.
+    fn collect_undefined_body_goals(
+        &self,
+        goal: &crate::eval::Value,
+        span: SourceSpan,
+        under_not: bool,
+        assumed: &[Symbol],
+        out: &mut Vec<(Symbol, SourceSpan)>,
+    ) {
+        if let Some(sym) = self.undefined_functor(goal) {
+            // Ordered cheapest-first: the two membership scans before the tree walk,
+            // so one missing name used five times costs one walk.
+            if !assumed.contains(&sym)
+                && !out.iter().any(|(s, _)| *s == sym)
+                && self.browse_program_clauses_matching(goal).is_empty()
+            {
+                out.push((sym, span));
+            }
+        }
+        let entering_not = matches!(
+            self.goal_head_sym_arity(goal),
+            Some((f, _)) if self.builtin_of(f) == Some(BuiltinTag::Not)
+        );
+        if under_not || entering_not {
+            for (child, child_span) in self.body_goal_children(goal, span) {
+                self.collect_undefined_body_goals(&child, child_span, true, assumed, out);
+            }
+        }
+    }
+
+    /// The children of `goal` the resolver evaluates as GOALS, each with the span to
+    /// report it at — the occurrence-side peer of [`Self::goal_arg_termids`],
+    /// recognising the same connectives, and unwrapping the quantifier body's
+    /// `tuple(…)` in the same place ([`Self::tuple_goal_children`]) for the same
+    /// reason: the wrapper is never held, so its own head is never mistaken for a
+    /// goal that names nothing.
+    ///
+    /// Empty for a plain predicate atom, whose arguments are DATA. That is the
+    /// property that keeps `Widget(id: absent(42))` out of the walk, so it is stated
+    /// here rather than left to the caller.
+    ///
+    /// `and` is NOT here, and its absence is measured rather than assumed. The query
+    /// walk lists it beside `or` as "the kernel disjunction / conjunction RULES", and
+    /// that is FALSE: `kernel.anthill` defines only `or`, there is no `BuiltinTag::And`,
+    /// and the surface `a & b` (`parse/pratt.rs`) lowers to `anthill.prelude.Bool.and`
+    /// — a boolean OPERATION whose arguments are values. Walking them would be the
+    /// same category error as walking a constructor's fields. (Driven: `rule both(?x)
+    /// :- p(?x) & q(?x)` with both facts present answers ZERO solutions, so `&` in a
+    /// goal position is dead however this walk treats it. That is a real silent-dead-rule
+    /// defect of the LOWERING, of exactly WI-1034's class and outside its reach —
+    /// **WI-1046**.)
+    fn body_goal_children(&self, goal: &crate::eval::Value, span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
+        let Some((functor, _)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
+        let args = self.positional_children(goal, span);
+        let take = |n: usize| args.iter().take(n).cloned().collect::<Vec<_>>();
+        match self.local_name_of(functor) {
+            // `or` is the kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
+            // `kernel.anthill:48`) — not a builtin, so `builtin_of` would miss it.
+            "or" => return take(2),
+            // A bounded quantifier's / an induction axiom's body is the `tuple(…)` at
+            // arg 2, unwrapped here so the wrapper never reaches the head test.
+            "forall_in" | "some_in" | "forall_impl" => {
+                return args.get(2).map(|(t, _)| self.tuple_goal_children(t)).unwrap_or_default();
+            }
+            _ => {}
+        }
+        match self.builtin_of(functor) {
+            Some(BuiltinTag::Not) => take(1),
+            Some(BuiltinTag::PushChoice) => take(2),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Components of a quantifier/discharge body: the positional args of its `tuple(…)`
+    /// wrapper. The occurrence-side peer of [`Self::tuple_goal_termids`], and returned
+    /// as-is when the body is not a tuple for the same reason that one gives — the
+    /// loader wraps every body, so this is defensive, and no goal escapes the walk.
+    ///
+    /// Reached ONLY from the quantifier arm of [`Self::body_goal_children`], never
+    /// applied to an arbitrary node. That placement is what stops a user functor whose
+    /// local name happens to be `tuple` from having its DATA arguments walked as goals
+    /// (and from having its own head skipped) — the walk sees a wrapper only where the
+    /// loader put one.
+    fn tuple_goal_children(&self, body: &crate::eval::Value) -> Vec<(crate::eval::Value, SourceSpan)> {
+        let span = self.value_span(body);
+        match self.goal_head_sym_arity(body) {
+            Some((f, _)) if self.local_name_of(f) == "tuple" => self.positional_children(body, span),
+            _ => vec![(body.clone(), span)],
+        }
+    }
+
+    /// The positional children of `goal`, in order, each paired with the span to report
+    /// it at: its OWN when the child carries an occurrence, else `parent_span`.
+    ///
+    /// The fallback is what makes this checked rather than skipped. A goal child is not
+    /// always an occurrence — `occ_view_pos_arg` delegates through `spliced_value`, so a
+    /// `Expr::Spliced` connective answers `ViewItem::Term`/`Value`/`Owned` — and
+    /// dropping those would silently disable the check inside a spliced `not(…)` and
+    /// silently lose a spliced discharge's hypotheses (which FALSELY REFUSES). A
+    /// carrier with no span of its own is reported at its parent's: a degraded
+    /// location, which is a diagnostic cost, not a missed defect.
+    fn positional_children(&self, goal: &crate::eval::Value, parent_span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
+        let Some((_, arity)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
+        (0..arity)
+            .filter_map(|i| {
+                let item = term_view::TermView::pos_arg(goal, self, i)?;
+                let span = match &item {
+                    term_view::ViewItem::Node(n) => n.span,
+                    _ => parent_span,
+                };
+                Some((item.to_value(), span))
+            })
+            .collect()
+    }
+
+    /// The span a goal `Value` carries, or a zero span when its carrier has none.
+    /// Used where a span is needed to seed a descent that only reads SYMBOLS
+    /// ([`Self::assumed_body_functors`], [`Self::tuple_goal_children`]) — no diagnostic
+    /// is rendered from it, which is why a zero fallback is honest here and would not
+    /// be on the reporting path.
+    fn value_span(&self, goal: &crate::eval::Value) -> SourceSpan {
+        match goal {
+            crate::eval::Value::Node(occ) => occ.span,
+            _ => Self::unspanned(),
         }
     }
 

@@ -64,6 +64,33 @@ pub fn load_kb_with(source: &str) -> KnowledgeBase {
     kb
 }
 
+/// WI-1034 — the NAMED lenient twin the doc above prescribes, and the ONE fixture
+/// in this crate that needs it: `cross_namespace_inline_test`'s
+/// `source_without_import`, whose subject IS a rule-body goal the loader now refuses.
+///
+/// It exists because that refusal moved EARLIER, not because a guard weakened. The
+/// unresolved `position_distance` used to reach smt-gen and be caught there
+/// ("unhandled body goal functor"); WI-1034 catches it at LOAD, for every consumer,
+/// with a span. The smt-gen guard is now unreachable through a strict load — so
+/// asserting it needs a KB the loader rejected, and this is how a test says so out
+/// loud instead of discarding an `Err`.
+///
+/// Returns the errors ALONGSIDE the KB: a caller here is testing a refusal, so it
+/// should be able to assert on the earlier one too rather than take the half-loaded
+/// KB on trust.
+#[allow(dead_code)]
+pub fn load_kb_with_lenient(source: &str) -> (KnowledgeBase, Vec<String>) {
+    let user = parse::parse(source).expect("parse user source");
+    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.push(&user);
+    let mut kb = KnowledgeBase::new();
+    let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
+        Ok(_) => Vec::new(),
+        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
+    };
+    (kb, errs)
+}
+
 #[allow(dead_code)]
 pub fn z3_available() -> bool {
     std::process::Command::new("z3").arg("--version").output()

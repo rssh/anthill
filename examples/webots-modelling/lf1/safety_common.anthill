@@ -122,6 +122,24 @@ namespace anthill.examples.lf1.safety.common
   -- by the protocol's transition relation (out of scope for the
   -- model — encoded operationally by the controller bodies).
 
+  -- The sensor reading at tick k, as a row the DEPLOYMENT asserts —
+  -- the same idiom `RealVelocity` uses below for the inner loop's
+  -- velocity: an entity for the input, a rule lifting it to the
+  -- relation the proofs read. `observed_pose_at` was documented
+  -- above but never declared, so `gps_drift_axiom` — the single
+  -- physics→controller bridge — named a relation that existed
+  -- nowhere and could never fire. It stays vacuous until a flight
+  -- supplies `ObservedPose` rows; what the model asserts about it is
+  -- only the per-variant drift bound (safety_gps.anthill).
+  entity ObservedPose(
+    k:     Int64,
+    drone: Drone,
+    pose:  Pose
+  )
+
+  rule observed_pose_at(?k, ?drone, ?pose)
+    :- ObservedPose(k: ?k, drone: ?drone, pose: ?pose)
+
   -- =================================================================
   -- Reachability (real trajectory)
   -- =================================================================

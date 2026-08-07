@@ -185,7 +185,15 @@ fn a_bodied_policy_rule_is_refused_through_the_prove_error_channel() {
         "bodied",
         &fixture(
             "import anthill.realization.policy.{TranslationPolicy, Inline}",
-            r#"rule TranslationPolicy(
+            // `fact enabled()` because WI-1034 refuses a rule-body goal whose
+            // functor names nothing, and this fixture's subject is the rule
+            // having a BODY at all — not what the body says. The guard is
+            // satisfiable now and the refusal is unchanged, which is the point:
+            // the bodied-policy reader head-matches facts and never evaluates
+            // the body, so a TRUE guard is refused exactly as an absent one was.
+            r#"fact enabled()
+
+  rule TranslationPolicy(
     predicate: "test.wi781.dispatch.bound_d",
     backend: "smt-z3",
     policy: Inline()

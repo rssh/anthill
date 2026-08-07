@@ -29,7 +29,7 @@ namespace anthill.examples.lf1.safety.gps
   import anthill.examples.lf1.follower_gps.{FollowerController}
   import anthill.examples.lf1.safety.common.{
     Drone, DistanceBounds, KinematicAssumptions, reachable_real,
-    real_pose_at, position_distance
+    real_pose_at, observed_pose_at, distance_at_step, position_distance
   }
   import anthill.examples.lf1.safety.common.Drone.{Leader, Follower}
 

@@ -14,12 +14,13 @@
 //! |---|---|---|---|---|
 //! | `Desc.describe(leaf(), ?r)` | `1` — the DEFAULT | `1` — tie ignored | → | `7` / **REFUSED** |
 //! | `leaf().describe(?r)` | `1` — the DEFAULT | `7` | → | `7` / `7` (see below) |
-//! | `describe(leaf(), ?r)` | `[]` | `[]` | → | `[]` — left, reason below |
+//! | `describe(leaf(), ?r)` | `[]` | `[]` | → | **REFUSED** (see below) |
 //! | via an operation body (control) | `7` | REFUSED | → | unchanged |
 //!
-//! (Row 2's `7` in the 2-supplier column is what this ticket left and **WI-1035**
-//! closed; it is a load REFUSAL now, at both sites. The row is written as it was
-//! measured HERE, because the reason it was left is this ticket's own attribution.)
+//! (Rows 2 and 3 record what this ticket LEFT: row 2's `7` in the 2-supplier column
+//! was closed by **WI-1035** and row 3's `[]` by **WI-1034**, both load REFUSALS now.
+//! Each is written as it was measured HERE, because the reason it was left is this
+//! ticket's own attribution, and each of the two tickets came back to say so.)
 //!
 //! ## Three defects wore one ticket, and the ticket's diagnosis named neither
 //!
@@ -63,18 +64,25 @@
 //! keeps the PAIRING it was written for; the fix's own coverage — both halves, the
 //! controls, the zero-site blast radius — is `wi1035_dot_member_supplier_tie_test`.
 //!
-//! ## The row deliberately left: `describe(leaf(), ?r)` answering `[]`
+//! ## The row deliberately left: `describe(leaf(), ?r)` answering `[]` — CLOSED
 //!
 //! `describe` is not in scope at the namespace top level, so it interns to a symbol
 //! with no clauses, no operation record and no builtin — a goal that can match
 //! nothing. It never reaches dispatch, so it is not an 058 question at all; WI-1026's
 //! own ordering note predicted exactly this ("a resolution failure prior to any 058
-//! question"). Making such a goal loud is a corpus-wide change, MEASURED: 20 dangling
-//! rule-body goals in stdlib alone (25 with examples), over 5 distinct names, and at
-//! least two categories are LEGITIMATE and would be false positives —
-//! `anthill.reflect.typing.DefaultProvider` is an entity whose facts the loader
-//! asserts after this check would run, and `forall_impl` is a resolver scoping marker
-//! that has no clauses by design. Filed as **WI-1034**.
+//! question"). Making such a goal loud was filed as **WI-1034**, which DELIVERED it:
+//! the row is a load refusal now, and the test below asserts that instead of `[]`.
+//!
+//! Both counts this ticket handed WI-1034 were artifacts of the probe that produced
+//! them. It reported "20 dangling rule-body goals in stdlib alone (25 with examples),
+//! over 5 distinct names", with two categories called LEGITIMATE
+//! (`anthill.reflect.typing.DefaultProvider`, an entity whose facts are asserted
+//! later; `forall_impl`, a resolver scoping marker). Re-measured through the
+//! predicate the KB already owns (`undefined_functor` — WI-754/WI-863/WI-878, which
+//! consults `kind_of` and exempts markers by name AND arity), stdlib reports ZERO:
+//! the marker is exempt by the shared `is_scoping_marker`, and the entity is DECLARED
+//! whether or not its facts have landed. The one genuinely-dangling category was real
+//! and is four goals in `examples/webots-modelling/lf1/`.
 //!
 //! ## What fails if this is backed out — MEASURED per half, not predicted
 //!
@@ -86,14 +94,16 @@
 //! | `the_rule_body_refusal_is_located_and_shares_one_body` | ok | **FAILS** | **FAILS** |
 //! | `a_carrier_with_no_supplier_still_runs_the_default_in_a_rule_body` | ok | ok | ok |
 //! | `a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does` | ok | ok | ok |
-//! | `a_bare_goal_naming_nothing_still_answers_nothing` | ok | ok | ok |
+//! | `a_bare_goal_naming_nothing_is_refused_at_load` | ok | ok | ok |
 //!
 //! The last three pass EITHER WAY **by design**, and each is here for a different
 //! reason: the gap case is what makes a default a default and must not move; the
 //! other two PIN the two rows this ticket deliberately leaves, so that closing
-//! WI-1034 or WI-1035 has to come here and say so. WI-1035 did — the dot row's test
-//! now asserts a refusal instead of `7`, and still passes either way here, because
-//! what it measures is the two SITES agreeing, not which verdict they agree on.
+//! WI-1034 or WI-1035 has to come here and say so. BOTH did, and both tests still
+//! pass either way here, because neither measures what this ticket changed: the dot
+//! row measures the two SITES agreeing (not which verdict they agree on), and the
+//! bare row measures that the refusal lands on the spelling whose NAME resolves to
+//! nothing — which is true before and after the stamp carry and the rule-body typing.
 //!
 //! Note the second row: `a_qualified_rule_body_reaches_the_supplied_impl` needs BOTH
 //! halves, which is why they ship together. Typing the call writes the pin; carrying
@@ -354,21 +364,37 @@ fn a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does() {
     );
 }
 
-/// PINS THE OTHER ROW DELIBERATELY LEFT (WI-1034). `describe` unqualified names
-/// nothing at the namespace top level: no clause, no operation record, no builtin.
-/// The goal matches nothing and the rule answers `[]` — with ONE unambiguous
-/// supplier present, so this is a name-resolution silence and not a dispatch verdict.
+/// THE OTHER ROW DELIBERATELY LEFT, NOW CLOSED BY **WI-1034** — kept here, re-aimed,
+/// for the reason the dot row above is kept: what it measures is this ticket's own
+/// attribution, not WI-1034's fix.
 ///
-/// Driven with one supplier deliberately: if it were a dispatch question, the single
-/// supplier would decide it, and the row would answer 7.
+/// `describe` unqualified names nothing at the namespace top level: no clause, no
+/// operation record, no builtin. Before WI-1034 the goal matched nothing and the rule
+/// answered `[]` — with ONE unambiguous supplier present, which is what makes this a
+/// name-resolution silence and not a dispatch verdict. It is now a LOAD REFUSAL.
+///
+/// The single supplier is still what carries the attribution: if this were a dispatch
+/// question, one supplier would decide it and the row would answer `7`. Instead the
+/// program is refused before any dispatch question is asked, which is what WI-1026's
+/// own ordering note predicted ("a resolution failure prior to any 058 question").
+///
+/// WI-1034's own coverage — the exemptions, the corpus, the blast radius — is
+/// `wi1034_undefined_rule_body_goal_test`; what stays here is that the refusal lands
+/// on THIS spelling and not on the other two, which still answer `7`.
 #[test]
-fn a_bare_goal_naming_nothing_still_answers_nothing() {
+fn a_bare_goal_naming_nothing_is_refused_at_load() {
     let ns = "test.wi1026.bare";
     let src = one_supplier(ns, "  rule answer(?r) :- describe(leaf(), ?r)\n");
-    let mut kb = crate::common::load_kb_with(&src);
+    let msg = crate::wi1012_static_supplier_tie_test::refusal(&src);
+    assert!(msg.contains("names nothing"), "WI-1034: {msg}");
+    assert!(msg.contains("`describe`"), "the goal must be named: {msg}");
+    // Located, and at the rule's own line — the whole point of raising this at the
+    // loader rather than letting the query come back empty. WI-1034's message names
+    // the GOAL and not the citing rule, deliberately; the reason is at
+    // `load::undefined_rule_body_goal_message`.
+    let (loc, _) = crate::wi1012_static_supplier_tie_test::located(&msg);
     assert!(
-        crate::common::query_unary(&mut kb, &format!("{ns}.answer")).is_empty(),
-        "WI-1034: a goal whose functor names nothing answers nothing, silently — \
-         unchanged here, and a corpus-wide question (20 such goals in stdlib alone)",
+        loc.starts_with("18:"),
+        "the refusal must point at the rule under test, got `{loc}` in: {msg}",
     );
 }
