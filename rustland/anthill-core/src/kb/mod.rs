@@ -3059,7 +3059,7 @@ impl KnowledgeBase {
             return SmallVec::new();
         };
         let mut out = SmallVec::new();
-        for slot in self.goal_arg_slots(*functor) {
+        for slot in self.goal_arg_slots(*functor, pos_args.len()) {
             let Some(&child) = pos_args.get(slot.index) else { continue };
             if slot.tuple_wrapped {
                 out.extend(self.tuple_goal_termids(child));
@@ -3092,24 +3092,41 @@ impl KnowledgeBase {
     /// `BuiltinTag::And`, and `a & b` lowers to `anthill.prelude.Bool.and`, a boolean
     /// OPERATION over values (spec §6.6: "goal conjunction is the comma"). WI-1046
     /// refuses it at a goal position rather than walking its data as goals.
-    pub(crate) fn goal_arg_slots(&self, functor: Symbol) -> SmallVec<[GoalSlot; 2]> {
+    /// EVERY arm is gated on `pos_arity`, and that is not defensive. A connective is
+    /// recognised by NAME here (a kernel rule and the markers head no builtin), so
+    /// without the gate a USER predicate that merely shares the short name has its DATA
+    /// arguments classified as goals — and the loader (WI-1046) turns that
+    /// classification into a load-blocking refusal. MEASURED: `fact or(true)` beside
+    /// `rule r(?x) :- … or(?a & ?b), …` was REFUSED while the identical program with the
+    /// predicate renamed loaded clean. The arities are the connectives' own — `or/2` is
+    /// `kernel.anthill:48`, the markers are `/3` exactly as
+    /// [`crate::kb::resolve::is_scoping_marker`] has them, and the two builtins are at
+    /// their declared arities. This is the same defect the `tuple` wrapper had one layer
+    /// down, fixed the same way: a node is a connective because of its SHAPE, never
+    /// because of its spelling alone.
+    pub(crate) fn goal_arg_slots(
+        &self,
+        functor: Symbol,
+        pos_arity: usize,
+    ) -> SmallVec<[GoalSlot; 2]> {
         let slot = |index, tuple_wrapped| GoalSlot { index, tuple_wrapped };
-        match self.local_name_of(functor) {
+        match (self.local_name_of(functor), pos_arity) {
             // A bounded quantifier's body is a `tuple(…)` of goals at arg 2 (the loader
             // always wraps it; `resolve::unwrap_tuple_args` reads the same shape).
-            "forall_in" | "some_in" => return SmallVec::from_elem(slot(2, true), 1),
+            // Arity 3 is `is_scoping_marker`'s, so the two cannot disagree.
+            ("forall_in" | "some_in", 3) => return SmallVec::from_elem(slot(2, true), 1),
             // A hereditary-Harrop discharge's CONSEQUENT, likewise wrapped. Its
             // antecedents (arg 1) are HYPOTHESES, not goals to prove, and are read by
             // `assumed_body_functors` alone — a different question, so not a slot here.
-            "forall_impl" => return SmallVec::from_elem(slot(2, true), 1),
+            ("forall_impl", 3) => return SmallVec::from_elem(slot(2, true), 1),
             // The kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
             // `kernel.anthill:48`), so `builtin_of` would miss it.
-            "or" => return SmallVec::from_slice(&[slot(0, false), slot(1, false)]),
+            ("or", 2) => return SmallVec::from_slice(&[slot(0, false), slot(1, false)]),
             _ => {}
         }
-        match self.builtin_of(functor) {
-            Some(BuiltinTag::Not) => SmallVec::from_elem(slot(0, false), 1),
-            Some(BuiltinTag::PushChoice) => {
+        match (self.builtin_of(functor), pos_arity) {
+            (Some(BuiltinTag::Not), 1) => SmallVec::from_elem(slot(0, false), 1),
+            (Some(BuiltinTag::PushChoice), 2) => {
                 SmallVec::from_slice(&[slot(0, false), slot(1, false)])
             }
             _ => SmallVec::new(),
@@ -3259,8 +3276,8 @@ impl KnowledgeBase {
         if let Some((functor, 3)) = self.goal_head_sym_arity(goal) {
             if self.local_name_of(functor) == "forall_impl" {
                 let args = self.positional_children(goal, Self::unspanned());
-                if let Some((antecedents, _)) = args.get(1) {
-                    for (antecedent, _) in self.tuple_goal_children(antecedents) {
+                if let Some((antecedents, ante_span)) = args.get(1) {
+                    for (antecedent, _) in self.tuple_goal_children(antecedents, *ante_span) {
                         if let Some((sym, _)) = self.goal_head_sym_arity(&antecedent) {
                             if !out.contains(&sym) {
                                 out.push(sym);
@@ -3334,15 +3351,20 @@ impl KnowledgeBase {
     /// defect of the LOWERING, of exactly WI-1034's class and outside its reach —
     /// **WI-1046**.)
     fn body_goal_children(&self, goal: &crate::eval::Value, span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
-        let Some((functor, _)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
+        let Some((functor, arity)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
         let args = self.positional_children(goal, span);
         let mut out = Vec::new();
-        for slot in self.goal_arg_slots(functor) {
+        for slot in self.goal_arg_slots(functor, arity) {
             let Some(child) = args.get(slot.index) else { continue };
             if slot.tuple_wrapped {
                 // Unwrapped HERE, so the wrapper never reaches the head test — its own
-                // functor names nothing and would be reported as a dangling goal.
-                out.extend(self.tuple_goal_children(&child.0));
+                // functor names nothing and would be reported as a dangling goal. The
+                // child's OWN span is threaded in as the components' fallback: it is the
+                // nearest real location, and re-deriving it inside answered
+                // `unspanned()` for a non-occurrence carrier — a span whose `SourceId(0)`
+                // is a REGISTERED file, so the diagnostic named a stdlib file at 1:1
+                // instead of degrading to the parent (`positional_children`'s contract).
+                out.extend(self.tuple_goal_children(&child.0, child.1));
             } else {
                 out.push(child.clone());
             }
@@ -3360,10 +3382,19 @@ impl KnowledgeBase {
     /// local name happens to be `tuple` from having its DATA arguments walked as goals
     /// (and from having its own head skipped) — the walk sees a wrapper only where the
     /// loader put one.
-    fn tuple_goal_children(&self, body: &crate::eval::Value) -> Vec<(crate::eval::Value, SourceSpan)> {
-        let span = self.value_span(body);
+    fn tuple_goal_children(
+        &self,
+        body: &crate::eval::Value,
+        fallback: SourceSpan,
+    ) -> Vec<(crate::eval::Value, SourceSpan)> {
+        // The wrapper's OWN span when it carries one, else the caller's — never
+        // `unspanned()`, whose `SourceId(0)` is a registered file and would mislocate
+        // the diagnostic into it at 1:1.
+        let span = self.value_span(body).unwrap_or(fallback);
         match self.goal_head_sym_arity(body) {
-            Some((f, _)) if self.local_name_of(f) == "tuple" => self.positional_children(body, span),
+            Some((f, _)) if self.local_name_of(f) == "tuple" => {
+                self.positional_children(body, span)
+            }
             _ => vec![(body.clone(), span)],
         }
     }
@@ -3397,10 +3428,10 @@ impl KnowledgeBase {
     /// ([`Self::assumed_body_functors`], [`Self::tuple_goal_children`]) — no diagnostic
     /// is rendered from it, which is why a zero fallback is honest here and would not
     /// be on the reporting path.
-    fn value_span(&self, goal: &crate::eval::Value) -> SourceSpan {
+    fn value_span(&self, goal: &crate::eval::Value) -> Option<SourceSpan> {
         match goal {
-            crate::eval::Value::Node(occ) => occ.span,
-            _ => Self::unspanned(),
+            crate::eval::Value::Node(occ) => Some(occ.span),
+            _ => None,
         }
     }
 

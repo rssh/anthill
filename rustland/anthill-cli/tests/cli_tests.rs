@@ -22,6 +22,9 @@
 
 mod common;
 
+#[path = "include/wi1047_query_stdlib_test.rs"]
+mod wi1047_query_stdlib_test;
+
 #[path = "include/load_cmd_test.rs"]
 mod load_cmd_test;
 

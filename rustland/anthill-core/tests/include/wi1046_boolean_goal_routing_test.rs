@@ -272,6 +272,18 @@ fn a_data_slot_keeps_the_value_operators() {
 /// Pinned because the refusal's VALUE here is larger than for a hand-written `a & b` —
 /// nobody writes `a & b` as a goal on purpose, but `?r = ?a & ?b` is a natural thing to
 /// write and means something else.
+///
+/// THE SIBLING `|` IS DELIBERATELY NOT REFUSED, and the asymmetry is the point rather
+/// than an oversight. `|` is priority 1, so `?r = ?a | ?b` is `or(eq(?r, ?a), ?b)` — the
+/// same trap — and it now answers `?r = ?_` with `residual: eq(?_, true)`, i.e. ONE
+/// CONDITIONAL solution where it used to answer none. That is not the fabricated
+/// DEFINITE answer `the_routing_does_not_capture_the_relational_call_form` guards
+/// against: the resolver reports the residual, so nothing is passed off as decided.
+/// And the two cases are not alike — `&` has NO goal reading at all (§6.6), so refusing
+/// it costs nothing, whereas `or(eq(…), ?b)` is a well-formed disjunction whose second
+/// branch happens to be a bare VARIABLE. Refusing that shape would refuse legitimate
+/// `or`s; what is actually wrong there is a variable in a goal branch, which is a
+/// different question (the `ho_apply` / unbound-predicate family) and not WI-1046's.
 #[test]
 fn the_equals_versus_ampersand_precedence_trap_is_now_loud() {
     let src = "namespace test.wi1046.precedence\n\
@@ -390,4 +402,51 @@ fn the_routing_does_not_capture_the_relational_call_form() {
              redirect made NAF succeed vacuously here",
         );
     }
+}
+
+/// REVIEW ROUND 2, FINDING 1 — a connective is recognised by its SHAPE, never by its
+/// spelling alone. Every arm of `goal_arg_slots` is gated on positional arity.
+///
+/// The table recognises `or` (a kernel RULE) and the markers by NAME, since they head no
+/// builtin — and the loader now READS that table to decide which arguments are goals, so
+/// a mis-classification became a load-blocking refusal. MEASURED: a user `fact or(true)`
+/// with `or(?a & ?b)` in a rule body was REFUSED, because `or` was registered at slots 0
+/// and 1 whatever the node's arity, so an `or/1` atom had its VALUE argument walked as a
+/// goal. The identical program with the predicate renamed loaded clean.
+///
+/// Both arms again, and for the reason the `tuple` twin gives: an arm alone would pass
+/// equally if the walk had simply stopped classifying anything.
+///
+/// This is the third time the same defect has been found one layer over — `tuple` (round
+/// 1), `and` (WI-1034's review), now `or` and the markers. The gate is now uniform, and
+/// the arities are the connectives' own rather than a second opinion about them.
+#[test]
+fn a_user_predicate_named_or_keeps_its_arguments_as_data() {
+    let named_or = "namespace test.wi1046.useror\n\
+                    \x20 import anthill.prelude.Bool\n\
+                    \x20 fact or(true)\n\
+                    \x20 fact bit1046o(true)\n\
+                    \x20 rule r(?x) :- bit1046o(?a), bit1046o(?b), or(?a & ?b), ?x = 1\n\
+                    end\n";
+    let renamed = named_or
+        .replace("test.wi1046.useror", "test.wi1046.useror2")
+        .replace("or(", "ordinary1046o(");
+    crate::common::load_kb_with(&renamed); // CONTROL first: the shape is loadable
+    crate::common::load_kb_with(named_or);
+
+    // …and the real `or/2` still IS a connective, so the gate did not retire the arm.
+    let ns = "test.wi1046.realor";
+    let src = format!(
+        "namespace {ns}\n\
+         \x20 fact leftor1046(1)\n\
+         \x20 fact rightor1046(2)\n\
+         \x20 rule pipe(?x) :- leftor1046(?x) | rightor1046(?x)\n\
+         end\n"
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    assert_eq!(
+        crate::common::query_unary(&mut kb, &format!("{ns}.pipe")).len(),
+        2,
+        "gating on arity must not stop `or/2` being the kernel disjunction",
+    );
 }

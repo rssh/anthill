@@ -308,6 +308,12 @@ struct QueryArgs {
     /// or a listing mode; `Option` keeps "user passed it" detectable.
     #[arg(long)]
     max_depth: Option<usize>,
+
+    /// Answer from the given paths ALONE, without the embedded stdlib. WI-1047:
+    /// the stdlib is included by DEFAULT (as it already was for `check`) — this
+    /// is the opt-out, and the same spelling `check` uses.
+    #[arg(long)]
+    no_stdlib: bool,
 }
 
 /// Default SLD depth budget for `query` (the pre-WI-767 `--max-depth` default).
@@ -515,8 +521,22 @@ fn output_filename(input: &Path) -> String {
 
 // ── Shared KB loader ────────────────────────────────────────────────
 
-fn load_kb(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
-    load_kb_with_stdlib(paths, verbose, false, &[])
+/// WI-1047 — the KB `query` answers from: the user's paths PLUS the embedded stdlib,
+/// unless `--no-stdlib` is passed.
+///
+/// It used to hard-code `include_stdlib = false`, with no flag either way, which made
+/// every stdlib clause invisible to `anthill query` — and invisible SILENTLY, because a
+/// rule whose body calls one still loads and simply answers nothing. MEASURED on the
+/// kernel disjunction, the smallest case: `rule either(?x) :- l(?x) | r(?x)` answered
+/// `no solutions` through the CLI and 2 solutions in-process over the same files, since
+/// `a | b` lowers to `anthill.kernel.or`, whose only clause is in `kernel.anthill`.
+/// `push_choice` kept working throughout and is what made the shape confusing: it is a
+/// BUILTIN registered by `register_prelude`, not a stdlib clause.
+///
+/// `check` already loaded the stdlib and already had `--no-stdlib`; `query` was the one
+/// command with neither, which is what marks this an oversight rather than a policy.
+fn load_kb(paths: &[PathBuf], verbose: bool, include_stdlib: bool) -> Result<KnowledgeBase, i32> {
+    load_kb_with_stdlib(paths, verbose, include_stdlib, &[])
 }
 
 /// WI-886 — the KB a C++ codegen run needs: the embedded stdlib PLUS this
@@ -1347,7 +1367,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         return Err(1);
     }
 
-    let mut kb = load_kb(&args.paths, false)?;
+    let mut kb = load_kb(&args.paths, false, !args.no_stdlib)?;
     // WI-914: the `-i` flags before the mode dispatch, not inside `collect_queries` —
     // the listing modes resolve their argument at `_global` too, so they must see the
     // same imports the pattern modes do. WI-853's ordering is otherwise unchanged: the

@@ -12465,7 +12465,7 @@ impl<'a> Loader<'a> {
                 // by the second flag, so a node is a wrapper because of WHERE IT SITS
                 // and never because of what it is named.
                 let slots = if at_goal && !is_wrapper {
-                    self.kb.goal_arg_slots(new_functor)
+                    self.kb.goal_arg_slots(new_functor, pos_args.len())
                 } else {
                     smallvec::SmallVec::new()
                 };

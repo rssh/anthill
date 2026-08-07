@@ -192,9 +192,15 @@ fn the_sort_mode_no_longer_exists() {
 /// collision) — so an import would shadow `anthill.reflect.SortInfo` with a user sort
 /// and the reflection query would answer about the wrong functor. Unimported, the head
 /// resolves to the implicit tier's.
+/// WI-1047 — `--max-results 0` (unlimited) since `query` began loading the stdlib. The
+/// reflection listing now answers with the stdlib's own `SortInfo` rows as well as this
+/// fixture's, and at the default cap of 100 the fixture's row fell off the end. The
+/// assertion is a `contains`, so the cap was the only thing in its way; raising it keeps
+/// what this test measures (the row is REACHABLE) rather than what the cap happens to
+/// admit.
 #[test]
 fn a_declared_sorts_clauses_are_reachable_without_the_mode() {
-    let sorts = query(&["--match", "SortInfo(name: ?s, constructors: ?c)"]);
+    let sorts = query(&["--max-results", "0", "--match", "SortInfo(name: ?s, constructors: ?c)"]);
     assert_eq!(sorts.code, 0, "stderr:\n{}", sorts.stderr);
     assert!(
         sorts.stdout.contains("[w907a]"),
