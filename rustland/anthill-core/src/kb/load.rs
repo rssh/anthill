@@ -12049,7 +12049,9 @@ impl<'a> Loader<'a> {
     /// Both are reachable as nested args too (e.g. `member(?x, cons(..))`); the
     /// memoized `convert_term` keeps every subterm consistent. Narrowing these
     /// fallbacks (native entities / structural reflect patterns, fixing the
-    /// `apply(args: ?V)` collapse) is later work.
+    /// `apply(args: ?V)` collapse) is later work — **owned by WI-1041**, which carries
+    /// this file's other span/materialization residues (a gap with a reason still needs
+    /// a ticket number at the site).
     ///
     /// WI-710: the entry point is a depth-tracking wrapper around the walk (see
     /// `term_depth`) — a rule BODY is built as occurrences, not terms (WI-246), so this
@@ -12085,7 +12087,9 @@ impl<'a> Loader<'a> {
     /// of those still renders `1:1`. It is not reachable by ANY parse-keyed table, and the
     /// author never wrote the node it would point at. (Every one of `convert_term_inner`'s
     /// exits DOES insert into `term_map`, so an "early return skipped it" hazard is not
-    /// among the misses — checked, not assumed.)
+    /// among the misses — checked, not assumed.) **OWNED BY WI-1041**: the reason is
+    /// recorded, but a residual `1:1` is still a mislocation, and the ticket that owns this
+    /// file's other span seams owns this one too.
     ///
     /// A node with no entry falls through to `kb.term_span` at the consumer, NOT to
     /// nothing: that is the cross-file, first-write-wins table this exists to bypass, so a

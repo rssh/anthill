@@ -10937,104 +10937,108 @@ fn check_apply_iter(
         // and falls through to run the default body. Eval's value-directed
         // override (eval.rs step 3) is the dynamic dual for an ABSTRACT-receiver
         // call this cannot pin.
-        if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
-            if let Some(spec_sort) = spec_op_parent_sort(kb, fn_sym) {
-                // WI-1027 moved the two-shape rule (and WI-608's abstract-spec exclusion)
-                // into [`statically_pinned_carrier`], shared with the body-less guard.
-                // A concrete carrier with no SUPPLIER at all yields an empty
-                // `carrier_override_suppliers` list (WI-1010 — it is no longer route 1
-                // alone) and defers at the gate below anyway.
-                // `receiver_carrier` answers `NotApplicable` by itself when there is no
-                // self-receiver param — `self_receiver_spec_sort` IS `spec_op_parent_sort`
-                // plus that same param lookup, and `spec_sort` is that parent here — so a
-                // `match self_recv_spec` wrapper around it would be a third gate that only
-                // LOOKS authoritative.
-                let carrier = statically_pinned_carrier(
-                    kb,
-                    receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results),
-                    carrier_param_sym,
+        //
+        // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
+        // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
+        // defaulted leg, [`is_defaulted_spec_op`]'s rule-body walk trigger,
+        // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
+        // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
+        // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
+        // body-less test.
+        //
+        // THE PRECONDITION THAT MAKES THE SWAP SAFE HERE, because the gate's body test is
+        // STRICTER than the one it replaces (see its doc): this whole block is inside
+        // `if let Some(mut op) = lookup_operation_info_full(kb, fn_sym)`, so `fn_sym` has
+        // an `OperationInfo` by construction and the two readings coincide. Move this
+        // block out of that bind and they stop coinciding.
+        //
+        // COST, corrected by this ticket's own review: the frame still reaches
+        // `type_params_of_sort` — 51 µs, O(|symbols|) — FOUR times per defaulted-spec-op
+        // call (`lookup_spec_op_dispatch` above, `self_receiver_spec_sort` beside it,
+        // this gate, and `lookup_spec_op_dispatch` again at the body-less block below).
+        // It was FIVE; collapsing the rest is a memo question (WI-1011), not a gate one.
+        if let Some(spec_sort) = defaulted_spec_op_parent(kb, fn_sym) {
+            // WI-1027 moved the two-shape rule (and WI-608's abstract-spec exclusion)
+            // into [`statically_pinned_carrier`], shared with the body-less guard.
+            // A concrete carrier with no SUPPLIER at all yields an empty
+            // `carrier_override_suppliers` list (WI-1010 — it is no longer route 1
+            // alone) and defers at the gate below anyway.
+            // `receiver_carrier` answers `NotApplicable` by itself when there is no
+            // self-receiver param — `self_receiver_spec_sort` IS `spec_op_parent_sort`
+            // plus that same param lookup, and `spec_sort` is that parent here — so a
+            // `match self_recv_spec` wrapper around it would be a third gate that only
+            // LOOKS authoritative.
+            let carrier = statically_pinned_carrier(
+                kb,
+                receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results),
+                carrier_param_sym,
+            );
+            if let Some(carrier_sym) = carrier {
+                let op_qn = kb.qualified_name_of(fn_sym).to_string();
+                let op_short_sym = kb.intern(short_name_of(&op_qn));
+                // WI-1010: the impl may arrive by ANY of the three supply routes,
+                // not just the carrier's own member — a WI-431 instance fact's
+                // op-valued binding fills the same gap and must win over the
+                // default for the same reason. See [`carrier_override_suppliers`].
+                let cands = carrier_override_suppliers(
+                    kb, spec_sort, carrier_sym, fn_sym, op_short_sym,
                 );
-                if let Some(carrier_sym) = carrier {
-                    let op_qn = kb.qualified_name_of(fn_sym).to_string();
-                    let op_short_sym = kb.intern(short_name_of(&op_qn));
-                    // WI-1010: the impl may arrive by ANY of the three supply routes,
-                    // not just the carrier's own member — a WI-431 instance fact's
-                    // op-valued binding fills the same gap and must win over the
-                    // default for the same reason. See [`carrier_override_suppliers`].
-                    let cands = carrier_override_suppliers(
-                        kb, spec_sort, carrier_sym, fn_sym, op_short_sym,
+                // WI-1012 — a TIE on a STATICALLY CONCRETE carrier is refused HERE, at
+                // load. WI-1010 left it to eval, which costs three things: `anthill check`
+                // passes on a program the interpreter will refuse; a tie in a branch that
+                // never runs never reports; and on the SLD path the refusal degrades to
+                // SILENCE, because `resolve.rs`'s bridge residualizes
+                // `AmbiguousSpecOpDispatch` to `None` and the enclosing rule just stops
+                // answering (MEASURED: the rule below answered `[]`, and the program loaded
+                // clean). Everything the diagnostic needs is in hand at the moment this
+                // declines to pin — the span, the carrier and the route-rendered candidate
+                // list — so declining silently was a fallback, not a deferral.
+                //
+                // Eval's read STAYS and shares this wording: this block fires only on a
+                // concrete carrier, so an abstract-spec receiver still needs the late
+                // refusal.
+                //
+                // WI-1042 — the CONDITION is [`refuse_defaulted_supplier_tie`], shared with
+                // the dot spelling ([`dot_member_dispatch_decision`]) so one program cannot
+                // be refused through `Desc.describe(x)` and accepted through `x.describe()`.
+                // It takes the slice this arm already computed, so the pin below still walks
+                // the suppliers once. Read its doc for why the count is bare here and
+                // clause-narrowed in the body-less sibling.
+                //
+                // REACH, stated because it is narrower than the block around it and nothing
+                // else records it: the refusal can only fire on the CARRIER-PARAM shape
+                // (`describe(x: T)`). For a SELF-RECEIVER spec (`head(s: Stream)`)
+                // `provision_carrier_sort` files every provision under the spec's FIRST TYPE
+                // PARAM — `Stream`'s `T`, the element — so no route-2/3 supplier reaches
+                // such a carrier and `cands` never holds two. That is WI-450's
+                // carrier-as-artifact limit (058 §12), and closing it would silently widen a
+                // LOAD refusal over the stdlib's largest defaulted-op family; it must be a
+                // decision taken there, not a side effect. IT IS PROSE, NOT A CLAUSE — the
+                // moment it becomes one it belongs in the shared helper, not here.
+                //
+                // WI-1027 built the BODY-LESS half's guard out of the same construction
+                // ([`supplier_tie_error`]), which is where the `NameableWitness` repair this
+                // arm can never reach becomes reachable — a body-less op HAS the dispatch
+                // slot a bracket binds.
+                refuse_defaulted_supplier_tie(kb, fn_sym, carrier_sym, &cands, span)?;
+                // Exactly ONE supplier: pin it. NO supplier is the gap a default exists to
+                // fill — fall through and run the spec's default body.
+                if let [only] = cands.as_slice() {
+                    let impl_op = only.target;
+                    let derived = dispatched_impl_effects(
+                        kb, impl_op, &op.params, &subst, pos_args, named_args,
+                        pos_results, named_results,
                     );
-                    match cands.as_slice() {
-                        [only] => {
-                            let impl_op = only.target;
-                            let derived = dispatched_impl_effects(
-                                kb, impl_op, &op.params, &subst, pos_args, named_args,
-                                pos_results, named_results,
-                            );
-                            merge_effects_into(kb, &mut effects, &derived);
-                            classify_pin_or_apply_within(
-                                kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
-                            );
-                            return Ok(TypeResult {
-                                ty: resolved_ret,
-                                env: env.clone(),
-                                effects,
-                                node: Rc::clone(occ),
-                            });
-                        }
-                        // WI-1012 — a TIE on a STATICALLY CONCRETE carrier is refused
-                        // HERE, at load. WI-1010 left it to eval, which costs three
-                        // things: `anthill check` passes on a program the interpreter
-                        // will refuse; a tie in a branch that never runs never reports;
-                        // and on the SLD path the refusal degrades to SILENCE, because
-                        // `resolve.rs`'s bridge residualizes `AmbiguousSpecOpDispatch`
-                        // to `None` and the enclosing rule just stops answering
-                        // (MEASURED: the rule below answered `[]`, and the program
-                        // loaded clean). Everything the diagnostic needs is in hand at
-                        // the moment this declines to pin — the span, the carrier and
-                        // the route-rendered candidate list — so declining silently was
-                        // a fallback, not a deferral.
-                        //
-                        // Eval's read STAYS and shares this wording: this block fires
-                        // only on a concrete carrier, so an abstract-spec receiver still
-                        // needs the late refusal.
-                        //
-                        // REACH, stated because it is narrower than the block around it
-                        // and nothing else records it: this arm can only fire on the
-                        // CARRIER-PARAM shape (`describe(x: T)`). For a SELF-RECEIVER
-                        // spec (`head(s: Stream)`) `provision_carrier_sort` files every
-                        // provision under the spec's FIRST TYPE PARAM — `Stream`'s `T`,
-                        // the element — so no route-2/3 supplier reaches such a carrier
-                        // and `cands` never holds two. That is WI-450's carrier-as-
-                        // artifact limit (058 §12), and closing it would silently widen
-                        // a LOAD refusal over the stdlib's largest defaulted-op family;
-                        // it must be a decision taken there, not a side effect.
-                        //
-                        // WI-1027 built the BODY-LESS half's guard out of the same
-                        // construction ([`supplier_tie_error`]), which is where the
-                        // `NameableWitness` repair this arm can never reach becomes
-                        // reachable — a body-less op HAS the dispatch slot a bracket binds.
-                        //
-                        // AND WHY THIS ARM STAYS A BARE COUNT while that one carries two
-                        // narrowing clauses — stated here because the symmetry is tempting
-                        // and copying them over would be WRONG. This block and the
-                        // body-less one are mutually exclusive branches on
-                        // `lookup_spec_op_dispatch`, and THIS branch never runs
-                        // `dispatch_spec_op_cached` at all: no `resolve_at_goal`, so no
-                        // tier-2 specificity, and `callee_requirement_slots` pushes no
-                        // dispatch slot for a defaulted op, so no tier-1 bracket can bind
-                        // one either. Nothing arbitrates on this path, so two suppliers
-                        // genuinely ARE a tie. The clauses over there exist because
-                        // something does.
-                        [_, _, ..] => {
-                            return Err(supplier_tie_error(
-                                kb, fn_sym, carrier_sym, &cands, span,
-                            ));
-                        }
-                        // NO supplier: the gap a default exists to fill. Fall through
-                        // and run the spec's default body.
-                        [] => {}
-                    }
+                    merge_effects_into(kb, &mut effects, &derived);
+                    classify_pin_or_apply_within(
+                        kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
+                    );
+                    return Ok(TypeResult {
+                        ty: resolved_ret,
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
                 }
             }
         }
@@ -12835,6 +12839,63 @@ fn refuse_unarbitrated_supplier_tie(
     Ok(())
 }
 
+/// WI-1042 — the DEFAULTED half's tie condition, in ONE place. The sibling of
+/// [`refuse_unarbitrated_supplier_tie`], and deliberately a DIFFERENT condition: this one
+/// is a bare count.
+///
+/// Takes the candidate slice the caller ALREADY computed, which is what makes sharing
+/// possible at all. WI-1035 recorded the opposite — "extracting it would make that arm's
+/// `[only]` pin walk the suppliers twice or leave it matching an arm it can no longer
+/// reach" — and that is true only of a helper that re-derives [`carrier_override_suppliers`]
+/// itself. Passing the slice is the shape [`supplier_tie_error`] and
+/// `refuse_unarbitrated_supplier_tie` already use, and it serves BOTH sites in one walk:
+/// `check_apply_iter`'s WI-1012 arm asks this, then matches the same slice for its single
+/// pin. What the coupling cost while it was two copies: the WI-1012 arm carries a
+/// documented REACH narrowing (only the carrier-param shape can tie), and the moment that
+/// became a CLAUSE the dot spelling would have silently diverged from the qualified
+/// spelling on the same program — the spelling-keyed silence WI-1035 was opened to close.
+///
+/// WHY IT IS A BARE COUNT while the body-less sibling carries two narrowing clauses —
+/// stated here, once, because the symmetry is tempting and copying them over would be
+/// WRONG. NOTHING ARBITRATES ON THIS PATH. Neither caller runs `dispatch_spec_op_cached`,
+/// so there is no `resolve_at_goal` and no tier-2 specificity to defer to; and
+/// `callee_requirement_slots` pushes no dispatch slot for a defaulted op, so no tier-1
+/// bracket can bind one either (at the dot site tier 1 is out for a second reason:
+/// `Expr::DotApply` carries no `type_args` field, so a dot is bracket-less by
+/// construction — the WI-842 argument). Two suppliers therefore genuinely ARE a tie. The
+/// clauses over there exist because something does.
+fn refuse_defaulted_supplier_tie(
+    kb: &KnowledgeBase,
+    spec_op: Symbol,
+    carrier: Symbol,
+    cands: &[SpecOpSupplier],
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if cands.len() >= 2 {
+        return Err(supplier_tie_error(kb, spec_op, carrier, cands, span));
+    }
+    Ok(())
+}
+
+/// WI-1035/WI-1038 — what a dot does with the member it resolved on the receiver's sort.
+/// A `Result<Option<Symbol>, _>` said the same thing and needed a comment at the call site
+/// to say which `Option` arm meant what, which is why this file already carries ~20 named
+/// verdicts ([`MemberMiss`], [`ReceiverCarrier`], [`SigmaVerdict`], …) rather than bare
+/// options. Refusals ride the `Err`; this is only the two ways to proceed.
+enum DotMember {
+    /// Call the member, which is what a dot has always done.
+    Take,
+    /// Call the SPEC OP instead, so the value picks the implementation — the receiver
+    /// pinned no carrier, so the member is not "the carrier's" anything.
+    ///
+    /// THE SYMBOL IS THE LADDER'S NEXT RUNG, not a second route to it: it is exactly what
+    /// `.or_else(find_spec_op_for_provided_sort)` would have produced had the own-member
+    /// rung missed, and this arm means precisely "on an abstract-spec receiver that rung is
+    /// not authoritative — fall through". It is carried rather than recomputed only because
+    /// the decision already paid for the lookup.
+    DispatchByValue(Symbol),
+}
+
 /// WI-1035/WI-1038 — the DOT spelling's decision: `leaf().describe(…)` resolves `describe` on the
 /// receiver's sort BY NAME, so the member was taken before anything asked which spec it
 /// backs, and the two guards above were never reached at all.
@@ -12895,15 +12956,18 @@ fn refuse_unarbitrated_supplier_tie(
 /// eval's later one. So the concrete arm keeps the load refusal and the member; the
 /// abstract arm has no load answer to keep.
 ///
-/// THE TWO HALVES ASK DIFFERENT QUESTIONS. The BODY-LESS one is delegated to
-/// [`refuse_unarbitrated_supplier_tie`], whose narrowing clauses exist because
-/// `dispatch_spec_op_cached` can weigh provisions. The DEFAULTED one is NOT delegated —
-/// it is the three-line condition WI-1012's arm applies inline, repeated here, because
-/// extracting it would make that arm's `[only]` pin walk the suppliers twice or leave it
-/// matching an arm it can no longer reach. **THE COUPLING THAT CREATES:** that arm has a
-/// documented REACH narrowing (only the carrier-param shape can tie) which is prose today;
-/// the moment it becomes a clause, or any other clause joins the count, it must be
-/// written HERE too. Nothing enforces that but this sentence.
+/// THE TWO HALVES ASK DIFFERENT QUESTIONS, and each is now DELEGATED to the owner of its
+/// condition: the BODY-LESS one to [`refuse_unarbitrated_supplier_tie`], whose narrowing
+/// clauses exist because `dispatch_spec_op_cached` can weigh provisions, and the DEFAULTED
+/// one to [`refuse_defaulted_supplier_tie`], shared with WI-1012's arm in
+/// [`check_apply_iter`]. **WI-1042 — WHAT THE COPY COST, recorded because the reason it
+/// was a copy was WRONG:** WI-1035 kept the three-line condition inline here on the ground
+/// that extracting it would make that arm's `[only]` pin walk the suppliers twice. It does
+/// not — the helper takes the ALREADY-COMPUTED slice, the shape `supplier_tie_error`
+/// already used. What the copy did buy was a live coupling: that arm carries a documented
+/// REACH narrowing (only the carrier-param shape can tie) which is prose today, and the
+/// moment it became a clause the dot spelling would have diverged from the qualified one
+/// on the same program — the spelling-keyed silence this ticket was opened to close.
 ///
 /// TIER 1 CANNOT APPLY HERE: `Expr::DotApply` carries no `type_args` field, so a dot is
 /// BRACKET-LESS BY CONSTRUCTION and the `!pinned_spec` clause the body-less guard's
@@ -12933,25 +12997,6 @@ fn refuse_unarbitrated_supplier_tie(
 /// no dispatch, so it has no outcome to yield to. Both refuse the same program at load
 /// and name the same two texts; only the sentence differs. Pinned by
 /// `a_dot_on_a_provision_tie_refuses_as_a_supplier_tie`.
-/// WI-1035/WI-1038 — what a dot does with the member it resolved on the receiver's sort.
-/// A `Result<Option<Symbol>, _>` said the same thing and needed a comment at the call site
-/// to say which `Option` arm meant what, which is why this file already carries ~20 named
-/// verdicts ([`MemberMiss`], [`ReceiverCarrier`], [`SigmaVerdict`], …) rather than bare
-/// options. Refusals ride the `Err`; this is only the two ways to proceed.
-enum DotMember {
-    /// Call the member, which is what a dot has always done.
-    Take,
-    /// Call the SPEC OP instead, so the value picks the implementation — the receiver
-    /// pinned no carrier, so the member is not "the carrier's" anything.
-    ///
-    /// THE SYMBOL IS THE LADDER'S NEXT RUNG, not a second route to it: it is exactly what
-    /// `.or_else(find_spec_op_for_provided_sort)` would have produced had the own-member
-    /// rung missed, and this arm means precisely "on an abstract-spec receiver that rung is
-    /// not authoritative — fall through". It is carried rather than recomputed only because
-    /// the decision already paid for the lookup.
-    DispatchByValue(Symbol),
-}
-
 fn dot_member_dispatch_decision(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
@@ -12966,12 +13011,23 @@ fn dot_member_dispatch_decision(
     let Some(spec_op) = find_spec_op_for_provided_sort(kb, carrier, short) else {
         return Ok(DotMember::Take);
     };
-    // ONE `spec_op_parent_sort`, deliberately: [`lookup_spec_op_dispatch`] IS this call
-    // plus [`operation_has_no_body`], so branching on IT below would pay
-    // `type_params_of_sort` twice — a `format!` plus a non-short-circuiting scan of every
-    // qualified name, 51 µs/call, which [`is_defaulted_spec_op`]'s doc flags as the WI-653
-    // hot-load-path hazard and which WI-1027's own frame is careful to evaluate once.
-    let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else { return Ok(DotMember::Take) };
+    // WI-1042 — WHAT A MISS MEANS HERE, stated because every other early-out in this
+    // function states its own and this one did not. `find_spec_op_for_provided_sort`
+    // answered `Some`, so the member backs something the carrier `provides` — but a
+    // PROVIDED SORT NEED NOT BE A SPEC. 058's spec sort is one declaring `sort X = ?`;
+    // `sort Leaf provides Plain` where `Plain` declares none loads clean, and
+    // `Plain.describe` then has no parametric parent.
+    //
+    // So `Take` is the ANSWER, not a fallback: with no type parameter there is no carrier
+    // to key a supplier set on and no spec-op dispatch to decide, and the tie guard below
+    // is INAPPLICABLE rather than skipped. Filed as a loud error by this ticket's
+    // description and REFUTED by driving — a `panic!` here fired on exactly that program
+    // and on nothing else in the workspace, so raising would refuse a legal one.
+    // `wi1042_defaulted_gate_test::a_non_parametric_provided_sort_takes_the_member` is
+    // that program, kept as the driver.
+    let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else {
+        return Ok(DotMember::Take);
+    };
     let op_short_sym = kb.intern(short);
     // WI-608: an ABSTRACT-SPEC receiver is not a static pin — its runtime value is some
     // concrete provider — so the suppliers of the SPEC sort are not the suppliers of the
@@ -13014,21 +13070,43 @@ fn dot_member_dispatch_decision(
         // (WI-616 records `sort_ops_lookup` returning one arbitrarily when a carrier
         // provides two specs with the same short name). Answering wrongly on a name
         // coincidence would be worse than answering as before, so the fallback is `Take`.
+        // WI-616 is DELIVERED and owns only that RECORD; the residual gap — the two
+        // spellings still disagreeing on such a carrier — is **owned by WI-1042** until
+        // the disagreeing shape has a decided answer.
         let backs = carrier_own_op(kb, carrier, spec_op, op_short_sym)
             .is_some_and(|o| kb.canonical_sym(o) == kb.canonical_sym(own_member));
         return Ok(if backs { DotMember::DispatchByValue(spec_op) } else { DotMember::Take });
     }
-    if operation_has_no_body(kb, spec_op) {
+    // WI-1042 — WHICH HALF, asked through the gate the other two sites ask
+    // ([`defaulted_spec_op_parent`]) rather than through a local `operation_has_no_body`.
+    // The two spellings agree today, which is exactly why the local one was a hazard: a
+    // clause added to the gate would have moved `check_apply_iter`'s population and left
+    // this one behind, silently, on a path no corpus program reaches.
+    //
+    // THEY ARE EXACT COMPLEMENTS HERE, which is not true of them in general and is worth
+    // one sentence: `operation_has_no_body` requires an `OperationInfo` and the gate's
+    // `op_has_runnable_body` requires one too, so they differ only where none exists — and
+    // `find_spec_op_for_provided_sort` found `spec_op` BY WALKING the `OperationInfo`
+    // facts, so at this line one exists by construction. `spec_sort` above supplies the
+    // gate's other two legs.
+    //
+    // AND IT PAYS `type_params_of_sort` A SECOND TIME, knowingly. The note that stood here
+    // ("ONE `spec_op_parent_sort`, deliberately") was a micro-optimization of a path this
+    // function's own contract measures at ZERO own-member dots across the corpus; 51 µs on
+    // a branch that never runs buys nothing, and it bought a second reading of "defaulted".
+    // The hot reader is `is_defaulted_spec_op` (~745 calls/load), which pays it once; the
+    // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
+    if defaulted_spec_op_parent(kb, spec_op).is_none() {
+        // BODY-LESS — a different question with a different condition; see
+        // [`refuse_unarbitrated_supplier_tie`].
         refuse_unarbitrated_supplier_tie(
             kb, spec_sort, carrier, spec_op, op_short_sym, span,
         )?;
         return Ok(DotMember::Take);
     }
-    // DEFAULTED — WI-1012's arm's condition, repeated rather than shared; see the doc.
+    // DEFAULTED.
     let cands = carrier_override_suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
-    if cands.len() >= 2 {
-        return Err(supplier_tie_error(kb, spec_op, carrier, &cands, span));
-    }
+    refuse_defaulted_supplier_tie(kb, spec_op, carrier, &cands, span)?;
     Ok(DotMember::Take)
 }
 
@@ -16385,12 +16463,113 @@ fn check_unconstrained_type_params(
 /// params — `operation outer[U](…)` gives `type_params_of_sort(outer) == ["U"]` —
 /// so the parametric gate alone states "some scope with brackets", which is not the
 /// question either caller asks.
-pub(crate) fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+pub fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
-    if kb.type_params_of_sort(parent_sym).is_empty() {
+    sort_is_parametric(kb, parent_sym).then_some(parent_sym)
+}
+
+/// WI-1042 — "declares at least one `sort <Param> = ?`", the PARAMETRIC leg of
+/// [`spec_op_parent_sort`], named so [`defaulted_spec_op_parent`] can order it after
+/// its own cheaper legs without re-spelling it. One line, and the name is the point:
+/// the two gates must not each carry their own reading of what makes a sort a spec.
+///
+/// THE EXPENSIVE LEG, and every caller should place it last. `type_params_of_sort`
+/// `format!`s a prefix, scans ALL of `by_qualified_name` without short-circuiting, and
+/// deep-clones a `Vec<String>` — 51 µs/call, O(|symbols|); `kb/mod.rs` flags it as a
+/// hot-load-path hazard (WI-653). The obvious O(1) rewrite is NOT a drop-in: the
+/// scope-based spelling `load.rs`'s `enclosing_is_spec` uses disagrees with
+/// `type_params_of_sort` on 24 of 2755 symbols, because the latter derives the body
+/// scope through a child's `declaring_scope`. So it is SHIELDED rather than replaced.
+fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
+    !kb.type_params_of_sort(sort_sym).is_empty()
+}
+
+/// WI-1042 — THE defaulted-spec-op gate: `op_sym` is a member of a PARAMETRIC sort and
+/// HAS a runnable body, i.e. the typeclass DEFAULT a carrier may override. Returns the
+/// parent spec sort.
+///
+/// ONE OWNER, because three sites asked this and two of them spelled it differently:
+///
+///   * [`check_apply_iter`]'s WI-444 carrier-override block, which pins the call to the
+///     carrier's supplied implementation or refuses a tie;
+///   * [`dot_member_dispatch_decision`]'s DEFAULTED leg, the same decision reached by
+///     the dot spelling (WI-1035);
+///   * [`is_defaulted_spec_op`], the WI-1026 rule-body walk trigger — this gate PLUS
+///     `!is_builtin`, the one clause that is genuinely site-local (WI-1036 owns it);
+///   * [`defaulted_spec_op_witness_grounds_soundly`], WI-1040's last witness scan — a
+///     FOURTH reader, found by this ticket's own review, which asked the question by name
+///     while reading only the body-AGNOSTIC parent and leaning on caller scan order for
+///     the rest.
+///
+/// The drift this closes is not hypothetical: the equivalence of the two spellings was
+/// held by a doc comment 30k lines away, so a clause added to the WI-444 block would
+/// have silently diverged the rule-body FIRE population from the op-body PIN/REFUSAL
+/// population with no test moving — the corpus population of the third spelling is
+/// ZERO, so nothing could observe it. `wi1042_defaulted_gate_test` drives the
+/// agreement over a real corpus load instead of asserting it in prose.
+///
+/// THE TWO SPELLINGS IT UNIFIES ARE NOT EQUIVALENT, AND THIS IS THE NARROWING. The
+/// WI-444 block read `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)
+/// .is_some()`, whose body test is `!operation_has_no_body` — TRUE for a symbol with no
+/// `OperationInfo` at all. This reads [`op_has_runnable_body`], which requires one. So
+/// they differ on exactly one population: a symbol parented by a parametric sort that is
+/// not an operation — `anthill.prelude.Option.some`, an entity constructor declared
+/// inside `Option`, is one, and the old spelling calls it a defaulted spec op.
+///
+/// WHAT MAKES THE NARROWING SAFE IS A PRECONDITION AT EACH SITE, not a coincidence, and
+/// NOT the corpus agreement test — that test walks `all_operation_params`, one entry per
+/// `OperationInfo` FACT, which is precisely the population where the two cannot differ.
+/// It measures the rest of the gate; it cannot see this case. The preconditions:
+///
+///   * `check_apply_iter`'s WI-444 block sits inside `if let Some(mut op) =
+///     lookup_operation_info_full(kb, fn_sym)`, which IS the `OperationInfo` probe;
+///   * [`dot_member_dispatch_decision`] reaches its leg only through
+///     `find_spec_op_for_provided_sort` → `find_operation_in_scope`, which finds symbols
+///     BY WALKING the `OperationInfo` facts;
+///   * [`is_defaulted_spec_op`] already conjoined [`op_has_runnable_body`] itself.
+///
+/// THE STRICT READ IS NOT MERELY THE STRONGER ONE — IT IS REQUIRED, and that was MEASURED
+/// after this ticket's review called the first justification here vacuous. Give this gate
+/// the old body test and **15 tests across 5 suites fail** (`wi936`, `wi618`,
+/// `parameterized_provides_block`, `sql_store_example`, and this ticket's own). FOURTEEN
+/// of them come from [`is_defaulted_spec_op`]: the rule-body walk then fires
+/// `type_check_node` on an entity constructor declared inside a parametric sort — which
+/// is what `operation_has_no_body`'s doc means by "so non-operation symbols are not
+/// misclassified" — and re-conjoining [`op_has_runnable_body`] at that site alone restores
+/// all fourteen (driven, both halves). The fifteenth is
+/// `wi1042_defaulted_gate_test::a_non_operation_functor_is_not_a_defaulted_spec_op`, the
+/// one test that pins THIS function's answer rather than one site's use of it.
+///
+/// At the dot site the swap is not conjunctive either: a misclassified symbol would not
+/// merely be admitted, it would take the DEFAULTED refusal predicate (a bare count over
+/// the interpretability-filtered supplier list) where the old spelling took the BODY-LESS
+/// one (arbitration-narrowed, unfiltered). Those reject different programs in both
+/// directions. No corpus program reaches it — the precondition above — but the failure
+/// would be a silently different refusal, not a louder one.
+///
+/// CLAUSE ORDER IS LOAD-BEARING AND IS NOT THE ORDER OF THE CONJUNCTION IT REPLACES.
+/// [`impl_parent_sort_of_op`] runs FIRST — a name split plus an O(1) kind probe — and it
+/// is the cheap NON-OPERATION early-out this gate previously lacked: a relational atom
+/// head (dot-less, or parented by a NAMESPACE) leaves HERE, before
+/// [`op_has_runnable_body`] can fall through `lookup_operation_info`'s record miss into
+/// its O(N_ops) fact scan, and before [`sort_is_parametric`]'s O(|symbols|) leg.
+///
+/// MEASURED over a stdlib + host-bindings load (counters on each leg, 2026-08-07): the
+/// gate is asked 523 times; the name split answers for 244 of them, 279 reach the body
+/// probe and 55 the parametric leg. Applying the OLD conjunct order (`!is_builtin`, then
+/// `op_has_runnable_body`, then the parent+parametric probe bundled inside
+/// `spec_op_parent_sort`) to the same 523 calls: 466 reach the body probe and 80 the
+/// parametric leg. Read it as an ordering comparison and not as history — the three call
+/// sites did not previously share one gate, so nothing ever ran the old order over this
+/// exact call set. `is_defaulted_spec_op`'s own doc carries the per-site count for the
+/// walk trigger (~745 per load on examples/github-todo), whose `!is_builtin` clause is
+/// still first and still O(1).
+pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
+    if !op_has_runnable_body(kb, op_sym) {
         return None;
     }
-    Some(parent_sym)
+    sort_is_parametric(kb, parent_sym).then_some(parent_sym)
 }
 
 /// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
@@ -41827,17 +42006,27 @@ fn rewrite_find_dictionary_goal(
 }
 
 /// WI-1040 — is `functor` an operation of spec `spec_canon` that carries a DEFAULT
-/// body? The gate for [`rewrite_find_dictionary_goal`]'s last witness scan. Reads
-/// [`spec_op_parent_sort`] (the body-AGNOSTIC parent, WI-444) rather than
-/// [`lookup_spec_op_dispatch`] (which requires body-lessness); the caller's
-/// scan order means only a defaulted op can reach it, since a body-less one was
-/// already taken by the direct scan.
+/// body? The gate for [`rewrite_find_dictionary_goal`]'s last witness scan.
+///
+/// WI-1042 — asks [`defaulted_spec_op_parent`], the ONE owner of that question. It read
+/// the body-AGNOSTIC [`spec_op_parent_sort`] and left the DEFAULT half to the caller's
+/// scan order ("a body-less op was already taken by the direct scan"), which is the
+/// prose-held coupling this ticket exists to delete: the predicate's NAME claimed a test
+/// its body did not make, so a reordering of the scans above would have changed what it
+/// means with nothing to notice.
+///
+/// NOT OBSERVABLE, and said plainly rather than dressed as a fix: if the scan order holds,
+/// a body-less op never reaches here and the two readings agree — no test can distinguish
+/// them, and none is claimed. What changes is the FAILURE MODE if the order ever stops
+/// holding: the strict gate answers `false` and the caller falls through to its "no such
+/// call in the rule body" error, instead of grounding the requirement on a witness whose
+/// dispatch the dictionary cannot decide.
 fn defaulted_spec_op_witness_grounds_soundly(
     kb: &KnowledgeBase,
     functor: Symbol,
     spec_canon: Symbol,
 ) -> bool {
-    spec_op_parent_sort(kb, functor)
+    defaulted_spec_op_parent(kb, functor)
         .is_some_and(|parent| kb.canonical_sort_sym(parent) == spec_canon)
 }
 
@@ -41900,9 +42089,19 @@ fn align_call_args_to_params(
 /// reader is most likely to drop. `type_rule_bodies` has never type-checked
 /// rule-body calls, so widening to every `Expr::Apply` would report the whole
 /// backlog of never-checked rule bodies as new load errors — a corpus-wide change
-/// of a different kind, not this ticket's dispatch question. A BODY-LESS spec op is
-/// out too: it has no default to shadow, so `reduce_op_value` leaves it un-ground
-/// and the goal residualizes rather than answering wrongly (WI-1027 owns that half).
+/// of a different kind, not this ticket's dispatch question. **OWNED BY WI-1043**,
+/// which records the general-`Expr::Apply` population (a rule-body call that is
+/// neither a dot, nor a defaulted spec op, nor a body-less one stays untyped) as its
+/// residue.
+///
+/// A BODY-LESS spec op is out too: it has no default to shadow, so `reduce_op_value`
+/// leaves it un-ground and the goal residualizes rather than answering wrongly. That
+/// sentence cited WI-1027, which is DELIVERED and owns the OPERATION-body half only —
+/// **the rule-body half is WI-1043**, which measured it: a body-less spec op with two
+/// suppliers, called from a rule body, loads clean and answers `[]` where the spec
+/// claimed REFUSED. WI-1043 widens this gate or records at it why it may not; either
+/// way the clause is written once, in [`defaulted_spec_op_parent`]'s neighbourhood
+/// rather than as a fourth spelling (WI-1042).
 fn dispatch_calls_in_occ(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -41970,31 +42169,18 @@ fn dispatch_calls_in_occ(
 /// action cannot drift — a body walked but not acted on costs a pass, a body
 /// acted on but not walked is silent.
 ///
-/// Spelled as the WI-444 gate PLUS `!is_builtin`, with the NAMED readers rather
-/// than re-derived: that block is `lookup_spec_op_dispatch(..).is_none() &&
-/// spec_op_parent_sort(..).is_some()`, and under a parametric parent the first
-/// conjunct is exactly "not body-less", i.e. [`op_has_runnable_body`]. The obvious
-/// spelling — `kb.op_body_node(f).is_some()`, which is what stood here first —
-/// silently drops that reader's `OperationInfo`-existence gate, the one
-/// `operation_has_no_body`'s doc calls load-bearing ("a symbol with no
-/// `OperationInfo` … must keep that answer so non-operation symbols are not
-/// misclassified"). The conjunction with `spec_op_parent_sort` happens to hide the
-/// difference today; that is a coupling, not a licence to keep the weaker read.
+/// WI-1042 — the gate itself is NOT spelled here. It is [`defaulted_spec_op_parent`],
+/// shared with the two sites that DECIDE such a call (`check_apply_iter`'s WI-444
+/// block and [`dot_member_dispatch_decision`]'s defaulted leg), so the population this
+/// walk FIRES on cannot drift from the population they PIN or REFUSE. What is local
+/// here is the one clause below, and only that clause.
 ///
-/// CLAUSE ORDER IS LOAD-BEARING AND WAS MEASURED. `spec_op_parent_sort` ends in
-/// `type_params_of_sort`, which `format!`s a prefix, scans ALL of
-/// `by_qualified_name`, and deep-clones a `Vec<String>` — 51 µs/call, O(|symbols|),
-/// and `kb/mod.rs` already flags it as a hot-load-path hazard (WI-653). It is third
-/// because the two `HashMap` probes in front of it SHIELD it completely: over a real
-/// load this predicate runs 745 times (examples/github-todo) / 657 (anthill-todo),
-/// `is_builtin` rejects ~half, `op_body_node` the rest, and the expensive leg is
-/// reached **zero** times. So the pre-scan stays a cheap pre-scan and needs no
-/// precomputed set. WI-1036 is where that stops being true — dropping `!is_builtin`
-/// sends 60 sites through the third clause, so `type_params_of_sort` wants fixing
-/// FIRST if that ticket lands. (The obvious O(1) rewrite is not a drop-in: the
-/// scope-based spelling `load.rs`'s `enclosing_is_spec` uses disagrees with
-/// `type_params_of_sort` on 24 of 2755 symbols, because the latter derives the body
-/// scope through a child's `declaring_scope`.)
+/// CLAUSE ORDER: the shared gate leads with its own cheap non-operation early-out, so
+/// `!is_builtin` is FIRST here purely because it is an O(1) `HashMap` probe and
+/// rejects ~half of the ~745 calls a real load makes (examples/github-todo; 657 for
+/// anthill-todo) before anything else runs. It is not shielding the expensive leg —
+/// [`defaulted_spec_op_parent`] shields that itself, which is what makes dropping this
+/// clause a decision about BEHAVIOUR alone (WI-1036) rather than one about cost.
 ///
 /// **`!is_builtin` is the whole blast radius of WI-1026's rule-body arm, and it
 /// was MEASURED, not assumed.** With this clause the arm fires on ZERO sites in
@@ -42015,7 +42201,7 @@ fn dispatch_calls_in_occ(
 /// feed `req_insertion::run`, which emits a dispatch rewrite per classified
 /// occurrence; filed as WI-1036 rather than taken as a side effect here.
 fn is_defaulted_spec_op(kb: &KnowledgeBase, f: Symbol) -> bool {
-    !kb.is_builtin(f) && op_has_runnable_body(kb, f) && spec_op_parent_sort(kb, f).is_some()
+    !kb.is_builtin(f) && defaulted_spec_op_parent(kb, f).is_some()
 }
 
 /// WI-282 / WI-1026: is THIS node a call [`dispatch_calls_in_occ`] must decide — an
