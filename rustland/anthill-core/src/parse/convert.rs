@@ -286,6 +286,13 @@ impl<'a> Converter<'a> {
         self.errors.push(ParseError::new(msg, self.span(node)));
     }
 
+    /// [`Self::err`] for a site reached from an already-converted TERM rather than
+    /// from a CST node — the span rides on the term (`SimpleTermStore::span`), so
+    /// there is no `Node` left to take it from (WI-1040's rule-body rewrites).
+    fn err_at_span(&mut self, msg: impl Into<String>, span: Span) {
+        self.errors.push(ParseError::new(msg, span));
+    }
+
     /// WI-446: dangling-`case` attachment hazard. The grammar attaches a
     /// trailing `case` arm to the innermost open `match` (`match_expr` is
     /// `prec.right(repeat1(match_branch))`, with no indentation awareness),
@@ -2669,7 +2676,152 @@ impl<'a> Converter<'a> {
     /// (`requires_body` is otherwise `rule_body` verbatim) made structural: a goal
     /// rewrite added for one is added for both.
     fn convert_rule_body(&mut self, node: Node) -> Vec<TermId> {
-        self.convert_requires_body(node, &mut Vec::new(), 0)
+        let goals = self.convert_requires_body(node, &mut Vec::new(), 0);
+        // WI-1040: `require[X]` is a RULE-BODY interpretation, so it is applied
+        // HERE and not inside `convert_requires_body` — that walk is shared with an
+        // operation's `requires` clause list, where the spelling would mean nothing
+        // (a clause DECLARES a slot; there is no body to bring a dictionary into).
+        goals.into_iter().map(|g| self.rewrite_require_goal(g)).collect()
+    }
+
+    /// WI-1040 (proposal 060 §1) — interpret a rule-body `require[X]`.
+    ///
+    /// Three spellings, three distinct things (`docs/design/requirement-channel.md`
+    /// §3): `requires <T>` DECLARES a slot (untouched); `requires(X)` is the WI-300
+    /// check-only guard; `require[X]` DENOTES the dictionary, bringing it into the
+    /// clause's scope. All three lower to the one kernel relation
+    /// `anthill.kernel.find_dictionary`, which `require[X]` reads with an OUTPUT:
+    ///
+    /// ```text
+    ///     require[Eq[T]]         ⇒  find_dictionary(Eq, out: ?<fresh>)
+    ///     ?d = require[Eq[T]]    ⇒  find_dictionary(Eq, out: ?d)
+    ///     requires(Eq[T])        ⇒  find_dictionary(Eq)              (unchanged)
+    /// ```
+    ///
+    /// `out` is a NAMED arg on purpose (the settled encoding, channel doc §5): the
+    /// delivered resolver arm and the typer sweep both key on POSITIONAL arity, so a
+    /// no-`out` goal takes the existing path with nothing about it changed —
+    /// WI-1040's acceptance (f) holds structurally rather than by re-testing.
+    ///
+    /// The output variable is minted HERE, at parse time, for the bare spelling —
+    /// not by the typer sweep. A rule's variables are numbered when the clause is
+    /// closed to De Bruijn, so a variable introduced after that would have no slot;
+    /// minting it as an ordinary body existential (exactly what `?` mints) means the
+    /// sweep only ever COPIES an occurrence that already exists.
+    ///
+    /// The spec's type-args are stripped for the SAME reason the guard strips them
+    /// ([`Self::strip_spec_type_args`]): a bare `T` in term position would reach
+    /// scope resolution with no binding in a free rule. Un-stripping them — so
+    /// WI-613 attribution sees full specs — needs a type-position channel and is
+    /// `requirement-channel.md` §10 item 1, still open.
+    ///
+    /// `require` is matched BY NAME with a bracketed (type-application) shape, the
+    /// same way `requires` / `unify` / `eq` are matched by name here. A parenthesised
+    /// `require(X)` is deliberately NOT this form: it stays an ordinary goal, so a
+    /// user predicate spelled `require` keeps working.
+    fn rewrite_require_goal(&mut self, tid: TermId) -> TermId {
+        // Spelling 2: `?d = require[X]` — the author names the output. `=` desugars
+        // to `eq(lhs, rhs)` (pratt `EQ_FUNCTOR`), and only this exact shape is a
+        // requirement denotation: variable on the left, `require[…]` on the right.
+        if let Term::Fn { functor, pos_args, named_args } = self.terms.get(tid) {
+            if self.symbols.local_name(*functor) == super::pratt::EQ_FUNCTOR
+                && pos_args.len() == 2
+                && named_args.is_empty()
+            {
+                let (lhs, rhs) = (pos_args[0], pos_args[1]);
+                if self.require_spec_arg(rhs).is_some() {
+                    let span = self.terms.span(tid);
+                    if !matches!(self.terms.get(lhs), Term::Var(_)) {
+                        self.err_at_span(
+                            "`require[…]` may name only a VARIABLE — write `?d = require[Spec[…]]`. \
+                             The output is an ordinary logic variable, not a pattern",
+                            span,
+                        );
+                        return tid;
+                    }
+                    return self.lower_require(rhs, lhs, span);
+                }
+            }
+        }
+        // Spelling 1: the bare goal `require[X]` — the translation owns the output
+        // variable, minted fresh here.
+        if self.require_spec_arg(tid).is_some() {
+            let span = self.terms.span(tid);
+            let sym = self.intern("__req_out");
+            let vid = VarId::new(self.next_var, sym);
+            self.next_var += 1;
+            let out = self.terms.alloc(Term::Var(Var::Global(vid)), span);
+            return self.lower_require(tid, out, span);
+        }
+        // Every other goal: `require[…]` is legal ONLY as a bare goal or as the RHS
+        // of a top-level `=` (channel doc §3 — no general lifting). Anything left
+        // nested inside a term is refused LOUDLY here rather than escaping to scope
+        // resolution, which would report it as an unresolved name `require` and hide
+        // which rule it belongs to.
+        self.refuse_nested_require(tid);
+        tid
+    }
+
+    /// The spec-instance argument of a `require[X]` denotation, or `None` when `tid`
+    /// is not one. The shape is a BRACKETED application on the bare name `require`
+    /// with exactly one type argument.
+    fn require_spec_arg(&self, tid: TermId) -> Option<TermId> {
+        match self.terms.get(tid) {
+            Term::Fn { functor, pos_args, named_args }
+                if self.symbols.local_name(*functor) == "require"
+                    && pos_args.len() == 1
+                    && named_args.is_empty()
+                    && self.terms.is_type_application(tid) =>
+            {
+                Some(pos_args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Build `find_dictionary(<spec base>, out: <out>)` for a `require[X]` goal.
+    fn lower_require(&mut self, require_tid: TermId, out: TermId, span: Span) -> TermId {
+        let spec_arg = self
+            .require_spec_arg(require_tid)
+            .expect("lower_require called on a non-`require[…]` term");
+        let base = self.strip_spec_type_args(spec_arg);
+        let functor = self.intern("find_dictionary");
+        let out_label = self.intern(crate::kb::typing::REQUIREMENT_OUT_LABEL);
+        self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(base, 1),
+                named_args: SmallVec::from_slice(&[(out_label, out)]),
+            },
+            span,
+        )
+    }
+
+    /// Refuse any `require[…]` still nested inside `tid` after the two legal
+    /// spellings have been lowered. Iterative (explicit worklist) so a deeply
+    /// nested goal cannot overflow the host stack.
+    fn refuse_nested_require(&mut self, tid: TermId) {
+        let mut stack = vec![tid];
+        let mut offenders: Vec<Span> = Vec::new();
+        while let Some(t) = stack.pop() {
+            if self.require_spec_arg(t).is_some() {
+                offenders.push(self.terms.span(t));
+                continue;
+            }
+            if let Term::Fn { pos_args, named_args, .. } = self.terms.get(t) {
+                stack.extend(pos_args.iter().copied());
+                stack.extend(named_args.iter().map(|(_, a)| *a));
+            }
+        }
+        for span in offenders {
+            self.err_at_span(
+                "`require[…]` is legal only as a bare rule-body goal or as the right-hand \
+                 side of a top-level `=` (`?d = require[Spec[…]]`). It denotes a dictionary \
+                 in the CLAUSE's scope, so there is no lifting rule that would give a \
+                 nested occurrence a meaning",
+                span,
+            );
+        }
     }
 
     /// WI-840: the node to convert as a NAMED slot's requirement GOAL, given the

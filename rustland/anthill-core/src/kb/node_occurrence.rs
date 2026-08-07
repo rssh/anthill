@@ -4143,20 +4143,29 @@ fn subst_var_leaf(
         None => return Rc::clone(occ), // unbound: keep the variable leaf
         Some(Value::Node(o)) => return Rc::clone(o), // matched child: splice in place
         Some(Value::Term { id: t, .. }) => *t,
-        Some(scalar) => match scalar_value_expr(scalar) {
+        Some(other) => match scalar_value_expr(other) {
             Some(expr) => return NodeOccurrence::new_expr(expr, occ.span, occ.owner),
-            // Structured non-`Term` values (`Value::Entity`/`Tuple` from
-            // external rows) aren't materialized to occurrences yet — that
-            // path lands when the resolver's external-row binding is wired.
-            // Fail loud rather than silently produce ⊥ (which would discard a
-            // genuine binding); the gate's relational rules bind only
-            // term-shaped values, so this is unreachable today.
-            None => panic!(
-                "substitute_occurrence: goal var bound to non-scalar Value ({}) — \
-                 occurrence materialization for external-row bindings is not yet \
-                 implemented (WI-246)",
-                scalar.type_name(),
-            ),
+            // WI-1040 — a STRUCTURED non-`Term` value (`Value::Entity` / `Tuple`,
+            // and now a requirement dictionary) rides into the occurrence tree as
+            // `Expr::Spliced`, the carrier that exists for exactly this (WI-714: "a
+            // `Spliced` occurrence carries a structured `Value`"). Every view arm
+            // delegates through `spliced_value`, so the spliced node reads —
+            // head, children, keys, bind-value, index-var — as the value it
+            // carries, with no loss and no wrapper visible to a consumer.
+            //
+            // This REPLACES a panic that called itself unreachable ("the gate's
+            // relational rules bind only term-shaped values"). It stopped being
+            // unreachable the moment a rule-body goal could bind a variable to a
+            // dictionary; discarding the binding would be the silent ⊥ the panic
+            // was guarding against, and `Spliced` is the wiring the panic's own
+            // text was waiting for.
+            None => {
+                return NodeOccurrence::new_expr(
+                    Expr::Spliced(other.clone()),
+                    occ.span,
+                    occ.owner,
+                )
+            }
         },
     };
     // Bound to a (possibly compound) term: deep-apply σ in term-land (keeps

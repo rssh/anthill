@@ -1119,16 +1119,33 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // the arm is unwritten (WI-814 retired that catch-all reading):
         //
         //  - Rigid / DeBruijn vars and rule-head occurrences, as before.
-        //  - The `*Within` family. Their TERM side is LIVE, not vestigial: the
-        //    requirement-insertion pass (`req_insertion.rs`, WI-231) does rewrite
-        //    a classified call to `apply_within` — but as a `Term::Fn` recorded in
-        //    `kb.dispatch_rewrites` (`record_apply_within_concrete`, typing.rs),
-        //    NOT as an occurrence. The occurrence stays `Expr::Apply` carrying its
+        //  - `Expr::ApplyWithin`, and the reason CHANGED in WI-1040 — do not read the
+        //    older one ("nothing produces it as an occurrence"), which is now false.
+        //    `weave_covered_call` (typing.rs) is a first-class occurrence-side
+        //    producer: it rewrites a rule-body spec-op call covered by a clause
+        //    `require[X]` into `ApplyWithin` carrying the dictionary variable.
+        //
+        //    It stays `Opaque` because its faithful term twin is the WRAPPED reflect
+        //    shape `apply_within(fn = …, args = …, requirements = …)`, whose head
+        //    functor is `apply_within` and NOT the callee. A TRANSPARENT head (functor
+        //    = the callee) would read one way here and another through
+        //    `occurrence_to_term` — the cross-carrier miss WI-425/WI-815 make a wrong
+        //    answer, not a precision loss.
+        //
+        //    THE PRICE IS PAID AT THE PRODUCER, not hidden here: an `Opaque` goal is
+        //    invisible to builtin dispatch, to the discrim query and to the WI-938
+        //    hook, so `collect_covered_calls` weaves ONLY callees the WI-938 hook
+        //    recognizes (`functional_relation_arity`). Widening that population needs
+        //    a goal-position reader, or this head's twin problem solved — not a
+        //    quiet transparent head.
+        //
+        //  - The rest of the `*Within` family. Their TERM side is LIVE, not
+        //    vestigial: the requirement-insertion pass (`req_insertion.rs`, WI-231)
+        //    rewrites a classified call to `apply_within` as a `Term::Fn` in
+        //    `kb.dispatch_rewrites` (`record_apply_within_concrete`, typing.rs), NOT
+        //    as an occurrence — the occurrence stays `Expr::Apply` carrying its
         //    `CallClass` tag, which is what the runtime reads post-WI-248 ("the
-        //    term-keyed redirect is now diagnostic-only"). So `Expr::ApplyWithin`
-        //    is reached only by reading such a term BACK through `visit_fn`, and
-        //    the occurrence↔term pair a head would keep in lockstep is not one the
-        //    pipeline actually produces side by side. `HoApplyWithin` /
+        //    term-keyed redirect is now diagnostic-only"). `HoApplyWithin` /
         //    `ConstructorWithin` / `LambdaWithin` go further: NOTHING constructs
         //    them, in either carrier. `LambdaWithin` is SUPERSEDED — NOT an
         //    "unimplemented gap", which would predict a failure nobody can
@@ -2176,6 +2193,26 @@ fn opref_key(kb: &KnowledgeBase, k: &str) -> Symbol {
         other => unreachable!("opref_key: `{other}` is not an OpRef accessor"),
     };
     accessor_key(kb, OPREF_QNAME, accessor, "OpRef")
+}
+
+/// WI-1040 — the `(constructor, `impl` key)` a dictionary reads under, for a
+/// PRODUCER rather than a reader.
+///
+/// The requirement channel builds dictionaries on the SLD side, where there is no
+/// arena; they must come out shaped exactly as [`dict_head`] announces for an eval
+/// handle, or the two would be one thing with two identities — which is the whole
+/// defect `requirement-channel.md` §9 exists to remove. Exposing the pair (rather
+/// than letting the producer spell `"Dictionary"` / `"impl"` itself) is what makes
+/// that structural: a change to either name moves both sides at once.
+///
+/// `None` in a KB that never loaded `anthill.realization.runtime` — the producer
+/// then reports that it cannot build one, rather than panicking the way a READER
+/// may (a reader holds a handle, so the sort must exist; a producer may be asked in
+/// a minimal KB).
+pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol)> {
+    let ctor = kb.try_resolve_symbol(DICT_QNAME)?;
+    let key = kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")?;
+    Some((ctor, key))
 }
 
 fn dict_key(kb: &KnowledgeBase, k: &str) -> Symbol {

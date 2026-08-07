@@ -44,7 +44,10 @@ p(?x, ?y) :- ?d = require[Eq[T]], f(?x, ?d)       -- named; passed by hand
 ```
 
 - **No grammar change.** `require[X]` already parses (WI-311 unified application);
-  what is added is an interpretation. `require` joins the kernel vocabulary.
+  what is added is an interpretation. The **converter owns the name**, as it owns
+  `requires` / `unify` / `eq`: both legal spellings are rewritten away there, so a
+  kernel-vocabulary entry would be reached only by an illegal one — where it would
+  turn a loud error into a name that resolves to nothing and then fails silently.
 - **The output variable is the translation's, not the surface's.** For a bare
   `require[X]` the translation synthesizes a fresh output variable and weaves the
   covered calls to dispatch through it; the author names one (`?d = require[X]`)

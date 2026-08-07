@@ -37622,6 +37622,21 @@ pub(crate) fn simp_requires_guard_holds(
     )
 }
 
+/// WI-1040 — the named-argument label under which a `find_dictionary` goal carries
+/// its OUTPUT slot: the clause variable the resolved dictionary binds to.
+///
+/// A NAMED arg, not a positional one, and that is the whole reason acceptance (f)
+/// ("`requires(X)` behaves exactly as before") holds structurally: the converter's
+/// idempotence gate, the typer sweep's, and the resolver arm's argument reads are
+/// all POSITIONAL, so a goal without an `out` is byte-identical to what WI-300
+/// delivered. `out` is present iff the surface said `require[…]`.
+///
+/// ONE FORM, ONE OWNER (the WI-900 rule): the sweep always emits the extended
+/// shape; `requires(X)` IS the no-`out` case, not a second encoding. No persistence
+/// migration exists — a rewritten rule body is an in-memory contract between the
+/// sweep and the resolver arm, re-elaborated from source on every load.
+pub(crate) const REQUIREMENT_OUT_LABEL: &str = "out";
+
 /// WI-300 — the three-way outcome of a rule-body `requires(X)` guard (the
 /// desugared `find_dictionary` goal). Three-way *by construction* (never
 /// NAF-decide, WI-519 / WI-067): the guard RESOLVES the requirement — it does not
@@ -37659,17 +37674,261 @@ pub(crate) fn find_dictionary_guard(
     op_functor: Symbol,
     arg_vals: &[Value],
 ) -> FindDictOutcome {
-    // Each witness argument's carrier sort head from `value_type_term` — the same
-    // total type reader `simp_requires_guard_holds` uses; needs `&mut kb` (may
-    // intern sort refs), so it runs before the immutable-`kb` core call. A headless
-    // argument rides as `None`; `simp_guard_holds_core` decides Fire/DontFire/
-    // Suspend from only the CARRIER indices (a headless carrier ⇒ Suspend).
-    let mut arg_sorts: Vec<Option<Symbol>> = Vec::with_capacity(arg_vals.len());
-    for v in arg_vals {
-        let ty = value_type_term(kb, subst, v);
-        arg_sorts.push(sort_functor_of_view(kb, &ty));
-    }
+    let arg_types = witness_arg_types(kb, subst, arg_vals);
+    guard_over_arg_types(kb, spec_sort, op_functor, &arg_types)
+}
+
+/// Each witness argument's CARRIED TYPE (`value_type_term`, WI-578) — the same
+/// total type reader `simp_requires_guard_holds` uses. Read whole and kept whole:
+/// the head constructor is what selects a provider row, and the type ARGUMENTS are
+/// what a sub-dictionary fetch needs, so collapsing to the head here would throw
+/// away half of what [`fetch_dictionary`] must pass on. Needs `&mut kb` (it may
+/// intern sort refs), so it runs before any immutable-`kb` walk.
+fn witness_arg_types(kb: &mut KnowledgeBase, subst: &Substitution, arg_vals: &[Value]) -> Vec<Value> {
+    arg_vals.iter().map(|v| value_type_term(kb, subst, v)).collect()
+}
+
+/// The WI-300 guard decision over already-read carried types. A headless argument
+/// rides as `None`; [`simp_guard_holds_core`] decides Fire/DontFire/Suspend from
+/// only the CARRIER indices (a headless carrier ⇒ Suspend).
+fn guard_over_arg_types(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    op_functor: Symbol,
+    arg_types: &[Value],
+) -> FindDictOutcome {
+    let arg_sorts: Vec<Option<Symbol>> =
+        arg_types.iter().map(|t| sort_functor_of_view(kb, t)).collect();
     simp_guard_holds_core(kb, op_functor, spec_sort, |i| arg_sorts.get(i).copied().flatten())
+}
+
+/// WI-1040 — the outcome of READING a rule-body requirement for its VALUE, the
+/// mode `require[X]` adds to WI-300's check-only guard.
+///
+/// Staged per `docs/design/requirement-channel.md` §2.1: **after the typing pass,
+/// run time performs no typing operations**. What happens here is a table read —
+/// the carried types decide which already-selected provider row applies — and a
+/// composition of the rows the conditional provisions name. No inference, no type
+/// unification, no instance selection.
+pub(crate) enum FindDictFetch {
+    /// The guard did not fire, so there is nothing to fetch: its own three-way
+    /// verdict stands, unchanged from the no-`out` path.
+    Guard(FindDictOutcome),
+    /// The dictionary: `Dictionary(sub₀ … subₙ₋₁, impl: S)`.
+    ///
+    /// **ONE REPRESENTATION** (`requirement-channel.md` §9, which settles §10 item
+    /// 2). This is not "the SLD form" of a dictionary — it is THE form, built in the
+    /// exact shape WI-1019's `TermView` announces for an eval `RequirementHandle`
+    /// (`dictionary_view_syms` supplies both names, so the producer and that reader
+    /// cannot drift). A dictionary built here and a handle built in an interpreter
+    /// therefore compare equal through the ordinary view, with no conversion and no
+    /// second identity. Retiring the arena so eval holds this value directly is
+    /// WI-1041.
+    ///
+    /// STORAGE IS NOT PART OF THE SHAPE, and this deliberately does not intern:
+    /// a conditional provision composes over type arguments, so the distinct
+    /// dictionaries follow the carried types that actually occur — a family with no
+    /// static bound, where interning (which never frees) is the wrong default. It
+    /// rides as an ordinary structured `Value`, which unifies and indexes
+    /// identically (CLAUDE.md's Representation note: matching and indexing key on
+    /// structural `DiscrimKey`s, never on `TermId` identity).
+    Fetched(Value),
+    /// The guard fired but no single row could be produced here. `detail` names
+    /// what was asked for and what came back.
+    Undecided { detail: String },
+    /// Two rows for one carried type. A DEFECT, not a semantics (§4): overlap is
+    /// refused at typing/load, so reaching this means the coherence machinery let
+    /// one through. The caller is expected to be loud about it in debug and to
+    /// degrade to "cannot decide" in release, never to pick one.
+    Defect { detail: String },
+}
+
+/// WI-1040 — read a rule-body requirement for its VALUE: run WI-300's guard, and
+/// where it fires, FETCH the provider tree for `spec_sort` at the witness
+/// arguments' carried types.
+///
+/// The guard half is shared with [`find_dictionary_guard`] verbatim (one carrier
+/// decision, one set of carried types), so the `out` and no-`out` readings of one
+/// goal can never disagree about whether the requirement holds — they differ only
+/// in whether the dictionary is also produced.
+///
+/// `resolve` runs with an EMPTY scope and no σ, exactly as
+/// [`resolve_bridge_requirements`] does and for the same reason: a rule clause has
+/// no caller frame whose slots could satisfy this by forwarding, so a slot can only
+/// resolve by CONSTRUCTION (`Leaf`/`Conditional`), never `FromScope`. And no
+/// SELECTION — 058 §3.3 puts rule bodies out of scope for the bracket channel.
+pub(crate) fn fetch_dictionary(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_functor: Symbol,
+    arg_vals: &[Value],
+) -> FindDictFetch {
+    let arg_types = witness_arg_types(kb, subst, arg_vals);
+    match guard_over_arg_types(kb, spec_sort, op_functor, &arg_types) {
+        FindDictOutcome::Fire => {}
+        other => return FindDictFetch::Guard(other),
+    }
+    let Some(goal) = witness_sort_goal(kb, spec_sort, op_functor, &arg_types) else {
+        return FindDictFetch::Undecided {
+            detail: format!(
+                "`{}` has no recorded signature, so the witness arguments' carried types \
+                 cannot say which of `{}`'s parameters they bind",
+                kb.qualified_name_of(op_functor),
+                kb.qualified_name_of(spec_sort),
+            ),
+        };
+    };
+    let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
+    match resolve(kb, &goal, &scope) {
+        ResolutionResult::Resolved(tree) => match dictionary_value_of_tree(kb, &tree) {
+            Some(v) => FindDictFetch::Fetched(v),
+            None => FindDictFetch::Undecided {
+                detail: "cannot build a dictionary value here: either the resolved tree \
+                         names a caller slot (a rule clause has none, and this \
+                         resolution ran with an empty scope, so `FromScope` should be \
+                         unreachable), or this KB never loaded \
+                         `anthill.realization.runtime.Dictionary`"
+                    .into(),
+            },
+        },
+        ResolutionResult::Ambiguous { goal_text, tie } => FindDictFetch::Defect {
+            detail: format!(
+                "two providers answer `{goal_text}` at run time: {}",
+                tie.candidates
+                    .iter()
+                    .map(|s| kb.qualified_name_of(*s).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        },
+        // The guard said the carrier PROVIDES the spec and instance synthesis then
+        // found no tree. The two readers are not the same oracle — `sort_provides`
+        // sees a WI-450 witness-sort provision and a denoted/value-fact provision
+        // that `resolve`'s candidate collection does not — so this is a reachable
+        // COMPLETENESS gap, not an invariant break, and is deliberately not a
+        // `debug_assert`: firing on those shapes would reject programs that run
+        // correctly today whenever nothing reads the dictionary.
+        //
+        // Reported as UNDECIDED (⇒ the caller delays), not as failure: `out` is
+        // present, so this clause asked to be PASSED a dictionary, and answering
+        // "no solution" would be exactly the silent skip a delay refuses to be.
+        ResolutionResult::NoMatch { goal_text, hint } => FindDictFetch::Undecided {
+            detail: format!("no provider answers `{goal_text}` ({hint})"),
+        },
+        ResolutionResult::Cyclic { path } => FindDictFetch::Undecided {
+            detail: format!("the provider chain re-enters its own goal: {}", path.join(" → ")),
+        },
+    }
+}
+
+/// WI-1040 — the [`SortGoal`] a witness call's carried types denote: which of the
+/// spec's parameters each CARRIER argument binds, read through the same
+/// carrier decision the guard uses ([`param_is_spec_carrier`] /
+/// [`spec_self_represented_by`]), so the goal and the guard cannot disagree about
+/// which argument carries the spec.
+///
+/// The two spec shapes bind differently, and that is WI-596's distinction applied
+/// once more rather than re-derived: a carrier-PARAMETER typeclass (`Desc.describe(x:
+/// T)`) names its carrier BY a type-parameter, so the argument's carried type is the
+/// BINDING; a SELF-REPRESENTING container (`Set.member(x: T, s: Set)`) names its
+/// carrier by the sort itself, where no binding is pinned and the argument's sort
+/// head is the [`SortGoal::carrier`] discriminant instead (WI-350).
+///
+/// `None` only when the operation has no recorded signature — the same condition
+/// under which the guard itself declines.
+fn witness_sort_goal(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    op_functor: Symbol,
+    arg_types: &[Value],
+) -> Option<SortGoal> {
+    let rec = super::op_info::lookup_operation_info(kb, op_functor)?;
+    let type_params = kb.type_params_of_sort(spec_sort);
+    let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let mut carrier: Option<Symbol> = None;
+    for (i, (_pname, pty)) in rec.params.iter().enumerate() {
+        if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
+            continue;
+        }
+        let Some(arg_ty) = arg_types.get(i).cloned() else { continue };
+        if self_representing {
+            carrier = carrier.or_else(|| sort_functor_of_view(kb, &arg_ty));
+            continue;
+        }
+        // The parameter's declared type IS one of the spec's type-parameters
+        // (`param_is_spec_carrier` just said so); its short name is the binding key.
+        let Some(param_sym) = carrier_sort_of_value(kb, pty) else { continue };
+        let short = kb.local_name_of(param_sym).to_string();
+        // The key spelling `resolve` matches provider heads against — the same
+        // preference `sort_goal_from_subst` applies: the bare short-name symbol when
+        // one is registered, else the spec-qualified parameter symbol.
+        let qualified = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")).unwrap_or(param_sym);
+        let key = kb.try_resolve_symbol(&short).unwrap_or(qualified);
+        let Some(tid) = type_value_as_term(kb, &arg_ty) else { continue };
+        if bindings.iter().all(|(k, _)| *k != key) {
+            bindings.push((key, tid));
+        }
+    }
+    Some(SortGoal { spec_sort, bindings, carrier })
+}
+
+/// WI-1040 — a resolved provider tree as the dictionary VALUE.
+///
+/// Built in WI-1019's shape: the sub-dictionaries are POSITIONAL children (slot `k`
+/// is the k-th entry of the WI-857 dictionary layout, so the order is the identity)
+/// and the impl carrier is the one named child. WI-857's `Unavailable` marker
+/// becomes a childless dictionary over the `NoProvider` marker, exactly as
+/// `emit_tree_as_projection` and `port_resolved_tree` both spell it — every use of
+/// that slot is refused at the read (`resolve_op_target_checked`), so carrying the
+/// absence stays loud.
+///
+/// `None` when the tree names a caller slot — `FromScope` cannot arise from the
+/// empty-scope resolution this is called on, and answering `None` rather than
+/// inventing a slot name keeps that true — or when the KB has no
+/// `anthill.realization.runtime.Dictionary` to name.
+fn dictionary_value_of_tree(kb: &mut KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<Value> {
+    let (ctor, impl_key) = super::term_view::dictionary_view_syms(kb)?;
+    let marker = no_provider_sym(kb);
+    fn build(
+        tree: &ResolvedRequiresNode,
+        ctor: Symbol,
+        impl_key: Symbol,
+        marker: Symbol,
+    ) -> Option<Value> {
+        let (impl_sort, subs): (Symbol, Vec<Value>) = match tree {
+            ResolvedRequiresNode::Leaf { impl_sort, .. } => (*impl_sort, Vec::new()),
+            ResolvedRequiresNode::Unavailable { .. } => (marker, Vec::new()),
+            ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => (
+                *impl_sort,
+                sub_resolutions
+                    .iter()
+                    .map(|s| build(s, ctor, impl_key, marker))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            ResolvedRequiresNode::FromScope { .. } => return None,
+        };
+        Some(Value::Entity {
+            functor: ctor,
+            pos: subs.into(),
+            named: vec![(impl_key, Value::SymbolRef(impl_sort))].into(),
+        })
+    }
+    build(tree, ctor, impl_key, marker)
+}
+
+/// A carried type as a `TermId`, for the `TermId`-keyed [`SortGoal::bindings`].
+/// `value_type_term` already answers in the term carrier for every type it
+/// computes structurally; the fallback re-mints the nominal head for a type that
+/// arrived on another carrier, which is exactly the granularity the guard decided
+/// on. `None` for a headless type — the guard would have suspended on it.
+fn type_value_as_term(kb: &mut KnowledgeBase, ty: &Value) -> Option<TermId> {
+    match ty {
+        Value::Term { id, .. } => Some(*id),
+        other => sort_functor_of_view(kb, other).map(|s| kb.alloc(Term::Ref(s))),
+    }
 }
 
 /// WI-582 — the resolver-side firing guard for EXPLICIT typed rule patterns
@@ -40122,14 +40381,28 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         }
         let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(body_nodes.len());
         let mut changed = false;
+        // WI-1040 — `(covered call, its functor, the dictionary variable)` per
+        // `require[X]` in this clause, applied once the goal rewrites are done.
+        let mut weaves: Vec<(Rc<NodeOccurrence>, Symbol, Rc<NodeOccurrence>)> = Vec::new();
         for node in &body_nodes {
             if !is_unrewritten(node) {
                 new_body.push(node.clone());
                 continue;
             }
             match rewrite_find_dictionary_goal(kb, node, &body_nodes, fd_sym, rule_sym) {
-                Ok(new_goal) => {
-                    new_body.push(new_goal);
+                Ok(found) => {
+                    // WI-1040 — step 2 of the transformation: the call this
+                    // dictionary covers is rewritten to carry it. Only when the goal
+                    // actually THREADS a dictionary (`out` present, i.e. the author
+                    // wrote `require[X]`); a check-only `requires(X)` leaves every
+                    // call in the body exactly as it found them, which is what makes
+                    // acceptance (f) structural.
+                    if let Some(out) = out_var_of_goal(kb, node, fd_sym) {
+                        for (call, call_fn) in &found.covered_calls {
+                            weaves.push((Rc::clone(call), *call_fn, Rc::clone(&out)));
+                        }
+                    }
+                    new_body.push(found.goal);
                     changed = true;
                 }
                 Err(e) => {
@@ -40137,6 +40410,22 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     new_body.push(node.clone());
                 }
             }
+        }
+        // Weave AFTER the goal rewrites, over the rebuilt body: a covered call may sit
+        // anywhere in the clause (including nested inside another goal), so it is
+        // reached by identity through a rewriting walk rather than by position.
+        for (call, call_fn, out) in weaves {
+            let mut wove = false;
+            new_body = new_body
+                .iter()
+                .map(|n| weave_covered_call(n, &call, call_fn, &out, &mut wove))
+                .collect();
+            debug_assert!(
+                wove,
+                "WI-1040: the covered call chosen as witness was not found in the body \
+                 it was chosen from",
+            );
+            changed |= wove;
         }
         if changed {
             kb.set_rule_body_nodes(rid, new_body);
@@ -41158,6 +41447,150 @@ fn rule_is_general_eq_clause(kb: &KnowledgeBase, r: crate::kb::RuleId, own: Symb
         && pos_args.iter().all(|&a| matches!(kb.get_term(a), Term::Var(_)))
 }
 
+/// WI-1040 — the `out:` occurrence of an un-rewritten `find_dictionary(X, out: ?d)`
+/// goal: the clause variable the dictionary binds to, and the thing a covered call
+/// is woven to read. `None` for a check-only `requires(X)`.
+fn out_var_of_goal(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    fd_sym: Symbol,
+) -> Option<Rc<NodeOccurrence>> {
+    match goal.as_expr() {
+        Some(Expr::Apply { functor, named_args, .. }) if *functor == fd_sym => named_args
+            .iter()
+            .find(|(n, _)| kb.local_name_of(*n) == REQUIREMENT_OUT_LABEL)
+            .map(|(_, v)| Rc::clone(v)),
+        _ => None,
+    }
+}
+
+/// WI-1040 step 2 — rewrite the call `target` (matched by occurrence IDENTITY) into
+/// the form that carries its dictionary:
+///
+/// ```text
+///     Desc.describe(?x, ?r)  ⇒  apply_within(fn = Desc.describe, args = (?x, ?r),
+///                                            requirements = [?d])
+/// ```
+///
+/// `apply_within` is the EXISTING carrier — `req_insertion` emits exactly this shape
+/// for operation bodies (as a `Term::Fn` in `dispatch_rewrites`) and eval's
+/// `start_apply_within` already reads a dictionary out of that channel to select the
+/// impl op. So there is no new node kind here, only the first OCCURRENCE-side
+/// producer of one; the resolver's reader is `reduce_op_value`.
+///
+/// Identity, not structure: two calls to the same operation on the same arguments
+/// are distinct occurrences, and only the one the witness scan chose is covered.
+/// `wove` reports whether the target was reached, so a scan that picked a call the
+/// walk cannot find is loud rather than silently un-woven.
+fn weave_covered_call(
+    node: &Rc<NodeOccurrence>,
+    target: &Rc<NodeOccurrence>,
+    call_fn: Symbol,
+    out: &Rc<NodeOccurrence>,
+    wove: &mut bool,
+) -> Rc<NodeOccurrence> {
+    if Rc::ptr_eq(node, target) {
+        if let Some(Expr::Apply { pos_args, named_args, type_args, .. }) = node.as_expr() {
+            *wove = true;
+            return node.rebuilt_expr(Expr::ApplyWithin {
+                functor: call_fn,
+                args: pos_args.clone(),
+                named_args: named_args.clone(),
+                requirements: vec![Rc::clone(out)],
+                type_args: type_args.clone(),
+            });
+        }
+    }
+    let Some(expr) = node.as_expr() else { return Rc::clone(node) };
+    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+    for_each_child(expr, |c| children.push(Rc::clone(c)));
+    if children.is_empty() {
+        return Rc::clone(node);
+    }
+    let new_children: Vec<Rc<NodeOccurrence>> = children
+        .iter()
+        .map(|c| weave_covered_call(c, target, call_fn, out, wove))
+        .collect();
+    super::simp_rewrite::reassemble(node, &new_children)
+}
+
+/// WI-1040 — every call in `body_nodes` this spec's dictionary COVERS and CAN be
+/// threaded into. Whole-body DFS, so a nested call is reached too.
+///
+/// TWO GATES, and each was measured before it was written.
+///
+/// * **A reader must exist for a woven goal.** `weave_covered_call` produces an
+///   `Expr::ApplyWithin`, whose `TermView` head is `Opaque` — so at GOAL position it
+///   is invisible to builtin dispatch (`get_builtin_view` keys on a `Functor` head),
+///   to the discrim query, and to the WI-938 functional-relation hook unless that
+///   hook recognizes the callee. `functional_relation_arity(..).is_some()` is exactly
+///   that recognition: a rule-less BODIED operation. Without this gate,
+///   `require[PartialEq[T]], eq(?x, ?y)` — the ordinary typeclass shape, where `eq`
+///   is body-less AND builtin-tagged — went from ONE solution to ZERO, a clause that
+///   worked before the weave silently failing after it.
+///
+///   So a **body-less** spec op (the typeclass norm) and a **builtin-backed** one are
+///   deliberately NOT woven: they keep exactly the `requires(X)` behaviour, which is
+///   what they had. Threading a dictionary into them needs a reader that does not
+///   exist yet — either a transparent head for `ApplyWithin` (which would then
+///   disagree with its own WRAPPED term twin, the WI-425/WI-815 cross-carrier miss)
+///   or a goal-position dispatch site of its own. Owned by WI-1040's ticket
+///   feedback; not silent, and not claimed as delivered.
+///
+/// * **Only where the typer did not already pin** (channel doc §5). Where
+///   `check_apply_iter` resolved the call at compile stage the dispatch is decided
+///   and installed; weaving it would put a run-time dictionary read in front of a
+///   solved case — and the resolver honours the pin
+///   (`classified_apply_target`), so the two would also disagree about which
+///   decision wins.
+fn collect_covered_calls(
+    kb: &KnowledgeBase,
+    body_nodes: &[Rc<NodeOccurrence>],
+    spec_canon: Symbol,
+) -> Vec<(Rc<NodeOccurrence>, Symbol)> {
+    let mut out: Vec<(Rc<NodeOccurrence>, Symbol)> = Vec::new();
+    let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
+    while let Some(cand) = stack.pop() {
+        let Some(expr) = cand.as_expr() else { continue };
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        let Expr::Apply { functor, .. } = expr else { continue };
+        if spec_op_parent_sort(kb, *functor)
+            .is_none_or(|p| kb.canonical_sort_sym(p) != spec_canon)
+        {
+            continue;
+        }
+        if kb.functional_relation_arity(*functor).is_none() {
+            continue;
+        }
+        if cand.classified_apply_target().is_some() {
+            continue;
+        }
+        if out.iter().any(|(c, _)| Rc::ptr_eq(c, &cand)) {
+            continue;
+        }
+        out.push((Rc::clone(&cand), *functor));
+    }
+    out
+}
+
+/// WI-1040 — one rewritten requirement goal plus the call it was grounded on.
+struct GroundedRequirement {
+    /// The rewritten `find_dictionary(spec_base, op, args…[, out: ?d])` goal.
+    goal: Rc<NodeOccurrence>,
+    /// EVERY call this dictionary covers — each call to an operation of the spec
+    /// itself, whose dispatch the dictionary decides. A `Vec`, not the witness
+    /// alone: a clause may call the spec op more than once, and weaving only the
+    /// one the witness scan happened to reach left the others folding the SPEC'S
+    /// DEFAULT — a silent wrong answer in a clause that explicitly asked for the
+    /// dictionary (`rule via(?x,?a,?b) :- require[Desc[T]], Desc.describe(?x,?a),
+    /// Desc.describe(?x,?b)` answered `1` then `7`).
+    ///
+    /// Empty for the transitive / inherited witnesses, which ground the requirement
+    /// through a DIFFERENT spec's carrier and so name no call this dictionary can be
+    /// threaded into (see [`weave_covered_call`]).
+    covered_calls: Vec<(Rc<NodeOccurrence>, Symbol)>,
+}
+
 /// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).
 fn rewrite_find_dictionary_goal(
     kb: &KnowledgeBase,
@@ -41165,7 +41598,7 @@ fn rewrite_find_dictionary_goal(
     body_nodes: &[Rc<NodeOccurrence>],
     fd_sym: Symbol,
     rule_sym: Option<Symbol>,
-) -> Result<Rc<NodeOccurrence>, TypeError> {
+) -> Result<GroundedRequirement, TypeError> {
     let span = goal.span;
     let owner = goal.owner;
     let err = |expected: String, actual: String| TypeError::Other {
@@ -41180,8 +41613,18 @@ fn rewrite_find_dictionary_goal(
     };
 
     // The single argument X is the spec instance (`Eq[T]`); read its base sort.
-    let spec_arg = match goal.as_expr() {
-        Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 1 => &pos_args[0],
+    // WI-1040: `out` — the clause variable the dictionary BINDS to — rides as a
+    // presence-optional NAMED arg, carried through this rewrite untouched. Present
+    // iff the author wrote `require[X]` (the converter mints or takes the variable);
+    // absent for `requires(X)`, which is the same relation read check-only.
+    let (spec_arg, out_arg) = match goal.as_expr() {
+        Some(Expr::Apply { pos_args, named_args, .. }) if pos_args.len() == 1 => (
+            &pos_args[0],
+            named_args
+                .iter()
+                .find(|(n, _)| kb.local_name_of(*n) == REQUIREMENT_OUT_LABEL)
+                .map(|(n, v)| (*n, Rc::clone(v))),
+        ),
         _ => return Err(err("find_dictionary(SpecInstance)".into(), "malformed guard goal".into())),
     };
     let Some(spec_base) = occ_head_symbol(spec_arg) else {
@@ -41212,7 +41655,11 @@ fn rewrite_find_dictionary_goal(
             Expr::Apply {
                 functor: fd_sym,
                 pos_args: new_pos,
-                named_args: Vec::new(),
+                // WI-1040: `out` survives the rewrite unchanged. The resolver arm
+                // reads only POSITIONALS to decide the guard, so carrying the
+                // output here cannot alter what the guard decides — it only says
+                // where to put the dictionary once it has.
+                named_args: out_arg.iter().map(|(n, v)| (*n, Rc::clone(v))).collect(),
                 type_args: Vec::new(),
             },
             span,
@@ -41228,7 +41675,9 @@ fn rewrite_find_dictionary_goal(
     // inside the conjunct `eq(member(?x, ?xs), true)`. A functor failing either gate is
     // skipped; both scans returning `None` falls through to the loud "no witness" error
     // (honest that the requirement is ungroundable, never a dead/unsound guard).
-    let scan_body_dfs = |gate: fn(&KnowledgeBase, Symbol, Symbol) -> bool| -> Option<Rc<NodeOccurrence>> {
+    let scan_body_dfs = |gate: fn(&KnowledgeBase, Symbol, Symbol) -> bool,
+                         covers: bool|
+     -> Option<GroundedRequirement> {
         let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
         while let Some(cand) = stack.pop() {
             let Some(expr) = cand.as_expr() else { continue };
@@ -41245,8 +41694,15 @@ fn rewrite_find_dictionary_goal(
             if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
                 continue;
             }
-            if let Some(new_goal) = make_witness(kb, *functor, pos_args, named_args) {
-                return Some(new_goal);
+            if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
+                return Some(GroundedRequirement {
+                    goal,
+                    covered_calls: if covers {
+                        collect_covered_calls(kb, body_nodes, spec_canon)
+                    } else {
+                        Vec::new()
+                    },
+                });
             }
         }
         None
@@ -41273,8 +41729,13 @@ fn rewrite_find_dictionary_goal(
         if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
             continue;
         }
-        if let Some(new_goal) = make_witness(kb, *functor, pos_args, named_args) {
-            return Ok(new_goal);
+        if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
+            // A call to X's OWN operation is both the witness AND a call this
+            // dictionary covers: its dispatch is exactly what the dictionary decides.
+            return Ok(GroundedRequirement {
+                goal,
+                covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
+            });
         }
     }
 
@@ -41295,8 +41756,12 @@ fn rewrite_find_dictionary_goal(
     //   * `op_has_spec_carrier_param` — the op must expose a carrier parameter the
     //     guard recognizes for X, else the emitted guard would be permanently
     //     `DontFire` (a silently-dead rule).
-    if let Some(new_goal) = scan_body_dfs(transitive_witness_grounds_soundly) {
-        return Ok(new_goal);
+    // `covers: false` — the call GROUNDS X (its own `requires X` is discharged at
+    // the same carrier) but is not a call to one of X's operations, so X's
+    // dictionary does not decide its dispatch. Threading a dictionary INTO such a
+    // callee is the §6 crossing, not this weave.
+    if let Some(found) = scan_body_dfs(transitive_witness_grounds_soundly, false) {
+        return Ok(found);
     }
 
     // Find an INHERITED-SPEC-OP WITNESS (WI-625 Direction A): no direct or transitive
@@ -41320,8 +41785,28 @@ fn rewrite_find_dictionary_goal(
     // mis-decision. A rule that means to constrain a container ELEMENT should compare
     // elements (or use an op like `List.member` that DECLARES `requires Eq[T]`, caught
     // by the transitive scan first).
-    if let Some(new_goal) = scan_body_dfs(inherited_spec_op_witness_grounds_soundly) {
-        return Ok(new_goal);
+    // `covers: false` — the witness is an op of a spec X *requires* (`eq` for
+    // `Eq`), so reaching its implementation from X's dictionary needs a projection
+    // into a sub-slot; the value it grounds X at is still correct.
+    if let Some(found) = scan_body_dfs(inherited_spec_op_witness_grounds_soundly, false) {
+        return Ok(found);
+    }
+
+    // Find a DEFAULTED-SPEC-OP WITNESS. `lookup_spec_op_dispatch` — the DIRECT
+    // scan's gate — answers only for a BODY-LESS spec op, so a call to a spec op
+    // that carries a DEFAULT body (`operation describe(x: T) -> Int64 = 1`) was no
+    // witness at all and its `requires`/`require` was rejected as ungroundable. It
+    // grounds the instance exactly as the body-less sibling does: the carrier
+    // parameter is declared with the spec's own type-parameter, so the argument's
+    // carried type decides — which is why `op_has_spec_carrier_param` (shared with
+    // every scan above) is the only other gate needed.
+    //
+    // ORDERED LAST, and that ordering is what makes it a zero-blast-radius
+    // addition rather than a re-attribution: reaching here means all three scans
+    // above found nothing, which until now was the hard error below. No rule that
+    // loads today can change which witness it picks.
+    if let Some(found) = scan_body_dfs(defaulted_spec_op_witness_grounds_soundly, true) {
+        return Ok(found);
     }
 
     Err(err(
@@ -41332,6 +41817,21 @@ fn rewrite_find_dictionary_goal(
         ),
         "no such call in the rule body".into(),
     ))
+}
+
+/// WI-1040 — is `functor` an operation of spec `spec_canon` that carries a DEFAULT
+/// body? The gate for [`rewrite_find_dictionary_goal`]'s last witness scan. Reads
+/// [`spec_op_parent_sort`] (the body-AGNOSTIC parent, WI-444) rather than
+/// [`lookup_spec_op_dispatch`] (which requires body-lessness); the caller's
+/// scan order means only a defaulted op can reach it, since a body-less one was
+/// already taken by the direct scan.
+fn defaulted_spec_op_witness_grounds_soundly(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_canon: Symbol,
+) -> bool {
+    spec_op_parent_sort(kb, functor)
+        .is_some_and(|parent| kb.canonical_sort_sym(parent) == spec_canon)
 }
 
 /// The nominal head symbol of an occurrence in spec-instance / reference position

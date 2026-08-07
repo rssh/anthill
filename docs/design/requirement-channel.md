@@ -119,12 +119,14 @@ dictionary in term position; `anthill.kernel.find_dictionary` (`kb/load.rs:2345`
 the **kernel relation** both lower to — the one WI-300's `requires(X)` already
 desugars into, gaining an output argument.
 
-Two surface rules the interpretation adds: **`require` needs a name-resolution
-home** — no symbol `require` exists today; it joins the kernel vocabulary beside
-`find_dictionary` (`load.rs:2345`). And **position is restricted**: `require[X]`
+Two surface rules the interpretation adds. **Position is restricted**: `require[X]`
 is legal as a bare body goal or as the RHS of a top-level `=` (the two forms
 above); nested deeper in a term (`f(require[Eq[T]], ?y)`) it is refused loudly —
-no general lifting.
+no general lifting. And **the name's home is the CONVERTER**, not the kernel
+vocabulary: both legal spellings are rewritten away at convert, so a kernel-vocab
+entry would be reached only by an *illegal* one — where it would turn a loud error
+into a name that resolves to nothing and then fails silently. `require` is matched
+by name and shape exactly as `requires`, `unify` and `eq` are.
 
 **It rides machinery that exists.** The resolver already *reduces operands* before an
 `=`/`cmp` decides: `reduce_dot_value` and `reduce_op_value` (`resolve.rs:6043`,
@@ -381,71 +383,172 @@ dictionary needs none of 047 §8's `register_undo` machinery that mutable state 
 - **No selection** at a rule-body requirement (058 §3.3 puts rule bodies out of scope).
 - No new value carrier; no change to named slots (058 §3.4) or to §3.2's semantics.
 
-## 9. Conditional provisions decide the representation
+## 9. One representation — the dictionary is an ordinary structural value
 
-A provision may be conditional — `provides Eq[Pair[A, B]] :- Eq[A], Eq[B]` (058 §3.8,
-delivered WI-869). This is not a complication for a relational `requires`; it is the
-reason the shape fits. A conditional provision **is a Horn clause over `provides`**
-(058 §3.8), so candidate narrowing is ordinary SLD over the same relation — run in
-the **typing pass** (§2.1), where a provider's own chain composes by resolution
-rather than by bespoke code; run time only composes the resulting rows.
+> **A dictionary has ONE runtime representation: an ordinary first-order value in
+> the carriers every other value uses. There is no second store, no second identity,
+> and no conversion at a crossing.**
 
-But it settles a question that was open while `requires` only *checked*:
+A dictionary is **immutable** (the arena has no setter), **acyclic** (the
+operation-call-model no-cycles policy), and — after the typing pass — **ground**
+(§2.1: the fetch delays rather than composing a hole). An immutable ground acyclic
+`(impl symbol, ordered children)` tree is a first-order value and nothing more; §2
+said so already ("no closure in it, no host handle, no value"). So it belongs in the
+carriers that already hold first-order values, and everything the channel needs —
+unify to bind `?d`, unify to check a supplied one, read child `k`, read the impl —
+is what those carriers already do.
 
-- **The σ-bound dictionary must be a TERM, not an arena handle.** A conditional
-  provision makes a **partially resolved** dictionary reachable: resolving
-  `Eq[Pair[Int64, ?B]]` pins the outer impl while `?B` is unbound, so one sub-dictionary
-  is not yet known. A term represents that natively — `Dictionary(impl: PairEq, d_A,
-  ?d_B)`, refined later by binding `?d_B`. A handle **cannot**: an arena slot is
-  `{ functor: Option<Symbol>, requirements: Option<SmallVec<[RequirementHandle]>> }`
-  (`eval/requirement_arena.rs:28`) — a sub must be an already-built handle, and there is
-  no variable inhabitant. The handle stays eval's form, where everything is ground by
-  construction; the boundary converts.
-- **"At most one solution" is a TYPING-TIME claim.** A dictionary may be reachable
-  by several derivations, but candidate narrowing and overlap refusal happen in the
-  typing pass (§2.1) — run time fetches and composes, it does not search, so there
-  is no answer stream to dedup and no runtime tie to adjudicate (two entries for
-  one carried type is a defect, §4).
+So the eval-side `RequirementArena` is a **second store for a shape the ordinary
+carriers already hold**. What it buys is deallocation; what it costs is real and
+already documented as a hazard: a second identity notion (`(arena, raw)`, so two
+scratch interpreters give one dictionary two identities and every comparison must be
+routed through the WI-1019 view), plus a conversion at every crossing. Retiring it
+removes both, and removes the boundary at which the two forms could disagree.
 
-### 9.1 The one genuine interaction to settle
+**Not two representations kept in step — one.** `Frame::requirements`,
+`Closure.requirements`, σ, and the reflect `Dictionary` face all name the same
+value. `project(k)` is reading child `k`; `functor()` is reading the `impl` field.
 
-WI-869 made strictness **per-provision**: a slot is demanded at a dispatch when it is
-sort-level or a condition of the provision dispatched, *"otherwise left unfilled, and
-reading an unfilled slot is refused at the read."* The staging invariant (§2.1) makes
-the two unfilled states **representably distinct**, which is the proposed settlement:
+**STORAGE IS A SEPARATE DECISION and this rule deliberately does not make it.**
+"One representation" is about *shape and identity* — one functor, one key set, one
+comparison — not about which carrier or store holds it. Whether a dictionary is
+interned, arena-held or built fresh is chosen on its own merits, and can be changed
+without touching anything above.
 
-- **not yet known** — composition stopped at an unreadable carried type: an
-  **unbound variable**. Reading it **delays**; a later binding fills it.
-- **never promised** — the dispatched provision does not demand the slot: a
-  structural **hole**, a distinct leaf that is not a variable. Reading it **refuses
-  loudly**; no later binding can fill what was never promised.
+**One spelling, too.** Today the IR construction node is
+`anthill.reflect.Expr.construct_requirement(impl_functor = …, requirements = …)`
+while WI-1019's view of a handle presents `Dictionary(sub₀ … subₙ₋₁, impl: S)` —
+different functor, different key names for one thing. Under this rule they collapse
+to a single constructor. §10 item 2 already made that a condition ("name the term
+constructor — its functor must equal the view head's `Dictionary` symbol"); it is
+now the rule rather than a branch of one.
 
-Illegal reads become distinguishable by shape at the site instead of by policy.
-Owned by **WI-1040**: confirm the two-leaf representation before writing the read,
-and say at the site which of the four WI-869 producers each leaf is keyed to.
+**What this rule is NOT resting on.** An earlier version of this section argued for
+the term from *partial* dictionaries: a conditional provision `provides Eq[Pair[A,
+B]] :- Eq[A], Eq[B]` (058 §3.8, WI-869) makes `Eq[Pair[Int64, ?B]]` reachable with
+`?B` unbound, which a `SmallVec<[RequirementHandle]>` has no inhabitant for. **That
+premise is stale and must not be repeated.** §2.1 relocated narrowing to the typing
+pass, and §4 says so in this document: typing-time narrowing is by one-way match,
+which makes those partial dictionaries *forced, not chosen*. After typing there is
+no partial dictionary — an unreadable carried type delays. The term is right for
+the reasons above, none of which involve holes.
+
+A conditional provision remains a Horn clause over `provides`, so candidate
+narrowing is ordinary SLD over the same relation, run in the **typing pass**; run
+time composes the resulting rows and does not search. Hence "at most one solution"
+is a typing-time claim: no answer stream to dedup, and two entries for one carried
+type is a defect (§4), not a tie.
+
+### 9.1 WI-869's unfilled slot
+
+WI-869 made strictness **per-provision**: a slot is demanded at a dispatch when it
+is sort-level or a condition of the provision dispatched, *"otherwise left unfilled,
+and reading an unfilled slot is refused at the read."*
+
+Under §2.1 that read has **one** state at run time, not two: an unfilled slot is a
+slot the dispatched provision **never promised**, a structural **hole** — a distinct
+leaf, refused loudly at the read. The "not yet known" leaf an earlier draft proposed
+alongside it (an unbound variable, read as a delay) is **unreachable after typing**,
+for the same reason §9's partial dictionary is: composition never starts on an
+unreadable carried type, so no slot is ever left pending. Both would have been
+needed only if run time composed under uncertainty, which §2.1 forbids.
+
+Delivered state (WI-1040): neither leaf is constructible on the fetch path, and
+WI-869's four producers are untouched. The hole leaf becomes real when a dictionary
+can reach σ from somewhere other than a fetch — i.e. with §10 item 3.
 
 ## 10. Open
 
-1. **The type-position channel for the un-stripped spec** (§5 — the rest of the
-   encoding is settled there): which concrete channel carries the `[T…]`
+Items 2 and 5 are **settled by the WI-1040 delivery**; 1, 3 and 4 are untouched.
+
+1. **[OPEN] The type-position channel for the un-stripped spec** (§5 — the rest of
+   the encoding is settled there): which concrete channel carries the `[T…]`
    decoration past scope resolution (the application's type-args channel,
    WI-272/383, vs a type-kind occurrence child), so WI-613 attribution sees full
    specs. The constraint is fixed — a bare name there is a type Var (WI-849),
-   never a scope-resolved ref; only the carrier is to pick.
-2. **One σ-carrier for a dictionary value**, stated once: §6 lets eval-supplied
-   HANDLES ride in σ; §9 requires partial compositions to be structural TERMS.
-   Either both key and unify alike through the WI-1019 view (then name the term
-   constructor — its functor must equal the view head's `Dictionary` symbol), or
-   one carrier converts at entry. Includes term→handle materialization at the
-   SLD→eval crossing (refuse on non-ground), and a driving test that unifies a
-   handle against a partial term, binding a sub-slot.
-3. **The eval→SLD handoff mechanism** (§6): `prove_rule_predicate` is a closed
-   ground test with no dictionary parameter; specify the channel (a signature
-   extension vs a `ResolveConfig` overlay à la `assumed_facts`) and the
+   never a scope-resolved ref; only the carrier is to pick. `require[X]` strips its
+   type-args at convert exactly as `requires(X)` does, for the same stated reason,
+   so the duplicate-spec-base hard error still stands.
+2. **[SETTLED — one representation, no conversion] The dictionary carrier.** The
+   item offered two settlements ("both carriers key alike" or "one converts at
+   entry"). **Neither: there is one representation.** §9 is the rule — one functor,
+   one key set, one comparison, named identically by σ, `Frame::requirements`,
+   `Closure.requirements` and the reflect `Dictionary` face — and the eval-side
+   `RequirementArena` is retired rather than converted into.
+
+   *Delivered by WI-1040:* the σ half. `?d` binds to a value shaped EXACTLY as
+   WI-1019's view of a handle — the `Dictionary` constructor, sub-dictionaries
+   positional, `impl` named — so a σ dictionary and an eval handle already compare
+   equal through that view, and the resolver allocates no arena. *Not yet delivered:* the eval half — `Frame::requirements`
+   still holds `RequirementHandle`s, so `eval_requirement_chain_node` still converts
+   at the SLD→eval edge. That conversion is exactly what §9 removes and is the last
+   place the two forms could disagree. **Tracked by WI-1045**; the shape is
+   mechanical (immutable, acyclic, ground, no setter — measured) but the surface is
+   82 references across 8 files plus a spelling merge, so it is its own change.
+3. **[OPEN] The eval→SLD handoff mechanism** (§6): `prove_rule_predicate` is a
+   closed ground test with no dictionary parameter; specify the channel (a
+   signature extension vs a `ResolveConfig` overlay à la `assumed_facts`) and the
    caller-name → spec attribution at the boundary.
-4. **The bridge deviation** (§2.1): compile `resolve_bridge_requirements`'s
+4. **[OPEN] The bridge deviation** (§2.1): compile `resolve_bridge_requirements`'s
    dispatch-time `unify_types` into projection paths, or grandfather it
    explicitly at the site.
-5. **Attribution** reuses WI-613's σ-class matcher (`find_requires_slot` /
-   `find_requires_location`) wholesale, per `requirement-dictionaries.md` §3.4. To
-   confirm, not redesign — item 1's un-stripping is its precondition.
+5. **[SETTLED — the witness IS the covered call] Attribution.** The item asked
+   whether WI-613's σ-class matcher (`find_requires_slot` /
+   `find_requires_location`) could be reused wholesale. It is not needed at this
+   tier and was not used: the goal's own witness scan already names an
+   *occurrence*, and where that witness is an operation **of the spec itself** the
+   witness and the covered call are the same node — attribution by identity, with
+   nothing to match. The scan gained a fourth pass for a **defaulted** spec op
+   (`lookup_spec_op_dispatch` answers only for a body-less one, so a spec op with a
+   default body was previously no witness at all); it is ordered LAST, where the
+   only prior outcome was the "cannot be grounded" hard error, so no rule that
+   loads today can change which witness it picks.
+
+   **The boundary, stated because it is a real gap and not an oversight:** the
+   *transitive* witness (an op that declares `requires X`) and the *inherited* one
+   (an op of a spec X requires, e.g. `eq` for `Eq`) still ground the requirement
+   but are **not woven**. The first needs §6's crossing — threading a dictionary
+   into a callee's frame, not choosing its member — and the second needs a
+   projection into a sub-slot. Both bind `?d`, so the named spelling passes them by
+   hand today. Item 1's un-stripping remains the precondition for attributing two
+   `require`s on one spec base.
+
+## 11. Delivered by WI-1040, and what it fixed in this document
+
+- **Surface.** `require[X]` as a bare body goal and as the RHS of a top-level `=`;
+  every other position refused loudly at convert, with its own sentence.
+- **`require`'s name-resolution home is the CONVERTER, not the kernel vocabulary.**
+  §3 said the name "joins the kernel vocabulary beside `find_dictionary`"; that was
+  written before the position restriction was settled and it is now the wrong
+  answer. Both legal spellings are rewritten away at convert, so a kernel-vocab
+  entry would only ever be reached by an *illegal* one — where it would turn
+  today's loud error into a name that resolves to nothing and then fails silently.
+  The converter owns the name, exactly as it owns `requires`, `unify` and `eq`.
+- **The weave.** A covered call is rewritten to `Expr::ApplyWithin { functor, args,
+  requirements: [?d] }` — the existing carrier, now with its first *occurrence*-side
+  producer. It stays `ViewHead::Opaque` in `TermView` deliberately: its faithful
+  term twin is the WRAPPED reflect shape `apply_within(fn = …, args = …,
+  requirements = …)`, whose head functor is `apply_within` and not the callee, so a
+  transparent head would be a cross-carrier miss of the WI-425/WI-815 kind. The two
+  readers that must understand a woven call read `as_expr()` directly: the WI-938
+  functional-relation goal hook and `reduce_op_value`. `is_unreduced_op_call` counts
+  a surviving `ApplyWithin` as un-reduced — measured, without that the hook bound a
+  result variable to the call node itself.
+
+- **The woven population is NARROWER than "every covered call", and the price of the
+  `Opaque` head is paid here.** An `Opaque` goal is invisible to builtin dispatch, to
+  the discrim query, and to the WI-938 hook unless that hook recognizes the callee —
+  so only a rule-less **bodied** operation is woven. A **body-less** spec op (the
+  typeclass norm, `PartialEq.eq`) and a **builtin-backed** one keep exactly their
+  `requires(X)` behaviour; MEASURED, weaving them took a clause from one solution to
+  none. Widening this needs a goal-position reader for a woven call, or the head's
+  twin problem solved — not a quiet transparent head. **Every** call in the admitted
+  population is woven, not just the witness: weaving one left the others folding the
+  spec's default, which is a silent wrong answer in a clause that asked for the
+  dictionary.
+- **The fetch never composes under uncertainty**, which is what collapses §9.1 to a
+  single leaf and retires §9's partial-dictionary argument: an unreadable carried
+  type DELAYS *before* composition starts, so what σ holds is always ground.
+  WI-869's four producers are untouched.
+- **σ carries the term; eval still carries a handle.** The remaining conversion at
+  `eval_requirement_chain_node` is §9's target and is **WI-1045**, not this ticket.

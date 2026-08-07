@@ -1277,11 +1277,38 @@ impl SearchStream {
         //
         // Same rewrite discipline as the Bool hook: goal[0] in place, same goal
         // count, `delay_mode` threaded through unchanged.
-        if let ViewHead::Functor { functor: Some(f), pos_arity, named_arity } = goal_val.head(kb) {
+        // WI-1040 — a WOVEN goal reads its shape off the occurrence, not off the
+        // view. `Expr::ApplyWithin` is `ViewHead::Opaque` (term_view.rs, `occ_head`),
+        // deliberately: its faithful term twin is the WRAPPED reflect shape
+        // `apply_within(fn = …, args = …, requirements = …)`, whose head functor is
+        // `apply_within` and NOT the callee — so a transparent head here would be a
+        // cross-carrier miss of exactly the WI-425/WI-815 kind. The two readers that
+        // must understand a woven call therefore read `as_expr()` directly: this one
+        // and `reduce_op_value`. An opaque goal that reaches neither answers nothing
+        // (it is not indexed and not cached), which is the pre-existing outcome for
+        // an unrecognized goal — never a wrong answer.
+        let woven_head: Option<(Symbol, usize)> = match &goal_val {
+            Value::Node(o) => match o.as_expr() {
+                Some(Expr::ApplyWithin { functor, args, named_args, .. })
+                    if named_args.is_empty() =>
+                {
+                    Some((*functor, args.len()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((f, pos_arity)) = woven_head.or_else(|| match goal_val.head(kb) {
             // Named args are not a functional-relation call shape — the result
             // column is POSITIONAL and last. A named-arg goal falls through to
             // ordinary candidate selection rather than being silently re-read.
-            if named_arity == 0 && pos_arity > 0
+            ViewHead::Functor { functor: Some(f), pos_arity, named_arity: 0 } => {
+                Some((f, pos_arity))
+            }
+            _ => None,
+        }) {
+            {
+            if pos_arity > 0
                 && kb.functional_relation_arity(f) == Some(pos_arity - 1)
             {
                 let n = pos_arity - 1;
@@ -1297,8 +1324,24 @@ impl SearchStream {
                     }
                     _ => None,
                 };
-                if let Some(goal_occ) = goal_occ {
-                    if let Some(Expr::Apply { pos_args, type_args, .. }) = goal_occ.as_expr() {
+                // WI-1040: a woven goal's args live in `ApplyWithin.args` and its
+                // dictionary in `requirements` — both carried through the rebuild
+                // below, so the n-ary call the resolver reduces is still woven and
+                // `reduce_op_value` still dispatches it through the dictionary.
+                let call_parts: Option<(&Vec<Rc<NodeOccurrence>>, &Vec<(Option<Symbol>, Value)>, &[Rc<NodeOccurrence>])> =
+                    goal_occ.as_ref().and_then(|o| match o.as_expr() {
+                        Some(Expr::Apply { pos_args, type_args, .. }) => {
+                            Some((pos_args, type_args, &[][..]))
+                        }
+                        Some(Expr::ApplyWithin { args, type_args, requirements, .. }) => {
+                            Some((args, type_args, requirements.as_slice()))
+                        }
+                        _ => None,
+                    });
+                if let (Some(goal_occ), Some((pos_args, type_args, reqs))) =
+                    (goal_occ.as_ref(), call_parts)
+                {
+                    {
                         if pos_args.len() == pos_arity {
                             // WI-1026: `rebuilt_expr`, not a bare `new_expr` — the
                             // GOAL is the site the typer classified, and the pin
@@ -1317,12 +1360,22 @@ impl SearchStream {
                             // positional args past the declared params, so the
                             // goal's stamped type already IS the n-ary call's
                             // return type, not something about the extra column.
-                            let call_occ = goal_occ.rebuilt_expr(Expr::Apply {
-                                functor: f,
-                                pos_args: pos_args[..n].to_vec(),
-                                named_args: Vec::new(),
-                                type_args: type_args.clone(),
-                            });
+                            let call_occ = if reqs.is_empty() {
+                                goal_occ.rebuilt_expr(Expr::Apply {
+                                    functor: f,
+                                    pos_args: pos_args[..n].to_vec(),
+                                    named_args: Vec::new(),
+                                    type_args: type_args.clone(),
+                                })
+                            } else {
+                                goal_occ.rebuilt_expr(Expr::ApplyWithin {
+                                    functor: f,
+                                    args: pos_args[..n].to_vec(),
+                                    named_args: Vec::new(),
+                                    requirements: reqs.to_vec(),
+                                    type_args: type_args.clone(),
+                                })
+                            };
                             let result = Value::Node(Rc::clone(&pos_args[n]));
                             let subst = self.stack.last().unwrap().subst.clone();
                             let reduced = kb.reduce_operand(Value::Node(call_occ), &subst);
@@ -1335,7 +1388,17 @@ impl SearchStream {
                             // is the pre-WI-938 behaviour (no answer) rather than a
                             // wrong one. Making that case DELAY instead of answering
                             // nothing is the open half — see WI-938's feedback.
-                            if !kb.is_unreduced_op_call(&reduced) {
+                            // WI-1040 — a WOVEN call routes to `unify` even when it
+                            // did NOT reduce, and that is safe for the exact reason
+                            // the comment above gives for why it is otherwise not:
+                            // `unify_values` delays on an unevaluated call
+                            // (`operand_is_unevaluated_call`, which counts an
+                            // `ApplyWithin` as one), so the result variable is never
+                            // bound to the call term. Falling through instead would
+                            // answer NOTHING for a woven call whose dictionary is not
+                            // bound yet — a silent failure where the clause must
+                            // DELAY and re-fire once a later goal binds the carrier.
+                            if !reqs.is_empty() || !kb.is_unreduced_op_call(&reduced) {
                                 let unify_sym = kb.unify_functor();
                                 let unify_goal =
                                     kb.make_goal_value(unify_sym, vec![result, reduced]);
@@ -1347,6 +1410,7 @@ impl SearchStream {
                         }
                     }
                 }
+            }
             }
         }
 
@@ -5127,10 +5191,128 @@ impl KnowledgeBase {
                 None => return BuiltinResult::Failure,
             }
         }
-        match super::typing::find_dictionary_guard(self, subst, spec_sort, op_functor, &arg_vals) {
-            super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
-            super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
-            super::typing::FindDictOutcome::Suspend => BuiltinResult::delay(),
+        // WI-1040 — `out`, when present, is what makes this goal a READ rather than
+        // a check: `require[X]` lowered to `find_dictionary(…, out: ?d)` and the
+        // clause wants the dictionary bound. ABSENT is the whole of WI-300's
+        // behaviour, unchanged — the reads above are positional, so a no-`out` goal
+        // never reaches a line of the code below.
+        // Matched by LOCAL NAME, as the typer sweep matches it. A `Symbol` compare
+        // against a freshly-interned `"out"` would be a silent-skip seam: if the
+        // loader's remapping ever gave the stored label a different `Symbol`, the
+        // sweep would still weave the call while this read found no `out` and quietly
+        // fell back to check-only — a dispatch that stops happening with nothing
+        // saying so. One spelling of the question, on both sides.
+        let out_sym = goal
+            .named_keys(self)
+            .into_iter()
+            .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
+        let Some(out_sym) = out_sym else {
+            return match super::typing::find_dictionary_guard(
+                self, subst, spec_sort, op_functor, &arg_vals,
+            ) {
+                super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
+                super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
+                super::typing::FindDictOutcome::Suspend => BuiltinResult::delay(),
+            };
+        };
+        // σ-WALKED, not read raw. A caller-supplied dictionary reaches this goal as a
+        // clause variable BOUND in σ, and unifying the unwalked variable leaf against
+        // the fetched row binds it afresh instead of comparing — measured: a
+        // dictionary derived at the wrong carrier passed the check and the call
+        // dispatched through it anyway, which is precisely the WI-860 disagreement
+        // this arm exists to refuse.
+        // `named_keys` just listed this key, so the child is there; `walk_arg` is
+        // what makes it the σ-VALUE rather than the variable leaf.
+        let out_slot = goal.named_arg(self, out_sym);
+        match self.walk_arg(out_slot, subst) {
+            Some(out) => self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out),
+            None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
+        }
+    }
+
+    /// WI-1040 — the `out` arm of [`Self::builtin_find_dictionary`]: fetch the
+    /// dictionary the guard just licensed and either BIND it to the clause variable
+    /// or CHECK a supplied one against it.
+    ///
+    /// **Check follows WI-860's rule — two derivations of one relation must agree.**
+    /// Where the local row is unique (which is every row that reaches here; a tie is
+    /// a defect, §4), a supplied `?d` must UNIFY with it. Disagreement is a failed
+    /// goal naming both, never a precedence win for either side: "the caller
+    /// supplied it, so use theirs" would make one relation answer two ways
+    /// depending on which derivation ran first. A supplied dictionary decides ONLY
+    /// where the local derivation cannot (`Undecided` below — WI-855's
+    /// Unresolvable/Ambiguous, the WI-843 named-instance case), which is the row
+    /// this arm reaches by delaying rather than by refusing.
+    ///
+    /// **Handles are compared STRUCTURALLY, never by `raw()`.** Two scratch
+    /// interpreters are two arenas, so a dictionary built at one crossing and one
+    /// built here carry unrelated slot indices; [`Self::unify_values`] reads both
+    /// through the WI-1019 `TermView`, where a dictionary is exactly
+    /// `Dictionary(sub₀ … subₙ₋₁, impl: S)`. A handle stays valid after
+    /// [`Self::run_in_bridge_interp`] drops its interpreter because it owns an `Rc`
+    /// to its arena (`eval/requirement_arena.rs:90`).
+    fn read_dictionary_into(
+        &mut self,
+        subst: &Substitution,
+        spec_sort: Symbol,
+        op_functor: Symbol,
+        arg_vals: &[Value],
+        out: Value,
+    ) -> BuiltinResult {
+        use super::typing::{FindDictFetch, FindDictOutcome};
+        let dict = match super::typing::fetch_dictionary(
+            self, subst, spec_sort, op_functor, arg_vals,
+        ) {
+            FindDictFetch::Fetched(dict) => dict,
+            FindDictFetch::Guard(FindDictOutcome::Fire) => {
+                unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
+            }
+            FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
+            // The carried type is not readable yet (the witness value is unbound).
+            // DELAY, and the wake condition needs no new machinery: the goal
+            // MENTIONS the witness value variables, so binding one re-fires it
+            // through ordinary rotation. This is what replaced WI-300's bespoke
+            // `FindDictOutcome::Suspend` reading with the general mechanism.
+            FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
+            FindDictFetch::Undecided { detail } => {
+                // Undecided, not failed. `out` says the clause asked to be PASSED a
+                // dictionary; answering "no solution" here would be the silent skip
+                // a delay exists to refuse, and it is also the row where a SUPPLIED
+                // `?d` is allowed to decide — which it cannot do if the goal has
+                // already failed.
+                //
+                // `detail` IS DROPPED, and that is a known gap with an owner rather
+                // than an oversight: a resolver builtin has no diagnostic channel
+                // (`BuiltinResult` is Success / Bindings / Delay / Failure), so a
+                // `require[X]` whose provider tree genuinely cannot be built delays
+                // with nothing saying why. Routing it — a flounder report on the
+                // WI-737 path is the obvious candidate — is WI-1040 residue, recorded
+                // in that ticket's feedback. Built only on this failure edge, never
+                // on the resolving path.
+                let _ = detail;
+                return BuiltinResult::delay();
+            }
+            // §4: a run-time tie is UNREACHABLE, not refused — overlap between
+            // provider heads is decided at typing/load. Reaching it means the
+            // coherence machinery let one through, so it is a defect: loud in
+            // debug/test (the repo's loud-over-silent rule, spelled the way
+            // `bridge_op_to_eval` spells the same class), and a delay in release
+            // rather than picking one of the two.
+            FindDictFetch::Defect { detail } => {
+                debug_assert!(false, "find_dictionary: {detail}");
+                return BuiltinResult::delay();
+            }
+        };
+        // BIND (unbound `?d`) or CHECK (bound) — one operation, because unification
+        // IS both: against an unbound variable it binds, against a supplied
+        // dictionary it compares structurally through the WI-1019 view.
+        let mut work = Substitution::with_parent(subst.clone());
+        match self.unify_values(out, dict, &mut work) {
+            UnifyOutcome::Delay => BuiltinResult::delay(),
+            UnifyOutcome::Fail => BuiltinResult::Failure,
+            UnifyOutcome::Ok if work.is_contradiction() => BuiltinResult::Failure,
+            UnifyOutcome::Ok if work.bindings.is_empty() => BuiltinResult::Success,
+            UnifyOutcome::Ok => BuiltinResult::SuccessWithBindings(work),
         }
     }
 
@@ -6120,6 +6302,32 @@ impl KnowledgeBase {
             Value::Node(o) => Rc::clone(o),
             _ => return v,
         };
+        // WI-1040 — a WOVEN call: the typer sweep rewrote a spec-op call covered by a
+        // clause `require[X]` into `apply_within(fn = op, args = …, requirements =
+        // [?d])`, and `?d` is bound in σ by the `find_dictionary` goal that precedes
+        // it. Read the dictionary, resolve the impl member it names, and continue as
+        // an ordinary `Apply` ON THAT MEMBER — so the fold, the eval bridge and every
+        // downstream reader see one shape and this arm is the whole of the SLD-side
+        // dictionary dispatch.
+        //
+        // `?d` still unbound (a woven call reached before its goal, or a delayed
+        // fetch) leaves the call un-reduced, which is the WI-483 leave-uninterpreted
+        // outcome: the enclosing goal delays and re-fires once the binding lands.
+        // Never a fall-through to the spec's own default — that is the wrong answer
+        // this weave exists to stop.
+        if let Some(Expr::ApplyWithin { functor, args, named_args, requirements, type_args }) =
+            occ.as_expr()
+        {
+            let target = self.dictionary_dispatch_target(*functor, requirements, subst);
+            let Some(target) = target else { return v };
+            let call = occ.rebuilt_expr(Expr::Apply {
+                functor: target,
+                pos_args: args.clone(),
+                named_args: named_args.clone(),
+                type_args: type_args.clone(),
+            });
+            return self.reduce_op_value(Value::Node(call), subst, depth);
+        }
         let functor = match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => *functor,
             _ => return v,
@@ -6225,6 +6433,43 @@ impl KnowledgeBase {
                 .unwrap_or(v),
             other => other,
         }
+    }
+
+    /// WI-1040 — the implementation member a woven call's dictionary selects.
+    ///
+    /// The requirements channel holds ONE entry, the clause variable the
+    /// `find_dictionary` goal bound; σ-walked it is the dictionary
+    /// `Dictionary(sub₀ … subₙ₋₁, impl: S)` — the ONE shape WI-1019's view also
+    /// announces for an eval handle, read here through the ordinary `impl` accessor
+    /// so this site does not care which side built it. `S` names
+    /// the impl, and [`super::typing::resolve_op_target_checked`] maps `(S, spec op)`
+    /// to the member — the SAME `(impl_sort, op_short)` table eval's
+    /// `dispatch_via_sort_ops_table` reads, so the two crossings cannot pick
+    /// different members for one dictionary, and WI-857's `NoProvider` marker is
+    /// refused here exactly as it is there.
+    ///
+    /// `None` — the caller leaves the call un-reduced — when the variable is still
+    /// unbound, when the channel is not a single dictionary, or when the table has
+    /// no member. Never a fallback to the spec op itself: that is the wrong answer.
+    fn dictionary_dispatch_target(
+        &mut self,
+        spec_op: Symbol,
+        requirements: &[Rc<NodeOccurrence>],
+        subst: &Substitution,
+    ) -> Option<Symbol> {
+        let [dict_occ] = requirements else { return None };
+        let dict = self.walk_arg(Some(ViewItem::Node(Rc::clone(dict_occ))), subst)?;
+        // Read through the ORDINARY view — the same `impl` accessor WI-1019 answers
+        // for an eval handle, so this reader does not care which side built the
+        // dictionary. That is the point of one representation: there is no carrier
+        // test here to get wrong.
+        let (_ctor, impl_key) = super::term_view::dictionary_view_syms(self)?;
+        let impl_sym = match self.walk_arg(dict.named_arg(self, impl_key), subst)?.head(self) {
+            ViewHead::Ref(s) | ViewHead::Ident(s) => s,
+            ViewHead::Functor { functor: Some(s), pos_arity: 0, .. } => s,
+            _ => return None,
+        };
+        super::typing::resolve_op_target_checked(self, impl_sym, spec_op).ok()
     }
 
     /// WI-625 gap 1 (SLD→eval op-body dispatch bridge): run a CONCRETE op whose
@@ -6472,6 +6717,21 @@ impl KnowledgeBase {
             Some(Expr::Apply { functor, .. }) => {
                 self.builtins.get(functor).is_none() && self.op_body_node(*functor).is_some()
             }
+            // WI-1040 — a WOVEN call (`apply_within(fn = …, requirements = [?d])`)
+            // that came back un-rewritten is un-reduced BY CONSTRUCTION: the arm in
+            // `reduce_op_value` either resolves its dictionary and returns the
+            // reduction of the impl call, or returns the node untouched. So reaching
+            // here means the dictionary was not readable, and the only honest
+            // answer is to delay.
+            //
+            // Not a cosmetic addition: MEASURED, without it the WI-938 hook routed
+            // `unify(?r, <the apply_within node>)` and BOUND the result variable to
+            // the call itself — the "definite-looking wrong answer" that hook's own
+            // comment warns about, produced by the one shape it had never seen.
+            // Deliberately unconditional on the callee (no `op_body_node` test): a
+            // BODY-LESS spec op is exactly the case a dictionary exists to dispatch,
+            // and it has no body to fold.
+            Some(Expr::ApplyWithin { .. }) => true,
             _ => false,
         }
     }
@@ -6545,7 +6805,19 @@ impl KnowledgeBase {
     /// `None` when `v` is not such an op-call.
     fn op_call_as_occ(&self, v: &Value) -> Option<Rc<NodeOccurrence>> {
         match v {
-            Value::Node(o) if self.is_unreduced_op_call(v) => Some(Rc::clone(o)),
+            // WI-1040 — an `ApplyWithin` is `is_unreduced_op_call` (it is un-reduced
+            // by construction until its dictionary reads), but it is NOT what this
+            // reader's contract promises: "BODIED ops only … which UNFOLDS the
+            // callee's body". Admitting it made `unfold_eq_operand` pick a woven
+            // operand as its case-split subject and then bail at its own `_ =>
+            // return None`, ABANDONING the WI-580 split that the other operand would
+            // have served.
+            Value::Node(o)
+                if self.is_unreduced_op_call(v)
+                    && matches!(o.as_expr(), Some(Expr::Apply { .. })) =>
+            {
+                Some(Rc::clone(o))
+            }
             Value::Node(_) => None,
             Value::Term { id, .. } => {
                 let functor = match self.get_term(*id) {
