@@ -28,15 +28,24 @@
 //! the second candidate, never first-match. The carrier's own member is route 1 of that
 //! set, not a rung.
 //!
-//! The call is still dispatched to the member, and the tempting reason for that is WRONG:
-//! "rerouting re-types every `xs.map(f)` in the tree" is false by this ticket's own
-//! number — `xs.map(f)` never reaches the guard, it resolves at the NEXT rung, which
-//! already synthesizes the spec op. The real reason is that `find_spec_op_for_provided_-
-//! sort` matches by SHORT NAME. That is the language's own notion of backing, and it is
-//! sound for REFUSING (a same-named member beside a provision-supplied one IS the tie) and
-//! unsound for CALLING: rerouting would invoke a different operation against the spec's
-//! signature on the strength of a name match. Refusing costs a correct program a
-//! diagnostic; rerouting would silently run something else.
+//! On a CONCRETE carrier the call is still dispatched to the member; only what happens at
+//! a SECOND supplier changes. The tempting reason for not rerouting is WRONG and is
+//! recorded so it is not re-derived: "rerouting re-types every `xs.map(f)` in the tree" is
+//! false by this ticket's own number — `xs.map(f)` never reaches the guard, it resolves at
+//! the NEXT rung, which already synthesizes the spec op. The real reason is that
+//! `find_spec_op_for_provided_sort` matches by SHORT NAME: sound for REFUSING (a same-named
+//! member beside a provision-supplied one IS the tie), and unsound for CALLING on its own,
+//! since it would invoke a different operation against the spec's signature on a name
+//! match.
+//!
+//! On an ABSTRACT-SPEC receiver the call IS rerouted, and that is WI-1038 — see
+//! `an_abstract_spec_receiver_refuses_at_the_call_not_at_load`. There the member is not the
+//! carrier's implementation (the runtime value's is), so handing the call to the spec op is
+//! what "dispatch answers by the value" means, and it is exactly what the same program's
+//! qualified spelling does. The name-match hazard is closed rather than tolerated: the
+//! reroute is gated on `carrier_own_op` agreeing that the member really is the language's
+//! backing — the relation `resolve_op_target` dispatches through — so it means "the same
+//! implementation, chosen by the value", never "some same-named operation".
 //!
 //! ## BLAST RADIUS — MEASURED, not predicted
 //!
@@ -61,26 +70,30 @@
 //!
 //! ## What fails if this is backed out — MEASURED per piece, one revert each
 //!
-//! | test | dot guard | respan | both |
+//! Three pieces ship here and each was reverted alone: the TIE GUARD, the ABSTRACT REROUTE (WI-1038) and the PARSE SPAN TABLE (WI-1039).
+//!
+//! | test | tie guard | reroute | span table |
 //! |---|---|---|---|
-//! | `a_dot_spelled_operation_body_tie_is_refused_at_load` | **FAILS** | ok | **FAILS** |
-//! | `a_dot_spelled_rule_body_tie_is_refused_at_load` | **FAILS** | ok | **FAILS** |
-//! | `a_body_less_dot_tie_with_a_fact_rival_is_refused` | **FAILS** | ok | **FAILS** |
-//! | `a_body_less_dot_tie_with_a_witness_rival_carries_the_witness_repair` | **FAILS** | ok | **FAILS** |
-//! | `a_dot_on_a_provision_tie_refuses_as_a_supplier_tie` | **FAILS** | ok | **FAILS** |
-//! | `the_dot_refusal_is_located_and_shares_the_qualified_spellings_body` | **FAILS** | **FAILS** | **FAILS** |
-//! | `an_abstract_spec_receiver_is_not_refused` | ok | ok | ok |
+//! | `a_dot_spelled_operation_body_tie_is_refused_at_load` | **FAILS** | ok | ok |
+//! | `a_dot_spelled_rule_body_tie_is_refused_at_load` | **FAILS** | ok | ok |
+//! | `a_body_less_dot_tie_with_a_fact_rival_is_refused` | **FAILS** | ok | ok |
+//! | `a_body_less_dot_tie_with_a_witness_rival_carries_the_witness_repair` | **FAILS** | ok | ok |
+//! | `a_dot_on_a_provision_tie_refuses_as_a_supplier_tie` | **FAILS** | ok | ok |
+//! | `the_dot_refusal_is_located_and_shares_the_qualified_spellings_body` | **FAILS** | ok | **FAILS** |
+//! | `a_nested_rule_body_dot_is_located_at_the_nested_dot` | ok | ok | **FAILS** |
+//! | `a_dot_under_an_entity_constructor_is_located_too` | ok | ok | **FAILS** |
+//! | `an_abstract_spec_receiver_refuses_at_the_call_not_at_load` | ok | **FAILS** | ok |
+//! | `an_abstract_spec_receiver_with_one_supplier_still_reaches_it` | ok | ok | ok |
 //! | `one_supplier_through_a_dot_still_reaches_the_own_member` | ok | ok | ok |
 //! | `one_fact_supplier_through_a_dot_still_reaches_the_binding` | ok | ok | ok |
 //! | `a_carrier_with_no_supplier_still_runs_the_default_through_a_dot` | ok | ok | ok |
-//! | `wi1026…::a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does` | **FAILS** | ok | **FAILS** |
+//! | `wi1026…::a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does` | **FAILS** | ok | ok |
 //!
-//! The four ok-either-way rows are the controls an over-firing guard consumes first, and
+//! The four ok-everywhere rows are the controls an over-firing change consumes first, and
 //! each is a different way of having ONE answer: the own member alone, a fact binding
-//! alone, no supplier at all (the default, which is what makes a default a default), and
-//! a receiver whose carrier is not statically pinned. The last is also the only test of
-//! the WI-608 abstract-spec gate, which is otherwise invisible, and the pin for the
-//! residual that gate leaves (**WI-1038**) — see it for both.
+//! alone, no supplier at all (the default, which is what makes a default a default), and —
+//! the one the reroute could most easily have broken — an abstract receiver with a single
+//! supplier, which must reach that supplier and not the spec's default.
 //!
 //! ## The two conditions, and which one is actually exercised here
 //!
@@ -113,15 +126,19 @@
 //!
 //! The rule-body arms first refused at `1:1` — a WRONG location, not a missing one, and
 //! the qualified spelling of the same program refuses at the call. `build_body_atom_-
-//! occurrence` falls back to `materialize_from_handle` for reflect forms, and a rule-body
-//! term has no `term_spans` entry, so the atom came back at offset 0 of source 0. Its own
-//! doc has recorded that loss since WI-246. `respan_root` gives the materialized atom the
-//! parse span the loader is already holding one line above. WI-1026 made "a rule-body
-//! refusal is LOCATED" an invariant with a test; this keeps it true for the new arm.
+//! occurrence` falls back to `materialize_from_handle` for reflect forms AND for entity
+//! constructors, and a rule-body term has no `term_spans` entry, so the atom came back at
+//! offset 0 of source 0. Its own doc has recorded that loss since WI-246. `parse_span_table`
+//! now hands materialization the spans the PARSE tree carries. WI-1026 made "a rule-body
+//! refusal is LOCATED" an invariant with a test; this keeps it true at every depth.
 //!
-//! Reach is the ROOT only — a reflect form's interior, hence the inner dot of a chained
-//! `a.b().c()`, still renders `1:1`. WI-246's "later work" note names no ticket and
-//! WI-246 is delivered, so **WI-1039** now owns it.
+//! Stamping the ROOT alone was the first cut and was itself half a channel: the atom was
+//! located and its own receiver was not, from one text. **WI-1039** replaced it with a
+//! per-atom PARSE span table consulted for every node materialization builds, so the two
+//! arms of that fallback — a reflect form and an entity constructor — are located
+//! together. Driven by the two `*_located_*` tests, whose fixtures put the inner node at a
+//! DIFFERENT column from the atom, because a chained `a.b().c()` would not distinguish
+//! them (its inner dot is leftmost, hence at the atom's own offset).
 //!
 //! REFERENCE: WI-1026; WI-1012; WI-1027; WI-1010; WI-444; WI-246; WI-608; WI-1038; WI-1039;
 //! `docs/design/058-implementation.md` §3.7, §4.9.
@@ -143,6 +160,8 @@
 /// that could emit either half would hide at each call site which half is under test.
 /// (`wi1027::program` is that half but hardwires a QUALIFIED `probe`, which is the
 /// spelling this file exists to contrast with.)
+use anthill_core::eval::EvalError;
+
 use crate::wi1010_defaulted_op_instance_fact_test::probe;
 use crate::wi1012_static_supplier_tie_test::{located, refusal};
 use crate::wi1026_rule_body_spec_op_dispatch_test::{
@@ -278,10 +297,10 @@ fn call_site(src: &str, needle: &str) -> String {
 /// stripping `line:col` is what stops a fourth raising site from growing a fourth wording
 /// (the `ambiguous_spec_op_dispatch_message` discipline WI-1012 built and WI-1026
 /// extended). The location is compared against the offset the needle really has in the
-/// fixture, NOT merely asserted to be numeric or to differ between fixtures: with
-/// `respan_root` backed out the rule-body arm renders `1:1`, which is numeric, and which
-/// differs from the other two — MEASURED, a first cut of this test asserted exactly those
-/// two weaker things and passed with the respan gone.
+/// fixture, NOT merely asserted to be numeric or to differ between fixtures: with the span
+/// table backed out the rule-body arm renders `1:1`, which is numeric, and which differs
+/// from the other two — MEASURED, a first cut of this test asserted exactly those two
+/// weaker things and passed with the stamping gone.
 #[test]
 fn the_dot_refusal_is_located_and_shares_the_qualified_spellings_body() {
     // One namespace for all three, so the qualified names inside the message match and any
@@ -312,6 +331,68 @@ fn the_dot_refusal_is_located_and_shares_the_qualified_spellings_body() {
         "fixture guard: the two dot fixtures must not sit at the same offset, or the \
          per-site check above would be one assertion made twice",
     );
+}
+
+/// WI-1039 — THE SAME REFUSAL ON A NESTED DOT, located at the NESTED dot.
+///
+/// WI-1035 first stamped the materialized atom's ROOT only, which left every node INSIDE
+/// it at offset 0 of source 0 — `1:1`, a wrong location rather than an absent one, and the
+/// very defect that stamping was added to remove. The atom is now located from a per-atom
+/// PARSE span table (`parse_span_table` → `materialize_from_handle_spanned`), so a node the
+/// loader's walk never descends into is located too.
+///
+/// THE FIXTURE IS BUILT SO ROOT-ONLY STAMPING CANNOT PASS IT: the inner dot is an ARGUMENT,
+/// not the receiver, so it sits at a different column from the atom — a chained
+/// `leaf().bogus().describe(?r)` would NOT distinguish them, its inner dot being leftmost
+/// and therefore at the atom's own offset. Asserted with the guard below rather than left
+/// to the reader. MEASURED both ways: root-only reports `1:1` here, the table reports the
+/// argument's own `line:col`.
+#[test]
+fn a_nested_rule_body_dot_is_located_at_the_nested_dot() {
+    let ns = "test.wi1035.nested";
+    let leaf = format!("{OWN}    operation combine(x: Leaf, y: Int64) -> Int64 = 2\n");
+    let src = defaulted(
+        ns,
+        &leaf,
+        RIVAL_FACT,
+        "  rule answer(?r) :- leaf().combine(leaf().describe(), ?r)\n",
+    );
+    let msg = refusal(&src);
+    assert!(msg.contains("ambiguous dispatch"), "the nested dot must still refuse: {msg}");
+    let inner = call_site(&src, "leaf().describe()");
+    assert_ne!(
+        inner,
+        call_site(&src, "leaf().combine("),
+        "fixture guard: the inner dot must NOT sit at the atom's own offset, or this test \
+         would pass on root-only stamping",
+    );
+    assert_eq!(located(&msg).0, inner, "the refusal must name the NESTED dot: {msg}");
+}
+
+/// WI-1039, the OTHER arm of the same fallback. `build_body_atom_occurrence_inner`
+/// materializes for an ENTITY functor as well as a reflect form — for a different reason
+/// (`convert_term` expands partial fields with fresh vars, so a native rebuild would mint
+/// different ones) — and it lost interior spans identically. One table fixes both, and
+/// this is what says so: without it a dot under a constructor reported `1:1` too.
+#[test]
+fn a_dot_under_an_entity_constructor_is_located_too() {
+    let ns = "test.wi1035.underctor";
+    let src = defaulted(
+        ns,
+        OWN,
+        RIVAL_FACT,
+        "  sort Wrap\n    import anthill.prelude.Int64\n    entity wrap(v: Int64)\n  end\n\n  \
+         rule answer(?r) :- unify(?r, wrap(v: leaf().describe()))\n",
+    );
+    let msg = refusal(&src);
+    assert!(msg.contains("ambiguous dispatch"), "the dot under a constructor must refuse: {msg}");
+    let inner = call_site(&src, "leaf().describe()");
+    assert_ne!(
+        inner,
+        call_site(&src, "unify(?r,"),
+        "fixture guard: the dot must NOT sit at the atom's own offset",
+    );
+    assert_eq!(located(&msg).0, inner, "the refusal must name the DOT, not the atom: {msg}");
 }
 
 /// THE STATED DIVERGENCE, PINNED SO IT IS A DECISION AND NOT A DRIFT. Add the carrier's
@@ -345,27 +426,16 @@ fn a_dot_on_a_provision_tie_refuses_as_a_supplier_tie() {
     );
 }
 
-/// CONTROL, and the only test of the WI-608 abstract-spec gate. `Coll` has no entity of
-/// its own and `Leaf` provides it, so a `Coll`-typed receiver is not a static pin — its
-/// runtime value is some concrete provider, and the suppliers of the SPEC sort are not
-/// the suppliers of the value. `Coll` DOES resolve an own member here (a spec declaring
-/// its own defaulted members is ordinary), and there are two suppliers for it, so without
-/// the gate this program is refused at LOAD — which is the wrong half of the answer, since
-/// WI-1012 deliberately leaves an abstract carrier to the CALL.
+/// The ABSTRACT-SPEC receiver fixture, shared by the two tests below because they differ by
+/// exactly the `rival` slot and the header's own rule ("byte-identical to a sibling's … so
+/// they are imported rather than kept") applies inside a file as much as across two.
 ///
-/// AND IT PINS A RESIDUAL — **WI-1038**, whose fixture this is. The dot answers `7`
-/// silently while the QUALIFIED spelling of the identical program is refused at the call.
-/// Both spellings are asserted here so the divergence is a recorded decision rather than a
-/// silence: closing WI-1038 must come here and flip the first half. It is unchanged by
-/// WI-1035 — the guard returns early on this receiver either way — and closing it needs
-/// the dot to REACH the value-directed reader, which is the reroute this ticket declined
-/// to take wholesale.
-#[test]
-fn an_abstract_spec_receiver_is_not_refused() {
-    let ns = "test.wi1035.abstract";
-    let program = |call: &str| {
-        format!(
-            r#"namespace {ns}
+/// `Coll` has no entity of its own and `Leaf` provides it, so a `Coll`-typed receiver pins
+/// no carrier — and `Coll` DOES declare an own `describe`, because a spec carrying its own
+/// defaulted members is ordinary. That pair is what makes the WI-608 gate non-vacuous.
+fn abstract_receiver(ns: &str, call: &str, rival: &str) -> String {
+    format!(
+        r#"namespace {ns}
   import anthill.prelude.Int64
 
   sort Desc
@@ -385,35 +455,86 @@ fn an_abstract_spec_receiver_is_not_refused() {
     entity leaf
     provides Coll[E = Int64]
   end
-
-  operation otherDescribe(x: Coll) -> Int64 = 9
-
-  fact Desc[T = Coll, describe = otherDescribe]
-
+{rival}
   operation viaSpec(c: Coll) -> Int64 = {call}
   operation probe() -> Int64 = viaSpec(leaf())
 end
 "#
-        )
-    };
-    assert_eq!(
-        probe(ns, &program("c.describe()")),
-        7,
-        "an abstract-spec receiver pins no carrier statically, so this load must not \
-         refuse — the value-directed reader owns the question. The 7 is the statically \
-         resolved own member RUNNING, not a verdict on which supplier should win (WI-1038)",
-    );
-    // The other spelling, on the same source, so the residual is measured and not assumed.
-    // Asserted at the CALL: it loads clean (`interp_for` goes through `expect_loaded`), and
-    // the refusal WI-1012 left to eval is what the dot does not reach.
-    let err = crate::common::interp_for(&program("Desc.describe(c)"))
-        .call(&format!("{ns}.probe"), &[])
-        .expect_err("WI-1038: the qualified spelling must still refuse this tie at the call");
-    assert!(
-        format!("{err:?}").contains("AmbiguousSpecOpDispatch"),
-        "WI-1038: the two spellings disagree — the dot answers 7 where this refuses. \
-         Closing WI-1038 flips the FIRST assertion, not this one: {err:?}",
-    );
+    )
+}
+
+/// The second supplier: an instance fact binding a different operation for `Coll`.
+const ABSTRACT_RIVAL: &str = "\n  operation otherDescribe(x: Coll) -> Int64 = 9\n\n  \
+                              fact Desc[T = Coll, describe = otherDescribe]\n";
+
+/// Both spellings of the receiver call, driven together everywhere below: agreeing on the
+/// refusal is worth nothing if they disagree on the answer, and vice versa.
+const BOTH_SPELLINGS: [&str; 2] = ["c.describe()", "Desc.describe(c)"];
+
+/// CONTROL for the WI-608 abstract-spec gate, and the test that closed **WI-1038**.
+///
+/// The gate is what keeps this program from being refused at LOAD — a `Coll`-typed
+/// receiver is not a static pin, so the suppliers of the SPEC sort are not the suppliers of
+/// the value, and refusing there would take the half WI-1012 deliberately left to the call.
+/// Dropped, the fixture is a load error.
+///
+/// WI-1038 WAS THE OTHER HALF OF THE SAME GATE. Behind the early return the dot used to
+/// take the own member and never reach the value-directed reader either, so it ANSWERED 7
+/// where the qualified spelling of the identical program was refused at the call. It now
+/// hands the call to the SPEC op, gated on the member really being the language's backing
+/// (`carrier_own_op`, the relation `resolve_op_target` dispatches through) — so the reroute
+/// means "the same implementation, chosen by the value", never "some same-named operation".
+/// Both spellings are driven: they must give ONE verdict.
+#[test]
+fn an_abstract_spec_receiver_refuses_at_the_call_not_at_load() {
+    let ns = "test.wi1035.abstract";
+    // The program LOADS — which `interp_for` asserts by not panicking, it going through
+    // WI-966's `expect_loaded` — and both spellings then refuse at the CALL, naming the
+    // same carrier and the same two routes.
+    for call in BOTH_SPELLINGS {
+        let err = crate::common::interp_for(&abstract_receiver(ns, call, ABSTRACT_RIVAL))
+            .call(&format!("{ns}.probe"), &[])
+            .expect_err("two suppliers behind an abstract receiver must refuse at the call");
+        let EvalError::AmbiguousSpecOpDispatch { carrier, candidates, .. } = &err else {
+            panic!("`{call}`: expected AmbiguousSpecOpDispatch, got {err:?}");
+        };
+        assert!(carrier.ends_with(".Coll"), "`{call}`: the tie is per CARRIER: {carrier}");
+        assert_eq!(candidates.len(), 2, "`{call}`: both routes: {candidates:?}");
+    }
+}
+
+/// The same fixture with ONE supplier, which is the control the reroute above could most
+/// easily have broken: rerouting a sole-supplier call to the spec op would run the SPEC'S
+/// DEFAULT (1) if the value-directed reader did not then find the carrier's member.
+///
+/// THE CLAIM IS NARROWER THAN IT LOOKS, and the second half is what bounds it. Eval's
+/// defaulted-op reader is INTERPRETABILITY-FILTERED (WI-1010/WI-876), so a sole supplier the
+/// interpreter cannot invoke would give it nothing and the default WOULD run — an answer
+/// change, where the pre-reroute dot called the member directly. MEASURED as unreachable
+/// through this shape rather than argued: a member with no runnable body is refused at LOAD
+/// by the WI-818 backing check, before either spelling can run, so the two spellings never
+/// get to disagree about it. The remaining hole needs a member that is a RESOLVER builtin
+/// and not an interpreter-mapped one — WI-876 records that no such pair exists today.
+#[test]
+fn an_abstract_spec_receiver_with_one_supplier_still_reaches_it() {
+    let ns = "test.wi1035.abstractone";
+    for call in BOTH_SPELLINGS {
+        assert_eq!(
+            probe(ns, &abstract_receiver(ns, call, "")),
+            7,
+            "`{call}`: one supplier — the spec's default (1) must not run",
+        );
+        // The bound above, driven: strip the member's body and the program stops loading,
+        // identically for both spellings. Without this the narrowing is a claim, not a fact.
+        let unrunnable = abstract_receiver(ns, call, "")
+            .replace("operation describe(x: Coll) -> Int64 = 7", "operation describe(x: Coll) -> Int64");
+        let msg = refusal(&unrunnable);
+        assert!(
+            msg.contains("backs no operation"),
+            "`{call}`: an unrunnable sole supplier must be refused at LOAD, which is what \
+             keeps the interpretability filter from changing an answer here: {msg}",
+        );
+    }
 }
 
 /// CONTROL — the carrier's own member ALONE still reaches it through the dot. This is

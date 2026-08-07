@@ -8575,18 +8575,25 @@ fn build_type(
             // spec fallbacks below, because it is not merely a rung of the name ladder
             // — when it backs a spec the receiver provides it is route 1 of a SUPPLIER
             // SET, and taking it is a dispatch decision. See
-            // [`refuse_dot_member_supplier_tie`].
+            // [`dot_member_dispatch_decision`].
             //
             // `find_operation_in_scope` reads the sort symbol from a bare
             // `Ref(sort)` / `sort(args)` head — not the `sort_ref(name:…)`
             // wrapper `make_sort_ref` builds (whose functor is `sort_ref`).
             let op_sym = if let Some(s) = recv_sort {
                 let sort_term = kb.alloc(Term::Ref(s));
-                let own_op = super::load::find_operation_in_scope(kb, sort_term, &short);
-                if own_op.is_some() {
-                    if let Err(e) = refuse_dot_member_supplier_tie(kb, s, &short, dot_span) {
-                        results.push(Err(e));
-                        return;
+                let mut own_op = super::load::find_operation_in_scope(kb, sort_term, &short);
+                // `own_member`, not `member`: the outer `member` is the dot's member NAME
+                // (read above, and by `try_fire_dot_rule`); this is the operation it
+                // resolved to, which is what the callee's own parameter is called.
+                if let Some(own_member) = own_op {
+                    match dot_member_dispatch_decision(kb, s, own_member, &short, dot_span) {
+                        Ok(DotMember::Take) => {}
+                        Ok(DotMember::DispatchByValue(spec_op)) => own_op = Some(spec_op),
+                        Err(e) => {
+                            results.push(Err(e));
+                            return;
+                        }
                     }
                 }
                 own_op
@@ -12798,7 +12805,7 @@ fn statically_pinned_carrier(
 /// pinned carrier and is not short-circuitable — skipping it on an own-member hit is the
 /// first-match blindness the design removes. Unmeasured here; **WI-1011** owns the memo.
 ///
-/// WI-1035 added a FOURTH reaching path — [`refuse_dot_member_supplier_tie`] — whose
+/// WI-1035 added a FOURTH reaching path — [`dot_member_dispatch_decision`] — whose
 /// population this paragraph's reasoning does not cover: not a call site with a pinned
 /// carrier, but every DOT that resolves the receiver's own member. It is 0 across the
 /// corpus (measured at that site) and so unexercised, not cheap; the memo is the same one.
@@ -12828,9 +12835,9 @@ fn refuse_unarbitrated_supplier_tie(
     Ok(())
 }
 
-/// WI-1035 — the DOT spelling's guard: `leaf().describe(…)` resolves `describe` on the
-/// receiver's sort BY NAME, so the carrier's own member is taken before anything asks
-/// which spec it backs, and the two guards above are never reached at all.
+/// WI-1035/WI-1038 — the DOT spelling's decision: `leaf().describe(…)` resolves `describe` on the
+/// receiver's sort BY NAME, so the member was taken before anything asked which spec it
+/// backs, and the two guards above were never reached at all.
 ///
 /// MEASURED on WI-1010's two-supplier fixture, all four combinations silent, and the
 /// two rows the qualified spelling REFUSES are the ones that make it a defect and not a
@@ -12853,21 +12860,40 @@ fn refuse_unarbitrated_supplier_tie(
 /// every reader: a read that SELECTS one goes loud on the second candidate, never
 /// first-match. The dot was the last reader still selecting silently.
 ///
-/// IT DOES NOT REROUTE THE CALL — the member is still taken, and only what happens at a
-/// SECOND supplier changes. **The tempting reason for that is wrong and is recorded so it
-/// is not re-derived:** "rerouting re-types every `xs.map(f)` in the tree" is FALSE, by
-/// this ticket's own number. `xs.map(f)` never reaches this function — it resolves at the
-/// NEXT rung, which already synthesizes the spec op and rides `req_insertion` (WI-281) —
-/// and own-member dots measure ZERO across the corpus, so a reroute's blast radius is
-/// this guard's, not the tree's.
+/// TWO ANSWERS, and which one depends on whether the receiver pins a CARRIER.
 ///
-/// The real reason is what "backs" means here. [`find_spec_op_for_provided_sort`] matches
-/// by SHORT NAME, which is the language's own notion of backing ([`resolve_op_target`]
-/// keys `sort_ops_lookup` the same way) — sound for REFUSING, because a same-named member
-/// beside a provision-supplied one is exactly the tie 058 §3.7 is about. It is not sound
-/// for CALLING: rerouting would type and invoke a DIFFERENT operation, against the spec's
-/// signature rather than the member's, on the strength of a name match. Refusing costs a
-/// correct program a diagnostic; rerouting would silently run something else.
+/// WHAT THE BACKING CHECK BUYS, stated exactly because it is easy to overclaim: it closes
+/// the WRONG-MEMBER hazard (the spec op's implementation for this carrier is the member the
+/// dot found, not some other same-named one). It does NOT verify that the spec op's
+/// SIGNATURE fits — nothing here does. That is caught by the synthesized `Apply` being
+/// re-typed, so a mismatch is a type error rather than a silently different call.
+///
+/// On an ABSTRACT-SPEC receiver it REROUTES (WI-1038): there is no static carrier — the
+/// runtime value is some concrete provider — so the member is not "the carrier's"
+/// implementation, and 058 §3.1 says dispatch answers by the value. Handing the call to the
+/// spec op is what the SAME program's qualified spelling does, so this is the two spellings
+/// agreeing rather than a new rule. MEASURED before: the dot answered 7 while the qualified
+/// spelling was refused at the call.
+///
+/// On a CONCRETE carrier it does not: the member is taken, and only what happens at a
+/// SECOND supplier changes. **This is a scope limit, not a soundness one, and TWO earlier
+/// readings of it were wrong** — both recorded, because each is what a reader will reach
+/// for next:
+///
+///   * "rerouting re-types every `xs.map(f)` in the tree" is FALSE by this ticket's own
+///     number — `xs.map(f)` never reaches this function, it resolves at the NEXT rung,
+///     which already synthesizes the spec op and rides `req_insertion` (WI-281), and
+///     own-member dots measure ZERO across the corpus.
+///   * "[`find_spec_op_for_provided_sort`] matches by SHORT NAME, so rerouting could call a
+///     different operation" was true of a reroute with no backing check and is no longer
+///     the discriminator: the `carrier_own_op` agreement in the abstract arm below closes
+///     exactly that hazard, and nothing stops the concrete arm from asking it too.
+///
+/// What actually separates them is WHEN the answer is available. A concrete carrier makes
+/// the tie decidable at LOAD, which is the whole of WI-1012's argument — the span, the
+/// carrier and the candidate list are in hand — and rerouting would trade that refusal for
+/// eval's later one. So the concrete arm keeps the load refusal and the member; the
+/// abstract arm has no load answer to keep.
 ///
 /// THE TWO HALVES ASK DIFFERENT QUESTIONS. The BODY-LESS one is delegated to
 /// [`refuse_unarbitrated_supplier_tie`], whose narrowing clauses exist because
@@ -12900,32 +12926,53 @@ fn refuse_unarbitrated_supplier_tie(
 /// first-match: a sort-specific rewrite declared in the receiver's sort is a text the
 /// author wrote for this receiver, which is a selection, not a route order.
 ///
-/// ONE DIVERGENCE, STATED BECAUSE IT IS A DECISION AND NOT AN OVERSIGHT: where the
+/// ONE DIVERGENCE LEFT, STATED BECAUSE IT IS A DECISION AND NOT AN OVERSIGHT: where the
 /// carrier ALSO self-provides the spec beside a witness rival, the qualified spelling
 /// reports the PROVIDER tie (`DispatchOutcome::Ambiguous`, which raises on its own
 /// account and is excluded there) while the dot reports the SUPPLIER tie — the dot ran
 /// no dispatch, so it has no outcome to yield to. Both refuse the same program at load
 /// and name the same two texts; only the sentence differs. Pinned by
 /// `a_dot_on_a_provision_tie_refuses_as_a_supplier_tie`.
-fn refuse_dot_member_supplier_tie(
+/// WI-1035/WI-1038 — what a dot does with the member it resolved on the receiver's sort.
+/// A `Result<Option<Symbol>, _>` said the same thing and needed a comment at the call site
+/// to say which `Option` arm meant what, which is why this file already carries ~20 named
+/// verdicts ([`MemberMiss`], [`ReceiverCarrier`], [`SigmaVerdict`], …) rather than bare
+/// options. Refusals ride the `Err`; this is only the two ways to proceed.
+enum DotMember {
+    /// Call the member, which is what a dot has always done.
+    Take,
+    /// Call the SPEC OP instead, so the value picks the implementation — the receiver
+    /// pinned no carrier, so the member is not "the carrier's" anything.
+    ///
+    /// THE SYMBOL IS THE LADDER'S NEXT RUNG, not a second route to it: it is exactly what
+    /// `.or_else(find_spec_op_for_provided_sort)` would have produced had the own-member
+    /// rung missed, and this arm means precisely "on an abstract-spec receiver that rung is
+    /// not authoritative — fall through". It is carried rather than recomputed only because
+    /// the decision already paid for the lookup.
+    DispatchByValue(Symbol),
+}
+
+fn dot_member_dispatch_decision(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
+    own_member: Symbol,
     short: &str,
     span: Option<Span>,
-) -> Result<(), TypeError> {
+) -> Result<DotMember, TypeError> {
     // The spec op the member backs, found the same way the ladder's NEXT rung finds one
     // when the carrier declares no member of its own — so "backed" here means exactly
     // what "resolved through a provided spec" means one line below, including the WI-450
     // witness match and the WI-495 transitive hop.
     let Some(spec_op) = find_spec_op_for_provided_sort(kb, carrier, short) else {
-        return Ok(());
+        return Ok(DotMember::Take);
     };
     // ONE `spec_op_parent_sort`, deliberately: [`lookup_spec_op_dispatch`] IS this call
     // plus [`operation_has_no_body`], so branching on IT below would pay
     // `type_params_of_sort` twice — a `format!` plus a non-short-circuiting scan of every
     // qualified name, 51 µs/call, which [`is_defaulted_spec_op`]'s doc flags as the WI-653
     // hot-load-path hazard and which WI-1027's own frame is careful to evaluate once.
-    let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else { return Ok(()) };
+    let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else { return Ok(DotMember::Take) };
+    let op_short_sym = kb.intern(short);
     // WI-608: an ABSTRACT-SPEC receiver is not a static pin — its runtime value is some
     // concrete provider — so the suppliers of the SPEC sort are not the suppliers of the
     // value. It is not vacuous here: a spec declaring its own defaulted members
@@ -12940,27 +12987,49 @@ fn refuse_dot_member_supplier_tie(
     // classification that was never made. The RULE has one owner and both sites call it:
     // [`carrier_is_abstract_spec`].
     //
-    // WI-1038 — WHAT THIS EARLY RETURN LEAVES, so the next reader does not mistake it for
-    // completeness: the dot then takes the own member and never reaches eval's
-    // value-directed reader either, so it answers silently where the QUALIFIED spelling of
-    // the same program is refused AT THE CALL. Not a second guard's job — closing it means
-    // the dot must REACH that reader. Measured from both ends by
-    // `an_abstract_spec_receiver_is_not_refused`.
+    // WI-1038 — and this arm is why the early return is a REROUTE rather than a bare
+    // `Ok(None)`. Taking the member here would not merely skip the tie check: it would also
+    // keep the call away from eval's value-directed reader, so the dot ANSWERED where the
+    // qualified spelling of the same program is refused AT THE CALL (measured, 7 vs. a
+    // refusal). Sending the spec op instead puts both spellings on the one reader.
+    //
+    // A SOLE supplier still reaches the member, via that same reader — which is the control
+    // this could most easily have broken, since `check_apply_iter`'s WI-444 block declines
+    // to pin an abstract carrier and would otherwise leave the spec's DEFAULT running.
+    // Driven by `an_abstract_spec_receiver_with_one_supplier_still_reaches_it`.
     if carrier_is_abstract_spec(kb, carrier) {
-        return Ok(());
+        // Is `own_member` the LANGUAGE's backing for `spec_op` on this carrier, and not
+        // merely a same-named member? [`carrier_own_op`] is that relation (`sort_ops_lookup`
+        // narrowed to a member the carrier itself declares) and the one
+        // [`resolve_op_target`] dispatches through, so agreeing with it is what makes the
+        // reroute mean "the same implementation, chosen by the value". Where they DISAGREE
+        // the dot found something the supplier set does not contain, and nothing may act as
+        // if it had. Asked HERE and not above: the concrete path never reads it, and this
+        // function's own budget note two paragraphs up is about not paying a second lookup
+        // on that path.
+        //
+        // AND WHAT `false` LEAVES, so this reads as a bound and not as completeness: the
+        // dot then keeps the member and answers where the qualified spelling would refuse
+        // — the pre-WI-1038 behaviour, for the one shape where the two lookups disagree
+        // (WI-616 records `sort_ops_lookup` returning one arbitrarily when a carrier
+        // provides two specs with the same short name). Answering wrongly on a name
+        // coincidence would be worse than answering as before, so the fallback is `Take`.
+        let backs = carrier_own_op(kb, carrier, spec_op, op_short_sym)
+            .is_some_and(|o| kb.canonical_sym(o) == kb.canonical_sym(own_member));
+        return Ok(if backs { DotMember::DispatchByValue(spec_op) } else { DotMember::Take });
     }
-    let op_short_sym = kb.intern(short);
     if operation_has_no_body(kb, spec_op) {
-        return refuse_unarbitrated_supplier_tie(
+        refuse_unarbitrated_supplier_tie(
             kb, spec_sort, carrier, spec_op, op_short_sym, span,
-        );
+        )?;
+        return Ok(DotMember::Take);
     }
     // DEFAULTED — WI-1012's arm's condition, repeated rather than shared; see the doc.
     let cands = carrier_override_suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
     if cands.len() >= 2 {
         return Err(supplier_tie_error(kb, spec_op, carrier, &cands, span));
     }
-    Ok(())
+    Ok(DotMember::Take)
 }
 
 /// WI-1027 — build the load-time supplier-tie refusal from a candidate list the caller

@@ -12065,6 +12065,64 @@ impl<'a> Loader<'a> {
         occ
     }
 
+    /// WI-1039 — every converted node of `parse_id`'s subtree, keyed by the `TermId`
+    /// `convert_term` produced for it, with the span the PARSE node carries.
+    ///
+    /// The one input [`node_occurrence::materialize_from_handle_spanned`] needs to locate
+    /// a rule-body atom: a rule body's terms get no `kb.term_spans` entry (they never go
+    /// through `create_occurrence`), so without this every node of a materialized atom
+    /// carries offset 0 of source 0.
+    ///
+    /// Built by walking the PARSE tree rather than the term tree, because the parse tree
+    /// is the one that HAS spans and the one that is not hash-consed. `term_map` is the
+    /// existing parse→term memo `convert_term` fills, so this adds no second conversion
+    /// and no second notion of which term a parse node became.
+    ///
+    /// WHAT IT CANNOT COVER, stated because the shape is systematic and not a stray miss:
+    /// a KB term the LOADER SYNTHESIZED has no parse node to be keyed by. The live case is
+    /// [`Self::convert_term_inner`]'s omitted-field fill — an absent optional becomes
+    /// `none()` and an absent required field a fresh var — so a diagnostic raised on one
+    /// of those still renders `1:1`. It is not reachable by ANY parse-keyed table, and the
+    /// author never wrote the node it would point at. (Every one of `convert_term_inner`'s
+    /// exits DOES insert into `term_map`, so an "early return skipped it" hazard is not
+    /// among the misses — checked, not assumed.)
+    ///
+    /// A node with no entry falls through to `kb.term_span` at the consumer, NOT to
+    /// nothing: that is the cross-file, first-write-wins table this exists to bypass, so a
+    /// miss is the pre-WI-1039 answer rather than a blank.
+    ///
+    /// FIRST WRITE WINS on a `TermId` two parse nodes share — see the consumer's doc for
+    /// what that costs and why exactness is not bought here. Order is therefore
+    /// load-bearing and is the walk's own: the outermost node is inserted before its
+    /// children, so an atom that IS its own child structurally keeps the outer span.
+    ///
+    /// Call it only where a subtree is about to be materialized. It allocates a map per
+    /// atom, and the atoms that reach it are the entity / reflect-form fallback alone —
+    /// the native walk below hands each of its children a span directly.
+    fn parse_span_table(
+        &self,
+        parse_id: TermId,
+    ) -> HashMap<TermId, SourceSpan> {
+        let mut out: HashMap<TermId, SourceSpan> = HashMap::new();
+        let mut stack: Vec<TermId> = vec![parse_id];
+        while let Some(pid) = stack.pop() {
+            if let Some(&kb_id) = self.term_map.get(&pid.raw()) {
+                out.entry(kb_id).or_insert_with(|| self.source_span_of(pid));
+            }
+            // `Term::subterms` rather than a local `Term::Fn` match: a hand-written child
+            // enumeration goes stale in SILENCE the day a variant gains children, and the
+            // symptom would be a node with no span — `1:1`, the defect this closes. The
+            // trade is real and taken knowingly: `subterms` returns a
+            // `SmallVec<[TermId; 4]>`, so an entity constructor with more than four fields
+            // (there are several) heap-allocates where the inline match did not. Against
+            // the reach measured at this call site that is noise; a silent miss is not.
+            // Reversed, so the first positional child is popped first and an earlier
+            // sibling wins a `TermId` collision over a later one.
+            stack.extend(self.parsed.terms.get(pid).subterms().into_iter().rev());
+        }
+        out
+    }
+
     /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
     /// maintain `term_depth`. Every recursive child re-enters through the wrapper.
     fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
@@ -12127,12 +12185,14 @@ impl<'a> Loader<'a> {
                     || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
                     let kb_term = self.convert_term(parse_id); // memoized hit
-                    // WI-1035: give the materialized atom the span this walk already
-                    // computed for it — the term-derived path has none (see this
-                    // function's doc), and `1:1` is a wrong location, not a missing one.
-                    return node_occurrence::respan_root(
-                        node_occurrence::materialize_from_handle(self.kb, kb_term),
-                        span,
+                    // WI-1035/WI-1039: locate the materialized subtree from the PARSE
+                    // tree. The term-derived path has no spans of its own (see this
+                    // function's doc), and `1:1` is a wrong location, not a missing one —
+                    // for the atom AND for everything inside it, which is where the
+                    // loader's own walk stops descending.
+                    let spans = self.parse_span_table(parse_id);
+                    return node_occurrence::materialize_from_handle_spanned(
+                        self.kb, kb_term, Some(&spans),
                     );
                 }
                 // Native generic application. Positional in source order; named

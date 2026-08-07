@@ -4240,12 +4240,46 @@ pub fn materialize_from_handle(
     kb: &KnowledgeBase,
     root: TermId,
 ) -> Rc<NodeOccurrence> {
+    materialize_from_handle_spanned(kb, root, None)
+}
+
+/// WI-1039 — [`materialize_from_handle`] with a CALLER-SUPPLIED span table, consulted
+/// ahead of `kb.term_span` for every node it builds.
+///
+/// The gap it closes: `kb.term_spans` is populated only where the loader called
+/// `create_occurrence`, and a RULE BODY's terms never do — `build_body_atom_occurrence`'s
+/// doc has said so since WI-246 — so every node of a materialized rule-body atom came back
+/// at offset 0 of source 0, which renders as `1:1`. That is a WRONG location, not an
+/// absent one, and it is what a diagnostic on a chained `a.b().c()` reported.
+///
+/// WI-1035 stamped the ROOT alone (`respan_root`, now deleted); this replaces it, because
+/// half a span channel is worse than one — the root was located and its own receiver was
+/// not, from the same atom.
+///
+/// KEYED BY `TermId`, WHICH IS HASH-CONSED, so two STRUCTURALLY IDENTICAL nodes inside one
+/// materialized atom share an entry and the caller's first-write wins. Both are then
+/// reported at the first one's offset — a real site, and one of the two the diagnostic is
+/// about. The map is built per atom, so this cannot reach across atoms or files, and it
+/// cannot happen at all for a node the loader's own walk descends into (that walk respans
+/// each child at its OWN parse id). It needs two identical siblings INSIDE one reflect
+/// form — `x.m(y.n(), y.n())`. Exactness there costs a parse↔occurrence correspondence
+/// per reflect shape, which is a second producer of the mapping `visit_fn` already owns.
+///
+/// IF EXACTNESS IS EVER NEEDED, the fix is not a better key: carry the PARSE `TermId`
+/// beside the term one in `WorkOp::Visit` and read `parsed.terms.span()` directly — no
+/// allocation, no hash-cons collision, O(1) per node. It is not done here because it would
+/// give this module a dependency on the parse IR, which it does not otherwise have.
+pub(crate) fn materialize_from_handle_spanned(
+    kb: &KnowledgeBase,
+    root: TermId,
+    spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
+) -> Rc<NodeOccurrence> {
     let mut work: Vec<WorkOp> = vec![WorkOp::Visit(root)];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
 
     while let Some(op) = work.pop() {
         match op {
-            WorkOp::Visit(t) => visit_term(kb, t, &mut work, &mut results),
+            WorkOp::Visit(t) => visit_term(kb, t, spans, &mut work, &mut results),
             WorkOp::Build(frame) => build_frame(kb, frame, &mut results),
         }
     }
@@ -4257,38 +4291,6 @@ pub fn materialize_from_handle(
         results.len(),
     );
     results.pop().expect("root produced no NodeOccurrence")
-}
-
-/// WI-1035 — overwrite a freshly-materialized root's span with the one its CALLER
-/// holds. [`materialize_from_handle`] reads `kb.term_span`, and a rule-body term has
-/// no entry there (stated in `build_body_atom_occurrence`'s doc since WI-246), so the
-/// atom came back at offset 0 of source 0 — which renders as `1:1`, a location that is
-/// WRONG rather than absent. The loader is holding the parse span at that call, having
-/// just computed it for the sibling native path.
-///
-/// Overwrites unconditionally rather than only filling an empty span: `convert_term` is
-/// hash-consed, so a rule-body term can COLLIDE with an identical one elsewhere and
-/// inherit that site's `term_spans` entry — the first-write-wins hazard `rule_head_span`
-/// exists to avoid for heads. The caller's span is the right answer either way.
-///
-/// Mutates through the `Rc` rather than rebuilding: `materialize_from_handle` builds
-/// every node fresh and hands back a root nothing else has seen, so the refcount is 1 by
-/// construction and there is nothing to copy. It PANICS on a shared `Rc` — that would
-/// mean the materializer started deduplicating and this helper's contract changed, and
-/// the alternative (hand back the node unchanged) is the silent skip that `1:1` already
-/// was.
-///
-/// REACH: the root only. A reflect form's INTERIOR (the receiver inside a `dot_apply`,
-/// hence the inner dot of a chained `a.b().c()`) keeps the zero span — the loader's
-/// native walk never descends there, so no caller holds a parse span to hand over. That
-/// residue is user-visible in the same way this closed: such a dot's own diagnostics
-/// still render `1:1`. **WI-1039** owns it; WI-246's "later work" note names no ticket
-/// and WI-246 is delivered, so it owns nothing.
-pub(crate) fn respan_root(mut occ: Rc<NodeOccurrence>, span: SourceSpan) -> Rc<NodeOccurrence> {
-    Rc::get_mut(&mut occ)
-        .expect("respan_root: the materialized root must be uniquely owned")
-        .span = span;
-    occ
 }
 
 /// WI-304: build the LEAF `NodeOccurrence` for a single op-body Term — the
@@ -4421,10 +4423,17 @@ pub(crate) struct BranchMeta {
 fn visit_term(
     kb: &KnowledgeBase,
     t: TermId,
+    spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
     work: &mut Vec<WorkOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
-    let span = kb.term_span(t).unwrap_or_else(empty_span);
+    // The caller's table first (WI-1039): it is the only source that can locate a
+    // rule-body node at all, and where BOTH have an entry the caller's is per-atom while
+    // `term_spans` is first-write-wins over a hash-consed key shared with every other file.
+    let span = spans
+        .and_then(|m| m.get(&t).copied())
+        .or_else(|| kb.term_span(t))
+        .unwrap_or_else(empty_span);
     let term = kb.get_term(t).clone();
     match term {
         Term::Const(lit) => results.push(NodeOccurrence::new_expr(Expr::Const(lit), span, None)),
