@@ -12127,7 +12127,13 @@ impl<'a> Loader<'a> {
                     || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
                     let kb_term = self.convert_term(parse_id); // memoized hit
-                    return node_occurrence::materialize_from_handle(self.kb, kb_term);
+                    // WI-1035: give the materialized atom the span this walk already
+                    // computed for it — the term-derived path has none (see this
+                    // function's doc), and `1:1` is a wrong location, not a missing one.
+                    return node_occurrence::respan_root(
+                        node_occurrence::materialize_from_handle(self.kb, kb_term),
+                        span,
+                    );
                 }
                 // Native generic application. Positional in source order; named
                 // ParseAux-filtered (type_args / type_name are read elsewhere)

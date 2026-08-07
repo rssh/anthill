@@ -8571,12 +8571,25 @@ fn build_type(
             // Owned: `kb` is mutated below (alloc / find_operation_in_scope),
             // so the borrowed name can't be held across it.
             let short = short_name_of(kb.local_name_of(member)).to_string();
-            let op_sym = recv_sort.and_then(|s| {
-                // `find_operation_in_scope` reads the sort symbol from a bare
-                // `Ref(sort)` / `sort(args)` head — not the `sort_ref(name:…)`
-                // wrapper `make_sort_ref` builds (whose functor is `sort_ref`).
+            // WI-1035: the receiver's OWN member is resolved SEPARATELY from the two
+            // spec fallbacks below, because it is not merely a rung of the name ladder
+            // — when it backs a spec the receiver provides it is route 1 of a SUPPLIER
+            // SET, and taking it is a dispatch decision. See
+            // [`refuse_dot_member_supplier_tie`].
+            //
+            // `find_operation_in_scope` reads the sort symbol from a bare
+            // `Ref(sort)` / `sort(args)` head — not the `sort_ref(name:…)`
+            // wrapper `make_sort_ref` builds (whose functor is `sort_ref`).
+            let op_sym = if let Some(s) = recv_sort {
                 let sort_term = kb.alloc(Term::Ref(s));
-                super::load::find_operation_in_scope(kb, sort_term, &short)
+                let own_op = super::load::find_operation_in_scope(kb, sort_term, &short);
+                if own_op.is_some() {
+                    if let Err(e) = refuse_dot_member_supplier_tie(kb, s, &short, dot_span) {
+                        results.push(Err(e));
+                        return;
+                    }
+                }
+                own_op
                     // WI-281: spec-satisfaction fallback — `member` may be an
                     // operation on a spec `s` *provides* (e.g. `(3).min(5)` →
                     // `Ordered.min` via `fact Ordered[Int]`), not declared on
@@ -8595,7 +8608,9 @@ fn build_type(
                             .then(|| find_spec_op_for_required_sort(kb, s, &short))
                             .flatten()
                     })
-            });
+            } else {
+                None
+            };
             if let Some(op_sym) = op_sym {
                 let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_nodes.len());
                 synth_pos.push(receiver_node);
@@ -12783,6 +12798,11 @@ fn statically_pinned_carrier(
 /// pinned carrier and is not short-circuitable — skipping it on an own-member hit is the
 /// first-match blindness the design removes. Unmeasured here; **WI-1011** owns the memo.
 ///
+/// WI-1035 added a FOURTH reaching path — [`refuse_dot_member_supplier_tie`] — whose
+/// population this paragraph's reasoning does not cover: not a call site with a pinned
+/// carrier, but every DOT that resolves the receiver's own member. It is 0 across the
+/// corpus (measured at that site) and so unexercised, not cheap; the memo is the same one.
+///
 /// Reads [`spec_op_suppliers_for_carrier`] and NOT [`carrier_override_suppliers`]: the
 /// interpretability filter is the defaulted half's own (WI-1010 — there a default is the
 /// fallback, so a member eval cannot call is not a supplier). A body-less op has no
@@ -12808,9 +12828,145 @@ fn refuse_unarbitrated_supplier_tie(
     Ok(())
 }
 
+/// WI-1035 — the DOT spelling's guard: `leaf().describe(…)` resolves `describe` on the
+/// receiver's sort BY NAME, so the carrier's own member is taken before anything asks
+/// which spec it backs, and the two guards above are never reached at all.
+///
+/// MEASURED on WI-1010's two-supplier fixture, all four combinations silent, and the
+/// two rows the qualified spelling REFUSES are the ones that make it a defect and not a
+/// spelling preference:
+///
+/// | spec op | rival | `leaf().describe()` | `Desc.describe(leaf())` |
+/// |---|---|---|---|
+/// | defaulted (`= 1`) | instance fact | **7** | REFUSED (WI-1012) |
+/// | body-less | instance fact | **7** | REFUSED (WI-1027) |
+/// | body-less | witness sort | **7** | REFUSED (WI-1027) |
+///
+/// and both faces of the first row — an operation body and a rule body — answer 7
+/// alike, which is what proved the silence keyed on the SPELLING rather than on
+/// WI-1026's rule-body path.
+///
+/// THE OWN MEMBER IS ROUTE 1, NOT A LADDER RUNG. The name ladder (§8.6, WI-907/908/914)
+/// is about which NAME a member resolves to and ends at an ambiguity; this is a
+/// different question one layer down — given the name, which of the texts that supply
+/// an implementation FOR THIS CARRIER wins — and 058 §3.7 answers it the same way for
+/// every reader: a read that SELECTS one goes loud on the second candidate, never
+/// first-match. The dot was the last reader still selecting silently.
+///
+/// IT DOES NOT REROUTE THE CALL — the member is still taken, and only what happens at a
+/// SECOND supplier changes. **The tempting reason for that is wrong and is recorded so it
+/// is not re-derived:** "rerouting re-types every `xs.map(f)` in the tree" is FALSE, by
+/// this ticket's own number. `xs.map(f)` never reaches this function — it resolves at the
+/// NEXT rung, which already synthesizes the spec op and rides `req_insertion` (WI-281) —
+/// and own-member dots measure ZERO across the corpus, so a reroute's blast radius is
+/// this guard's, not the tree's.
+///
+/// The real reason is what "backs" means here. [`find_spec_op_for_provided_sort`] matches
+/// by SHORT NAME, which is the language's own notion of backing ([`resolve_op_target`]
+/// keys `sort_ops_lookup` the same way) — sound for REFUSING, because a same-named member
+/// beside a provision-supplied one is exactly the tie 058 §3.7 is about. It is not sound
+/// for CALLING: rerouting would type and invoke a DIFFERENT operation, against the spec's
+/// signature rather than the member's, on the strength of a name match. Refusing costs a
+/// correct program a diagnostic; rerouting would silently run something else.
+///
+/// THE TWO HALVES ASK DIFFERENT QUESTIONS. The BODY-LESS one is delegated to
+/// [`refuse_unarbitrated_supplier_tie`], whose narrowing clauses exist because
+/// `dispatch_spec_op_cached` can weigh provisions. The DEFAULTED one is NOT delegated —
+/// it is the three-line condition WI-1012's arm applies inline, repeated here, because
+/// extracting it would make that arm's `[only]` pin walk the suppliers twice or leave it
+/// matching an arm it can no longer reach. **THE COUPLING THAT CREATES:** that arm has a
+/// documented REACH narrowing (only the carrier-param shape can tie) which is prose today;
+/// the moment it becomes a clause, or any other clause joins the count, it must be
+/// written HERE too. Nothing enforces that but this sentence.
+///
+/// TIER 1 CANNOT APPLY HERE: `Expr::DotApply` carries no `type_args` field, so a dot is
+/// BRACKET-LESS BY CONSTRUCTION and the `!pinned_spec` clause the body-less guard's
+/// caller applies has nothing to read. That is the same argument eval's bracket-less
+/// readers make for taking the bare count (WI-842).
+///
+/// TIER 2 IS WHY THE BODY-LESS HALF DELEGATES RATHER THAN COUNTING: no dispatch runs on
+/// this path, so there is no `DispatchOutcome` to defer to, and a bare count would refuse
+/// the specificity-ordered pair WI-843 pinned as deliberate. STATED SO IT IS NOT READ AS
+/// A DRIVEN CLAUSE: at THIS site the shared guard's route clause is not known to be
+/// reachable — this function runs only on an own-member hit, and an `Own` candidate is
+/// never `weighed_by_provision_arbitration`, so the clause is satisfied whenever the count
+/// is. It is not PROVABLY inert ([`carrier_own_op`] reads `sort_ops_lookup` while the dot
+/// reads `find_operation_in_scope`, and WI-616's doc records a shape where those differ),
+/// and delegating keeps ONE owner for the condition either way — but no test here drives
+/// it, and this paragraph is instead of a control that would only look like one.
+///
+/// AN AUTHOR-WRITTEN `[simp]` DOT RULE IS NOT PRE-EMPTED, because it fires EARLIER in this
+/// frame and never reaches here. That ordering is unchanged and is not a silent
+/// first-match: a sort-specific rewrite declared in the receiver's sort is a text the
+/// author wrote for this receiver, which is a selection, not a route order.
+///
+/// ONE DIVERGENCE, STATED BECAUSE IT IS A DECISION AND NOT AN OVERSIGHT: where the
+/// carrier ALSO self-provides the spec beside a witness rival, the qualified spelling
+/// reports the PROVIDER tie (`DispatchOutcome::Ambiguous`, which raises on its own
+/// account and is excluded there) while the dot reports the SUPPLIER tie — the dot ran
+/// no dispatch, so it has no outcome to yield to. Both refuse the same program at load
+/// and name the same two texts; only the sentence differs. Pinned by
+/// `a_dot_on_a_provision_tie_refuses_as_a_supplier_tie`.
+fn refuse_dot_member_supplier_tie(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    short: &str,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    // The spec op the member backs, found the same way the ladder's NEXT rung finds one
+    // when the carrier declares no member of its own — so "backed" here means exactly
+    // what "resolved through a provided spec" means one line below, including the WI-450
+    // witness match and the WI-495 transitive hop.
+    let Some(spec_op) = find_spec_op_for_provided_sort(kb, carrier, short) else {
+        return Ok(());
+    };
+    // ONE `spec_op_parent_sort`, deliberately: [`lookup_spec_op_dispatch`] IS this call
+    // plus [`operation_has_no_body`], so branching on IT below would pay
+    // `type_params_of_sort` twice — a `format!` plus a non-short-circuiting scan of every
+    // qualified name, 51 µs/call, which [`is_defaulted_spec_op`]'s doc flags as the WI-653
+    // hot-load-path hazard and which WI-1027's own frame is careful to evaluate once.
+    let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else { return Ok(()) };
+    // WI-608: an ABSTRACT-SPEC receiver is not a static pin — its runtime value is some
+    // concrete provider — so the suppliers of the SPEC sort are not the suppliers of the
+    // value. It is not vacuous here: a spec declaring its own defaulted members
+    // (`Stream.collect`) resolves an own member for a `Stream`-typed receiver exactly as a
+    // concrete carrier does; dropped, a two-supplier program behind such a receiver is
+    // refused at LOAD, which is the half WI-1012 deliberately left to the call.
+    //
+    // NOT ROUTED THROUGH [`statically_pinned_carrier`], which applies the same filter: that
+    // function's job is SELECTING between two receiver shapes, and this frame made neither
+    // classification — its carrier is the receiver's `min_sort`. Passing `NotApplicable` +
+    // `Some(carrier)` would answer correctly by coincidence of the filter while claiming a
+    // classification that was never made. The RULE has one owner and both sites call it:
+    // [`carrier_is_abstract_spec`].
+    //
+    // WI-1038 — WHAT THIS EARLY RETURN LEAVES, so the next reader does not mistake it for
+    // completeness: the dot then takes the own member and never reaches eval's
+    // value-directed reader either, so it answers silently where the QUALIFIED spelling of
+    // the same program is refused AT THE CALL. Not a second guard's job — closing it means
+    // the dot must REACH that reader. Measured from both ends by
+    // `an_abstract_spec_receiver_is_not_refused`.
+    if carrier_is_abstract_spec(kb, carrier) {
+        return Ok(());
+    }
+    let op_short_sym = kb.intern(short);
+    if operation_has_no_body(kb, spec_op) {
+        return refuse_unarbitrated_supplier_tie(
+            kb, spec_sort, carrier, spec_op, op_short_sym, span,
+        );
+    }
+    // DEFAULTED — WI-1012's arm's condition, repeated rather than shared; see the doc.
+    let cands = carrier_override_suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
+    if cands.len() >= 2 {
+        return Err(supplier_tie_error(kb, spec_op, carrier, &cands, span));
+    }
+    Ok(())
+}
+
 /// WI-1027 — build the load-time supplier-tie refusal from a candidate list the caller
-/// already has. The TWO typer sites that decline to select — WI-1012's defaulted-op arm
-/// and WI-1027's body-less guard — construct one error out of `(span, op, carrier)` plus
+/// already has. The typer sites that decline to select — WI-1012's defaulted-op arm,
+/// WI-1027's body-less guard, and WI-1035's dot-member guard, which reaches both by
+/// spelling — construct one error out of `(span, op, carrier)` plus
 /// the two derived fields, and both derivations are easy to get subtly wrong: the
 /// candidate list must be route-rendered against the op's SHORT name (so the fact leg can
 /// echo `describe = otherDescribe`), and the repair must be ASKED rather than assumed

@@ -17,6 +17,10 @@
 //! | `describe(leaf(), ?r)` | `[]` | `[]` | → | `[]` — left, reason below |
 //! | via an operation body (control) | `7` | REFUSED | → | unchanged |
 //!
+//! (Row 2's `7` in the 2-supplier column is what this ticket left and **WI-1035**
+//! closed; it is a load REFUSAL now, at both sites. The row is written as it was
+//! measured HERE, because the reason it was left is this ticket's own attribution.)
+//!
 //! ## Three defects wore one ticket, and the ticket's diagnosis named neither
 //!
 //! WI-1026 says "neither WI-444 site is on the SLD goal path". MEASURED FALSE for
@@ -39,20 +43,25 @@
 //!     triggers on a defaulted spec-op head.
 //!   * **The dot's 2-supplier row is NOT a rule-body defect** — see below.
 //!
-//! ## The row deliberately left: `leaf().describe(?r)` with two suppliers
+//! ## The row deliberately left: `leaf().describe(?r)` with two suppliers — CLOSED
 //!
-//! It answers `7` (the carrier's own member) where the qualified spelling is now
-//! refused. That is not this ticket's path, and the CONTROL is what proves it:
-//! `a_dot_spelled_operation_body_is_silent_on_the_same_tie` puts the SAME dot in an
-//! OPERATION body — the path WI-1010/WI-1012 own — and it answers `7` too. WI-1026's
-//! ticket asserted the opposite ("the same tie through an operation body … a load
-//! refusal with two, so the defect is the PATH and not the fixture"); its control
+//! It answered `7` (the carrier's own member) where the qualified spelling is now
+//! refused. That was not this ticket's path, and the CONTROL is what proved it:
+//! `a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does` puts the SAME dot
+//! in an OPERATION body — the path WI-1010/WI-1012 own — and it answered `7` too.
+//! WI-1026's ticket asserted the opposite ("the same tie through an operation body … a
+//! load refusal with two, so the defect is the PATH and not the fixture"); its control
 //! used the QUALIFIED spelling and so measured the path while attributing to it what
 //! is really keyed on the SPELLING. The dot resolves `describe` on `Leaf` BY NAME to
 //! the carrier's own member, so `check_apply_iter` is reached with `fn_sym =
-//! Leaf.describe` — not a spec op at all — and no supplier set is ever consulted.
-//! Fixing it means changing dot member resolution, which changes operation bodies
-//! too. Filed as **WI-1035**.
+//! Leaf.describe` — not a spec op at all — and no supplier set was ever consulted.
+//! Fixing it meant changing dot member resolution, which changes operation bodies too.
+//!
+//! **WI-1035 delivered it**, and driving found MORE than this row measured: the same
+//! dot bypassed WI-1027's BODY-LESS guard identically, so one fix closes both halves
+//! of the spec-op population. The test above now asserts the refusal at both sites and
+//! keeps the PAIRING it was written for; the fix's own coverage — both halves, the
+//! controls, the zero-site blast radius — is `wi1035_dot_member_supplier_tie_test`.
 //!
 //! ## The row deliberately left: `describe(leaf(), ?r)` answering `[]`
 //!
@@ -76,13 +85,15 @@
 //! | `a_qualified_rule_body_tie_is_refused_at_load` | ok | **FAILS** | **FAILS** |
 //! | `the_rule_body_refusal_is_located_and_shares_one_body` | ok | **FAILS** | **FAILS** |
 //! | `a_carrier_with_no_supplier_still_runs_the_default_in_a_rule_body` | ok | ok | ok |
-//! | `a_dot_spelled_operation_body_is_silent_on_the_same_tie` | ok | ok | ok |
+//! | `a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does` | ok | ok | ok |
 //! | `a_bare_goal_naming_nothing_still_answers_nothing` | ok | ok | ok |
 //!
 //! The last three pass EITHER WAY **by design**, and each is here for a different
 //! reason: the gap case is what makes a default a default and must not move; the
 //! other two PIN the two rows this ticket deliberately leaves, so that closing
-//! WI-1034 or WI-1035 has to come here and say so.
+//! WI-1034 or WI-1035 has to come here and say so. WI-1035 did — the dot row's test
+//! now asserts a refusal instead of `7`, and still passes either way here, because
+//! what it measures is the two SITES agreeing, not which verdict they agree on.
 //!
 //! Note the second row: `a_qualified_rule_body_reaches_the_supplied_impl` needs BOTH
 //! halves, which is why they ship together. Typing the call writes the pin; carrying
@@ -125,7 +136,7 @@ use anthill_core::eval::Value;
 /// Not `wi1010::program` with an empty tail: that builder hardwires `operation
 /// probe() -> Int64 = Desc.describe(leaf())`, and this file's subject is the path
 /// that has no such operation in it.
-fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
+pub(crate) fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
@@ -153,8 +164,8 @@ const ONE_SUPPLY: &str = "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  
 
 /// TWO suppliers — the carrier's own member (7) beside a fact binding a different
 /// operation (9). WI-1012's tie, reachable without an operation body.
-const TWO_LEAF: &str = "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
-const TWO_SUPPLY: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
+pub(crate) const TWO_LEAF: &str = "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
+pub(crate) const TWO_SUPPLY: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
                           fact Desc[T = Leaf, describe = otherDescribe]\n";
 
 fn one_supplier(ns: &str, tail: &str) -> String {
@@ -167,7 +178,7 @@ fn two_suppliers(ns: &str, tail: &str) -> String {
 /// The single Int answer of `{ns}.answer`, driven as an SLD GOAL — the path under
 /// test. Panics on any other shape, including `[]`: "the query returned nothing" is
 /// the symptom this ticket exists to stop, so it must never read as a pass.
-fn answer(ns: &str, src: &str) -> i64 {
+pub(crate) fn answer(ns: &str, src: &str) -> i64 {
     let mut kb = crate::common::load_kb_with(src);
     let qn = format!("{ns}.answer");
     match crate::common::query_unary(&mut kb, &qn).as_slice() {
@@ -298,42 +309,48 @@ fn a_carrier_with_no_supplier_still_runs_the_default_in_a_rule_body() {
     assert_eq!(answer(ns, &src), 1, "no supplier — the spec's default must still run");
 }
 
-/// PINS A ROW DELIBERATELY LEFT (WI-1035), and the CONTROL that proves it is not
-/// this ticket's path. The dot spelling with two suppliers answers `7` in a rule
-/// body — and the identical dot in an OPERATION body, which WI-1010/WI-1012 own,
-/// answers `7` as well. So the silence is keyed on the SPELLING, not on the rule
-/// body: `leaf().describe(…)` resolves `describe` on `Leaf` by NAME to the carrier's
-/// own member, and `check_apply_iter` never sees the spec op whose suppliers would
-/// be compared.
+/// THE ROW THIS TICKET DELIBERATELY LEFT, NOW CLOSED BY **WI-1035** — kept here,
+/// re-aimed, because what it measures is this ticket's own attribution and not
+/// WI-1035's fix. Before WI-1035 both arms answered `7`; both are now refused at load.
 ///
-/// This is the measurement that refutes WI-1026's own stated control, which used the
-/// QUALIFIED spelling in the operation body and concluded the defect was the path.
+/// The reading is unchanged and is why the pair is asserted TOGETHER: the dot in a rule
+/// body and the identical dot in an OPERATION body — the path WI-1010/WI-1012 own —
+/// behave alike, so the silence was keyed on the SPELLING and not on the rule body.
+/// `leaf().describe(…)` resolved `describe` on `Leaf` by NAME to the carrier's own
+/// member, and `check_apply_iter` never saw the spec op whose suppliers would be
+/// compared. That measurement refutes WI-1026's own stated control, which used the
+/// QUALIFIED spelling in the operation body and so concluded the defect was the path.
 ///
-/// Asserting BOTH arms is the point: a test on the rule-body arm alone would pass
-/// equally if the dot were a rule-body defect, and would then silently license
-/// closing WI-1035 in the wrong place.
+/// A test on the rule-body arm alone would have passed equally if the dot HAD been a
+/// rule-body defect, and would have licensed closing WI-1035 in the wrong place —
+/// which is the whole reason this test asserts both arms rather than one.
+///
+/// WI-1035's own coverage (both halves of the spec-op population, the controls, the
+/// blast radius) is in `wi1035_dot_member_supplier_tie_test`; what stays here is the
+/// PAIRING.
 #[test]
-fn a_dot_spelled_operation_body_is_silent_on_the_same_tie() {
-    let ns_op = "test.wi1026.dottieop";
-    let src_op = two_suppliers(ns_op, "  operation probe() -> Int64 = leaf().describe()\n");
-    let mut interp = crate::common::interp_for(&src_op);
-    let op = format!("{ns_op}.probe");
-    match interp.call(&op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
-        Value::Int(7) => {}
-        other => panic!(
-            "WI-1035: an OPERATION body's dot must answer the own member (7) on a \
-             2-supplier tie — so the rule body doing the same is not a rule-body \
-             defect; got {other:?}",
-        ),
-    }
-
-    let ns_rule = "test.wi1026.dottierule";
-    let src_rule = two_suppliers(ns_rule, "  rule answer(?r) :- leaf().describe(?r)\n");
+fn a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does() {
+    // `refusal` / `located` rather than local closures: they are this cluster's shared
+    // owners of "loaded clean must never read as a pass" and of the `line:col: message`
+    // parse, and `refusal`'s own doc gives that as the reason it is `pub(crate)`.
+    let expect_tie = |ns: &str, tail: &str| {
+        let msg = crate::wi1012_static_supplier_tie_test::refusal(&two_suppliers(ns, tail));
+        assert!(
+            msg.contains("ambiguous dispatch") && msg.contains("Desc.describe"),
+            "WI-1035: `{tail}` must refuse the 2-supplier tie: {msg}",
+        );
+        msg
+    };
+    let op = expect_tie("test.wi1026.dottie", "  operation probe() -> Int64 = leaf().describe()\n");
+    let rule = expect_tie("test.wi1026.dottie", "  rule answer(?r) :- leaf().describe(?r)\n");
+    // Same namespace in both, so the qualified names inside match: the two SITES agree
+    // on the verdict, which is the claim this test exists to make. Compared after the
+    // `line:col` prefix, since the two fixtures put the call in different places.
     assert_eq!(
-        answer(ns_rule, &src_rule),
-        7,
-        "WI-1035: and the rule body agrees with it — the two paths are consistent, \
-         both silently first-match (058 §3.7)",
+        crate::wi1012_static_supplier_tie_test::located(&op).1,
+        crate::wi1012_static_supplier_tie_test::located(&rule).1,
+        "the two sites must give ONE verdict — a difference here would mean the dot's \
+         silence really was keyed on the rule body after all",
     );
 }
 

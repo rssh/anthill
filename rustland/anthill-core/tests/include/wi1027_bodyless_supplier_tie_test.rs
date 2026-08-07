@@ -159,12 +159,12 @@ const RIVAL_FACT: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n 
 /// `[Desc = Rival]` bracket ("its values carry their own sort, so the dispatch is already
 /// directed by the value" — WI-855), which would make the tier-1 control below untestable.
 /// `wi857`'s `Descending` is spelled the same way for the same reason.
-const RIVAL_WITNESS: &str = "\n  sort Rival\n    import anthill.prelude.Int64\n    \
+pub(crate) const RIVAL_WITNESS: &str = "\n  sort Rival\n    import anthill.prelude.Int64\n    \
                              fact Desc[T = Leaf]\n    \
                              operation describe(x: Leaf) -> Int64 = 9\n  end\n";
 
 /// Assert the refusal is the SUPPLIER tie and names both routes.
-fn assert_supplier_tie(msg: &str, ns: &str, route_two: &str) {
+pub(crate) fn assert_supplier_tie(msg: &str, ns: &str, route_two: &str) {
     assert!(msg.contains(&format!("{ns}.Desc.describe")), "the spec op must be named: {msg}");
     assert!(msg.contains(&format!("carrier `{ns}.Leaf`")), "the carrier must be named: {msg}");
     assert!(

@@ -1016,6 +1016,9 @@ mod wi1027_bodyless_supplier_tie_test;
 #[path = "include/wi1032_provision_dedup_test.rs"]
 mod wi1032_provision_dedup_test;
 
+#[path = "include/wi1035_dot_member_supplier_tie_test.rs"]
+mod wi1035_dot_member_supplier_tie_test;
+
 #[path = "include/wi537_local_interpretation_test.rs"]
 mod wi537_local_interpretation_test;
 

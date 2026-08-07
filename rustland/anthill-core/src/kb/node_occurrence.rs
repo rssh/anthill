@@ -4259,6 +4259,38 @@ pub fn materialize_from_handle(
     results.pop().expect("root produced no NodeOccurrence")
 }
 
+/// WI-1035 — overwrite a freshly-materialized root's span with the one its CALLER
+/// holds. [`materialize_from_handle`] reads `kb.term_span`, and a rule-body term has
+/// no entry there (stated in `build_body_atom_occurrence`'s doc since WI-246), so the
+/// atom came back at offset 0 of source 0 — which renders as `1:1`, a location that is
+/// WRONG rather than absent. The loader is holding the parse span at that call, having
+/// just computed it for the sibling native path.
+///
+/// Overwrites unconditionally rather than only filling an empty span: `convert_term` is
+/// hash-consed, so a rule-body term can COLLIDE with an identical one elsewhere and
+/// inherit that site's `term_spans` entry — the first-write-wins hazard `rule_head_span`
+/// exists to avoid for heads. The caller's span is the right answer either way.
+///
+/// Mutates through the `Rc` rather than rebuilding: `materialize_from_handle` builds
+/// every node fresh and hands back a root nothing else has seen, so the refcount is 1 by
+/// construction and there is nothing to copy. It PANICS on a shared `Rc` — that would
+/// mean the materializer started deduplicating and this helper's contract changed, and
+/// the alternative (hand back the node unchanged) is the silent skip that `1:1` already
+/// was.
+///
+/// REACH: the root only. A reflect form's INTERIOR (the receiver inside a `dot_apply`,
+/// hence the inner dot of a chained `a.b().c()`) keeps the zero span — the loader's
+/// native walk never descends there, so no caller holds a parse span to hand over. That
+/// residue is user-visible in the same way this closed: such a dot's own diagnostics
+/// still render `1:1`. **WI-1039** owns it; WI-246's "later work" note names no ticket
+/// and WI-246 is delivered, so it owns nothing.
+pub(crate) fn respan_root(mut occ: Rc<NodeOccurrence>, span: SourceSpan) -> Rc<NodeOccurrence> {
+    Rc::get_mut(&mut occ)
+        .expect("respan_root: the materialized root must be uniquely owned")
+        .span = span;
+    occ
+}
+
 /// WI-304: build the LEAF `NodeOccurrence` for a single op-body Term — the
 /// native counterpart to the leaf arms of `visit_term` / `visit_fn`. The
 /// op-body loader calls this directly as it converts each parse-IR leaf into
