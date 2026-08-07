@@ -3,17 +3,17 @@
 //! Three sites decide what to do with a call on a spec operation that HAS a default
 //! body: `check_apply_iter`'s WI-444 block (pin the carrier's supplied impl, or refuse a
 //! tie), `dot_member_dispatch_decision`'s defaulted leg (the same decision reached by the
-//! dot spelling, WI-1035), and `is_defaulted_spec_op` (the WI-1026 rule-body walk
+//! dot spelling, WI-1035), and `expr_needs_call_dispatch` (the WI-1026 rule-body walk
 //! trigger). They spelled the gate two different ways, and the equivalence was held by a
 //! doc comment 30 000 lines away.
 //!
-//! WHY A COMMENT WAS NOT ENOUGH, and it is not a style point: the third spelling's
-//! call-site population is ZERO across the whole corpus (stdlib + host bindings +
-//! testcases + examples + anthill-todo — WI-1026's measurement, not this file's),
-//! because it carries a `!is_builtin` clause the other two do not. So a clause added to
-//! the WI-444 block would have moved the PIN/REFUSE population and left the rule-body
-//! FIRE population behind — silently, with the full suite green both ways. That is the
-//! drift this file measures.
+//! WHY A COMMENT WAS NOT ENOUGH, and it is not a style point: when this file was written
+//! the third spelling carried a `!is_builtin` clause the other two did not, and its
+//! call-site population was ZERO across the whole corpus — so a clause added to the
+//! WI-444 block would have moved the PIN/REFUSE population and left the rule-body FIRE
+//! population behind, silently, with the full suite green both ways. (WI-1036 has since
+//! deleted that clause, on evidence this sharing is what made cheap to gather: the walk
+//! trigger now asks the gate and nothing else.) That is the drift this file measures.
 //!
 //! WHAT THIS FILE ACTUALLY LOADS, since the two scopes are easy to conflate: `corpus_kb`
 //! is `load_kb_with`, i.e. **stdlib + the Rust host bindings** and nothing else. A drift
@@ -30,7 +30,7 @@
 //! [`defaulted_spec_op_parent`] alone, and the corpus population is large enough
 //! (`the_gate_population_is_not_vacuous`) that it cannot pass by having nothing to check.
 //! Restoring the `!is_builtin` clause INTO the shared gate — the WI-1036 blast radius,
-//! which belongs at `is_defaulted_spec_op` and nowhere else — is exactly such a clause,
+//! which WI-1036 has since deleted from its one reader — is exactly such a clause,
 //! and it is the case `a_builtin_backed_defaulted_spec_op_is_in_the_shared_gate` pins.
 
 use anthill_core::kb::op_info::all_operation_params;
@@ -63,7 +63,7 @@ fn corpus_kb() -> KnowledgeBase {
 ///
 /// It also drives the one difference the two spellings genuinely have. The oracle's body
 /// test is `!operation_has_no_body`, true also of a symbol with NO `OperationInfo`; the
-/// gate reads `op_has_runnable_body`, which requires one. `is_defaulted_spec_op`'s old doc
+/// gate reads `op_has_runnable_body`, which requires one. The walk trigger's old doc
 /// asserted they coincide under a parametric parent and called that "a coupling, not a
 /// licence"; this measures it instead of asserting it.
 #[test]
@@ -118,15 +118,17 @@ fn the_gate_population_is_not_vacuous() {
     );
 }
 
-/// THE WI-1036 CLAUSE IS SITE-LOCAL, and this is what says so. `PartialOrd.gt` is a
-/// defaulted spec op that is ALSO builtin-mapped: the shared gate admits it (all three
-/// sites agree about what it is), and only `is_defaulted_spec_op` — the rule-body walk
-/// trigger — excludes it, through its own `!is_builtin` clause.
+/// A BUILTIN-MAPPED DEFAULTED SPEC OP IS ONE, and the gate says so by what it IS.
+/// `PartialOrd.gt` is defaulted AND builtin-mapped; every reader of the gate admits it.
+/// When this was written one reader — the rule-body walk trigger — excluded it through a
+/// `!is_builtin` clause of its own, and this test's subject was that the clause was
+/// SITE-LOCAL and could not become a claim about the shape. WI-1036 then deleted the
+/// clause outright, so today no reader excludes it and the assertion pins the shared
+/// answer the deletion rests on.
 ///
-/// CONTROL: move that clause into [`defaulted_spec_op_parent`] and this fails, as does
-/// `the_shared_gate_agrees_with_the_wi444_spelling`. That is the point — WI-1036 is a
-/// decision about which CALLS the rule-body walk fires on, and it must not silently
-/// become a decision about what a defaulted spec op IS.
+/// CONTROL: put a `!is_builtin` clause into [`defaulted_spec_op_parent`] and this fails,
+/// as does `the_shared_gate_agrees_with_the_wi444_spelling` — a per-site dispatch policy
+/// must not be spelled as a change to what a defaulted spec op IS.
 #[test]
 fn a_builtin_backed_defaulted_spec_op_is_in_the_shared_gate() {
     let kb = corpus_kb();
@@ -137,7 +139,7 @@ fn a_builtin_backed_defaulted_spec_op_is_in_the_shared_gate() {
     assert!(
         defaulted_spec_op_parent(&kb, gt).is_some(),
         "the shared gate must classify a builtin-backed defaulted spec op by what it IS; \
-         only `is_defaulted_spec_op` may exclude it (WI-1036)",
+         a dispatch policy that wants to skip it belongs at a reader (WI-1036)",
     );
 }
 
@@ -158,9 +160,10 @@ fn a_builtin_backed_defaulted_spec_op_is_in_the_shared_gate() {
 ///
 /// CONTROL, MEASURED — and the first version of this sentence was WRONG, which is why the
 /// number is here. Give the gate the old body test and 15 tests across 5 suites fail, not
-/// one: 14 of them through `is_defaulted_spec_op`, whose rule-body walk then type-checks
+/// one: 14 of them through the rule-body walk trigger, which then type-checks
 /// entity-constructor calls (driven — re-conjoining `op_has_runnable_body` at that site
-/// alone restores exactly those 14), and THIS one, which is the only test in the workspace
+/// alone restores exactly those 14; re-measured after WI-1036, unchanged), and THIS one,
+/// which is the only test in the workspace
 /// that sees the gate's own answer rather than one site's use of it. That is what it is
 /// for: the other three call sites are safe by a precondition each (see
 /// [`defaulted_spec_op_parent`]'s doc), and a site that later loses its precondition

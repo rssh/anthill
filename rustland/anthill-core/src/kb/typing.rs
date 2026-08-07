@@ -10940,7 +10940,7 @@ fn check_apply_iter(
         //
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
         // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
-        // defaulted leg, [`is_defaulted_spec_op`]'s rule-body walk trigger,
+        // defaulted leg, [`expr_needs_call_dispatch`]'s rule-body walk trigger,
         // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
@@ -13094,7 +13094,7 @@ fn dot_member_dispatch_decision(
     // ("ONE `spec_op_parent_sort`, deliberately") was a micro-optimization of a path this
     // function's own contract measures at ZERO own-member dots across the corpus; 51 µs on
     // a branch that never runs buys nothing, and it bought a second reading of "defaulted".
-    // The hot reader is `is_defaulted_spec_op` (~745 calls/load), which pays it once; the
+    // The hot reader is `expr_needs_call_dispatch` (~745 calls/load), which pays it once; the
     // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
         // BODY-LESS — a different question with a different condition; see
@@ -16494,8 +16494,8 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 ///     carrier's supplied implementation or refuses a tie;
 ///   * [`dot_member_dispatch_decision`]'s DEFAULTED leg, the same decision reached by
 ///     the dot spelling (WI-1035);
-///   * [`is_defaulted_spec_op`], the WI-1026 rule-body walk trigger — this gate PLUS
-///     `!is_builtin`, the one clause that is genuinely site-local (WI-1036 owns it);
+///   * [`expr_needs_call_dispatch`], the WI-1026 rule-body walk trigger — this gate and
+///     nothing else since WI-1036 deleted its `!is_builtin` clause;
 ///   * [`defaulted_spec_op_witness_grounds_soundly`], WI-1040's last witness scan — a
 ///     FOURTH reader, found by this ticket's own review, which asked the question by name
 ///     while reading only the body-AGNOSTIC parent and leaning on caller scan order for
@@ -16526,17 +16526,20 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 ///   * [`dot_member_dispatch_decision`] reaches its leg only through
 ///     `find_spec_op_for_provided_sort` → `find_operation_in_scope`, which finds symbols
 ///     BY WALKING the `OperationInfo` facts;
-///   * [`is_defaulted_spec_op`] already conjoined [`op_has_runnable_body`] itself.
+///   * [`expr_needs_call_dispatch`] is asked per `Expr::Apply` functor, where a symbol
+///     with no `OperationInfo` must answer `false` — the strict read IS the requirement
+///     there, not a precondition (see the measurement below).
 ///
 /// THE STRICT READ IS NOT MERELY THE STRONGER ONE — IT IS REQUIRED, and that was MEASURED
 /// after this ticket's review called the first justification here vacuous. Give this gate
 /// the old body test and **15 tests across 5 suites fail** (`wi936`, `wi618`,
 /// `parameterized_provides_block`, `sql_store_example`, and this ticket's own). FOURTEEN
-/// of them come from [`is_defaulted_spec_op`]: the rule-body walk then fires
+/// of them come from [`expr_needs_call_dispatch`]: the rule-body walk then fires
 /// `type_check_node` on an entity constructor declared inside a parametric sort — which
 /// is what `operation_has_no_body`'s doc means by "so non-operation symbols are not
 /// misclassified" — and re-conjoining [`op_has_runnable_body`] at that site alone restores
-/// all fourteen (driven, both halves). The fifteenth is
+/// all fourteen (driven, both halves). RE-MEASURED after WI-1036 deleted that site's
+/// `!is_builtin` clause: the same 15 tests, unchanged. The fifteenth is
 /// `wi1042_defaulted_gate_test::a_non_operation_functor_is_not_a_defaulted_spec_op`, the
 /// one test that pins THIS function's answer rather than one site's use of it.
 ///
@@ -16561,9 +16564,10 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 /// `spec_op_parent_sort`) to the same 523 calls: 466 reach the body probe and 80 the
 /// parametric leg. Read it as an ordering comparison and not as history — the three call
 /// sites did not previously share one gate, so nothing ever ran the old order over this
-/// exact call set. `is_defaulted_spec_op`'s own doc carries the per-site count for the
-/// walk trigger (~745 per load on examples/github-todo), whose `!is_builtin` clause is
-/// still first and still O(1).
+/// exact call set. [`expr_needs_call_dispatch`]'s own doc carries the per-site count for
+/// the walk trigger (~745 per load on examples/github-todo); WI-1036 deleted the
+/// `!is_builtin` clause that used to shield it, so every one of those calls now reaches
+/// this gate's own legs.
 pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
     if !op_has_runnable_body(kb, op_sym) {
@@ -42159,51 +42163,6 @@ fn dispatch_calls_in_occ(
     }
 }
 
-/// WI-1026 — is `f` a spec operation WITH a default body: the shape whose call
-/// sites the WI-444 block in [`check_apply_iter`] decides (pin to the carrier's
-/// supplied implementation, or refuse a tie), as opposed to a body-less spec op,
-/// which dispatches through the WI-573 slot instead.
-///
-/// The gate for BOTH the rule-body walk trigger ([`occ_needs_call_dispatch`]) and
-/// the arm in [`dispatch_calls_in_occ`] that acts on it, so the pre-scan and the
-/// action cannot drift — a body walked but not acted on costs a pass, a body
-/// acted on but not walked is silent.
-///
-/// WI-1042 — the gate itself is NOT spelled here. It is [`defaulted_spec_op_parent`],
-/// shared with the two sites that DECIDE such a call (`check_apply_iter`'s WI-444
-/// block and [`dot_member_dispatch_decision`]'s defaulted leg), so the population this
-/// walk FIRES on cannot drift from the population they PIN or REFUSE. What is local
-/// here is the one clause below, and only that clause.
-///
-/// CLAUSE ORDER: the shared gate leads with its own cheap non-operation early-out, so
-/// `!is_builtin` is FIRST here purely because it is an O(1) `HashMap` probe and
-/// rejects ~half of the ~745 calls a real load makes (examples/github-todo; 657 for
-/// anthill-todo) before anything else runs. It is not shielding the expensive leg —
-/// [`defaulted_spec_op_parent`] shields that itself, which is what makes dropping this
-/// clause a decision about BEHAVIOUR alone (WI-1036) rather than one about cost.
-///
-/// **`!is_builtin` is the whole blast radius of WI-1026's rule-body arm, and it
-/// was MEASURED, not assumed.** With this clause the arm fires on ZERO sites in
-/// the corpus (stdlib + host bindings + testcases + examples + anthill-todo);
-/// WITHOUT it, on 60 — every one a `PartialOrd.gt/gte/lt/lte` rule-body goal,
-/// newly pinned to `Int64.gt` / `Float.gt` (the corpus still loads clean either
-/// way). CORRECTED (2026-08-07 /code-review — the justification this paragraph
-/// used to give was FALSE): `reduce_op_value` does NOT return early on a builtin
-/// before reading a pin. It reads the pin FIRST — `op =
-/// classified_apply_target().unwrap_or(functor)` (`resolve.rs:6143`) — and keys
-/// the builtin early-return on the PINNED op. Classifying these 60 sites would
-/// therefore put the pin in front of the builtin check, which then asks about
-/// the impl symbol (`Int64.gt`) instead of the spelled spec op
-/// (`PartialOrd.gt`). Both happen to be builtin-mapped, so the outcomes may
-/// coincide — but that equivalence is a measurement WI-1036 must MAKE, not an
-/// ordering this comment can promise. The exclusion stands on the unmeasured
-/// blast radius — the resolver path IS affected, and the 60 sites additionally
-/// feed `req_insertion::run`, which emits a dispatch rewrite per classified
-/// occurrence; filed as WI-1036 rather than taken as a side effect here.
-fn is_defaulted_spec_op(kb: &KnowledgeBase, f: Symbol) -> bool {
-    !kb.is_builtin(f) && defaulted_spec_op_parent(kb, f).is_some()
-}
-
 /// WI-282 / WI-1026: is THIS node a call [`dispatch_calls_in_occ`] must decide — an
 /// `Expr::DotApply`, or (WI-1026) a direct call to a DEFAULTED spec op?
 ///
@@ -42211,10 +42170,54 @@ fn is_defaulted_spec_op(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// ([`occ_needs_call_dispatch`]) alike. Two spellings of "which shapes we decide"
 /// is the drift this ticket was created by: a shape walked but not acted on costs
 /// a pass, a shape acted on but not walked is silent.
+///
+/// **WI-1036 — the spec-op arm is [`defaulted_spec_op_parent`] AND NOTHING ELSE.** It was
+/// that gate plus `!kb.is_builtin(f)`, excluding the `PartialOrd.{gt,gte,lt,lte}` family
+/// (a defaulted spec op whose carrier implementations are host-mapped). WI-1026 gave that
+/// exclusion two reasons and BOTH WERE FALSE, each refuted by driving
+/// (`wi1036_builtin_defaulted_dispatch_test`):
+///
+///   1. "`reduce_op_value` returns early on a builtin before it reads a pin, so
+///      classifying these sites changes nothing." It reads the pin FIRST — `op =
+///      classified_apply_target().unwrap_or(functor)` — and keys the builtin
+///      early-return on the PINNED symbol. (2026-08-07 /code-review.)
+///   2. "`req_insertion::run` emits a dispatch rewrite per classified occurrence, so
+///      widening emits 60 new ones." It walks `kb.op_bodies_iter()`, and a RULE body is
+///      not an operation body: the same classified call emits ONE rewrite from an
+///      operation body and ZERO from a rule body. No rule-body classification has ever
+///      produced a dispatch rewrite, builtin-mapped or not.
+///
+/// WHAT THE CLAUSE ACTUALLY WITHHELD — two things, both driven, neither about the pin:
+///
+///   * **The 058 §3.7 tie refusal.** A carrier supplying one of these ops TWICE (own
+///     member + instance fact) was refused at load from an operation body and accepted
+///     from a rule body — one program, two verdicts, decided by where the call is
+///     written. Without the clause the rule body refuses at its own location, with the
+///     same message.
+///   * **§3.1 dispatch by value in OPERAND position.** A rule-body operand
+///     `unify(?r, PartialOrd.gt(p, q))` on a carrier with a supplied override answered an
+///     indefinite residual; classified, the pin names the override and
+///     [`reduce_op_value`] folds it. The pin IS readable there — the carrier's own `gt`
+///     is an ordinary bodied operation, not a builtin — so "both sides are builtin" was
+///     only ever true of the STDLIB family, never of the population.
+///
+/// COST, measured at [`dispatch_calls_in_occ`]'s acting arm: FOUR newly decided sites on
+/// a stdlib + host-bindings load (2 × `PartialOrd.gt`, 1 × `lt`, 1 × `gte`, all stdlib
+/// rule bodies), five with `anthill-testcases`, none in `examples/github-todo` or
+/// `anthill-todo`; the ticket's 60 does not reproduce. Those four are GOAL-position calls
+/// whose pins name `Int64.gt` / `Float.gt`, both builtins, so `reduce_op_value` returns
+/// early exactly as before — the corpus gets the refusal, not a dispatch change.
+///
+/// WHAT IS STILL BROKEN AND IS NOT THIS GATE'S: the same call in GOAL position on a
+/// carrier with a supplied override still answers nothing. The goal takes
+/// `BuiltinTag::Gt` off its SPELLED functor — no goal-position reader consults a pin —
+/// and `builtin_cmp` fails silently on operands it cannot compare. Classifying it does
+/// not help; **WI-879 owns it**, and its acceptance is exactly that such a comparison
+/// "either answers correctly or raises, never silently fails".
 fn expr_needs_call_dispatch(kb: &KnowledgeBase, expr: &Expr) -> bool {
     match expr {
         Expr::DotApply { .. } => true,
-        Expr::Apply { functor, .. } => is_defaulted_spec_op(kb, *functor),
+        Expr::Apply { functor, .. } => defaulted_spec_op_parent(kb, *functor).is_some(),
         _ => false,
     }
 }
@@ -42228,7 +42231,7 @@ fn expr_needs_call_dispatch(kb: &KnowledgeBase, expr: &Expr) -> bool {
 /// The conditions share ONE pre-scan because they share one walk: a body with only
 /// a spec-op call still needs the var-type env installed, which is what
 /// `type_rule_bodies` builds around this gate. Still cheap after WI-1026 widened it
-/// — see [`is_defaulted_spec_op`] for the measurement that says so.
+/// — see [`expr_needs_call_dispatch`] for the measurement that says so.
 fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {

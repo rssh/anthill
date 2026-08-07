@@ -370,7 +370,7 @@ Full workspace green (29 binaries, 4288 tests).
 
 **The qualified row: never typed at all.** `type_rule_bodies` walked only bodies containing a DOT. `occ_needs_call_dispatch` now also triggers on a direct call to a defaulted spec op, and `dispatch_calls_in_occ` gained the arm that acts on it — routed through `check_apply_iter`, so the pin and the tie refusal keep ONE owner rather than growing a rule-body copy. That arm is where the load refusal for a rule-body tie comes from, and it is **located**, which is not free: WI-1012 put this refusal at the typer *because* the typer holds the span, and `type_rule_bodies` was the one typer pass that never took the WI-745 `sources` channel, so its errors rendered a bare byte offset. Backed out alone, the located-and-one-body test fails and nothing else moves.
 
-**`!is_builtin` is the whole blast radius, and it was measured both ways.** With it, the new arm fires on ZERO corpus sites (stdlib + host bindings + testcases + examples + anthill-todo); without it, on 60 — every one a `PartialOrd.gt/gte/lt/lte` rule-body goal newly pinned to `Int64.gt` / `Float.gt`. Excluded on the merits: a builtin is decided by the interpreter's builtin table and `reduce_op_value` returns early on one *before* it reads a pin, so classifying them changes nothing on this ticket's path — while it does feed 60 new `record_apply_rewrite` rewrites to `req_insertion`. **And the suite cannot decide it**: the workspace is green BOTH ways, 4295/0 with the clause and 4295/0 without, so those rewrites are observed by no test and a green run is not evidence for landing them. The driver has to be built first — **WI-1036**.
+**`!is_builtin` is the whole blast radius, and this paragraph's two reasons for it were BOTH FALSE** — corrected in §22, which decided the question. What stands: with the clause the new arm fires on ZERO corpus sites; without it, on four (re-measured — the 60 claimed here does not reproduce). What does not: "`reduce_op_value` returns early on a builtin *before* it reads a pin" (it reads the pin first and keys the early-return on the PINNED symbol), and "classifying them feeds 60 new `record_apply_rewrite` rewrites to `req_insertion`" (a rule-body classification emits NO rewrite at all — `req_insertion::run` walks operation bodies). **And the suite cannot decide it**: the workspace is green BOTH ways, which is why the driver had to be built first — **WI-1036**, §22.
 
 **Two rows are deliberately left, and here is the standing they have.**
 
@@ -433,3 +433,29 @@ A `term_spans` entry would have been the wrong carrier: first-write-wins on a ha
 **Back-out matrix, measured per piece, one revert each — THREE pieces.** Removing the tie guard fails six tests (the four refusals, the provision-tie divergence, and the located-one-body test) plus §20's re-aimed pairing test. Removing the abstract reroute fails exactly one, the gate's own control. Removing the span table fails the three location tests and nothing else. Four pass everywhere by design, and each is a different way of having ONE answer: the own member alone, a fact binding alone, no supplier at all (the default, which is what makes a default a default), and an abstract receiver with a single supplier.
 
 Full workspace green (29 binaries, 4308 tests).
+
+## 22. WI-1036 — the builtin-mapped population, and a clause whose two reasons were both false (DELIVERED 2026-08-07)
+
+§20 excluded builtin-mapped defaulted spec ops from the rule-body arm and gave two reasons. **Neither was true**, and the ticket's acceptance was the right shape for exactly that: build the driver first, decide after. **The clause is deleted.**
+
+**Reason 1 was refuted by review** (WI-1036 feedback): `reduce_op_value` does not return early on a builtin before reading a pin. It reads the pin FIRST — `op = classified_apply_target().unwrap_or(functor)` — and keys the builtin early-return on the PINNED symbol.
+
+**Reason 2 was refuted by driving.** ONE classified call, two positions: from an operation body it emits a dispatch rewrite, from a rule body it emits NONE. `req_insertion::run` walks `kb.op_bodies_iter()`, and a rule body is not an operation body — so no rule-body classification has ever produced a `record_apply_rewrite`, for any spec op. The "60 new rewrites" could not happen. (Diagnostic-only anyway since WI-248; the runtime reads `CallClass` off the `NodeOccurrence`.)
+
+**What the clause actually withheld was two REFUSALS-and-dispatch, neither of them about the pin being read on the corpus** — and both are §3 rules that say nothing about where a call is written:
+
+| program | operation body | rule body, clause IN | rule body, clause OUT |
+|---|---|---|---|
+| carrier supplies `gt` TWICE (own member + instance fact) | REFUSED at load (§14) | **loads clean** — §3.7 violated | REFUSED, same message, at the rule's own location |
+| carrier supplies `gt` once; call in OPERAND position | `false` — the override | indefinite residual — §3.1 violated | **`false`** — the override |
+| carrier supplies `gt` once; call in GOAL position | `false` — the override | `[]` — silent | `[]` — unchanged, **WI-879** |
+
+The middle row is why "both sides are builtin, so the pin is unreadable" was the wrong reason as well as an incomplete one: it is true of the STDLIB family (`PartialOrd.{gt,gte,lt,lte}` and `Int64.*` / `Float.*` are all registered builtins) and false of the population — a user carrier's own `gt` is an ordinary bodied operation, and `reduce_op_value` folds it once the pin names it.
+
+**Cost, measured at the acting arm of `dispatch_calls_in_occ`:** FOUR newly decided sites on a stdlib + host-bindings load (2 × `PartialOrd.gt`, 1 × `lt`, 1 × `gte`, all in stdlib rule bodies — counted by functor, not located), five with `anthill-testcases`, none added by `examples/` or `anthill-todo`. The ticket's 60 does not reproduce. All four are GOAL-position calls whose pins name `Int64.gt` / `Float.gt`, both builtins, so `reduce_op_value` returns early exactly as before: **the corpus gets the refusal, not a dispatch change**.
+
+**The third row stays broken and is not this gate's.** A goal takes `BuiltinTag::Gt` off its SPELLED functor — no goal-position reader consults a pin — and `builtin_cmp` fails silently on operands it cannot compare. Classifying does not help; **WI-879** owns it, its acceptance being that such a comparison "either answers correctly or raises, never silently fails".
+
+**Back-out matrix, driven per test.** Restoring `!is_builtin` fails exactly two of the five: the tie refusal and the operand fold. Three pass either way by design and say so at their sites — the rewrite observer (an absence the clause never affected), the stdlib-family tag bound, and the goal-position silence pinned for WI-879.
+
+Full workspace green (29 binaries, 4326 tests).
