@@ -1276,9 +1276,11 @@ pub(super) fn reassemble(
     if !cur.changed {
         return Rc::clone(occ);
     }
-    // Preserve provenance (`Synthesized { from, by }`) AND the typer-stamped
-    // `inferred_type` (WI-502 Step 3) when a child is rewritten under this node —
-    // `rebuilt_expr` carries both, where a bare `new_expr` would drop the type.
+    // Preserve provenance (`Synthesized { from, by }`) AND the typer's stamps when a
+    // child is rewritten under this node — `rebuilt_expr` carries them (WI-502 Step 3
+    // for `inferred_type`, WI-1026 for the `CallClass`; the list lives at
+    // `NodeOccurrence::carry_typer_stamps_from`, not here, so it cannot be enumerated
+    // stale a fourth time). A bare `new_expr` would drop them.
     occ.rebuilt_expr(new_expr)
 }
 

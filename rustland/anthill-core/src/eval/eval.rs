@@ -250,7 +250,13 @@ impl Interpreter {
                         pos_args, named_args, type_args,
                     ),
                     _ => {
-                        let target = classified_apply_target(occ).unwrap_or(*functor);
+                        // WI-218/WI-1026: only `PinNow` names a target here, and
+                        // that is all this arm can honour — the two classes that
+                        // need a requirements channel (`ConcreteApplyWithin`,
+                        // `DeferToRequirement`) are matched ABOVE and routed to the
+                        // starts that install one. See
+                        // `NodeOccurrence::classified_apply_target`.
+                        let target = occ.classified_apply_target().unwrap_or(*functor);
                         self.start_apply(target, pos_args, named_args, type_args)
                     }
                 }
@@ -2859,28 +2865,6 @@ impl Interpreter {
 }
 
 // ── helpers ─────────────────────────────────────────────────────
-
-/// WI-218 — read the typer's `CallClass` off the Apply occurrence's
-/// RefCell and return the impl-op symbol to dispatch to. PinNow tags
-/// the call for direct redirection to `impl_op_sym`; the bare-apply
-/// `ConcreteApplyWithin` form (empty requirements channel) redirects
-/// to `fn_target_sym`. DeferToRequirement leaves the target as the
-/// spec op — the dispatch happens at runtime via the requirements
-/// channel, not at the apply.
-fn classified_apply_target(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    use crate::kb::typing::CallClass;
-    let classification = match &occ.kind {
-        NodeKind::Expr { classification, .. } => classification.borrow(),
-        _ => return None,
-    };
-    match classification.as_deref() {
-        Some(CallClass::PinNow { impl_op_sym, .. }) => Some(*impl_op_sym),
-        Some(CallClass::ConcreteApplyWithin { fn_target_sym, .. }) => {
-            Some(*fn_target_sym)
-        }
-        _ => None,
-    }
-}
 
 /// Short-name-aware local lookup. See the note in reduce_var for why we
 /// compare by name rather than by interned `Symbol`.

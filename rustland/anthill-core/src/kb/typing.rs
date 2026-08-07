@@ -9966,7 +9966,7 @@ fn check_apply_iter(
     //
     // Gated to EXPRESSION context (`!in_rule_body`): inside a rule body a rule name
     // applied to arguments is a relational SUBGOAL (reached here only via
-    // `dispatch_dots_in_occ` for a dot-bearing atom), never a `Relation` VALUE — the
+    // `dispatch_calls_in_occ` for a dot-bearing atom), never a `Relation` VALUE — the
     // value reading belongs to functional/operation code. In rule-body context this
     // falls through, preserving the pre-WI-714 behavior there.
     if !env.in_rule_body() && kb.cites_a_relation(fn_sym) {
@@ -10672,7 +10672,7 @@ fn check_apply_iter(
         // imperative Hoare semantics — so a precondition over a SYMBOLIC rule-body
         // variable legitimately FLOATS (an unconstrained Γ over a symbolic arg) and
         // must NOT raise: pre-WI-557 it raised a spurious `UnsatisfiedPrecondition`
-        // that `dispatch_dots_in_occ`'s `Err(_)` arm swallowed, leaving the dot
+        // that `dispatch_calls_in_occ`'s `Err(_)` arm swallowed, leaving the dot
         // UNDISPATCHED. But a GROUND-REFUTED precondition in a rule body
         // (`guarded(_, 0)` ⇒ `neq(0, 0)` false) is a DEFINITE violation, not a
         // float, and IS raised exactly as an op body would — the rule-body gate is
@@ -10793,7 +10793,7 @@ fn check_apply_iter(
         //
         // WI-622: this is an OP-BODY call-site obligation (it lets the caller
         // recover the concrete return shape via a `let`-annotation / return
-        // position). A rule body is relational and `dispatch_dots_in_occ` types
+        // position). A rule body is relational and `dispatch_calls_in_occ` types
         // the dot with `expected: None`, so a return-only type-param has no
         // call-site pin here — but it is NOT a violation: SLD resolution unifies
         // the param against the goal context, or it stays a harmless phantom on a
@@ -37781,7 +37781,16 @@ fn type_check_sorts_collect(
     // Runs over ALL rules (free namespace-level rules too, which the sort loop
     // above misses) and after signature checks, so the operation/entity metadata
     // the collection + dispatch read is settled.
-    errors.extend(type_rule_bodies(kb, &rule_typing_reportable));
+    // WI-1026: takes `sources` too — this pass now raises the WI-1012 supplier-tie
+    // refusal, whose value over eval's face is precisely that it is LOCATED.
+    // Padded HERE, like the sort loop's own pad above: the two passes between that
+    // loop and this call (`check_operation_signatures`,
+    // `check_branch_external_exclusion`) push untagged errors, and the
+    // `check_entity_facts` / `check_operation_bodies` contract is that `sources` is
+    // parallel on ENTRY. Repairing it inside the callee gave this one pass a second
+    // convention.
+    sources.resize(errors.len(), None);
+    type_rule_bodies(kb, &rule_typing_reportable, &mut errors, &mut sources);
 
     // WI-702 (proposal 054 §"Consumers"): reject a `[simp]`/`[unfold]` rewrite whose
     // sides mention an effectful operation — firing it would duplicate/reorder/drop
@@ -39656,8 +39665,20 @@ fn stamp_rule_body_var_types(occ: &Rc<NodeOccurrence>, var_types: &HashMap<u32, 
 fn type_rule_bodies(
     kb: &mut KnowledgeBase,
     reportable: &std::collections::HashSet<crate::kb::RuleId>,
-) -> Vec<TypeError> {
-    let mut errors: Vec<TypeError> = Vec::new();
+    // WI-745 / WI-1026: parallel to `errors`, tagging each error with the
+    // `source_id` of the rule-body atom (or rule head) it came from, so it renders
+    // `path:line:col` instead of a bare byte offset. On entry `sources` is parallel
+    // to `errors` (the caller pads); restored on exit — the `check_entity_facts` /
+    // `check_operation_bodies` contract, held rather than re-invented.
+    //
+    // This pass used to leave every error untagged (the caller padded with `None`),
+    // which was tolerable while it reported only the WI-282 dot failures. WI-1026
+    // raises the WI-1012 SUPPLIER TIE here, and that refusal's whole reason for
+    // living at the typer rather than at eval is that the typer HOLDS THE SPAN —
+    // an unlocated copy of it would be the fallback WI-1012 removed.
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body
@@ -39682,14 +39703,15 @@ fn type_rule_bodies(
                     let head_sym = *head_sym;
                     // WI-458: the rule's own head span, keyed by RuleId — no
                     // `term_span` fallback (see `check_pattern_fragment`).
-                    let span = kb.rule_head_span(rid).map(|s| s.span);
+                    let head_span = kb.rule_head_span(rid);
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
-                        span,
+                        span: head_span.map(|s| s.span),
                         context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },
                         expected: "consistent variable types".to_string(),
                         actual: "contradictory variable types".to_string(),
                     });
+                    sources.push(head_span.map(|s| s.source));
                 }
             }
             continue;
@@ -39700,13 +39722,15 @@ fn type_rule_bodies(
         // (The KB-global `has_dot_applies` flag is NOT a valid gate — it is set only
         // by the EXPR-occurrence load path [op bodies]; a rule body loads its dot via
         // term→occurrence materialization, which does not set it.)
+        // WI-1026 widened the gate to a DIRECT call on a defaulted spec op, which
+        // needs the same walk for the same reason — see [`occ_needs_call_dispatch`].
         //
         // WI-603: stamping (`stamp_rule_body_var_types`) is interior-mutable on the
         // shared `Rc<NodeOccurrence>`, so writing the in-hand `Rc`s persists onto the
         // KB's stored body — no re-fetch needed. Stamp the FINAL occurrences: the
         // (possibly rewritten) `new_body` on the dot path, the untouched `body_nodes`
         // otherwise.
-        if body_nodes.iter().any(occ_contains_dot_apply) {
+        if body_nodes.iter().any(|n| occ_needs_call_dispatch(kb, n)) {
             // Install the var types so a receiver `?x` (an `Expr::Var(DeBruijn)`)
             // resolves to its concrete sort, exactly as an operation's param env
             // resolves an op-body receiver. The env is otherwise empty — a rule body
@@ -39722,13 +39746,25 @@ fn type_rule_bodies(
             // skipped (it would otherwise raise a spurious, swallowed
             // `UnsatisfiedPrecondition` that also leaves the dot undispatched); a
             // GROUND-REFUTED one is still a definite violation and surfaces (the
-            // `UnsatisfiedPrecondition` arm of `dispatch_dots_in_occ`).
+            // `UnsatisfiedPrecondition` arm of `dispatch_calls_in_occ`).
             env.mark_rule_body_dispatch();
             let mut changed = false;
             let new_body: Vec<Rc<NodeOccurrence>> = body_nodes
                 .iter()
                 .map(|n| {
-                    let rewritten = dispatch_dots_in_occ(kb, &env, n, &mut errors);
+                    // WI-1026: tag whatever THIS atom reports with the atom's own
+                    // file. Per-atom rather than per-rule because a rule body can
+                    // carry atoms from different files (a `[simp]`-rewritten or
+                    // synthesized atom keeps its origin's span), and the point of
+                    // the tag is that the path names where the author must look.
+                    let before = errors.len();
+                    let rewritten = dispatch_calls_in_occ(kb, &env, n, errors);
+                    debug_assert_eq!(
+                        sources.len(),
+                        before,
+                        "WI-745: `sources` must stay parallel to `errors` across each atom",
+                    );
+                    sources.resize(errors.len(), Some(n.span.source));
                     if !Rc::ptr_eq(&rewritten, n) {
                         changed = true;
                     }
@@ -39753,7 +39789,6 @@ fn type_rule_bodies(
             }
         }
     }
-    errors
 }
 
 /// WI-300 — rewrite each rule body's `find_dictionary(X)` guard (the converter's
@@ -41094,25 +41129,50 @@ fn align_call_args_to_params(
     Some(out)
 }
 
-/// WI-282: recursively rewrite `Expr::DotApply` nodes to their dispatched form,
-/// preserving all non-dot structure (`reassemble`'s ptr-eq short-circuit keeps
-/// unchanged subtrees allocation-free). A DotApply is dispatched as a unit via
-/// the typer's own walk (`type_check_node`), which recurses into the receiver —
-/// so a nested `?x.a.b` chain dispatches outward-in through one call, never
-/// double-visited here. A pattern occurrence (`as_expr` = `None`) is left
+/// WI-282 / WI-1026: recursively rewrite the calls a rule body's dispatch DECIDES —
+/// an `Expr::DotApply`, and a DIRECT call on a defaulted spec op — to their
+/// dispatched form, preserving all non-call structure (`reassemble`'s ptr-eq
+/// short-circuit keeps unchanged subtrees allocation-free). Each is dispatched as a
+/// unit via the typer's own walk (`type_check_node`), which recurses into the
+/// receiver — so a nested `?x.a.b` chain dispatches outward-in through one call,
+/// never double-visited here. A pattern occurrence (`as_expr` = `None`) is left
 /// unchanged: a dot in a pattern's type annotation is a TYPE projection, not a
 /// value dispatch.
-fn dispatch_dots_in_occ(
+///
+/// WI-1026 added the second shape and with it the second REASON. A rule body naming
+/// a defaulted spec op directly (`Desc.describe(leaf(), ?r)`) has no dot to trigger
+/// the walk, so nothing typed it and nothing ran the WI-444 carrier-override
+/// decision on it: the resolver folded `op_body_node(fn_sym)` — the SPEC'S DEFAULT —
+/// and MEASURED, a carrier whose implementation arrives by a WI-431 instance fact
+/// answered `1` where the same call in an operation body answered the supplied `7`,
+/// and a two-supplier TIE answered `1` where the operation body is REFUSED AT LOAD.
+/// Routing it through the same `check_apply_iter` keeps the pin and the refusal in
+/// ONE owner rather than growing a rule-body copy (058 §3.1/§3.7: dispatch answers
+/// by the value, and a read that SELECTS goes loud on the second candidate).
+///
+/// NARROWED to a defaulted spec-op head, deliberately, and this is the clause a
+/// reader is most likely to drop. `type_rule_bodies` has never type-checked
+/// rule-body calls, so widening to every `Expr::Apply` would report the whole
+/// backlog of never-checked rule bodies as new load errors — a corpus-wide change
+/// of a different kind, not this ticket's dispatch question. A BODY-LESS spec op is
+/// out too: it has no default to shadow, so `reduce_op_value` leaves it un-ground
+/// and the goal residualizes rather than answering wrongly (WI-1027 owns that half).
+fn dispatch_calls_in_occ(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
     match occ.as_expr() {
-        Some(Expr::DotApply { .. }) => match type_check_node(kb, env, occ, None) {
+        // ONE predicate for the shapes this walk decides, shared with the pre-scan
+        // ([`occ_needs_call_dispatch`]) so a shape walked but not acted on, or acted
+        // on but not walked, is impossible — and ONE error tail for both, since the
+        // policy below is about type_check_node's outcome, not about which shape
+        // produced it.
+        Some(e) if expr_needs_call_dispatch(kb, e) => match type_check_node(kb, env, occ, None) {
             // `result.node` is the dispatched tree (method `Apply` / reflect
-            // `field_access`), re-typed and redex-free — the same form an op
-            // body's dot rewrites to.
+            // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
+            // the same form an op body's call rewrites to.
             Ok(result) => result.node,
             // The ONE deliberately-tolerated failure: an UNRESOLVED receiver
             // (`receiver_sort: None`) is not a value dispatch we can decide —
@@ -41132,8 +41192,8 @@ fn dispatch_dots_in_occ(
             // violation [`?b.guarded(0)`], any type / arity / effect mismatch inside
             // the dispatched form). A rule-body FLOAT is NOT one of these: the
             // WI-557/602 gate skips it, so `check_apply_iter` returns `Ok` and the
-            // dot dispatches clean (`rule_body_value_precondition_dot_dispatches`).
-            // The dot is left in place so downstream still sees an un-rewritten node.
+            // call dispatches clean (`rule_body_value_precondition_dot_dispatches`).
+            // The node is left in place so downstream still sees an un-rewritten one.
             Err(e) => {
                 errors.push(e);
                 Rc::clone(occ)
@@ -41146,7 +41206,7 @@ fn dispatch_dots_in_occ(
             for_each_child(expr, |c| children.push(Rc::clone(c)));
             let new_children: Vec<Rc<NodeOccurrence>> = children
                 .iter()
-                .map(|c| dispatch_dots_in_occ(kb, env, c, errors))
+                .map(|c| dispatch_calls_in_occ(kb, env, c, errors))
                 .collect();
             super::simp_rewrite::reassemble(occ, &new_children)
         }
@@ -41154,15 +41214,88 @@ fn dispatch_dots_in_occ(
     }
 }
 
-/// WI-282: does `occ` carry an `Expr::DotApply` anywhere in its expression
-/// subtree? A cheap pre-scan so the dispatch walk skips dot-free rule bodies.
-/// Explicit-stack walk (matching its sibling [`occurrence_contains_functor`]) so
-/// a deeply-nested body can't overflow the host stack.
-fn occ_contains_dot_apply(occ: &Rc<NodeOccurrence>) -> bool {
+/// WI-1026 — is `f` a spec operation WITH a default body: the shape whose call
+/// sites the WI-444 block in [`check_apply_iter`] decides (pin to the carrier's
+/// supplied implementation, or refuse a tie), as opposed to a body-less spec op,
+/// which dispatches through the WI-573 slot instead.
+///
+/// The gate for BOTH the rule-body walk trigger ([`occ_needs_call_dispatch`]) and
+/// the arm in [`dispatch_calls_in_occ`] that acts on it, so the pre-scan and the
+/// action cannot drift — a body walked but not acted on costs a pass, a body
+/// acted on but not walked is silent.
+///
+/// Spelled as the WI-444 gate PLUS `!is_builtin`, with the NAMED readers rather
+/// than re-derived: that block is `lookup_spec_op_dispatch(..).is_none() &&
+/// spec_op_parent_sort(..).is_some()`, and under a parametric parent the first
+/// conjunct is exactly "not body-less", i.e. [`op_has_runnable_body`]. The obvious
+/// spelling — `kb.op_body_node(f).is_some()`, which is what stood here first —
+/// silently drops that reader's `OperationInfo`-existence gate, the one
+/// `operation_has_no_body`'s doc calls load-bearing ("a symbol with no
+/// `OperationInfo` … must keep that answer so non-operation symbols are not
+/// misclassified"). The conjunction with `spec_op_parent_sort` happens to hide the
+/// difference today; that is a coupling, not a licence to keep the weaker read.
+///
+/// CLAUSE ORDER IS LOAD-BEARING AND WAS MEASURED. `spec_op_parent_sort` ends in
+/// `type_params_of_sort`, which `format!`s a prefix, scans ALL of
+/// `by_qualified_name`, and deep-clones a `Vec<String>` — 51 µs/call, O(|symbols|),
+/// and `kb/mod.rs` already flags it as a hot-load-path hazard (WI-653). It is third
+/// because the two `HashMap` probes in front of it SHIELD it completely: over a real
+/// load this predicate runs 745 times (examples/github-todo) / 657 (anthill-todo),
+/// `is_builtin` rejects ~half, `op_body_node` the rest, and the expensive leg is
+/// reached **zero** times. So the pre-scan stays a cheap pre-scan and needs no
+/// precomputed set. WI-1036 is where that stops being true — dropping `!is_builtin`
+/// sends 60 sites through the third clause, so `type_params_of_sort` wants fixing
+/// FIRST if that ticket lands. (The obvious O(1) rewrite is not a drop-in: the
+/// scope-based spelling `load.rs`'s `enclosing_is_spec` uses disagrees with
+/// `type_params_of_sort` on 24 of 2755 symbols, because the latter derives the body
+/// scope through a child's `declaring_scope`.)
+///
+/// **`!is_builtin` is the whole blast radius of WI-1026's rule-body arm, and it
+/// was MEASURED, not assumed.** With this clause the arm fires on ZERO sites in
+/// the corpus (stdlib + host bindings + testcases + examples + anthill-todo);
+/// WITHOUT it, on 60 — every one a `PartialOrd.gt/gte/lt/lte` rule-body goal,
+/// newly pinned to `Int64.gt` / `Float.gt` (the corpus still loads clean either
+/// way). Those 60 are excluded on the merits, not for quiet: a builtin-mapped
+/// spec op is decided by the interpreter's builtin table, and the resolver's
+/// `reduce_op_value` returns early on a builtin before it ever reads a pin — so
+/// classifying them changes nothing on the path this ticket is about, while it
+/// DOES newly feed 60 sites to `req_insertion::run`, which emits a dispatch
+/// rewrite per classified occurrence. That is a separate change with its own
+/// measurement to do; filed as WI-1036 rather than taken as a side effect here.
+fn is_defaulted_spec_op(kb: &KnowledgeBase, f: Symbol) -> bool {
+    !kb.is_builtin(f) && op_has_runnable_body(kb, f) && spec_op_parent_sort(kb, f).is_some()
+}
+
+/// WI-282 / WI-1026: is THIS node a call [`dispatch_calls_in_occ`] must decide — an
+/// `Expr::DotApply`, or (WI-1026) a direct call to a DEFAULTED spec op?
+///
+/// THE one predicate, asked by the walk's acting arm and by its pre-scan
+/// ([`occ_needs_call_dispatch`]) alike. Two spellings of "which shapes we decide"
+/// is the drift this ticket was created by: a shape walked but not acted on costs
+/// a pass, a shape acted on but not walked is silent.
+fn expr_needs_call_dispatch(kb: &KnowledgeBase, expr: &Expr) -> bool {
+    match expr {
+        Expr::DotApply { .. } => true,
+        Expr::Apply { functor, .. } => is_defaulted_spec_op(kb, *functor),
+        _ => false,
+    }
+}
+
+/// WI-282 / WI-1026: does `occ` CARRY, anywhere in its subtree, a node
+/// [`expr_needs_call_dispatch`] answers for? A cheap pre-scan so the dispatch walk
+/// skips rule bodies with none. Explicit-stack walk (matching its sibling
+/// [`occurrence_contains_functor`]) so a deeply-nested body can't overflow the host
+/// stack.
+///
+/// The conditions share ONE pre-scan because they share one walk: a body with only
+/// a spec-op call still needs the var-type env installed, which is what
+/// `type_rule_bodies` builds around this gate. Still cheap after WI-1026 widened it
+/// — see [`is_defaulted_spec_op`] for the measurement that says so.
+fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         if let Some(expr) = o.as_expr() {
-            if matches!(expr, Expr::DotApply { .. }) {
+            if expr_needs_call_dispatch(kb, expr) {
                 return true;
             }
             for_each_child(expr, |c| stack.push(Rc::clone(c)));

@@ -986,6 +986,9 @@ mod wi1012_static_supplier_tie_test;
 #[path = "include/wi1013_call_type_args_view_test.rs"]
 mod wi1013_call_type_args_view_test;
 
+#[path = "include/wi1026_rule_body_spec_op_dispatch_test.rs"]
+mod wi1026_rule_body_spec_op_dispatch_test;
+
 // Moved out of tests/*.rs (WI-244 convention, 2026-08-06): each of these was its
 // own test binary; they are ordinary per-WI tests with no reason to be separate.
 

@@ -1284,16 +1284,29 @@ impl SearchStream {
                 if let Some(goal_occ) = goal_occ {
                     if let Some(Expr::Apply { pos_args, type_args, .. }) = goal_occ.as_expr() {
                         if pos_args.len() == pos_arity {
-                            let call_occ = NodeOccurrence::new_expr(
-                                Expr::Apply {
-                                    functor: f,
-                                    pos_args: pos_args[..n].to_vec(),
-                                    named_args: Vec::new(),
-                                    type_args: type_args.clone(),
-                                },
-                                goal_occ.span,
-                                None,
-                            );
+                            // WI-1026: `rebuilt_expr`, not a bare `new_expr` — the
+                            // GOAL is the site the typer classified, and the pin
+                            // has to reach `reduce_op_value` or it folds
+                            // `op_body_node(f)`, a DEFAULTED spec op's own default,
+                            // over the implementation the carrier supplies (a rule
+                            // body answered `1` where an operation body answered
+                            // `7`). It also carries the goal's `owner`, which the
+                            // hand-rolled `new_expr` here dropped.
+                            //
+                            // This is NOT a rebuild of the same expression — it
+                            // drops the goal's RESULT COLUMN (`pos_args[..n]` of
+                            // `n + 1`). That is fine for the pin, whose subject is
+                            // the callee, and benign for the `inferred_type` the
+                            // same helper carries: `check_apply_iter` ignores
+                            // positional args past the declared params, so the
+                            // goal's stamped type already IS the n-ary call's
+                            // return type, not something about the extra column.
+                            let call_occ = goal_occ.rebuilt_expr(Expr::Apply {
+                                functor: f,
+                                pos_args: pos_args[..n].to_vec(),
+                                named_args: Vec::new(),
+                                type_args: type_args.clone(),
+                            });
                             let result = Value::Node(Rc::clone(&pos_args[n]));
                             let subst = self.stack.last().unwrap().subst.clone();
                             let reduced = kb.reduce_operand(Value::Node(call_occ), &subst);
@@ -6091,10 +6104,27 @@ impl KnowledgeBase {
             Value::Node(o) => Rc::clone(o),
             _ => return v,
         };
-        let op = match occ.as_expr() {
+        let functor = match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => *functor,
             _ => return v,
         };
+        // WI-1026 — fold the operation the TYPER pinned this site to, not the
+        // functor it is spelled with. `classified_apply_target` is the same read
+        // eval performs at its own apply (`eval.rs`'s `classified_apply_target`);
+        // without it the two paths disagreed about a DEFAULTED spec op, since
+        // `op_body_node(spec_op)` is the SPEC'S DEFAULT and the pin names the
+        // carrier's supplied implementation. MEASURED: `rule answer(?r) :-
+        // leaf().describe(?r)` answered `1` (the default) where the identical call
+        // in an operation body answered the supplied `7` — WI-444/WI-1010's whole
+        // rule ("defaults fill GAPS, they do not SHADOW") silently absent from the
+        // SLD path, on a call the typer HAD already classified.
+        //
+        // Redirecting only the CALLEE is sound because the args are read
+        // positionally first (`occ.pos_arg(self, i)` below) against the pinned op's
+        // own arg places, exactly as eval binds them; a named-arg call whose spec
+        // and impl spell a parameter differently finds no arg and residualizes,
+        // which is the WI-483 leave-uninterpreted outcome, not a wrong answer.
+        let op = occ.classified_apply_target().unwrap_or(functor);
         // A builtin (field_access, arith, eq, …) is reduced by its own path, not
         // folded. Only a CONCRETE operation (one with a stored body) folds; an
         // abstract / spec op has no body (its requires are abstract) — leave it.

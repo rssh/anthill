@@ -33,21 +33,27 @@
 //!
 //! ## Two limits, both MEASURED, neither closed here
 //!
-//! **A rule body that names the spec op DIRECTLY is not covered** — the typer never
-//! sees it, since `type_rule_bodies` reaches `check_apply_iter` only for a DOT. Three
-//! spellings, three silent answers, measured on this file's tie fixture and on the
-//! same program with ONE (fact-route) supplier:
+//! **A rule body that names the spec op DIRECTLY was not covered** — three spellings,
+//! three silent answers, measured on this file's tie fixture and on the same program
+//! with ONE (fact-route) supplier. **CLOSED BY WI-1026**; the table is kept because
+//! this is where it was measured, with what WI-1026 changed it to:
 //!
-//! | rule body | 1 supplier | 2 suppliers |
-//! |---|---|---|
-//! | `Desc.describe(leaf(), ?r)` | `1` — the DEFAULT, binding invisible | `1` — default, tie ignored |
-//! | `describe(leaf(), ?r)` | `[]` | `[]` |
-//! | `leaf().describe(?r)` | `1` — the DEFAULT | `7` — route 1, first match |
-//! | via an operation body | `7` ✓ WI-1010 | REFUSED ✓ WI-1012 |
+//! | rule body | 1 supplier | 2 suppliers | | WI-1026 |
+//! |---|---|---|---|---|
+//! | `Desc.describe(leaf(), ?r)` | `1` — the DEFAULT, binding invisible | `1` — tie ignored | → | `7` / REFUSED |
+//! | `describe(leaf(), ?r)` | `[]` | `[]` | → | unchanged — WI-1034 |
+//! | `leaf().describe(?r)` | `1` — the DEFAULT | `7` — route 1, first match | → | `7` / `7` — WI-1035 |
+//! | via an operation body | `7` ✓ WI-1010 | REFUSED ✓ WI-1012 | → | unchanged |
 //!
-//! So the rule-body path honours neither WI-1010 (a written binding is invisible) nor
-//! WI-1012. That is PRE-EXISTING — neither WI-444 site is on the SLD goal path — and
-//! is a different mechanism from the one this ticket fixes. Filed as **WI-1026**.
+//! TWO CLAIMS ABOVE WERE WRONG, and WI-1026 refuted both by driving them.
+//! "The typer never sees it, since `type_rule_bodies` reaches `check_apply_iter` only
+//! for a DOT" — the DOT row IS reached, and the WI-444 block DID pin it; the pin was
+//! lost in the De Bruijn open / head-match rename, because `rebuilt_expr` carried the
+//! `inferred_type` and not the `CallClass` beside it. And the tie shown here as `7 —
+//! route 1, first match` is not a rule-body defect at all: the same dot in an
+//! OPERATION body also answers `7` (this file's own control used the QUALIFIED
+//! spelling, so it measured the path and attributed to it what is keyed on the
+//! spelling). See `wi1026_rule_body_spec_op_dispatch_test`.
 //!
 //! **The refusal cannot fire for a SELF-RECEIVER spec** (`head(s: Stream)`) — the
 //! stdlib's largest defaulted-op family. `provision_carrier_sort` files every
@@ -166,8 +172,10 @@ fn a_concrete_carrier_tie_is_refused_at_load() {
 /// apart. The refusal is raised on `probe`'s OPERATION body; the rule reaches the tie
 /// only by CALLING `probe`, which is the route that residualized. So this pins that
 /// the SLD-reachable program is now refused — but it would still pass if rule-body
-/// typing were deleted outright, and a rule body naming `Desc.describe` DIRECTLY is
-/// NOT covered at all (the measured table in this file's header; WI-1026).
+/// typing were deleted outright. A rule body naming `Desc.describe` DIRECTLY is a
+/// different program and is driven in `wi1026_rule_body_spec_op_dispatch_test`, which
+/// removes THIS file's `probe` so the refusal cannot fire on the operation body and
+/// mask what the rule does.
 ///
 /// Asserted as a LOAD refusal rather than by re-driving the rule: once the program is
 /// refused there is no KB to query, and "the query returns nothing" is precisely the

@@ -335,6 +335,9 @@ impl NodeOccurrence {
     /// silent drift (the M6 refresh-boundary guarantee holds by head-only reads,
     /// not by re-deriving the type, which is the deferred compute-once entry).
     /// On a non-`Expr` self (no `inferred_type` slot) the carry is a no-op.
+    ///
+    /// WI-1026 added the `CallClass` to what is carried — see
+    /// [`carry_typer_stamps_from`](Self::carry_typer_stamps_from).
     pub fn rebuilt_expr(&self, expr: Expr) -> Rc<Self> {
         let rebuilt = match &self.kind {
             NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { from, by }, .. } => {
@@ -342,10 +345,106 @@ impl NodeOccurrence {
             }
             _ => NodeOccurrence::new_expr(expr, self.span, self.owner),
         };
-        if let Some(ty) = self.inferred_type() {
-            rebuilt.set_inferred_type(ty);
-        }
+        rebuilt.carry_typer_stamps_from(self);
         rebuilt
+    }
+
+    /// WI-502 / WI-1026 — carry `src`'s TYPER-WRITTEN stamps onto this rebuilt
+    /// occurrence: the `inferred_type` and the `CallClass`.
+    ///
+    /// ONE owner for both, because they are one invariant with two fields and
+    /// they were separated by exactly one bug. WI-502 established the rule for
+    /// `inferred_type` ("every occurrence-rebuild path must carry it, else the
+    /// stamp is dropped the instant a body is opened/renamed during resolution")
+    /// and wrote the carry at the three rebuild owners. The `classification`
+    /// written beside it was left behind at all three, so a rule-body call the
+    /// typer HAD pinned reached the resolver unclassified: `with_fresh_vars`
+    /// opens the body's De Bruijn vars and `body_rename` substitutes the head
+    /// match, and each rebuild reset the pin to `None`. MEASURED — `rule
+    /// answer(?r) :- leaf().describe(?r)` carried `PinNow{impl = leafDescribe}`
+    /// on its STORED body and `None` by the time `reduce_op_value` folded it,
+    /// so it ran the spec's default `1` instead of the carrier's supplied `7`.
+    ///
+    /// The carry is VERBATIM for both. For the type that is the head-only-read
+    /// argument in [`rebuilt_expr`]. For the classification the argument is
+    /// REFINEMENT, and it has to be made per CALLER, because the three do not all
+    /// refine:
+    ///
+    ///   * `open_debruijn_node` / `node_to_debruijn` / `substitute_occurrence` —
+    ///     opening and substituting only bind a var to a value OF the carrier the
+    ///     typer already saw, and the functor is copied through (`functor:
+    ///     *functor` in all three `Expr::Apply` arms), so the pin still names the
+    ///     right callee. A site whose carrier was not statically concrete was never
+    ///     pinned at all (`statically_pinned_carrier` answers `None`), so there is
+    ///     no stale pin to carry.
+    ///   * `simp_rewrite::reassemble` — NOT a refinement, and it needs its own leg.
+    ///     A `[simp]` fire replaces a child with an arbitrary equational RHS, so a
+    ///     rewritten receiver can name a different carrier than the pin was derived
+    ///     from. Both drivers that reach it are nonetheless safe, for two different
+    ///     reasons, and BOTH were checked rather than assumed: `simp_rewrite::run`
+    ///     is the PRE-TYPER pass (`load.rs` — "guard-free, type-blind"), so no
+    ///     classification exists yet and the carry is vacuous; the typer's own
+    ///     firing site RE-TYPES the spliced subtree (`push_visit`'s continuation,
+    ///     fuel-bounded by `SIMP_FUEL` for exactly that fire→re-type recursion),
+    ///     which overwrites the classification at any node whose input moved.
+    ///
+    /// ONLY these two fields are carried, and the exclusions are deliberate — the
+    /// pattern below is EXHAUSTIVE (no `..`) so a fifth typer-written cell is a
+    /// compile error here rather than the silent drop this ticket is about, which
+    /// is the `Expr::Constructor.from_projection` discipline ("riding INSIDE the
+    /// `Expr` makes every rebuild site a compile error until it decides"):
+    ///
+    ///   * `resolved_type_args` — read only off KB-STORED op bodies
+    ///     (`collect_resolved_type_args`, from eval's `Expr::Apply`/`ApplyWithin`
+    ///     arms). The rebuild paths feed SLD, and the eval bridge re-enters by op
+    ///     SYMBOL, so a rebuilt node never reaches that reader. Carrying it would
+    ///     be inert, not wrong; it is left out so the excluded set stays the one a
+    ///     reader can check.
+    ///   * `lowered_receiver` — a `Weak` twin, same-pass-only, and by its own doc a
+    ///     dropped twin means `None` is the HONEST answer. Carrying it would alias
+    ///     a stale receiver, so this one must NOT be carried.
+    ///
+    /// No-op in both directions on a non-`Expr` kind, and per field: an unstamped
+    /// `src` leaves this occurrence's slot alone rather than clearing it.
+    /// MEASURED, because the `CallClass` clone here looks like a hot-path hazard and
+    /// is not: over the whole `wi_tests` binary, **4,355,888 calls and 10 clones**
+    /// (0.004 ms total), and ZERO `ResolvedRequiresNode` tree nodes — every
+    /// `ConcreteApplyWithin` seen carried `resolved_tree: None`. The recursive deep
+    /// clone that variant COULD cost is real in the type and never reached, so the
+    /// per-call cost for the other 4.36M is one `RefCell::borrow`. `Rc<CallClass>`
+    /// would make it a refcount bump; at 10 clones a suite that is insurance, not a
+    /// measured win, and it is not taken here.
+    pub fn carry_typer_stamps_from(&self, src: &NodeOccurrence) {
+        // Both sides destructured ONCE, and the bound refs are what the carries use
+        // — `src.inferred_type()` / `self.set_inferred_type()` would re-match both
+        // kinds, four discriminant checks where the pattern already holds the cells.
+        let (
+            NodeKind::Expr {
+                expr: _,
+                origin: _,
+                classification: dst_class,
+                resolved_type_args: _,
+                inferred_type: dst_ty,
+                lowered_receiver: _,
+            },
+            NodeKind::Expr {
+                expr: _,
+                origin: _,
+                classification: src_class,
+                resolved_type_args: _,
+                inferred_type: src_ty,
+                lowered_receiver: _,
+            },
+        ) = (&self.kind, &src.kind)
+        else {
+            return;
+        };
+        if let Some(ty) = src_ty.borrow().as_ref() {
+            *dst_ty.borrow_mut() = Some(ty.clone());
+        }
+        if let Some(c) = src_class.borrow().as_deref() {
+            *dst_class.borrow_mut() = Some(Box::new(c.clone()));
+        }
     }
 
     /// Build a synthesized expression occurrence — span inherited from
@@ -488,6 +587,46 @@ impl NodeOccurrence {
     pub fn set_classification(&self, class: super::typing::CallClass) {
         if let NodeKind::Expr { classification, .. } = &self.kind {
             *classification.borrow_mut() = Some(Box::new(class));
+        }
+    }
+
+    /// WI-218/WI-1026 — the operation this apply site dispatches to when the
+    /// caller can supply **no requirement dictionary**: the `PinNow` impl, whose
+    /// parent sort by construction reads no requirement slots
+    /// (`classify_pin_or_apply_within` writes `ConcreteApplyWithin` instead the
+    /// moment it does). `None` for every other class, INCLUDING
+    /// `ConcreteApplyWithin` — see below.
+    ///
+    /// The READER paired with [`set_classification`](Self::set_classification).
+    /// WI-1026 lifted it here from `eval.rs` because the RESOLVER needs the same
+    /// decode: `reduce_op_value` was folding `op_body_node(functor)` — a defaulted
+    /// spec op's own DEFAULT — over a call the typer had already pinned to the
+    /// carrier's supplied implementation. MEASURED: `rule answer(?r) :-
+    /// leaf().describe(?r)` answered `1` where the identical call in an operation
+    /// body answered the supplied `7`.
+    ///
+    /// **WHY `ConcreteApplyWithin` IS NOT A TARGET HERE, though eval's copy of this
+    /// read used to name it.** That variant means the callee's parent sort declares
+    /// `requires`, so running it needs a dictionary installed in its frame. Eval
+    /// never reached the old copy's arm for it — `Expr::Apply` matches
+    /// `ConcreteApplyWithin` three arms earlier and routes to
+    /// `start_apply_same_sort`, which installs the `dispatch_dict` — so that arm
+    /// was DEAD there and its deadness is what hid the hazard. It is not dead for
+    /// the resolver: `reduce_op_value` calls this unconditionally and folds
+    /// structurally, with no frame to thread a dictionary into, and the WI-444
+    /// block writes exactly this class for any supplied impl whose sort reads
+    /// requirement slots. Redirecting there would inline a body whose `requires`
+    /// slot nothing filled. So the answer is `None`, the fold keeps the spelled
+    /// functor, and the dictionary-bearing dispatch stays with the two paths that
+    /// have a frame (eval's own apply, and `bridge_op_to_eval`). A rule body
+    /// reaching a supplied impl of that shape therefore still runs the default —
+    /// a gap, narrower than the one this ticket closed, recorded as **WI-1037**.
+    pub fn classified_apply_target(&self) -> Option<Symbol> {
+        use super::typing::CallClass;
+        let NodeKind::Expr { classification, .. } = &self.kind else { return None };
+        match classification.borrow().as_deref() {
+            Some(CallClass::PinNow { impl_op_sym, .. }) => Some(*impl_op_sym),
+            _ => None,
         }
     }
 
@@ -3797,16 +3936,14 @@ pub fn substitute_occurrence(
             return super::simp_rewrite::reassemble(occ, &subst_children);
         }
     };
-    // WI-502 Step 3: the explicit arms above build the rebuilt node via
-    // `new_expr` (which resets `inferred_type` to `None`); carry `occ`'s stamped
-    // type onto it here, in one place. (The `_` arm already returned via
-    // `reassemble`, which carries the type itself.) Verbatim carry is sound for
-    // `min_sort`'s head-only read — see `NodeOccurrence::rebuilt_expr`.
+    // WI-502 Step 3 / WI-1026: the explicit arms above build the rebuilt node via
+    // `new_expr` (which resets the typer's stamps to `None`); carry `occ`'s
+    // stamped type AND its `CallClass` onto it here, in one place. (The `_` arm
+    // already returned via `reassemble`, which carries them itself.) Both carries
+    // are verbatim — see [`NodeOccurrence::carry_typer_stamps_from`].
     rebuilt
         .map(|n| {
-            if let Some(ty) = occ.inferred_type() {
-                n.set_inferred_type(ty);
-            }
+            n.carry_typer_stamps_from(occ);
             n
         })
         .unwrap_or_else(|| Rc::clone(occ))
