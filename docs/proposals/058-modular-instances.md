@@ -1,6 +1,6 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will; §3.9's congruent positive lawfulness, the use-site discharge WI-869 left unread, is proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -9,6 +9,8 @@
 ## 2. Model
 
 Supply and demand are two ends of one relation, and the language already has it. Every `provides Spec[…]` or `fact Spec[…]` declaration is recorded by the loader as a `SortProvidesInfo` fact, and the reflect layer exposes those facts as a queryable relation: `provides(?A, ?S_inst)` — "sort `?A` provides the spec instance `?S_inst`" (`stdlib/anthill/reflect/typing.anthill`, whose own comment calls `requires X` and `fact X[Y]` "the two ends of one relation").
+
+Each such declaration is a **provision** — one claim, one row. A provision may carry a **condition** (§3.8): the goals under which the claim applies. The pair is an ordinary clause — the provision is the **head**, the condition its **body** — so an unconditional provision is a fact and a conditional one is a rule. That naming is used throughout §3.
 
 A `requires Spec[…]` clause is the demand end. It adds nothing to the `provides` relation; it asks it a question: *which sort `?W` provides `Spec[…]`?* In SLD terms that question is the **goal** `provides(?W, Spec[…])` — "goal" being the ordinary name for a query the resolver tries to prove, binding its variables as it succeeds. Instance resolution is therefore not a new subsystem: it is the language's own relational search, aimed at its own `provides` relation. Each answer binds `?W` to a provider, and the requirement dictionary the runtime threads is that answer made concrete — the chosen provider plus, recursively, the answers to that provider's own requirements.
 
@@ -49,7 +51,7 @@ Desc.describe[Desc = LoudDesc](w)          -- a direct spec-op call: key = the s
 biFold[plus = AddM, times = MulM](xs)      -- two slots of one spec: keys = the slot NAMES (§3.4)
 ```
 
-A key resolves as: (1) a declared **type parameter** of the operation or its enclosing sort — a named slot *is* one; (2) a requirement's **spec short name**, when unambiguous among the callee's anonymous slots. A **qualified** key is refused, not resolved — selection must not depend on the caller's imports, and any selection a short name cannot express is written with a named slot instead. Name collisions across the two scopes, with a requirement's short name, or with the spec's own name are refused **at the declaration**: one name, one channel. A bracket in a **rule body** is refused loudly (selection there is deferred, not ignored); route through an operation.
+A key identifies one of the callee's slots, as: (1) a declared **type parameter** of the operation or its enclosing sort — a named slot *is* one; (2) a requirement's **spec short name**, when unambiguous among the callee's anonymous slots. A **qualified** key is refused, not resolved — the key is *matched* against the callee's declaration, never looked up in the caller's scope, so selecting a slot never requires importing its spec. Qualification is only meaningful for a resolved name, and admitting it would make the short form import-dependent in turn. It would also buy nothing: the ambiguity that actually arises is two anonymous slots of one spec, which share a qualified name — and a named slot's key is a parameter name, which has no qualified form at all. Any selection a short name cannot express is written with a named slot instead. Name collisions across the two scopes, with a requirement's short name, or with the spec's own name are refused **at the declaration**: one name, one channel. A bracket in a **rule body** is refused loudly (selection there is deferred, not ignored); route through an operation.
 
 Pinning does not reach into the resolution tree: a witness's own sub-goals always resolve by search. Steering one is written as a named slot **on the witness**, bound in the key's value position — `fold[Monoid = ListM[O = MyEq]]`, an ordinary type application. *(delivered — WI-870)* A key still reaches exactly one level, so the two channels are exclusive by construction: a spec key answers the goal the call made, a value's slot binding answers a sub-goal of the provider it names, and the composition nests.
 
@@ -105,28 +107,68 @@ sort ListOrd
                                          -- NAMED (§3.4): the element ordering is not
                                          -- incidental — selectable (`ListOrd[OE = …]`,
                                          -- §3.3) and part of ListOrd's identity
-  provides PartialOrd[T = List[T = E]]   -- the bundle (below): List has no order of its own
-  provides Ordered[T = List[T = E]]
+  provides Ordered[T = List[T = E]]      -- the PartialOrd floor is DERIVED, not written
+                                         -- (below): List has no order of its own
   operation compare(…) = … Ordered.compare(headA, headB) …
 end
 ```
 
 The chain does double duty: it *conditions* the provision and it *supplies the evidence* the provider's bodies dispatch through.
 
-**A CONDITION BELONGS TO ITS PROVISION, not to the sort** *(delivered — WI-869)*. A sort's `requires` chain is shared by every provision it makes, so a provider of two floors of one tower cannot condition them at two strengths — and that is not hypothetical, it is what the shipped `Pair` needs:
+**A condition is written on the provision it constrains, not on the sort** *(delivered — WI-869)*. A sort's `requires` chain is shared by every provision it makes — and it also supplies the evidence the bodies dispatch through — so a provider of two floors of one tower cannot condition them at two strengths. In clause terms (§2) it is one **body copied onto every head** the sort declares, which is why it can express only one strength. That is not hypothetical; it is what the shipped `Pair` needs:
 
 ```anthill
 provides PartialEq[Pair[A, B]] :- PartialEq[A], PartialEq[B]
 provides Eq[Pair[A, B]]        :- Eq[A], Eq[B]        -- STRICTLY stronger condition
 ```
 
-With one chain the weaker condition must win — `Pair` takes `requires PartialEq[…]`, since an `Eq` chain would make `Pair[A = Float, B = Int64]` a load error and stop `Pair` being a general product — and the stronger provision then **over-claims**: `Eq[Pair]` asserts lawful equality wherever the components merely have the partial one. The rule is that a `:- goals` tail scopes its conditions to the one provision; a sort-level `requires` keeps its present meaning (every provision, plus the bodies' evidence), and the two compose. Not new machinery: a per-provision chain is a second contributor to the dictionary's **provider half**, not a new half. As delivered the provider half is ONE slot set per sort — the `requires` chain then the provisions' conditions, deduplicated, because a body is owned by the sort and not by a provision — and it is STRICTNESS that is per-provision: a slot is demanded at a dispatch when it is sort-level or a condition of the provision dispatched, otherwise left unfilled, and reading an unfilled slot is refused at the read.
+With one chain the weaker condition must win — `Pair` takes `requires PartialEq[…]`, since an `Eq` chain would make `Pair[A = Float, B = Int64]` a load error and stop `Pair` being a general product — and the stronger provision then **over-claims**: `Eq[Pair]` asserts lawful equality wherever the components merely have the partial one. The rule is that a `:- goals` tail scopes its conditions to the one provision — each head carrying its own body. A sort-level `requires` keeps both its present jobs (conditioning every provision, *and* supplying the bodies' evidence); a `:- goals` tail does only the first, for one provision. They compose because they are not the same mechanism. Not new machinery: a per-provision chain is a second contributor to the dictionary's **provider half**, not a new half. As delivered the provider half is ONE slot set per sort — the `requires` chain then the provisions' conditions, deduplicated, because a body is owned by the sort and not by a provision — and it is STRICTNESS that is per-provision: a slot is demanded at a dispatch when it is sort-level or a condition of the provision dispatched, otherwise left unfilled, and reading an unfilled slot is refused at the read.
 
 Two boundaries: **a condition admits, it never ranks** — it shrinks where a provision applies, and provisions still applicable after their conditions resolve by the ladder (§3.2), which is the line between this and the predicate-directed selection §7 rejects; and a provider's chain does **not** discharge the *spec's* own requirements (`Eq[List[E]]` must come from `List`'s provision, not from the witness's chain) — lifting that is a separate, deferred increment.
 
-*(proposed from here)* `Ordered`'s laws derive the inherited comparison surface from `compare`, so a lone alternative `Ordered` witness contradicts the `PartialOrd` it inherits from the carrier — for *any* order but the carrier's own. A lawful alternative therefore **bundles** its own `PartialOrd` + `Ordered`, mutually consistent, anchored to the one shared `Eq` (which stays outside the bundle — §3.7). This generalizes: in a spec tower, an alternative is a consistent bundle of floors, never one floor over shared lower floors. Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
+*(proposed from here)* A lone alternative `Ordered` witness contradicts the `PartialOrd` it inherits from the carrier — `Ordered`'s laws derive `gt`/`lt`/`gte`/`lte` from `compare`, so for *any* order but the carrier's own the two disagree. The lawful shape is a consistent **bundle** of floors, never one floor over shared lower floors, anchored to the one shared `Eq` (which stays outside the bundle — §3.7). But the bundle is **derived, not written**: WI-876 already gives that derivation real default bodies, so "a carrier that supplies `compare` alone inherits the whole surface" (`stdlib/anthill/prelude/ordered.anthill:20`) — the only missing piece is the provision row a `requires PartialOrd[X]` goal finds, which is one clause in the §2 model:
 
-### 3.9 Dictionaries are PASSED at run time — instances are never CHOSEN at run time
+```anthill
+provides(?W, PartialOrd[T = ?X]) :- provides(?W, Ordered[T = ?X])
+```
+
+Deriving beats writing both floors: two hand-written provisions permit a bundle whose halves disagree, whereas one `compare` cannot. The rule does **not** generalize to "a spec provides what it requires" — `Ordered requires Eq` as well, and §3.7 refuses a second `Eq` provider permanently, since unification-fired dispatch has no call site to select at. It is narrower: **derive the provision for a required floor iff the upper floor's laws determine that floor's surface *and* the floor is selectable.** `PartialOrd` qualifies; `Eq` does not. Two mechanics it must respect, both recorded at the declaration: the derivation adds a provision **row**, never a second op declaration (`ordered.anthill:24` — declaring `gt`/`lt` on both specs gives a carrier providing both two `sort_ops` entries for one short name, "and which one wins is HashMap-iteration order — a coin flip, not a rule"); and the inherited default bodies read `Ordered.compare`, which `PartialOrd` does not `requires`, so the per-provision condition above is also what states that they are backed only where `Ordered[T]` holds (`ordered.anthill:35`, which names this very clause as the fix). Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
+
+### 3.9 Lawfulness derives positively — the missing use-site discharge *(proposed)*
+
+WI-869 conditioned the provisions; nothing yet **reads** the resulting failure. `stdlib/anthill/prelude/pair.anthill:55` records the measurement: `Set[T = Pair[Float, Int64]]` still **loads** although `Eq[Pair[Float, Int64]]` does not hold — "not an over-claim any more — the provision is conditioned and the goal genuinely fails — but no POSITIVE use-site check for `requires Eq` exists," and, measured, **a key providing nothing at all is accepted too**. Conditioning a provision changes what is *derivable*. It does not change what any use site *checks*.
+
+**The rule: positive from positive.** A composite is lawful exactly when its parts are, which is §3.8's clause shape applied **congruently** rather than per hand-written provision:
+
+```anthill
+provides Eq[Pair[A, B]]  :- Eq[A], Eq[B]
+provides Eq[List[T = E]] :- Eq[E]
+provides Eq[Point]       :- Eq[<each field's type>]
+```
+
+Conjunctive over the parts, because lawfulness is a universal claim. No new machinery: a head with its own body (§2), over the relation §3.8 already conditions.
+
+**The use-site check then reads positively.** `Set[T = X]` asks the goal `Eq[X]`, discharged either by a provision row or — inside a generic context — by the enclosing `requires Eq[T]` as an ordinary **assumption** (`Candidate::Assumption`, `rustland/anthill-core/src/kb/resolve.rs`). That is what Rust and Haskell do for `Map<K: Eq>`, and it settles three cases at once:
+
+| written | today | with positive derivation |
+| --- | --- | --- |
+| `Set[T = Pair[Float, Int64]]` | loads (measured, `pair.anthill:55`) | refused — `Eq[Pair[…]]` needs `Eq[Float]` |
+| `Set[T = Point(x: Int64, y: Int64)]` | loads, by *absence* of a `NonEq` | loads, by a derived `Eq[Point]` |
+| `Set[T = T]` under `requires Eq[T]` | loads, by absence | loads, by assumption |
+
+The middle row is what made the check negative in the first place — `stdlib/anthill/prelude/map.anthill:11`, "no `Eq` fact is derived for a lawful all-`Eq` composite." That is a **gap in the positive channel, not a reason to stop reading it**, and `rustland/anthill-core/src/kb/eq_derive.rs` already computes the classification: it asserts only the partial side. Assert the lawful side too and the reason lapses.
+
+**The parametric reach is why this is a rule and not more Rust.** WI-664 already derives composite lawfulness as a monotone fixpoint over the field-reference graph — sound under recursion, stopping at a dispatched-`eq` boundary, which is what keeps `TotalFloat` lawful and shields its wrappers. What it structurally cannot reach is the parametric case: `sort_functor_of_view` resolves a field's type to its **base sort**, whose element parameter is abstract, so `Pair[Float, Int64]` / `List[Float]` / `Option[Float]` are never seen. A fixpoint over concrete field types has nowhere to put a condition on a type parameter. A clause does — and after WI-869 the clause form exists.
+
+**What `NonEq` is left doing — the declaration, not the use site.** `eq_refl` is never discharged per instance (`stdlib/anthill/prelude/eq.anthill`: "documentation-only … NOT discharged per instance"), so nothing inspects reflexivity and nothing stops a carrier claiming lawfulness it lacks. `Float` is blocked today *only* because `NonEq[Float]` exists and the exclusion fires — `eq.anthill` says so outright. That job survives intact, and it is the only one needing a witness: `eq(w, w) = false` is a computation, checkable in a way the universal law is not.
+
+So the remit narrows to one sentence: **`NonEq` is the checkable shadow of an unchecked law, used to refuse a false claim at the declaration.** It is not a use-site mechanism, and "provides nothing at all" stops being an accepting state — a carrier deriving no `Eq` is refused *for that reason*, rather than admitted for want of a refutation. That leaves `pair.anthill:55`'s two named halves as one: the composite `NonEq` derivation stays a declaration-side follow-up, and the positive use-site discharge is this section.
+
+**Boundaries.** `Eq` stays coherent (§3.7) — one provider per carrier, never selectable — so a derived provision must be *the* provision, not a second candidate. The derivation is conditional in §3.8's sense, so it admits and never ranks. And it adds a provision **row**, never a second op declaration.
+
+**To measure before drafting further.** (1) Whether `Map[K = (a: Float)]` is refused *today*: `docs/kernel-language.md` lists it as a gap, but a named tuple with concrete fields is inside WI-664's delivered scope, and `wi664_composite_eq_test.rs` drives the derivation and the `provides Eq[Point]` conflict but **no use-site refusal**. (2) What `map.anthill:11`'s other reason — "WI-616's universal structural default would make the positive reading vacuous" — actually denotes; it is not reconstructible from the sources, since `Float` provides `PartialEq` + `NonEq` and not `Eq`, so a check reading provision *rows* is not obviously vacuous. (2) decides whether the check may be flipped at all.
+
+### 3.10 Dictionaries are PASSED at run time — instances are never CHOSEN at run time
 
 When a body dispatches through an abstract slot — `report[T, O](s: SortedSet[T = T, O = O])` — the provider arrives as a **dictionary in the frame**, passed like an argument: two calls may carry two different orders through one body. That is ordinary dictionary passing, the delivered threading.
 
