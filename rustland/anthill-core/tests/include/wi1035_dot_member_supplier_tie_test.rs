@@ -12,7 +12,7 @@
 //! | defaulted (`= 1`) | instance fact | operation body | **7** | REFUSED |
 //! | defaulted (`= 1`) | instance fact | rule body | **7** | REFUSED |
 //! | body-less | instance fact | operation body | **7** | REFUSED |
-//! | body-less | instance fact | rule body | **7** | REFUSED |
+//! | body-less | instance fact | rule body | **7** | `[]` — silent (WI-1043; the REFUSED this row used to claim was wi1027 probe-fixture contamination) |
 //! | body-less | witness sort | operation body | **7** | REFUSED |
 //!
 //! Row 5 is the loudest: the qualified spelling of that program answers 9 without the

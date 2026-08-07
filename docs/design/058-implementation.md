@@ -395,8 +395,10 @@ Full workspace green (29 binaries, 4295 tests).
 | defaulted (`= 1`) | instance fact | operation body | **7** | REFUSED (§14) |
 | defaulted (`= 1`) | instance fact | rule body | **7** | REFUSED (§14/§20) |
 | body-less | instance fact | operation body | **7** | REFUSED (§15) |
-| body-less | instance fact | rule body | **7** | REFUSED (§15) |
+| body-less | instance fact | rule body | **7** | **`[]` — silent (WI-1043)** |
 | body-less | witness sort | operation body | **7** | REFUSED (§15) |
+
+**The rule-body body-less cell above is a 2026-08-07 correction** — this table used to claim REFUSED there, and the claim was contamination of exactly the class §20 diagnosed: the wi1027 fixture's hardwired `probe` *operation* is what the refusal fired on (it locates at the probe's line), not the rule body. Driven without the probe, the two-supplier program loads clean and answers `[]`: `expr_needs_call_dispatch` requires `op_has_runnable_body`, so a body-less named call in a rule body is never typed and no other refusal path exists. The hole is owned by **WI-1043**.
 
 The last row is the loudest: without §15's guard the qualified spelling of that program answers **9**, with it the program is refused, and the dot answered **7** throughout. Two texts, three outcomes, decided by which spelling the author reached for.
 

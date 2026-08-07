@@ -41494,13 +41494,19 @@ fn dispatch_calls_in_occ(
 /// the corpus (stdlib + host bindings + testcases + examples + anthill-todo);
 /// WITHOUT it, on 60 — every one a `PartialOrd.gt/gte/lt/lte` rule-body goal,
 /// newly pinned to `Int64.gt` / `Float.gt` (the corpus still loads clean either
-/// way). Those 60 are excluded on the merits, not for quiet: a builtin-mapped
-/// spec op is decided by the interpreter's builtin table, and the resolver's
-/// `reduce_op_value` returns early on a builtin before it ever reads a pin — so
-/// classifying them changes nothing on the path this ticket is about, while it
-/// DOES newly feed 60 sites to `req_insertion::run`, which emits a dispatch
-/// rewrite per classified occurrence. That is a separate change with its own
-/// measurement to do; filed as WI-1036 rather than taken as a side effect here.
+/// way). CORRECTED (2026-08-07 /code-review — the justification this paragraph
+/// used to give was FALSE): `reduce_op_value` does NOT return early on a builtin
+/// before reading a pin. It reads the pin FIRST — `op =
+/// classified_apply_target().unwrap_or(functor)` (`resolve.rs:6143`) — and keys
+/// the builtin early-return on the PINNED op. Classifying these 60 sites would
+/// therefore put the pin in front of the builtin check, which then asks about
+/// the impl symbol (`Int64.gt`) instead of the spelled spec op
+/// (`PartialOrd.gt`). Both happen to be builtin-mapped, so the outcomes may
+/// coincide — but that equivalence is a measurement WI-1036 must MAKE, not an
+/// ordering this comment can promise. The exclusion stands on the unmeasured
+/// blast radius — the resolver path IS affected, and the 60 sites additionally
+/// feed `req_insertion::run`, which emits a dispatch rewrite per classified
+/// occurrence; filed as WI-1036 rather than taken as a side effect here.
 fn is_defaulted_spec_op(kb: &KnowledgeBase, f: Symbol) -> bool {
     !kb.is_builtin(f) && op_has_runnable_body(kb, f) && spec_op_parent_sort(kb, f).is_some()
 }
