@@ -5073,7 +5073,7 @@ fn const_expr_form_name(e: &Expr) -> &'static str {
         Expr::ApplyWithin { .. } => "apply-within",
         Expr::ConstructorWithin { .. } => "constructor-within",
         Expr::LambdaWithin { .. } => "lambda-within",
-        Expr::RequirementAtSort { .. } | Expr::ConstructRequirement { .. } => "requirement form",
+        Expr::RequirementAtSort { .. } | Expr::Dictionary { .. } => "requirement form",
         _ => "unsupported expression form",
     }
 }

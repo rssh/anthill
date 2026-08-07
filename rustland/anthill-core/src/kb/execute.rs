@@ -315,7 +315,6 @@ impl Value {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_)
             | Value::FactRef(_)
             | Value::Node(_)
             | Value::Relation { .. } => false,
@@ -420,7 +419,6 @@ impl KnowledgeBase {
             Value::Substitution(_) => Err(LowerError::UnsupportedVariant("Substitution")),
             Value::Map(_) => Err(LowerError::UnsupportedVariant("Map")),
             Value::Cell(_) => Err(LowerError::UnsupportedVariant("Cell")),
-            Value::Requirement(_) => Err(LowerError::UnsupportedVariant("Requirement")),
             Value::FactRef(_) => Err(LowerError::UnsupportedVariant("FactRef")),
             Value::Node(_) => Err(LowerError::UnsupportedVariant("Node")),
             // WI-714: a `Relation` is an intensional query value — it is RUN
@@ -1024,7 +1022,6 @@ mod tests {
             Value::Substitution(interp.alloc_subst(crate::kb::subst::Substitution::new())),
             Value::Map(interp.alloc_map(crate::eval::map_arena::MapBody::new())),
             Value::Cell(interp.alloc_cell(Value::Int(0))),
-            Value::Requirement(interp.alloc_requirement(s, SmallVec::new())),
             Value::Relation { query: Rc::new(Value::Unit), columns: Rc::from(vec![]) },
             Value::FactRef(crate::kb::extent::FactRef::resident(crate::kb::RuleId::from_raw(0))),
             Value::term(tid),
@@ -1047,7 +1044,7 @@ mod tests {
             samples.iter().map(variant_name).collect();
         let expected: std::collections::BTreeSet<&str> = [
             "Int", "BigInt", "Float", "Bool", "Str", "Unit", "Tuple", "Entity", "OpRef",
-            "Substitution", "Map", "Cell", "Requirement", "Relation", "FactRef", "Term",
+            "Substitution", "Map", "Cell", "Relation", "FactRef", "Term",
             "Var", "SymbolRef", "Node",
         ]
         .into_iter()
@@ -1090,7 +1087,6 @@ mod tests {
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
-            Value::Requirement(_) => "Requirement",
             Value::FactRef(_) => "FactRef",
             Value::Term { .. } => "Term",
             Value::Var(_) => "Var",

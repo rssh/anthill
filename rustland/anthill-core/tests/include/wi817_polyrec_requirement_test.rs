@@ -368,7 +368,7 @@ fn op_scoped_recursion_correct_control_and_lambda_identical() {
 /// The requires-eval-path hazard SETTLED: sort-level requires + a
 /// CONDITIONAL instance at a concrete compound binding works end-to-end —
 /// the call site resolves `Desc[Wrap[Leaf]]` to the nested
-/// `construct_requirement(WrapDesc, [Leaf])` tree and eval expands it
+/// `Dictionary(Dictionary(impl: Leaf), impl: WrapDesc)` tree and eval expands it
 /// correctly (12 = 10·1 + 2). Neither error spelling reported in the ticket
 /// (`projection index 0 out of range` / `UnknownOperation`) reproduces here.
 #[test]
@@ -393,8 +393,8 @@ fn sort_level_single_conditional_level_is_correct() {
 /// computes the depth-coded values 1/12/122: the g→f leg's `Desc[FT :=
 /// Wrap[GT]]` dep σ-DISAGREES with g's covering `Desc[GT]` entry (mixed
 /// param/compound), so instead of forwarding g's dictionary unchanged the
-/// call site constructs `construct_requirement(WrapDesc,
-/// [var_ref(__req_desc)])` — the conditional instance wrapping the caller's
+/// call site constructs `Dictionary(var_ref(__req_desc), impl:
+/// WrapDesc)` — the conditional instance wrapping the caller's
 /// own dictionary one level deeper each round — while the f→g leg (same
 /// σ-class, FT ↦ GT) keeps forwarding BY NAME. Before WI-821 the wildcard
 /// forward returned 1 at EVERY depth, running the Leaf impl on wrapped

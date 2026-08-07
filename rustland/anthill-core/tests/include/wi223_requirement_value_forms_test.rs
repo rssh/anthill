@@ -2,9 +2,13 @@
 //! eval reduces the requirement-typed value forms emitted by the
 //! requirement-insertion pass:
 //!
-//!   - `requirement_at_current(slot)` → `Value::Requirement(frame.requirements[slot])`
+//!   - `var_ref(name)` → the frame requirement of that name
 //!   - `requirement_at_sort(chain, slot)` → projected sub-requirement
-//!   - `construct_requirement(impl, [...])` → freshly-allocated arena slot
+//!   - `Dictionary(subs…, impl: S)` → a freshly-built dictionary value
+//!
+//! WI-1045 — the reductions produce ORDINARY VALUES, so each assertion reads
+//! the result back through `Dictionary::from_value`: the same boundary an
+//! anthill caller crosses, and the only shape check in the crate.
 //!
 //! Tests use `Interpreter::run_with_requirements` to seed the frame's
 //! requirements before stepping the body — exercising reductions in
@@ -16,6 +20,7 @@
 
 use smallvec::SmallVec;
 
+use anthill_core::eval::value::Dictionary;
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::KnowledgeBase;
@@ -51,12 +56,12 @@ fn build_req_var_ref(
 #[test]
 fn var_ref_yields_frame_requirement_handle() {
     // Pre-seed a single named requirement; an op body that reads
-    // `var_ref(name: __req_probe)` must return a Value::Requirement
-    // whose functor matches what we passed in.
+    // `var_ref(name: __req_probe)` must return the dictionary whose impl
+    // matches what we passed in.
     let mut interp = fresh_interp();
     let probe_sym = interp.kb_mut().intern("test.wi223.IntFooImpl");
-    let handle = interp.alloc_requirement(probe_sym, SmallVec::new());
-    let expected_functor = handle.functor();
+    let handle = crate::common::dict(&interp, probe_sym, []);
+    let expected_impl = handle.impl_sort();
 
     let var_ref_sym = interp.kb()
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
@@ -69,13 +74,15 @@ fn var_ref_yields_frame_requirement_handle() {
     let value = interp.run_with_requirements(expr, requirements)
         .expect("var_ref should reduce to the frame requirement");
 
-    match value {
-        Value::Requirement(h) => {
-            assert_eq!(h.functor(), expected_functor,
-                "Value::Requirement should carry the seeded handle's functor");
-        }
-        other => panic!("expected Value::Requirement, got {other:?}"),
-    }
+    let read = expect_dict(&interp, &value);
+    assert_eq!(read.impl_sort(), expected_impl,
+        "the value delivered should carry the seeded dictionary's impl");
+}
+
+/// The dictionary a reduction delivered, read back through the ONE boundary.
+fn expect_dict(interp: &Interpreter, v: &Value) -> Dictionary {
+    Dictionary::from_value(interp.kb(), v)
+        .unwrap_or_else(|| panic!("expected a Dictionary value, got {v:?}"))
 }
 
 #[test]
@@ -104,10 +111,10 @@ fn requirement_at_sort_projects_sub_handle() {
     let parent_sym = interp.kb_mut().intern("test.wi223.ParentImpl");
     let child_sym = interp.kb_mut().intern("test.wi223.ChildImpl");
 
-    let child_handle = interp.alloc_requirement(child_sym, SmallVec::new());
+    let child_handle = crate::common::dict(&interp, child_sym, []);
     let mut bundle: SmallVec<[_; 1]> = SmallVec::new();
     bundle.push(child_handle);
-    let parent_handle = interp.alloc_requirement(parent_sym, bundle);
+    let parent_handle = crate::common::dict(&interp, parent_sym, bundle);
 
     let var_ref_sym = interp.kb()
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
@@ -134,137 +141,53 @@ fn requirement_at_sort_projects_sub_handle() {
     let value = interp.run_with_requirements(expr, requirements)
         .expect("requirement_at_sort should reduce successfully");
 
-    match value {
-        Value::Requirement(h) => {
-            assert_eq!(h.functor(), child_sym,
-                "projected handle should be the child's");
-        }
-        other => panic!("expected Value::Requirement, got {other:?}"),
-    }
+    let read = expect_dict(&interp, &value);
+    assert_eq!(read.impl_sort(), child_sym,
+        "the projected sub-dictionary should be the child's");
 }
 
 #[test]
-fn construct_requirement_allocates_fresh_arena_slot() {
-    // `construct_requirement(impl_functor: Foo, requirements: [])`
-    // allocates a brand-new requirement value with no sub-requirements.
-    // The arena's live count climbs by one over the body's execution.
+fn dictionary_node_builds_a_childless_dictionary() {
+    // `Dictionary(impl: Foo)` builds a dictionary with no sub-dictionaries.
+    //
+    // WI-1045 — the arena live-count half of this test is DELETED, not ported:
+    // there is no arena, so "the slot releases after the value drops" has no
+    // subject. What remains is the reduction itself, which is what the IR node
+    // is for.
     let mut interp = fresh_interp();
     let foo_sym = interp.kb_mut().intern("test.wi223.Foo");
+    let expr = crate::common::dict_term(interp.kb_mut(), foo_sym, &[]);
 
-    let cr_sym = interp.kb()
-        .try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .expect("construct_requirement registered");
-
-    let impl_field = interp.kb_mut().intern("impl_functor");
-    let reqs_field = interp.kb_mut().intern("requirements");
-    let impl_ref = interp.kb_mut().alloc(Term::Ref(foo_sym));
-    let nil_sym = interp.kb()
-        .try_resolve_symbol("anthill.prelude.List.nil")
-        .expect("List.nil registered");
-    let nil = interp.kb_mut().alloc(Term::Fn {
-        functor: nil_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    let expr = interp.kb_mut().alloc(Term::Fn {
-        functor: cr_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (impl_field, impl_ref),
-            (reqs_field, nil),
-        ]),
-    });
-
-    let pre = interp.requirement_arena_live_count();
     let value = interp.run_with_requirements(expr, SmallVec::new())
-        .expect("construct_requirement should reduce successfully");
+        .expect("the Dictionary node should reduce successfully");
 
-    match value {
-        Value::Requirement(h) => {
-            assert_eq!(h.functor(), foo_sym,
-                "constructed handle's functor should match the requested impl");
-            assert_eq!(h.arity(), 0, "no sub-requirements expected");
-            // Drop the value so the slot is freed before we read live count.
-            drop(h);
-            assert_eq!(interp.requirement_arena_live_count(), pre,
-                "constructed slot must release after Value::Requirement drops");
-        }
-        other => panic!("expected Value::Requirement, got {other:?}"),
-    }
+    let read = expect_dict(&interp, &value);
+    assert_eq!(read.impl_sort(), foo_sym,
+        "the built dictionary's impl should match the requested one");
+    assert_eq!(read.arity(), 0, "no sub-dictionaries expected");
 }
 
 #[test]
-fn construct_requirement_bundles_subrequirements() {
-    // Construct a parent that bundles a child requirement (built via a
-    // nested construct_requirement). The cascade-drop test in the arena
-    // unit suite already proves the dispose path; here we pin the IR
-    // wiring: the eval produces a parent whose 0-th sub-requirement is
-    // the freshly-built child.
+fn dictionary_node_bundles_sub_dictionaries() {
+    // Construct a parent that bundles a child dictionary (built via a nested
+    // `Dictionary` node); pin the IR wiring: the eval produces a parent whose
+    // 0-th sub-dictionary is the freshly-built child.
     let mut interp = fresh_interp();
     let parent_sym = interp.kb_mut().intern("test.wi223.Parent");
     let child_sym = interp.kb_mut().intern("test.wi223.Child");
 
-    let cr_sym = interp.kb()
-        .try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .unwrap();
-    let cons_sym = interp.kb()
-        .try_resolve_symbol("anthill.prelude.List.cons")
-        .expect("List.cons registered");
-    let nil_sym = interp.kb()
-        .try_resolve_symbol("anthill.prelude.List.nil")
-        .unwrap();
-    let impl_field = interp.kb_mut().intern("impl_functor");
-    let reqs_field = interp.kb_mut().intern("requirements");
-    let head_field = interp.kb_mut().intern("head");
-    let tail_field = interp.kb_mut().intern("tail");
-
-    let nil = interp.kb_mut().alloc(Term::Fn {
-        functor: nil_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-
-    // Inner: construct_requirement(Child, [])
-    let child_ref = interp.kb_mut().alloc(Term::Ref(child_sym));
-    let child_construct = interp.kb_mut().alloc(Term::Fn {
-        functor: cr_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (impl_field, child_ref),
-            (reqs_field, nil),
-        ]),
-    });
-
-    // Outer: construct_requirement(Parent, [child_construct])
-    let cons = interp.kb_mut().alloc(Term::Fn {
-        functor: cons_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (head_field, child_construct),
-            (tail_field, nil),
-        ]),
-    });
-    let parent_ref = interp.kb_mut().alloc(Term::Ref(parent_sym));
-    let parent_construct = interp.kb_mut().alloc(Term::Fn {
-        functor: cr_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (impl_field, parent_ref),
-            (reqs_field, cons),
-        ]),
-    });
+    // Inner: Dictionary(impl: Child) — a POSITIONAL child of the outer node,
+    // the same layout the value carries (WI-1045's one spelling).
+    let child_construct = crate::common::dict_term(interp.kb_mut(), child_sym, &[]);
+    let parent_construct =
+        crate::common::dict_term(interp.kb_mut(), parent_sym, &[child_construct]);
 
     let value = interp.run_with_requirements(parent_construct, SmallVec::new())
-        .expect("construct_requirement chain should reduce");
+        .expect("the nested Dictionary chain should reduce");
 
-    match value {
-        Value::Requirement(h) => {
-            assert_eq!(h.functor(), parent_sym, "parent functor preserved");
-            assert_eq!(h.arity(), 1, "parent should bundle one sub-requirement");
-            let sub = h.project(0);
-            assert_eq!(sub.functor(), child_sym,
-                "parent's 0-th sub-requirement should be the child");
-        }
-        other => panic!("expected Value::Requirement, got {other:?}"),
-    }
+    let read = expect_dict(&interp, &value);
+    assert_eq!(read.impl_sort(), parent_sym, "parent impl preserved");
+    assert_eq!(read.arity(), 1, "parent should bundle one sub-dictionary");
+    assert_eq!(read.sub(0).expect("slot 0").impl_sort(), child_sym,
+        "parent's 0-th sub-dictionary should be the child");
 }

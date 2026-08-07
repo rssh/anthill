@@ -4,6 +4,26 @@
 
 ## Tracks: WI-204 (port cmd_X), WI-218 (static-dispatch rewrite), WI-210 (spec/impl call-site dispatch), WI-222–WI-233 (elaboration / dictionary model)
 
+## Superseded on ONE point — the dictionary's REPRESENTATION (WI-1045)
+
+Everything below about the *model* — parameter insertion, the names model, the
+`frame.requirements` channel, closure capture, projection, the no-cycles policy —
+stands. What is superseded is every sentence describing the dictionary's runtime
+CARRIER: `Value::Requirement(RequirementHandle)`, the per-interpreter
+`RequirementArena`, refcounted slots, `(arena, raw)` identity, and the IR spelling
+`construct_requirement(impl_functor =, requirements = <list>)`.
+
+A dictionary is now an ordinary first-order value —
+`Dictionary(sub₀ … subₙ₋₁, impl: S)`, positional sub-dictionaries and one named
+`impl` — carried identically by σ, by `frame.requirements` and by
+`closure.requirements`, with no arena and no conversion at a crossing. The IR
+construction node is that SAME constructor rather than a second one. Read
+`construct_requirement(impl, [subs])` below as `Dictionary(subs…, impl: impl)`, and
+`Value::Requirement(handle)` as the value itself.
+
+**`docs/design/requirement-channel.md` §9 owns the representation**; this document
+owns the call model.
+
 ## Brainstorm: see `operation-call-model-brainstorm.md` for the exploration. This doc is the resulting design only.
 
 ## Two models: the implemented names model vs. the retired positional model

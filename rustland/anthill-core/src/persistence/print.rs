@@ -478,11 +478,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_occurrence(chain, buf);
                 buf.push_str(&format!(", {slot})"));
             }
-            Expr::ConstructRequirement { impl_functor, requirements } => {
-                buf.push_str("construct_requirement(");
-                buf.push_str(self.view.sym_name(*impl_functor));
-                buf.push_str(", ");
-                self.write_occ_seq('[', ']', requirements, buf);
+            // WI-1045 — printed the way the VALUE reads: `Dictionary(sub₀ … subₙ₋₁,
+            // impl: S)`. One spelling, so a printed IR node and a printed dictionary
+            // are the same text (`requirement-channel.md` §9).
+            Expr::Dictionary { impl_sort, subs } => {
+                buf.push_str("Dictionary(");
+                for sub in subs.iter() {
+                    self.write_occurrence(sub, buf);
+                    buf.push_str(", ");
+                }
+                buf.push_str("impl: ");
+                buf.push_str(self.view.sym_name(*impl_sort));
                 buf.push(')');
             }
         }

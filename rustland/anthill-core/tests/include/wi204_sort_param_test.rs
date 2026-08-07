@@ -190,7 +190,7 @@ end
         .kb_mut()
         .try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore")
         .expect("FileBasedWorkitemStore is loaded");
-    let dict = interp.alloc_requirement(fbws, smallvec::SmallVec::new());
+    let dict = crate::common::dict(&interp, fbws, []);
     let result = interp.call_with_requirements(
         "test.wi204_form_c_runtime.ConcreteCaller.call_drive",
         &[cell_value, Value::Str("WI-001".to_string())],

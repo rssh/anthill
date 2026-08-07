@@ -166,7 +166,7 @@ end
 /// `requires HasZero[T]` calls `zero()` on its abstract `T`; at the call
 /// `zeroLike(box(tag))` the receiver pins `T := Tag`, the `HasZero[T = Tag]` dict
 /// is built by SLD against the instance fact's `SortProvidesInfo`
-/// (`build_dep_projection` Strategy 3 ⇒ `construct_requirement(Tag, nil)`) and
+/// (`build_dep_projection` Strategy 3 ⇒ `Dictionary(impl: Tag)`) and
 /// threaded in; inside, `zero` dispatches via `dispatch_via_sort_ops_table`,
 /// which must read the instance fact's `zero = tagZero` binding (Tag owns no real
 /// `zero`). Without the increment-4 fallback this dies (the body-less spec op has
@@ -224,7 +224,7 @@ end
 /// dictionary's prefix is the spec's own `requires` chain, resolved here against
 /// `fact MyEq[T = Tag]`. What keeps `expand_dispatching_dict` quiet is the other
 /// end: `tagZero` has no parent sort, so it owns no `requires` slots and the frame
-/// gets `__req_self` alone. (Before, the dict was `construct_requirement(Tag, nil)`
+/// gets `__req_self` alone. (Before, the dict was `Dictionary(impl: Tag)`
 /// and the check passed as `0 == 0` — the same pass for a different reason, which is
 /// why this test did not notice the layout change.) Result `7` ⇒ `tagZero` ran.
 #[test]

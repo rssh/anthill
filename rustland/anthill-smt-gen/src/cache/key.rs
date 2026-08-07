@@ -183,7 +183,7 @@ fn hash_occurrence(
         Expr::Constructor { name, .. } => fn_node(kb, b"C", *name, h, out),
         Expr::ConstructorWithin { name, .. } => fn_node(kb, b"CW", *name, h, out),
         Expr::Instantiation { name, .. } => fn_node(kb, b"I", *name, h, out),
-        Expr::ConstructRequirement { impl_functor, .. } => fn_node(kb, b"CR", *impl_functor, h, out),
+        Expr::Dictionary { impl_sort, .. } => fn_node(kb, b"CR", *impl_sort, h, out),
         // Member/leaf symbols (not functors — don't feed `out`).
         Expr::DotApply { name, .. } => leaf_sym(kb, b"D", *name, h),
         Expr::VarRef { name } => leaf_sym(kb, b"VR", *name, h),

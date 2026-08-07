@@ -7,7 +7,7 @@
 //!    level of the caller's frame requirements (the v0 stdlib case).
 //! 2. **Nested** — `requirement_at_sort(requirement_at_current(slot=i), slot=k)`
 //!    when the dep is bundled inside caller slot i's requirement value.
-//! 3. **Static** — `construct_requirement(impl, [<sub-projections>])`
+//! 3. **Static** — `Dictionary(<sub-projections>, impl: impl)`
 //!    when the dep is fully ground and `SortProvidesInfo` resolves it.
 //!
 //! WI-222's transitive-flat `requires_chain` only naturally exercises
@@ -199,13 +199,13 @@ fn nested_handle_emits_requirement_at_sort_chain() {
 }
 
 #[test]
-fn ground_dep_emits_construct_requirement() {
+fn ground_dep_emits_the_dictionary_node() {
     // Synthetic Strategy 3 scenario: an empty caller chain (no enclosing
     // requires) plus a fully-ground dep `Eq[T = Int64]`. Strategies 1 and 2
     // both fail (nothing to scan); Strategy 3 runs SLD resolution
     // against `SortProvidesInfo` — the rustland binding registers
     // `fact Eq[T = Int64]` via a leaf impl carrier — and emits
-    // `construct_requirement(<IntEq>, nil)`.
+    // `Dictionary(impl: <IntEq>)`.
     //
     // Done as a direct `build_dep_projection` call against a hand-built
     // `RequiresEntry`. The natural Pin-now path that ends up here in
@@ -258,19 +258,21 @@ fn ground_dep_emits_construct_requirement() {
     )
         .expect("Strategy 3 must resolve Eq[T=Int64] via SortProvidesInfo");
 
-    // Top-level must be construct_requirement(impl_functor=Ref(<Eq impl>),
-    // requirements=nil).
-    let (functor, named_args) = match kb.get_term(projection) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+    // Top-level must be `Dictionary(<subs …>, impl = Ref(<Eq impl>))`.
+    let (functor, pos_args, named_args) = match kb.get_term(projection) {
+        Term::Fn { functor, pos_args, named_args } => {
+            (*functor, pos_args.clone(), named_args.clone())
+        }
         other => panic!("projection must be Fn; got {other:?}"),
     };
     assert_eq!(
-        functor, syms.construct,
-        "Strategy 3 emits construct_requirement; got {}",
+        functor, syms.dict_ctor,
+        "Strategy 3 emits the `Dictionary` construction node; got {}",
         kb.qualified_name_of(functor)
     );
 
-    let impl_tid = get_named_arg(&kb, &named_args, "impl_functor").expect("impl_functor arg");
+    let impl_tid = named_args.iter().find(|(k, _)| *k == syms.dict_impl)
+        .map(|(_, v)| *v).expect("impl arg");
     let impl_sym = match kb.get_term(impl_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
         Term::Fn { functor, pos_args, named_args }
@@ -278,48 +280,40 @@ fn ground_dep_emits_construct_requirement() {
         {
             *functor
         }
-        other => panic!("impl_functor must be a sort reference; got {other:?}"),
+        other => panic!("impl must be a sort reference; got {other:?}"),
     };
     // The rustland binding (anthill-stl/anthill/int.anthill) declares
     // `provides Int64 … fact Eq[T = Int64]` — Int64 IS the Eq carrier for
     // T = Int64. SortProvidesInfo's `sort_ref` is therefore the Int64
-    // symbol, so the construct_requirement's `impl_functor` Ref's Int64.
+    // symbol, so the node's `impl` Ref's Int64.
     assert_eq!(
         impl_sym, int_sym,
         "Eq[T = Int64]'s SortProvidesInfo carrier is Int64 itself; \
-         construct_requirement.impl_functor must point to it. Got {}",
+         Dictionary.impl must point to it. Got {}",
         kb.qualified_name_of(impl_sym)
     );
 
-    // requirements list = one entry — WI-857: a dictionary bundles the SPEC's own
+    // ONE positional sub-dictionary — WI-857: a dictionary bundles the SPEC's own
     // direct `requires` chain as its prefix, and `Eq requires PartialEq[T]`. So the
-    // emitted list is a single `cons` carrying `PartialEq[T = Int64]`'s own
-    // construct_requirement (also over Int64, which provides both). It was `nil`
-    // while the producer bundled only the PROVIDER's chain — and `Int64`'s is empty,
-    // which is exactly the arity-0 dictionary that died at eval.
-    let sub_reqs_tid =
-        get_named_arg(&kb, &named_args, "requirements").expect("requirements arg");
-    let sub_functor = match kb.get_term(sub_reqs_tid) {
-        Term::Fn { functor, .. } => *functor,
-        // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
-        Term::Ref(s) => *s,
-        other => panic!("requirements must be Fn (list) or Ref (nil); got {other:?}"),
-    };
+    // node carries `PartialEq[T = Int64]`'s own `Dictionary` node (also over Int64,
+    // which provides both). It was EMPTY while the producer bundled only the
+    // PROVIDER's chain — and `Int64`'s is empty, which is exactly the arity-0
+    // dictionary that died at eval.
+    //
+    // WI-1045 — POSITIONAL, not a `requirements` cons spine: the IR node's key set
+    // is now the VALUE's, where a sub-dictionary is positional child `k`.
     assert_eq!(
-        sub_functor, syms.cons,
-        "the spec half is `Eq`'s `requires PartialEq[T]`, so the nested \
-         requirements list is a one-entry cons, not nil"
+        pos_args.len(), 1,
+        "the spec half is `Eq`'s `requires PartialEq[T]`, so the node carries one \
+         positional sub-dictionary, not zero"
     );
-    let cons_named = match kb.get_term(sub_reqs_tid) {
-        Term::Fn { named_args, .. } => named_args.clone(),
-        other => panic!("expected a cons cell; got {other:?}"),
-    };
-    let head_tid = get_named_arg(&kb, &cons_named, "head").expect("cons head");
+    let head_tid = pos_args[0];
     let head_named = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } if *functor == syms.construct => named_args.clone(),
-        other => panic!("the bundled entry must itself be construct_requirement; got {other:?}"),
+        Term::Fn { functor, named_args, .. } if *functor == syms.dict_ctor => named_args.clone(),
+        other => panic!("the bundled entry must itself be a `Dictionary` node; got {other:?}"),
     };
-    let inner_tid = get_named_arg(&kb, &head_named, "impl_functor").expect("impl_functor");
+    let inner_tid = head_named.iter().find(|(k, _)| *k == syms.dict_impl)
+        .map(|(_, v)| *v).expect("impl");
     let inner_sym = match kb.get_term(inner_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
         Term::Fn { functor, pos_args, named_args }

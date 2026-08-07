@@ -60,7 +60,7 @@ fn lambda_construction_snapshots_enclosing_frame_requirements() {
     // `closure.requirements`.
     let mut interp = fresh_interp();
     let probe_sym = interp.kb_mut().intern("test.wi223.closure_reqs.SomeImpl");
-    let h = interp.alloc_requirement(probe_sym, SmallVec::new());
+    let h = crate::common::dict(&interp, probe_sym, []);
 
     // Body doesn't matter for snapshot test — use a literal so the
     // closure is well-formed.
@@ -82,8 +82,8 @@ fn lambda_construction_snapshots_enclosing_frame_requirements() {
     let snapshot = interp.closure_requirements_for_test(&closure_h);
     assert_eq!(snapshot.len(), 1,
         "lambda must snapshot the enclosing frame's single requirement");
-    assert_eq!(snapshot[0].1.functor(), h.functor(),
-        "snapshotted handle should reference the same impl");
+    assert_eq!(snapshot[0].1.impl_sort(), h.impl_sort(),
+        "snapshotted dictionary should reference the same impl");
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     // `closure.requirements` wins over the (empty) apply-side channel.
     let mut interp = fresh_interp();
     let probe_sym = interp.kb_mut().intern("test.wi223.closure_reqs.SnapImpl");
-    let h = interp.alloc_requirement(probe_sym, SmallVec::new());
+    let h = crate::common::dict(&interp, probe_sym, []);
 
     // Body of the lambda: var_ref(name: __req_probe) — a named
     // requirement read (WI-237 names model).
@@ -217,14 +217,11 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     requirements.push((req_name, h.clone()));
     let value = interp.run_with_requirements(let_term, requirements)
         .expect("let-bound closure invocation should reduce");
-    match value {
-        Value::Requirement(observed) => {
-            assert_eq!(observed.functor(), h.functor(),
-                "closure body should observe the requirement snapshotted at \
-                 lambda construction time, not the invocation-site context");
-        }
-        other => panic!("expected Value::Requirement, got {other:?}"),
-    }
+    let observed = anthill_core::eval::value::Dictionary::from_value(interp.kb(), &value)
+        .unwrap_or_else(|| panic!("expected a Dictionary value, got {value:?}"));
+    assert_eq!(observed.impl_sort(), h.impl_sort(),
+        "closure body should observe the requirement snapshotted at \
+         lambda construction time, not the invocation-site context");
 }
 
 #[test]

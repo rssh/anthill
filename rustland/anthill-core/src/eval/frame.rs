@@ -31,8 +31,8 @@ pub type FrameTypeArgs = SmallVec<[(Symbol, TermId); 2]>;
 ///
 /// WI-078 (proposal 027, Phase A step a): `Clone` so a frame — and the whole
 /// `ActivationStack` — can be snapshotted for continuation capture. Every field
-/// is already cloneable: `Value` (`value.rs`), `RequirementHandle`
-/// (`requirement_arena.rs`), `MatchBranch` (`node_occurrence.rs`), and the
+/// is already cloneable: `Value` (`value.rs`), `Dictionary`
+/// (`dictionary.rs`), `MatchBranch` (`node_occurrence.rs`), and the
 /// `Rc<NodeOccurrence>` / `Symbol` / `TermId` leaves.
 #[derive(Debug, Clone)]
 pub enum AwaitState {
@@ -84,7 +84,7 @@ pub enum AwaitState {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
-        requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
+        requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     },
     /// A constructor node is collecting (possibly named) field values.
@@ -177,7 +177,7 @@ pub struct Frame {
     /// the eval resolves a body's `var_ref(name)` requirement reads
     /// against it. Per `docs/design/operation-call-model.md` §"Runtime:
     /// frame, requirement value, closure".
-    pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
     /// Operation-level type arguments for the call that pushed this
     /// frame (WI-272). Per `docs/design/operation-call-model.md`
     /// §"Operation type arguments", sequenced *after* sort-level
@@ -199,7 +199,7 @@ pub struct Frame {
 pub struct ChildFrameContext {
     pub op: Symbol,
     pub locals: SmallVec<[(Symbol, Value); 4]>,
-    pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
     pub type_args: FrameTypeArgs,
 }
 

@@ -1,6 +1,6 @@
 -- Runtime dispatch values: the first-class anthill face of the runtime
--- requirement dictionary (`Value::Requirement`) and resolved operation
--- reference (`Value::OpRef`).
+-- requirement dictionary and the resolved operation reference
+-- (`Value::OpRef`).
 --
 -- These are the RUNTIME dual of realization's `Obligation`/`Implementation`:
 -- a `Dictionary` is the value that discharges a `requires` by carrying its
@@ -9,10 +9,12 @@
 -- (realization.rust_std, …) describe how a Dictionary renders (a Rust `&dyn
 -- Trait`, a Scala `using`).
 --
--- A pure structural VIEW, not new storage: each operation is a native Rust
--- builtin reading the live `RequirementArena` handle in place — exactly the
--- `Substitution`/`Map`/`Cell` model. `Value::Requirement` stays opaque; the
--- builtins match the handle in Rust and read the arena directly. No
+-- A pure structural VIEW, not new storage. WI-1045 went further and removed
+-- the storage entirely: a dictionary IS an ordinary value in this shape --
+-- `Dictionary(sub0 .. subN, impl: S)`, positional sub-dictionaries and one
+-- named `impl` -- carried by sigma, by an eval frame and by a closure alike,
+-- with no arena behind it and no conversion at a crossing. Each operation
+-- below is a native Rust builtin reading that value's own children. No
 -- pattern-match face (anthill has no user-defined extractors) — the accessor
 -- ops expose everything the value holds.
 --
@@ -26,26 +28,26 @@ namespace anthill.realization.runtime
   import anthill.prelude.{Option, Int64, FiniteStream}
 
   -- The runtime requirement dictionary: a resolved spec impl, materialized as
-  -- `(functor, [sub-requirement dicts])`.
+  -- `Dictionary(sub0 .. subN, impl: S)` — an ordinary first-order value.
   --
   -- Parameterized by S — the spec instance this dict witnesses (e.g.
   -- `Dictionary[Eq[Int64]]`). S is the DENOTED type of the two-type split: it
   -- rides as an ordinary type parameter, tracked STATICALLY by the typer, never
-  -- read off the opaque value (the runtime slot stores only `(functor,
-  -- sub-handles)`, and the functor is a multi-spec carrier, so the witnessed
+  -- read off the value (the value carries only the impl and its sub-dictionaries,
+  -- and the impl is a multi-spec carrier, so the witnessed
   -- spec is not recoverable from the value — it lives in the type). Bare
   -- `Dictionary` (S unknown) is the existential form.
   sort Dictionary
     sort S = ?
 
-    -- The resolved impl identity (the arena slot's `functor`).
+    -- The resolved impl identity (the `impl` named child).
     operation impl(d: Dictionary) -> Symbol
 
     -- Number of sub-requirement dicts.
     operation arity(d: Dictionary) -> Int64
 
-    -- Project the i-th sub-requirement — no copy (a refcount bump on the child
-    -- handle). Its denoted type is the i-th `requires` of S's impl; that
+    -- Project the i-th sub-requirement — positional child i, no copy (the
+    -- child rides an Rc). Its denoted type is the i-th `requires` of S's impl; that
     -- value-dependent refinement is deferred, so the view returns bare
     -- `Dictionary` (existential) for now.
     operation sub(d: Dictionary, i: Int64) -> Dictionary

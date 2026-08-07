@@ -13,6 +13,9 @@ the generated-body-goal rule, the three spellings, position restriction, the anc
 rule — including its second anchor, WI-742's typed relational head (`?x: T` →
 `domain(?x, T)`), which grounds a `require[Spec[T]]` with no witness call.
 
+**One representation delivered** (WI-1045): §9 is no longer a rule to apply but a
+state of the code — there is one dictionary carrier, one constructor, and no
+conversion at a crossing.
 **Consumers:** WI-1037; **WI-070** (`Branch` effect) and **WI-069** (`Suspension`
 snapshot/resume) — jointly 027.2's eval↔SLD switch.
 
@@ -37,12 +40,12 @@ justify the absence of a channel.
 
 > **A dictionary is a term. `find_dictionary` is an ordinary relation. The binding is σ.**
 
-A requirement arena slot is `{ functor: Option<Symbol>, requirements:
-Option<SmallVec<[RequirementHandle]>> }` (`eval/requirement_arena.rs:28`) — an impl
-symbol and its sub-dictionaries. There is no closure in it, no host handle, no value:
-**a dictionary is exactly a first-order term** `Dictionary(sub₀ … subₙ₋₁, impl: S)`,
-and WI-1019's `TermView` already presents it as precisely that, totally and losslessly
-(`kb/term_view.rs:2228`, `:2322`, `:2364`, `:2386`).
+A dictionary is an impl symbol and its sub-dictionaries. There is no closure in it,
+no host handle, no second store: **a dictionary is exactly a first-order term**
+`Dictionary(sub₀ … subₙ₋₁, impl: S)`, and since WI-1045 that is not a *view* of it
+but what it IS — an ordinary `Value::Entity` carried identically by σ, by
+`eval::Frame::requirements` and by `Closure::requirements`
+(`eval/dictionary.rs`).
 
 Three consequences, and they are the whole design:
 
@@ -344,11 +347,12 @@ var and delays. Ordering is a performance question, not a correctness one.
   dictionaries; hand them to the goal so a `require(X, ?d)` in the proved rule
   **checks** rather than re-resolves.
 
-**Handle identity.** `RequirementHandle { raw, arena: RequirementArenaRef }` where the
-ref is an `Rc` (`eval/requirement_arena.rs:90`, `:167`), so a dictionary built in a
-scratch interpreter stays valid in σ after `run_in_bridge_interp` drops it. **Pin at
-the site:** two scratch interpreters are two arenas — compare **structurally** (the
-WI-1019 view), never by `raw()`.
+**Identity (WI-1045).** A dictionary has **one** — its content. It is an ordinary
+value, so it stays valid in σ after `run_in_bridge_interp` drops the interpreter
+that built it, and two dictionaries compare by `(impl, ordered subs)` wherever
+they were built. The warning this paragraph used to carry — *two scratch
+interpreters are two arenas, so compare structurally, never by `raw()`* — has no
+subject any more.
 
 ---
 
@@ -398,12 +402,13 @@ carriers that already hold first-order values, and everything the channel needs 
 unify to bind `?d`, unify to check a supplied one, read child `k`, read the impl —
 is what those carriers already do.
 
-So the eval-side `RequirementArena` is a **second store for a shape the ordinary
-carriers already hold**. What it buys is deallocation; what it costs is real and
-already documented as a hazard: a second identity notion (`(arena, raw)`, so two
-scratch interpreters give one dictionary two identities and every comparison must be
-routed through the WI-1019 view), plus a conversion at every crossing. Retiring it
-removes both, and removes the boundary at which the two forms could disagree.
+The eval-side `RequirementArena` was a **second store for a shape the ordinary
+carriers already hold**. What it bought was deallocation; what it cost was real and
+had to be documented as a hazard: a second identity notion (`(arena, raw)`, so two
+scratch interpreters gave one dictionary two identities and every comparison had to
+be routed through the WI-1019 view), plus a conversion at every crossing. **WI-1045
+retired it**, removing both and removing the boundary at which the two forms could
+disagree.
 
 **Not two representations kept in step — one.** `Frame::requirements`,
 `Closure.requirements`, σ, and the reflect `Dictionary` face all name the same
@@ -415,13 +420,16 @@ comparison — not about which carrier or store holds it. Whether a dictionary i
 interned, arena-held or built fresh is chosen on its own merits, and can be changed
 without touching anything above.
 
-**One spelling, too.** Today the IR construction node is
-`anthill.reflect.Expr.construct_requirement(impl_functor = …, requirements = …)`
-while WI-1019's view of a handle presents `Dictionary(sub₀ … subₙ₋₁, impl: S)` —
-different functor, different key names for one thing. Under this rule they collapse
-to a single constructor. §10 item 2 already made that a condition ("name the term
-constructor — its functor must equal the view head's `Dictionary` symbol"); it is
-now the rule rather than a branch of one.
+**One spelling, too — DELIVERED (WI-1045).** The IR construction node was
+`anthill.reflect.Expr.construct_requirement(impl_functor = …, requirements = <cons
+list>)` while the value presents `Dictionary(sub₀ … subₙ₋₁, impl: S)` — a different
+functor, different key names, and a list where the value has positional children,
+for one thing. They are now **one constructor**: the node's functor IS
+`anthill.realization.runtime.Dictionary`, its sub-dictionaries are positional and
+its provider is the named `impl`, so the node and the value it evaluates to present
+the same head. The `Expr.construct_requirement` entity is gone from
+`stdlib/anthill/reflect/reflect.anthill`; `dictionary_view_syms` owns both names for
+every side.
 
 **What this rule is NOT resting on.** An earlier version of this section argued for
 the term from *partial* dictionaries: a conditional provision `provides Eq[Pair[A,
@@ -453,13 +461,15 @@ for the same reason §9's partial dictionary is: composition never starts on an
 unreadable carried type, so no slot is ever left pending. Both would have been
 needed only if run time composed under uncertainty, which §2.1 forbids.
 
-Delivered state (WI-1040): neither leaf is constructible on the fetch path, and
-WI-869's four producers are untouched. The hole leaf becomes real when a dictionary
-can reach σ from somewhere other than a fetch — i.e. with §10 item 3.
+Delivered state (WI-1040, unchanged by WI-1045): neither leaf is constructible on
+the fetch path, and WI-869's four producers are untouched. The hole leaf becomes
+real when a dictionary can reach σ from somewhere other than a fetch — i.e. with
+§10 item 3.
 
 ## 10. Open
 
-Items 2 and 5 are **settled by the WI-1040 delivery**; 1, 3 and 4 are untouched.
+Items 2 and 5 are **settled and delivered** (item 2's eval half by WI-1045);
+1, 3 and 4 are untouched.
 
 1. **[OPEN] The type-position channel for the un-stripped spec** (§5 — the rest of
    the encoding is settled there): which concrete channel carries the `[T…]`
@@ -476,15 +486,16 @@ Items 2 and 5 are **settled by the WI-1040 delivery**; 1, 3 and 4 are untouched.
    `Closure.requirements` and the reflect `Dictionary` face — and the eval-side
    `RequirementArena` is retired rather than converted into.
 
-   *Delivered by WI-1040:* the σ half. `?d` binds to a value shaped EXACTLY as
-   WI-1019's view of a handle — the `Dictionary` constructor, sub-dictionaries
-   positional, `impl` named — so a σ dictionary and an eval handle already compare
-   equal through that view, and the resolver allocates no arena. *Not yet delivered:* the eval half — `Frame::requirements`
-   still holds `RequirementHandle`s, so `eval_requirement_chain_node` still converts
-   at the SLD→eval edge. That conversion is exactly what §9 removes and is the last
-   place the two forms could disagree. **Tracked by WI-1045**; the shape is
-   mechanical (immutable, acyclic, ground, no setter — measured) but the surface is
-   82 references across 8 files plus a spelling merge, so it is its own change.
+   *Delivered by WI-1040:* the σ half — `?d` binds to a value shaped exactly as
+   WI-1019's view announced. *Delivered by WI-1045:* the eval half.
+   `Frame::requirements`, `Closure::requirements` and `Value::OpRef`'s `dict` all
+   hold `eval::dictionary::Dictionary` — a validated wrapper around the very
+   `Value`, so `as_value` is the identity and the SLD→eval edge converts nothing.
+   `RequirementArena`/`RequirementHandle` and the `Value::Requirement` variant are
+   deleted, the two tree→dictionary producers are one
+   (`typing::dictionary_of_tree`), and the IR construction node was respelled to
+   the dictionary's own constructor. Driven by
+   `wi1045_one_dictionary_representation_test`.
 3. **[OPEN] The eval→SLD handoff mechanism** (§6): `prove_rule_predicate` is a
    closed ground test with no dictionary parameter; specify the channel (a
    signature extension vs a `ResolveConfig` overlay à la `assumed_facts`) and the
@@ -551,4 +562,6 @@ Items 2 and 5 are **settled by the WI-1040 delivery**; 1, 3 and 4 are untouched.
   type DELAYS *before* composition starts, so what σ holds is always ground.
   WI-869's four producers are untouched.
 - **σ carries the term; eval still carries a handle.** The remaining conversion at
-  `eval_requirement_chain_node` is §9's target and is **WI-1045**, not this ticket.
+  `eval_requirement_chain_node` was §9's target and **WI-1045 removed it**: eval now
+  carries the same value, and `eval_requirement_chain_node` reads a frame slot
+  rather than converting one.

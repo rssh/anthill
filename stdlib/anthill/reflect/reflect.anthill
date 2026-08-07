@@ -541,9 +541,13 @@ namespace anthill.reflect
     -- sub-requirement of `chain`. `chain` is a requirement chain rooted
     -- at a `var_ref` requirement read — enforced by the typer.
     entity requirement_at_sort(chain: NodeOccurrence, slot: Int64)
-    -- construct_requirement(impl_functor, requirements): allocate a
-    -- fresh requirement value bundling the resolved sub-requirements.
-    entity construct_requirement(impl_functor: Symbol, requirements: List[NodeOccurrence])
+    -- The dictionary CONSTRUCTION node is not declared here, and its absence
+    -- is deliberate (WI-1045). It is spelled with the dictionary's OWN
+    -- constructor — `anthill.realization.runtime.Dictionary(sub0 .. subN,
+    -- impl: S)` — the same functor and the same key set as the VALUE it
+    -- evaluates to, so there is one constructor for a dictionary rather than
+    -- an `Expr.construct_requirement(impl_functor =, requirements =)` beside
+    -- it. See `docs/design/requirement-channel.md` §9.
   end
 
   entity MatchBranch(

@@ -1,14 +1,20 @@
 //! WI-1019 — the native-carrier structural view: the SHAPE is the equality.
 //!
-//! `Value::OpRef` and `Value::Requirement` used to view as `ViewHead::Opaque`,
-//! which made an `OpRef` measure as not equal to ITSELF and gave two distinct
-//! ones one `goal_fingerprint`. WI-1014 patched the first with a bespoke
-//! `Value::native_carrier_eq`; it could not touch the second, because a
+//! `Value::OpRef` and the requirement dictionary used to view as
+//! `ViewHead::Opaque`, which made an `OpRef` measure as not equal to ITSELF and
+//! gave two distinct ones one `goal_fingerprint`. WI-1014 patched the first with
+//! a bespoke `Value::native_carrier_eq`; it could not touch the second, because a
 //! payload-free head has nothing to key on.
 //!
-//! Both now present a structural head under their own declared sort, so equality
-//! and the key read the SAME view and cannot disagree. `Value::FactRef` stays
-//! `Opaque` on purpose — see the last section.
+//! `OpRef` now presents a structural head under its own declared sort, so
+//! equality and the key read the SAME view and cannot disagree.
+//! `Value::FactRef` stays `Opaque` on purpose — see the last section.
+//!
+//! WI-1045 — the dictionary reached the same place by a shorter road: it is an
+//! ORDINARY `Value::Entity` in the `Dictionary(sub₀ … subₙ₋₁, impl: S)` shape,
+//! so it reads through the `Entity` view arms and has no arm of its own. The
+//! dictionary tests below are unchanged in what they CLAIM; what changed is that
+//! there is no second carrier left for the claim to be false of.
 //!
 //! Reference: docs/design/requirement-dictionaries.md §2.4.1, proposal 005.
 //!
@@ -18,14 +24,14 @@
 //! | back-out | fails |
 //! |---|---|
 //! | `Value::head`'s `OpRef` arm → `Opaque` | `an_opref_is_equal_to_itself_and_keys_by_its_op`, `an_opref_key_is_payload_bearing`, `the_named_spec_op_half_…`, `two_oprefs_differing_only_in_their_dictionary_…` |
-//! | `Value::head`'s `Requirement` arm → `Opaque` | `a_dictionary_views_as_its_impl_and_sub_dictionaries`, `dictionaries_from_two_arenas_sharing_a_raw_…`, `two_oprefs_differing_only_in_their_dictionary_…` |
+//! | `Value::head`'s `Entity` arm → `Opaque` | `a_dictionary_views_as_its_impl_and_sub_dictionaries`, `two_dictionaries_over_different_impls_are_not_equal`, `two_oprefs_differing_only_in_their_dictionary_…` (and most of the suite — after WI-1045 a dictionary IS an entity, so this back-out is no longer narrow) |
 //! | drop `dict` from `opref_shape` | `two_oprefs_differing_only_in_their_dictionary_are_distinct` |
 //! | drop `named` from `opref_shape` | `the_named_spec_op_half_is_part_of_the_identity` |
 //! | delete the `(Opaque, Opaque)` arm | `kb::tests::a_factref_is_an_identity_not_a_shape` (unit) |
 //!
 //! The last row is the one that shows the two halves are INDEPENDENT: deleting
-//! the opaque-equality arm leaves every test above green, because `OpRef` and
-//! `Requirement` no longer reach it.
+//! the opaque-equality arm leaves every test above green, because neither an
+//! `OpRef` nor a dictionary reaches it.
 
 use smallvec::SmallVec;
 
@@ -119,9 +125,9 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
     let bool_sym = resolve(&interp, "anthill.prelude.Bool");
     let op = resolve(&interp, "anthill.prelude.Option");
 
-    let d_int = interp.alloc_requirement(int64, SmallVec::new());
-    let d_bool = interp.alloc_requirement(bool_sym, SmallVec::new());
-    let with = |d| Value::OpRef { op, dict: Some(d), named: None };
+    let d_int = crate::common::dict(&interp, int64, []);
+    let d_bool = crate::common::dict(&interp, bool_sym, []);
+    let with = |d| Value::OpRef { op, dict: Some(std::rc::Rc::new(d)), named: None };
 
     let kb = interp.kb();
     let (eq, same_key) = eq_and_key(kb, &with(d_int.clone()), &with(d_bool));
@@ -146,6 +152,10 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
 /// read — and compares by CONTENT.
 ///
 /// CONTROL: back-out row 2 (see the module table).
+///
+/// WI-1045 — this reads a `Value::Entity` now. That is the delivery, not a
+/// weakening: the head it asserts is the one the σ-side producer already built,
+/// so this test now pins that BOTH sides announce it.
 #[test]
 fn a_dictionary_views_as_its_impl_and_sub_dictionaries() {
     let interp = interp();
@@ -155,9 +165,9 @@ fn a_dictionary_views_as_its_impl_and_sub_dictionaries() {
     let mk = |i: &Interpreter, functor, sub: Option<Symbol>| {
         let mut subs: SmallVec<[_; 1]> = SmallVec::new();
         if let Some(s) = sub {
-            subs.push(i.alloc_requirement(s, SmallVec::new()));
+            subs.push(crate::common::dict(i, s, []));
         }
-        Value::Requirement(i.alloc_requirement(functor, subs))
+        crate::common::dict(&i, functor, subs).into_value()
     };
 
     let parent = mk(&interp, int64, Some(bool_sym));
@@ -190,36 +200,42 @@ fn a_dictionary_views_as_its_impl_and_sub_dictionaries() {
     assert!(!eq && !same_key, "and so is WHICH sub-dictionary it is");
 }
 
-/// The cross-arena FALSE POSITIVE the stopgap had, closed.
+/// The cross-interpreter FALSE POSITIVE the stopgap had, closed — and since
+/// WI-1045, INEXPRESSIBLE.
 ///
-/// `native_carrier_eq` compared dictionaries with `ha.raw() == hb.raw()` while
-/// `RequirementHandle`'s own doc says "Identity is `(arena, raw)`". It dropped the
-/// arena half, so the FIRST slot of two different interpreters' arenas — both
-/// raw 0, different impls — compared EQUAL. That is the direction that merges
-/// facts, and a fresh interpreter per call is the normal pattern, so it was
-/// reachable. Content comparison has no arena half to drop.
+/// `native_carrier_eq` compared dictionaries with `ha.raw() == hb.raw()` while the
+/// handle's own doc said "Identity is `(arena, raw)`". It dropped the arena half,
+/// so the FIRST slot of two different interpreters' arenas — both raw 0, different
+/// impls — compared EQUAL. That is the direction that merges facts, and a fresh
+/// interpreter per call is the normal pattern, so it was reachable.
 ///
-/// The subject is deliberately two SLOT-0 handles, so a raw-only compare would
-/// have to answer equal; that is the case the retired code got wrong, preserved
-/// here as a shape rather than as a rerun of the retired code.
-///
-/// CONTROL: back-out row 2 — with `Requirement` opaque again both sides key as
-/// one payload-free token and compare equal, which is the same wrong answer by
-/// the other route.
+/// WI-1019 answered it with content comparison, which has no arena half to drop.
+/// WI-1045 removed the arena, so there is no longer a slot index for anything to
+/// compare by: the subject is now simply two dictionaries built in two
+/// interpreters, which is the shape that used to collide.
 #[test]
-fn dictionaries_from_two_arenas_sharing_a_raw_are_not_equal() {
+fn two_dictionaries_over_different_impls_are_not_equal() {
     let a = interp();
     let b = interp();
     let int64 = resolve(&a, "anthill.prelude.Int64");
     let bool_sym = resolve(&b, "anthill.prelude.Bool");
 
-    // First allocation in each arena — same `raw`, different arenas AND impls.
-    let da = Value::Requirement(a.alloc_requirement(int64, SmallVec::new()));
-    let db = Value::Requirement(b.alloc_requirement(bool_sym, SmallVec::new()));
+    // Built in two SEPARATE interpreters — the pattern that shared a `raw`.
+    let da = crate::common::dict(&a, int64, []).into_value();
+    let db = crate::common::dict(&b, bool_sym, []).into_value();
 
     let (eq, same_key) = eq_and_key(a.kb(), &da, &db);
-    assert!(!eq, "two arenas' slot 0 are not the same dictionary");
+    assert!(!eq, "different impls are not the same dictionary");
     assert!(!same_key, "and do not share a key");
+
+    // The other direction, which a raw-only compare also got wrong: two
+    // dictionaries built in DIFFERENT interpreters over the SAME impl ARE equal.
+    // With one representation there is no identity left for them to differ in.
+    let db_int = crate::common::dict(&b, int64, []).into_value();
+    let (eq, same_key) = eq_and_key(a.kb(), &da, &db_int);
+    assert!(eq && same_key,
+        "one dictionary built on two sides is one value — the whole point of \
+         retiring the arena (requirement-channel.md §9)");
 }
 
 // ── The blast radius, asserted ───────────────────────────────────────────────

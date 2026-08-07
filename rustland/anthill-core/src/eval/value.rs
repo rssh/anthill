@@ -15,7 +15,7 @@ use crate::kb::term::{TermId, Var, VarId};
 pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
 pub use super::map_arena::MapHandle;
-pub use super::requirement_arena::RequirementHandle;
+pub use super::dictionary::{BoxedDictionary, Dictionary};
 pub use super::stream::StreamHandle;
 pub use super::subst_arena::SubstHandle;
 
@@ -85,7 +85,7 @@ pub enum Value {
         /// `requires`) or a namespace-level op; a requires-carrying eta captures
         /// a dict, INCLUDING a same-sort eta (its sort's `__req_self`) — an eta'd
         /// `OpRef` escapes to a foreign apply frame, so it cannot inherit.
-        dict: Option<RequirementHandle>,
+        dict: Option<BoxedDictionary>,
         /// WI-857 — the op the CALL NAMED, when that differs from `op`. `op` is the
         /// RESOLVED target; `dict`'s layout is keyed by the SPEC it witnesses, and
         /// only the minter knows which that was. `None` means "the same" — an eta'd
@@ -113,19 +113,6 @@ pub enum Value {
     /// transitively contains Cell, so the runtime never has to detect
     /// cycles. See proposal 037 §`Cell[V]` + `docs/design/cell-runtime.md`.
     Cell(CellHandle),
-    /// First-class requirement value — arena-refcounted handle into the
-    /// per-interpreter RequirementArena. Materializes a resolved spec
-    /// impl: the slot stores `(functor, sub-requirements)`. A body reads
-    /// the dictionary by name (`var_ref` of an inserted `__req_*` param,
-    /// the names model — WI-237 retired the positional
-    /// `requirement_at_current` read) and projects sub-deps via
-    /// `requirement_at_sort(chain, k)`.
-    /// Constructed by the IR's `construct_requirement(impl, [...])`
-    /// form; carried in `frame.requirements` and `closure.requirements`
-    /// channels. See `docs/design/operation-call-model.md` §"Runtime:
-    /// frame, requirement value, closure".
-    Requirement(RequirementHandle),
-
     /// WI-780 / proposal 057 — an opaque, KB-session-scoped locator for one
     /// stored row. Unlike the former literal handle it never exposes a
     /// resident `RuleId`: its private payload selects either the resident
@@ -324,11 +311,12 @@ impl Value {
     /// introduced as a stopgap for `Value::OpRef`, which MEASURED as not equal to
     /// ITSELF — but that was not a missing equality, it was a missing SHAPE. An
     /// `OpRef` is two symbols and a dictionary, all three already `Value`-carried,
-    /// so it now views structurally and never reaches here; likewise
-    /// `Value::Requirement`, whose slot is `(functor, [sub-handles])` written once
-    /// at `alloc`. Giving them a shape fixed equality AND the fingerprint at once,
-    /// where this function could only ever fix the first — the head stayed
-    /// payload-free, so two distinct `OpRef`s still shared one `goal_fingerprint`.
+    /// so it now views structurally and never reaches here; likewise a
+    /// dictionary, which WI-1045 then made an ordinary `Value::Entity` so it has
+    /// no carrier of its own left to compare. Giving them a shape fixed equality
+    /// AND the fingerprint at once, where this function could only ever fix the
+    /// first — the head stayed payload-free, so two distinct `OpRef`s still
+    /// shared one `goal_fingerprint`.
     ///
     /// So this is no longer a second compare path racing the structural one; it is
     /// the law for carriers that genuinely have no shape. Its coarse KEY is not a
@@ -337,11 +325,12 @@ impl Value {
     ///
     /// WHAT THE STOPGAP GOT WRONG BESIDES ITS FRAMING, kept because the shape of
     /// the mistake recurs: it compared two dictionaries with `ha.raw() == hb.raw()`
-    /// while `RequirementHandle`'s own doc says "Identity is `(arena, raw)`". It
-    /// dropped the arena half, so two dictionaries from DIFFERENT interpreter
-    /// arenas sharing a raw compared EQUAL — a false positive, the direction that
-    /// merges facts (WI-815), and reachable because a fresh interpreter per call is
-    /// the normal pattern. Content comparison has no such half to drop.
+    /// while the handle's own doc said "Identity is `(arena, raw)`". It dropped the
+    /// arena half, so two dictionaries from DIFFERENT interpreter arenas sharing a
+    /// raw compared EQUAL — a false positive, the direction that merges facts
+    /// (WI-815), and reachable because a fresh interpreter per call is the normal
+    /// pattern. Content comparison has no such half to drop, which is one of the
+    /// two hazards WI-1045 deleted rather than documented (there is no arena now).
     ///
     /// `FactRef` is the remaining answer and the type case: a row locator spelled
     /// in a private slot index (`RuleId` / `RowKey`) that has no `Value` carrier,
@@ -460,7 +449,6 @@ impl Value {
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
-            Value::Requirement(_) => "Requirement",
             Value::FactRef(_) => "FactRef",
             Value::Term { .. } => "Term",
             Value::Node(_) => "Node",

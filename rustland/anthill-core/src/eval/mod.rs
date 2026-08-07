@@ -7,13 +7,13 @@
 pub mod builtins;
 pub mod cell_arena;
 pub mod closure;
+pub mod dictionary;
 pub mod effects;
 pub mod error;
 pub mod eval;
 pub mod frame;
 pub mod map_arena;
 pub mod pattern;
-pub mod requirement_arena;
 pub mod stream;
 pub mod subst_arena;
 pub mod value;
@@ -32,7 +32,6 @@ use cell_arena::CellArenaRef;
 use closure::ClosureArenaRef;
 use effects::EffectRegistry;
 use map_arena::MapArenaRef;
-use requirement_arena::RequirementArenaRef;
 use stream::StreamArenaRef;
 
 /// Runtime resource limits. Each cap is optional so different embeddings
@@ -130,7 +129,6 @@ pub(crate) struct ReflectSymbols {
     pub constructor_within: Option<Symbol>,
     pub lambda_within: Option<Symbol>,
     pub requirement_at_sort: Option<Symbol>,
-    pub construct_requirement: Option<Symbol>,
 
     // Pattern entities — still consulted by `eval::pattern::match_pattern`.
     pub var_pattern: Option<Symbol>,
@@ -173,7 +171,6 @@ impl ReflectSymbols {
             constructor_within: r("anthill.reflect.Expr.constructor_within"),
             lambda_within: r("anthill.reflect.Expr.lambda_within"),
             requirement_at_sort: r("anthill.reflect.Expr.requirement_at_sort"),
-            construct_requirement: r("anthill.reflect.Expr.construct_requirement"),
 
             var_pattern: r("anthill.reflect.Pattern.var_pattern"),
             wildcard: r("anthill.reflect.Pattern.wildcard"),
@@ -281,6 +278,20 @@ impl FieldSymbols {
     }
 }
 
+
+/// WI-1045 — why [`Interpreter::frame_requirements_from_trees`] could not build a
+/// frame's requirement channel. Two causes with different owners, kept apart
+/// because collapsing them reported a missing stdlib namespace as an unresolvable
+/// requirement of the named slot.
+pub(crate) enum FrameReqFailure {
+    /// This slot's tree names a CALLER scope (`FromScope`), which cannot arise
+    /// from the empty-scope resolution these callers run.
+    CallerScopeSlot(Symbol),
+    /// No dictionary is constructible at all: the KB never loaded
+    /// `anthill.realization.runtime.Dictionary`. Not the slot's fault.
+    NoDictionarySort,
+}
+
 /// Top-level interpreter state. Owns the KB so builtins and effect handlers
 /// can mutate it; host code takes it back via `Interpreter::into_kb()` when
 /// evaluation is done.
@@ -295,7 +306,6 @@ pub struct Interpreter {
     pub(crate) substs: subst_arena::SubstArenaRef,
     pub(crate) maps: MapArenaRef,
     pub(crate) cells: CellArenaRef,
-    pub(crate) requirements: RequirementArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
     /// Memoized operation-body lookups. `lookup_operation_body` linear-scans
     /// every `OperationInfo` fact to find the one matching the op symbol, so
@@ -377,7 +387,6 @@ impl Interpreter {
             substs: subst_arena::SubstArenaRef::new(),
             maps: MapArenaRef::new(),
             cells: CellArenaRef::new(),
-            requirements: RequirementArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             op_body_cache: HashMap::new(),
             const_cache: HashMap::new(),
@@ -508,7 +517,6 @@ impl Interpreter {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_)
             | Value::FactRef(_)
             | Value::Node(_)
             // WI-714: a `Relation` is a query value, never persisted store data.
@@ -557,7 +565,7 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
-        let requirements = self.seed_entry_requirements(sym);
+        let requirements = self.seed_entry_requirements(sym)?;
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
@@ -628,14 +636,22 @@ impl Interpreter {
                 });
             }
             BridgeRequirements::Resolved(parent, trees) => {
-                self.frame_requirements_from_trees(parent, &trees).map_err(|name| {
+                self.frame_requirements_from_trees(parent, &trees).map_err(|f| {
                     EvalError::Suspended {
-                        detail: format!(
-                            "bridge: requirement `{}` for `{}` resolved to a caller-scope \
-                             slot with no caller frame",
-                            self.kb.local_name_of(name),
-                            self.kb.qualified_name_of(sym),
-                        ),
+                        detail: match f {
+                            FrameReqFailure::CallerScopeSlot(name) => format!(
+                                "bridge: requirement `{}` for `{}` resolved to a \
+                                 caller-scope slot with no caller frame",
+                                self.kb.local_name_of(name),
+                                self.kb.qualified_name_of(sym),
+                            ),
+                            FrameReqFailure::NoDictionarySort => format!(
+                                "bridge: cannot build any requirement dictionary for \
+                                 `{}` — this KB never loaded \
+                                 `anthill.realization.runtime.Dictionary`",
+                                self.kb.qualified_name_of(sym),
+                            ),
+                        },
                         // A missing caller frame is a flounder, not truncation.
                         truncated: false,
                     }
@@ -652,63 +668,63 @@ impl Interpreter {
     /// `call_with_requirements` assembles for a host caller and
     /// `expand_dispatching_dict` assembles from a dispatching dict.
     ///
-    /// `Err(name)` is the requirement whose tree would not port — only ever a
-    /// `FromScope`, which cannot arise from an empty-scope resolution. The SPELLING
-    /// of that failure is the caller's: the WI-625 bridge residualizes
-    /// (`Suspended`), WI-822's value-directed dispatch raises (`Internal`). Both
-    /// otherwise built this list identically, so it has one owner.
+    /// `Err` names WHICH of the two things went wrong, because they want different
+    /// messages: a slot whose tree names a caller scope (only ever a `FromScope`,
+    /// which cannot arise from an empty-scope resolution), or a KB with no
+    /// `anthill.realization.runtime.Dictionary` to name, where NO dictionary is
+    /// constructible and the slot is not at fault (WI-1045 — collapsing the second
+    /// into the first reported a missing stdlib namespace as an unresolvable
+    /// requirement, the WI-855 mis-attribution shape). The SPELLING of each is the
+    /// caller's: the WI-625 bridge residualizes (`Suspended`), WI-822's
+    /// value-directed dispatch raises (`Internal`). Both otherwise built this list
+    /// identically, so it has one owner.
     fn frame_requirements_from_trees(
         // `&mut` since WI-857: the `__req_self` stand-in reads the dictionary layout,
         // which memoizes the requires chain on `kb`.
         &mut self,
         parent: Symbol,
         trees: &[(Symbol, crate::kb::typing::ResolvedRequiresNode)],
-    ) -> Result<smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>, Symbol> {
-        let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
+    ) -> Result<smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>, FrameReqFailure> {
+        let mut out: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
             smallvec::SmallVec::with_capacity(trees.len() + 1);
         // WI-857: layout-valid — see `stand_in_requirement`.
-        let self_slot = self.stand_in_requirement(parent, parent);
+        let self_slot = self
+            .stand_in_requirement(parent, parent)
+            .map_err(|_| FrameReqFailure::NoDictionarySort)?;
         out.push((self.fields.req_self, self_slot));
         for (name, tree) in trees {
-            out.push((*name, self.port_resolved_tree(tree).ok_or(*name)?));
+            // `port_resolved_tree` answers `None` for a `FromScope` AND for the
+            // missing-sort case; the `stand_in_requirement` above already ruled the
+            // second one out, so reaching here names the slot.
+            out.push((
+                *name,
+                self.port_resolved_tree(tree)
+                    .ok_or(FrameReqFailure::CallerScopeSlot(*name))?,
+            ));
         }
         Ok(out)
     }
 
     /// WI-625 Layer B: port a resolved requirement tree
     /// ([`crate::kb::typing::ResolvedRequiresNode`]) to a runtime
-    /// [`value::RequirementHandle`] — the runtime dual of the typer's
-    /// `emit_tree_as_projection`. A `Leaf` allocates a handle over its impl carrier
-    /// with no sub-requirements; a `Conditional` recurses each sub-resolution into a
-    /// nested handle first (so `handle.arity()` matches the DICTIONARY LAYOUT — the
-    /// spec's own `requires` chain then the impl's, WI-857 — satisfying the eval
-    /// dispatcher's cross-check). `FromScope` cannot arise
-    /// here (the bridge resolves with an empty scope) — returns `None` (residualize)
-    /// if it somehow does.
+    /// [`value::Dictionary`].
+    ///
+    /// WI-1045 — this had its OWN recursion over the tree, structurally identical
+    /// to the resolver-side [`crate::kb::typing::dictionary_of_tree`] and
+    /// differing only in which carrier it built. With one representation there is
+    /// nothing left to differ in, so there is one walk: a `Leaf`'s impl with no
+    /// sub-dictionaries, WI-857's marker for an `Unavailable`, and a
+    /// `Conditional` recursing first so the arity matches the DICTIONARY LAYOUT
+    /// (the spec's own `requires` chain then the impl's, WI-857 — which is what
+    /// the eval dispatcher's cross-check measures).
+    ///
+    /// `None` for a `FromScope`, which cannot arise here (the bridge resolves
+    /// with an empty scope) — the caller residualizes if it somehow does.
     fn port_resolved_tree(
-        &self,
+        &mut self,
         tree: &crate::kb::typing::ResolvedRequiresNode,
-    ) -> Option<value::RequirementHandle> {
-        use crate::kb::typing::ResolvedRequiresNode;
-        match tree {
-            ResolvedRequiresNode::Leaf { impl_sort, .. } => {
-                Some(self.requirements.alloc(*impl_sort, smallvec::SmallVec::new()))
-            }
-            // WI-857: the runtime dual of `emit_tree_as_projection`'s marker slot —
-            // an empty bundle over the marker, which dispatch refuses to go through.
-            ResolvedRequiresNode::Unavailable { .. } => {
-                Some(self.requirements.alloc(self.fields.no_provider, smallvec::SmallVec::new()))
-            }
-            ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
-                let mut subs: smallvec::SmallVec<[value::RequirementHandle; 1]> =
-                    smallvec::SmallVec::with_capacity(sub_resolutions.len());
-                for sub in sub_resolutions {
-                    subs.push(self.port_resolved_tree(sub)?);
-                }
-                Some(self.requirements.alloc(*impl_sort, subs))
-            }
-            ResolvedRequiresNode::FromScope { .. } => None,
-        }
+    ) -> Option<value::Dictionary> {
+        crate::kb::typing::dictionary_of_tree(&mut self.kb, tree)
     }
 
     /// WI-625 gap 1: is this interpreter running as the resolver's op-body
@@ -766,7 +782,7 @@ impl Interpreter {
         &mut self,
         qualified_name: &str,
         args: &[Value],
-        chain_dicts: smallvec::SmallVec<[value::RequirementHandle; 2]>,
+        chain_dicts: smallvec::SmallVec<[value::Dictionary; 2]>,
     ) -> Result<Value, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
             EvalError::UnknownOperation { name: qualified_name.to_string() }
@@ -810,7 +826,7 @@ impl Interpreter {
             let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, p);
             for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
                 let want = crate::kb::typing::dict_layout(
-                    &mut self.kb, entry.required_sort, dict.functor(),
+                    &mut self.kb, entry.required_sort, dict.impl_sort(),
                 );
                 if dict.arity() != want.arity() {
                     return Err(EvalError::Internal(format!(
@@ -823,11 +839,11 @@ impl Interpreter {
                 }
             }
         }
-        let mut requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
+        let mut requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
             smallvec::SmallVec::new();
         if let (Some(p), Some(names)) = (parent_sym, names) {
             // WI-857: layout-valid — see `stand_in_requirement`.
-            let placeholder = self.stand_in_requirement(p, p);
+            let placeholder = self.stand_in_requirement(p, p)?;
             requirements.push((self.fields.req_self, placeholder));
             for (name, dict) in names.iter().zip(chain_dicts) {
                 requirements.push((*name, dict));
@@ -871,7 +887,7 @@ impl Interpreter {
         &mut self,
         sym: Symbol,
         args: &[Value],
-        requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>,
+        requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
         let (body_term, params) = match self.cached_operation_body(sym) {
             Some(b) => b,
@@ -957,28 +973,28 @@ impl Interpreter {
     fn seed_entry_requirements(
         &mut self,
         op_sym: Symbol,
-    ) -> smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> {
+    ) -> Result<smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>, EvalError> {
         let Some(parent_sym) = crate::kb::typing::impl_parent_of_op(&self.kb, op_sym) else {
-            return smallvec::SmallVec::new();
+            return Ok(smallvec::SmallVec::new());
         };
         // WI-1033: the names come OFF the chain, so the zip below cannot pair a
         // dictionary chain with a declared-chain naming (WI-869 did exactly that at
         // four producers). WI-657(12): no owned clone — only `required_sort` is read.
         let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, parent_sym);
         let names = chain.names(&mut self.kb);
-        let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
+        let mut out: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
             smallvec::SmallVec::with_capacity(names.len() + 1);
-        let self_slot = self.stand_in_requirement(parent_sym, parent_sym);
+        let self_slot = self.stand_in_requirement(parent_sym, parent_sym)?;
         out.push((self.fields.req_self, self_slot));
         // `names` and `chain` are ONE `DictChain`, so the zip cannot truncate — that is
         // now a property of the type rather than of these two lines being adjacent.
         // (`expand_dispatching_dict` still checks its analogous pair at runtime, because
         // there the two sides come from DIFFERENT symbols, bridged by canonicalization.)
         for (name, entry) in names.iter().zip(chain.iter()) {
-            let slot = self.stand_in_requirement(entry.required_sort, parent_sym);
+            let slot = self.stand_in_requirement(entry.required_sort, parent_sym)?;
             out.push((*name, slot));
         }
-        out
+        Ok(out)
     }
 
     /// WI-857 — a **stand-in** dictionary for `spec` under the functor `functor`:
@@ -999,18 +1015,40 @@ impl Interpreter {
         &mut self,
         spec: Symbol,
         functor: Symbol,
-    ) -> value::RequirementHandle {
+    ) -> Result<value::Dictionary, EvalError> {
         let arity = crate::kb::typing::dict_layout(&mut self.kb, spec, functor).arity();
         if arity == 0 {
-            return self.requirements.alloc(functor, smallvec::SmallVec::new());
+            // The common `__req_self` case. Short-circuited so a requires-free sort
+            // does not build a marker dictionary per frame entry and discard it.
+            return self.build_dictionary(functor, []);
         }
-        // ONE marker slot, shared by refcount across the sub-slots: they are empty and
-        // interchangeable, and slot sharing between parents is supported and tested
-        // (`shared_subrequirement_kept_alive_via_other_owner`).
-        let marker = self.requirements.alloc(self.fields.no_provider, smallvec::SmallVec::new());
-        let subs: smallvec::SmallVec<[value::RequirementHandle; 1]> =
-            smallvec::SmallVec::from_elem(marker, arity);
-        self.requirements.alloc(functor, subs)
+        // ONE marker value, SHARED across the sub-slots: they are empty and
+        // interchangeable, and a dictionary's children are `Rc`-backed, so sharing
+        // is a refcount bump exactly as the arena's shared slot was.
+        let marker = self.build_dictionary(self.fields.no_provider, [])?;
+        self.build_dictionary(functor, std::iter::repeat_n(marker, arity))
+    }
+
+    /// WI-1045 — build `Dictionary(subs…, impl: impl_sort)`, the ONE way eval
+    /// produces a dictionary. Delegates to the shared
+    /// [`value::Dictionary::build`], so eval and the resolver spell the shape in
+    /// one place.
+    ///
+    /// LOUD, not silent: a KB that never loaded `anthill.realization.runtime` has
+    /// no name for a dictionary to carry, and answering with some other shape
+    /// would put a value into `frame.requirements` that no reader can read.
+    pub(crate) fn build_dictionary(
+        &self,
+        impl_sort: Symbol,
+        subs: impl IntoIterator<Item = value::Dictionary>,
+    ) -> Result<value::Dictionary, EvalError> {
+        value::Dictionary::build(&self.kb, impl_sort, subs).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "cannot build a requirement dictionary for `{}`: this KB never loaded \
+                 `anthill.realization.runtime.Dictionary`",
+                self.kb.qualified_name_of(impl_sort),
+            ))
+        })
     }
 
     /// Override the activation-stack depth cap. Kept as a convenience wrapper
@@ -1051,19 +1089,15 @@ impl Interpreter {
     /// Number of live cell-arena slots. Diagnostic for refcount tests.
     pub fn cell_arena_live_count(&self) -> usize { self.cells.live() }
 
-    /// Number of live requirement-arena slots. Diagnostic for refcount
-    /// and cascade-drop tests under the WI-223 runtime support.
-    pub fn requirement_arena_live_count(&self) -> usize { self.requirements.live() }
-
-    /// Allocate a fresh requirement slot bundling `(functor, requirements)`
-    /// and return an owning handle. Used by the eval to reduce
-    /// `construct_requirement(impl, [...])` IR forms.
+    /// Build `Dictionary(subs…, impl: functor)` — the host/test-facing face of
+    /// [`Self::build_dictionary`]. `None` in a KB with no
+    /// `anthill.realization.runtime.Dictionary` to name.
     pub fn alloc_requirement(
         &self,
         functor: Symbol,
-        requirements: smallvec::SmallVec<[value::RequirementHandle; 1]>,
-    ) -> value::RequirementHandle {
-        self.requirements.alloc(functor, requirements)
+        requirements: impl IntoIterator<Item = value::Dictionary>,
+    ) -> Option<value::Dictionary> {
+        value::Dictionary::build(&self.kb, functor, requirements)
     }
 
     /// Test-only: read a closure's snapshotted `requirements` channel.
@@ -1073,7 +1107,7 @@ impl Interpreter {
     pub fn closure_requirements_for_test(
         &self,
         h: &value::ClosureHandle,
-    ) -> smallvec::SmallVec<[(Symbol, value::RequirementHandle); 1]> {
+    ) -> smallvec::SmallVec<[(Symbol, value::Dictionary); 1]> {
         self.closures.with(h, |c| c.requirements.clone())
     }
 
@@ -1092,13 +1126,13 @@ impl Interpreter {
     /// ad-hoc operation, with `frame.requirements` pre-seeded. Used to
     /// verify the WI-223 requirement IR reductions
     /// (`requirement_at_current` / `requirement_at_sort` /
-    /// `construct_requirement`) before WI-222's rewrite pass produces them
+    /// the `Dictionary` node) before WI-222's rewrite pass produces them
     /// from real call sites.
     #[doc(hidden)]
     pub fn run_with_requirements(
         &mut self,
         expr: crate::kb::term::TermId,
-        requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>,
+        requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
         let op = self.kb.intern("__test_requirement_eval");
         self.step_count = 0;
@@ -1117,13 +1151,6 @@ impl Interpreter {
             awaiting: None,
         })?;
         self.run()
-    }
-
-    /// Clone the requirement-arena handle. Same rationale as
-    /// `subst_arena()`: lets a caller hold a borrow on the arena while
-    /// `&mut self` on the interpreter is in flight.
-    pub fn requirement_arena(&self) -> RequirementArenaRef {
-        self.requirements.clone()
     }
 
     /// Allocate a fresh cell slot and return an owning handle.

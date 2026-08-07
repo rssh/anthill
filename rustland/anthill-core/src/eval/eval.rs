@@ -282,8 +282,8 @@ impl Interpreter {
             Expr::RequirementAtSort { chain, slot } => {
                 self.reduce_requirement_at_sort_node(chain, *slot)
             }
-            Expr::ConstructRequirement { impl_functor, requirements } => {
-                self.reduce_construct_requirement_node(*impl_functor, requirements)
+            Expr::Dictionary { impl_sort, subs } => {
+                self.reduce_dictionary_node(*impl_sort, subs)
             }
             // `DotApply` is a pre-dispatch form: the `[simp]` dot rules must
             // have rewritten it to `Apply`/field-access before eval (WI-278).
@@ -328,8 +328,9 @@ impl Interpreter {
             find_local(&self.kb, &top.locals, &target_name)
                 .cloned()
                 .or_else(|| {
+                    // WI-1045: no conversion — the dictionary IS this value.
                     find_requirement(&top.requirements, sym)
-                        .map(|h| Value::Requirement(h.clone()))
+                        .map(|d| d.as_value().clone())
                 })
                 .or_else(|| {
                     find_type_arg(&top.type_args, sym).map(Value::term)
@@ -411,7 +412,9 @@ impl Interpreter {
                 let dict = self.eta_dispatch_dict(occ)?;
                 // WI-857: an eta captures its OWN parent's bundle, so the named op
                 // and the target are the same — `named: None`.
-                return Ok(StepOutcome::Deliver(Value::OpRef { op: sym, dict, named: None }));
+                return Ok(StepOutcome::Deliver(Value::OpRef {
+                    op: sym, dict: dict.map(std::rc::Rc::new), named: None,
+                }));
             }
         }
         // WI-714 (proposal 052): a bare reference to a RULE — its head functor
@@ -759,14 +762,14 @@ impl Interpreter {
     }
 
     /// WI-420: read the `CallClass::EtaOpRef` dict the typer attached to an eta
-    /// occurrence (if any) and evaluate it to a `RequirementHandle` in the
+    /// occurrence (if any) and evaluate it to a [`Dictionary`] in the
     /// CURRENT frame (so an abstract requirement reads the enclosing `__req_*`).
     /// `None` when the occ carries no such classification — a requires-free or
     /// same-sort eta, for which the apply path forwards the caller's reqs.
     fn eta_dispatch_dict(
         &self,
         occ: &Rc<NodeOccurrence>,
-    ) -> Result<Option<super::value::RequirementHandle>, EvalError> {
+    ) -> Result<Option<super::value::Dictionary>, EvalError> {
         // WI-700: `.flatten()` collapses "not eta" and "eta with no dict" — both mean
         // "no dispatch dict, forward the caller's reqs".
         let dict_tid = Self::eta_marker(occ).flatten();
@@ -799,7 +802,7 @@ impl Interpreter {
         // creation, not invocation site). Frame-side SmallVec is sized 2,
         // closure-side is sized 1 (most lambdas hold 0–1 reqs); collect
         // across the size boundary.
-        let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 1]> = self.stack.top()
+        let requirements: SmallVec<[(Symbol, super::value::Dictionary); 1]> = self.stack.top()
             .map(|f| f.requirements.iter().cloned().collect())
             .unwrap_or_default();
         // Snapshot the enclosing frame's type_args alongside (WI-272)
@@ -837,23 +840,19 @@ impl Interpreter {
     /// was the only consumer that had it.
     fn project_requirement(
         &self,
-        parent: &super::value::RequirementHandle,
+        parent: &super::value::Dictionary,
         k: usize,
         what: &str,
-    ) -> Result<super::value::RequirementHandle, EvalError> {
-        if let Err(msg) = crate::kb::typing::marker_refusal(&self.kb, parent.functor()) {
+    ) -> Result<super::value::Dictionary, EvalError> {
+        if let Err(msg) = crate::kb::typing::marker_refusal(&self.kb, parent.impl_sort()) {
             return Err(EvalError::UnpinnedRequirement {
                 detail: format!("cannot read sub-requirement {k} of {what}: {msg}"),
             });
         }
-        let arity = parent.arity();
-        if k >= arity {
-            return Err(EvalError::Internal(format!(
-                "requirement_at_sort: index {k} out of range for {what} \
-                 (it bundles {arity} sub-requirement(s))"
-            )));
-        }
-        Ok(parent.project(k))
+        parent.sub(k).ok_or_else(|| EvalError::Internal(format!(
+            "requirement_at_sort: index {k} out of range for {what} \
+             (it bundles {} sub-requirement(s))", parent.arity()
+        )))
     }
 
     fn reduce_requirement_at_sort_node(
@@ -863,32 +862,31 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         let parent = self.eval_requirement_chain_node(chain)?;
         let projected = self.project_requirement(&parent, slot as usize, "this chain")?;
-        Ok(StepOutcome::Deliver(Value::Requirement(projected)))
+        Ok(StepOutcome::Deliver(projected.into_value()))
     }
 
-    fn reduce_construct_requirement_node(
+    fn reduce_dictionary_node(
         &mut self,
-        impl_functor: Symbol,
-        requirements: &[Rc<NodeOccurrence>],
+        impl_sort: Symbol,
+        sub_occs: &[Rc<NodeOccurrence>],
     ) -> Result<StepOutcome, EvalError> {
-        let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
-        for occ in requirements.iter() {
-            handles.push(self.eval_requirement_chain_node(occ)?);
+        let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
+        for occ in sub_occs.iter() {
+            subs.push(self.eval_requirement_chain_node(occ)?);
         }
-        let new_handle = self.requirements.alloc(impl_functor, handles);
-        Ok(StepOutcome::Deliver(Value::Requirement(new_handle)))
+        Ok(StepOutcome::Deliver(self.build_dictionary(impl_sort, subs)?.into_value()))
     }
 
     /// Synchronously reduce a requirement-typed NodeOccurrence to a
-    /// `RequirementHandle`. Walks the chain per the design grammar:
+    /// [`Dictionary`]. Walks the chain per the design grammar:
     /// bottoms out at `var_ref(name)`; intermediate nodes are
-    /// `RequirementAtSort` (projection) or `ConstructRequirement`
-    /// (allocation). No AwaitState — the grammar is closed under direct
+    /// `RequirementAtSort` (projection) or `Dictionary`
+    /// (construction). No AwaitState — the grammar is closed under direct
     /// recursion.
     fn eval_requirement_chain_node(
         &self,
         occ: &Rc<NodeOccurrence>,
-    ) -> Result<super::value::RequirementHandle, EvalError> {
+    ) -> Result<super::value::Dictionary, EvalError> {
         let expr = match &occ.kind {
             NodeKind::Expr { expr, .. } => expr,
             _ => return Err(EvalError::Internal(
@@ -900,12 +898,12 @@ impl Interpreter {
                 let parent = self.eval_requirement_chain_node(chain)?;
                 self.project_requirement(&parent, *slot as usize, "this chain")
             }
-            Expr::ConstructRequirement { impl_functor, requirements } => {
-                let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
-                for r in requirements.iter() {
-                    handles.push(self.eval_requirement_chain_node(r)?);
+            Expr::Dictionary { impl_sort, subs: sub_occs } => {
+                let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
+                for r in sub_occs.iter() {
+                    subs.push(self.eval_requirement_chain_node(r)?);
                 }
-                Ok(self.requirements.alloc(*impl_functor, handles))
+                self.build_dictionary(*impl_sort, subs)
             }
             Expr::VarRef { name } => {
                 let top = self.stack.top().ok_or_else(|| {
@@ -942,10 +940,10 @@ impl Interpreter {
     fn dispatch_via_sort_ops_table(
         &self,
         fn_sym: Symbol,
-        dispatching_dict: &super::value::RequirementHandle,
+        dispatching_dict: &super::value::Dictionary,
     ) -> Result<Symbol, EvalError> {
         crate::kb::typing::resolve_op_target_checked(
-            &self.kb, dispatching_dict.functor(), fn_sym,
+            &self.kb, dispatching_dict.impl_sort(), fn_sym,
         )
         .map_err(|detail| EvalError::UnpinnedRequirement { detail })
     }
@@ -1259,7 +1257,7 @@ impl Interpreter {
                 requirements_occ.len(),
             )));
         }
-        let dispatching_dict: Option<super::value::RequirementHandle> =
+        let dispatching_dict: Option<super::value::Dictionary> =
             if let Some(first) = requirements_occ.first() {
                 Some(self.eval_requirement_chain_node(first)?)
             } else {
@@ -1456,9 +1454,9 @@ impl Interpreter {
         &mut self,
         dispatched_from: Symbol,
         target: Symbol,
-        dict: &super::value::RequirementHandle,
-    ) -> Result<SmallVec<[(Symbol, super::value::RequirementHandle); 2]>, EvalError> {
-        let provider = dict.functor();
+        dict: &super::value::Dictionary,
+    ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
+        let provider = dict.impl_sort();
         // A namespace-level `dispatched_from` names no spec (nothing to dispatch
         // through); the dictionary is then the provider's own bundle alone.
         let spec = crate::kb::typing::impl_parent_of_op(&self.kb, dispatched_from)
@@ -1473,7 +1471,7 @@ impl Interpreter {
                 layout.describe(&self.kb),
             )));
         }
-        let mut reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
+        let mut reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
             SmallVec::with_capacity(arity + 1);
         reqs.push((self.fields.req_self, dict.clone()));
         let Some(owner) = crate::kb::typing::impl_parent_of_op(&self.kb, target) else {
@@ -1509,7 +1507,7 @@ impl Interpreter {
         // interned copies of one sort whose `SortRequiresInfo` differs, which
         // `same_sort_canonical` would bridge for identity while the two chain reads
         // disagreed. Checked rather than `debug_assert`ed because the alternative is
-        // `RequirementHandle::project`'s panic in a release build.
+        // a frame silently short of the slots its body reads.
         if slots.len() != names.len() {
             return Err(EvalError::Internal(format!(
                 "deferred dispatch frame-push: `{}` reads {} requirement slot(s) but \
@@ -1521,7 +1519,11 @@ impl Interpreter {
             )));
         }
         for (k, name) in names.iter().enumerate() {
-            reqs.push((*name, dict.project(slots.start + k)));
+            let i = slots.start + k;
+            reqs.push((*name, dict.sub(i).ok_or_else(|| EvalError::Internal(format!(
+                "deferred dispatch frame-push: the dictionary for `{}` has no slot {i}",
+                self.kb.qualified_name_of(owner),
+            )))?));
         }
         Ok(reqs)
     }
@@ -1533,7 +1535,7 @@ impl Interpreter {
     fn dispatch_apply_with_requirements(
         &mut self,
         target: Symbol,
-        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -1639,7 +1641,7 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
-        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         self.note_dispatch(target);
@@ -1683,7 +1685,7 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
-        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // 1. Local binding to target — a closure, or (WI-275) an eta'd
@@ -1777,7 +1779,7 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
-        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // 2. Registered Rust builtin?
@@ -2003,8 +2005,8 @@ impl Interpreter {
         &mut self,
         impl_target: Symbol,
         arg_values: &[Value],
-        incoming: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
-    ) -> Result<SmallVec<[(Symbol, super::value::RequirementHandle); 2]>, EvalError> {
+        incoming: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
         use crate::kb::typing::BridgeRequirements;
         // An incoming channel was built FOR THIS CALL by a caller that knew the
         // callee (an `apply_within` dict, a same-sort inherit). It is the more
@@ -2044,15 +2046,24 @@ impl Interpreter {
                 })
             }
             BridgeRequirements::Resolved(parent, trees) => {
-                self.frame_requirements_from_trees(parent, &trees).map_err(|name| {
-                    // `resolve_bridge_requirements` resolves with an EMPTY scope,
-                    // so `FromScope` — the only failure — cannot arise.
-                    EvalError::Internal(format!(
-                        "value-directed dispatch to `{}`: requirement `{}` resolved \
-                         to a caller-scope slot, but the resolution ran with no scope",
-                        self.kb.qualified_name_of(impl_target),
-                        self.kb.local_name_of(name),
-                    ))
+                self.frame_requirements_from_trees(parent, &trees).map_err(|f| {
+                    EvalError::Internal(match f {
+                        // `resolve_bridge_requirements` resolves with an EMPTY
+                        // scope, so `FromScope` cannot arise.
+                        super::FrameReqFailure::CallerScopeSlot(name) => format!(
+                            "value-directed dispatch to `{}`: requirement `{}` \
+                             resolved to a caller-scope slot, but the resolution \
+                             ran with no scope",
+                            self.kb.qualified_name_of(impl_target),
+                            self.kb.local_name_of(name),
+                        ),
+                        super::FrameReqFailure::NoDictionarySort => format!(
+                            "value-directed dispatch to `{}`: cannot build any \
+                             requirement dictionary — this KB never loaded \
+                             `anthill.realization.runtime.Dictionary`",
+                            self.kb.qualified_name_of(impl_target),
+                        ),
+                    })
                 })
             }
         }
@@ -2285,7 +2296,7 @@ impl Interpreter {
         body_node: Rc<NodeOccurrence>,
         params: &[(Symbol, Value)],
         arg_values: Vec<Value>,
-        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         if arg_values.len() != params.len() {
@@ -2345,7 +2356,7 @@ impl Interpreter {
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
         let (param_pattern, body, requirements, type_args) = self.closures.with(&handle, |c| {
-            let reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
+            let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
             let ta: FrameTypeArgs =
                 c.type_args.iter().cloned().collect();
@@ -2886,9 +2897,9 @@ fn find_local<'a>(
 /// Symbol equality suffices — unlike `find_local`, which must compare
 /// resolved short names. Reverse order: last binding wins (shadowing).
 fn find_requirement<'a>(
-    reqs: &'a SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+    reqs: &'a SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     name: Symbol,
-) -> Option<&'a super::value::RequirementHandle> {
+) -> Option<&'a super::value::Dictionary> {
     reqs.iter().rev().find(|(s, _)| *s == name).map(|(_, h)| h)
 }
 
@@ -2997,8 +3008,8 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
 /// accept-then-decline pair the change exists to avoid.
 ///
 /// The ticket also claimed a widening here would reach dynamic dispatch: it cannot.
-/// [`runtime_carrier_sort`] gives `OpRef`, `Requirement` AND `Node` fixed answers
-/// BEFORE it calls this, so none of them arrives here from the dispatch consumer.
+/// [`runtime_carrier_sort`] gives `OpRef` AND `Node` fixed answers BEFORE it calls
+/// this, so neither arrives here from the dispatch consumer.
 ///
 /// ADMITTING A CARRIER OBLIGES ITS PAIRED READERS (the rule WI-1016 wrote at
 /// `eval/pattern.rs`): `constructor_sub_values` must be able to destructure it, or
@@ -3023,8 +3034,11 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         // An occurrence lowers too, so its head is read the same way.
         Value::Node(_) => value.head(kb).functor_sym(),
         // No faithful term form — the head is a view-only presentation, so it names
-        // nothing this reader may answer with. See the note above.
-        Value::OpRef { .. } | Value::Requirement(_) => None,
+        // nothing this reader may answer with. See the note above. (A DICTIONARY is
+        // not here any more: WI-1045 made it an ordinary `Value::Entity`, so it
+        // answers `Dictionary` through the arm above — the same answer its σ-built
+        // twin already gave, which is what one representation means.)
+        Value::OpRef { .. } => None,
         // No name to give: a scalar, a functor-less aggregate, an opaque runtime
         // handle, a logic variable. Listed rather than defaulted so a new `Value`
         // variant must decide here (the `runtime_carrier_sort` discipline).
@@ -3067,17 +3081,6 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Stream(_) => Some("anthill.prelude.LogicalStream"),
         Value::Map(_) => Some("anthill.prelude.Map"),
         Value::Cell(_) => Some("anthill.prelude.Cell"),
-        // WI-577 — a runtime requirement dictionary names the `Dictionary` view
-        // sort (the anthill face of `Value::Requirement`). `OpRef` stays
-        // `Function` below so an eta'd op-ref remains callable. This is the
-        // value→carrier map for uniform typing; it is NOT a live dynamic-dispatch
-        // path — `Dictionary` provides no spec, so the typer never binds a
-        // `Value::Requirement` into a spec-op receiver slot, and the
-        // `spec_call_runtime_carrier` route (whose `resolve_spec_op_target_by_value`
-        // matches by short name) is unreachable for it. If `Dictionary` ever
-        // provides a spec, that route would need `carrier_override_op`'s
-        // runnable-body gate to avoid a short-name collision (`sub` ↔ `Numeric.sub`).
-        Value::Requirement(_) => Some("anthill.realization.runtime.Dictionary"),
         Value::FactRef(_) => Some("anthill.reflect.FactRef"),
         Value::Closure(_) | Value::OpRef { .. } => Some("anthill.prelude.Function"),
         Value::Int(_) => Some("anthill.prelude.Int64"),
@@ -3121,7 +3124,31 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     // supplier and `VectorSpace.vec_add(a, a)` over two `Vec3`s died
     // `OperationBodyMissing`.
     let functor = value_functor(kb, value)?;
-    kb.sort_of_constructor(functor)
+    kb.sort_of_constructor(functor).or_else(|| dictionary_carrier(kb, functor))
+}
+
+/// WI-1045 — the `Dictionary` row of [`runtime_carrier_sort`]'s value→carrier map,
+/// relocated rather than dropped.
+///
+/// It used to be a FIXED row keyed on the `Value::Requirement` variant. With one
+/// representation a dictionary is a `Value::Entity` whose functor is the
+/// `Dictionary` SORT — and `sort_of_constructor` is the belongs-to index, which a
+/// constructor-less sort is deliberately absent from (`register_self_sort` runs
+/// per entity, and `Dictionary` declares none). So the reflexive answer is stated
+/// here, where it costs nothing: reached ONLY after the index misses, never on
+/// the per-dispatch path for an ordinary entity.
+///
+/// WI-577's reading of the row is unchanged and still holds: this is the
+/// value→carrier map for uniform typing, NOT a live dynamic-dispatch path —
+/// `Dictionary` provides no spec, so the typer never binds a dictionary into a
+/// spec-op receiver slot, and the `spec_call_runtime_carrier` route (whose
+/// `resolve_spec_op_target_by_value` matches by short name) is unreachable for
+/// it. If `Dictionary` ever provides a spec, that route would need
+/// `carrier_override_op`'s runnable-body gate to avoid a short-name collision
+/// (`sub` ↔ `Numeric.sub`).
+fn dictionary_carrier(kb: &KnowledgeBase, functor: Symbol) -> Option<Symbol> {
+    let (ctor, _) = crate::kb::term_view::dictionary_view_syms(kb)?;
+    (functor == ctor).then_some(ctor)
 }
 
 /// Decide whether a constructor arg with optional auto-name goes into the

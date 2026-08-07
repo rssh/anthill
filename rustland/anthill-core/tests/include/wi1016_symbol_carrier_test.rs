@@ -36,7 +36,7 @@ fn resolve(interp: &Interpreter, qn: &str) -> Symbol {
 /// A `Symbol` value on the MINTED carrier — what `Dictionary.impl` returns.
 fn minted_symbol(interp: &mut Interpreter, qn: &str) -> Value {
     let s = resolve(interp, qn);
-    let dict = Value::Requirement(interp.alloc_requirement(s, SmallVec::new()));
+    let dict = crate::common::dict(&interp, s, []).into_value();
     let got = interp.call(&format!("{DICT}.impl"), &[dict]).expect("Dictionary.impl");
     assert!(
         matches!(got, Value::SymbolRef(m) if m == s),

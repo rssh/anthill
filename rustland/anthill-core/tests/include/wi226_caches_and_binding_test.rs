@@ -198,24 +198,24 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     // The projection must NOT be the caller's slot-0 read — that would
     // be the pre-WI-226 buggy behavior (matching by required_sort alone
     // and reusing slot 0 even though caller's binding is Int64, not
-    // String). Instead it must be construct_requirement with
-    // impl_functor = Ref(String).
+    // String). Instead it must be the dictionary construction node with
+    // impl = Ref(String).
     let (functor, named_args) = match kb.get_term(projection) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
         other => panic!("projection must be Fn; got {other:?}"),
     };
     assert_eq!(
-        functor, syms.construct,
+        functor, syms.dict_ctor,
         "binding-aware match must reject slot 0 (Eq[T=Int64] != Eq[T=String]) \
-         and fall through to Strategy 3's construct_requirement; got {}",
+         and fall through to Strategy 3's `Dictionary` node; got {}",
         kb.qualified_name_of(functor)
     );
 
     let impl_tid = named_args
         .iter()
-        .find(|(k, _)| kb.local_name_of(*k) == "impl_functor")
+        .find(|(k, _)| *k == syms.dict_impl)
         .map(|(_, v)| *v)
-        .expect("impl_functor arg");
+        .expect("impl arg");
     let impl_sym = match kb.get_term(impl_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
         Term::Fn { functor, pos_args, named_args }
@@ -223,7 +223,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
         {
             *functor
         }
-        other => panic!("impl_functor must be a sort reference; got {other:?}"),
+        other => panic!("impl must be a sort reference; got {other:?}"),
     };
     assert_eq!(
         impl_sym, string_sym,

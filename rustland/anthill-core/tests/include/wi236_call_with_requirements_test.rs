@@ -98,7 +98,7 @@ fn polymorphic_entry_op_runs_when_dict_supplied() {
     // sub-dicts list is empty.
     let filebased = interp.kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore");
-    let dict = interp.alloc_requirement(filebased, SmallVec::new());
+    let dict = crate::common::dict(&interp, filebased, []);
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
     requirements.push(dict);
 
@@ -254,7 +254,7 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
 
     let filebased = interp.kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore");
-    let dict = interp.alloc_requirement(filebased, SmallVec::new());
+    let dict = crate::common::dict(&interp, filebased, []);
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
     requirements.push(dict);
 

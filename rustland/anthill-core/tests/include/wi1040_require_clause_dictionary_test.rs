@@ -306,7 +306,7 @@ end
 // ── (b) the named spelling ─────────────────────────────────────────────────
 
 /// The author names the output and passes it by hand. What is asserted is that the
-/// binding is a real dictionary — `construct_requirement` over the carrier that
+/// binding is a real dictionary — the `Dictionary` node over the carrier that
 /// supplies the spec — not merely that the goal succeeded.
 #[test]
 fn the_named_spelling_binds_the_dictionary_by_hand() {

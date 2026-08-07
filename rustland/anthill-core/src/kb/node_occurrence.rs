@@ -292,8 +292,8 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
         Expr::RequirementAtSort { chain, .. } => {
             stack.push(std::mem::replace(chain, mk_placeholder()));
         }
-        Expr::ConstructRequirement { requirements, .. } => {
-            for r in std::mem::take(requirements) { stack.push(r); }
+        Expr::Dictionary { subs, .. } => {
+            for r in std::mem::take(subs) { stack.push(r); }
         }
         Expr::Const(_) | Expr::Spliced(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
@@ -1045,10 +1045,18 @@ pub enum Expr {
         chain: Rc<NodeOccurrence>,
         slot: i64,
     },
-    /// `construct_requirement(impl_functor, [sub-requirements])`.
-    ConstructRequirement {
-        impl_functor: Symbol,
-        requirements: Vec<Rc<NodeOccurrence>>,
+    /// The dictionary construction node, `Dictionary(sub₀ … subₙ₋₁, impl: S)`.
+    ///
+    /// WI-1045 — ONE SPELLING with the VALUE it evaluates to
+    /// (`requirement-channel.md` §9): same functor
+    /// (`anthill.realization.runtime.Dictionary`), same key set (positional
+    /// sub-dictionaries, one named `impl`). It was
+    /// `construct_requirement(impl_functor =, requirements = <list>)` — a second
+    /// constructor for one thing, whose key names and child carrier both differed
+    /// from the value's.
+    Dictionary {
+        impl_sort: Symbol,
+        subs: Vec<Rc<NodeOccurrence>>,
     },
     /// `var_ref(name)` — a body reading a `__req_*` requirement param.
     VarRef {
@@ -1402,8 +1410,8 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
             for r in requirements.iter() { f(r); }
         }
         Expr::RequirementAtSort { chain, .. } => f(chain),
-        Expr::ConstructRequirement { requirements, .. } => {
-            for r in requirements.iter() { f(r); }
+        Expr::Dictionary { subs, .. } => {
+            for r in subs.iter() { f(r); }
         }
         Expr::Const(_) | Expr::Spliced(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
@@ -1805,7 +1813,7 @@ pub fn node_to_debruijn(
         }
         // Remaining child-bearing forms carry NO `TermId`-typed var fields
         // (If / DotApply / collection literals / *Within without param /
-        // RequirementAtSort / ConstructRequirement): close their occurrence
+        // RequirementAtSort / Dictionary): close their occurrence
         // children generically and reassemble, mirroring `open_debruijn_node`.
         _ => {
             let mut closed: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -4408,7 +4416,7 @@ pub(crate) enum BuildFrame {
         type_args: Vec<(Option<Symbol>, Value)>,
     },
     RequirementAtSort { span: SourceSpan, slot: i64 },
-    ConstructRequirement { span: SourceSpan, impl_functor: Symbol, requirements_count: usize },
+    Dictionary { span: SourceSpan, impl_sort: Symbol, sub_count: usize },
     ListLit { span: SourceSpan, count: usize },
     SetLit { span: SourceSpan, count: usize },
     /// A `TupleLiteral`'s elements ride in `named_args` (positional surface
@@ -4698,12 +4706,30 @@ fn visit_fn(
             work.push(WorkOp::Build(BuildFrame::RequirementAtSort { span, slot }));
             push_visit_or_bottom(work, chain);
         }
-        "construct_requirement" => {
-            let impl_functor = named_ref(kb, named_args, "impl_functor").unwrap_or(functor);
-            let reqs_tid = get_named_arg(kb, named_args, "requirements");
-            let (count, visits) = collect_list_visits(kb, reqs_tid);
-            work.push(WorkOp::Build(BuildFrame::ConstructRequirement {
-                span, impl_functor, requirements_count: count,
+        // WI-1045 — the DICTIONARY construction node. Its functor is the
+        // `anthill.realization.runtime.Dictionary` sort, the same one the VALUE
+        // carries, and its children are read the same way: positional
+        // sub-dictionaries, one named `impl` (`requirement-channel.md` §9).
+        // `pos_args` directly, not `collect_list_visits` — the subs are positional
+        // children here exactly as they are in the value, not a cons spine.
+        //
+        // Guarded on the SHAPE, not the last name segment, which every other arm
+        // here keys on — and not on the symbol alone either.
+        // `anthill.realization.runtime.Dictionary` is a PUBLIC, type-parameterized
+        // sort (`sort S = ?`), so `Dictionary[S = Eq[Int64]]` is a legal thing to
+        // write and lowers to a `Term::Fn` under this very symbol carrying a
+        // `type_args` named arg. Admitting it on the symbol alone read the type
+        // application as a requirement form: `impl` was absent so the fallback
+        // pinned the `Dictionary` SORT as the provider, and the type arguments were
+        // dropped — a dictionary over a non-provider where a type was written. The
+        // shape test refuses it, and it falls through to the generic application
+        // below, which is the right answer for a type application.
+        "Dictionary" if is_dictionary_node(kb, functor, named_args) => {
+            let impl_sort = named_ref(kb, named_args, "impl")
+                .expect("is_dictionary_node just read `impl` off this term");
+            let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
+            work.push(WorkOp::Build(BuildFrame::Dictionary {
+                span, impl_sort, sub_count: visits.len(),
             }));
             for v in visits.into_iter().rev() { work.push(v); }
         }
@@ -4982,13 +5008,13 @@ pub(crate) fn build_frame(
             let expr = Expr::RequirementAtSort { chain, slot };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::ConstructRequirement { span, impl_functor, requirements_count } => {
-            let mut requirements: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(requirements_count);
-            for _ in 0..requirements_count {
-                requirements.push(results.pop().expect("construct_requirement: missing entry"));
+        BuildFrame::Dictionary { span, impl_sort, sub_count } => {
+            let mut subs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(sub_count);
+            for _ in 0..sub_count {
+                subs.push(results.pop().expect("Dictionary: missing sub-dictionary"));
             }
-            requirements.reverse();
-            let expr = Expr::ConstructRequirement { impl_functor, requirements };
+            subs.reverse();
+            let expr = Expr::Dictionary { impl_sort, subs };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::ListLit { span, count } => {
@@ -5077,9 +5103,37 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
             | "var_ref" | "if_expr" | "let_expr" | "lambda_expr" | "match_expr"
             | "proof_stmt"
             | "apply" | "constructor" | "dot_apply" | "apply_within"
-            | "requirement_at_sort" | "construct_requirement"
+            | "requirement_at_sort"
             | "ListLiteral" | "SetLiteral" | "TupleLiteral"
     )
+}
+
+/// WI-1045 — is this `Term::Fn` the DICTIONARY construction node,
+/// `Dictionary(sub₀ … subₙ₋₁, impl: S)`?
+///
+/// Both halves are load-bearing. The SYMBOL, because a user may name a sort or a
+/// relation `Dictionary` and `construct_requirement` was a name nobody would.
+/// The SHAPE — exactly one named arg, `impl`, naming a symbol — because
+/// `anthill.realization.runtime.Dictionary` is itself a public parameterized sort,
+/// so `Dictionary[S = …]` is a legal TYPE spelled under the same functor; see the
+/// `"Dictionary"` arm of [`visit_fn`].
+///
+/// [`is_reflect_form_functor`] deliberately does NOT list `Dictionary`, breaking
+/// its "mirrors `visit_fn`'s match arms" rule on this one entry, and the reason is
+/// this predicate's second half: that function is keyed on a functor alone and
+/// cannot see the named args, so it could only mirror the symbol test — which is
+/// the over-admission above. Nothing is lost: it gates the loader's RULE-BODY-atom
+/// builder, and a dictionary node is emitted into OP BODIES, which reach
+/// [`materialize_from_handle`] directly.
+fn is_dictionary_node(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+) -> bool {
+    super::term_view::dictionary_view_syms(kb)
+        .is_some_and(|(ctor, _)| ctor == functor)
+        && named_args.len() == 1
+        && named_ref(kb, named_args, "impl").is_some()
 }
 
 /// Extract the `Symbol` of a `Ref(sym)` or `Ident(sym)` from a named-arg slot.

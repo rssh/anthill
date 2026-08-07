@@ -3013,7 +3013,7 @@ fn lower_node(
         // WI-891: a CAPABILITY GAP, not a fault — the profile has not implemented this
         // shape yet. Marked degradable, so an op body reaching it becomes a
         // build-breaking `static_assert` at the one method, not a codegen abort.
-        | Expr::ConstructRequirement { .. } => Err(ctx.capability_gap(
+        | Expr::Dictionary { .. } => Err(ctx.capability_gap(
             "post-elaboration / higher-order Expr variant not \
              supported by cpp-gen profile yet",
         )),

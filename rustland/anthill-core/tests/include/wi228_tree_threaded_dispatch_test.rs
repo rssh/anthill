@@ -16,7 +16,7 @@
 //! threads it into `build_projected_requirements_list_from_tree`, which
 //! walks `tree.sub_resolutions` and emits one IR entry per impl-side
 //! `requires` slot via WI-227's `emit_tree_as_projection`. A
-//! conditional impl now produces nested `construct_requirement` IR
+//! conditional impl now produces nested `Dictionary` IR
 //! through real dispatch.
 //!
 //! Reference: docs/design/operation-call-model.md §"Resolution"
@@ -28,7 +28,7 @@ use anthill_core::kb::typing::{CallClass, ResolvedRequiresNode};
 use crate::common::interp_for;
 
 #[test]
-fn pin_now_threads_conditional_tree_into_nested_construct_requirement() {
+fn pin_now_threads_conditional_tree_into_nested_dictionary_nodes() {
     // Setup: an EqList carrier that conditionally provides Eq for
     // List[T = A] given Eq[T = A]. The driver calls `eq(x, y)` at
     // T = List[Int64] — Pin-now resolves to EqList.eq with a

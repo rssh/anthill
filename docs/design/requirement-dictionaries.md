@@ -44,9 +44,13 @@ an operational interface over a term, not new storage*.
 ## 1. What the runtime dictionary *is* today
 
 A requirement value is the materialization of a **resolved spec impl** — textbook
-dictionary-passing. Storage is a per-interpreter **`RequirementArena`**
-(`anthill-core/src/eval/requirement_arena.rs`), refcounted, mirroring
-`CellArena` / `MapArena` / `SubstArena`. Each slot is:
+dictionary-passing. **Storage: superseded by WI-1045** — this said a per-interpreter
+refcounted `RequirementArena` mirroring `CellArena` / `MapArena` / `SubstArena`.
+There is no arena: a dictionary is an ordinary value
+(`Dictionary(sub₀ … subₙ₋₁, impl: S)`, `eval/dictionary.rs`), carried identically by
+σ, by an eval frame and by a closure, and `requirement-channel.md` §9 owns that rule.
+Read every "arena slot" below as the value's own children. The slot's CONTENT is
+unchanged and is what the rest of this section is about:
 
 ```rust
 struct Slot {
@@ -377,10 +381,11 @@ two shapes distinct on both carriers — so no `Option` wrapper is synthesized.
 
 **Dictionary equality is by CONTENT, not by slot.** A dictionary is fully
 determined by `(functor, sub-dicts)`, so two with the same tree are
-interchangeable. Slot identity is the wrong test twice over: `RequirementHandle`'s
-identity is `(arena, raw)` and a raw-only compare answers EQUAL across two
-interpreters' arenas (a false positive), while `RequirementArena` reuses freed
-slots from a `free_list`, so a raw is not even stable within one arena.
+interchangeable. Slot identity was the wrong test twice over: the handle's identity
+was `(arena, raw)` and a raw-only compare answered EQUAL across two interpreters'
+arenas (a false positive), while the arena reused freed slots from a `free_list`, so
+a raw was not even stable within one arena. WI-1045 removed the alternative rather
+than only ruling it out — content is now the only thing there is to compare.
 
 **What stays `ViewHead::Opaque`, by nature.** A carrier with no structure to walk
 keeps a payload-free head: equality is carrier identity, and the key stays

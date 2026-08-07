@@ -872,3 +872,52 @@ pub fn one_goal_carrier_fixture(
     });
     (kb, q_term, goal)
 }
+
+/// WI-1045 — a requirement dictionary `Dictionary(subs…, impl: impl_sym)`, the
+/// one construction path a test has.
+///
+/// It goes through `Interpreter::alloc_requirement` rather than assembling a
+/// `Value::Entity` by hand ON PURPOSE: a test that spelled the functor and the
+/// `impl` key itself would keep passing if the production spelling moved, which
+/// is exactly the drift `dictionary_view_syms` exists to make impossible.
+/// Panics in a KB that never loaded `anthill.realization.runtime` — for a test
+/// that is a broken fixture, not a state to handle.
+#[allow(dead_code)]
+pub fn dict(
+    interp: &Interpreter,
+    impl_sym: anthill_core::intern::Symbol,
+    subs: impl IntoIterator<Item = eval::value::Dictionary>,
+) -> eval::value::Dictionary {
+    interp
+        .alloc_requirement(impl_sym, subs)
+        .expect("the loaded stdlib declares anthill.realization.runtime.Dictionary")
+}
+
+/// WI-1045 — the dictionary IR CONSTRUCTION node,
+/// `Dictionary(sub₀ … subₙ₋₁, impl: impl_sym)`.
+///
+/// ONE SPELLING with the value (`requirement-channel.md` §9): same functor, same
+/// key set. This resolves both names the way the typer's `build_dictionary_term`
+/// does — the QUALIFIED accessor for `impl`, not a bare `intern("impl")`, which
+/// is a different symbol and would build a node the materializer reads as having
+/// no `impl` at all.
+#[allow(dead_code)]
+pub fn dict_term(
+    kb: &mut KnowledgeBase,
+    impl_sym: anthill_core::intern::Symbol,
+    subs: &[anthill_core::kb::term::TermId],
+) -> anthill_core::kb::term::TermId {
+    use anthill_core::kb::term::Term;
+    let ctor = kb
+        .try_resolve_symbol("anthill.realization.runtime.Dictionary")
+        .expect("the loaded stdlib declares anthill.realization.runtime.Dictionary");
+    let impl_key = kb
+        .try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")
+        .expect("the loaded stdlib declares Dictionary.impl");
+    let impl_ref = kb.alloc(Term::Ref(impl_sym));
+    kb.alloc(Term::Fn {
+        functor: ctor,
+        pos_args: subs.iter().copied().collect(),
+        named_args: smallvec::SmallVec::from_slice(&[(impl_key, impl_ref)]),
+    })
+}

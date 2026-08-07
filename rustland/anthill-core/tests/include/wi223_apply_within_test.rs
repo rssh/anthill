@@ -18,7 +18,8 @@
 
 use smallvec::SmallVec;
 
-use anthill_core::eval::{Interpreter, Value};
+use anthill_core::eval::value::Dictionary;
+use anthill_core::eval::Interpreter;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 
@@ -57,9 +58,14 @@ fn make_singleton(kb: &mut KnowledgeBase, item: TermId) -> TermId {
 #[test]
 fn apply_within_evaluates_requirements_then_dispatches_to_anthill_op() {
     // `produce()` is a no-arg anthill op. apply_within calls it with one
-    // freshly-constructed requirement value in the requirements channel.
-    // The arena's live count climbs by one before dispatch and returns
-    // to baseline after the body returns + requirement drops.
+    // freshly-constructed dictionary in the requirements channel.
+    //
+    // WI-1045 — this used to ALSO assert that the arena's live count climbed by
+    // one before dispatch and returned to baseline after. That half is deleted,
+    // not ported: there is no arena to reclaim from, and a dictionary is an
+    // ordinary `Rc`-backed value whose lifetime Rust owns. What survives is the
+    // half that was about the channel — the requirement is evaluated, installed
+    // and the call runs.
     let src = r#"
 namespace test.wi223.apply_within
   operation produce() -> Int64 = 42
@@ -71,22 +77,10 @@ end
     let impl_sym = kb.intern("test.wi223.apply_within.SomeImpl");
     let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .unwrap();
-    let cr_sym = kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .unwrap();
 
-    // requirements = [construct_requirement(SomeImpl, [])]
-    let nil = make_nil(&mut kb);
-    let impl_ref = kb.alloc(Term::Ref(impl_sym));
-    let impl_field = kb.intern("impl_functor");
+    // requirements = [Dictionary(impl: SomeImpl)]
     let reqs_field = kb.intern("requirements");
-    let cr = kb.alloc(Term::Fn {
-        functor: cr_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (impl_field, impl_ref),
-            (reqs_field, nil),
-        ]),
-    });
+    let cr = crate::common::dict_term(&mut kb, impl_sym, &[]);
     let cr_list = make_singleton(&mut kb, cr);
 
     // apply_within(fn = produce, args = [], requirements = [cr])
@@ -105,15 +99,10 @@ end
     });
 
     let mut interp = Interpreter::new(kb);
-    let pre_live = interp.requirement_arena_live_count();
     let value = interp.run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within should reduce");
     assert_eq!(value.as_int(), Some(42),
         "produce body should run and return 42");
-    // The requirement was alive across the dispatch (installed in the
-    // callee frame) and should be released after produce returns.
-    assert_eq!(interp.requirement_arena_live_count(), pre_live,
-        "requirement allocated for the dispatch must be reclaimed");
 }
 
 #[test]
@@ -142,28 +131,15 @@ end
 
     let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .unwrap();
-    let cr_sym = kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .unwrap();
 
     // A synthetic spec-op-like symbol (the short name "foo"). The
     // runtime will resolve `<IntFooImpl_qn>.foo` via the dispatching
-    // dict's functor.
+    // dict's impl.
     let foo_spec_qn = "test.wi223.dispatch_form.Spec.foo";
     let foo_spec_sym = kb.intern(foo_spec_qn);
 
-    // Build the dispatching dict expression: construct_requirement(IntFooImpl, []).
-    let int_impl_ref = kb.alloc(Term::Ref(int_impl));
-    let impl_field = kb.intern("impl_functor");
-    let reqs_inner_field = kb.intern("requirements");
-    let nil = make_nil(&mut kb);
-    let dict_expr = kb.alloc(Term::Fn {
-        functor: cr_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (impl_field, int_impl_ref),
-            (reqs_inner_field, nil),
-        ]),
-    });
+    // Build the dispatching dict expression: Dictionary(impl: IntFooImpl).
+    let dict_expr = crate::common::dict_term(&mut kb, int_impl, &[]);
     let dict_list = make_singleton(&mut kb, dict_expr);
 
     // apply_within(fn = Ref(foo_spec_sym), args = [], requirements = [<dict>])
@@ -213,8 +189,6 @@ end
     let impl_sym = kb.intern("test.wi223.thread_through.MyImpl");
     let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .unwrap();
-    let cr_sym = kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .unwrap();
     let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
 
@@ -239,19 +213,9 @@ end
     );
     kb.set_op_body_node(target_sym, body_node);
 
-    // requirements = [construct_requirement(MyImpl, [])]
-    let nil = make_nil(&mut kb);
-    let impl_ref = kb.alloc(Term::Ref(impl_sym));
-    let impl_field = kb.intern("impl_functor");
+    // requirements = [Dictionary(impl: MyImpl)]
     let reqs_field = kb.intern("requirements");
-    let cr = kb.alloc(Term::Fn {
-        functor: cr_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (impl_field, impl_ref),
-            (reqs_field, nil),
-        ]),
-    });
+    let cr = crate::common::dict_term(&mut kb, impl_sym, &[]);
     let cr_list = make_singleton(&mut kb, cr);
 
     // apply_within(fn = read_my_req, args = [], requirements = [cr])
@@ -272,12 +236,12 @@ end
     let mut interp = Interpreter::new(kb);
     let value = interp.run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within with introspecting body should reduce");
-    match value {
-        Value::Requirement(h) => {
-            assert_eq!(h.functor(), impl_sym,
-                "callee's frame.requirements[__req_self] should be the \
-                 requirement we constructed at the apply_within site");
-        }
-        other => panic!("expected Value::Requirement(MyImpl), got {other:?}"),
-    }
+    // WI-1045: the body's `var_ref(__req_self)` delivers the dictionary AS a
+    // value — no unwrapping carrier — so this reads it back through the same
+    // boundary an anthill caller would.
+    let observed = Dictionary::from_value(interp.kb(), &value)
+        .unwrap_or_else(|| panic!("expected a Dictionary value, got {value:?}"));
+    assert_eq!(observed.impl_sort(), impl_sym,
+        "callee's frame.requirements[__req_self] should be the \
+         dictionary we constructed at the apply_within site");
 }

@@ -855,7 +855,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             } else {
                 entry.required_sort
             };
-            out.push(interp.alloc_requirement(impl_sym, smallvec::SmallVec::new()));
+            out.push(
+                interp.alloc_requirement(impl_sym, [])
+                    .expect("the stdlib defines anthill.realization.runtime.Dictionary"),
+            );
         }
         out
     };

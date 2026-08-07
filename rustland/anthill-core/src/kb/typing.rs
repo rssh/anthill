@@ -21,7 +21,7 @@ use super::discrim::SubstTree;
 use super::persist_subst::BindValue;
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, RuleId, SortKind};
-use crate::eval::value::Value;
+use crate::eval::value::{Dictionary, Value};
 use crate::intern::{is_positional_label_at, positional_label, Symbol};
 use crate::span::Span;
 
@@ -7932,7 +7932,7 @@ fn visit_type(
         | Expr::ConstructorWithin { .. }
         | Expr::LambdaWithin { .. }
         | Expr::RequirementAtSort { .. }
-        | Expr::ConstructRequirement { .. }
+        | Expr::Dictionary { .. }
         | Expr::Bottom => results.push(Err(TypeError::BottomExpr { span: occ_span })),
     }
 }
@@ -13200,44 +13200,47 @@ pub struct ProjectionSyms {
     pub var_ref: Symbol,
     /// `anthill.reflect.Expr.requirement_at_sort`
     pub ras: Symbol,
-    /// `anthill.reflect.Expr.construct_requirement`
-    pub construct: Symbol,
-    /// `anthill.prelude.List.nil`
-    pub nil: Symbol,
-    /// `anthill.prelude.List.cons`
-    pub cons: Symbol,
+    /// WI-1045 — the DICTIONARY constructor, `anthill.realization.runtime.Dictionary`.
+    ///
+    /// ONE SPELLING (`requirement-channel.md` §9): the IR construction node and the
+    /// value it evaluates to are the same constructor with the same key set —
+    /// positional sub-dictionaries, one named `impl`. It used to be
+    /// `anthill.reflect.Expr.construct_requirement(impl_functor =, requirements =)`:
+    /// a different functor and different key names for one thing, which is a second
+    /// identity to keep in step by hand. Both names come from
+    /// [`super::term_view::dictionary_view_syms`], so producer and reader cannot drift.
+    pub dict_ctor: Symbol,
+    /// The `impl` key of a dictionary — the named child naming the provider.
+    ///
+    /// WI-1045 also RETIRED this struct's `nil` / `cons` / `head` / `tail`: the
+    /// emitter built its sub-dictionaries as a cons SPINE under a `requirements`
+    /// key, and they are positional children now. Nothing here spells a list any
+    /// more, so `resolve` no longer gates on `anthill.prelude.List` either.
+    pub dict_impl: Symbol,
     pub slot: Symbol,
     pub chain: Symbol,
-    pub impl_functor: Symbol,
-    pub requirements: Symbol,
-    pub head: Symbol,
-    pub tail: Symbol,
     /// `name` field of `var_ref`.
     pub name: Symbol,
 }
 
 impl ProjectionSyms {
     pub fn resolve(kb: &mut KnowledgeBase) -> Option<Self> {
+        let (dict_ctor, dict_impl) = super::term_view::dictionary_view_syms(kb)?;
         Some(Self {
             var_ref: kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")?,
             ras: kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_sort")?,
-            construct: kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")?,
-            nil: kb.try_resolve_symbol("anthill.prelude.List.nil")?,
-            cons: kb.try_resolve_symbol("anthill.prelude.List.cons")?,
+            dict_ctor,
+            dict_impl,
             slot: kb.intern("slot"),
             chain: kb.intern("chain"),
-            impl_functor: kb.intern("impl_functor"),
-            requirements: kb.intern("requirements"),
-            head: kb.intern("head"),
-            tail: kb.intern("tail"),
             name: kb.intern("name"),
         })
     }
 }
 
 /// WI-234 (Model 1): build the dispatching-dict expression for the
-/// Direct path — `construct_requirement(callee_spec_sort, [<projections
-/// per callee chain>])`. Each projection sources its sub-instance from
+/// Direct path — `Dictionary(<one projection per callee chain entry>, impl:
+/// callee_spec_sort)`. Each projection sources its sub-instance from
 /// `caller_requires` via the three-strategy search in
 /// `build_dep_projection`. The caller wraps the result in a
 /// single-entry cons-list to form the `apply_within.requirements`
@@ -13482,9 +13485,9 @@ fn explain_dep_refusal(
 
 /// Shared core of the Direct-path dict build (`build_dispatching_dict_direct`)
 /// and the WI-415 concrete build (`build_concrete_dispatch_dict`): emit
-/// `construct_requirement(callee_spec_sort, [<one projection per `chain`
-/// entry>])`, sourcing each projection from `caller_requires` via the
-/// three-strategy search in `build_dep_projection`.
+/// `Dictionary(<one projection per `chain` entry>, impl: callee_spec_sort)`,
+/// sourcing each projection from `caller_requires` via the three-strategy search
+/// in `build_dep_projection`.
 ///
 /// `chain` is the callee's DIRECT requires — one projection per slot the
 /// callee body reads by `__req_<spec>` name, matching `synth_req_names` (also
@@ -13586,8 +13589,7 @@ fn build_dispatching_dict_from_chain(
             None => {}
         }
     }
-    let sub_reqs_list = kb.build_list(&proj_terms);
-    Ok(Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list)))
+    Ok(Some(build_dictionary_term(kb, syms, callee_spec_sort, &proj_terms)))
 }
 
 /// WI-415/WI-418: build, at COMPILE stage, the parent-bundle dispatching dict a
@@ -14474,9 +14476,9 @@ const NO_PROVIDER_NAME: &str = "anthill.reflect.NoProvider";
 
 /// WI-227: translate a `ResolvedRequiresNode` into a projection IR term.
 /// `FromScope` becomes `var_ref(name = __req_<caller chain slot>)`;
-/// `Leaf` becomes `construct_requirement(impl, nil)`; `Conditional`
+/// `Leaf` becomes `Dictionary(impl: impl)`; `Conditional`
 /// recursively emits sub-projections and wraps them in a
-/// `construct_requirement(impl, cons_list)`. `caller_sort` is the
+/// `Dictionary(<subs …>, impl: impl)`. `caller_sort` is the
 /// enclosing op's parent sort, used to name `FromScope` chain slots.
 fn emit_tree_as_projection(
     kb: &mut KnowledgeBase,
@@ -14508,8 +14510,7 @@ fn emit_tree_as_projection(
             for sub in sub_resolutions {
                 sub_terms.push(emit_tree_as_projection(kb, caller, sub, syms)?);
             }
-            let list = kb.build_list(&sub_terms);
-            Some(build_construct_requirement(kb, syms, *impl_sort, list))
+            Some(build_dictionary_term(kb, syms, *impl_sort, &sub_terms))
         }
     }
 }
@@ -14545,7 +14546,7 @@ fn build_req_at_sort(
     })
 }
 
-/// Build `construct_requirement(functor, nil)` — a dictionary bundling nothing.
+/// Build `Dictionary(impl: <Ref(functor)>)` — a dictionary bundling nothing.
 /// THREE producers need it: a `Leaf` resolution, WI-857's `Unavailable` marker slot,
 /// and `build_dep_projection`'s synthetic `EffectsRuntime` anchor. One owner, so the
 /// spelling of a childless dictionary has one definition.
@@ -14554,25 +14555,30 @@ fn build_empty_bundle(
     syms: &ProjectionSyms,
     functor: Symbol,
 ) -> TermId {
-    let nil_list = kb.build_list(&[]);
-    build_construct_requirement(kb, syms, functor, nil_list)
+    build_dictionary_term(kb, syms, functor, &[])
 }
 
-/// Build `construct_requirement(impl_functor = <Ref(impl)>, requirements = <list>)`.
-fn build_construct_requirement(
+/// Build the IR construction node `Dictionary(sub₀ … subₙ₋₁, impl = <Ref(impl)>)`.
+///
+/// WI-1045 — ONE SPELLING. This term's functor and key set are the DICTIONARY's,
+/// not a second constructor's: the sub-dictionaries are POSITIONAL children (slot
+/// `k` is the k-th entry of the WI-857 layout, so the order is the identity) and
+/// the provider is the one named child, exactly as
+/// [`crate::eval::value::Dictionary`] lays out the value this node evaluates to.
+/// It used to be `construct_requirement(impl_functor =, requirements = <cons
+/// spine>)` — a different functor, different key names, and a list where the value
+/// had positional children, for one thing.
+fn build_dictionary_term(
     kb: &mut KnowledgeBase,
     syms: &ProjectionSyms,
     impl_sym: Symbol,
-    requirements_list: TermId,
+    subs: &[TermId],
 ) -> TermId {
     let impl_ref = kb.alloc(Term::Ref(impl_sym));
     kb.alloc(Term::Fn {
-        functor: syms.construct,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (syms.impl_functor, impl_ref),
-            (syms.requirements, requirements_list),
-        ]),
+        functor: syms.dict_ctor,
+        pos_args: SmallVec::from_slice(subs),
+        named_args: SmallVec::from_slice(&[(syms.dict_impl, impl_ref)]),
     })
 }
 
@@ -14601,7 +14607,7 @@ pub(crate) enum BridgeRequirements {
     /// gap-1 behavior; a requirement-free body decides).
     NoneNeeded,
     /// Resolved: the parent sort + one tree per slot of its `requires` chain, in
-    /// `synth_req_names` order, for the eval bridge to port into `RequirementHandle`s.
+    /// `synth_req_names` order, for the eval bridge to port into `Dictionary`s.
     Resolved(Symbol, Vec<(Symbol, ResolvedRequiresNode)>),
     /// A required dictionary is unresolvable at these arg types (NO provider, a
     /// cyclic one, an under-determined carrier, or a signature/spec-binding the
@@ -14827,7 +14833,7 @@ fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option
 ///
 /// When `resolved_tree` is `Some`, the requirements list is built from
 /// the SLD-resolved sub_resolutions (WI-228 path) — conditional impls
-/// produce nested `construct_requirement` IR. When `None`, the
+/// produce nested `Dictionary` IR. When `None`, the
 /// per-dep search runs against the callee's `requires_chain`
 /// (Direct-call path; no SLD tree available).
 pub(crate) fn record_apply_within_concrete(
@@ -16705,7 +16711,7 @@ pub enum CallClass {
         enclosing_sort: Option<Symbol>,
         resolved_tree: Option<ResolvedRequiresNode>,
         /// WI-415: the parent-bundle dispatching dict
-        /// (`construct_requirement(callee_parent, [<resolved sub-reqs>])`),
+        /// (`Dictionary(<resolved sub-reqs>, impl: callee_parent)`),
         /// built at COMPILE stage by the typer when the call-site
         /// substitution pinned the callee parent sort's type params
         /// concretely — a cross-sort / no-enclosing-sort direct call such
@@ -16771,7 +16777,7 @@ pub enum CallClass {
     /// op needs a requirement dictionary. `dict` is the dispatching-dict
     /// expression, built at the eta site: a caller-frame `var_ref(__req_self)`
     /// for a SAME-SORT eta (the op's own sort dict), or — for a cross-sort eta —
-    /// `construct_requirement(callee_parent, [...])` for a concrete dep / a
+    /// `Dictionary(…, impl: callee_parent)` for a concrete dep / a
     /// caller-frame `var_ref` projection for an abstract one (via
     /// `build_concrete_dispatch_dict` from the expected arrow's pinning). Eval
     /// evaluates it IN THE ETA-SITE FRAME at mint and stores the resulting
@@ -17252,7 +17258,7 @@ pub struct ResolutionScope<'a> {
 }
 
 /// The synthesized resolution chain. Returned to the requirement-
-/// insertion pass which emits the IR (`construct_requirement` /
+/// insertion pass which emits the IR (the `Dictionary` node /
 /// `requirement_at_current` / projections) per node.
 #[derive(Clone, Debug)]
 pub enum ResolvedRequiresNode {
@@ -23766,7 +23772,7 @@ pub fn find_unique_impl_op(
 /// WI-228 — same as `find_unique_impl_op` but also returns the full
 /// `ResolvedRequiresNode` (when one was produced). The tree carries the impl's
 /// sub_resolutions for conditional instances, which the requirement-
-/// insertion pass turns into nested `construct_requirement` IR.
+/// insertion pass turns into nested `Dictionary` IR.
 ///
 /// Delegates to `dispatch_spec_op_cached` — the legacy compat path
 /// (`find_unique_impl_op`) thus also benefits from WI-226 Cache B.
@@ -37717,13 +37723,11 @@ pub(crate) enum FindDictFetch {
     /// The dictionary: `Dictionary(sub₀ … subₙ₋₁, impl: S)`.
     ///
     /// **ONE REPRESENTATION** (`requirement-channel.md` §9, which settles §10 item
-    /// 2). This is not "the SLD form" of a dictionary — it is THE form, built in the
-    /// exact shape WI-1019's `TermView` announces for an eval `RequirementHandle`
-    /// (`dictionary_view_syms` supplies both names, so the producer and that reader
-    /// cannot drift). A dictionary built here and a handle built in an interpreter
-    /// therefore compare equal through the ordinary view, with no conversion and no
-    /// second identity. Retiring the arena so eval holds this value directly is
-    /// WI-1041.
+    /// 2). This is not "the SLD form" of a dictionary — it is THE form. WI-1045
+    /// retired the eval-side arena, so an operation call's frame holds this very
+    /// value: the two sides do not merely compare equal through a view, they are
+    /// built by ONE producer ([`dictionary_of_tree`]) and the crossing converts
+    /// nothing.
     ///
     /// STORAGE IS NOT PART OF THE SHAPE, and this deliberately does not intern:
     /// a conditional provision composes over type arguments, so the distinct
@@ -37781,8 +37785,8 @@ pub(crate) fn fetch_dictionary(
     };
     let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
     match resolve(kb, &goal, &scope) {
-        ResolutionResult::Resolved(tree) => match dictionary_value_of_tree(kb, &tree) {
-            Some(v) => FindDictFetch::Fetched(v),
+        ResolutionResult::Resolved(tree) => match dictionary_of_tree(kb, &tree) {
+            Some(d) => FindDictFetch::Fetched(d.into_value()),
             None => FindDictFetch::Undecided {
                 detail: "cannot build a dictionary value here: either the resolved tree \
                          names a caller slot (a rule clause has none, and this \
@@ -37875,13 +37879,19 @@ fn witness_sort_goal(
     Some(SortGoal { spec_sort, bindings, carrier })
 }
 
-/// WI-1040 — a resolved provider tree as the dictionary VALUE.
+/// WI-1040 — a resolved provider tree as the dictionary.
+///
+/// THE ONE PRODUCER, for both sides of the crossing (WI-1045). The eval side had
+/// its own copy of this walk (`Interpreter::port_resolved_tree`) that differed
+/// only in building an arena handle; with one representation there is nothing to
+/// differ in, so that copy now delegates here and the two crossings cannot spell
+/// one tree two ways.
 ///
 /// Built in WI-1019's shape: the sub-dictionaries are POSITIONAL children (slot `k`
 /// is the k-th entry of the WI-857 dictionary layout, so the order is the identity)
 /// and the impl carrier is the one named child. WI-857's `Unavailable` marker
 /// becomes a childless dictionary over the `NoProvider` marker, exactly as
-/// `emit_tree_as_projection` and `port_resolved_tree` both spell it — every use of
+/// `emit_tree_as_projection` spells it — every use of
 /// that slot is refused at the read (`resolve_op_target_checked`), so carrying the
 /// absence stays loud.
 ///
@@ -37889,34 +37899,31 @@ fn witness_sort_goal(
 /// empty-scope resolution this is called on, and answering `None` rather than
 /// inventing a slot name keeps that true — or when the KB has no
 /// `anthill.realization.runtime.Dictionary` to name.
-fn dictionary_value_of_tree(kb: &mut KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<Value> {
-    let (ctor, impl_key) = super::term_view::dictionary_view_syms(kb)?;
+pub(crate) fn dictionary_of_tree(
+    kb: &mut KnowledgeBase,
+    tree: &ResolvedRequiresNode,
+) -> Option<Dictionary> {
     let marker = no_provider_sym(kb);
     fn build(
+        kb: &KnowledgeBase,
         tree: &ResolvedRequiresNode,
-        ctor: Symbol,
-        impl_key: Symbol,
         marker: Symbol,
-    ) -> Option<Value> {
-        let (impl_sort, subs): (Symbol, Vec<Value>) = match tree {
+    ) -> Option<Dictionary> {
+        let (impl_sort, subs): (Symbol, Vec<Dictionary>) = match tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. } => (*impl_sort, Vec::new()),
             ResolvedRequiresNode::Unavailable { .. } => (marker, Vec::new()),
             ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => (
                 *impl_sort,
                 sub_resolutions
                     .iter()
-                    .map(|s| build(s, ctor, impl_key, marker))
+                    .map(|s| build(kb, s, marker))
                     .collect::<Option<Vec<_>>>()?,
             ),
             ResolvedRequiresNode::FromScope { .. } => return None,
         };
-        Some(Value::Entity {
-            functor: ctor,
-            pos: subs.into(),
-            named: vec![(impl_key, Value::SymbolRef(impl_sort))].into(),
-        })
+        Dictionary::build(kb, impl_sort, subs)
     }
-    build(tree, ctor, impl_key, marker)
+    build(kb, tree, marker)
 }
 
 /// A carried type as a `TermId`, for the `TermId`-keyed [`SortGoal::bindings`].

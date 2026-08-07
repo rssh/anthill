@@ -1254,9 +1254,9 @@ pub(super) fn reassemble(
             chain: cur.take(chain),
             slot: *slot,
         },
-        Expr::ConstructRequirement { impl_functor, requirements } => Expr::ConstructRequirement {
-            impl_functor: *impl_functor,
-            requirements: cur.take_vec(requirements),
+        Expr::Dictionary { impl_sort, subs } => Expr::Dictionary {
+            impl_sort: *impl_sort,
+            subs: cur.take_vec(subs),
         },
         // WI-538: an in-body proof — consume children in `for_each_child`
         // order [conclude?, body] so a `[simp]` rewrite (or a WI-408

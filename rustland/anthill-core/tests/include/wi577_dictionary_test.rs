@@ -2,9 +2,10 @@
 //!
 //! The two runtime VIEW sorts `anthill.realization.runtime.Dictionary` /
 //! `OpRef` — the anthill face of the runtime dispatch values
-//! `Value::Requirement` / `Value::OpRef` — exposed as native builtins over the
-//! `RequirementArena`. These tests build requirement dictionaries by hand (as
-//! the interpreter does when reducing `construct_requirement`) and exercise
+//! a requirement dictionary / `Value::OpRef` — exposed as native builtins over
+//! the values themselves (WI-1045; there is no arena behind a dictionary any
+//! more). These tests build requirement dictionaries by hand (as
+//! the interpreter does when reducing the `Dictionary` IR node) and exercise
 //! each accessor op through `Interpreter::call`, which dispatches straight to
 //! the registered builtin.
 //!
@@ -13,6 +14,7 @@
 
 use smallvec::SmallVec;
 
+use anthill_core::eval::value::Dictionary;
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::term::Term;
@@ -89,10 +91,10 @@ fn dictionary_impl_arity_sub() {
     let bool_sym = resolve(&interp, "anthill.prelude.Bool");
 
     // parent{ Int64, subs = [ child{ Bool } ] }
-    let child = interp.alloc_requirement(bool_sym, SmallVec::new());
+    let child = crate::common::dict(&interp, bool_sym, []);
     let mut subs: SmallVec<[_; 1]> = SmallVec::new();
     subs.push(child);
-    let dict = Value::Requirement(interp.alloc_requirement(int64, subs));
+    let dict = crate::common::dict(&interp, int64, subs).into_value();
 
     // impl(d) — the resolved impl identity.
     let got = interp.call(&format!("{DICT}.impl"), &[dict.clone()]).unwrap();
@@ -102,15 +104,16 @@ fn dictionary_impl_arity_sub() {
     let got = interp.call(&format!("{DICT}.arity"), &[dict.clone()]).unwrap();
     assert_eq!(expect_int(&got), 1);
 
-    // sub(d, 0) — the child dict (a Requirement); impl(child) == Bool, arity 0.
+    // sub(d, 0) — the child dict; impl(child) == Bool, arity 0.
     let child_dict = interp.call(&format!("{DICT}.sub"), &[dict.clone(), Value::Int(0)]).unwrap();
-    assert!(matches!(child_dict, Value::Requirement(_)), "sub must return a Dictionary handle");
+    assert!(Dictionary::from_value(interp.kb(), &child_dict).is_some(),
+        "sub must return a dictionary, got {child_dict:?}");
     let child_impl = interp.call(&format!("{DICT}.impl"), &[child_dict.clone()]).unwrap();
     assert_eq!(sym_qn(&interp, &child_impl), "anthill.prelude.Bool");
     let child_arity = interp.call(&format!("{DICT}.arity"), &[child_dict]).unwrap();
     assert_eq!(expect_int(&child_arity), 0);
 
-    // Out-of-range projection is a loud error, not an arena panic.
+    // Out-of-range projection is a loud error, not a panic.
     let err = interp.call(&format!("{DICT}.sub"), &[dict, Value::Int(5)]);
     assert!(err.is_err(), "out-of-range sub must error");
 }
@@ -124,7 +127,7 @@ fn resolve_op_real_impl_yields_callable_opref() {
 
     // Int64 provides Eq — resolve `Eq.eq` against a Dictionary{Int64}.
     let eq_eq = sym_val(&mut interp, "anthill.prelude.PartialEq.eq");
-    let dict = Value::Requirement(interp.alloc_requirement(int64, SmallVec::new()));
+    let dict = crate::common::dict(&interp, int64, []).into_value();
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, eq_eq]).unwrap();
 
     // The result carries the dispatch dict — so it stays callable.
@@ -144,7 +147,9 @@ fn resolve_op_real_impl_yields_callable_opref() {
     match &d {
         Value::Entity { functor, named, .. } => {
             assert!(interp.kb().qualified_name_of(*functor).ends_with(".some"), "dict(r) must be some(...)");
-            assert!(matches!(named_field(&interp, named, "value"), Value::Requirement(_)));
+            let inner = named_field(&interp, named, "value");
+            assert!(Dictionary::from_value(interp.kb(), &inner).is_some(),
+                "the payload must be a dictionary, got {inner:?}");
         }
         other => panic!("dict(r) must be an Option, got {}", other.type_name()),
     }
@@ -158,7 +163,7 @@ fn resolve_op_no_table_row_falls_back_to_spec_op() {
     // `dispatch_via_sort_ops_table`'s `unwrap_or(fn_sym)`).
     let bool_sym = resolve(&interp, "anthill.prelude.Bool");
     let add = sym_val(&mut interp, "anthill.prelude.Numeric.add");
-    let dict = Value::Requirement(interp.alloc_requirement(bool_sym, SmallVec::new()));
+    let dict = crate::common::dict(&interp, bool_sym, []).into_value();
 
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, add]).unwrap();
     let op_id = interp.call(&format!("{OPREF}.op"), &[opref]).unwrap();
@@ -177,7 +182,7 @@ fn ops_enumerates_dict_operations_as_oprefs() {
         "Int64 should have SortOpsTable rows (own + inherited spec ops)"
     );
 
-    let dict = Value::Requirement(interp.alloc_requirement(int64, SmallVec::new()));
+    let dict = crate::common::dict(&interp, int64, []).into_value();
     let list = interp.call(&format!("{DICT}.ops"), &[dict]).unwrap();
 
     // A non-empty cons list whose head is a dict-bearing OpRef.
@@ -251,9 +256,9 @@ fn resolve_op_remembers_the_named_spec_op() {
     // A LAYOUT-VALID `Ordered[Int64]` dictionary supplied by `Descending`: the spec
     // half is `Ordered`'s two entries; `Descending` declares no `requires`.
     let mut subs: SmallVec<[_; 1]> = SmallVec::new();
-    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
-    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
-    let dict = Value::Requirement(interp.alloc_requirement(desc, subs));
+    subs.push(crate::common::dict(&interp, desc, []));
+    subs.push(crate::common::dict(&interp, desc, []));
+    let dict = crate::common::dict(&interp, desc, subs).into_value();
     let cmp = sym_val(&mut interp, "anthill.prelude.Ordered.compare");
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
     match &opref {
@@ -325,9 +330,9 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     let mut interp = crate::common::interp_for(src);
     let desc = resolve(&interp, "test.wi577.namedop.Descending");
     let mut subs: SmallVec<[_; 1]> = SmallVec::new();
-    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
-    subs.push(interp.alloc_requirement(desc, SmallVec::new()));
-    let dict = Value::Requirement(interp.alloc_requirement(desc, subs));
+    subs.push(crate::common::dict(&interp, desc, []));
+    subs.push(crate::common::dict(&interp, desc, []));
+    let dict = crate::common::dict(&interp, desc, subs).into_value();
     let cmp = sym_val(&mut interp, "anthill.prelude.Ordered.compare");
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
 

@@ -1619,7 +1619,10 @@ end
             .kb()
             .try_resolve_symbol("test.wi1016_seam.Color")
             .expect("Color declared above");
-        let dict = Value::Requirement(interp.alloc_requirement(color, Default::default()));
+        let dict = interp
+            .alloc_requirement(color, [])
+            .expect("the stdlib defines anthill.realization.runtime.Dictionary")
+            .into_value();
 
         // The producer: `Dictionary.impl(d) -> Symbol`.
         let sym_val = interp

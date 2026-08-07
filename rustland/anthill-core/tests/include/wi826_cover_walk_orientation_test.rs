@@ -297,7 +297,7 @@ fn bindingless_slot_nested_forward_is_refused_and_constructed() {
 /// not refuse the bound spelling", not as a pin on which route supplies the dep.
 ///
 /// Deliberately NOT evaluated: `Gem` provides `Mid` UNCONDITIONALLY, so the
-/// resolution is a `Leaf` whose emitted `construct_requirement` bundles an EMPTY
+/// resolution is a `Leaf` whose emitted `Dictionary` node bundles an EMPTY
 /// sub-requirement list, while Strategy 2 indexes the forward by the SPEC's
 /// static `direct_requires_chain(Mid)` — running it panics
 /// `requirement_at_sort: index 0 out of range`. That mismatch (a `Leaf`'s bundle

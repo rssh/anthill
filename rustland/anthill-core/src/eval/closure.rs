@@ -42,7 +42,7 @@ pub struct Closure {
     /// §"Closure invocation: the one runtime exception" of
     /// `docs/design/operation-call-model.md`. Name-keyed (WI-237 names
     /// model): each entry is `(synthesized __req_* name, handle)`.
-    pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 1]>,
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 1]>,
     /// Operation type-argument scope, snapshotted at lambda
     /// construction time alongside `requirements` (WI-272). Same
     /// lexical-scope preservation rationale: a lambda created inside

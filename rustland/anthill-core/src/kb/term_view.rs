@@ -16,7 +16,6 @@
 
 use std::rc::Rc;
 
-use crate::eval::requirement_arena::RequirementHandle;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
@@ -1064,6 +1063,16 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
             functor_view_head(kb, *name, pos_args.len(), named_args.len())
         }
+        // WI-1045 — the DICTIONARY construction node reads as the dictionary it
+        // builds: same functor, positional sub-dictionaries, one named `impl`.
+        // That is the third carrier of the one representation
+        // (`requirement-channel.md` §9) — a `TermId`, a `Value` and a
+        // `NodeOccurrence` spelling one dictionary must not present three heads.
+        Some(Expr::Dictionary { subs, .. }) => ViewHead::Functor {
+            functor: Some(dictionary_ctor_sym(kb)),
+            pos_arity: subs.len(),
+            named_arity: 1,
+        },
         Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
         // WI-714: a `Spliced` occurrence carries a structured `Value` (which
         // itself implements `TermView`) — present the value's head, never
@@ -1157,9 +1166,17 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //    the IR node is not needed. Whether to FINISH that supersession
         //    (delete the variants) or REVERSE it is WI-816. Either way, a head
         //    here could not be tested against a producer.
-        //  - `HoApply` / `RequirementAtSort` / `ConstructRequirement`:
-        //    rebuild-only — `visit_fn` materializes them from terms nothing in
-        //    the pipeline emits, so again there is no live pair to align.
+        //  - `HoApply` / `RequirementAtSort`: rebuild-only — `visit_fn`
+        //    materializes them from terms nothing in the pipeline emits, so again
+        //    there is no live pair to align.
+        //
+        //  (`Dictionary` WAS on that line and is NOT any more — WI-1045. It is
+        //  live: `typing::build_dictionary_term` emits the term and
+        //  `eta_dispatch_dict` materializes it at run time. And unlike
+        //  `ApplyWithin`, its faithful term twin IS what its head would say —
+        //  `Dictionary(sub₀ … subₙ₋₁, impl: S)`, the same functor and key set the
+        //  VALUE carries — so a transparent head is not a cross-carrier miss but
+        //  the third side of one representation. It has an arm above.)
         //
         //  (`SetLit` / `TupleLit` were the fourth entry here and are GONE — they
         //  now read as their WI-559 twins, above. The lesson their absence leaves
@@ -1209,6 +1226,8 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
         // tuple literal's POSITIONAL components are the positional children,
         // mirroring what `occ_build_fn` puts in `pos_args`.
         Expr::SetLit(es) => es.get(i).map(Rc::clone),
+        // WI-1045 — the sub-dictionaries the head just counted.
+        Expr::Dictionary { subs, .. } => subs.get(i).map(Rc::clone),
         // NOT `TupleLit`: its canonical twin is all-named (`_N` labels), so it has
         // no positional children to expose — see `occ_head`.
         //
@@ -1307,6 +1326,9 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
             }
             keys
         }
+        // WI-1045 — the ONE key the head counted, same symbol the value's
+        // `named_keys` answers.
+        Some(Expr::Dictionary { .. }) => vec![dictionary_impl_key(kb)],
         Some(Expr::Constructor { named_args, .. })
         // WI-520: `Instantiation` reads like `Constructor`.
         | Some(Expr::Instantiation { named_args, .. }) => {
@@ -2120,28 +2142,34 @@ impl TermView for TermId {
 
 // ── Native-carrier structural views (WI-1019) ───────────────────
 //
-// `Value::OpRef` and `Value::Requirement` are RESOLVED VALUES, not handles into
-// mutable state. An `OpRef` is two symbols and a dictionary; a requirement slot
-// is `(functor, [sub-handles])`, written once at `alloc` and never mutated after
-// (`requirement_arena.rs` — only `refcount` moves). So each HAS a shape, and
-// presenting it is what makes equality, `goal_fingerprint` keying, discrim
-// indexing and unification fall out of the machinery every other structural form
-// already uses — with no second compare path to keep in sync by hand, which is
-// the duplication WI-486 collapsed.
+// `Value::OpRef` is a RESOLVED VALUE, not a handle into mutable state: two
+// symbols and a dictionary. So it HAS a shape, and presenting it is what makes
+// equality, `goal_fingerprint` keying, discrim indexing and unification fall out
+// of the machinery every other structural form already uses — with no second
+// compare path to keep in sync by hand, which is the duplication WI-486
+// collapsed.
 //
-// THE SHAPE IS THE EQUALITY. Before this, both viewed as `ViewHead::Opaque` and
-// the head match had no `(Opaque, Opaque)` arm, so an `OpRef` MEASURED as not
-// equal to ITSELF. WI-1014's stopgap repaired that with a bespoke
+// THE SHAPE IS THE EQUALITY. Before this it viewed as `ViewHead::Opaque` and the
+// head match had no `(Opaque, Opaque)` arm, so an `OpRef` MEASURED as not equal
+// to ITSELF. WI-1014's stopgap repaired that with a bespoke
 // `Value::native_carrier_eq`, which fixed equality and nothing else — the head
 // stayed payload-free, so two distinct `OpRef`s still shared one fingerprint.
 // A shape fixes both at once, because both read the same view.
 //
-// They view under their OWN DECLARED SORT (`anthill.realization.runtime.OpRef` /
-// `.Dictionary`, `stdlib/anthill/realization/runtime.anthill`). This is NOT a new
-// surface: those sorts are constructor-less and stay so, and `ViewHead` is
-// internal machinery — a structural view adds no syntax and grants a user no way
-// to match. That is the layer split `requirement-dictionaries.md` §2.3 draws and
-// §2.4.1 states.
+// It views under its OWN DECLARED SORT (`anthill.realization.runtime.OpRef`,
+// `stdlib/anthill/realization/runtime.anthill`). This is NOT a new surface: that
+// sort is constructor-less and stays so, and `ViewHead` is internal machinery —
+// a structural view adds no syntax and grants a user no way to match. That is
+// the layer split `requirement-dictionaries.md` §2.3 draws and §2.4.1 states.
+//
+// THE DICTIONARY IS NO LONGER HERE, and its absence is the delivery, not a gap.
+// WI-1019 gave `Value::Requirement` — an arena handle — the shape
+// `Dictionary(sub₀ … subₙ₋₁, impl: S)`. WI-1045 retired the arena, so a
+// dictionary IS an ordinary `Value::Entity` in exactly that shape and reads
+// through the `Entity` arms below with no arm of its own. One representation, so
+// there is nothing left for a second arm to present differently
+// (`requirement-channel.md` §9). [`dictionary_view_syms`] survives as the one
+// owner of the two NAMES.
 //
 // `Value::FactRef` is deliberately NOT here, and the reason is not that it is a
 // "reference" — an `OpRef` is one too. It is what the reference is spelled IN: an
@@ -2195,32 +2223,36 @@ fn opref_key(kb: &KnowledgeBase, k: &str) -> Symbol {
     accessor_key(kb, OPREF_QNAME, accessor, "OpRef")
 }
 
-/// WI-1040 — the `(constructor, `impl` key)` a dictionary reads under, for a
-/// PRODUCER rather than a reader.
+/// WI-1040 — the `(constructor, `impl` key)` a dictionary is spelled with.
 ///
-/// The requirement channel builds dictionaries on the SLD side, where there is no
-/// arena; they must come out shaped exactly as [`dict_head`] announces for an eval
-/// handle, or the two would be one thing with two identities — which is the whole
-/// defect `requirement-channel.md` §9 exists to remove. Exposing the pair (rather
-/// than letting the producer spell `"Dictionary"` / `"impl"` itself) is what makes
-/// that structural: a change to either name moves both sides at once.
+/// THE ONE OWNER OF BOTH NAMES, for every side: the σ producer, the eval
+/// producer, [`crate::eval::dictionary::Dictionary`]'s boundary check, the
+/// resolver's `impl` read, and the IR term the typer emits. Exposing the pair
+/// (rather than letting each site spell `"Dictionary"` / `"impl"` itself) is what
+/// makes one representation structural rather than a convention: a change to
+/// either name moves every side at once.
 ///
-/// `None` in a KB that never loaded `anthill.realization.runtime` — the producer
-/// then reports that it cannot build one, rather than panicking the way a READER
-/// may (a reader holds a handle, so the sort must exist; a producer may be asked in
-/// a minimal KB).
+/// `None` in a KB that never loaded `anthill.realization.runtime` — a producer
+/// then reports that it cannot build one, which is a real state (a minimal KB),
+/// not a defect to panic on.
+/// The dictionary CONSTRUCTOR, for a reader that already holds one.
+///
+/// Panics for the same reason [`reflect_ctor_sym`] does: the occurrence exists, so
+/// the KB resolved this name to build it. A producer (which may be asked in a
+/// minimal KB) uses [`dictionary_view_syms`] and reports that it cannot build one.
+fn dictionary_ctor_sym(kb: &KnowledgeBase) -> Symbol {
+    reflect_ctor_sym(kb, DICT_QNAME, "Dictionary")
+}
+
+/// The `impl` key, same rule as [`dictionary_ctor_sym`].
+fn dictionary_impl_key(kb: &KnowledgeBase) -> Symbol {
+    accessor_key(kb, DICT_QNAME, "anthill.realization.runtime.Dictionary.impl", "Dictionary")
+}
+
 pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol)> {
     let ctor = kb.try_resolve_symbol(DICT_QNAME)?;
     let key = kb.try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")?;
     Some((ctor, key))
-}
-
-fn dict_key(kb: &KnowledgeBase, k: &str) -> Symbol {
-    let accessor = match k {
-        "impl" => "anthill.realization.runtime.Dictionary.impl",
-        other => unreachable!("dict_key: `{other}` is not a Dictionary accessor"),
-    };
-    accessor_key(kb, DICT_QNAME, accessor, "Dictionary")
 }
 
 /// An `OpRef`'s named keys, in accessor-declaration order.
@@ -2252,21 +2284,6 @@ fn opref_head(has_dict: bool, has_named: bool, kb: &KnowledgeBase) -> ViewHead {
         functor: Some(reflect_ctor_sym(kb, OPREF_QNAME, "OpRef")),
         pos_arity: 0,
         named_arity: opref_shape(has_dict, has_named).len(),
-    }
-}
-
-/// A dictionary reads as its ACCESSOR SET: `impl` is the one named child,
-/// `arity` is the positional arity, and `sub(i)` is the i-th positional child.
-/// One value, read one way by the view and by the operations.
-///
-/// Positional, not named, because the sub-dictionaries are an ORDERED bundle —
-/// slot `k` is the k-th entry of the dictionary layout (WI-857), so the order is
-/// the identity and a name would have to be invented for each.
-fn dict_head(h: &RequirementHandle, kb: &KnowledgeBase) -> ViewHead {
-    ViewHead::Functor {
-        functor: Some(reflect_ctor_sym(kb, DICT_QNAME, "Dictionary")),
-        pos_arity: h.arity(),
-        named_arity: 1,
     }
 }
 
@@ -2312,7 +2329,6 @@ impl TermView for Value {
             Value::OpRef { dict, named, .. } => {
                 opref_head(dict.is_some(), named.is_some(), kb)
             }
-            Value::Requirement(h) => dict_head(h, kb),
             // WHAT IS STILL `Opaque`, AND WHY — a payload-free head is the right
             // answer for a carrier with no shape to present, NOT a gap. Equality
             // is carrier identity ([`Value::opaque_carrier_eq`]) and the key stays
@@ -2352,13 +2368,6 @@ impl TermView for Value {
             Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Node(occ) => occ_view_pos_arg(occ, kb, i),
-            // WI-1019: a dictionary's sub-dictionaries ARE its positional
-            // children — `dict_head` promised `h.arity()` of them and `project`
-            // panics past the end, so the bound is checked here rather than
-            // trusted.
-            Value::Requirement(h) => {
-                (i < h.arity()).then(|| ViewItem::Owned(Value::Requirement(h.project(i))))
-            }
             _ => None,
         }
     }
@@ -2389,17 +2398,17 @@ impl TermView for Value {
                 let idx = keys.iter().position(|k| opref_key(kb, k) == sym)?;
                 Some(ViewItem::Owned(match keys[idx] {
                     "op" => Value::SymbolRef(*op),
-                    "dict" => Value::Requirement(
-                        dict.clone().expect("opref_shape listed `dict` without one"),
-                    ),
+                    "dict" => dict
+                        .as_ref()
+                        .expect("opref_shape listed `dict` without one")
+                        .as_value()
+                        .clone(),
                     "named" => Value::SymbolRef(
                         named.expect("opref_shape listed `named` without one"),
                     ),
                     other => unreachable!("opref named_arg: no arm for key `{other}`"),
                 }))
             }
-            Value::Requirement(h) => (dict_key(kb, "impl") == sym)
-                .then(|| ViewItem::Owned(Value::SymbolRef(h.functor()))),
             _ => None,
         }
     }
@@ -2420,7 +2429,6 @@ impl TermView for Value {
                 .iter()
                 .map(|k| opref_key(kb, k))
                 .collect(),
-            Value::Requirement(_) => vec![dict_key(kb, "impl")],
             _ => Vec::new(),
         }
     }
@@ -2514,6 +2522,14 @@ fn occ_view_named_arg<'a>(
 ) -> Option<ViewItem<'a>> {
     if let Some(v) = spliced_value(occ) {
         return v.named_arg(kb, sym);
+    }
+    // WI-1045 — a dictionary node's `impl` child is a SYMBOL, so it cannot ride
+    // the `Rc<NodeOccurrence>` channel `occ_named_child` returns. Answered as an
+    // owned `Value::SymbolRef`, which views as `ViewHead::Ref` — the same head the
+    // term twin's `Term::Ref(impl)` child gives.
+    if let Some(Expr::Dictionary { impl_sort, .. }) = occ.as_expr() {
+        return (dictionary_impl_key(kb) == sym)
+            .then(|| ViewItem::Owned(Value::SymbolRef(*impl_sort)));
     }
     occ_type_named(occ, kb, sym).or_else(|| occ_named_child(occ, kb, sym).map(ViewItem::Node))
 }

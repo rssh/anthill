@@ -29,6 +29,9 @@
 //! non-registration above is unaffected: it is about EVAL, and the reason is strictness,
 //! not naming.
 
+use std::rc::Rc;
+
+use super::value::Dictionary;
 use super::{EvalError, Interpreter, Value};
 
 /// Register the standard-library builtins. Symbols that don't resolve in the
@@ -206,9 +209,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
     register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
 
-    // WI-577 — first-class runtime dispatch values: the anthill face of
-    // `Value::Requirement` (a resolved spec-impl dictionary) and `Value::OpRef`
-    // (a resolved operation reference). Native views over the RequirementArena.
+    // WI-577 — first-class runtime dispatch values: the anthill face of a
+    // requirement dictionary (a resolved spec impl) and `Value::OpRef` (a resolved
+    // operation reference). Native readers over the values themselves (WI-1045).
     register_if_present(interp, "anthill.realization.runtime.Dictionary.impl", dict_impl)?;
     register_if_present(interp, "anthill.realization.runtime.Dictionary.arity", dict_arity)?;
     register_if_present(interp, "anthill.realization.runtime.Dictionary.sub", dict_sub)?;
@@ -3721,54 +3724,57 @@ fn symbol_value(s: crate::intern::Symbol) -> Value {
 
 // ── WI-577 — runtime dictionary / op-ref views ──────────────────────────────
 //
-// The anthill face of the runtime dispatch values `Value::Requirement` (a
-// resolved spec-impl dictionary — `(functor, [sub-dicts])`) and `Value::OpRef`
-// (a resolved op symbol + captured dispatch dict). Native VIEWS over the live
-// `RequirementArena` handle — the `Substitution`/`Map`/`Cell` model: the value
-// stays opaque and these read the arena in place, never a structural copy.
-// Design: `docs/design/requirement-dictionaries.md` §2.
+// The anthill face of the runtime dispatch values: a requirement dictionary
+// (`Dictionary(sub₀ … subₙ₋₁, impl: S)`) and `Value::OpRef` (a resolved op
+// symbol + captured dispatch dict).
+//
+// WI-1045 — a dictionary is now an ORDINARY value, so these are not views over
+// a second store any more: `impl` reads the named child, `arity` is the
+// positional arity, `sub` is positional child `k`. What each one still owns is
+// the BOUNDARY CHECK — an anthill caller may pass any value, so
+// [`Dictionary::from_value`] is what turns "some value" into a dictionary here,
+// and it is the only place in the crate that test runs.
+// Design: `docs/design/requirement-dictionaries.md` §2,
+// `docs/design/requirement-channel.md` §9.
 
-/// `Dictionary.impl(d) -> Symbol` — the resolved impl identity (the arena
-/// slot's `functor`), surfaced as a `Symbol` value.
-fn dict_impl(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+/// The dictionary an anthill caller passed, or the declared `type_mismatch`.
+/// ONE owner for the four faces' boundary check, so they cannot come to accept
+/// different things under one sort name.
+fn expect_dictionary(interp: &Interpreter, v: &Value) -> Result<Dictionary, EvalError> {
+    Dictionary::from_value(&interp.kb, v).ok_or_else(|| type_mismatch("Dictionary", v, None))
+}
+
+/// `Dictionary.impl(d) -> Symbol` — the resolved impl identity, surfaced as a
+/// `Symbol` value.
+fn dict_impl(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [d] = expect_args::<1>("Dictionary.impl", args)?;
-    match d {
-        Value::Requirement(h) => Ok(symbol_value(h.functor())),
-        other => Err(type_mismatch("Dictionary", &other, None)),
-    }
+    Ok(symbol_value(expect_dictionary(interp, &d)?.impl_sort()))
 }
 
 /// `Dictionary.arity(d) -> Int64` — number of sub-requirement dicts.
-fn dict_arity(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn dict_arity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [d] = expect_args::<1>("Dictionary.arity", args)?;
-    match d {
-        Value::Requirement(h) => Ok(Value::Int(h.arity() as i64)),
-        other => Err(type_mismatch("Dictionary", &other, None)),
-    }
+    Ok(Value::Int(expect_dictionary(interp, &d)?.arity() as i64))
 }
 
 /// `Dictionary.sub(d, i) -> Dictionary` — project the i-th sub-requirement.
-/// No structural copy: `project` bumps the child handle's refcount and wraps
-/// the SAME arena slot. A loud out-of-range error (rather than the arena's
-/// panic) for an index the anthill caller supplies out of bounds.
-fn dict_sub(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+/// No structural copy: the child rides an `Rc`, so this is a refcount bump. A
+/// loud out-of-range error for an index the anthill caller supplies out of
+/// bounds.
+fn dict_sub(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [d, idx] = expect_args::<2>("Dictionary.sub", args)?;
     let i = match &idx {
         Value::Int(n) => *n,
         other => return Err(type_mismatch("Int64", other, None)),
     };
-    match d {
-        Value::Requirement(h) => {
-            let n = h.arity();
-            if i < 0 || (i as usize) >= n {
-                return Err(EvalError::Internal(format!(
-                    "Dictionary.sub: index {i} out of range (dict has {n} sub-requirements)"
-                )));
-            }
-            Ok(Value::Requirement(h.project(i as usize)))
-        }
-        other => Err(type_mismatch("Dictionary", &other, None)),
-    }
+    let dict = expect_dictionary(interp, &d)?;
+    let sub = usize::try_from(i).ok().and_then(|k| dict.sub(k)).ok_or_else(|| {
+        EvalError::Internal(format!(
+            "Dictionary.sub: index {i} out of range (dict has {} sub-requirements)",
+            dict.arity(),
+        ))
+    })?;
+    Ok(sub.into_value())
 }
 
 /// `Dictionary.resolveOp(d, specOp: Symbol) -> OpRef` — resolve a spec op
@@ -3786,24 +3792,21 @@ fn dict_sub(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::typing::resolve_op_target_checked;
     let [d, spec_op] = expect_args::<2>("Dictionary.resolveOp", args)?;
-    let h = match d {
-        Value::Requirement(h) => h,
-        other => return Err(type_mismatch("Dictionary", &other, None)),
-    };
+    let h = expect_dictionary(interp, &d)?;
     let Some(spec_op_sym) = interp.kb.value_symbol(&spec_op) else {
         return Err(type_mismatch("Symbol", &spec_op, None));
     };
     // WI-857: refuses a `NoProvider` marker — `resolveOp` MINTS A CALLABLE, so it is
     // a dispatch face, and letting it hand back an `OpRef` on the spec op is the
     // silent fall-through the marker exists to prevent.
-    let target = resolve_op_target_checked(&interp.kb, h.functor(), spec_op_sym)
+    let target = resolve_op_target_checked(&interp.kb, h.impl_sort(), spec_op_sym)
         .map_err(|detail| EvalError::UnpinnedRequirement { detail })?;
     // WI-857: `target` is the RESOLVED member; `h` is a dictionary for the spec
     // `spec_op_sym` belongs to, whose layout has that spec's chain as its prefix.
     // Carry the named op so applying this ref measures `h` against the right layout —
     // reading it off `target` alone measures a spec dictionary against the provider's
     // own chain, which for a chain-free witness is 0 and rejects a valid dict.
-    Ok(Value::OpRef { op: target, dict: Some(h), named: Some(spec_op_sym) })
+    Ok(Value::OpRef { op: target, dict: Some(Rc::new(h)), named: Some(spec_op_sym) })
 }
 
 /// `Dictionary.ops(d) -> FiniteStream[OpRef]` — all this dict's operations as
@@ -3821,11 +3824,8 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
 fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::typing::resolve_op_target_checked;
     let [d] = expect_args::<1>("Dictionary.ops", args)?;
-    let h = match d {
-        Value::Requirement(h) => h,
-        other => return Err(type_mismatch("Dictionary", &other, None)),
-    };
-    let impl_sym = h.functor();
+    let h = Rc::new(expect_dictionary(interp, &d)?);
+    let impl_sym = h.impl_sort();
     // WI-857: refuse the marker UP FRONT, not per element. A marker's
     // `sort_ops_for_impl` is EMPTY, so a per-element check never runs and the bulk
     // face would answer `nil` — "this dictionary has no operations" — for a
@@ -3871,7 +3871,7 @@ fn opref_dict(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     let value_key = interp.kb.intern("value");
     match r {
         Value::OpRef { dict, .. } => Ok(match dict {
-            Some(h) => option_some(some_sym, value_key, Value::Requirement(h)),
+            Some(h) => option_some(some_sym, value_key, h.as_value().clone()),
             None => option_none(none_sym),
         }),
         other => Err(type_mismatch("OpRef", &other, None)),

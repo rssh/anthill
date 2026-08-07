@@ -5244,13 +5244,14 @@ impl KnowledgeBase {
     /// Unresolvable/Ambiguous, the WI-843 named-instance case), which is the row
     /// this arm reaches by delaying rather than by refusing.
     ///
-    /// **Handles are compared STRUCTURALLY, never by `raw()`.** Two scratch
-    /// interpreters are two arenas, so a dictionary built at one crossing and one
-    /// built here carry unrelated slot indices; [`Self::unify_values`] reads both
-    /// through the WI-1019 `TermView`, where a dictionary is exactly
-    /// `Dictionary(sub₀ … subₙ₋₁, impl: S)`. A handle stays valid after
-    /// [`Self::run_in_bridge_interp`] drops its interpreter because it owns an `Rc`
-    /// to its arena (`eval/requirement_arena.rs:90`).
+    /// **Dictionaries are compared STRUCTURALLY, and since WI-1045 there is no
+    /// other way to compare them.** A dictionary is
+    /// `Dictionary(sub₀ … subₙ₋₁, impl: S)` — an ordinary value — wherever it was
+    /// built, so [`Self::unify_values`] over one built at a crossing and one built
+    /// here is the ordinary structural compare. It used to be an arena handle whose
+    /// identity was `(arena, raw)`, so two scratch interpreters gave one dictionary
+    /// two identities and this site had to WARN that `raw()` must not be read; the
+    /// second identity is gone, not documented.
     fn read_dictionary_into(
         &mut self,
         subst: &Substitution,

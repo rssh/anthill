@@ -1069,6 +1069,8 @@ mod wi997_declaration_ledger_test;
 
 #[path = "include/wi1040_require_clause_dictionary_test.rs"]
 mod wi1040_require_clause_dictionary_test;
+#[path = "include/wi1045_one_dictionary_representation_test.rs"]
+mod wi1045_one_dictionary_representation_test;
 
 // Guards this very layout: every include/ file registered exactly once, across
 // anthill-core, anthill-cli and anthill-todo. An unregistered file is compiled
