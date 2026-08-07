@@ -4,7 +4,7 @@
 //! operator equivalents:
 //!   - Numeric.{add, sub, mul} → + - *
 //!   - Int64.div / Float.div / Int64.mod → / / %
-//!   - Ordered.{gt, lt, gte, lte} → > < >= <=
+//!   - Ord.{gt, lt, gte, lte} → > < >= <=
 //!   - Eq.{eq, neq} → == !=
 //!   - Bool.{and, or, not} → && || !
 //!   - Int64.neg / Float.neg → unary -

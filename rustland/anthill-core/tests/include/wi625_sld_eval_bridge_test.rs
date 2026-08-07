@@ -547,7 +547,7 @@ const INHERITED_EQ_SRC: &str = r#"
 "#;
 
 /// A raw `Float` leaf — `Float` provides `PartialEq`/`PartialOrd` (IEEE) but NOT the
-/// lawful `Eq`/`Ordered` (WI-644), so it is the carrier that distinguishes "grounds the
+/// lawful `Eq`/`Ord` (WI-644), so it is the carrier that distinguishes "grounds the
 /// inherited-from spec" from "grounds only what the body call needs".
 fn float_term(kb: &mut KnowledgeBase, f: f64) -> TermId {
     kb.alloc(Term::Const(Literal::Float(OrderedFloat(f))))
@@ -605,14 +605,14 @@ fn inherited_requires_eq_blocks_non_eq_float() {
     );
 }
 
-// `requires(Ordered[T])` witnessed by `gt` — `gt` is `PartialOrd.gt`, and `Ordered
+// `requires(Ord[T])` witnessed by `gt` — `gt` is `PartialOrd.gt`, and `Ord
 // requires PartialOrd`, so the inherited witness grounds the total-order requirement
 // exactly as the eq case grounds Eq.
 const INHERITED_ORD_SRC: &str = r#"
     namespace dirA.ordtest
-      import anthill.prelude.{Int64, Bool, Ordered}
+      import anthill.prelude.{Int64, Bool, Ord}
       import anthill.prelude.PartialOrd.{gt}
-      rule bigger(?a, ?b) :- requires(Ordered[T]), gt(?a, ?b)
+      rule bigger(?a, ?b) :- requires(Ord[T]), gt(?a, ?b)
     end
 "#;
 
@@ -620,11 +620,11 @@ const INHERITED_ORD_SRC: &str = r#"
 fn inherited_requires_ordered_types_and_decides_via_gt() {
     assert!(
         common::try_load_kb_with(INHERITED_ORD_SRC).is_ok(),
-        "a rule whose requires(Ordered[T]) is witnessed by a gt() call \
-         (PartialOrd's op, inherited by Ordered) must load",
+        "a rule whose requires(Ord[T]) is witnessed by a gt() call \
+         (PartialOrd's op, inherited by Ord) must load",
     );
     let mut kb = common::load_kb_with(INHERITED_ORD_SRC);
-    // bigger(3, 1): guard fires (Int64 provides Ordered), gt(3, 1) = true ⇒ one solution.
+    // bigger(3, 1): guard fires (Int64 provides Ord), gt(3, 1) = true ⇒ one solution.
     let (a, b) = (int_term(&mut kb, 3), int_term(&mut kb, 1));
     let g = goal(&mut kb, "dirA.ordtest.bigger", &[a, b]);
     assert_eq!(

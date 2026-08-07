@@ -25,7 +25,7 @@ Stdlib parks satisfaction declarations in a *namespace* whose name shadows the b
 namespace anthill.prelude.Int64       -- a Namespace, NOT the sort
   ...
   fact Eq[Int64]                      -- intent: "Int64 satisfies Eq"
-  fact Ordered[Int64]
+  fact Ord[Int64]
   fact Numeric[Int64]
 end
 ```
@@ -72,7 +72,7 @@ rustland/anthill-stl/anthill/int.anthill      -- Rust host binding
       artifact "rustland/anthill-stl/src/prelude/int.rs"
       carrier Int64 = "i64"
       fact Eq[T = Int64]
-      fact Ordered[T = Int64]
+      fact Ord[T = Int64]
       fact Numeric[T = Int64]
     end
 
@@ -81,7 +81,7 @@ scaland/anthill-stl/anthill/int.anthill       -- Scala host binding
       artifact "scaland/.../scala/Int64.scala"
       carrier Int64 = "scala.Long"
       fact Eq[T = Int64]
-      fact Ordered[T = Int64]
+      fact Ord[T = Int64]
       fact Numeric[T = Int64]
     end
 
@@ -172,7 +172,7 @@ The `provides_block` already supports `Artifact`, `Carrier`, `NamespaceMap` item
     profile "std"
     carrier Int64 = "i64"
     fact Eq[T = Int64]
-    fact Ordered[T = Int64]
+    fact Ord[T = Int64]
     fact Numeric[T = Int64]
   end
 
@@ -183,7 +183,7 @@ The `provides_block` already supports `Artifact`, `Carrier`, `NamespaceMap` item
     -- elide some provider-side helpers or pull a different builtin
     -- registration set.
     fact Eq[T = Int64]
-    fact Ordered[T = Int64]
+    fact Ord[T = Int64]
     fact Numeric[T = Int64]
   end
   ```

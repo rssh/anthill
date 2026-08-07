@@ -7,7 +7,7 @@ namespace anthill.prelude
     carrier { Int64: "i64" }
     -- WI-876: which host function realizes each of `Int64`'s ordering operations.
     -- Before this clause existed there was nowhere to say it, so the implementation
-    -- was registered on the SPEC op (`anthill.prelude.Ordered.compare`) and served
+    -- was registered on the SPEC op (`anthill.prelude.Ord.compare`) and served
     -- every carrier — including structural ones whose values it cannot compare.
     operation_map {
       compare: "ordered_compare",
@@ -23,11 +23,11 @@ namespace anthill.prelude
       maxValue: "int_max_value"
     }
     -- WI-644 / proposal 004: Int64 is lawful — it provides the partial bases
-    -- (PartialEq/PartialOrd) AND the total markers (Eq/Ordered).
+    -- (PartialEq/PartialOrd) AND the total markers (Eq/Ord).
     fact PartialEq[T = Int64]
     fact Eq[T = Int64]
     fact PartialOrd[T = Int64]
-    fact Ordered[T = Int64]
+    fact Ord[T = Int64]
     fact Numeric[T = Int64]
   end
 end

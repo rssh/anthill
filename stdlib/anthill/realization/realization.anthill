@@ -216,10 +216,10 @@ namespace anthill.realization
   -- WHY IT EXISTS. Before this, a binding block admitted an artifact, a carrier,
   -- a namespace map, facts and rules — and NOTHING that mapped an operation to a
   -- host function. So `Int64`'s host `compare` had nowhere to be keyed and the
-  -- registration went on the SPEC op (`anthill.prelude.Ordered.compare`), where
+  -- registration went on the SPEC op (`anthill.prelude.Ord.compare`), where
   -- that ONE implementation served every carrier that never wrote its own —
   -- including STRUCTURAL carriers whose values it cannot compare. MEASURED:
-  -- `gt(pair(2, 1), pair(1, 9))` died *"expected Ordered scalars of matching
+  -- `gt(pair(2, 1), pair(1, 9))` died *"expected Ord scalars of matching
   -- type, got Entity and Entity"* on a program that LOADED CLEAN. Keyed here, the
   -- host implementation reaches exactly the carrier that declared it, and a spec
   -- op's own default body is no longer shadowed.

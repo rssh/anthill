@@ -324,7 +324,7 @@ sort Eq {
     sort T = ?
 }
 
-sort Ordered {
+sort Ord {
     sort T = ?
     requires Eq[T = T]
     operation compare(a: T, b: T) -> Int64
@@ -333,14 +333,14 @@ sort Ordered {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let ordered_term = kb.resolve_qualified_name_term("Ordered");
+    let ordered_term = kb.resolve_qualified_name_term("Ord");
 
-    // Query: SortRequiresInfo(sort_ref: Ordered, spec: ?spec) — direct fact query (named args)
+    // Query: SortRequiresInfo(sort_ref: Ord, spec: ?spec) — direct fact query (named args)
     let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_named_goal(&mut kb, "anthill.reflect.SortRequiresInfo", &[("sort_ref", ordered_term), ("spec", var_spec)]);
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "Ordered should have at least 1 SortRequiresInfo fact");
+    assert!(!results.is_empty(), "Ord should have at least 1 SortRequiresInfo fact");
 }
 
 #[test]
@@ -350,7 +350,7 @@ sort Eq {
     sort T = ?
 }
 
-sort Ordered {
+sort Ord {
     sort T = ?
     requires Eq[T = T]
     operation compare(a: T, b: T) -> Int64
@@ -359,14 +359,14 @@ sort Ordered {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let ordered_term = kb.resolve_qualified_name_term("Ordered");
+    let ordered_term = kb.resolve_qualified_name_term("Ord");
 
-    // Query: refines(Ordered, ?spec) via the typing rule
+    // Query: refines(Ord, ?spec) via the typing rule
     let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[ordered_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "refines(Ordered, ?spec) should find at least Eq[T=T]");
+    assert!(!results.is_empty(), "refines(Ord, ?spec) should find at least Eq[T=T]");
 }
 
 #[test]
@@ -483,7 +483,7 @@ sort Eq {
     sort T = ?
 }
 
-sort Ordered {
+sort Ord {
     sort T = ?
     requires Eq[T = T]
     operation compare(a: T, b: T) -> Int64
@@ -492,18 +492,18 @@ sort Ordered {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let ordered_name = kb.resolve_qualified_name_term("Ordered");
+    let ordered_name = kb.resolve_qualified_name_term("Ord");
     let ordered_functor = functor_of(&kb, ordered_name);
     let ordered_ref = kb.alloc(Term::Ref(ordered_functor));
 
-    // Query: sort_requires(Ordered_ref, ?spec)
+    // Query: sort_requires(Ord_ref, ?spec)
     let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_goal(&mut kb, "anthill.reflect.typing.sort_requires", &[ordered_ref, var_spec]);
     let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
     let results = kb.resolve(&[goal], &config);
     assert!(!results.is_empty(),
-        "sort_requires(Ordered, ?spec) should find at least one spec via SortInfo partial expansion");
+        "sort_requires(Ord, ?spec) should find at least one spec via SortInfo partial expansion");
 }
 
 // ── sort_has_param tests ─────────────────────────────────────────
@@ -1698,7 +1698,7 @@ fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
 }
 
 /// WI-420 helper: load full stdlib (incl. the Rust host bindings, so concrete
-/// `fact Eq[Int64]`/`Ordered[Int64]` records are present, matching real `anthill
+/// `fact Eq[Int64]`/`Ord[Int64]` records are present, matching real `anthill
 /// check`) + a user `source`, returning `Ok(())`/`Err(messages)` so a test can
 /// assert an expected load-time (typer) error instead of panicking. Thin
 /// wrapper over the shared `common::try_load_kb_with`.
@@ -1741,7 +1741,7 @@ fn wi420_eta_of_requires_free_op_still_loads() {
     let src = r#"
 namespace test.wi420.ok
   import anthill.prelude.{Int64, Bool, Function}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
 
   operation is_big(n: Int64) -> Bool = gt(n, 10)
 
@@ -1763,7 +1763,7 @@ fn wi537_match_arm_guard_type_checks() {
     let src = r#"
 namespace test.wi537.guard_ok
   import anthill.prelude.{Int64, Bool}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
 
   operation classify(n: Int64) -> Bool =
     match n
@@ -4023,25 +4023,25 @@ end
 
 #[test]
 fn is_subtype_requires_direct() {
-    // Ordered requires Eq — Ordered is a subtype of Eq
+    // Ord requires Eq — Ord is a subtype of Eq
     let mut kb = load_stdlib_kb();
-    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ord");
     let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
     let ordered_ty = kb.make_sort_ref(ordered_sym);
     let eq_ty = kb.make_sort_ref(eq_sym);
-    assert!(is_subtype(&mut kb, ordered_ty, eq_ty), "Ordered <: Eq via requires");
-    assert!(!is_subtype(&mut kb, eq_ty, ordered_ty), "Eq is not <: Ordered");
+    assert!(is_subtype(&mut kb, ordered_ty, eq_ty), "Ord <: Eq via requires");
+    assert!(!is_subtype(&mut kb, eq_ty, ordered_ty), "Eq is not <: Ord");
 }
 
 #[test]
 fn requires_compatible() {
     // types_compatible should also accept requires relationships
     let mut kb = load_stdlib_kb();
-    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ord");
     let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
     let ordered_ty = kb.make_sort_ref(ordered_sym);
     let eq_ty = kb.make_sort_ref(eq_sym);
-    assert!(types_compatible(&mut kb, ordered_ty, eq_ty), "Ordered compatible with Eq");
+    assert!(types_compatible(&mut kb, ordered_ty, eq_ty), "Ord compatible with Eq");
 }
 
 // ── requires_chain and obligation checking tests ───────────────
@@ -4049,23 +4049,23 @@ fn requires_compatible() {
 #[test]
 fn requires_chain_ordered_includes_eq() {
     let kb = load_stdlib_kb();
-    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ord");
     let chain = requires_chain_flat(&kb, ordered_sym);
     let eq_name = "Eq";
     assert!(chain.iter().any(|e| kb.local_name_of(e.required_sort) == eq_name),
-        "Ordered's requires chain should include Eq");
+        "Ord's requires chain should include Eq");
 }
 
 #[test]
 fn obligations_spec_sort_not_checked() {
-    // Spec sorts (like Ordered requires Eq) don't need to provide the required operations.
+    // Spec sorts (like Ord requires Eq) don't need to provide the required operations.
     // They declare a transitive requirement — obligation checking applies to concrete sorts.
     let kb = load_stdlib_kb();
-    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ord");
     let chain = requires_chain_flat(&kb, ordered_sym);
-    assert!(!chain.is_empty(), "Ordered should have requires entries");
-    // Ordered itself is a spec — it doesn't need to implement Eq's operations.
-    // A concrete sort that requires Ordered would need to provide both.
+    assert!(!chain.is_empty(), "Ord should have requires entries");
+    // Ord itself is a spec — it doesn't need to implement Eq's operations.
+    // A concrete sort that requires Ord would need to provide both.
 }
 
 #[test]
@@ -5657,7 +5657,7 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     let sort_info_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
     let name_field = kb.intern("name");
     for qn in ["anthill.prelude.Eq",
-               "anthill.prelude.Ordered",
+               "anthill.prelude.Ord",
                "anthill.prelude.Numeric",
                "anthill.logic.Minimal.Minimal",
                "anthill.logic.Constructive.Constructive",
@@ -5683,11 +5683,11 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     // (same module, kb/typing.rs). All asserted pairs are direct stdlib
     // requires — they appear at depth 0 of the chain.
     let pairs = [
-        ("anthill.prelude.Ordered",                  "anthill.prelude.Eq"),
-        ("anthill.prelude.Ordered",                  "anthill.prelude.PartialOrd"),
+        ("anthill.prelude.Ord",                  "anthill.prelude.Eq"),
+        ("anthill.prelude.Ord",                  "anthill.prelude.PartialOrd"),
         ("anthill.prelude.Eq",                       "anthill.prelude.PartialEq"),
         // WI-644: Numeric requires the PARTIAL order (IEEE Float is Numeric but not
-        // totally Ordered).
+        // totally Ord).
         ("anthill.prelude.Numeric",                  "anthill.prelude.PartialOrd"),
         ("anthill.logic.Constructive.Constructive",  "anthill.logic.Minimal.Minimal"),
         ("anthill.logic.Classical.Classical",        "anthill.logic.Constructive.Constructive"),

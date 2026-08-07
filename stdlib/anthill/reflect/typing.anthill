@@ -87,7 +87,7 @@ namespace anthill.reflect.typing
   -- ================================================================
   -- Builtin: given a provision's `sort_ref` and its spec view, yields the
   -- carrier that provision's dictionary dispatches at, as a type term.
-  --   sort ListOrd provides Ordered[T = List[T = E]]   ->  List[T = E]
+  --   sort ListOrd provides Ord[T = List[T = E]]   ->  List[T = E]
   --   sort Leaf    provides Desc[T = Leaf]             ->  Leaf
   --   sort Leaf    provides Desc                       ->  Leaf
   --   fact Desc[T = Leaf, describe = f]                ->  Leaf
@@ -181,7 +181,7 @@ namespace anthill.reflect.typing
   -- Entity subtyping: red where Color expected.
   rule type_compatible(?A, ?B) :- is_entity_of(?A, ?B)
 
-  -- Spec refinement: Ordered where Eq expected.
+  -- Spec refinement: Ord where Eq expected.
   rule type_compatible(?A, ?B) :- refines(?A, ?B)
 
   -- Provider admissibility: List where Stream expected, when List

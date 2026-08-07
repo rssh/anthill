@@ -17,7 +17,7 @@ The mapping is deterministic: given the same anthill source, the same Scala code
 - **Concrete companion objects with implemented methods** are generated only when a body source exists, namely:
   1. **A `Quoted("scala", "...")` term** in the spec (verbatim insertion, e.g. `String.length` → `s.length`).
   2. **An `Implementation` fact** (kernel spec §8.5) pointing to a host-side artifact (carrier binding).
-  3. **An automatic derivation** from required typeclasses (e.g. `Ordered.lt(a, b)` from `compare`-trichotomy when the spec marks the derivation hint).
+  3. **An automatic derivation** from required typeclasses (e.g. `Ord.lt(a, b)` from `compare`-trichotomy when the spec marks the derivation hint).
 - **Rules are laws, not definitions.** Same as rust (`#[cfg(test)] property-based test stub`), an anthill `rule` becomes a ScalaCheck property under **`src/test/scala/`** (per §1.1) — used to *verify* implementations, not derive them. Even rules that look definitional (`length(nil) = 0`) compile to a property `forAll { … assert(length(Nil) == 0) }`, not to a method body.
 
 If none of (1)–(3) supplies a body for an operation, codegen emits the abstract `trait` and stops; no concrete companion is produced for that operation. The result still compiles — abstract trait members are valid Scala — and downstream `class … extends Trait` or `Implementation`-fact wiring fills the gap.
@@ -256,7 +256,7 @@ sort List {                                 enum List[T] {
 A `requires` declaration can be either a type-class supertrait or a `using` context parameter, depending on the call shape:
 
 ```
-sort Ordered {                              trait Ordered[T] extends Eq[T] {
+sort Ord {                              trait Ord[T] extends Eq[T] {
   sort T                         →            def gt(a: T, b: T): Boolean
   requires Eq[T]                              ...
   operation gt(a: T,                        }

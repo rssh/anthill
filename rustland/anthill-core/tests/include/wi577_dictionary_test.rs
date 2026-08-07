@@ -231,7 +231,7 @@ fn opref_backed_by_builtin_is_callable() {
 /// call NAMED, not only the one it resolved to.
 ///
 /// `resolveOp` returns `op` = the RESOLVED impl member (`Descending.compare`) while
-/// `dict` witnesses the SPEC (`Ordered`), whose layout puts `Ordered`'s own chain —
+/// `dict` witnesses the SPEC (`Ord`), whose layout puts `Ord`'s own chain —
 /// `Eq`, `PartialOrd` — in front of the provider's. Applying that ref reads the
 /// layout to slice the callee's frame, and reading it off the resolved op alone
 /// measures a spec-instance dictionary against `Descending`'s own chain, which is
@@ -244,22 +244,22 @@ fn opref_backed_by_builtin_is_callable() {
 #[test]
 fn resolve_op_remembers_the_named_spec_op() {
     let src = "namespace test.wi577.named\n\
-               import anthill.prelude.{Int64, Ordered}\n\
+               import anthill.prelude.{Int64, Ord}\n\
                import anthill.prelude.Numeric.{sub}\n\
                sort Descending\n\
-               fact Ordered[T = Int64]\n\
+               fact Ord[T = Int64]\n\
                operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
                end\n\
                end\n";
     let mut interp = crate::common::interp_for(src);
     let desc = resolve(&interp, "test.wi577.named.Descending");
-    // A LAYOUT-VALID `Ordered[Int64]` dictionary supplied by `Descending`: the spec
-    // half is `Ordered`'s two entries; `Descending` declares no `requires`.
+    // A LAYOUT-VALID `Ord[Int64]` dictionary supplied by `Descending`: the spec
+    // half is `Ord`'s two entries; `Descending` declares no `requires`.
     let mut subs: SmallVec<[_; 1]> = SmallVec::new();
     subs.push(crate::common::dict(&interp, desc, []));
     subs.push(crate::common::dict(&interp, desc, []));
     let dict = crate::common::dict(&interp, desc, subs).into_value();
-    let cmp = sym_val(&mut interp, "anthill.prelude.Ordered.compare");
+    let cmp = sym_val(&mut interp, "anthill.prelude.Ord.compare");
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
     match &opref {
         Value::OpRef { op, named, .. } => {
@@ -275,7 +275,7 @@ fn resolve_op_remembers_the_named_spec_op() {
             );
             assert_eq!(
                 interp.kb().qualified_name_of(named),
-                "anthill.prelude.Ordered.compare",
+                "anthill.prelude.Ord.compare",
                 "the named op is the SPEC op the call passed in",
             );
         }
@@ -320,10 +320,10 @@ fn opref_dict_none_for_dictless_ref() {
 #[test]
 fn opref_named_reads_the_spec_op_through_the_accessor() {
     let src = "namespace test.wi577.namedop\n\
-               import anthill.prelude.{Int64, Ordered}\n\
+               import anthill.prelude.{Int64, Ord}\n\
                import anthill.prelude.Numeric.{sub}\n\
                sort Descending\n\
-               fact Ordered[T = Int64]\n\
+               fact Ord[T = Int64]\n\
                operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
                end\n\
                end\n";
@@ -333,7 +333,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     subs.push(crate::common::dict(&interp, desc, []));
     subs.push(crate::common::dict(&interp, desc, []));
     let dict = crate::common::dict(&interp, desc, subs).into_value();
-    let cmp = sym_val(&mut interp, "anthill.prelude.Ordered.compare");
+    let cmp = sym_val(&mut interp, "anthill.prelude.Ord.compare");
     let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
 
     let got = interp.call(&format!("{OPREF}.named"), &[opref]).unwrap();
@@ -345,7 +345,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
             );
             assert_eq!(
                 sym_qn(&interp, named_field(&interp, named, "value")),
-                "anthill.prelude.Ordered.compare",
+                "anthill.prelude.Ord.compare",
                 "and it is the SPEC op the call passed in, not the resolved member",
             );
         }

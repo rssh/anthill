@@ -321,7 +321,7 @@ those lists loads under test yet fails in the CLI bundle (the 002 gotcha).
 
 ## Phasing
 
-Ordered so **every phase keeps the suite green** — additive first, removal last.
+Ord so **every phase keeps the suite green** — additive first, removal last.
 
 **Phase A — add the sorts (WI-585, re-scoped).** Add `FiniteCollection`
 (`collect` primitive + `size`/`foldLeft`/`foldRight` defaults) and `FiniteStream`

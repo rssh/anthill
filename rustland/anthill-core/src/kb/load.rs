@@ -2308,7 +2308,7 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.Option.some",
     "anthill.prelude.Option.none",
     // WI-644 / proposal 004: the partial comparison ops live on the PartialEq /
-    // PartialOrd bases (Eq / Ordered are the lawful/total markers above them). A
+    // PartialOrd bases (Eq / Ord are the lawful/total markers above them). A
     // bare `eq`/`gt`/… resolves to the base op via this fallback.
     "anthill.prelude.PartialEq.eq",
     "anthill.prelude.PartialEq.neq",
@@ -2796,7 +2796,7 @@ fn scan_rule(
 /// deferred retry (WI-295), which already existed for rule-defined PREDICATES.
 ///
 /// B2: when the introduced name already resolves — an operation inherited via
-/// `requires` (e.g. `Ordered`'s `eq` law resolving to `PartialEq.eq`), a locally
+/// `requires` (e.g. `Ord`'s `eq` law resolving to `PartialEq.eq`), a locally
 /// declared operation, or an IMPORT of another scope's rule functor — the rule
 /// binds to that ORIGIN symbol instead of minting a shadowing sort-local `Goal`.
 /// Only a genuinely-new name gets a fresh Goal, and WHICH names those are is
@@ -3958,7 +3958,7 @@ fn process_imports(
                 }
             }
             ImportKind::Selective(names) => {
-                // `import anthill.prelude.{Eq, Ordered}` → for each name,
+                // `import anthill.prelude.{Eq, Ord}` → for each name,
                 // register a local alias. Parent-scope links are NOT added here —
                 // if sort contents (operations) are needed, use `requires` or
                 // wildcard import (`import path.*`) instead.
@@ -4488,8 +4488,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     register_prelude_constructor(kb, some_sym, option_term);
 
     // WI-644 / proposal 004: PartialEq / PartialOrd are the partial bases that
-    // hold the eq/neq and gt/lt/gte/lte OPERATIONS; Eq / Ordered are the lawful /
-    // total markers above them (Eq requires PartialEq; Ordered requires Eq,
+    // hold the eq/neq and gt/lt/gte/lte OPERATIONS; Eq / Ord are the lawful /
+    // total markers above them (Eq requires PartialEq; Ord requires Eq,
     // PartialOrd). The bootstrap pre-defines the ops on their base sorts so the
     // builtin-tag registration (register_builtin_tags) and the bare-name
     // fallback resolve to the same symbols the stdlib .anthill files reuse.
@@ -4524,15 +4524,15 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     kb.symbols.define("gte", "anthill.prelude.PartialOrd.gte", SymbolKind::Operation, partial_ord_sort_scope);
     kb.symbols.define("lte", "anthill.prelude.PartialOrd.lte", SymbolKind::Operation, partial_ord_sort_scope);
 
-    // anthill.prelude.Ordered sort (total; operations: compare, max, min; the
+    // anthill.prelude.Ord sort (total; operations: compare, max, min; the
     // gt/lt/gte/lte comparison surface is inherited from PartialOrd)
-    let ord_sort_sym = kb.symbols.define("Ordered", "anthill.prelude.Ordered", SymbolKind::Sort, prelude_scope);
+    let ord_sort_sym = kb.symbols.define("Ord", "anthill.prelude.Ord", SymbolKind::Sort, prelude_scope);
     let ord_sort_scope = kb.symbols.scope_id(ord_sort_sym);
     kb.symbols.add_parent(ord_sort_scope, ScopeInclusion {
         parent_scope: prelude_scope,
         is_enclosing: true,
     });
-    kb.symbols.define("compare", "anthill.prelude.Ordered.compare", SymbolKind::Operation, ord_sort_scope);
+    kb.symbols.define("compare", "anthill.prelude.Ord.compare", SymbolKind::Operation, ord_sort_scope);
 
     // anthill.prelude.Numeric sort (operations: add, sub, mul)
     let num_sort_sym = kb.symbols.define("Numeric", "anthill.prelude.Numeric", SymbolKind::Sort, prelude_scope);

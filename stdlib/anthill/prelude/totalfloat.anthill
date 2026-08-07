@@ -2,7 +2,7 @@
 -- genuine "floats as Map/Set keys / deduped" case (library proposal 004, WI-644).
 -- Raw `Float` provides only the PARTIAL specs (PartialEq / PartialOrd, IEEE — where
 -- `nan eq nan = false`), so `Map[K = Float]` is not a lawful key; `Map[K = TotalFloat]`
--- is (Map/Set keys require `Eq`, not `Ordered`).
+-- is (Map/Set keys require `Eq`, not `Ord`).
 --
 -- TotalFloat's equality is STRUCTURAL (`===` on the entity): all NaNs are equal and
 -- it is reflexive, so TotalFloat is lawfully `Eq` — verified: `eq(TotalFloat(nan),
@@ -17,7 +17,7 @@
 -- `Point` becomes `NonEq`. Without the own `eq`, TotalFloat's Float field would make
 -- it `NonEq` and `provides Eq[TotalFloat]` a load error.
 --
--- NOT `Ordered` (yet): `Ordered.compare`/`gt`/`max` are host BUILTINS dispatched
+-- NOT `Ord` (yet): `Ord.compare`/`gt`/`max` are host BUILTINS dispatched
 -- directly on the operand values, so a carrier `<=>` delegation rule
 -- (`compare(TotalFloat(raw:?a), …) <=> compare(?a, ?b)`) never fires — a bodied rule
 -- cannot override a builtin op on the eval path. A functional total ORDER for floats

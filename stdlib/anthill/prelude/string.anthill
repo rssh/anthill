@@ -1,8 +1,8 @@
 -- String: abstract spec for the built-in string sort.
--- Spec satisfaction facts (Eq[String], Ordered[String]) live in the per-language
+-- Spec satisfaction facts (Eq[String], Ord[String]) live in the per-language
 -- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
 sort anthill.prelude.String
-  import anthill.prelude.{Eq, Ordered, Int64}
+  import anthill.prelude.{Eq, Ord, Int64}
   import anthill.prelude.Numeric.{sub}
 
   -- WI-876: `String`'s ORDERING (lexicographic by code unit), declared here and

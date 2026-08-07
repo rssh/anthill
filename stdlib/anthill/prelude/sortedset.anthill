@@ -5,13 +5,13 @@
 --
 -- ── WHAT THE NAME BUYS (058 §4.7) ────────────────────────────────────────────────
 --
--- `requires O: Ordered[T]` is a NAMED requirement slot, and a named slot IS a type
+-- `requires O: Ord[T]` is a NAMED requirement slot, and a named slot IS a type
 -- parameter. So the chosen comparator is part of the type:
 --
 --   SortedSet[T = String, O = ByLength]  and  SortedSet[T = String, O = Alphabetical]
 --
 -- are two DIFFERENT types, and merging one into the other is a type error before it
--- is a wrong answer. Had the slot been left anonymous (`requires Ordered[T]`, the
+-- is a wrong answer. Had the slot been left anonymous (`requires Ord[T]`, the
 -- spelling `Map`/`Set` use for their `Eq`) it would be a CONSTRAINT — solved at each
 -- dispatch, recorded nowhere — and two sets ordered differently would share one type.
 -- That is right for `Map`'s `Eq` (two `Map[K = Int64]`s must not differ by which `Eq`
@@ -53,7 +53,7 @@
 -- ── ONE CAVEAT, AND IT IS NOT THIS FILE'S (WI-857) ───────────────────────────────
 --
 -- NAME a comparator. Leaving `O` out entirely — `SortedSet.empty[T = Int64]()` —
--- loads, and tier 2 resolves it to the carrier's own `Ordered[Int64]` provider, but
+-- loads, and tier 2 resolves it to the carrier's own `Ord[Int64]` provider, but
 -- then dies at eval with an arity mismatch. That is a pre-existing defect in how a
 -- requirement dictionary is built from a CARRIER-KEYED provider (the producer walks
 -- the provider's `requires` chain, the consumer names the frame from the SPEC's), and
@@ -80,12 +80,12 @@
 -- added here is surface to keep in agreement with a comparator that is part of the
 -- type. Use `toList` at the boundary.
 enum anthill.prelude.SortedSet
-  import anthill.prelude.{Ordered, List}
+  import anthill.prelude.{Ord, List}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.PartialOrd.{lt, gt}
 
   sort T = ?                                   -- element type
-  requires O: Ordered[T]                       -- NAMED ⇒ a parameter of the type
+  requires O: Ord[T]                           -- NAMED ⇒ a parameter of the type
 
   -- The items, ascending under `O` and duplicate-free. The invariant is maintained by
   -- `insert`, which is the only producer; the constructor is not meant to be applied
@@ -121,14 +121,14 @@ enum anthill.prelude.SortedSet
   -- neither of which respects the set's ordering. Called from WITHIN the sort, both
   -- inherit the enclosing frame's `O` dictionary.
   --
-  -- Both READ the order through `Ordered.compare`, which resolves via slot `O` — the
+  -- Both READ the order through `Ord.compare`, which resolves via slot `O` — the
   -- one the construction site filled. Two sets built with different comparators run
   -- different code here, out of one body (058 §4.6).
   internal operation insertSorted(l: List[T = T], x: T) -> List[T = T] =
     match l
       case nil() -> cons(head: x, tail: nil())
       case cons(h, t) ->
-        let c = Ordered.compare(x, h)
+        let c = Ord.compare(x, h)
         if lt(c, 0) then cons(head: x, tail: cons(head: h, tail: t))
         else if gt(c, 0) then cons(head: h, tail: insertSorted(t, x))
         else cons(head: h, tail: t)          -- already present: a SET, so no duplicate
@@ -142,7 +142,7 @@ enum anthill.prelude.SortedSet
         match ys
           case nil() -> cons(head: x, tail: xt)
           case cons(y, yt) ->
-            let c = Ordered.compare(x, y)
+            let c = Ord.compare(x, y)
             if lt(c, 0) then cons(head: x, tail: merge(xt, cons(head: y, tail: yt)))
             else if gt(c, 0) then cons(head: y, tail: merge(cons(head: x, tail: xt), yt))
             else cons(head: x, tail: merge(xt, yt))    -- equal: one element, not two

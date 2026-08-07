@@ -1231,7 +1231,7 @@ fn reflection_inventory_schemas_survive_an_empty_relation() {
 
 #[test]
 fn parse_sort_with_requires() {
-    let source = r#"sort Ordered {
+    let source = r#"sort Ord {
   sort T = ?
   requires Eq[T = T]
   operation gt(a: T, b: T) -> Bool
@@ -1241,7 +1241,7 @@ fn parse_sort_with_requires() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::SortWithBody(s) => {
-            assert_eq!(parsed.symbols.local_name(s.name.last()), "Ordered");
+            assert_eq!(parsed.symbols.local_name(s.name.last()), "Ord");
             // Items: AbstractSort(T), RequiresDecl(Eq[T=T]), Operation(gt)
             assert_eq!(s.items.len(), 3);
             match &s.items[1] {
@@ -1274,7 +1274,7 @@ fn load_sort_with_requires() {
   sort T = ?
 }
 
-sort Ordered {
+sort Ord {
   sort T = ?
   requires Eq[T = T]
   operation gt(a: T, b: T) -> Bool
@@ -1289,14 +1289,14 @@ sort Ordered {
     let reqs = kb.clauses_of_kind(req_sort);
     assert_eq!(reqs.len(), 1, "should have 1 Requirement fact");
 
-    // The requirement should be scoped to the Ordered sort
-    let ordered_domain = kb.resolve_qualified_name_sym("Ordered");
+    // The requirement should be scoped to the Ord sort
+    let ordered_domain = kb.resolve_qualified_name_sym("Ord");
     assert_eq!(
         kb.fact_domain(reqs[0]), ordered_domain,
-        "requirement should be scoped to the Ordered sort"
+        "requirement should be scoped to the Ord sort"
     );
 
-    // The requirement term should be Requires(sort_ref: Ordered_ref, spec: SortView(Eq(), T=T()))
+    // The requirement term should be Requires(sort_ref: Ord_ref, spec: SortView(Eq(), T=T()))
     let fid = reqs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
@@ -1312,7 +1312,7 @@ sort Ordered {
 #[test]
 fn parse_requires_positional_binding() {
     // `Eq[T]` is a positional binding — T binds to Eq's first param
-    let source = r#"sort Ordered {
+    let source = r#"sort Ord {
   sort T = ?
   requires Eq[T]
 }
@@ -2195,7 +2195,7 @@ fn all_names_resolved_no_errors() {
   sort T = ?
 }
 
-sort Ordered {
+sort Ord {
   sort T = ?
   requires Eq[T = T]
   operation compare(a: T, b: T) -> Int64

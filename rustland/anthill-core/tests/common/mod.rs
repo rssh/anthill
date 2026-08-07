@@ -622,8 +622,8 @@ pub const DESC_INSTANCES: &str = r#"
 /// `wi227.flat` fixture loaded the surviving `PartialEq.eq` entry is
 /// `__req_partialeq_14325` (`anthill.prelude.Pair`'s, whose chain names `PartialEq`
 /// twice), while with `wi222.box` it is the fixture's own `__req_partialeq`, and in
-/// the same load the `Ordered.compare` entry is a `Pair` ordering's
-/// `__req_ordered_14331`. The eviction is pre-existing — **WI-873** — but before
+/// the same load the `Ord.compare` entry is a `Pair` ordering's
+/// `__req_ord_14331`. The eviction is pre-existing — **WI-873** — but before
 /// WI-858 no sort in the tree repeated a spec in its chain, so no disambiguated name
 /// existed and the exact spelling always matched.
 ///

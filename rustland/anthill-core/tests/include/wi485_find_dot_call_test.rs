@@ -73,7 +73,7 @@ fn find_plain_call_threads_callback_element() {
         r#"{FIXTURE}
 namespace test.wi485.use_plain
   import anthill.prelude.{{Int64, Option, Bool}}
-  import anthill.prelude.Ordered.{{gt}}
+  import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
   operation is_big(n: Int64) -> Bool = gt(n, 2)
@@ -96,7 +96,7 @@ fn find_dot_call_threads_callback_element() {
         r#"{FIXTURE}
 namespace test.wi485.use_dot
   import anthill.prelude.{{Int64, Option, Bool}}
-  import anthill.prelude.Ordered.{{gt}}
+  import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
   operation is_big(n: Int64) -> Bool = gt(n, 2)
@@ -120,7 +120,7 @@ fn find_plain_call_lambda_callback_infers_element() {
         r#"{FIXTURE}
 namespace test.wi485.use_plain_lambda
   import anthill.prelude.{{Int64, Option, Bool}}
-  import anthill.prelude.Ordered.{{gt}}
+  import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
   operation run(xs: Lst[T = Int64]) -> Option[T = Int64] = findX(xs, lambda n -> gt(n, 2))
@@ -142,7 +142,7 @@ fn find_dot_call_lambda_callback_infers_element() {
         r#"{FIXTURE}
 namespace test.wi485.use_dot_lambda
   import anthill.prelude.{{Int64, Option, Bool}}
-  import anthill.prelude.Ordered.{{gt}}
+  import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
   operation run(xs: Lst[T = Int64]) -> Option[T = Int64] = xs.findX(lambda n -> gt(n, 2))

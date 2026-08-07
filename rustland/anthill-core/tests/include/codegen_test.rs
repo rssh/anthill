@@ -83,13 +83,13 @@ fn self_collapse_heuristic() {
 
 #[test]
 fn requires_to_supertrait() {
-    let out = gen(r#"sort Ordered {
+    let out = gen(r#"sort Ord {
   sort T = ?
   requires Eq[T = T]
   operation compare(a: T, b: T) -> Int64
 }
 "#);
-    assert!(out.contains("trait Ordered: Eq {"), "output:\n{out}");
+    assert!(out.contains("trait Ord: Eq {"), "output:\n{out}");
 }
 
 // ── Test 7: fact inside sort → supertrait ────────────────────────

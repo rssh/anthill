@@ -1,16 +1,16 @@
 //! WI-876 — a spec-op builtin must not serve carriers it cannot handle.
 //!
 //! THE PRE-FIX MEASUREMENT, reproduced before the change and both halves confirmed.
-//! `Ordered.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` were registered on the SPEC
-//! op and compared host SCALARS only, so a STRUCTURAL carrier providing `Ordered` was
+//! `Ord.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` were registered on the SPEC
+//! op and compared host SCALARS only, so a STRUCTURAL carrier providing `Ord` was
 //! intercepted by an implementation that could not run on its values:
 //!
 //!   * the LOAD refused [`CARRIER`] outright for `max`/`min` — *"provides
-//!     'anthill.prelude.Ordered' but backs no operation … max"* — because those two
+//!     'anthill.prelude.Ord' but backs no operation … max"* — because those two
 //!     are NOT resolver builtins, so `op_backed` found no backing and demanded a
 //!     member;
 //!   * with `max`/`min` hand-written, the load went clean and `gt(pt(2,1), pt(1,9))`
-//!     died *"expected Ordered scalars of matching type, got Entity and Entity"* —
+//!     died *"expected Ord scalars of matching type, got Entity and Entity"* —
 //!     because `gt`/`gte`/`lt`/`lte` ARE resolver builtins, so `op_backed` demanded
 //!     nothing and they broke at eval instead.
 //!
@@ -23,7 +23,7 @@
 //! rules — and nothing mapping an OPERATION to a host function. So `Int64`'s host
 //! `compare` went on the spec op, where one implementation served every carrier. This
 //! adds the missing clause (`operation_map`), keys the scalar implementations per
-//! carrier, deletes the spec-op registrations, and lets `PartialOrd`/`Ordered` carry
+//! carrier, deletes the spec-op registrations, and lets `PartialOrd`/`Ord` carry
 //! the DEFAULT BODIES that `ordered.anthill` previously stated only as laws — a rule is
 //! not backing (WI-818), and until the spec-op builtin was gone they were shadowed
 //! anyway.
@@ -33,20 +33,20 @@
 
 use anthill_core::eval::Value;
 
-/// A structural `Ordered` carrier that supplies exactly ONE operation — `compare`.
+/// A structural `Ord` carrier that supplies exactly ONE operation — `compare`.
 /// Everything else (`gt`/`gte`/`lt`/`lte`, `max`/`min`) must come from the spec.
 const CARRIER: &str = r#"
 namespace wi876.lex
-  import anthill.prelude.{Int64, Bool, Ordered, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
 
   sort Point
-    import anthill.prelude.{Int64, Bool, Ordered, PartialOrd, PartialEq, Eq}
+    import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
     entity pt(x: Int64, y: Int64)
 
     provides PartialEq[Point]
     provides Eq[Point]
     provides PartialOrd[Point]
-    provides Ordered[Point]
+    provides Ord[Point]
 
     operation eq(a: Point, b: Point) -> Bool =
       match a
@@ -61,25 +61,25 @@ namespace wi876.lex
         case pt(ax, ay) ->
           match b
             case pt(bx, by) ->
-              let c = Ordered.compare(ax, bx)
-              if PartialEq.eq(c, 0) then Ordered.compare(ay, by) else c
+              let c = Ord.compare(ax, bx)
+              if PartialEq.eq(c, 0) then Ord.compare(ay, by) else c
   end
 
   sort Driver
-    import anthill.prelude.{Int64, Bool, Ordered, PartialOrd}
+    import anthill.prelude.{Int64, Bool, Ord, PartialOrd}
     import wi876.lex.Point.{pt}
-    operation cmpGt(n: Int64) -> Int64 = Ordered.compare(pt(2, 1), pt(1, 9))
-    operation cmpLt(n: Int64) -> Int64 = Ordered.compare(pt(1, 9), pt(2, 1))
-    operation cmpEq(n: Int64) -> Int64 = Ordered.compare(pt(2, 1), pt(2, 1))
+    operation cmpGt(n: Int64) -> Int64 = Ord.compare(pt(2, 1), pt(1, 9))
+    operation cmpLt(n: Int64) -> Int64 = Ord.compare(pt(1, 9), pt(2, 1))
+    operation cmpEq(n: Int64) -> Int64 = Ord.compare(pt(2, 1), pt(2, 1))
     operation isGt(n: Int64) -> Bool = PartialOrd.gt(pt(2, 1), pt(1, 9))
     operation isGte(n: Int64) -> Bool = PartialOrd.gte(pt(2, 1), pt(2, 1))
     operation isLt(n: Int64) -> Bool = PartialOrd.lt(pt(2, 1), pt(1, 9))
     operation isLte(n: Int64) -> Bool = PartialOrd.lte(pt(1, 9), pt(2, 1))
     operation maxX(n: Int64) -> Int64 =
-      match Ordered.max(pt(2, 1), pt(1, 9))
+      match Ord.max(pt(2, 1), pt(1, 9))
         case pt(x, y) -> x
     operation minX(n: Int64) -> Int64 =
-      match Ordered.min(pt(2, 1), pt(1, 9))
+      match Ord.min(pt(2, 1), pt(1, 9))
         case pt(x, y) -> x
   end
 end
@@ -152,7 +152,7 @@ fn positive_control_a_broken_program_is_refused() {
     );
 }
 
-/// THE ACCEPTANCE: the whole `Ordered`/`PartialOrd` surface works on a structural
+/// THE ACCEPTANCE: the whole `Ord`/`PartialOrd` surface works on a structural
 /// carrier that declared only `compare` — no `max`/`min`, no `gt`/`gte`/`lt`/`lte`.
 ///
 /// Every arm is asserted in BOTH directions, and `cmpEq`/`isGte` on a tie: a body that
@@ -186,7 +186,7 @@ fn the_whole_comparison_surface_works_from_one_operation() {
 /// registrations had quietly stayed on the spec op, which is the defect.
 ///
 /// `Float` is the discriminating carrier: it maps the four IEEE comparisons and NOT
-/// `compare` (it provides `PartialOrd`, not `Ordered`), so a mapping table that had
+/// `compare` (it provides `PartialOrd`, not `Ord`), so a mapping table that had
 /// collapsed to one per-language entry would show `compare` here. WI-881 filled the
 /// rest of `Float`'s surface in through this same clause, so the assertion is on the
 /// ABSENCE of `compare` and on `Float`'s own IEEE host functions rather than on an
@@ -229,7 +229,7 @@ fn a_binding_blocks_operation_map_lands_as_facts() {
     assert!(
         !float_mapped.iter().any(|m| m == "compare"),
         "`Float` maps no `compare` — it provides `PartialOrd` and not the total \
-         `Ordered`, so there is no total comparison for the derivation to bottom out \
+         `Ord`, so there is no total comparison for the derivation to bottom out \
          in; got {float_mapped:?}",
     );
 
@@ -259,7 +259,7 @@ fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
     assert!(kb.is_host_mapped_op(sym("anthill.prelude.Int64.compare")), "Int64.compare");
     assert!(kb.is_host_mapped_op(sym("anthill.prelude.Float.gt")), "Float.gt");
     assert!(
-        !kb.is_host_mapped_op(sym("anthill.prelude.Ordered.compare")),
+        !kb.is_host_mapped_op(sym("anthill.prelude.Ord.compare")),
         "the SPEC op carries no host implementation any more — that keying IS the defect",
     );
     assert!(
@@ -278,18 +278,18 @@ fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
 fn the_scalar_orderings_are_unchanged() {
     let src = "
 namespace wi876.scalars
-  import anthill.prelude.{Int64, String, BigInt, Bool, Ordered, PartialOrd}
+  import anthill.prelude.{Int64, String, BigInt, Bool, Ord, PartialOrd}
   import anthill.prelude.BigInt.{to_bigint}
   sort Driver
-    operation ints(n: Int64) -> Int64 = Ordered.compare(7, 3)
-    operation strings(n: Int64) -> Int64 = Ordered.compare(\"b\", \"a\")
-    operation bigs(n: Int64) -> Int64 = Ordered.compare(to_bigint(7), to_bigint(3))
+    operation ints(n: Int64) -> Int64 = Ord.compare(7, 3)
+    operation strings(n: Int64) -> Int64 = Ord.compare(\"b\", \"a\")
+    operation bigs(n: Int64) -> Int64 = Ord.compare(to_bigint(7), to_bigint(3))
     operation intGt(n: Int64) -> Bool = PartialOrd.gt(7, 3)
     operation intLt(n: Int64) -> Bool = PartialOrd.lt(7, 3)
     operation strLte(n: Int64) -> Bool = PartialOrd.lte(\"a\", \"b\")
-    operation intMax(n: Int64) -> Int64 = Ordered.max(7, 3)
-    operation intMin(n: Int64) -> Int64 = Ordered.min(7, 3)
-    operation strMax(n: Int64) -> String = Ordered.max(\"a\", \"b\")
+    operation intMax(n: Int64) -> Int64 = Ord.max(7, 3)
+    operation intMin(n: Int64) -> Int64 = Ord.min(7, 3)
+    operation strMax(n: Int64) -> String = Ord.max(\"a\", \"b\")
   end
 end
 ";
@@ -507,24 +507,24 @@ fn an_unknown_host_function_is_loud_at_registration() {
 /// the gate WI-876 widened (`carrier_override_op` filtered on a runnable BODY, so a
 /// member whose body is the HOST's read as absent) and it is not ceremony: MEASURED
 /// with the narrow gate, `gt(nan, 1.5)` fell through to `PartialOrd`'s `compare`-based
-/// default and died `OperationBodyMissing {Ordered.compare}` — `Float` has no
+/// default and died `OperationBodyMissing {Ord.compare}` — `Float` has no
 /// `compare` — while a `String` comparison inside a program's witness ordering fell
 /// through into an `AmbiguousSpecOpDispatch` between `String.compare` and the
 /// program's own witnesses (six `wi844_sorted_set_driver_test` arms).
 ///
-/// Asserted through a program that declares a RIVAL `Ordered[String]`, which is what
+/// Asserted through a program that declares a RIVAL `Ord[String]`, which is what
 /// makes it discriminating: if the default body ran, the value-directed resolution
 /// underneath it would see two suppliers for `String` and go loud.
 #[test]
 fn a_carriers_own_host_member_beats_the_spec_default() {
     let src = "
 namespace wi876.rival
-  import anthill.prelude.{Int64, String, Bool, Ordered, PartialOrd}
+  import anthill.prelude.{Int64, String, Bool, Ord, PartialOrd}
   sort ByLength
     import anthill.prelude.{Int64, String}
     import anthill.prelude.String.{length}
     import anthill.prelude.Numeric.{sub}
-    fact Ordered[T = String]
+    fact Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end
   sort Driver

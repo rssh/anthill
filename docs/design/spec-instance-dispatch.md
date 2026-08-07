@@ -459,7 +459,7 @@ Concrete consumer examples (none exist yet, but anticipated):
 
 - Stdlib ships a default `Show[T]` impl for any sort with constructors. A project that wants custom rendering for `WorkItem` declares its own `Show` impl; it wins for `WorkItem` calls without disturbing other types.
 - Stdlib ships a default `Persist[Backend = FileBackend]` impl using JSON. A project that wants YAML files declares `Persist[Backend = FileBackend]` locally; it wins.
-- Stdlib ships a fallback `Ordered[Int64]`; a project that wants reverse ordering for a specific sort overrides.
+- Stdlib ships a fallback `Ord[Int64]`; a project that wants reverse ordering for a specific sort overrides.
 
 The pattern only works if (a) defaults exist and (b) overriding them is automatic and *local*. That's what scoped priority gives you.
 

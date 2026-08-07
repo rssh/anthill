@@ -59,7 +59,7 @@ Pinning does not reach into the resolution tree: a witness's own sub-goals alway
 
 ```anthill
 requires Eq[T]              -- anonymous: a CONSTRAINT — solved, not recorded
-requires O: Ordered[T]      -- named: a PARAMETER — part of the type's identity
+requires O: Ord[T]          -- named: a PARAMETER — part of the type's identity
 ```
 
 An anonymous slot fixes nothing about the type: `List[T = Int64]` is one type no matter which `Eq` satisfied it. A named slot is an ordinary type parameter, addressable in brackets and in type position — `SortedSet[T = String, O = ByLength]` and `…O = Alphabetical]` are **different types**, so merging them is a type error before it is a wrong answer. The author chooses by naming. Omitting a named slot in type position means "any" — it is how order-agnostic signatures are written, so the merge guarantee is per-signature, holding exactly where the slot is written. Omitting it at a call leaves it to inference (the ladder, §3.2).
@@ -83,7 +83,7 @@ rule default_provider(?S, ?C, ?C) :- self_provides(?C, ?S)      -- the inference
 
 - **The carrier's own provision is its default**, inferred — the existing standard library needs no edits.
 - A `DefaultProvider` fact marks an *existing* provider (typically a witness for a foreign carrier) as the fallback — the **application's** act when linking libraries that don't know each other; the carrier is derived from the provider's provision.
-- **A default row carries the carrier its provision WROTE**, which is all conditionality needs: marking `ListOrd` default for `Ordered` yields a row at `List[T = E]`, and a default only ever chooses among candidates that already resolved — a provision whose chain (§3.8) fails offers no candidate to prefer. The row itself is unconditional; the condition is the provision's, and holds where the provision is used.
+- **A default row carries the carrier its provision WROTE**, which is all conditionality needs: marking `ListOrd` default for `Ord` yields a row at `List[T = E]`, and a default only ever chooses among candidates that already resolved — a provision whose chain (§3.8) fails offers no candidate to prefer. The row itself is unconditional; the condition is the provision's, and holds where the provision is used.
 - Two default rows whose carriers **overlap** are refused by `one_default` — a ground row beside a parametric one for one family; two DISJOINT ground rows coexist. Layering defaults by specificity would be a widening needing its own measurement.
 - A `DefaultProvider` is a **fact**. Written as a rule it is refused: a derived mark would answer through `default_provider` while escaping `one_default`.
 - **Sugar *(proposed)*: a provision may mark itself** — `default provides X[…]`, one leading modifier (the `internal` pattern), desugaring to the same `DefaultProvider` row. (A trailing `[default]` annotation was considered and dropped: a bracket list right after a bracketed type invites a parse tie, and the `[simp]` precedent follows a rule body, not a type.) The reference-form fact keeps its own job — marking a provider you *cannot edit*. Discipline: mark inline when you own the carrier or ship its canonical companion; mark by reference as the assembler otherwise; `one_default` arbitrates all rows regardless of origin.
@@ -98,18 +98,18 @@ One property *is* per-spec: when a spec's dispatch fires from **unification**, n
 
 ### 3.8 Conditional provisions; an alternative to an ordered carrier is a BUNDLE
 
-**A provision may be conditional** — `Ordered[List[T = E]]` exists only where `Ordered[E]` does. In the §2 model this is a Horn clause over the `provides` relation, and it is written today as the provider's own `requires` chain:
+**A provision may be conditional** — `Ord[List[T = E]]` exists only where `Ord[E]` does. In the §2 model this is a Horn clause over the `provides` relation, and it is written today as the provider's own `requires` chain:
 
 ```anthill
 sort ListOrd
   sort E = ?
-  requires OE: Ordered[T = E]            -- the condition, AND the evidence the body uses.
+  requires OE: Ord[T = E]            -- the condition, AND the evidence the body uses.
                                          -- NAMED (§3.4): the element ordering is not
                                          -- incidental — selectable (`ListOrd[OE = …]`,
                                          -- §3.3) and part of ListOrd's identity
-  provides Ordered[T = List[T = E]]      -- the PartialOrd floor is DERIVED, not written
+  provides Ord[T = List[T = E]]      -- the PartialOrd floor is DERIVED, not written
                                          -- (below): List has no order of its own
-  operation compare(…) = … Ordered.compare(headA, headB) …
+  operation compare(…) = … Ord.compare(headA, headB) …
 end
 ```
 
@@ -128,13 +128,13 @@ With one chain the weaker condition must win — `Pair` takes `requires PartialE
 
 Two boundaries: **a condition admits, it never ranks** — it shrinks where a provision applies, and provisions still applicable after their conditions resolve by the ladder (§3.2), which is the line between this and the predicate-directed selection §7 rejects; and a provider's chain does **not** discharge the *spec's* own requirements (`Eq[List[E]]` must come from `List`'s provision, not from the witness's chain) — lifting that is a separate, deferred increment.
 
-*(proposed from here)* A lone alternative `Ordered` witness contradicts the `PartialOrd` it inherits from the carrier — `Ordered`'s laws derive `gt`/`lt`/`gte`/`lte` from `compare`, so for *any* order but the carrier's own the two disagree. The lawful shape is a consistent **bundle** of floors, never one floor over shared lower floors, anchored to the one shared `Eq` (which stays outside the bundle — §3.7). But the bundle is **derived, not written**: WI-876 already gives that derivation real default bodies, so "a carrier that supplies `compare` alone inherits the whole surface" (`stdlib/anthill/prelude/ordered.anthill:20`) — the only missing piece is the provision row a `requires PartialOrd[X]` goal finds, which is one clause in the §2 model:
+*(proposed from here)* A lone alternative `Ord` witness contradicts the `PartialOrd` it inherits from the carrier — `Ord`'s laws derive `gt`/`lt`/`gte`/`lte` from `compare`, so for *any* order but the carrier's own the two disagree. The lawful shape is a consistent **bundle** of floors, never one floor over shared lower floors, anchored to the one shared `Eq` (which stays outside the bundle — §3.7). But the bundle is **derived, not written**: WI-876 already gives that derivation real default bodies, so "a carrier that supplies `compare` alone inherits the whole surface" (`stdlib/anthill/prelude/ordered.anthill:20`) — the only missing piece is the provision row a `requires PartialOrd[X]` goal finds, which is one clause in the §2 model:
 
 ```anthill
-provides(?W, PartialOrd[T = ?X]) :- provides(?W, Ordered[T = ?X])
+provides(?W, PartialOrd[T = ?X]) :- provides(?W, Ord[T = ?X])
 ```
 
-Deriving beats writing both floors: two hand-written provisions permit a bundle whose halves disagree, whereas one `compare` cannot. The rule does **not** generalize to "a spec provides what it requires" — `Ordered requires Eq` as well, and §3.7 refuses a second `Eq` provider permanently, since unification-fired dispatch has no call site to select at. It is narrower: **derive the provision for a required floor iff the upper floor's laws determine that floor's surface *and* the floor is selectable.** `PartialOrd` qualifies; `Eq` does not. Two mechanics it must respect, both recorded at the declaration: the derivation adds a provision **row**, never a second op declaration (`ordered.anthill:24` — declaring `gt`/`lt` on both specs gives a carrier providing both two `sort_ops` entries for one short name, "and which one wins is HashMap-iteration order — a coin flip, not a rule"); and the inherited default bodies read `Ordered.compare`, which `PartialOrd` does not `requires`, so the per-provision condition above is also what states that they are backed only where `Ordered[T]` holds (`ordered.anthill:35`, which names this very clause as the fix). Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
+Deriving beats writing both floors: two hand-written provisions permit a bundle whose halves disagree, whereas one `compare` cannot. The rule does **not** generalize to "a spec provides what it requires" — `Ord requires Eq` as well, and §3.7 refuses a second `Eq` provider permanently, since unification-fired dispatch has no call site to select at. It is narrower: **derive the provision for a required floor iff the upper floor's laws determine that floor's surface *and* the floor is selectable.** `PartialOrd` qualifies; `Eq` does not. Two mechanics it must respect, both recorded at the declaration: the derivation adds a provision **row**, never a second op declaration (`ordered.anthill:24` — declaring `gt`/`lt` on both specs gives a carrier providing both two `sort_ops` entries for one short name, "and which one wins is HashMap-iteration order — a coin flip, not a rule"); and the inherited default bodies read `Ord.compare`, which `PartialOrd` does not `requires`, so the per-provision condition above is also what states that they are backed only where `Ord[T]` holds (`ordered.anthill:35`, which names this very clause as the fix). Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
 
 ### 3.9 Lawfulness derives positively — the missing use-site discharge *(proposed)*
 
@@ -188,7 +188,7 @@ Each branch's dictionary is static; only the branch taken is runtime. Two conseq
 New grammar — **one production**, delivered: the named requirement binder, at sort level and operation level:
 
 ```anthill
-requires O: Ordered[T]                          -- sort-level: a named slot, a type parameter
+requires O: Ord[T]                          -- sort-level: a named slot, a type parameter
 
 operation biFold[T](xs: List[T]) -> T
   requires plus: Monoid[T], times: Monoid[T]    -- op-level: two slots of one spec, one name each
@@ -235,20 +235,20 @@ SortedSet.union(a, b)              -- b Alphabetical ⇒ TYPE ERROR naming both 
 -- orderings are the PROGRAM's — which is where an alternative belongs anyway, and what
 -- makes every repair writable (a carrier that already had a provider, like `String`,
 -- ties three ways and a bracket-less compare there can never succeed):
-sort ByFst  requires OA: Ordered[A]  requires OB: Ordered[B]
-  provides PartialOrd[Pair[A, B]]  provides Ordered[Pair[A, B]]  … end
+sort ByFst  requires OA: Ord[A]  requires OB: Ord[B]
+  provides PartialOrd[Pair[A, B]]  provides Ord[Pair[A, B]]  … end
 sort BySnd  … end                                              -- the mirror
 let s = SortedSet.empty[T = Pair[Int64, Int64], O = ByFst]()   -- (1,9) before (2,1)
 let t = SortedSet.empty[T = Pair[Int64, Int64], O = BySnd]()   -- (2,1) before (1,9)
-Ordered.compare(p, q)            -- no bracket ⇒ tier 3, naming ByFst and BySnd
+Ord.compare(p, q)            -- no bracket ⇒ tier 3, naming ByFst and BySnd
 
 -- a conditional provision (§3.8): lists are ordered wherever their elements are
 sort ListOrd
   sort E = ?
-  requires OE: Ordered[T = E]              -- named: the element ordering is selectable
+  requires OE: Ord[T = E]              -- named: the element ordering is selectable
   provides PartialOrd[T = List[T = E]]
-  default provides Ordered[T = List[T = E]]   -- sugar (§3.6/§4): = a DefaultProvider row.
-                                           -- CONDITIONAL for free — holds where Ordered[E]
+  default provides Ord[T = List[T = E]]   -- sugar (§3.6/§4): = a DefaultProvider row.
+                                           -- CONDITIONAL for free — holds where Ord[E]
                                            -- does; matters once a rival (say ShortLex)
                                            -- coexists: silence takes ListOrd, rival opt-in
   operation compare(a: List[T = E], b: List[T = E]) -> Int64 = …   -- lexicographic over OE
@@ -263,17 +263,17 @@ let s2 = SortedSet.empty[T = List[T = P],    O = ListOrd[OE = LexFst]]()  -- OE 
 -- linking libraries you do NOT own (proposed, §3.6) — in lib_b, shipped UNMARKED:
 sort MoneyByAmount                             -- glue: a witness beside a foreign carrier
   provides PartialOrd[T = lib_a.Money]         -- the §3.8 bundle
-  provides Ordered[T = lib_a.Money]
+  provides Ord[T = lib_a.Money]
   operation compare(a: lib_a.Money, b: lib_a.Money) -> Int64 = …
 end
 -- …and in the APPLICATION, the default declared by REFERENCE — the spelling for a
 -- provider you cannot edit (the inline `default` sugar is lib_b's to write, not yours):
-fact DefaultProvider(spec: Ordered, provider: lib_b.MoneyByAmount)
+fact DefaultProvider(spec: Ord, provider: lib_b.MoneyByAmount)
 ```
 
 ## 6. What does not change
 
-The `Eq`/`Ordered` hierarchy and its laws (§3.7 makes "untouched" enforced); `TotalFloat` for `Map[K = Float]` — a container's key requirement is anonymous, hence a constraint, hence outside the type's identity: the newtype changes the *type*, selection changes the *witness*.
+The `Eq`/`Ord` hierarchy and its laws (§3.7 makes "untouched" enforced); `TotalFloat` for `Map[K = Float]` — a container's key requirement is anonymous, hence a constraint, hence outside the type's identity: the newtype changes the *type*, selection changes the *witness*.
 
 ## 7. Rejected alternatives
 

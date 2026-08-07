@@ -513,7 +513,7 @@ Implicit-form signatures already in stdlib (e.g. `operation identity(x: ?T) -> ?
 ## Non-goals
 
 - **Higher-rank polymorphism.** `operation g[F](f: F[A] -> F[B], ...) -> ...` — `F` as a type-constructor variable. Same boundary 035 already drew: HM stays rank-1.
-- **Bounded type parameters at declaration site.** `operation sort[T: Ordered](xs: List[T]) -> List[T]` (Scala-style `T: Ordered`) would be a separate proposal. Today and after this proposal: bounds are expressed via `requires` on the operation.
+- **Bounded type parameters at declaration site.** `operation sort[T: Ord](xs: List[T]) -> List[T]` (Scala-style `T: Ord`) would be a separate proposal. Today and after this proposal: bounds are expressed via `requires` on the operation.
 - **First-class operations.** Treating an operation as a value, passing `term_as_entity` itself as an argument — separate concern (proposal 018 + a type-class shape for operations).
 - **Type-parameter erasure rules.** Operation type arguments are carried in the call frame at the IR/eval layer (see `docs/design/operation-call-model.md` §"Operation type arguments"), the same way sort-level requirements are. Backends decide whether to elide them: Rust-side codegen monomorphizes and erases (same answer 035 gave for `Map[K, V]`); the interpreter and any backend that needs runtime type-driven dispatch keeps them. The frame layout is uniform; this proposal doesn't fix the erasure rule per backend.
 

@@ -1,11 +1,11 @@
 -- BigInt: abstract spec for arbitrary-precision integer operations.
 -- Used for ZK field elements, cryptographic constants, and values exceeding i64.
 -- Literals that overflow i64 are automatically parsed as BigInt.
--- Spec satisfaction facts (Eq[BigInt], Ordered[BigInt], Numeric[BigInt]) live
+-- Spec satisfaction facts (Eq[BigInt], Ord[BigInt], Numeric[BigInt]) live
 -- in the per-language binding files (e.g. rustland/anthill-stl/anthill/bigint.anthill)
 -- — see proposal 038.
 sort anthill.prelude.BigInt
-  import anthill.prelude.{Eq, Ordered, Numeric}
+  import anthill.prelude.{Eq, Ord, Numeric}
   import anthill.prelude.Numeric.{sub}
 
   -- WI-876: `BigInt`'s ORDERING, declared here and backed by the host in

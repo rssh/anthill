@@ -1315,7 +1315,7 @@ fn untagged_equation_mentioning_external_op_still_loads() {
 const SIMP_DOT_EXTERNAL_SRC: &str = r#"
 namespace smoke.h6_simp_dot_external
   import anthill.prelude.{Int64, External}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
 
   sort Reg
     operation peek(m: Reg) -> Int64

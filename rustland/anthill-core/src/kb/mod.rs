@@ -2902,7 +2902,7 @@ impl KnowledgeBase {
         if let Some(sym) = self.undefined_query_functor(tid) {
             // Discrim backstop, per node — an arity-0 proposition reachable only
             // through a rule body is in no functor table but matches the tree.
-            // Ordered cheap-check first: skip the tree walk for a name already
+            // Ord cheap-check first: skip the tree walk for a name already
             // recorded from a sibling branch.
             if !out.contains(&sym) && self.browse_program_clauses_matching(&tid).is_empty() {
                 out.push(sym);
@@ -2956,7 +2956,7 @@ impl KnowledgeBase {
         // defined functor are dropped by `undefined_query_functor`, and the
         // discrimination-tree backstop clears an arity-0 proposition that is declared
         // but sits in no functor table — so the two refusals cannot disagree about
-        // which symbols are even askable. Ordered ladder-read first: an ambiguity is
+        // which symbols are even askable. Ord ladder-read first: an ambiguity is
         // rare and the tree walk is the expensive half.
         if let Some(sym) = self.undefined_query_functor(tid) {
             let ambiguous = matches!(
@@ -6864,7 +6864,7 @@ impl KnowledgeBase {
         // dispatches at SLD. `===` (struct_eq, WI-615) keeps the structural
         // `builtin_eq`: total, carrier-agnostic, never dispatches.
         // WI-644 / proposal 004: eq/neq live on PartialEq, gt/lt/gte/lte on
-        // PartialOrd (the partial bases); Eq/Ordered are the lawful/total markers.
+        // PartialOrd (the partial bases); Eq/Ord are the lawful/total markers.
         self.register_builtin_tag("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
         self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::Eq);
         self.register_builtin_tag("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);

@@ -196,7 +196,7 @@ Inside `Eq.neq`'s body, `var_ref(__req_self_eq)` evaluates to the IntEq dict. Th
 ### Notes
 
 - Self-bound: a single requirement param serves two roles — Self for the body, and dispatching dict for the inner same-spec call.
-- Common pattern in stdlib: `Eq`, `Ordered`, `Numeric` all have default ops calling primitive ones of the same spec.
+- Common pattern in stdlib: `Eq`, `Ord`, `Numeric` all have default ops calling primitive ones of the same spec.
 
 ## Example 3 — Diamond dependency
 
@@ -274,7 +274,7 @@ Both nested calls construct fresh dictionaries (Pin-now), each bundling the same
 - At runtime, both inner calls receive a dict whose A sub-instance is the same IntA.
 - The IntA value is constructed once and refcount-shared between BImpl_Int's and CImpl_Int's sub-trees.
 
-## Example 4 — Cross-bound (B requires both Eq and Ordered)
+## Example 4 — Cross-bound (B requires both Eq and Ord)
 
 ### Source
 
@@ -282,7 +282,7 @@ Both nested calls construct fresh dictionaries (Pin-now), each bundling the same
 sort B
   sort T = ?
   requires Eq[T = T]
-  requires Ordered[T = T]
+  requires Ord[T = T]
   operation sort_pair(a: T, b: T) -> Pair[A = T, B = T] =
     if eq(a, b) then pair(a, b)
     else if lt(a, b) then pair(a, b)
@@ -292,12 +292,12 @@ end
 
 ### Per-op requirements-tree
 
-B's requires-chain: [Eq, Ordered] (declaration order). Tree:
+B's requires-chain: [Eq, Ord] (declaration order). Tree:
 
 ```
 B-tree = RequiresNode(B, [
   RequiresNode(Eq, []),
-  RequiresNode(Ordered, [])
+  RequiresNode(Ord, [])
 ])
 ```
 
@@ -307,23 +307,23 @@ B-tree = RequiresNode(B, [
 
 ```
 params:       [a, b]
-requirements: [__req_self_b : B, __req_eq : Eq, __req_ord : Ordered]
+requirements: [__req_self_b : B, __req_eq : Eq, __req_ord : Ord]
 body: if_expr(
   cond = apply_within(fn = Eq.eq, args = [a, b], requirements = [var_ref(__req_eq)]),
   then = apply_within(fn = pair, args = [a, b], requirements = []),
   else = if_expr(
-    cond = apply_within(fn = Ordered.lt, args = [a, b], requirements = [var_ref(__req_ord)]),
+    cond = apply_within(fn = Ord.lt, args = [a, b], requirements = [var_ref(__req_ord)]),
     then = apply_within(fn = pair, args = [a, b], requirements = []),
     else = apply_within(fn = pair, args = [b, a], requirements = [])
   )
 )
 ```
 
-Two distinct named bindings: `__req_eq` for the Eq dictionary, `__req_ord` for the Ordered dictionary. Both populated from `__req_self_b`'s sub-tree at frame push.
+Two distinct named bindings: `__req_eq` for the Eq dictionary, `__req_ord` for the Ord dictionary. Both populated from `__req_self_b`'s sub-tree at frame push.
 
 ### Call-site translation
 
-Caller D with `fact B[T = Int64]` resolving Eq[Int64] (IntEq), Ordered[Int64] (IntOrdered):
+Caller D with `fact B[T = Int64]` resolving Eq[Int64] (IntEq), Ord[Int64] (IntOrd):
 
 ```
 apply_within(
@@ -331,7 +331,7 @@ apply_within(
   args = [x, y],
   requirements = [construct_requirement(BImpl_Int, [
     construct_requirement(IntEq, []),
-    construct_requirement(IntOrdered, [])
+    construct_requirement(IntOrd, [])
   ])]
 )
 ```
@@ -339,7 +339,7 @@ apply_within(
 At frame push, the runtime expands the B-dict:
 - `__req_self_b` = BImpl_Int dict
 - `__req_eq` = IntEq dict (from sub_requires[0])
-- `__req_ord` = IntOrdered dict (from sub_requires[1])
+- `__req_ord` = IntOrd dict (from sub_requires[1])
 
 ### Notes
 
@@ -726,7 +726,7 @@ The body code is identical in every frame; only the dictionary values bound to `
 - The chain depth equals the type's nesting depth. Each level adds one outer `construct_requirement` wrapping the inner.
 - The single body of EqList.eq is reused at every level; per-frame `__req_self_eqlist` / `__req_inner_eq` differ.
 
-## Example 9 — Same sort at two type-args (`requires Ordered[A]` and `requires Ordered[B]`)
+## Example 9 — Same sort at two type-args (`requires Ord[A]` and `requires Ord[B]`)
 
 When a sort has two `requires` clauses naming the **same sort but at different type-args**, they're treated as two distinct entries in the requires-chain.
 
@@ -736,8 +736,8 @@ When a sort has two `requires` clauses naming the **same sort but at different t
 sort Pair
   sort A = ?
   sort B = ?
-  requires Ordered[T = A]
-  requires Ordered[T = B]
+  requires Ord[T = A]
+  requires Ord[T = B]
 
   entity pair(a: A, b: B)
 
@@ -753,8 +753,8 @@ end
 
 ```
 Pair-tree = RequiresNode(Pair, [
-  RequiresNode(Ordered, []),    -- for A
-  RequiresNode(Ordered, [])     -- for B
+  RequiresNode(Ord, []),    -- for A
+  RequiresNode(Ord, [])     -- for B
 ])
 ```
 
@@ -764,11 +764,11 @@ Inserted requirement params: `__req_self_pair`, `__req_ord_a`, `__req_ord_b`.
 
 ```
 params:       [p1, p2]
-requirements: [__req_self_pair : Pair, __req_ord_a : Ordered[A], __req_ord_b : Ordered[B]]
+requirements: [__req_self_pair : Pair, __req_ord_a : Ord[A], __req_ord_b : Ord[B]]
 body: let_expr(
   binding = ca,
   rhs = apply_within(
-    fn = Ordered.compare,
+    fn = Ord.compare,
     args = [p1.a, p2.a],
     requirements = [var_ref(__req_ord_a)]
   ),
@@ -776,7 +776,7 @@ body: let_expr(
     cond = apply_within(fn = ne, args = [ca, 0], requirements = []),
     then = ca,
     else = apply_within(
-      fn = Ordered.compare,
+      fn = Ord.compare,
       args = [p1.b, p2.b],
       requirements = [var_ref(__req_ord_b)]
     )
@@ -784,7 +784,7 @@ body: let_expr(
 )
 ```
 
-Two distinct named bindings (`__req_ord_a` and `__req_ord_b`). They share a sort name (Ordered) but at different type-args.
+Two distinct named bindings (`__req_ord_a` and `__req_ord_b`). They share a sort name (Ord) but at different type-args.
 
 ### Call-site translation
 
@@ -795,24 +795,24 @@ apply_within(
   fn = Pair.cmp,
   args = [p1, p2],
   requirements = [construct_requirement(PairImpl_Int_String, [
-    construct_requirement(IntOrdered, []),
-    construct_requirement(StringOrdered, [])
+    construct_requirement(IntOrd, []),
+    construct_requirement(StringOrd, [])
   ])]
 )
 ```
 
 At frame push:
 - `__req_self_pair` = the PairImpl_Int_String dict
-- `__req_ord_a` = IntOrdered (from sub_requires[0])
-- `__req_ord_b` = StringOrdered (from sub_requires[1])
+- `__req_ord_a` = IntOrd (from sub_requires[0])
+- `__req_ord_b` = StringOrd (from sub_requires[1])
 
-The body then dispatches Ordered.compare twice — first through IntOrdered, then through StringOrdered.
+The body then dispatches Ord.compare twice — first through IntOrd, then through StringOrd.
 
 ### Notes
 
 - Same-sort-name bounds aren't unusual — any sort parametric in multiple types (Pair, Map, BiFunctor, …) will frequently have multiple instances of the same constraint sort.
 - Each named binding is independent: caller can pass impls for entirely unrelated types (Int64 + String).
-- Compare with Example 4: that had **different sort names** (Eq + Ordered) at the same T. This example has the **same sort name** (Ordered) at different type-args. Both produce length-2 requires-chains; the difference is in the dictionary's sub-instance functors.
+- Compare with Example 4: that had **different sort names** (Eq + Ord) at the same T. This example has the **same sort name** (Ord) at different type-args. Both produce length-2 requires-chains; the difference is in the dictionary's sub-instance functors.
 
 ## Summary observations
 

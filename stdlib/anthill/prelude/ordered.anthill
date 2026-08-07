@@ -1,4 +1,4 @@
--- PartialOrd / Ordered — partial vs. total ordering (library proposal 004, WI-644).
+-- PartialOrd / Ord — partial vs. total ordering (library proposal 004, WI-644).
 --
 -- PartialOrd holds the `gt`/`lt`/`gte`/`lte` comparison surface, with NO totality
 -- law: a `NaN` operand answers `false` (IEEE unordered). `Float` provides this.
@@ -6,12 +6,12 @@
 -- gt/lt derived; the core keeps gt/lt/gte/lte as builtin-backed primitives — the
 -- Option-compare refinement is a follow-up.)
 --
--- Ordered (the proposal's `Ord`) is the TOTAL order: `compare -> Int64` plus the
+-- Ord (named `Ordered` until library proposal 004's rename landed) is the TOTAL order: `compare -> Int64` plus the
 -- reflexivity/antisymmetry laws. It `requires Eq` (lawful equality) and PartialOrd.
--- `Float`'s order is partial (NaN unordered), so `Float` does NOT provide Ordered;
--- `TotalFloat` does. Sort / dedup / sorted-key consumers require Ordered.
+-- `Float`'s order is partial (NaN unordered), so `Float` does NOT provide Ord;
+-- `TotalFloat` does. Sort / dedup / sorted-key consumers require Ord.
 sort anthill.prelude.PartialOrd
-  import anthill.prelude.{Int64, Ordered}
+  import anthill.prelude.{Int64, Ord}
 
   sort T = ?
   requires PartialEq[T]
@@ -19,32 +19,32 @@ sort anthill.prelude.PartialOrd
   -- WI-876: these four carry the DERIVATION from `compare` as real default BODIES,
   -- not only as the laws below. Until WI-876 they could not: an eval builtin
   -- registered on these very spec ops shadowed every carrier, so the derivation was
-  -- unreachable and each `Ordered` carrier had to restate four one-liners. With the
+  -- unreachable and each `Ord` carrier had to restate four one-liners. With the
   -- host implementations keyed per carrier (`operation_map`, proposal 038 binding
   -- blocks), a carrier that supplies `compare` alone inherits the whole surface.
   --
-  -- WHY THEY LIVE HERE AND NOT ON `Ordered`, where the laws are: `gt`/`gte`/`lt`/`lte`
+  -- WHY THEY LIVE HERE AND NOT ON `Ord`, where the laws are: `gt`/`gte`/`lt`/`lte`
   -- are DECLARED here, and a spec op's default body must sit with its declaration.
-  -- Declaring them a second time on `Ordered` would give a carrier that provides BOTH
+  -- Declaring them a second time on `Ord` would give a carrier that provides BOTH
   -- specs two `sort_ops` entries for one short name, and which one wins is
   -- HashMap-iteration order (`build_sort_ops_table` pass 2) — a coin flip, not a rule.
   --
   -- TWO COSTS, recorded rather than hidden.
   --
-  -- (1) The derivation reads `Ordered.compare`, which `PartialOrd` does not `requires`
+  -- (1) The derivation reads `Ord.compare`, which `PartialOrd` does not `requires`
   -- (the dependency runs the other way). A carrier providing `PartialOrd` ALONE, with
   -- no own `gt` and no host mapping, thus inherits a body that cannot run for it — the
   -- load check sees a runnable default and says "backed". `Float` is the only such
   -- carrier in the library and it maps all four in its own binding, so nothing
   -- exercises it; a per-provision condition (058 §3.8) is what would state it properly.
   --
-  -- (2) The op-scoped `requires Ordered[T]` is load-bearing for the BODY, and its
+  -- (2) The op-scoped `requires Ord[T]` is load-bearing for the BODY, and its
   -- CALL-SITE half is currently MASKED: `check_one_spec_op_requirement` returns early
   -- for a builtin functor, and `PartialOrd.gt` is still a resolver builtin. MEASURED —
   -- a generic operation with `requires PartialOrd[T]`, and even one with no `requires`
   -- at all, calls `PartialOrd.gt(a, b)` and loads clean. WHEN WI-879 DELETES THE
   -- SPEC-OP RESOLVER REGISTRATION THAT MASK GOES, and every `PartialOrd`-only generic
-  -- caller starts being asked for an `Ordered[T]` it has no reason to have. That is
+  -- caller starts being asked for an `Ord[T]` it has no reason to have. That is
   -- the larger half of this clause's cost and it comes due there, not here.
   --
   -- The inner comparison is `Int64.gt` EXPLICITLY, not the unqualified `gt` the laws
@@ -53,18 +53,18 @@ sort anthill.prelude.PartialOrd
   -- recursion out at that carrier's own host implementation in one hop, and hard-wires
   -- nothing that `compare`'s declared `-> Int64` return does not already fix.
   operation {
-    gt(a: T, b: T) -> Bool requires Ordered[T]          -- >
-      = Int64.gt(Ordered.compare(a, b), 0)
-    gte(a: T, b: T) -> Bool requires Ordered[T]         -- >=
-      = Int64.gte(Ordered.compare(a, b), 0)
-    lt(a: T, b: T) -> Bool requires Ordered[T]          -- <
-      = Int64.lt(Ordered.compare(a, b), 0)
-    lte(a: T, b: T) -> Bool requires Ordered[T]         -- <=
-      = Int64.lte(Ordered.compare(a, b), 0)
+    gt(a: T, b: T) -> Bool requires Ord[T]          -- >
+      = Int64.gt(Ord.compare(a, b), 0)
+    gte(a: T, b: T) -> Bool requires Ord[T]         -- >=
+      = Int64.gte(Ord.compare(a, b), 0)
+    lt(a: T, b: T) -> Bool requires Ord[T]          -- <
+      = Int64.lt(Ord.compare(a, b), 0)
+    lte(a: T, b: T) -> Bool requires Ord[T]         -- <=
+      = Int64.lte(Ord.compare(a, b), 0)
   }
 end
 
-sort anthill.prelude.Ordered
+sort anthill.prelude.Ord
   import anthill.prelude.Int64.{neg}
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, and a rule does not
   -- travel to the global namespace from its place — so the `max`/`min` laws
@@ -83,7 +83,7 @@ sort anthill.prelude.Ordered
   -- Derived operations. WI-876: real default BODIES, so a carrier supplying
   -- `compare` inherits them. They were the load check's sharpest inconsistency —
   -- `max`/`min` are not resolver builtins, so the check DEMANDED a member for them
-  -- from every concrete `Ordered` carrier, while `gt`/`lt`/`gte`/`lte` ARE, so it
+  -- from every concrete `Ord` carrier, while `gt`/`lt`/`gte`/`lte` ARE, so it
   -- demanded nothing and they broke at eval instead. Two halves of one surface
   -- treated oppositely; both are now backed by the same derivation.
   --

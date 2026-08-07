@@ -13,7 +13,7 @@
 //! accepts an abstract per-call value against EVERY concrete provider
 //! (`Int64`/`String`/`Bool`/`BigInt`/`Set`/`Map`/`TotalFloat`) — so all of them
 //! matched → "multiple impls". There is exactly ONE `fact PartialEq[T = Int64]`; the
-//! numeric hierarchy (`Eq`/`Ordered`/`Numeric requires … PartialEq`) is resolved by
+//! numeric hierarchy (`Eq`/`Ord`/`Numeric requires … PartialEq`) is resolved by
 //! the requires-recursion in `resolve_inner`, not by collecting a second candidate.
 //!
 //! WI-723 (row-lambda binder types at the concrete relation schema) fixed this as a

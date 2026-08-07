@@ -140,10 +140,10 @@ object SmtGen:
     case _ => None
 
   private[smtgen] def mapInequalityOp(qn: String): Option[String] = qn match
-    case "anthill.prelude.Ordered.lte" | "Ordered.lte" | "lte" => Some("<=")
-    case "anthill.prelude.Ordered.lt"  | "Ordered.lt"  | "lt"  => Some("<")
-    case "anthill.prelude.Ordered.gte" | "Ordered.gte" | "gte" => Some(">=")
-    case "anthill.prelude.Ordered.gt"  | "Ordered.gt"  | "gt"  => Some(">")
+    case "anthill.prelude.Ord.lte" | "Ord.lte" | "lte" => Some("<=")
+    case "anthill.prelude.Ord.lt"  | "Ord.lt"  | "lt"  => Some("<")
+    case "anthill.prelude.Ord.gte" | "Ord.gte" | "gte" => Some(">=")
+    case "anthill.prelude.Ord.gt"  | "Ord.gt"  | "gt"  => Some(">")
     case _ => None
 
   /** Loader desugars `=` to `anthill.prelude.Eq.eq` in goal position;

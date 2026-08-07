@@ -311,7 +311,7 @@ rule dot_field: dot_apply(?x, ?name, []) = field_access(?x, ?name)
 A method call must **not** require importing the operation: `?l.map(?f)` works whenever `?l` is a `List`, with no `import …map` — found via the receiver's sort, not lexical scope. KB query `find_operation_on_sort(sort, name) -> op` (qualified), resolving in this order, all subsort-aware (§4.6 step 2 — a method on a supersort applies):
 
 - **Tier 1 — the sort's own operations** (`length`, `map` in `enum List`): reachable with **no import**; the qualified op name is returned so the rewritten `apply` references it directly. The defining property.
-- **Tier 1b — operations of specs the sort *satisfies*** (`?n.min(?m)` for `n: Int64` → `Ordered.min`, because `fact Ordered[Int64]`). This is the headline `requires`-typeclass case and must be covered; today the WI-240 `sort_ops` table covers user `fact Spec[ImplSort]` impls but **not** builtin satisfaction like `Int64 → Ordered` — a gap to close (WI-281).
+- **Tier 1b — operations of specs the sort *satisfies*** (`?n.min(?m)` for `n: Int64` → `Ord.min`, because `fact Ord[Int64]`). This is the headline `requires`-typeclass case and must be covered; today the WI-240 `sort_ops` table covers user `fact Spec[ImplSort]` impls but **not** builtin satisfaction like `Int64 → Ord` — a gap to close (WI-281).
 - **Tier 2 — extension operations** elsewhere whose first param matches the sort: normal import rules (Rust trait / Scala 3 extension style).
 
 Resolution walks the receiver's sort and its supersort/satisfied-spec chain (most-specific first), so an operation on a supersort or a satisfied spec is found, mirroring the rule-firing conformance of §4.6.
@@ -328,8 +328,8 @@ The rewrite produces an **ordinary** `apply(op, [receiver, …args])` with no ex
 - **`requires` clauses** play **two distinct roles** — don't conflate them:
   1. **Selection guard.** A sort-scoped dot rule (and `find_operation_on_sort`'s
      Tier-1b) *uses* `requires`/conformance to decide it applies: `Either.map`
-     fires because `min_sort(?e) <: Either`; `Ordered.min` resolves for `Int64`
-     because `Int64` satisfies `Ordered`. This is part of matching/selection (§4.6).
+     fires because `min_sort(?e) <: Either`; `Ord.min` resolves for `Int64`
+     because `Int64` satisfies `Ord`. This is part of matching/selection (§4.6).
   2. **Downstream check.** The *produced* `apply(op, [receiver, …args])` is then
      requirement-elaborated by `req_insertion`, which runs *after* the rewrite,
      exactly as for a hand-written call. `?a.min(?b)` → `min(?a, ?b)` typechecks

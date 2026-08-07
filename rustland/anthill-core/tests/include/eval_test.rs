@@ -1411,7 +1411,7 @@ end
 fn m3_comparison_gt() {
     let src = r#"
 namespace test.m3_cmp
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
   operation main() -> Bool = gt(7, 3)
 end
 "#;
@@ -1502,7 +1502,7 @@ fn m3_non_tail_recursion_accumulates_frames() {
     // same program succeeds and returns n.
     let src = r#"
 namespace test.m3_nontail
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
   operation sumUntil(n: Int64) -> Int64 =
     if gt(n, 0) then sumUntil(n - 1) + 1 else 0
   operation main(n: Int64) -> Int64 = sumUntil(n)
@@ -1735,7 +1735,7 @@ fn m3_bigint_comparison() {
     let src = r#"
 namespace test.m3_bigint_cmp
   import anthill.prelude.{BigInt}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
   operation main() -> Bool =
     gt(200000000000000000000, 100000000000000000000)
 end
@@ -1809,24 +1809,24 @@ end
 
 /// WI-876 — `Float` comparison, on the surface `Float` actually PROVIDES.
 ///
-/// This test used to read `Ordered.max(1.5, 2.75)` and answer `2.75`. It no longer
+/// This test used to read `Ord.max(1.5, 2.75)` and answer `2.75`. It no longer
 /// can, and that is the fix rather than a casualty of it: `Float` provides
-/// `PartialOrd` and deliberately NOT `Ordered` (WI-644 / proposal 004 — an IEEE order
-/// is PARTIAL, `NaN` is unordered), and `max` is an `Ordered` operation. The old
+/// `PartialOrd` and deliberately NOT `Ord` (WI-644 / proposal 004 — an IEEE order
+/// is PARTIAL, `NaN` is unordered), and `max` is an `Ord` operation. The old
 /// answer came from a builtin registered on the SPEC op, which served every carrier
 /// whether or not it provided the spec — and served this one with `total_cmp`, under
 /// which `NaN` ranks LARGEST, exactly the "same program, opposite answers by backend"
 /// that `wi645_float_nan_ieee_test` exists to forbid. With the host implementations
-/// keyed per carrier, `Ordered.max` reaches only carriers that provide `Ordered`.
+/// keyed per carrier, `Ord.max` reaches only carriers that provide `Ord`.
 ///
 /// The second arm pins the refusal so the change is a decision and not a drift, and
-/// the third keeps `max` covered on a carrier that IS `Ordered`.
+/// the third keeps `max` covered on a carrier that IS `Ord`.
 #[test]
 fn m3_float_comparison_and_max() {
     let src = r#"
 namespace test.m3_float_cmp
   import anthill.prelude.PartialOrd.{gt, lt, gte, lte}
-  import anthill.prelude.Ordered.{max}
+  import anthill.prelude.Ord.{max}
   import anthill.prelude.Float.{nan}
   operation bigger() -> Bool = gt(2.75, 1.5)
   operation smaller() -> Bool = lt(2.75, 1.5)
@@ -1851,20 +1851,20 @@ end
         assert_eq!(got.as_bool(), Some(want), "{op}");
     }
 
-    // A `Float` is not `Ordered`, so the total `max` has no implementation for it.
+    // A `Float` is not `Ord`, so the total `max` has no implementation for it.
     // Asserted as "errors" rather than on the message: the diagnostic is poor (an
     // `Internal` from the unfilled requirement slot rather than a load-time "Float
-    // does not provide Eq, which Ordered requires") because no use-site `requires
-    // Ordered` check exists — WI-883. Pinning the message would pin the defect.
+    // does not provide Eq, which Ord requires") because no use-site `requires
+    // Ord` check exists — WI-883. Pinning the message would pin the defect.
     let mut interp = interp_for(src);
     assert!(
         interp.call("test.m3_float_cmp.totalMax", &[]).is_err(),
-        "`Ordered.max` on a `Float` must not resolve — `Float` provides no `Ordered`",
+        "`Ord.max` on a `Float` must not resolve — `Float` provides no `Ord`",
     );
 
     let mut interp = interp_for(src);
     match interp.call("test.m3_float_cmp.intMax", &[]).expect("call intMax") {
-        Value::Int(n) => assert_eq!(n, 2, "`max` still works on a carrier that IS `Ordered`"),
+        Value::Int(n) => assert_eq!(n, 2, "`max` still works on a carrier that IS `Ord`"),
         other => panic!("intMax: {other:?}"),
     }
 }
@@ -1896,7 +1896,7 @@ fn m3_tco_10000_tail_calls() {
     // ~depth 16.
     let src = r#"
 namespace test.m3_tco
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
   operation loop(n: Int64) -> Int64 =
     if gt(n, 0) then loop(n - 1) else 0
   operation main() -> Int64 = loop(10000)
@@ -2116,7 +2116,7 @@ namespace test.m4_take
   import anthill.prelude.{LogicalStream}
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
 
   operation takeN(s: LogicalStream, n: Int64) -> Int64 effects s.E =
     if gt(n, 0) then

@@ -30,7 +30,7 @@ namespace anthill.todo
   import anthill.cli.parse.{Binding}
   import anthill.prelude.Option.{Option, none, some}
   import anthill.prelude.Pair.{Pair, pair}
-  import anthill.prelude.Ordered.{lt, lte}
+  import anthill.prelude.Ord.{lt, lte}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Int64.{to_string}

@@ -232,10 +232,10 @@ end
     //
     // SCOPED TO THIS SORT's ops, which the whole-KB walk used to get for free: until
     // WI-844 no STDLIB op body deferred to a requirement, so "every Defer row in this
-    // KB" happened to mean Wi232Two's. `SortedSet.insertSorted`'s `Ordered.compare`
-    // (a sort-level `requires O: Ordered[T]` read from an operation BODY, where
+    // KB" happened to mean Wi232Two's. `SortedSet.insertSorted`'s `Ord.compare`
+    // (a sort-level `requires O: Ord[T]` read from an operation BODY, where
     // `Set`/`Map` read theirs from rule bodies, which are never typer-classified) is
-    // the first, and it made this fail with `Ordered` where `Eq` was expected. The
+    // the first, and it made this fail with `Ord` where `Eq` was expected. The
     // claim was always about this fixture; the filter says so.
     // By SYMBOL IDENTITY (`impl_parent_of_op`), not a qualified-name prefix — this
     // file's whole subject is that a resolved spec is the matched ENTRY and not a name.

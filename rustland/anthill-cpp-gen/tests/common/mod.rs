@@ -27,7 +27,7 @@ pub fn stdlib_dir() -> PathBuf {
 
 /// Path to this crate's `anthill/` directory of C++ host bindings —
 /// sibling of `anthill-stl/anthill/`. Registers prelude spec impls
-/// (Eq/Ordered/Numeric for Int64) so the typer can dispatch primitive
+/// (Eq/Ord/Numeric for Int64) so the typer can dispatch primitive
 /// typeclass ops in cpp-gen tests.
 pub fn cpp_bindings_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("anthill")

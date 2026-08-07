@@ -18,7 +18,7 @@ fn runtime_header_is_non_empty_and_namespaced() {
     assert!(header.contains("satisfies_indexed_seq_v"),
             "IndexedSeq trait missing");
     assert!(header.contains("satisfies_eq_v"), "Eq trait missing");
-    assert!(header.contains("satisfies_ordered_v"), "Ordered trait missing");
+    assert!(header.contains("satisfies_ordered_v"), "Ord trait missing");
     assert!(header.contains("satisfies_numeric_v"), "Numeric trait missing");
 }
 
@@ -53,7 +53,7 @@ static_assert( anthill::runtime::satisfies_eq_v<int>);
 static_assert( anthill::runtime::satisfies_eq_v<std::string>);
 static_assert(!anthill::runtime::satisfies_eq_v<Plain>);
 
-// Ordered: int and string have <; Plain doesn't.
+// Ord: int and string have <; Plain doesn't.
 static_assert( anthill::runtime::satisfies_ordered_v<int>);
 static_assert( anthill::runtime::satisfies_ordered_v<std::string>);
 static_assert(!anthill::runtime::satisfies_ordered_v<Plain>);

@@ -406,7 +406,7 @@ end
 
 `neq`'s body calls `eq` — same Self bound, no explicit `requires`. Inside `IntEq` (which inherits the default neq), `eq` should dispatch to `IntEq.eq`. This is "Self-dispatch": the implicit bound is `Self : Eq[T]`. Both M and D handle this; the question is how the default body is registered (in Eq, then specialized; or pre-specialized at fact-load).
 
-This pattern is widespread — every `Eq`, `Ordered`, `Numeric` impl in stdlib likely inherits at least one default body that calls a primitive method.
+This pattern is widespread — every `Eq`, `Ord`, `Numeric` impl in stdlib likely inherits at least one default body that calls a primitive method.
 
 ### Diamond dependency
 
@@ -523,12 +523,12 @@ Why this matters for the M-vs-D choice: monad transformers are the case where Ru
 sort B
   sort T = ?
   requires Eq[T = T]       -- B's instances must satisfy Eq for same T
-  requires Ordered[T = T]  -- and Ordered too
+  requires Ord[T = T]      -- and Ord too
   operation sort(xs: List[T = T]) -> List[T = T] = ... eq(...) ... lt(...) ...
 end
 ```
 
-`B.sort`'s body uses both `eq` (from Eq bound) and `lt` (from Ordered bound). At an instantiation `D { fact B[T = Int64]; fact Eq[T = Int64]; fact Ordered[T = Int64] }`, the environment has TWO impl picks (one per bound). Resolution must pin both.
+`B.sort`'s body uses both `eq` (from Eq bound) and `lt` (from Ord bound). At an instantiation `D { fact B[T = Int64]; fact Eq[T = Int64]; fact Ord[T = Int64] }`, the environment has TWO impl picks (one per bound). Resolution must pin both.
 
 This is the diamond pattern's inner mechanism: the environment is a *set* of resolutions, not a single one. M's specialized body has both rewrites baked in; D's side-table entry covers both apply terms, keyed on the same environment.
 
@@ -612,7 +612,7 @@ The alternatives:
 
 **Plan M (Rust + C++ style)** is cleaner for codegen but:
 - Defeats hash-consing for generic specs.
-- Explodes the term store on stdlib-heavy projects (every Eq/Ordered/Numeric instance gets its own clones of derived methods, plus every conditional instance over Pair/List/Option/Tuple gets cloned per concrete combo).
+- Explodes the term store on stdlib-heavy projects (every Eq/Ord/Numeric instance gets its own clones of derived methods, plus every conditional instance over Pair/List/Option/Tuple gets cloned per concrete combo).
 - Requires explicit cycle-breaking for recursive instances (`F[T = F[T = ...]]`).
 - **Breaks down on monad transformer stacks.** `StateT[S, ExceptT[E, M]]` style abstractions clone bodies per stack level × per type-arg combo — exponential. Rust's ecosystem reflects this: the monad-transformer pattern, ubiquitous in Haskell and natural in Lean, is rare in Rust precisely because the mono cost shape is wrong.
 - Doesn't compose well with conditional instances at scale — Lean's experience here is instructive: GHC and Lean both default to dict-passing at runtime even though they have access to LLVM specialization.
@@ -648,7 +648,7 @@ Whichever plan we pick, the first phase is model-independent:
 
 1. **WI-218 soundness patch** — return `Deferred` for `EnvOpen` calls. Generic bodies become unsound-but-explicit (clear error) instead of unsound-and-silent (current state).
 2. **CallKind classification** — populate `dispatch_kind: HashMap<TermId, CallKind>` at typing time. Required by both M and D.
-3. **Pick M, D, or H** — based on benchmark on real workloads (stdlib's Eq/Ordered/Numeric chains, future server-side query workloads, the cmd_X port).
+3. **Pick M, D, or H** — based on benchmark on real workloads (stdlib's Eq/Ord/Numeric chains, future server-side query workloads, the cmd_X port).
 4. **Implement** the chosen model.
 5. **Re-port** generic bodies that hit WI-218's limitation once the chosen model is in.
 

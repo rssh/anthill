@@ -133,7 +133,7 @@ fn typed_bound_on_a_guarded_equation_is_refused() {
     const SRC: &str = r#"
 namespace test.wi903guarded
   import anthill.prelude.{Int64}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Ord.{gt}
 
   sort Summable
     sort T = ?

@@ -6,19 +6,19 @@
 //! the sort makes, so a provider of two floors of one tower must condition them at
 //! ONE strength. `anthill.prelude.Pair` needs two: it provides `PartialEq` wherever
 //! its components have the partial equality and `Eq` only where they have the lawful
-//! one, `PartialOrd` wherever they are partially ordered and `Ordered` only where
+//! one, `PartialOrd` wherever they are partially ordered and `Ord` only where
 //! they are totally ordered. With one chain the WEAKEST condition must win (else
 //! `Pair` stops being a general product — `pair.anthill`'s header carries that
 //! measurement) and every stronger provision then over-claims.
 //!
 //! AND IT WAS NOT ONLY AN OVER-CLAIM. MEASURED at WI-877 and reproduced here before
-//! the fix: adding `requires Ordered[A], requires Ordered[B]` to `Pair`'s chain —
+//! the fix: adding `requires Ord[A], requires Ord[B]` to `Pair`'s chain —
 //! the only spelling the implementation accepted — turned
 //! `PartialEq.eq(pair(fst: 1.5, snd: 1), pair(fst: 1.5, snd: 1))` into the LOAD ERROR
 //! *"anthill.prelude.PartialEq.eq.dispatch: expected matching impl for per-call
 //! bindings, got no impl matches"*, because a sort's chain is threaded WHOLESALE at
 //! every dispatch through the carrier. `Float` provides `PartialOrd` and not
-//! `Ordered`, so an ordering requirement broke EQUALITY.
+//! `Ord`, so an ordering requirement broke EQUALITY.
 //!
 //! THE TWO ARMS THAT DISCRIMINATE, and they are a pair on purpose:
 //! [`a_pair_of_floats_still_compares_for_equality`] EVALUATES `eq` on a pair of
@@ -42,7 +42,7 @@ use anthill_core::eval::Value;
 fn program(ns: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ordered, PartialOrd, PartialEq, Int64, Float, \
+         import anthill.prelude.{{Ord, PartialOrd, PartialEq, Int64, Float, \
          List, Pair, SortedSet, String}}\n  \
          import anthill.prelude.Pair.{{pair}}\n{body}\nend\n"
     )
@@ -84,7 +84,7 @@ fn positive_control_a_broken_program_is_refused() {
 // ── `Pair`: two towers, four provisions, four conditions ─────────────
 
 /// THE ARM THAT WAS RED. On the `pair.anthill` this ticket ships — four conditioned
-/// provisions including `Ordered` — a pair of FLOATS must still compare for
+/// provisions including `Ord` — a pair of FLOATS must still compare for
 /// EQUALITY. Backed out to a shared sort-level chain carrying the same ordering
 /// requirement, this is the LOAD ERROR quoted in this file's header (MEASURED before
 /// the fix, on this exact program).
@@ -114,7 +114,7 @@ fn a_pair_of_floats_still_compares_for_equality() {
     );
 }
 
-/// THE OTHER HALF OF THE PAIR: the same value, the `Ordered` provision, REFUSED —
+/// THE OTHER HALF OF THE PAIR: the same value, the `Ord` provision, REFUSED —
 /// and refused NAMING the unmet component condition, which is what makes the refusal
 /// actionable. Without the name the message says only that this pair has no
 /// ordering; with it, the author is told the ordering is missing on `Float`.
@@ -131,15 +131,15 @@ fn a_total_comparison_of_a_float_pair_names_the_unmet_condition() {
         "wi869.floatord",
         "  sort Driver\n    \
          operation cmp(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 1.5, snd: 1), pair(fst: 2.5, snd: 1))\n  end",
+         Ord.compare(pair(fst: 1.5, snd: 1), pair(fst: 2.5, snd: 1))\n  end",
     );
     let errs = load_errs(&src);
     assert!(
         errs.iter().any(|e| {
-            e.contains("anthill.prelude.Ordered.compare")
-                && e.contains("unresolved: anthill.prelude.Ordered[T = anthill.prelude.Float]")
+            e.contains("anthill.prelude.Ord.compare")
+                && e.contains("unresolved: anthill.prelude.Ord[T = anthill.prelude.Float]")
         }),
-        "the refusal must name the unmet component condition `Ordered[Float]`; got {errs:?}",
+        "the refusal must name the unmet component condition `Ord[Float]`; got {errs:?}",
     );
 }
 
@@ -152,11 +152,11 @@ fn an_int_pair_orders_lexicographically() {
         "wi869.intord",
         "  sort Driver\n    \
          operation fstWins(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n    \
+         Ord.compare(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n    \
          operation sndBreaksTie(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 9))\n    \
+         Ord.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 9))\n    \
          operation equalPairs(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1))\n  end",
+         Ord.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1))\n  end",
     );
     assert_eq!(eval_int(&src, "wi869.intord.Driver.fstWins", "`fst` decides"), 1);
     assert_eq!(
@@ -335,10 +335,10 @@ fn two_provisions_sharing_one_condition_own_one_slot() {
 
 
 /// A CONDITION SLOT IS EVIDENCE, and it composes: `Pair.compare`'s component compares
-/// go through the `Ordered` provision's own slots, so a pair whose component is itself
+/// go through the `Ord` provision's own slots, so a pair whose component is itself
 /// a pair orders RECURSIVELY. Asserted because `pair.anthill`'s header claims it, and
 /// because the inner pair is where the outer provision's condition
-/// `Ordered[A = Pair[Int64, Int64]]` has to resolve through `Pair`'s own provision —
+/// `Ord[A = Pair[Int64, Int64]]` has to resolve through `Pair`'s own provision —
 /// the locality rule (058 §3.8), not a global search.
 ///
 /// Its equality twin is a RECORDED DEFECT (WI-871, pinned in
@@ -350,10 +350,10 @@ fn a_pair_of_pairs_orders_recursively() {
         "wi869.nested",
         "  sort Driver\n    \
          operation innerDecides(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: pair(fst: 1, snd: 2), snd: 7),\n                      \
+         Ord.compare(pair(fst: pair(fst: 1, snd: 2), snd: 7),\n                      \
          pair(fst: pair(fst: 1, snd: 3), snd: 7))\n    \
          operation outerSndDecides(n: Int64) -> Int64 =\n      \
-         Ordered.compare(pair(fst: pair(fst: 1, snd: 2), snd: 9),\n                      \
+         Ord.compare(pair(fst: pair(fst: 1, snd: 2), snd: 9),\n                      \
          pair(fst: pair(fst: 1, snd: 2), snd: 7))\n  end",
     );
     assert_eq!(
@@ -462,9 +462,9 @@ fn a_condition_naming_an_unknown_spec_is_refused() {
 
 /// THE WHOLE COMPARISON SURFACE FROM ONE OPERATION. `pair.anthill` declares `compare`
 /// and nothing else: `gt`/`gte`/`lt`/`lte` come from `PartialOrd`'s default bodies and
-/// `max`/`min` from `Ordered`'s (WI-876's per-carrier host keying is what unshadowed
+/// `max`/`min` from `Ord`'s (WI-876's per-carrier host keying is what unshadowed
 /// them). Every arm here reaches `Pair.compare` through a DEFAULT body, which is a
-/// different frame-producer from the direct `Ordered.compare` above — the value-directed
+/// different frame-producer from the direct `Ord.compare` above — the value-directed
 /// bridge — and that route had to learn the dictionary chain too.
 #[test]
 fn the_inherited_comparison_surface_works_from_compare_alone() {
@@ -476,9 +476,9 @@ fn the_inherited_comparison_surface_works_from_compare_alone() {
          operation gte(n: Int64) -> Int64 = if PartialOrd.gte(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1)) then 1 else 0\n    \
          operation lte(n: Int64) -> Int64 = if PartialOrd.lte(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1)) then 1 else 0\n    \
          operation maxFst(n: Int64) -> Int64 =\n      \
-         match Ordered.max(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n    \
+         match Ord.max(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n    \
          operation minFst(n: Int64) -> Int64 =\n      \
-         match Ordered.min(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n  end",
+         match Ord.min(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n  end",
     );
     // Both directions of each, so an implementation that answered a constant fails.
     assert_eq!(eval_int(&src, "wi877.surface.Driver.gt", "(2,1) > (1,9)"), 1);
@@ -504,8 +504,8 @@ fn pair_supplies_only_compare_and_eq() {
         ("gte", "anthill.prelude.PartialOrd.gte"),
         ("lt", "anthill.prelude.PartialOrd.lt"),
         ("lte", "anthill.prelude.PartialOrd.lte"),
-        ("max", "anthill.prelude.Ordered.max"),
-        ("min", "anthill.prelude.Ordered.min"),
+        ("max", "anthill.prelude.Ord.max"),
+        ("min", "anthill.prelude.Ord.min"),
     ] {
         let short_sym = kb.intern(short);
         let got = kb
@@ -561,41 +561,41 @@ fn a_bracketless_sorted_set_of_pairs_sorts() {
 // ── WI-1033: the conditions are FACTS, and they are checked ──────────
 
 /// A local tower with an EXTRA spec nothing requires, so the unsound spelling breaks
-/// ENTAILMENT and nothing else — `Ordered[E]` stays declared, so `compare`'s body keeps
+/// ENTAILMENT and nothing else — `Ord[E]` stays declared, so `compare`'s body keeps
 /// the evidence it reads and no coverage error muddies the measurement.
 fn cell_tower(eq_cond: &str) -> String {
     format!(
         "\nnamespace wi1033.cell\n  \
-         import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ordered}}\n\
+         import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ord}}\n\
   sort Lawful\n    sort T = ?\n    operation witness(x: T) -> Int64\n  end\n\
   enum Cell\n    sort E = ?\n    entity cell(v: E)\n    \
     provides PartialEq[Cell] :- PartialEq[E]\n    \
     provides Eq[Cell] :- {eq_cond}\n    \
     provides PartialOrd[Cell] :- PartialOrd[E]\n    \
-    provides Ordered[Cell] :- Ordered[E]\n    \
+    provides Ord[Cell] :- Ord[E]\n    \
     operation eq(a: Cell, b: Cell) -> Bool =\n      \
       match a\n        case cell(x) ->\n          match b\n            case cell(y) -> PartialEq.eq(x, y)\n    \
     operation compare(a: Cell, b: Cell) -> Int64 =\n      \
-      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> Ordered.compare(x, y)\n  end\nend\n"
+      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> Ord.compare(x, y)\n  end\nend\n"
     )
 }
 
 /// A CONDITIONAL PROVISION CERTIFIED BY A CONDITIONAL ONE MUST ENTAIL IT. The
-/// self-provision arm of `check_provider_requires` accepts `Ordered[Cell]` because the
-/// carrier provides the `Eq[Cell]` that `Ordered` requires — and once conditions are
-/// per-provision, that is only sound where `Ordered[Cell]` HOLDING forces `Eq[Cell]` to.
+/// self-provision arm of `check_provider_requires` accepts `Ord[Cell]` because the
+/// carrier provides the `Eq[Cell]` that `Ord` requires — and once conditions are
+/// per-provision, that is only sound where `Ord[Cell]` HOLDING forces `Eq[Cell]` to.
 /// The arm's original justification ("the element-conditionality is already inherited
 /// from the outer provision") held by construction when a carrier had one chain; it is
 /// now a claim about two independent lists.
 ///
-/// The unsound spelling conditions `Eq[Cell]` on a spec `Ordered` does not require, so
-/// `Ordered[Cell]` would be claimed where the `Eq` it needs does not hold.
+/// The unsound spelling conditions `Eq[Cell]` on a spec `Ord` does not require, so
+/// `Ord[Cell]` would be claimed where the `Eq` it needs does not hold.
 #[test]
 fn a_provision_certified_by_a_weaker_conditioned_one_is_refused() {
     let errs = load_errs(&cell_tower("Lawful[E]"));
     assert!(
         errs.iter().any(|e| {
-            e.contains("provides 'anthill.prelude.Ordered', which requires \
+            e.contains("provides 'anthill.prelude.Ord', which requires \
                         'anthill.prelude.Eq'")
                 && e.contains("DOES provide")
                 && e.contains("`wi1033.cell.Lawful[T = wi1033.cell.Cell.E]`")
@@ -607,12 +607,12 @@ fn a_provision_certified_by_a_weaker_conditioned_one_is_refused() {
 
 /// THE CONTROL, and it is what says the check discriminates rather than refusing every
 /// conditional tower: the same carrier with `Eq[Cell] :- Eq[E]` loads clean, because
-/// `Ordered[E]` transitively requires `Eq[E]` and so entails it.
+/// `Ord[E]` transitively requires `Eq[E]` and so entails it.
 #[test]
 fn a_provision_whose_conditions_entail_the_inner_ones_loads() {
     if let Err(errs) = crate::common::try_load_kb_with(&cell_tower("Eq[E]")) {
         panic!(
-            "`Ordered[E]` requires `Eq[E]`, so it entails the `Eq[Cell]` condition and \
+            "`Ord[E]` requires `Eq[E]`, so it entails the `Eq[Cell]` condition and \
              this must load; got {errs:?}"
         );
     }
@@ -704,7 +704,7 @@ fn each_condition_is_joined_to_its_own_provision() {
         "anthill.prelude.PartialEq",
         "anthill.prelude.Eq",
         "anthill.prelude.PartialOrd",
-        "anthill.prelude.Ordered",
+        "anthill.prelude.Ord",
     ] {
         assert!(
             pairs.iter().any(|(p, c)| p == spec && c == spec),
@@ -716,7 +716,7 @@ fn each_condition_is_joined_to_its_own_provision() {
     // every condition of the carrier would pass the loop above and fail here.
     assert!(
         !pairs.iter().any(|(p, c)| p == "anthill.prelude.PartialEq"
-            && c == "anthill.prelude.Ordered"),
+            && c == "anthill.prelude.Ord"),
         "each condition must be joined to ITS OWN provision; found {pairs:?}",
     );
 }

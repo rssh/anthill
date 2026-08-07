@@ -1,9 +1,9 @@
 -- Int64: abstract spec for the built-in integer sort.
--- Spec satisfaction facts (Eq[Int64], Ordered[Int64], Numeric[Int64]) live in
+-- Spec satisfaction facts (Eq[Int64], Ord[Int64], Numeric[Int64]) live in
 -- the per-language binding files (e.g. rustland/anthill-stl/anthill/boundedint.anthill)
 -- — see proposal 038.
 sort anthill.prelude.Int64
-  import anthill.prelude.{Eq, Ordered, Numeric}
+  import anthill.prelude.{Eq, Ord, Numeric}
   import anthill.prelude.Numeric.{add, sub}
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, reached by an explicit
   -- import rather than by a global name — see the note in `ordered.anthill`.
@@ -15,9 +15,9 @@ sort anthill.prelude.Int64
   -- splitFirst` shape, and what `check_provider_operations` already exempts a host
   -- carrier for.
   --
-  -- WHY DECLARED AT ALL, when `fact Ordered[T = Int64]` alone used to do: the host
+  -- WHY DECLARED AT ALL, when `fact Ord[T = Int64]` alone used to do: the host
   -- implementation had nowhere to be KEYED, so it was registered on the SPEC op
-  -- (`anthill.prelude.Ordered.compare`) — where that one host-scalar implementation
+  -- (`anthill.prelude.Ord.compare`) — where that one host-scalar implementation
   -- served every carrier that never wrote its own, including structural ones it
   -- cannot compare. An operation must EXIST on the carrier for a per-carrier
   -- registration to attach to; these declarations are that.

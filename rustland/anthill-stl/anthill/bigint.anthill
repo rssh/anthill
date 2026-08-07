@@ -17,7 +17,7 @@ namespace anthill.prelude
     fact PartialEq[T = BigInt]
     fact Eq[T = BigInt]
     fact PartialOrd[T = BigInt]
-    fact Ordered[T = BigInt]
+    fact Ord[T = BigInt]
     fact Numeric[T = BigInt]
   end
 end

@@ -27,7 +27,7 @@ fn build_kb() -> KnowledgeBase {
         namespace test.smt_gen.wi681
           import anthill.prelude.{Float, Int64, Bool}
           import anthill.prelude.Numeric.{add, sub, mul}
-          import anthill.prelude.Ordered.{lt, gt, gte}
+          import anthill.prelude.Ord.{lt, gt, gte}
           import anthill.prelude.Float.{cos, sin}
           import anthill.geometry.{Vec3}
 

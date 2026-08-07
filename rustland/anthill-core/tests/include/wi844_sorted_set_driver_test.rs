@@ -7,7 +7,7 @@
 //! the one ambiguous call) and gave the call a bracket to answer with. None of that is
 //! worth having unless a real program can hold two witnesses of one `(spec, carrier)`
 //! and keep them apart. `stdlib/anthill/prelude/sortedset.anthill` is that program:
-//! `requires O: Ordered[T]` is a NAMED slot, so the ordering is a type PARAMETER and
+//! `requires O: Ord[T]` is a NAMED slot, so the ordering is a type PARAMETER and
 //! `SortedSet[T = String, O = ByLength]` and `SortedSet[T = String, O = Alphabetical]`
 //! are two types.
 //!
@@ -20,7 +20,7 @@
 //!    promises, WI-836 having landed: `expected SortedSet[T = String, O = ByLength],
 //!    got SortedSet[T = String, O = Alphabetical]`;
 //!  * but the very next line of §5.3's own program, `SortedSet.insert(a, "zz")`,
-//!    FAILED TO LOAD: *"constructing `Ordered[T = String]` is ambiguous among
+//!    FAILED TO LOAD: *"constructing `Ord[T = String]` is ambiguous among
 //!    providers: String, ByLength, Alphabetical"*. And so did `union(a, b)` on two
 //!    AGREEING sets — the program that must work. The pin was read only off the call's
 //!    own BRACKET (WI-841), never off the type an argument already carried, so the
@@ -38,9 +38,9 @@
 //! WHERE THE TWO ORDERINGS LIVE, and why not in the stdlib. The ticket scopes phase 4
 //! to `stdlib/anthill/prelude/`, and `SortedSet` is there. `ByLength` / `Alphabetical`
 //! are NOT, and the reason is measured (`two_string_orderings_make_a_bare_compare_
-//! ambiguous`): the Rust binding already declares `fact Ordered[T = String]`, so a
+//! ambiguous`): the Rust binding already declares `fact Ord[T = String]`, so a
 //! third and fourth provider in the PRELUDE would make every bracket-less
-//! `Ordered.compare(a: String, b: String)` in every downstream program a load error.
+//! `Ord.compare(a: String, b: String)` in every downstream program a load error.
 //! Tier 3's coexistence is a per-program choice, not something a standard library may
 //! impose on its consumers. So the driver declares them.
 //!
@@ -49,7 +49,7 @@
 
 use anthill_core::eval::Value;
 
-/// The two `Ordered[String]` witnesses of §5.3, declared separately so the
+/// The two `Ord[String]` witnesses of §5.3, declared separately so the
 /// single-provider control can take one without a substring search into the other.
 /// `ByLength` orders by `length`, `Alphabetical` by the host's string order — chosen so
 /// that on `["zz", "aaa"]` they DISAGREE about the first element (`zz` is shorter,
@@ -58,14 +58,14 @@ const BY_LENGTH: &str = r#"
   sort ByLength
     import anthill.prelude.String.{length}
     import anthill.prelude.Int64.{sub}
-    fact Ordered[T = String]
+    fact Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end
 "#;
 
 const ALPHABETICAL: &str = r#"
   sort Alphabetical
-    fact Ordered[T = String]
+    fact Ord[T = String]
     operation compare(a: String, b: String) -> Int64 =
       if lt(a, b) then -1 else if gt(a, b) then 1 else 0
   end
@@ -89,7 +89,7 @@ fn program(ns: &str, body: &str) -> String {
 fn program_with(ns: &str, orderings: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ordered, String, Int64, List, Bool, SortedSet}}\n  \
+         import anthill.prelude.{{Ord, String, Int64, List, Bool, SortedSet}}\n  \
          import anthill.prelude.PartialOrd.{{lt, gt}}\n{orderings}{body}\nend\n"
     )
 }
@@ -172,21 +172,21 @@ fn positive_control_a_broken_program_is_refused() {
 
 // ── §9 phase 4 acceptance ────────────────────────────────────────────
 
-/// THE PRECONDITION, and it is not free: `String` already has an `Ordered` provider
-/// (`fact Ordered[T = String]` in the Rust binding, `anthill-stl/anthill/string.anthill`).
+/// THE PRECONDITION, and it is not free: `String` already has an `Ord` provider
+/// (`fact Ord[T = String]` in the Rust binding, `anthill-stl/anthill/string.anthill`).
 /// So this loads THREE providers of one `(spec, carrier)` — the configuration tier 3
 /// admits and every earlier phase refused at load.
 #[test]
 fn two_orderings_for_one_carrier_coexist() {
     loads_clean(
         &program("wi844.coexist", ""),
-        "two witness sorts for `Ordered[String]` are NAMEABLE, so they coexist beside \
+        "two witness sorts for `Ord[String]` are NAMEABLE, so they coexist beside \
          the Rust binding's own provider (058 §4.1 tier 3)",
     );
 }
 
 /// …AND THAT IS WHY THEY ARE NOT IN THE PRELUDE. With them declared, a bracket-less
-/// `Ordered.compare` on a `String` is an ambiguous dispatch naming all three. Pinning
+/// `Ord.compare` on a `String` is an ambiguous dispatch naming all three. Pinning
 /// this is what makes the placement decision a measurement rather than a preference:
 /// putting these two witnesses in `stdlib/` would hand this error to every downstream
 /// program that compares two strings.
@@ -194,7 +194,7 @@ fn two_orderings_for_one_carrier_coexist() {
 fn two_string_orderings_make_a_bare_compare_ambiguous() {
     let src = program(
         "wi844.bare",
-        "  sort Use\n    operation cmp(a: String, b: String) -> Int64 = Ordered.compare(a, b)\n  end",
+        "  sort Use\n    operation cmp(a: String, b: String) -> Int64 = Ord.compare(a, b)\n  end",
     );
     let errs = load_errs(&src);
     let tie: Vec<&String> = errs.iter().filter(|e| e.contains("ambiguous dispatch of")).collect();
@@ -249,7 +249,7 @@ fn union_within_one_ordering_loads() {
              SortedSet.toList(SortedSet.union(a, b))\n  end",
         ),
         "two sets of the SAME ordering merge — MEASURED refused before WI-844 \
-         (`constructing Ordered[T = String] is ambiguous`), which is why the mismatch \
+         (`constructing Ord[T = String] is ambiguous`), which is why the mismatch \
          test above needs this control",
     );
 }
@@ -269,7 +269,7 @@ fn union_merges_ascending_and_deduplicates() {
         "wi844.merge",
         "  sort Ascending\n    \
          import anthill.prelude.Numeric.{sub}\n    \
-         fact Ordered[T = Int64]\n    \
+         fact Ord[T = Int64]\n    \
          operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
          sort Driver\n    \
          import anthill.prelude.String.{concat}\n    \
@@ -310,7 +310,7 @@ fn union_merges_ascending_and_deduplicates() {
 /// which is the whole content of "a named slot is a type parameter" (§4.7).
 ///
 /// Measured before the fix, this exact program refused at the first `insert` with
-/// *"constructing `Ordered[T = String]` is ambiguous among providers: String,
+/// *"constructing `Ord[T = String]` is ambiguous among providers: String,
 /// ByLength, Alphabetical"* — the argument's `O = ByLength` notwithstanding.
 #[test]
 fn the_ordering_is_read_from_the_argument_type_not_only_the_bracket() {
@@ -384,7 +384,7 @@ fn swapping_the_construction_brackets_swaps_the_answers() {
 /// op's parameters by unifying its eta arrow against the EXPECTED one, so an expected
 /// arrow naming `O = ByLength` puts the witness in σ with no call and no bracket
 /// anywhere. Found by review and measured: before the fix this exact program refused
-/// with *"constructing `Ordered[T = String]` is ambiguous among providers"* — the
+/// with *"constructing `Ord[T = String]` is ambiguous among providers"* — the
 /// expected type's `O = ByLength` notwithstanding — because that site passed an empty
 /// selection list on the (then-true, now half-true) grounds that "an eta carries no
 /// call-site bracket".
@@ -436,7 +436,7 @@ fn an_abstract_ordering_parameter_forwards_the_callers_choice() {
         &format!(
             "  sort Report\n    \
              sort T = ?\n    \
-             requires O: Ordered[T]\n    \
+             requires O: Ord[T]\n    \
              operation first(s: SortedSet[T = T, O = O], dflt: T) -> T =\n      \
              match SortedSet.toList(s)\n        \
              case nil() -> dflt\n        \
@@ -486,11 +486,11 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
             &format!(
                 "  sort Both\n    \
                  sort T = ?\n    \
-                 requires A: Ordered[T]\n    \
-                 requires B: Ordered[T]\n    \
+                 requires A: Ord[T]\n    \
+                 requires B: Ord[T]\n    \
                  entity both(x: T)\n    \
                  operation cmp(s: Both[T = T, A = A, B = B], y: T) -> Int64 = \
-                 Ordered.compare(y, y)\n  end\n  \
+                 Ord.compare(y, y)\n  end\n  \
                  sort Take\n    \
                  operation take(s: Both[T = String, A = ByLength, B = Alphabetical]) \
                  -> Int64 =\n      {call}\n  end"
@@ -563,7 +563,7 @@ fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
     let errs = load_errs(&src);
     assert!(
         errs.iter().any(|e| {
-            e.contains("anthill.prelude.Ordered[T = anthill.prelude.String]")
+            e.contains("anthill.prelude.Ord[T = anthill.prelude.String]")
                 && e.contains("ambiguous among providers")
                 && e.contains("wi844.underdetermined.ByLength")
                 && e.contains("wi844.underdetermined.Alphabetical")
@@ -575,12 +575,12 @@ fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
 
 /// §5.3's last paragraph — "omitting the binding keeps existing code working". It
 /// LOADS, tier 2 resolves it (`SortedSet.empty[T = Int64]()` names no ordering and the
-/// unique `Ordered[Int64]` provider answers), and — since **WI-857** — it also RUNS.
+/// unique `Ord[Int64]` provider answers), and — since **WI-857** — it also RUNS.
 ///
 /// It used to die at eval, on a defect that predated the whole arc and needed none of
 /// its vocabulary: the producer of a requirement dictionary walked the PROVIDER's
 /// `requires` chain while the consumer named the frame's slots from the SPEC's, and a
-/// carrier-keyed `fact Ordered[T = Int64]` has an empty chain while `Ordered` itself
+/// carrier-keyed `fact Ord[T = Int64]` has an empty chain while `Ord` itself
 /// declares two — so the dict arrived arity 0 where 2 were wanted. A WITNESS provider
 /// agreed by accident (dispatch lands on the witness's own member, whose parent chain
 /// is empty), which is why every other test in this file ran. WI-857 made the two read
@@ -602,7 +602,7 @@ fn omitting_the_ordering_is_resolved_and_runs() {
     loads_clean(
         &src,
         "omission leaves `O` to inference and tier 2 answers with the unique \
-         `Ordered[Int64]` provider — the LOAD half of §5.3's last paragraph",
+         `Ord[Int64]` provider — the LOAD half of §5.3's last paragraph",
     );
     assert_eq!(
         eval_int(
@@ -611,7 +611,7 @@ fn omitting_the_ordering_is_resolved_and_runs() {
             "the inferred route must SORT, not merely resolve (WI-857)",
         ),
         3,
-        "the prelude `Ordered[Int64]` is ascending, so the smallest of {{7, 3}} is 3; \
+        "the prelude `Ord[Int64]` is ascending, so the smallest of {{7, 3}} is 3; \
          a -1 would mean the set came back empty",
     );
 }
@@ -663,7 +663,7 @@ fn wi857_control_the_same_hole_with_no_058_vocabulary() {
 /// that made the derived pin element-blind — the two slots would then cross-talk.
 ///
 /// It also shows the driver is not a String curiosity: `Int64` already has a prelude
-/// `Ordered` provider, so `Ascending` is a SECOND one for that carrier too, and the
+/// `Ord` provider, so `Ascending` is a SECOND one for that carrier too, and the
 /// bracket is what tells them apart.
 #[test]
 fn a_string_set_and_an_int_set_keep_their_own_orderings() {
@@ -672,11 +672,11 @@ fn a_string_set_and_an_int_set_keep_their_own_orderings() {
         &format!(
             "  sort Ascending\n    \
              import anthill.prelude.Numeric.{{sub}}\n    \
-             fact Ordered[T = Int64]\n    \
+             fact Ord[T = Int64]\n    \
              operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
              sort Descending\n    \
              import anthill.prelude.Numeric.{{sub}}\n    \
-             fact Ordered[T = Int64]\n    \
+             fact Ord[T = Int64]\n    \
              operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n  end\n  \
              sort Driver\n{FIRST}{}{}{}  end",
             string_pipeline("strings", "ByLength"),

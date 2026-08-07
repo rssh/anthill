@@ -398,7 +398,7 @@ end
 ///     `op_requires_covers` → `sigma_pair_precise`, which needs a Global→Rigid
 ///     bridge for the param. `check_operation_bodies` rigidifies the op's OWN
 ///     type params together with its sort's, but recorded only the sort half. So
-///     the written `requires Ordered[T]` and the call's rigidified carrier landed
+///     the written `requires Ord[T]` and the call's rigidified carrier landed
 ///     in different var spaces and the license was refused.
 ///
 ///     WI-943 CORRECTED WHY. WI-942 read this as an op param having TWO canonical
@@ -486,16 +486,16 @@ end
 
 /// THE AGREEMENT WI-942 IS ABOUT: the same construct over a ONE-parameter spec.
 ///
-/// `operation cmp[T](a: T, b: T) -> Int64 requires Ordered[T] = Ordered.compare(a, b)`
-/// was REFUSED AT LOAD — "expected `requires Ordered[…]` covering abstract type
-/// parameter, got missing `requires Ordered[T = …]` on enclosing sort" — while
+/// `operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(a, b)`
+/// was REFUSED AT LOAD — "expected `requires Ord[…]` covering abstract type
+/// parameter, got missing `requires Ord[T = …]` on enclosing sort" — while
 /// the VectorSpace shape above was certified. One spec caught, the other
 /// certified and dead: that DISAGREEMENT, not either failure alone, is what made
 /// this a defect rather than a limitation. The demand was also wrong on its face:
 /// it asked for a `requires` "on enclosing sort" when the author had written one
 /// on the OPERATION, which is exactly where WI-448/WI-562 put it.
 ///
-/// Its sort-level twin (WI-857's `HolderOrd`, `sort T = ? / requires Ordered[T]`)
+/// Its sort-level twin (WI-857's `HolderOrd`, `sort T = ? / requires Ord[T]`)
 /// ran the whole time — that pairing is what identified the op-scoped bridge, not
 /// the spec, as the broken side. Driven to a VALUE, and to both verdicts, so a
 /// dictionary that resolved somewhere wrong could not pass by returning some Int.
@@ -503,17 +503,17 @@ end
 fn one_parameter_spec_op_scoped_requires_now_agrees_and_dispatches() {
     let src = r#"
 namespace test.wi942.oneparam
-  import anthill.prelude.{Int64, Ordered}
+  import anthill.prelude.{Int64, Ord}
 
   sort OpHolder
-    operation cmp[T](a: T, b: T) -> Int64 requires Ordered[T] = Ordered.compare(a, b)
+    operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(a, b)
   end
 
   -- The sort-level twin, which ran BEFORE WI-942 and must keep running.
   sort SortHolder
     sort T = ?
-    requires Ordered[T]
-    operation cmp(a: T, b: T) -> Int64 = Ordered.compare(a, b)
+    requires Ord[T]
+    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
   end
 
   sort Driver
@@ -524,7 +524,7 @@ namespace test.wi942.oneparam
 end
 "#;
     crate::common::try_load_kb_with(src).map(|_| ()).expect(
-        "an op-scoped `requires Ordered[T]` covering its own `Ordered.compare` must \
+        "an op-scoped `requires Ord[T]` covering its own `Ord.compare` must \
          LOAD — it was refused `MissingRequiresForSpecOp` before WI-942",
     );
     for (entry, want, why) in [

@@ -231,7 +231,7 @@ Sorts with constructors (Account, List) — sum types (closed: exactly these con
     ↑
 Abstract sorts (sort T = ?)             — type parameters, unbound until instantiated
     ↑
-Spec sorts (Eq, Ordered, Numeric)       — interfaces, satisfied via fact assertions
+Spec sorts (Eq, Ord, Numeric)       — interfaces, satisfied via fact assertions
     ↑
 Logical variables (?x in rules)         — fully unbound, typed only by unification context
 ```
@@ -399,7 +399,7 @@ The Anthill type universe, from most concrete to most abstract:
                     └──────────────┬──────────────────┘
                                    │
                     ┌──────────────┴──────────────────┐
-                    │  Spec sorts (Eq, Ordered, ...)   │  — interfaces, satisfied via facts
+                    │  Spec sorts (Eq, Ord, ...)   │  — interfaces, satisfied via facts
                     └──────────────┬──────────────────┘
                                    │
                ┌───────────────────┼───────────────────┐
@@ -713,7 +713,7 @@ Are these all the same relation (subtyping)? Or distinct relations with differen
   - No meta-sort — sort names are just terms, not typed themselves
   - Currently: sort declarations create `SortInfo(name: Symbol, definition: Term, constructors: [...], operations: [...], parameters: [...], requires: [...])` facts with sort `Sort` and domain = enclosing scope
 
-**OQ5b.5. Spec sorts and the lattice.** Spec sorts (Eq, Ordered, Numeric) are at a different level — they classify sorts, not terms. `Eq[T = Int64]` says "Int64 as a sort satisfies Eq." This is a **sort-level predicate**, not a term-level type. Should the lattice distinguish:
+**OQ5b.5. Spec sorts and the lattice.** Spec sorts (Eq, Ord, Numeric) are at a different level — they classify sorts, not terms. `Eq[T = Int64]` says "Int64 as a sort satisfies Eq." This is a **sort-level predicate**, not a term-level type. Should the lattice distinguish:
   - Term-level types: `42 : Int64`, `red : Color`
   - Sort-level predicates: `Int64 satisfies Eq`, `Account satisfies Persistent`
 
@@ -865,7 +865,7 @@ Benefits:
 
 **OQ6.2.** How do type variables (`?T`) interact with parametric sorts? In `operation identity(x: ?T) -> ?T`, `?T` is a universally quantified type variable. Resolution at call sites binds `?T` to a concrete sort.
 
-**OQ6.3.** Constraints on type variables? `operation sort_list(l: List[T = ?T]) -> List[T = ?T] requires Ordered[T = ?T]` — the `requires` constrains `?T` to sorts satisfying `Ordered`. How is this checked?
+**OQ6.3.** Constraints on type variables? `operation sort_list(l: List[T = ?T]) -> List[T = ?T] requires Ord[T = ?T]` — the `requires` constrains `?T` to sorts satisfying `Ord`. How is this checked?
 
 ### OQ8. Error reporting
 
@@ -873,7 +873,7 @@ Benefits:
   - "Unknown sort `Foo`" — name not found
   - "Sort mismatch: expected `Int64`, got `String`" — argument type error
   - "Operation `map` is ambiguous: found in `List` and `Stream`" — overload resolution failure
-  - "Sort `MyType` does not satisfy `Ordered`" — spec sort not satisfied
+  - "Sort `MyType` does not satisfy `Ord`" — spec sort not satisfied
 
 **OQ7.2.** Where are errors reported? At the term level (pointing to the specific argument)? At the declaration level (pointing to the operation signature)?
 

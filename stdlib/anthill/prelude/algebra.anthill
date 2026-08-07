@@ -9,8 +9,8 @@
 -- VectorSpace[V = Vec3, F = Float].
 --
 -- This is a more abstract layer than anthill.prelude.Numeric (which
--- bundles Ring + Ordered into one spec for primitive arithmetic
--- types). Ring is intentionally Ordered-free so non-ordered fields
+-- bundles Ring + Ord into one spec for primitive arithmetic
+-- types). Ring is intentionally Ord-free so non-ordered fields
 -- (complex numbers, finite fields) can satisfy it later if needed.
 
 namespace anthill.prelude.algebra

@@ -116,8 +116,8 @@ pub enum TypeError {
     ///
     /// WI-869 — `unmet` is the goal the search actually failed on, as the search
     /// itself rendered it (never re-derived here; the WI-828 rule). For a
-    /// CONDITIONAL provision that is the condition, not the call: `Ordered.compare`
-    /// on a `Pair[Float, Int64]` is refused because `Ordered[T = Float]` has no
+    /// CONDITIONAL provision that is the condition, not the call: `Ord.compare`
+    /// on a `Pair[Float, Int64]` is refused because `Ord[T = Float]` has no
     /// provider, and without naming it the message says only that the pair has no
     /// ordering — true, and useless for finding out why.
     DispatchNoMatch {
@@ -1404,7 +1404,7 @@ pub struct TypingEnv {
     ///    the sort half recorded, an op-declared param's canonical `Global` had no
     ///    bridge to the `Rigid` its own body was checked at, so
     ///    [`op_requires_covers`] could not see that `cmp[T](a: T, …) requires
-    ///    Ordered[T]` covers its own `Ordered.compare(a, b)` — the call was refused
+    ///    Ord[T]` covers its own `Ord.compare(a, b)` — the call was refused
     ///    `MissingRequiresForSpecOp` demanding a `requires` "on enclosing sort"
     ///    that the author had already written on the operation.
     ///  * [`Self::enclosing_instance_param_rigids`] — the SORT prefix alone, whose
@@ -1573,7 +1573,7 @@ impl TypingEnv {
     /// WI-869: the snapshot is the DICTIONARY chain (`provider_dict_chain`), not the
     /// declared `requires` chain. A conditional provision's `:- goals` are the
     /// evidence that provision's own member bodies dispatch through — `Pair.compare`
-    /// reads `Ordered[A]` from a slot only `provides Ordered[Pair] :- Ordered[A], …`
+    /// reads `Ord[A]` from a slot only `provides Ord[Pair] :- Ord[A], …`
     /// put there — so they must be in scope here, at the slot index `synth_req_names`
     /// gives them. Identical for a sort with no conditional provision.
     pub fn set_enclosing_sort(&mut self, kb: &mut KnowledgeBase, sort: Option<Symbol>) {
@@ -5911,7 +5911,7 @@ fn attach_eta_dispatch_dict(
     // half itself — the unify above pins the op's params from the EXPECTED ARROW, so
     // when that arrow names a witness (`(SortedSet[T = String, O = ByLength], String) ->
     // …`) σ already holds it. MEASURED before this: a bare-name eta of `SortedSet.insert`
-    // against exactly that arrow refused with "constructing `Ordered[T = String]` is
+    // against exactly that arrow refused with "constructing `Ord[T = String]` is
     // ambiguous among providers" — the expected type's `O = ByLength` notwithstanding.
     // The slot read is the same one the direct call uses; only the σ producer differs.
     //
@@ -6754,11 +6754,11 @@ fn try_fire_dot_rule(
 /// WI-281: spec-satisfaction method resolution. When `member` is not declared
 /// directly on the receiver's sort, look for it on a spec the receiver's sort
 /// *provides* (`fact Spec[Carrier = recv_sort]`): e.g. `(3).min(5)` resolves
-/// `min` to `Ordered.min` because `Int` provides `Ordered`. Returns the spec
+/// `min` to `Ord.min` because `Int` provides `Ord`. Returns the spec
 /// operation's fully-qualified symbol; the caller synthesizes the same
 /// `Apply(op, [receiver, ...args])` as the direct-sort case, so the produced
 /// call rides the normal spec-op dispatch + `req_insertion` — the requirement
-/// (`Ordered[Int]`) is threaded by that machinery, not re-implemented here.
+/// (`Ord[Int]`) is threaded by that machinery, not re-implemented here.
 ///
 /// Walks `SortProvidesInfo` for the specs `recv_sort` provides (mirroring
 /// `build_sort_ops_table`'s pass-2 snapshot) and resolves `member` within each
@@ -6794,7 +6794,7 @@ fn find_spec_op_for_provided_sort(
         let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
         let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
         // Carrier-keyed: the receiver's sort IS the provider — `(3).min(5)` →
-        // `Ordered.min` via `fact Ordered[Int]`. WI-672: canonical sort identity (see
+        // `Ord.min` via `fact Ord[Int]`. WI-672: canonical sort identity (see
         // `same_sort_canonical`), not `same_symbol`'s last-segment bridge.
         let carrier_match = same_sort_canonical(kb, carrier, recv_sort);
         // WI-450 witness: the receiver's sort is the spec's CARRIER-PARAM VALUE of a
@@ -8599,7 +8599,7 @@ fn build_type(
                 own_op
                     // WI-281: spec-satisfaction fallback — `member` may be an
                     // operation on a spec `s` *provides* (e.g. `(3).min(5)` →
-                    // `Ordered.min` via `fact Ordered[Int]`), not declared on
+                    // `Ord.min` via `fact Ord[Int]`), not declared on
                     // `s` itself. The synthesized `Apply` below is identical;
                     // re-typing it rides the normal spec-op dispatch +
                     // `req_insertion`, which threads the requirement.
@@ -11500,7 +11500,7 @@ fn check_apply_iter(
                     // the `anthill.*` namespace) without providers are NOT
                     // host-builtin — they're the WI-324 'forgot to register
                     // an impl' case and warrant the diagnostic. Stdlib
-                    // specs with at least one provider (Eq, Numeric, Ordered,
+                    // specs with at least one provider (Eq, Numeric, Ord,
                     // …) also warrant it — the spec_has_any_providers leg.
                     //
                     // Detection lives here because the per-call substitution
@@ -11684,7 +11684,7 @@ fn check_apply_iter(
                     // that has a runnable body. A body-less `impl_op_sym`
                     // is a spec-level declaration (e.g. the auto-bound
                     // `anthill.prelude.String.eq` a `provides` block
-                    // registers, or a derived `Ordered.lt` whose body
+                    // registers, or a derived `Ord.lt` whose body
                     // lives in a separate `rule {}`). Rewriting the call
                     // to it produces a runtime `unknown operation`
                     // (no body, no builtin) or — worse — mis-resolves to
@@ -12760,7 +12760,7 @@ fn statically_pinned_carrier(
 /// BRACKET-LESS BY CONSTRUCTION — no call site, so nothing could ever have selected. Here
 /// a call site exists and 058 §4.1 gives it two ways to arbitrate that a count cannot see:
 ///
-///   * TIER 1, an explicit `f[Spec = W](…)` — `wi857`'s `Ordered.compare[Ordered =
+///   * TIER 1, an explicit `f[Spec = W](…)` — `wi857`'s `Ord.compare[Ord =
 ///     Descending](7, 3)` has two suppliers for `Int64` and is a correct program. Applied
 ///     by the CALLER, which holds the selections.
 ///   * TIER 2, SPECIFICITY — `pick_most_specific` takes the ground provision over the
@@ -13983,7 +13983,7 @@ pub fn build_dep_projection(
         // WI-613/WI-821: same σ-class gate as Strategy 1 (same predicate). A
         // sub-chain entry is written in the SLOT sort's own param space
         // (`direct_requires_chain(slot)` roots at the slot — `Eq[T = Eq.T]`
-        // under a caller `requires Ordered[T = CT]`), whose vars the call-site
+        // under a caller `requires Ord[T = CT]`), whose vars the call-site
         // subst never binds — compared raw, a correct nested forward would
         // σ-disagree. So the σ gate compares the sub-entry COMPOSED into
         // caller scope through the slot entry's own bindings (`Eq[T = CT]`) —
@@ -14767,8 +14767,8 @@ pub(crate) fn resolve_bridge_requirements(
     // the declared chain a carrier whose requirements are all provision conditions
     // (`Pair`) answered `NoneNeeded` here and its body was entered with an EMPTY frame
     // while reading the slots its provisions put there. MEASURED: `PartialOrd.gt` on a
-    // pair — whose default body value-directs `Ordered.compare` to `Pair.compare` —
-    // died `__req_ordered not bound in caller frame`, while a `compare` the TYPER
+    // pair — whose default body value-directs `Ord.compare` to `Pair.compare` —
+    // died `__req_ord not bound in caller frame`, while a `compare` the TYPER
     // dispatched worked, because that route fills the frame from `dict_layout`.
     let chain = provider_dict_entries(kb, parent);
     if chain.is_empty() {
@@ -15237,7 +15237,7 @@ fn seed_op_type_args(
 }
 
 /// WI-870 (058 §3.3) — the SELECTIONS a bracket VALUE makes on the witness it names:
-/// `[Ordered = ListOrd[OE = LexFst]]`.
+/// `[Ord = ListOrd[OE = LexFst]]`.
 ///
 /// A value's bracket list has always been parsed and validated against the witness's
 /// declared parameters (`check_sort_type_args` refuses an unknown name at load, naming
@@ -15455,9 +15455,9 @@ fn push_selection(
 /// `SortedSet[T = String, O = ByLength]`. WI-841 implemented the WRITE half — a
 /// bracket key binds the slot's parameter AND records an [`InstanceSelection`] — and
 /// left the type carrying a choice nothing read back. MEASURED at HEAD before this
-/// ticket, on §5.3's driver: two `Ordered[String]` witnesses coexist and
+/// ticket, on §5.3's driver: two `Ord[String]` witnesses coexist and
 /// `SortedSet.empty[T = String, O = ByLength]()` selects, but the very next line,
-/// `SortedSet.insert(a, "zz")`, refused with *"constructing `Ordered[T = String]` is
+/// `SortedSet.insert(a, "zz")`, refused with *"constructing `Ord[T = String]` is
 /// ambiguous among providers: String, ByLength, Alphabetical"* — the argument's
 /// `O = ByLength` notwithstanding. The driver was writable only by repeating
 /// `[T = String, O = ByLength]` at every call, which is the type parameter doing none
@@ -15640,7 +15640,7 @@ pub struct InstanceSelection {
     /// says why: *pinning does not reach into the resolution tree*. `spec_sort` keys
     /// the goal the CALL made; these key sub-goals of the chosen provider's own
     /// dictionary, which no spec key could reach — two same-spec slots of one witness
-    /// (`requires OA: Ordered[A]`, `requires OB: Ordered[B]`) are one spec and two
+    /// (`requires OA: Ord[A]`, `requires OB: Ord[B]`) are one spec and two
     /// answers.
     pub slots: Vec<SlotSelection>,
 }
@@ -15649,7 +15649,7 @@ pub struct InstanceSelection {
 ///
 /// Keyed POSITIONALLY (`chain_index`), because the spec cannot key it: a witness may
 /// declare two slots of one spec, and that is the shape 058's own example has
-/// (`requires OA: Ordered[A]`, `requires OB: Ordered[B]`). The index is into the
+/// (`requires OA: Ord[A]`, `requires OB: Ord[B]`). The index is into the
 /// witness's DICTIONARY CHAIN — i.e. into the PROVIDER half of the dictionary
 /// [`dict_sub_goals`] lays out — and it has one owner,
 /// [`dict_chain_index_of_named_slot`], per WI-857's standing lesson about positional
@@ -16726,7 +16726,7 @@ pub(crate) fn carrier_own_op(
 /// meant the spec's default body ran INSTEAD of the carrier's own host code.
 /// MEASURED once `Float` declared its own IEEE `gt`: `gt(nan, 1.0)` fell through to
 /// `PartialOrd`'s `compare`-based default and died `OperationBodyMissing
-/// {Ordered.compare}` — `Float` provides no `Ordered` — and a `String` comparison
+/// {Ord.compare}` — `Float` provides no `Ord` — and a `String` comparison
 /// inside a witness ordering fell through the same way into an
 /// `AmbiguousSpecOpDispatch` between `String`'s own `compare` and the program's two
 /// witnesses. Both are the carrier's own implementation not being seen.
@@ -17557,12 +17557,12 @@ fn resolve_inner<'a>(
     local_provider: Option<Symbol>,
     // WI-870 (058 §3.3) — the binding a bracket VALUE wrote for THIS sub-goal's slot,
     // when this goal is a named slot of the provider one level up and the call named
-    // it: `[Ordered = ListOrd[OE = LexFst]]`. `None` at the call's own goal (where
+    // it: `[Ord = ListOrd[OE = LexFst]]`. `None` at the call's own goal (where
     // `scope.selected` answers instead) and at every slot the value left unwritten.
     //
     // The whole `SlotSelection` rather than its witness, because the REFUSAL has to
     // name the slot: "provides no instance at these bindings" is unactionable when the
-    // author's text was `OE = LexFst` and the goal rendered is `Ordered[T = Int64]`.
+    // author's text was `OE = LexFst` and the goal rendered is `Ord[T = Int64]`.
     slot_pin: Option<&'a SlotSelection>,
 ) -> ResolutionResult {
     // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
@@ -17757,7 +17757,7 @@ fn resolve_inner<'a>(
         // WI-869 — A SIBLING PROVISION'S CONDITION IS NOT THIS DISPATCH'S BUSINESS, and
         // that is decided BEFORE the search, not after it. Deciding after would make the
         // slot's content depend on whether the sibling's goal HAPPENED to resolve —
-        // `Pair.eq`'s dictionary would really carry `Ordered[Int64]` for an int pair and
+        // `Pair.eq`'s dictionary would really carry `Ord[Int64]` for an int pair and
         // a marker for a float one — which is exactly the evidence the strictness rule
         // says a provision did not earn. It also runs the search: `Pair` has 8 slots of
         // which any one dispatch is strict on 2, so six full sub-resolutions per dispatch
@@ -17769,9 +17769,9 @@ fn resolve_inner<'a>(
         // WI-857, the LOCALITY rule (058 §3.8): the sub-goals of `chosen_impl_sort`'s
         // dictionary see that provider FIRST. Once the spec half is bundled (see
         // `dict_sub_goals`), a bundled witness — the only lawful form of an
-        // alternative ordering, since `Ordered`'s inherited `gt`/`lt` are derived
+        // alternative ordering, since `Ord`'s inherited `gt`/`lt` are derived
         // from `compare` and a lone witness's dictionary would contradict itself —
-        // provides both `Ordered[C]` and `PartialOrd[C]`, so `PartialOrd[C]` has one
+        // provides both `Ord[C]` and `PartialOrd[C]`, so `PartialOrd[C]` has one
         // candidate inside EACH of two coexisting witnesses' chains and a global
         // search ties. The only right answer is witness-local. It depends on the
         // SELECTED provider and never on caller scope, so it introduces no
@@ -17855,7 +17855,7 @@ struct Candidate {
 /// should fire the `MissingRequiresForSpecOp` diagnostic. Two cases
 /// warrant it:
 ///
-/// 1. Spec has at least one declared provider (Eq, Numeric, Ordered,
+/// 1. Spec has at least one declared provider (Eq, Numeric, Ord,
 ///    …): the user clearly intends per-carrier dispatch and forgot
 ///    either the `requires` clause or to specialize the call.
 /// 2. Spec is user-defined (outside the stdlib `anthill.*` namespace
@@ -19321,7 +19321,7 @@ fn reached_carrier_matches_call(
 /// WI-644 / proposal 004: TRANSITIVE coverage. `requires Eq[T]` covers a `PartialEq.eq`
 /// call because `Eq requires PartialEq` — the partial ops moved onto the `PartialEq`/
 /// `PartialOrd` bases, so a comparison-only op that declares `requires Eq`/`requires
-/// Ordered` (`List.member`) reaches its `eq`/`gt` through the chain.
+/// Ord` (`List.member`) reaches its `eq`/`gt` through the chain.
 ///
 /// WI-653: CARRIER-AWARE. The prior version compared only spec SYMBOLS, so a `requires
 /// Foo[A, B]` whose `Foo requires Bar[B]` wrongly licensed a `Bar`-op over the SIBLING
@@ -19404,7 +19404,7 @@ fn op_requires_covers_call(
 /// check is why the spec half can be built at all: the information was already
 /// established at load and merely not put in the dictionary. σ is the candidate's
 /// RESOLVED head bindings — the per-call values, so a parametric provision
-/// (`fact Ordered[T = Duo[A, B]]` matched at `Duo[Int64, Int64]`) instantiates the
+/// (`fact Ord[T = Duo[A, B]]` matched at `Duo[Int64, Int64]`) instantiates the
 /// spec's chain at the call's carrier and not at the provision's pattern.
 ///
 /// `impl_sort == goal.spec_sort` (a sort providing its own spec) contributes the
@@ -19423,7 +19423,7 @@ fn dict_sub_goals(
     if !same_sort_canonical(kb, impl_sort, goal.spec_sort) {
         // σ keyed by the spec's short param name — `provider_requires_subgoals`'
         // convention, and the only key that reaches the stdlib shorthand
-        // (`Ordered requires Eq[T]` stores the value as `Eq`'s OWN `T`).
+        // (`Ord requires Eq[T]` stores the value as `Eq`'s OWN `T`).
         let sigma: SmallVec<[(String, TermId); 2]> = head_bindings
             .iter()
             .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
@@ -19457,7 +19457,7 @@ fn provider_slot_is_ours(i: usize, spec_half_len: usize, mask: &[bool]) -> bool 
 /// Returns a parallel STRICTNESS mask: a slot is strict for this dispatch when it is
 /// a sort-level `requires` (which conditions every provision) or a condition of the
 /// very provision being dispatched. A slot contributed by a SIBLING provision is not
-/// this dispatch's business — `Pair`'s `Ordered[A]` must not be demanded of
+/// this dispatch's business — `Pair`'s `Ord[A]` must not be demanded of
 /// `PartialEq.eq` — and `resolve_inner` places `Unavailable` for it instead.
 fn candidate_provider_sub_goals(
     kb: &mut KnowledgeBase,
@@ -19541,7 +19541,7 @@ fn candidate_provider_sub_goals(
 ///    instance via `spec_resolves_at_bindings` — binding-precise (a provider
 ///    satisfying `R` at the *wrong* bindings now fails) AND transitive (the
 ///    resolver recurses into `R`'s own `requires`). This is the case the WI
-///    targets: `Ordered[T=Int] requires Eq[T]` is checked as `Eq[T=Int]`.
+///    targets: `Ord[T=Int] requires Eq[T]` is checked as `Eq[T=Int]`.
 ///  - If a binding stays an abstract type-param, fall back to v0's base-level
 ///    existence check (some sort named in the provision provides `R`). Two
 ///    stdlib realities force this: the shorthand `requires Ring[F]` drops the
@@ -19839,9 +19839,9 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             // provision" — was written when a carrier had ONE chain, where it held by
             // construction. With per-provision conditions (058 §3.8) it is a claim
             // about two independent condition lists, and it can be FALSE: a carrier
-            // writing `provides Ordered[C] :- PartialOrd[E]` beside `provides Eq[C]
-            // :- Eq[E]` would have `Ordered[C]` certified at bindings where its own
-            // `Eq[C]` does not hold, and `Ordered requires Eq`. So the outer
+            // writing `provides Ord[C] :- PartialOrd[E]` beside `provides Eq[C]
+            // :- Eq[E]` would have `Ord[C]` certified at bindings where its own
+            // `Eq[C]` does not hold, and `Ord requires Eq`. So the outer
             // provision's conditions must ENTAIL the inner one's.
             // `unentailed` is the FIRST condition that broke the entailment among the
             // self-provisions that matched on everything else — reported only if no
@@ -20026,8 +20026,8 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
 /// Deliberate non-scope (documented, not silently dropped):
 ///
 /// (1) DIRECT `requires Eq` only — a container whose Eq requirement is TRANSITIVE
-/// (`sort S requires Ordered[T]`, and `Ordered requires Eq`) is not chased; the
-/// stdlib key containers (`Map`/`Set`/`Lattice`/`Ordered`) all `requires Eq`
+/// (`sort S requires Ord[T]`, and `Ord requires Eq`) is not chased; the
+/// stdlib key containers (`Map`/`Set`/`Lattice`/`Ord`) all `requires Eq`
 /// directly.
 ///
 /// (2) A PARAMETRIC or TUPLE key whose unlawfulness is in its ARGUMENT, not in
@@ -20901,7 +20901,7 @@ fn witness_dispatch_carrier(
 }
 
 /// WI-860 — [`witness_dispatch_carrier`] with the carrier's WRITTEN VIEW kept beside
-/// its base: `sort ListOrd provides Ordered[T = List[T = E]]` answers
+/// its base: `sort ListOrd provides Ord[T = List[T = E]]` answers
 /// `(List[T = E], List)` where the symbol-only reader answers `List`.
 ///
 /// The base alone is the right key for every DISPATCH reader — a dispatch is decided by
@@ -21731,7 +21731,7 @@ fn impl_target_qn(kb: &KnowledgeBase, target: TermId) -> Option<String> {
 /// the shared short name `T`; a symbol-keyed substitution (what the resolver
 /// uses, where the requires values reference the impl's *own* params) never
 /// reaches it. Matching by name grounds `Eq[T] → Eq[T=Int]` from an
-/// `Ordered[T=Int]` provision. A requires-param the provision leaves unbound
+/// `Ord[T=Int]` provision. A requires-param the provision leaves unbound
 /// stays as its original type-param ref — the caller (`check_provider_requires`)
 /// inspects each goal and only resolves the *fully concrete* ones precisely,
 /// falling back to a base-level existence check otherwise (the unbound shape
@@ -27199,7 +27199,7 @@ fn extract_function_param_type<V: TermView>(kb: &mut KnowledgeBase, fn_type: &V)
     arrow_parts(kb, fn_type)?.0
 }
 
-/// Ordered component types of a `named_tuple(fields: [TypeField(name,
+/// Ord component types of a `named_tuple(fields: [TypeField(name,
 /// type), …])` type. Used to bind a tuple-destructuring pattern's
 /// sub-patterns positionally (`lambda (a, b) -> ...` checked against
 /// `Function[(A, B), R]` types `a: A`, `b: B`). Returns `None` for a
@@ -28357,7 +28357,7 @@ fn project_via_provided_spec(
 ///
 /// LIMITATION (vs the sort path): this reads the op's DIRECT requires only — it does NOT
 /// transitively close (a member declared by a *transitively* required spec, e.g.
-/// `requires Ordered[T]` lending `Eq`'s members, is not reached). The candidate filter
+/// `requires Ord[T]` lending `Eq`'s members, is not reached). The candidate filter
 /// then finds no bound, so the projection is conservatively rejected (sound — never a
 /// wrong ground type). Transitive op-requires lending is deferred (no motivating driver).
 fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
@@ -35664,8 +35664,8 @@ impl std::hash::Hash for RequiresEntry {
 /// node holds one `RequiresEntry` plus a recursive `Vec` of sub-entries
 /// (the required spec's *own* `requires`, transitively). Substitution
 /// is composed top-down so each node's `entry.spec` carries the
-/// *root-scoped* view of bindings — Eq in `Wi222Outer requires Ordered
-/// requires Eq` reads `T = Wi222Outer.T` directly, not `T = Ordered.T`.
+/// *root-scoped* view of bindings — Eq in `Wi222Outer requires Ord
+/// requires Eq` reads `T = Wi222Outer.T` directly, not `T = Ord.T`.
 ///
 /// This mirrors the runtime arena's `RequirementSlot` tree shape (slot
 /// = node, sub-handles = sub_requires) and the typer's
@@ -35730,9 +35730,9 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
 /// body reads only its DIRECT requires by `__req_<spec>` name; a
 /// transitive require lives inside a direct requirement's tree-shaped
 /// dict value, reached at runtime via `requirement_at_sort`. The
-/// duplication the flat chain suffers — `requires Eq, Ordered` with
-/// `Ordered requires Eq` flattening to `[Eq, Ordered, Eq]` — does not
-/// arise here: the result is exactly `[Eq, Ordered]`.
+/// duplication the flat chain suffers — `requires Eq, Ord` with
+/// `Ord requires Eq` flattening to `[Eq, Ord, Eq]` — does not
+/// arise here: the result is exactly `[Eq, Ord]`.
 ///
 /// Consumers that must remain transitive (resolution-tree subgoals are
 /// recursive per-level, obligation checks, the `sort_refines` reach
@@ -35780,7 +35780,7 @@ pub fn direct_requires_chain_rc(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<
 /// Instead the SLOT SET is uniform and the STRICTNESS is per-provision: a slot
 /// contributed by a provision other than the one being dispatched is placed as
 /// `Unavailable` (see `resolve_inner`), which is refused at any use — so `Pair.eq`
-/// cannot read the `Ordered[A]` evidence that only `Pair.compare` is entitled to,
+/// cannot read the `Ord[A]` evidence that only `Pair.compare` is entitled to,
 /// and cannot do so LOUDLY rather than by the slot's absence.
 ///
 /// For a carrier with NO conditional provisions this is `direct_requires_chain`
@@ -36110,9 +36110,9 @@ pub fn provider_dict_entries(kb: &mut KnowledgeBase, sort_sym: Symbol) -> DictCh
 ///
 /// WI-239: walks the DIRECT requires (top-level `requires_tree` nodes),
 /// not the flattened transitive chain. The flat chain duplicated shared
-/// subtrees — `requires Eq, Ordered` with `Ordered requires Eq` flattened
-/// to `[Eq, Ordered, Eq]`, yielding a benign `__req_eq` name collision —
-/// whereas the direct chain is exactly `[Eq, Ordered]`. A transitive
+/// subtrees — `requires Eq, Ord` with `Ord requires Eq` flattened
+/// to `[Eq, Ord, Eq]`, yielding a benign `__req_eq` name collision —
+/// whereas the direct chain is exactly `[Eq, Ord]`. A transitive
 /// require is not a frame slot under this model; it lives inside a direct
 /// requirement's tree-shaped dict value, reached via `requirement_at_sort`.
 ///
@@ -36176,7 +36176,7 @@ pub fn req_name_for_chain_index(
 /// this ticket they did not: the producer bundled the PROVIDER's `requires` chain
 /// while `expand_dispatching_dict` named the frame from whatever chain the
 /// dispatched target's parent declared and `requirement_at_sort` indexed the SPEC's
-/// — so a carrier-keyed provision (`fact Ordered[T = Int64]`, whose provider
+/// — so a carrier-keyed provision (`fact Ord[T = Int64]`, whose provider
 /// `Int64` declares no `requires`) produced an arity-0 dictionary where two spec
 /// slots were wanted, and every spec with a non-empty chain died at eval.
 ///
@@ -40912,9 +40912,9 @@ fn check_one_spec_op_requirement(
     //     its instance"), so EVERY carrier already satisfies `Eq`; a carrier wanting
     //     non-structural equality *overrides* it (`Set.eq`/`Map.eq`), and the
     //     explicitly structural test is `===`/`struct_eq`. Never a missing requirement.
-    //   * `Ordered.gt`/`lt`/`gte`/`lte`, `Numeric.add`/`sub`/`mul` — numeric-constant
-    //     builtins (`builtin_cmp` / arithmetic) that NEVER consult an `Ordered`/
-    //     `Numeric` instance, so a `requires Ordered[…]` could not even fix them; a
+    //   * `Ord.gt`/`lt`/`gte`/`lte`, `Numeric.add`/`sub`/`mul` — numeric-constant
+    //     builtins (`builtin_cmp` / arithmetic) that NEVER consult an `Ord`/
+    //     `Numeric` instance, so a `requires Ord[…]` could not even fix them; a
     //     non-numeric carrier is a plain resolution failure, not a missing dictionary.
     //     (Why stdlib `needs_rebuild`'s `gt` on two `Timestamp`s must not be flagged.)
     if kb.is_builtin(functor) {
@@ -40943,7 +40943,7 @@ fn check_one_spec_op_requirement(
     // cannot tell that the declared `Eq[T]` and the op's carrier are the SAME type. A
     // carrier-blind transitive suppression would hide a genuine missing instance when
     // the op is applied to a different carrier than the declared requirement ranges
-    // over (`requires(Ordered[A])` does not cover a `PartialEq` op applied to some
+    // over (`requires(Ord[A])` does not cover a `PartialEq` op applied to some
     // unrelated `B`). This exact-match is SOUND (it never wrongly suppresses) but
     // INCOMPLETE (it over-diagnoses a transitively-covered non-builtin op). Direction
     // A's own witnesses (`eq`/`gt`) are builtins, returned above at the `is_builtin`
@@ -41150,7 +41150,7 @@ fn transitive_witness_grounds_soundly(
 /// whose only comparison is `eq(?x, ?y)` has NO direct or transitive witness: `eq` is
 /// `PartialEq.eq`, and `Eq requires PartialEq`, so the call is evidence the carrier
 /// needs an `Eq` dictionary (which subsumes the `PartialEq` the call itself uses).
-/// Likewise `requires(Ordered[T])` witnessed by `gt` (`PartialOrd.gt`, and `Ordered
+/// Likewise `requires(Ord[T])` witnessed by `gt` (`PartialOrd.gt`, and `Ord
 /// requires PartialOrd`).
 ///
 /// Sound only when the guard reads the argument `X`'s requirement ranges over. `X`'s
@@ -41158,9 +41158,9 @@ fn transitive_witness_grounds_soundly(
 /// `X`'s own — exactly [`transitive_witness_grounds_soundly`]'s condition, applied to
 /// the SPEC's requires-chain rather than the OP's (`op_has_spec_carrier_param` in the
 /// scan then confirms the op exposes an `X`-keyed carrier parameter). Restricted to a
-/// DIRECT `requires` of `X` (`Eq requires PartialEq`, `Ordered requires PartialOrd`
+/// DIRECT `requires` of `X` (`Eq requires PartialEq`, `Ord requires PartialOrd`
 /// are both direct); an inherited requirement reached only through `X`'s chain
-/// (`Ordered requires Eq requires PartialEq`, witnessed by `eq`) is conservatively
+/// (`Ord requires Eq requires PartialEq`, witnessed by `eq`) is conservatively
 /// declined — sound incompleteness, not a gap.
 fn inherited_spec_op_witness_grounds_soundly(
     kb: &KnowledgeBase,
@@ -41958,9 +41958,9 @@ fn rewrite_find_dictionary_goal(
     // witness appears, but a body call to an op of a spec `X` REQUIRES grounds the
     // requirement through the same carrier. `requires(Eq[T])` witnessed by `eq(?x, ?y)`
     // — post WI-644 `eq` is `PartialEq.eq` and `Eq requires PartialEq`, so `Eq` owns no
-    // op of its own to serve as a direct witness. `requires(Ordered[T])` via `gt`.
+    // op of its own to serve as a direct witness. `requires(Ord[T])` via `gt`.
     //
-    // Ordered LAST, on purpose: for `has_elem` the body has BOTH `member` (a transitive
+    // Ord LAST, on purpose: for `has_elem` the body has BOTH `member` (a transitive
     // witness that grounds the ELEMENT type) AND `eq(member(…), true)` (an inherited
     // witness over Bool). The transitive scan runs first, so `member` wins — grounding
     // `requires(Eq[T])` at the element, not at the Bool the `eq` compares. Were this

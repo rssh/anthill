@@ -66,17 +66,17 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     // WI-644 / proposal 004: gt/lt/gte/lte are the PartialOrd comparison surface
     // (IEEE for Float — a NaN operand answers false); compare/max/min are the total
-    // `Ordered` surface.
+    // `Ord` surface.
     //
     // WI-876 — NOT REGISTERED HERE. This family is the one whose host
     // implementations are keyed PER CARRIER, from the `operation_map` clause of
     // each `provides <carrier> language rust` block (see
     // [`register_operation_mappings`]). Registered on the SPEC op, one host-scalar
     // implementation served every carrier that never wrote its own — so a
-    // STRUCTURAL `Ordered` provider was intercepted by code that could not compare
+    // STRUCTURAL `Ord` provider was intercepted by code that could not compare
     // its values, on a program that LOADED CLEAN, and the spec's own default bodies
     // could never run. `max`/`min` are in the family too: they are DECLARED on
-    // `Ordered` (with the default bodies that derive them from `gte`/`lte`), and each
+    // `Ord` (with the default bodies that derive them from `gte`/`lte`), and each
     // total scalar carrier maps them to `ordered_max`/`ordered_min` so the derivation
     // costs no interpreter frame where the host answers in one call. WI-881 — `Float`
     // maps its OWN `max`/`min` to the IEEE pair; the argument is beside `float_max`.
@@ -254,7 +254,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 /// construction. The lookup is a linear scan over a few dozen `&'static str`s, run
 /// once per mapping per fresh interpreter, against a stdlib parse.
 const HOST_FNS: &[(&str, usize, fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>)] = &[
-    // The TOTAL scalar order (`Ordered`): `Int64`, `BigInt`, `String`.
+    // The TOTAL scalar order (`Ord`): `Int64`, `BigInt`, `String`.
     ("ordered_compare", 2, ordered_compare),
     ("ordered_gt", 2, ordered_gt),
     ("ordered_gte", 2, ordered_gte),
@@ -780,7 +780,7 @@ nullary_const! { Value::Int;
     int_max_value("Int64.maxValue") = i64::MAX;
 }
 
-// ── Eq / Ordered ───────────────────────────────────────────────
+// ── Eq / Ord ───────────────────────────────────────────────
 
 /// WI-644 / proposal 004: the SEMANTIC `PartialEq.eq` on a `Float` operand pair is
 /// IEEE `==` — `nan eq nan` is *false*, `-0.0 eq +0.0` is *true* — matching the C++
@@ -1031,7 +1031,7 @@ fn value_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, EvalError> 
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
         _ => return Err(EvalError::TypeMismatch {
-            expected: "Ordered scalars of matching type",
+            expected: "Ord scalars of matching type",
             got: format!("{} and {}", a.type_name(), b.type_name()),
         }),
     })
@@ -1050,7 +1050,7 @@ fn ordered_compare(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 /// on a `Float` operand pair is IEEE — a `NaN` operand is UNORDERED, so every
 /// comparison answers `false` (`x > y` etc. are already `false` when either is NaN).
 /// This matches the C++ codegen (`>`/`<`) and is the ordering dual of the IEEE `eq`
-/// fix. The TOTAL `Ordered` ops keep `total_cmp` — they are only sound on a total
+/// fix. The TOTAL `Ord` ops keep `total_cmp` — they are only sound on a total
 /// carrier (`TotalFloat`, not raw `Float`).
 ///
 /// WI-876 — these four are `Float`'s OWN host implementations, named by
@@ -1113,7 +1113,7 @@ fn ordered_lte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
     Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
 }
 
-/// `Ordered.max`/`min` on a total scalar carrier. `Ordered` derives both from
+/// `Ord.max`/`min` on a total scalar carrier. `Ord` derives both from
 /// `gte`/`lte` by default body, which is what a STRUCTURAL carrier gets — but for a
 /// scalar that derivation costs an interpreter frame and a dictionary dispatch where
 /// the host answers in one call, so the total carriers map these too. Same reasoning
@@ -1362,8 +1362,8 @@ float_binary! {
     // commutative, which a `gte`-derived max is not — MEASURED before this ticket,
     // the derived one answers `1.0` on `(nan, 1.0)` and `nan` on `(1.0, nan)`. That
     // asymmetry is why `Float` exposes the IEEE pair rather than inheriting
-    // `Ordered`'s derivation, which it could not reach anyway (`Float` provides
-    // `PartialOrd`, not `Ordered` — so until this ticket there was NO way to take
+    // `Ord`'s derivation, which it could not reach anyway (`Float` provides
+    // `PartialOrd`, not `Ord` — so until this ticket there was NO way to take
     // the maximum of two floats at all).
     float_max("Float.max")     = f64::max;
     float_min("Float.min")     = f64::min;

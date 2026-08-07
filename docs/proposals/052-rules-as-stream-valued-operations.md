@@ -561,7 +561,7 @@ sort Reach
 ```
 
 `reachable` over a `SocialNet` walks *follows*-edges; over a `RoadMap`, *road*-edges — one generic rule,
-a per-instance relation. This is to a relation what `Ordered.compare` (declared abstract, provided per
+a per-instance relation. This is to a relation what `Ord.compare` (declared abstract, provided per
 type) is to a function. Static rules force the alternative: thread the graph explicitly
 (`reachable(g, ?a, ?b) :- edge_of(g, ?a, ?b)`) — the boilerplate dispatch removes for operations.
 

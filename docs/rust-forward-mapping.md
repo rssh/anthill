@@ -173,7 +173,7 @@ sort List {                                pub enum List<T> {
 A `requires` declaration maps to a trait bound — either as a supertrait (on a trait definition) or a `where` clause (on a generic struct or function):
 
 ```
-sort Ordered {                             pub trait Ordered: Eq {
+sort Ord {                             pub trait Ord: Eq {
   sort T                        →              fn gt(&self, other: &Self) -> bool;
   requires Eq[T]                               ...
   operation gt(a: T,                       }
@@ -336,7 +336,7 @@ sort MemStore {                            pub struct MemStore { ... }
 
 This is forced by the path-dependent semantics, not a style preference: `s.K` is well-defined only because each provider *determines* its members — δ-grounding "projects **the** manifest member off the receiver's type" presumes exactly one binding per carrier. A member that is a function of the implementing type is precisely Rust's associated type. Trait generics encode the opposite reading — multi-parameter type classes, where one carrier may instantiate the trait at many bindings — under which `s.K` would be ambiguous. **Data sorts (§2.3) keep the §2.6 generic mapping**: Rust enums have no associated types, and a projection off a concrete carrier δ-grounds before codegen ever sees it.
 
-**Self-collapse takes precedence.** The single-type-parameter collapse (§2.2, §4) is unchanged: a spec sort whose lone member is the operations' subject (`Eq`'s `T`, `Ordered`'s `T`) still collapses that member to `Self` and gains no associated type. Associated types apply to the members that *survive* collapse — in `KVStore` the carrier position collapses to `Self` while `K` and `V` become `type K;` / `type V;`. The §2.7 composition bullet below relies on exactly this split: `Eq` stays collapsed while `K` is projected.
+**Self-collapse takes precedence.** The single-type-parameter collapse (§2.2, §4) is unchanged: a spec sort whose lone member is the operations' subject (`Eq`'s `T`, `Ord`'s `T`) still collapses that member to `Self` and gains no associated type. Associated types apply to the members that *survive* collapse — in `KVStore` the carrier position collapses to `Self` while `K` and `V` become `type K;` / `type V;`. The §2.7 composition bullet below relies on exactly this split: `Eq` stays collapsed while `K` is projected.
 
 **The lowering forms.** Rust has the projection ("host has it" — `S::K`), so projection is primary and the lift-to-parameter form is reserved for member sharing:
 
@@ -878,7 +878,7 @@ mod tests {
 }
 ```
 
-### 6.3 Prelude Trait Hierarchy (Eq / Ordered / Numeric)
+### 6.3 Prelude Trait Hierarchy (Eq / Ord / Numeric)
 
 ```
 -- Anthill:
@@ -889,7 +889,7 @@ sort anthill.prelude.Eq
   rule neq(?a, ?b) = not(eq(?a, ?b))
 end
 
-sort anthill.prelude.Ordered
+sort anthill.prelude.Ord
   sort T
   requires Eq[T]
   operation gt(a: T, b: T) -> Bool
@@ -898,7 +898,7 @@ end
 
 sort anthill.prelude.Numeric
   sort T
-  requires Ordered[T]
+  requires Ord[T]
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
@@ -918,14 +918,14 @@ pub trait Eq {
     }
 }
 
-pub trait Ordered: Eq {
+pub trait Ord: Eq {
     fn gt(&self, other: &Self) -> bool;
     fn gte(&self, other: &Self) -> bool;
     fn lt(&self, other: &Self) -> bool;
     fn lte(&self, other: &Self) -> bool;
 }
 
-pub trait Numeric: Ordered {
+pub trait Numeric: Ord {
     fn add(&self, other: &Self) -> Self;
     fn sub(&self, other: &Self) -> Self;
     fn mul(&self, other: &Self) -> Self;
@@ -933,7 +933,7 @@ pub trait Numeric: Ordered {
 }
 ```
 
-Note: `requires Eq[T]` on `Ordered` becomes a supertrait `: Eq`. `requires Ordered[T]` on `Numeric` becomes `: Ordered`. The `rule neq(?a, ?b) = not(eq(?a, ?b))` generates a default method implementation.
+Note: `requires Eq[T]` on `Ord` becomes a supertrait `: Eq`. `requires Ord[T]` on `Numeric` becomes `: Ord`. The `rule neq(?a, ?b) = not(eq(?a, ?b))` generates a default method implementation.
 
 ### 6.4 Stage 0 WorkStatus
 

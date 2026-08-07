@@ -89,7 +89,7 @@ operation parse(s: String) -> Result[T = AST, E = ParseError]
 -- Instantiation as terms (spec satisfaction)
 fact Eq[Int64]
 fact Eq[T = String]
-fact Ordered[T = Float]
+fact Ord[T = Float]
 fact Numeric[T = Int64]
 
 -- Nested

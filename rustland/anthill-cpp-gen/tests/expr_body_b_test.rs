@@ -55,7 +55,7 @@ fn if_then_else_with_call_in_condition() {
         .expect("emit Calc");
 
     // Phase E rewrites `gt(n, 0)` to `(n > 0)` because gt is the
-    // anthill.prelude.Ordered.gt typeclass operation.
+    // anthill.prelude.Ord.gt typeclass operation.
     assert!(
         cpp.contains("static int64_t abs(int64_t n) {\n        return ((n > 0) ? n : 0);\n    }"),
         "if-then-else with call condition missing:\n{cpp}"

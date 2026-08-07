@@ -1,6 +1,6 @@
 //! WI-645 — the interpreter's SEMANTIC Float equality/ordering (`Eq.eq`/`neq`,
-//! `Ordered.gt`/`lt`/`gte`/`lte`) must follow IEEE 754 on NaN, matching the C++
-//! codegen (`Eq.eq` -> `==`, `Ordered.gt` -> `>`) and the stdlib's own contract
+//! `Ord.gt`/`lt`/`gte`/`lte`) must follow IEEE 754 on NaN, matching the C++
+//! codegen (`Eq.eq` -> `==`, `Ord.gt` -> `>`) and the stdlib's own contract
 //! (`float.anthill:19-20`: "Float.eq returns false for NaN (NaN != NaN in IEEE)").
 //!
 //! Today it does NOT: eval `Eq.eq` = `builtin_eq` = `views_structurally_equal`,
@@ -11,13 +11,13 @@
 //!
 //! The fix must SPLIT: the STRUCTURAL layer (`===`/`struct_eq`, `Literal` Hash/Eq
 //! for hash-consing) stays on `OrderedFloat` — `nan === nan` is structural
-//! identity and correctly `true` — while only the SEMANTIC `Eq`/`Ordered` builtins
+//! identity and correctly `true` — while only the SEMANTIC `Eq`/`Ord` builtins
 //! switch to raw-`f64` IEEE compare. `struct_eq_on_nan_stays_structural` guards the
 //! first half; `eq_ordered_on_nan_follow_ieee` (ignored until the fix) specifies the
 //! second.
 //!
 //! WI-644 / proposal 004 landed *direction B*: `PartialEq ⊂ Eq` (and `PartialOrd ⊂
-//! Ordered`) split; `Float` provides only the PARTIAL bases (`PartialEq`/`PartialOrd`),
+//! Ord`) split; `Float` provides only the PARTIAL bases (`PartialEq`/`PartialOrd`),
 //! and its semantic `eq`/`neq`/`gt`/`lt`/… are IEEE (this test). The reflexivity
 //! shortcut in `sem_eq_core` and the structural `builtin_eq` are gated to skip a raw
 //! Float operand pair (eval `float_ieee_eq`, resolver `value_f64`). `struct_eq`

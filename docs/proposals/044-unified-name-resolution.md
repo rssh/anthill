@@ -99,17 +99,17 @@ A prototype that makes resolution ignore the `export` whitelist:
 
   ```
   AmbiguousSymbol { name: "eq",
-    candidates: ["anthill.prelude.Eq.eq", "anthill.prelude.Ordered.eq"],
+    candidates: ["anthill.prelude.Eq.eq", "anthill.prelude.Ord.eq"],
     scope_name: "Numeric" }
   ```
 
-  `Ordered` inherits `eq` from `Eq` (spec auto-binding, §8.7), producing a **distinct** `anthill.prelude.Ordered.eq` symbol alongside `anthill.prelude.Eq.eq`. A scope that sees both as parents (e.g. `Numeric requires Ordered, Eq`) finds bare `eq` twice → `Ambiguous`. Today, `Ordered`'s `export` list **omits `eq`**, suppressing the inherited copy.
+  `Ord` inherits `eq` from `Eq` (spec auto-binding, §8.7), producing a **distinct** `anthill.prelude.Ord.eq` symbol alongside `anthill.prelude.Eq.eq`. A scope that sees both as parents (e.g. `Numeric requires Ord, Eq`) finds bare `eq` twice → `Ambiguous`. Today, `Ord`'s `export` list **omits `eq`**, suppressing the inherited copy.
 
 **Conclusion:** `export` is *not* decorative in Rust — it is the current mechanism for **disambiguating inherited operations**. "Drop `export`, shorter programs" cannot be done without first replacing that disambiguation mechanism.
 
 ### Root cause of the `eq` ambiguity (instrumented)
 
-`anthill.prelude.Ordered.eq` is minted in `scan_rule` (`kb/load.rs`) as a `SymbolKind::Goal` for the head functor of `Ordered`'s consistency law `eq(?a,?b) = eq(compare(?a,?b),0)`. So an **override** — a derived rule for an operation inherited via `requires` — currently creates a *distinct* sort-local symbol that shadows the inherited `Eq.eq`. The `export` list (omitting `eq`) is what hides it. This is a latent modeling defect independent of Model C: a derived rule for an inherited op should attach to that op.
+`anthill.prelude.Ord.eq` is minted in `scan_rule` (`kb/load.rs`) as a `SymbolKind::Goal` for the head functor of `Ord`'s consistency law `eq(?a,?b) = eq(compare(?a,?b),0)`. So an **override** — a derived rule for an operation inherited via `requires` — currently creates a *distinct* sort-local symbol that shadows the inherited `Eq.eq`. The `export` list (omitting `eq`) is what hides it. This is a latent modeling defect independent of Model C: a derived rule for an inherited op should attach to that op.
 
 ### Prototype result — B2 validated via "R2"
 
@@ -117,7 +117,7 @@ Implemented the **R2** variant of Part B: move rule-head-functor `Goal` registra
 
 Measured (rustland):
 - **R2 alone, export whitelist still ON:** full `anthill-core` suite green — R2 is a correct, non-regressing fix on its own.
-- **R2 + export whitelist OFF:** `wi_tests` 129/0 (was 42/87); whole suite green **except 4** `ring-polynom` fixture tests. The 87 inherited-op ambiguities are gone — no `Ordered.eq` is ever minted.
+- **R2 + export whitelist OFF:** `wi_tests` 129/0 (was 42/87); whole suite green **except 4** `ring-polynom` fixture tests. The 87 inherited-op ambiguities are gone — no `Ord.eq` is ever minted.
 
 So **B2 is adopted, implemented as R2.** (R2 is the concrete spelling of B2; the "alias the origin" framing is realized by simply *not minting* the shadow symbol so resolution finds the origin.)
 
@@ -143,12 +143,12 @@ This is mechanical *once* Part B removes export's disambiguation duty.
 
 The spec already points here (§8.7): *"different namespaces can provide different instantiations of the same spec… a consumer chooses which to use via `import`."* Candidate rules (pick one in review):
 
-- **B1 — provenance/origin dedup.** If the multiple candidates for a bare name all trace to the **same originating definition** (e.g. `Ordered.eq` is the inherited image of `Eq.eq`), collapse them to one — not ambiguous. Requires tracking the origin symbol through `requires`/auto-binding so inherited copies carry a back-pointer.
-- **B2 — inheritance aliases, not copies.** `Ordered` gaining `eq` should create an **alias** to `Eq.eq`, not a fresh `Ordered.eq` symbol. Then the two candidates are literally the same `Symbol` and dedup is automatic. (Changes how spec auto-binding materializes inherited operations.)
+- **B1 — provenance/origin dedup.** If the multiple candidates for a bare name all trace to the **same originating definition** (e.g. `Ord.eq` is the inherited image of `Eq.eq`), collapse them to one — not ambiguous. Requires tracking the origin symbol through `requires`/auto-binding so inherited copies carry a back-pointer.
+- **B2 — inheritance aliases, not copies.** `Ord` gaining `eq` should create an **alias** to `Eq.eq`, not a fresh `Ord.eq` symbol. Then the two candidates are literally the same `Symbol` and dedup is automatic. (Changes how spec auto-binding materializes inherited operations.)
 - **B3 — nearest-wins.** Prefer the candidate reachable through the shortest `requires` chain; ambiguous only on a true tie of distinct origins.
 - **B4 — explicit consumer selection.** Keep ambiguity an error, but require the consumer to disambiguate with a selective `import` (which the resolver then prefers). Most spec-faithful, but pushes boilerplate onto consumers.
 
-**Recommendation:** B2 (alias, don't copy) is the cleanest — it makes the ambiguity disappear structurally and matches the intuition that "Ordered's eq *is* Eq's eq." B1 is the fallback if aliasing is too invasive in the typer.
+**Recommendation:** B2 (alias, don't copy) is the cleanest — it makes the ambiguity disappear structurally and matches the intuition that "Ord's eq *is* Eq's eq." B1 is the fallback if aliasing is too invasive in the typer.
 
 ### One algorithm
 
@@ -176,7 +176,7 @@ work** and is not required for uniform name resolution.
 - `rustland` and `scaland` implement the same documented resolution algorithm; a shared cross-impl fixture resolves identically.
 - stdlib carries no `export` statements; both engines load it green.
 - `internal` hides a name from import/wildcard/parent resolution (tested on both sides).
-- The `Eq`/`Ordered`/`Numeric` `eq` case resolves unambiguously with no `export` whitelist. **(met by R2)**
+- The `Eq`/`Ord`/`Numeric` `eq` case resolves unambiguously with no `export` whitelist. **(met by R2)**
 - The `ring-polynom` testcase loads green alongside stdlib with the `export` whitelist off and **no change to the fixture** (job-2 acceptance test). **(met: `algebra_tests` 19/0 in rustland)**
 - `kernel-language.md` has a Name Resolution section matching the implementation. **(met)**
 

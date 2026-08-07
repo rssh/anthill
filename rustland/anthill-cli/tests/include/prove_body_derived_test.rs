@@ -55,7 +55,7 @@ const OPS: &str = r#"
 fn src_with(rules: &str) -> String {
     format!(
         "namespace test.wi669b\n  import anthill.prelude.{{Int64}}\n  \
-         import anthill.prelude.Ordered.{{gte, lt, lte}}\n{OPS}\n{rules}\nend\n"
+         import anthill.prelude.Ord.{{gte, lt, lte}}\n{OPS}\n{rules}\nend\n"
     )
 }
 

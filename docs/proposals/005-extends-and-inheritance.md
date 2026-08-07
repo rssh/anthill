@@ -64,15 +64,15 @@ Which direction does `extends` establish?
 Perhaps `extends` only makes sense for abstract sorts (no constructors):
 
 ```
-sort Ordered
-  extends Eq                              -- Ordered has all of Eq's operations
+sort Ord
+  extends Eq                              -- Ord has all of Eq's operations
   sort T
   operation gt(a: T, b: T) -> Bool
   operation lt(a: T, b: T) -> Bool
 end
 ```
 
-Here `Ordered <: Eq` means "anything that is Ordered is also Eq." Since neither has constructors, the closed-ADT problem doesn't arise. This is the type class / algebraic specification pattern.
+Here `Ord <: Eq` means "anything that is Ord is also Eq." Since neither has constructors, the closed-ADT problem doesn't arise. This is the type class / algebraic specification pattern.
 
 For defined sorts (with constructors), `extends` would be forbidden — use `import` instead.
 
@@ -99,12 +99,12 @@ end
 Can `extends` have `where` bindings?
 
 ```
-sort IntOrdered
-  extends Ordered where { T = Int64 }
+sort IntOrd
+  extends Ord where { T = Int64 }
 end
 ```
 
-Or is this just `import Ordered where { T = Int64 }` plus a subtyping assertion?
+Or is this just `import Ord where { T = Int64 }` plus a subtyping assertion?
 
 ## Possible Approaches
 
@@ -113,7 +113,7 @@ Or is this just `import Ordered where { T = Int64 }` plus a subtyping assertion?
 - `extends` is only valid when the parent has no constructors.
 - Establishes subtyping: `B <: A`.
 - Inherits all operations and rules.
-- This covers the type class hierarchy pattern (Eq → Ordered → Numeric).
+- This covers the type class hierarchy pattern (Eq → Ord → Numeric).
 
 ### Approach B: `extends` as `import` + subtype declaration
 
@@ -124,7 +124,7 @@ Or is this just `import Ordered where { T = Int64 }` plus a subtyping assertion?
 ### Approach C: Defer entirely
 
 - Continue using `import` for all cases.
-- Subtyping, if needed, is expressed as explicit facts: `rule subtype(Ordered, Eq)`.
+- Subtyping, if needed, is expressed as explicit facts: `rule subtype(Ord, Eq)`.
 - Reintroduce `extends` only when the need is clearer.
 
 ## Recommendation

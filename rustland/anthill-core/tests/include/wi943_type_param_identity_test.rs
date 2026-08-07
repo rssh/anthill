@@ -32,8 +32,8 @@
 //!    var (`left: 1, right: 1326` on the first assertion). Two different parameters,
 //!    one variable, and neither of them their own.
 //!  - `an_op_scoped_requires_covers_its_own_call` — at LOAD, twice: `expected
-//!    `requires Ordered[…]` covering abstract type parameter, got missing `requires
-//!    Ordered[T = …]` on enclosing sort`. That is WI-942's defect returning once the
+//!    `requires Ord[…]` covering abstract type parameter, got missing `requires
+//!    Ord[T = …]` on enclosing sort`. That is WI-942's defect returning once the
 //!    bridge is removed and nothing replaces it, which is what says WI-943 REPLACES
 //!    that bridge rather than merely permitting its deletion.
 //!  - In `vec3_ops_test.rs`, the same three tests WI-942's own revert table names for
@@ -60,7 +60,7 @@ use anthill_core::kb::KnowledgeBase;
 /// measure the IDENTITY, so the program must load with the fix backed out too.
 const IDENT_SRC: &str = r#"
 namespace test.wi943.identity
-  import anthill.prelude.{Int64, Ordered}
+  import anthill.prelude.{Int64, Ord}
 
   sort OpHolder
     operation cmp[T](a: T, b: T) -> Int64 = 0
@@ -70,14 +70,14 @@ namespace test.wi943.identity
 
   sort SortHolder
     sort T = ?
-    requires Ordered[T]
-    operation cmp(a: T, b: T) -> Int64 = Ordered.compare(a, b)
+    requires Ord[T]
+    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
   end
 end
 "#;
 
 /// The variable a type parameter's SYMBOL resolves to, i.e. what a written `T` denotes.
-/// This is the route `sigma_class` takes for the `Ref(T)` inside `requires Ordered[T]`.
+/// This is the route `sigma_class` takes for the `Ref(T)` inside `requires Ord[T]`.
 fn via_symbol(kb: &KnowledgeBase, owner_qn: &str, param: &str) -> u32 {
     let sym = kb
         .try_resolve_symbol(&format!("{owner_qn}.{param}"))
@@ -142,7 +142,7 @@ fn distinct_operations_do_not_share_one_type_param_variable() {
 }
 
 /// The identity DRIVEN where it decides something: `sigma_class` reads the written
-/// `Ordered[T]` through `type_param_global_var`, and `op_requires_covers` compares that
+/// `Ord[T]` through `type_param_global_var`, and `op_requires_covers` compares that
 /// against the rigid `check_operation_bodies` minted from the RECORD. When the two
 /// disagree the operation's own `requires` fails to cover its own call and the program
 /// is refused. Kept here beside the identity assertions — the WI-942 tests measure the
@@ -152,10 +152,10 @@ fn distinct_operations_do_not_share_one_type_param_variable() {
 fn an_op_scoped_requires_covers_its_own_call() {
     let src = r#"
 namespace test.wi943.covered
-  import anthill.prelude.{Int64, Ordered}
+  import anthill.prelude.{Int64, Ord}
   sort OpHolder
-    operation cmp[T](a: T, b: T) -> Int64 requires Ordered[T] = Ordered.compare(a, b)
-    operation cmp2[T](a: T, b: T) -> Int64 requires Ordered[T] = Ordered.compare(b, a)
+    operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(a, b)
+    operation cmp2[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(b, a)
   end
   sort Driver
     operation via(n: Int64) -> Int64 = OpHolder.cmp(7, 3)
@@ -179,7 +179,7 @@ end
                 assert_eq!(n, want, "{entry} must compare through its own requirement")
             }
             other => panic!(
-                "{entry} must dispatch through the operation's own `requires Ordered[T]` \
+                "{entry} must dispatch through the operation's own `requires Ord[T]` \
                  (pre-WI-943 the LOAD was refused `MissingRequiresForSpecOp`); got {other:?}"
             ),
         }
@@ -197,11 +197,11 @@ fn sort_type_param_resolves_through_its_sort_alias() {
     let kb = load_kb_with(
         r#"
 namespace test.wi943.sortparam
-  import anthill.prelude.{Int64, Ordered}
+  import anthill.prelude.{Int64, Ord}
   sort SortHolder
     sort T = ?
-    requires Ordered[T]
-    operation cmp(a: T, b: T) -> Int64 = Ordered.compare(a, b)
+    requires Ord[T]
+    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
   end
 end
 "#,

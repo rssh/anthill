@@ -439,7 +439,7 @@ impl<'kb> Emitter<'kb> {
         // Walk the body. Three clause shapes we accept:
         //   <Entity>(field: ?var, ...) — destructure a fact's fields
         //   ?var = <arith>             — bind ?var to an SMT term
-        //   <Ordered.op>(a, b)         — inequality assertion
+        //   <Ord.op>(a, b)         — inequality assertion
         //                                  (lte/lt/gte/gt)
         // Plus rule calls (`<rule_qn>(?var)`) — chase the dependency.
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
@@ -1983,13 +1983,13 @@ fn map_bool_connective(qn: &str) -> Option<&'static str> {
 /// assertions (not embedded in arithmetic expressions, since
 /// SMT-LIB segregates Bool from Real cleanly).
 fn map_inequality_op(qn: &str) -> Option<&'static str> {
-    // WI-644 / proposal 004: gt/lt/gte/lte moved from `Ordered` onto the `PartialOrd`
-    // base (Ordered kept as `Ordered.*` aliases for any legacy QN).
+    // WI-644 / proposal 004: gt/lt/gte/lte moved from `Ord` onto the `PartialOrd`
+    // base (Ord kept as `Ord.*` aliases for any legacy QN).
     match qn {
-        "anthill.prelude.PartialOrd.lte" | "PartialOrd.lte" | "anthill.prelude.Ordered.lte" | "Ordered.lte" | "lte" => Some("<="),
-        "anthill.prelude.PartialOrd.lt"  | "PartialOrd.lt"  | "anthill.prelude.Ordered.lt"  | "Ordered.lt"  | "lt"  => Some("<"),
-        "anthill.prelude.PartialOrd.gte" | "PartialOrd.gte" | "anthill.prelude.Ordered.gte" | "Ordered.gte" | "gte" => Some(">="),
-        "anthill.prelude.PartialOrd.gt"  | "PartialOrd.gt"  | "anthill.prelude.Ordered.gt"  | "Ordered.gt"  | "gt"  => Some(">"),
+        "anthill.prelude.PartialOrd.lte" | "PartialOrd.lte" | "anthill.prelude.Ord.lte" | "Ord.lte" | "lte" => Some("<="),
+        "anthill.prelude.PartialOrd.lt"  | "PartialOrd.lt"  | "anthill.prelude.Ord.lt"  | "Ord.lt"  | "lt"  => Some("<"),
+        "anthill.prelude.PartialOrd.gte" | "PartialOrd.gte" | "anthill.prelude.Ord.gte" | "Ord.gte" | "gte" => Some(">="),
+        "anthill.prelude.PartialOrd.gt"  | "PartialOrd.gt"  | "anthill.prelude.Ord.gt"  | "Ord.gt"  | "gt"  => Some(">"),
         _ => None,
     }
 }

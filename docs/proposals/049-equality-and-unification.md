@@ -334,7 +334,7 @@ fastparse grammar. scaland **mirrors grammar + loader only** (no typer).
 6. **Radius-3 migration** (**WI-526**) — `is_equation` heads `=` → `<=>` across
    prelude/stdlib (classification-driven; contracts/constraints/guards untouched). Needs
    the `<=>`-equation recognition from step 3 (WI-523).
-7. **Docs** (**WI-527**) — `kernel-language.md` (Eq/Ordered/Numeric examples,
+7. **Docs** (**WI-527**) — `kernel-language.md` (Eq/Ord/Numeric examples,
    rule-semantics §) and proposal 043 (`lhs = rhs` → `lhs <=> rhs`).
 8. **scaland** (**WI-528**) — grammar + loader mirror.
 

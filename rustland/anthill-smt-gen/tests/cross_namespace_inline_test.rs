@@ -27,7 +27,7 @@ const COMMON_NS: &str = r#"
     namespace test.smt_gen.common
       import anthill.prelude.{Float, Int64, Bool}
       import anthill.prelude.Numeric.{add, sub, mul}
-      import anthill.prelude.Ordered.{gte}
+      import anthill.prelude.Ord.{gte}
 
       enum Drone
         entity Leader
@@ -69,7 +69,7 @@ fn source_with_import() -> String {
         r#"{COMMON_NS}
         namespace test.smt_gen.gps
           import anthill.prelude.{{Float, Bool}}
-          import anthill.prelude.Ordered.{{lt}}
+          import anthill.prelude.Ord.{{lt}}
           import test.smt_gen.common.{{
             reachable_real, position_distance, DistanceBounds
           }}
@@ -92,7 +92,7 @@ fn source_without_import() -> String {
         r#"{COMMON_NS}
         namespace test.smt_gen.gps
           import anthill.prelude.{{Float, Bool}}
-          import anthill.prelude.Ordered.{{lt}}
+          import anthill.prelude.Ord.{{lt}}
           import test.smt_gen.common.{{ reachable_real, DistanceBounds }}
 
           rule safety_min_distance(?w)

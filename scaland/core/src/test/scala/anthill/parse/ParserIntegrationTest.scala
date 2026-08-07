@@ -627,7 +627,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     res.toOption.get
 
   /** Drop load errors for symbols scaland's Prelude hasn't wired up yet —
-    * the prelude typeclasses (Eq/Ordered/Numeric), the parametric
+    * the prelude typeclasses (Eq/Ord/Numeric), the parametric
     * collections (List/Option), and reflect.Term. Delete this filter once
     * those modules are loaded as part of EmbeddedStdlib.
     */
@@ -721,9 +721,9 @@ class ParserIntegrationTest extends munit.FunSuite:
     // them now because its host implementations are keyed per carrier — its
     // binding's `operation_map` names the IEEE functions — where they used to be
     // registered on the `PartialOrd` spec op and serve every carrier at once.
-    // WI-881: + the IEEE `max`/`min` pair. `max`/`min` live on `Ordered`, which
+    // WI-881: + the IEEE `max`/`min` pair. `max`/`min` live on `Ord`, which
     // `Float` does not provide, so before this there was no way to take the maximum
-    // of two floats at all — and `Ordered`'s `gte`-based derivation would have been
+    // of two floats at all — and `Ord`'s `gte`-based derivation would have been
     // the wrong answer anyway (not commutative with a NaN operand).
     assertEquals(opCount, 34, "Float should expose 34 operations")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
@@ -731,7 +731,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,
       "Float should declare 6 constraints")
 
-    // Loaded as part of the full stdlib chain — Eq/Ordered/Numeric resolve.
+    // Loaded as part of the full stdlib chain — Eq/Ord/Numeric resolve.
     val kb = kbWithStdlib()
     assert(kb.hasQualifiedName("anthill.prelude.Float"))
     assert(kb.hasQualifiedName("anthill.prelude.Float.sqrt"))
@@ -1368,7 +1368,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     // resolution, moving `requires PartialEq[A]` into `provides PartialEq[Pair] :-
     // PartialEq[A]` removed these links silently and `sbt test` stayed green.
     for (spec <- List("anthill.prelude.PartialEq", "anthill.prelude.Eq",
-                      "anthill.prelude.PartialOrd", "anthill.prelude.Ordered"))
+                      "anthill.prelude.PartialOrd", "anthill.prelude.Ord"))
       assert(parents.contains(scopeOf(spec)),
         s"`provides … :- $spec[…]` should link $spec; parents = " +
         parents.map(p => kb.scopeDisplayName(p)).mkString(", "))

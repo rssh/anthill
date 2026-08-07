@@ -157,7 +157,7 @@ fn override_strengthening_precondition_rejected() {
     let src = r#"
         namespace wi347.pre_strong
           import anthill.prelude.{Int64}
-          import anthill.prelude.Ordered.{gt}
+          import anthill.prelude.Ord.{gt}
           sort Sp
             sort T = ?
             operation op(x: T) -> T
@@ -185,7 +185,7 @@ fn override_weakening_postcondition_rejected() {
     let src = r#"
         namespace wi347.post_weak
           import anthill.prelude.{Int64}
-          import anthill.prelude.Ordered.{gt}
+          import anthill.prelude.Ord.{gt}
           sort Sp
             sort T = ?
             operation op(x: T) -> T ensures gt(x, 0)
@@ -214,7 +214,7 @@ fn override_matching_contract_loads() {
     let src = r#"
         namespace wi347.contract_ok
           import anthill.prelude.{Int64}
-          import anthill.prelude.Ordered.{gt}
+          import anthill.prelude.Ord.{gt}
           sort Sp
             sort T = ?
             operation op(x: T) -> T requires gt(x, 0) ensures gt(x, 0)

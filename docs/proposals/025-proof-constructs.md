@@ -16,7 +16,7 @@ We need:
 A `proof` is not a standalone proposition — it attaches to an existing `rule`. The rule states what is claimed; the proof provides evidence.
 
 ```anthill
-sort Ordered
+sort Ord
   requires Eq[T]
 
   rule lt(?a, ?b) :- eq(sign(compare(?a, ?b)), neg-one)
@@ -715,7 +715,7 @@ Multiple `provides` blocks can target the same spec — one for anthill rules, o
 |--|--|--|
 | Direction | Consumer: "I need this spec" | Producer: "I satisfy this spec" |
 | Effect | Makes spec's rules available in scope | Creates obligation to supply spec's operations |
-| Subtyping | Yes: `Ordered <: Eq` via requires | Yes: `IntStack <: Stack` via provides |
+| Subtyping | Yes: `Ord <: Eq` via requires | Yes: `IntStack <: Stack` via provides |
 | Proof context | Spec's rules are assumptions | Spec's contracts must be proved |
 
 ### KB representation

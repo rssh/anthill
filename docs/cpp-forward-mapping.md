@@ -296,7 +296,7 @@ A `requires` clause becomes a compile-time check that the required trait class i
 ```anthill
 sort Sorted
   sort T
-  requires Ordered[T]
+  requires Ord[T]
 
   operation sort(xs: List[T = T]) -> List[T = T]
 end
@@ -308,13 +308,13 @@ becomes
 namespace anthill::prelude {
 
 // Sort: Sorted[T]
-//   Requires: Ordered<T>
+//   Requires: Ord<T>
 template <typename T>
 struct Sorted {
     static std::vector<T> sort(std::vector<T> xs) {
-        static_assert(::anthill::detail::is_satisfied_v<Ordered<T>>,
-                      "Sorted<T> requires Ordered<T> to be specialized "
-                      "(declare 'fact Ordered[T = ...]' in anthill).");
+        static_assert(::anthill::detail::is_satisfied_v<Ord<T>>,
+                      "Sorted<T> requires Ord<T> to be specialized "
+                      "(declare 'fact Ord[T = ...]' in anthill).");
         // TODO
     }
 };
@@ -322,12 +322,12 @@ struct Sorted {
 }
 ```
 
-Inside the body, calls go through `Ordered<T>::compare(a, b)`. The substitution from `requires Ordered[T]` (`Ordered`'s `T` ↦ enclosing `T`) is just template argument plumbing.
+Inside the body, calls go through `Ord<T>::compare(a, b)`. The substitution from `requires Ord[T]` (`Ord`'s `T` ↦ enclosing `T`) is just template argument plumbing.
 
 **Substitutions** map directly to template arguments at the call site:
 - `requires Eq[T]` → `Eq<T>::eq(...)` and a `static_assert` on `is_satisfied_v<Eq<T>>`.
 - `requires Eq[T = Pair[A = T, B = S]]` → `Eq<std::pair<T, S>>::eq(...)` and a `static_assert` on `is_satisfied_v<Eq<std::pair<T, S>>>`.
-- `requires Ordered[T = K], Eq[T = K]` (multi-requires) → one `static_assert` per requires, both substituting `K` for the trait's type parameter.
+- `requires Ord[T = K], Eq[T = K]` (multi-requires) → one `static_assert` per requires, both substituting `K` for the trait's type parameter.
 
 **Operation-level `requires`** (vs. sort-level) just means the `static_assert` is emitted inside that one method's body, not in every method.
 
@@ -351,7 +351,7 @@ inline constexpr bool is_satisfied_v = is_satisfied<Tr>::value;
 
 Three pieces — the marker on every specialization, the detection trait in the runtime header, and the `static_assert` at the top of each method body. Together they enforce `requires` at compile time without `concept`.
 
-**Substitution at rule sites.** When an anthill `rule` body references an operation from a required sort (e.g. `Ordered.lte(?a, ?b)` inside a `rule` of `Sorted[T]`), codegen emits `Ordered<T>::lte(a, b)` — the substitution from the `requires` carries through.
+**Substitution at rule sites.** When an anthill `rule` body references an operation from a required sort (e.g. `Ord.lte(?a, ?b)` inside a `rule` of `Sorted[T]`), codegen emits `Ord<T>::lte(a, b)` — the substitution from the `requires` carries through.
 
 ### 3.9 Imports
 
@@ -378,7 +378,7 @@ These two drive the cpp20-stl profile:
 
 ## 6. Out of scope (explicitly)
 
-- **`cpp20-stl` profile.** Adds auto-generated `concept` aliases on top of the existing traits classes (`template<typename T> concept OrderedC = is_satisfied_v<Ordered<T>>;`), `requires` clauses on dependent methods (replacing in-body `static_assert`s with structural constraints), `std::optional` chaining utilities, designated initializers in entity construction. Same call-site code, better diagnostics, and lets users write `template<OrderedC T>` in their own generics. Slotted in when a consumer can guarantee C++20.
+- **`cpp20-stl` profile.** Adds auto-generated `concept` aliases on top of the existing traits classes (`template<typename T> concept OrderedC = is_satisfied_v<Ord<T>>;`), `requires` clauses on dependent methods (replacing in-body `static_assert`s with structural constraints), `std::optional` chaining utilities, designated initializers in entity construction. Same call-site code, better diagnostics, and lets users write `template<OrderedC T>` in their own generics. Slotted in when a consumer can guarantee C++20.
 - **Unreal Engine profile.** UE has its own conventions (`UCLASS`, `UFUNCTION`, `UPROPERTY`, `FString`, `TArray`, `TSharedPtr`). Adding UE means a new profile (`ue5`) with its own type table and macro decoration. Drafted only when UE work begins.
 - **Embedded no-STL profile.** Fixed-size arrays, no heap, possibly `etl::*`. New profile, same story.
 - **Backward direction (C++ → anthill).** No automated extractor. Hand-author bindings as needed. A libclang-based tool may be considered later if hand-authoring proves to be a real bottleneck.

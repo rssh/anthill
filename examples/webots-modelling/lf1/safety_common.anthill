@@ -42,13 +42,13 @@
 --   - field access on a bound entity is via destructuring in the
 --     body, not dot syntax: DistanceBounds(d_min: ?d_min, ...)
 --     extracts ?d_min from the active fact
---   - comparisons in goal position go through Ordered: lt, gt, lte
+--   - comparisons in goal position go through Ord: lt, gt, lte
 --   - arithmetic in goal position uses Numeric ops: add, mul, div
 
 namespace anthill.examples.lf1.safety.common
   import anthill.prelude.{Float, Int64, Bool}
   import anthill.prelude.Numeric.{add, sub, mul}
-  import anthill.prelude.Ordered.{gte}
+  import anthill.prelude.Ord.{gte}
   import anthill.geometry.{Vec3}
   import anthill.examples.lf1.leader.{Pose}
 

@@ -4,7 +4,7 @@
 //! Three acceptance points:
 //! 1. Tree shape mirrors the declared `requires` hierarchy.
 //! 2. Substitution composition: a leaf in Wi222Outer's tree carries
-//!    `T = Wi222Outer.T` directly, not `T = Ordered.T` (root-scoped).
+//!    `T = Wi222Outer.T` directly, not `T = Ord.T` (root-scoped).
 //! 3. `flatten_requires_tree` reproduces the same set of entries that
 //!    `requires_chain` returns (consistency between tree and flat views).
 

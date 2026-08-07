@@ -28,7 +28,7 @@ fn build_kb() -> anthill_core::kb::KnowledgeBase {
         namespace test.smt_gen.qfnra_field
           import anthill.prelude.{Float, Int64, Bool}
           import anthill.prelude.Numeric.{add, sub, mul}
-          import anthill.prelude.Ordered.{lt, gte}
+          import anthill.prelude.Ord.{lt, gte}
 
 
           enum Drone

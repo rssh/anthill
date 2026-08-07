@@ -222,8 +222,8 @@ anthill> members Account
   deposit   (Operation)
   withdraw  (Operation)
 
-anthill> requirements Ordered
-  Eq[T]  [domain: Ordered]
+anthill> requirements Ord
+  Eq[T]  [domain: Ord]
 
 anthill> stats
   sorts: 9  facts: 51  active: 50  retracted: 1

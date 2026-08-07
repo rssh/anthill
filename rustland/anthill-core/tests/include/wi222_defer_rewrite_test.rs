@@ -175,21 +175,21 @@ end
 
 #[test]
 fn requirement_name_tracks_requires_chain_entry() {
-    // Sort declares two requires: `Eq[T]` then `Ordered[T]`. A call to
-    // `Ordered.compare(...)` from inside the sort's body must emit a
-    // dispatching-dict expression `var_ref(name = Ref(__req_ordered))`
-    // — Ordered's slot in the transitive `requires_chain` (chain shape
-    // `[Eq, Ordered, Eq]` here, with Ordered at index 1) is named via
-    // `synth_req_names` as `__req_ordered` (no collision: only one
-    // Ordered in the chain).
+    // Sort declares two requires: `Eq[T]` then `Ord[T]`. A call to
+    // `Ord.compare(...)` from inside the sort's body must emit a
+    // dispatching-dict expression `var_ref(name = Ref(__req_ord))`
+    // — Ord's slot in the transitive `requires_chain` (chain shape
+    // `[Eq, Ord, Eq]` here, with Ord at index 1) is named via
+    // `synth_req_names` as `__req_ord` (no collision: only one
+    // Ord in the chain).
     let src = r#"
 namespace test.wi222.multi_requires
-  import anthill.prelude.Ordered.{compare}
-  import anthill.prelude.{Eq, Ordered, Int64}
+  import anthill.prelude.Ord.{compare}
+  import anthill.prelude.{Eq, Ord, Int64}
   sort Wi222Multi
     sort T = ?
     requires Eq[T]
-    requires Ordered[T]
+    requires Ord[T]
     operation use_compare(a: T, b: T) -> Int64 = compare(a, b)
   end
 end
@@ -197,8 +197,8 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ordered.compare")
-        .expect("Ordered.compare registered");
+    let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ord.compare")
+        .expect("Ord.compare registered");
     let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref in stdlib");
 
@@ -209,7 +209,7 @@ end
         }
     }
     let rewritten_tid = rewritten_for_compare
-        .expect("Ordered.compare call inside multi-requires sort must be rewritten");
+        .expect("Ord.compare call inside multi-requires sort must be rewritten");
 
     // Drill into the rewritten apply_within's requirements[0] to find
     // the dispatching dict's name.
@@ -238,9 +238,9 @@ end
         // WI-873: KB-global map, so the surviving entry for this spec may be another
         // sort's — the SPEC of the name is what this can establish, not the fixture.
         Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb, *s, "__req_ordered",
-            "an `Ordered` chain slot maps to a requirement param synthesized from \
-             `Ordered`",
+            kb, *s, "__req_ord",
+            "an `Ord` chain slot maps to a requirement param synthesized from \
+             `Ord`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
@@ -248,25 +248,25 @@ end
 
 #[test]
 fn dispatching_dict_is_caller_direct_requirement_var_ref() {
-    // Wi222Outer declares `requires Ordered[T]`; Ordered itself declares
+    // Wi222Outer declares `requires Ord[T]`; Ord itself declares
     // `requires Eq[T]` (from stdlib). Wi222Outer's transitive chain is
-    // [Ordered, Eq], synthesized names [`__req_ordered`, `__req_eq`].
+    // [Ord, Eq], synthesized names [`__req_ord`, `__req_eq`].
     //
     // The body calls `compare(a, b)`. Names-model emit: the apply_within
     // carries a single-entry requirements channel with the dispatching
-    // Ordered dictionary, sourced as `var_ref(name = Ref(__req_ordered))`
-    // — the caller's own Ordered slot, by name. The callee's `__req_eq`
+    // Ord dictionary, sourced as `var_ref(name = Ref(__req_ord))`
+    // — the caller's own Ord slot, by name. The callee's `__req_eq`
     // binding is populated at runtime by expanding the dispatching
-    // dict's `sub_requires[0]` (Ordered's bundled Eq), not by an IR-time
+    // dict's `sub_requires[0]` (Ord's bundled Eq), not by an IR-time
     // projection. See operation-call-model.md §"Channel cardinality
     // (v0)" — every apply_within has exactly one requirements entry.
     let src = r#"
 namespace test.wi222.proj_deps
-  import anthill.prelude.Ordered.{compare}
-  import anthill.prelude.{Ordered, Int64}
+  import anthill.prelude.Ord.{compare}
+  import anthill.prelude.{Ord, Int64}
   sort Wi222Outer
     sort T = ?
-    requires Ordered[T]
+    requires Ord[T]
     operation use_compare(a: T, b: T) -> Int64 = compare(a, b)
   end
 end
@@ -274,8 +274,8 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ordered.compare")
-        .expect("Ordered.compare registered");
+    let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ord.compare")
+        .expect("Ord.compare registered");
     let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
     let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")
@@ -290,15 +290,15 @@ end
         }
     }
     let rewritten_tid = rewritten_for_compare
-        .expect("Ordered.compare call inside `requires Ordered[T]` sort must be rewritten");
+        .expect("Ord.compare call inside `requires Ord[T]` sort must be rewritten");
 
     let named_args = match kb.get_term(rewritten_tid) {
         Term::Fn { named_args, .. } => named_args.clone(),
         other => panic!("rewritten must be Fn; got {other:?}"),
     };
 
-    // requirements list must be `cons(head=var_ref(name=Ref(__req_ordered)), tail=nil)`
-    // — single dispatching dict naming the caller's own Ordered slot.
+    // requirements list must be `cons(head=var_ref(name=Ref(__req_ord)), tail=nil)`
+    // — single dispatching dict naming the caller's own Ord slot.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements")
         .expect("apply_within must carry `requirements`");
     let (cons_functor, cons_named) = match kb.get_term(reqs_tid) {
@@ -322,11 +322,11 @@ end
     let name_tid = get_named_arg(kb, &head_named, "name")
         .expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        // WI-873: was "the CALLER's own Ordered slot" — the KB-global map cannot
+        // WI-873: was "the CALLER's own Ord slot" — the KB-global map cannot
         // establish whose rewrite this is, so the claim is narrowed to the spec.
         Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb, *s, "__req_ordered",
-            "the var_ref must name a requirement param synthesized from `Ordered`",
+            kb, *s, "__req_ord",
+            "the var_ref must name a requirement param synthesized from `Ord`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
@@ -462,20 +462,20 @@ end
 
 #[test]
 fn synth_req_names_for_multi_requires_is_direct_no_dup() {
-    // WI-239: `Wi239Multi requires Eq[T], requires Ordered[T]` with
-    // `Ordered requires Eq[T]` (stdlib). The pre-WI-239 *flat* chain
-    // flattened to `[Eq, Ordered, Eq]` — a duplicated Eq that forced
+    // WI-239: `Wi239Multi requires Eq[T], requires Ord[T]` with
+    // `Ord requires Eq[T]` (stdlib). The pre-WI-239 *flat* chain
+    // flattened to `[Eq, Ord, Eq]` — a duplicated Eq that forced
     // `synth_req_names` to disambiguate the two `__req_eq` bases by spec
-    // TermId. The DIRECT chain is exactly `[Eq, Ordered]`, so the
+    // TermId. The DIRECT chain is exactly `[Eq, Ord]`, so the
     // synthesized frame-requirement names are the clean
-    // `[__req_eq, __req_ordered]`, no collision and no duplication.
+    // `[__req_eq, __req_ord]`, no collision and no duplication.
     let src = r#"
 namespace test.wi239.multi
-  import anthill.prelude.{Eq, Ordered, Int64}
+  import anthill.prelude.{Eq, Ord, Int64}
   sort Wi239Multi
     sort T = ?
     requires Eq[T]
-    requires Ordered[T]
+    requires Ord[T]
   end
 end
 "#;
@@ -491,22 +491,22 @@ end
         .collect();
     assert_eq!(
         resolved,
-        vec!["__req_eq".to_string(), "__req_ordered".to_string()],
+        vec!["__req_eq".to_string(), "__req_ord".to_string()],
         "WI-239: the direct requires chain yields one clean per-spec name \
-         each, with no `[Eq, Ordered, Eq]` duplication / `__req_eq` \
+         each, with no `[Eq, Ord, Eq]` duplication / `__req_eq` \
          collision; got {resolved:?}",
     );
 }
 
 #[test]
 fn transitive_eq_call_classifies_as_nested_deferral() {
-    // WI-239: `Wi239Nested requires Ordered[T]`; `Ordered requires Eq[T]`
+    // WI-239: `Wi239Nested requires Ord[T]`; `Ord requires Eq[T]`
     // (stdlib). The body calls `eq(a, b)` — an Eq op reached only
-    // TRANSITIVELY, through Ordered. Under the direct-chain ABI Eq is not
-    // a frame slot of Wi239Nested; it lives inside the `__req_ordered`
+    // TRANSITIVELY, through Ord. Under the direct-chain ABI Eq is not
+    // a frame slot of Wi239Nested; it lives inside the `__req_ord`
     // requirement's bundled value. So the call must classify as
-    // `DeferToRequirement { slot: 0 (Ordered), proj_path: [0] (Eq is
-    // Ordered's 0th direct require) }` — a NON-EMPTY `proj_path` marks the
+    // `DeferToRequirement { slot: 0 (Ord), proj_path: [0] (Eq is
+    // Ord's 0th direct require) }` — a NON-EMPTY `proj_path` marks the
     // nested case, vs. an empty `proj_path` for a direct require (which
     // would wrongly read a non-existent `__req_eq` frame slot), and NOT
     // `UnresolvedSpecOp` (the pre-WI-239 direct-chain regression, where
@@ -514,10 +514,10 @@ fn transitive_eq_call_classifies_as_nested_deferral() {
     let src = r#"
 namespace test.wi239.nested
   import anthill.prelude.Eq.{eq}
-  import anthill.prelude.{Eq, Ordered, Bool}
+  import anthill.prelude.{Eq, Ord, Bool}
   sort Wi239Nested
     sort T = ?
-    requires Ordered[T]
+    requires Ord[T]
     operation use_eq(a: T, b: T) -> Bool = eq(a, b)
   end
 end
@@ -557,13 +557,13 @@ end
 
     assert_eq!(
         slot, 0,
-        "Ordered is Wi239Nested's direct require slot 0",
+        "Ord is Wi239Nested's direct require slot 0",
     );
     assert_eq!(
         proj_path.as_slice(),
         &[0usize, 0usize],
         "WI-644: `eq`'s spec is now `PartialEq`, nested one level deeper — \
-         Ordered → Eq (slot 0) → PartialEq (slot 0), so the projection path is \
+         Ord → Eq (slot 0) → PartialEq (slot 0), so the projection path is \
          [0, 0]. The extra hop is the added PartialEq base level.",
     );
 }

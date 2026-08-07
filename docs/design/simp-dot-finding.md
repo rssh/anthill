@@ -28,7 +28,7 @@ The rules that matter are defined **in specs/sorts**:
 
 ```
 Numeric:  add_identity:  add(?a, 0) = ?a                  -- requires Numeric[T]
-Ordered:  min(?a, ?b) = ite(lte(?a, ?b), ?a, ?b)          -- requires Ordered[T]
+Ord:  min(?a, ?b) = ite(lte(?a, ?b), ?a, ?b)              -- requires Ord[T]
 ```
 
 The rule's `add` is `Numeric.add`; a real term is `Int64.add(x, 0)` — a

@@ -16,7 +16,7 @@ namespace anthill.todo.store
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
   import anthill.prelude.Int64.{to_string}
   import anthill.prelude.String.{concat}
-  import anthill.prelude.Ordered.{lt}
+  import anthill.prelude.Ord.{lt}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Option.{none, some}

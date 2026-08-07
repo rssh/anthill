@@ -25,7 +25,7 @@ fn build_kb() -> KnowledgeBase {
     let source = r#"
         namespace test.smt_gen.wi687
           import anthill.prelude.{Float, Bool, Option}
-          import anthill.prelude.Ordered.{lt, gt, gte}
+          import anthill.prelude.Ord.{lt, gt, gte}
           import anthill.prelude.Numeric.{add}
           import anthill.prelude.Option.{some, none}
 

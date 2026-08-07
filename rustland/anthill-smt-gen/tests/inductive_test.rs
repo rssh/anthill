@@ -19,7 +19,7 @@ fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
           import anthill.prelude.{Float, Int64}
           import anthill.prelude.Numeric.{add, sub, mul}
           import anthill.prelude.Float.{div, abs}
-          import anthill.prelude.Ordered.{lte, lt, gt}
+          import anthill.prelude.Ord.{lte, lt, gt}
 
 
           entity LinkParameters(

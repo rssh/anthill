@@ -3,26 +3,26 @@
 //!
 //! WHAT THE PRELUDE SHIPS — REWRITTEN AT WI-869/WI-877, because the answer changed.
 //! `Pair` now provides FOUR conditioned provisions: `PartialEq`, `Eq`, `PartialOrd`
-//! and `Ordered`, each with its own `:- goals` tail (058 §3.8), and the ordering is
+//! and `Ord`, each with its own `:- goals` tail (058 §3.8), and the ordering is
 //! the canonical lexicographic `fst`-then-`snd`. When this file was written it
 //! provided only the two equality floors, for two reasons that are both now gone:
 //! ordering `Pair` cost SEVEN operations where one would do (WI-876 keyed host
 //! implementations per carrier, so `compare` alone suffices), and a sort's ONE
-//! `requires` chain could not condition `Ordered` without also demanding it of
+//! `requires` chain could not condition `Ord` without also demanding it of
 //! `PartialEq` (WI-869 scoped conditions to their own provision).
 //!
 //! WHICH CHANGES THE COEXISTENCE STORY BELOW, and the arms record the new shape
-//! rather than being deleted. `Pair` is now a THIRD `Ordered` provider, so the two
+//! rather than being deleted. `Pair` is now a THIRD `Ord` provider, so the two
 //! witnesses declared here tie three ways at a bracket-less compare — the same
 //! configuration `wi844_sorted_set_driver_test` has over `String`, whose host
-//! `Ordered` provider makes its ties three-way. Every repair here is still writable
+//! `Ord` provider makes its ties three-way. Every repair here is still writable
 //! for the two LOCAL witnesses; naming the prelude's own is not (058 §3.5 check 3
-//! refuses `[Ordered = Pair]` because `Pair` is a CONCRETE provider — WI-861's rung
+//! refuses `[Ord = Pair]` because `Pair` is a CONCRETE provider — WI-861's rung
 //! 2a is what would close that, and WI-877 records the decision to keep the order as
 //! `Pair`'s own identity anyway).
 //!
 //! WHY THE PRELUDE COULD HAVE CARRIED AN ORDERING (and what still holds): obstacle B —
-//! `Ordered requires Eq[T]`, and in a binding-free `stdlib/` load no primitive's `Eq`
+//! `Ord requires Eq[T]`, and in a binding-free `stdlib/` load no primitive's `Eq`
 //! exists (those live in the per-language binding files, proposal 038). `Pair`'s
 //! componentwise `Eq` is what makes an ordering of it prelude-expressible at all, and
 //! it is what lets the two witnesses below discharge their own `Eq` leg.
@@ -37,55 +37,55 @@ use anthill_core::eval::Value;
 fn program(ns: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ordered, PartialOrd, PartialEq, String, Int64, Float, \
+         import anthill.prelude.{{Ord, PartialOrd, PartialEq, String, Int64, Float, \
          List, Pair, SortedSet}}\n  \
          import anthill.prelude.Pair.{{pair}}\n{body}\nend\n"
     )
 }
 
-/// A LOCAL ordering — lexicographic `snd`-then-`fst`. A `PartialOrd` + `Ordered`
+/// A LOCAL ordering — lexicographic `snd`-then-`fst`. A `PartialOrd` + `Ord`
 /// BUNDLE with NAMED element slots, which is the lawful form (058 §3.8):
 /// `ordered.anthill` derives `gt`/`lt` from `compare` off the carrier's `PartialOrd`,
-/// so a lone `Ordered` witness would contradict what it inherits.
+/// so a lone `Ord` witness would contradict what it inherits.
 const BY_SND: &str = r#"
   sort BySnd
-    import anthill.prelude.{Int64, Pair, Ordered, PartialOrd, PartialEq}
+    import anthill.prelude.{Int64, Pair, Ord, PartialOrd, PartialEq}
     import anthill.prelude.Pair.{pair}
     sort A = ?
     sort B = ?
-    requires OA: Ordered[A]
-    requires OB: Ordered[B]
+    requires OA: Ord[A]
+    requires OB: Ord[B]
     provides PartialOrd[Pair[A, B]]
-    provides Ordered[Pair[A, B]]
+    provides Ord[Pair[A, B]]
     operation compare(a: Pair[A, B], b: Pair[A, B]) -> Int64 =
       match a
         case pair(al, ar) ->
           match b
             case pair(bl, br) ->
-              let c = Ordered.compare(ar, br)
-              if PartialEq.eq(c, 0) then Ordered.compare(al, bl) else c
+              let c = Ord.compare(ar, br)
+              if PartialEq.eq(c, 0) then Ord.compare(al, bl) else c
 "#;
 
 /// The SECOND local ordering — lexicographic `fst`-then-`snd`, the one a canonical
-/// `Ordered[Pair]` would be. Declared here rather than in the prelude for WI-876's
+/// `Ord[Pair]` would be. Declared here rather than in the prelude for WI-876's
 /// reason (see this file's header).
 const BY_FST: &str = r#"
   sort ByFst
-    import anthill.prelude.{Int64, Pair, Ordered, PartialOrd, PartialEq}
+    import anthill.prelude.{Int64, Pair, Ord, PartialOrd, PartialEq}
     import anthill.prelude.Pair.{pair}
     sort A = ?
     sort B = ?
-    requires OA: Ordered[A]
-    requires OB: Ordered[B]
+    requires OA: Ord[A]
+    requires OB: Ord[B]
     provides PartialOrd[Pair[A, B]]
-    provides Ordered[Pair[A, B]]
+    provides Ord[Pair[A, B]]
     operation compare(a: Pair[A, B], b: Pair[A, B]) -> Int64 =
       match a
         case pair(al, ar) ->
           match b
             case pair(bl, br) ->
-              let c = Ordered.compare(al, bl)
-              if PartialEq.eq(c, 0) then Ordered.compare(ar, br) else c
+              let c = Ord.compare(al, bl)
+              if PartialEq.eq(c, 0) then Ord.compare(ar, br) else c
 "#;
 
 /// Render a `List[Pair[Int64, Int64]]` as `(1,9)(2,1)`.
@@ -164,16 +164,16 @@ fn positive_control_a_broken_program_is_refused() {
 
 /// THE OBSTACLE-B CONTROL: `Pair`'s componentwise equality must hold with NO language
 /// binding present — that is what makes an ordering of `Pair` prelude-EXPRESSIBLE at
-/// all (`Ordered requires Eq[T]`), and it is what the two witnesses below discharge
+/// all (`Ord requires Eq[T]`), and it is what the two witnesses below discharge
 /// their own `Eq` leg from. `stdlib/` must load bindings-free. `load_stdlib_kb` is exactly that load (it collects `stdlib/` alone
 /// and panics on failure), and it is what many suites use.
 ///
 /// Not ceremony. The identical experiment on `String` — one prelude witness beside
-/// `Ordered[String]` — MEASURED two errors here (*"provides `Ordered`, which requires
+/// `Ord[String]` — MEASURED two errors here (*"provides `Ord`, which requires
 /// `Eq`, but … does not provide `Eq`"*), because `Eq[String]` exists only in the Rust
 /// binding. `Pair` passes because its `Eq` is its own.
 /// Asserted on the PROVISION FACT rather than on "the load did not panic": without the
-/// `Ordered` provision `stdlib/` loads perfectly well (it did, until this change), so a
+/// `Ord` provision `stdlib/` loads perfectly well (it did, until this change), so a
 /// bare `load_stdlib_kb()` would be vacuous for this claim. (`wi362_stream_provides_
 /// iterable`'s shape.)
 #[test]
@@ -208,7 +208,7 @@ fn the_prelude_makes_a_pair_lawful_with_no_language_binding() {
             }
         })
         .collect();
-    // WI-869/WI-877: all FOUR floors, not just the two equality ones. `Ordered
+    // WI-869/WI-877: all FOUR floors, not just the two equality ones. `Ord
     // requires Eq` and `PartialOrd requires PartialEq`, so the ordering provisions
     // are exactly what the equality ones make prelude-expressible — asserting only
     // the equality half would leave the tower's upper floors unpinned in the very
@@ -217,7 +217,7 @@ fn the_prelude_makes_a_pair_lawful_with_no_language_binding() {
         "anthill.prelude.PartialEq",
         "anthill.prelude.Eq",
         "anthill.prelude.PartialOrd",
-        "anthill.prelude.Ordered",
+        "anthill.prelude.Ord",
     ] {
         assert!(
             pair_provides.iter().any(|s| s == spec),
@@ -273,7 +273,7 @@ fn swapping_the_brackets_swaps_the_answers() {
 }
 
 /// …AND THE PRICE OF COEXISTENCE, which is 058's whole subject: with both declared, a
-/// bracket-LESS `Ordered.compare` on a `Pair` is a loud tier-3 error naming both. This
+/// bracket-LESS `Ord.compare` on a `Pair` is a loud tier-3 error naming both. This
 /// is the configuration every phase before 3b refused at the DECLARATION; it is now
 /// refused at the one call that has to choose, with the repair spelled out.
 ///
@@ -290,7 +290,7 @@ fn a_bracketless_compare_with_two_orderings_names_both() {
         &format!(
             "{BY_SND}  end\n{BY_FST}  end\n  sort Use\n    \
              operation cmp(a: Pair[Int64, Int64], b: Pair[Int64, Int64]) -> Int64 =\n      \
-             Ordered.compare(a, b)\n  end"
+             Ord.compare(a, b)\n  end"
         ),
     );
     let errs = load_errs(&src);
@@ -358,7 +358,7 @@ fn union_within_one_ordering_merges() {
 }
 
 /// The ELEMENT orderings are independent of the pair ordering: a HETEROGENEOUS
-/// `Pair[Int64, String]` threads `Ordered[Int64]` for `fst` and `Ordered[String]` for
+/// `Pair[Int64, String]` threads `Ord[Int64]` for `fst` and `Ord[String]` for
 /// `snd` — two DIFFERENT providers of one spec, live in one dictionary at once. Worth
 /// asserting because an `InstanceSelection` is keyed by the SPEC, so a read that
 /// collapsed the two would pin one element ordering onto both components.
@@ -369,10 +369,10 @@ fn a_heterogeneous_pair_orders_through_two_element_orderings() {
         &format!(
             "{BY_FST}  end\n  sort Driver\n    \
              operation sndDecides(n: Int64) -> Int64 =\n      \
-             Ordered.compare[Ordered = ByFst](pair(fst: 1, snd: \"zz\"), \
+             Ord.compare[Ord = ByFst](pair(fst: 1, snd: \"zz\"), \
              pair(fst: 1, snd: \"aaa\"))\n    \
              operation fstDecides(n: Int64) -> Int64 =\n      \
-             Ordered.compare[Ordered = ByFst](pair(fst: 1, snd: \"zz\"), \
+             Ord.compare[Ord = ByFst](pair(fst: 1, snd: \"zz\"), \
              pair(fst: 2, snd: \"aaa\"))\n  end"
         ),
     );
@@ -433,7 +433,7 @@ fn pair_equality_is_componentwise() {
 /// That half is DONE: `pair.anthill` now writes `provides Eq[Pair] :- Eq[A], Eq[B]`
 /// and the goal `Eq[Pair[Float, Int64]]` genuinely does not resolve — measured by its
 /// sibling floor in `wi869_per_provision_conditions_test`, where the same shape
-/// refuses `Ordered.compare` on a float pair naming `Ordered[Float]`.
+/// refuses `Ord.compare` on a float pair naming `Ord[Float]`.
 ///
 /// `Set[T = Pair[Float, Int64]]` STILL LOADS, for a different and now-measured
 /// reason: there is NO POSITIVE use-site check for `requires Eq`. The only refusal at
@@ -638,7 +638,7 @@ fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
 /// show that, because either alone is explicable: the KEY is checked (an unknown slot
 /// name is refused, naming the real ones — so the bracket list was parsed and
 /// validated against the witness), while the VALUE steered nothing (a NONSENSE
-/// binding, `OA = ByFst`, which provides no `Ordered[Int64]` at all, loaded clean and
+/// binding, `OA = ByFst`, which provides no `Ord[Int64]` at all, loaded clean and
 /// computed `1`, `BySnd`'s unbound answer). A silent drop of written text — and a
 /// defect rather than a gap because `TieRepair::SubGoal` PRINTS this spelling as the
 /// repair for a sub-goal tie, so an author who followed the diagnostic got the
@@ -656,7 +656,7 @@ fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
         &format!(
             "{BY_SND}  end\n  sort Driver\n    \
              operation go(n: Int64) -> Int64 =\n      \
-             Ordered.compare[Ordered = BySnd[NoSuchSlot = Int64]](\n        \
+             Ord.compare[Ord = BySnd[NoSuchSlot = Int64]](\n        \
              pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
         ),
     );
@@ -674,14 +674,14 @@ fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
         &format!(
             "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n    \
              operation go(n: Int64) -> Int64 =\n      \
-             Ordered.compare[Ordered = BySnd[OA = ByFst]](\n        \
+             Ord.compare[Ord = BySnd[OA = ByFst]](\n        \
              pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
         ),
     );
     let errs = load_errs(&nonsense);
     assert!(
         errs.iter().any(|e| e.contains("bound slot `OA` of") && e.contains("ByFst")),
-        "`ByFst` provides `Ordered` at `Pair`, never at `Int64`, so the binding is now \
+        "`ByFst` provides `Ord` at `Pair`, never at `Int64`, so the binding is now \
          refused where it used to be dropped — and named in the author's own \
          vocabulary, the SLOT rather than the sub-goal it became: {errs:?}"
     );
@@ -689,7 +689,7 @@ fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
 
 // ── Control: nothing outside `Pair` moved ────────────────────────────
 
-/// The carriers that ALREADY had an `Ordered` provider are untouched — obstacle A
+/// The carriers that ALREADY had an `Ord` provider are untouched — obstacle A
 /// stated as a control. A bracket-less compare on a `String` or an `Int64` still
 /// resolves silently, which is precisely what a prelude witness for those carriers
 /// would have destroyed.
@@ -698,8 +698,8 @@ fn primitive_orderings_are_unchanged() {
     let src = program(
         "wi858.primitives",
         "  sort Driver\n    \
-         operation strings(n: Int64) -> Int64 = Ordered.compare(\"b\", \"a\")\n    \
-         operation ints(n: Int64) -> Int64 = Ordered.compare(7, 3)\n  end",
+         operation strings(n: Int64) -> Int64 = Ord.compare(\"b\", \"a\")\n    \
+         operation ints(n: Int64) -> Int64 = Ord.compare(7, 3)\n  end",
     );
     assert_eq!(eval_int(&src, "wi858.primitives.Driver.strings", "String compare"), 1);
     assert_eq!(eval_int(&src, "wi858.primitives.Driver.ints", "Int64 compare"), 1);

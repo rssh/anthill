@@ -47,7 +47,7 @@
 //! gap" the (b) pins below were written to flip on. An operation type parameter
 //! had no symbol→canonical-var channel at all, so `sigma_class` could not
 //! classify the `PT` written inside `requires Desc[PT]` and the operation's own
-//! clause never covered its own call. (WI-942 hit the same wall for `Ordered[T]`
+//! clause never covered its own call. (WI-942 hit the same wall for `Ord[T]`
 //! and got away with it: `T` collided by SHORT NAME with a stdlib `SortAlias`,
 //! so both sides landed on one wrong var and agreed. `PT` / `FT` / `GT` collide
 //! with nothing, so they simply had no answer.) With the channel in place the

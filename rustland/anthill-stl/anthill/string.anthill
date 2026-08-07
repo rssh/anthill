@@ -36,6 +36,6 @@ namespace anthill.prelude
     fact PartialEq[T = String]
     fact Eq[T = String]
     fact PartialOrd[T = String]
-    fact Ordered[T = String]
+    fact Ord[T = String]
   end
 end

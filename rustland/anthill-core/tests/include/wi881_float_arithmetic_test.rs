@@ -231,11 +231,11 @@ fn ieee_partiality_is_a_value_not_an_error() {
 }
 
 /// `max`/`min` are the IEEE-754 `maxNum`/`minNum` — they ABSORB NaN and are
-/// therefore COMMUTATIVE, which the `Ordered` derivation (`if gte(a, b) then a else
+/// therefore COMMUTATIVE, which the `Ord` derivation (`if gte(a, b) then a else
 /// b`) is not: with a NaN operand every comparison is false, so it answers the second
 /// argument on `(nan, 1.0)` and the first on `(1.0, nan)`. That asymmetry is why
 /// `Float` declares its own pair. It could not have inherited one anyway — `max`/`min`
-/// live on `Ordered`, `Float` provides `PartialOrd`, and before this ticket there was
+/// live on `Ord`, `Float` provides `PartialOrd`, and before this ticket there was
 /// NO way to take the maximum of two floats at all.
 #[test]
 fn max_min_are_ieee_and_absorb_nan() {
@@ -298,7 +298,7 @@ end
 
 /// THE `abs` LAW, settled. `abs` CLEARS the sign bit, and `-0.0` compares EQUAL to
 /// `+0.0`, so no comparison-based law reaches it. The original
-/// `abs(?a) <=> max(?a, neg(?a))` named `Ordered.max`, which no `Float` value can
+/// `abs(?a) <=> max(?a, neg(?a))` named `Ord.max`, which no `Float` value can
 /// reach; the `ite(lt(?a, 0.0), neg(?a), ?a)` restatement the ticket floated is
 /// driven here and answers `-0.0` where `abs` must answer `+0.0`. The law is gone,
 /// replaced by the part that is true (`abs(neg(?a)) <=> abs(?a)`), and `abs` is

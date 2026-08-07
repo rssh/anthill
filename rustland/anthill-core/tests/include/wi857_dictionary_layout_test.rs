@@ -12,14 +12,14 @@
 //! declared, and `requirement_at_sort` projected the required spec's own chain. The
 //! two agreed only when the provider was a chain-free witness sort — dispatch then
 //! landed on that witness's member, whose parent chain is empty. For a
-//! CARRIER-KEYED provision (`fact Ordered[T = Int64]`, provider `Int64`, which
+//! CARRIER-KEYED provision (`fact Ord[T = Int64]`, provider `Int64`, which
 //! declares no `requires`) the dictionary arrived arity 0 where the spec's two slots
 //! were wanted, so EVERY spec whose own chain is non-empty died at eval.
 //!
 //! What this file pins, in the order the ticket states it:
 //!
 //!  1. the two 058-free reproducers — `requires Eq[T]` reaching `PartialEq.eq`
-//!     transitively, and `requires Ordered[T]` reaching `Ordered.compare` — RUN;
+//!     transitively, and `requires Ord[T]` reaching `Ord.compare` — RUN;
 //!  2. the two controls that identified the trigger still run: the spec whose own
 //!     chain is EMPTY (`PartialEq`), and a chain-free WITNESS provider;
 //!  3. the parametric, chain-bearing witness (the ticket's feedback, probe `q4e`) —
@@ -74,12 +74,12 @@ fn eval_err(src: &str, entry: &str, needle: &str, why: &str) {
 ///
 /// `HolderEq` exercises the `requirement_at_sort` consumer (the body's `PartialEq.eq`
 /// is reached TRANSITIVELY, through `Eq`, so it reads `__req_eq` and projects slot 0)
-/// and `HolderOrd` the `expand_dispatching_dict` one (`Ordered.compare` dispatches
+/// and `HolderOrd` the `expand_dispatching_dict` one (`Ord.compare` dispatches
 /// onto the SPEC's op, since `Int64` supplies no member, so the frame is named from
-/// `Ordered`'s two-entry chain). Those were the two distinct death sites.
+/// `Ord`'s two-entry chain). Those were the two distinct death sites.
 const HOLDERS: &str = r#"
 namespace wi857.holder
-  import anthill.prelude.{Int64, Bool, PartialEq, Eq, Ordered}
+  import anthill.prelude.{Int64, Bool, PartialEq, Eq, Ord}
 
   sort HolderPE
     sort T = ?
@@ -95,15 +95,15 @@ namespace wi857.holder
 
   sort HolderOrd
     sort T = ?
-    requires Ordered[T]
-    operation cmp(a: T, b: T) -> Int64 = Ordered.compare(a, b)
+    requires Ord[T]
+    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
   end
 
   sort Driver
     operation viaPartialEq(n: Int64) -> Int64 = if HolderPE.same(7, 7) then 1 else 0
     operation viaEq(n: Int64) -> Int64 = if HolderEq.same(7, 7) then 1 else 0
     operation viaEqFalse(n: Int64) -> Int64 = if HolderEq.same(7, 8) then 1 else 0
-    operation viaOrdered(n: Int64) -> Int64 = HolderOrd.cmp(7, 3)
+    operation viaOrd(n: Int64) -> Int64 = HolderOrd.cmp(7, 3)
   end
 end
 "#;
@@ -140,12 +140,12 @@ fn a_requires_eq_holder_reaches_partialeq_transitively() {
 
 #[test]
 fn a_requires_ordered_holder_dispatches_the_specs_own_op() {
-    // Before: Internal("… dispatching dict for anthill.prelude.Ordered.compare has
+    // Before: Internal("… dispatching dict for anthill.prelude.Ord.compare has
     // arity 0 but its requires chain has 2 entries"). `Int64` supplies no `compare`
     // member, so dispatch lands on the spec's own builtin and the frame is named from
-    // `Ordered`'s chain (`Eq`, `PartialOrd`) — which the dictionary now carries.
+    // `Ord`'s chain (`Eq`, `PartialOrd`) — which the dictionary now carries.
     assert_eq!(
-        eval_int(HOLDERS, "wi857.holder.Driver.viaOrdered", "the `Ordered` reproducer"),
+        eval_int(HOLDERS, "wi857.holder.Driver.viaOrd", "the `Ord` reproducer"),
         1,
         "compare(7, 3) is 1 for the prelude's ascending Int64 order",
     );
@@ -155,23 +155,23 @@ fn a_requires_ordered_holder_dispatches_the_specs_own_op() {
 /// fix — dispatch lands on `Ascending.compare`, whose parent's chain is empty, so the
 /// consumer asked for 0 names and got the 0-arity dictionary — and it must still run,
 /// because the fix changes what that dictionary CONTAINS (it now also carries
-/// `Ordered`'s two spec-half slots) and therefore where the witness's frame slice
+/// `Ord`'s two spec-half slots) and therefore where the witness's frame slice
 /// starts. Getting the slice wrong here would be silent: `Ascending` declares no
 /// `requires`, so a mis-offset would only show up as a wrong value.
 #[test]
 fn a_chain_free_witness_provider_still_runs() {
     let src = r#"
 namespace wi857.witness
-  import anthill.prelude.{Int64, Ordered}
+  import anthill.prelude.{Int64, Ord}
   import anthill.prelude.Numeric.{sub}
 
   sort Descending
-    fact Ordered[T = Int64]
+    fact Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 
   sort Driver
-    operation viaWitness(n: Int64) -> Int64 = Ordered.compare[Ordered = Descending](7, 3)
+    operation viaWitness(n: Int64) -> Int64 = Ord.compare[Ord = Descending](7, 3)
   end
 end
 "#;
@@ -179,7 +179,7 @@ end
         eval_int(src, "wi857.witness.Driver.viaWitness", "the witness control"),
         -4,
         "`Descending.compare` is `sub(b, a)` = 3 - 7; the prelude's own ascending \
-         `Ordered[Int64]` would answer 1, so the value also proves the witness — not \
+         `Ord[Int64]` would answer 1, so the value also proves the witness — not \
          the carrier — supplied the op",
     );
 }
@@ -192,14 +192,14 @@ end
 ///
 /// `Duo` provides `PartialEq`/`Eq` for itself componentwise (so its dictionary's
 /// provider half is `Eq[A]`, `Eq[B]`); `LexFst` is a witness bundling
-/// `PartialOrd[Duo]` + `Ordered[Duo]` with its OWN chain `Ordered[A]`, `Ordered[B]`.
-/// The `Ordered[Duo[Int64, Int64]]` dictionary therefore carries four slots: the spec
-/// half (`Eq[Duo]`, `PartialOrd[Duo]`) then the provider half (`Ordered[Int64]`
+/// `PartialOrd[Duo]` + `Ord[Duo]` with its OWN chain `Ord[A]`, `Ord[B]`.
+/// The `Ord[Duo[Int64, Int64]]` dictionary therefore carries four slots: the spec
+/// half (`Eq[Duo]`, `PartialOrd[Duo]`) then the provider half (`Ord[Int64]`
 /// twice) — and `LexFst.compare`'s frame must read the SECOND pair. It loaded clean
 /// and died `arity 0 but its requires chain has 2 entries` on both routes before.
 const PARAMETRIC_WITNESS: &str = r#"
 namespace wi857.parametric
-  import anthill.prelude.{Int64, Bool, Ordered, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
 
   enum Duo
     import anthill.prelude.{PartialEq, Eq}
@@ -222,26 +222,26 @@ namespace wi857.parametric
     import anthill.prelude.PartialOrd.{lt, gt}
     sort A = ?
     sort B = ?
-    requires Ordered[T = A]
-    requires Ordered[T = B]
+    requires Ord[T = A]
+    requires Ord[T = B]
     fact PartialOrd[T = Duo[A = A, B = B]]
-    fact Ordered[T = Duo[A = A, B = B]]
+    fact Ord[T = Duo[A = A, B = B]]
     operation compare(a: Duo[A = A, B = B], b: Duo[A = A, B = B]) -> Int64 =
       match a
         case duo(al, ar) ->
           match b
             case duo(bl, br) ->
-              let c = Ordered.compare(al, bl)
+              let c = Ord.compare(al, bl)
               if lt(c, 0) then c
               else if gt(c, 0) then c
-              else Ordered.compare(ar, br)
+              else Ord.compare(ar, br)
   end
 
   sort Driver
     operation searched(n: Int64) -> Int64 =
-      Ordered.compare(duo(l: 1, r: 9), duo(l: 2, r: 1))
+      Ord.compare(duo(l: 1, r: 9), duo(l: 2, r: 1))
     operation tiebreaks(n: Int64) -> Int64 =
-      Ordered.compare(duo(l: 5, r: 9), duo(l: 5, r: 1))
+      Ord.compare(duo(l: 5, r: 9), duo(l: 5, r: 1))
   end
 end
 "#;
@@ -254,9 +254,9 @@ fn a_parametric_chain_bearing_witness_threads_both_halves() {
         "first components 1 < 2, so the lexicographic answer is negative",
     );
     // The SECOND component decides only when the first ties — which is the branch
-    // that dispatches `Ordered.compare` through the witness's SECOND chain slot. A
+    // that dispatches `Ord.compare` through the witness's SECOND chain slot. A
     // slice off by one would take slot 0's dictionary here and still be a valid
-    // `Ordered[Int64]`, so `searched` alone would not catch it.
+    // `Ord[Int64]`, so `searched` alone would not catch it.
     assert_eq!(
         eval_int(PARAMETRIC_WITNESS, "wi857.parametric.Driver.tiebreaks", "the tie branch"),
         1,
@@ -270,10 +270,10 @@ fn a_parametric_chain_bearing_witness_threads_both_halves() {
 /// provider `W`'s dictionary, a sub-goal `W` itself provides resolves to `W`'s OWN
 /// provision before any global search.
 ///
-/// It becomes necessary exactly BECAUSE the spec half is now bundled. `Ordered
+/// It becomes necessary exactly BECAUSE the spec half is now bundled. `Ord
 /// requires PartialOrd[T]`, and the lawful form of an alternative ordering is a
-/// `PartialOrd` + `Ordered` BUNDLE (`ordered.anthill` derives the inherited
-/// `gt`/`lt` from `compare`, so a lone `Ordered` witness's dictionary would
+/// `PartialOrd` + `Ord` BUNDLE (`ordered.anthill` derives the inherited
+/// `gt`/`lt` from `compare`, so a lone `Ord` witness's dictionary would
 /// contradict itself). So with two coexisting bundles, `PartialOrd[Duo]` has one
 /// candidate inside EACH of them and a global search TIES — the only right answer is
 /// witness-local. The rule keys on the SELECTED provider and never on caller scope,
@@ -286,7 +286,7 @@ fn a_parametric_chain_bearing_witness_threads_both_halves() {
 fn a_sub_goal_the_provider_supplies_resolves_witness_local() {
     let src = r#"
 namespace wi857.locality
-  import anthill.prelude.{Int64, Bool, Ordered, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
   import anthill.prelude.Numeric.{sub}
   
   enum Duet
@@ -309,36 +309,36 @@ namespace wi857.locality
   sort ByFst
     sort A = ?
     sort B = ?
-    requires Ordered[T = A]
-    requires Ordered[T = B]
+    requires Ord[T = A]
+    requires Ord[T = B]
     fact PartialOrd[T = Duet[A = A, B = B]]
-    fact Ordered[T = Duet[A = A, B = B]]
+    fact Ord[T = Duet[A = A, B = B]]
     operation compare(a: Duet[A = A, B = B], b: Duet[A = A, B = B]) -> Int64 =
       match a
         case pr(al, ar) ->
           match b
-            case pr(bl, br) -> Ordered.compare(al, bl)
+            case pr(bl, br) -> Ord.compare(al, bl)
   end
 
   sort BySnd
     sort A = ?
     sort B = ?
-    requires Ordered[T = A]
-    requires Ordered[T = B]
+    requires Ord[T = A]
+    requires Ord[T = B]
     fact PartialOrd[T = Duet[A = A, B = B]]
-    fact Ordered[T = Duet[A = A, B = B]]
+    fact Ord[T = Duet[A = A, B = B]]
     operation compare(a: Duet[A = A, B = B], b: Duet[A = A, B = B]) -> Int64 =
       match a
         case pr(al, ar) ->
           match b
-            case pr(bl, br) -> Ordered.compare(ar, br)
+            case pr(bl, br) -> Ord.compare(ar, br)
   end
 
   sort Driver
     operation byFst(n: Int64) -> Int64 =
-      Ordered.compare[Ordered = ByFst](pr(l: 1, r: 9), pr(l: 2, r: 1))
+      Ord.compare[Ord = ByFst](pr(l: 1, r: 9), pr(l: 2, r: 1))
     operation bySnd(n: Int64) -> Int64 =
-      Ordered.compare[Ordered = BySnd](pr(l: 1, r: 9), pr(l: 2, r: 1))
+      Ord.compare[Ord = BySnd](pr(l: 1, r: 9), pr(l: 2, r: 1))
   end
 end
 "#;
@@ -375,7 +375,7 @@ fn the_layout_counts_what_resolve_bundles() {
         "namespace wi857.shape\n  import anthill.prelude.{Int64}\nend\n",
     );
     for (spec_qn, expect_spec_half) in
-        [("anthill.prelude.PartialEq", 0), ("anthill.prelude.Eq", 1), ("anthill.prelude.Ordered", 2)]
+        [("anthill.prelude.PartialEq", 0), ("anthill.prelude.Eq", 1), ("anthill.prelude.Ord", 2)]
     {
         let goal = goal_at(&mut kb, spec_qn, "anthill.prelude.Int64");
         let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };

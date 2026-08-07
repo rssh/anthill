@@ -70,12 +70,12 @@ fn resolve_instantiations_is_idempotent() {
 
 const USER_SOURCE: &str = r#"
 namespace test.increment
-  import anthill.prelude.{Eq, Ordered}
+  import anthill.prelude.{Eq, Ord}
 
   sort MyThing
     sort T = ?
     requires Eq[T]
-    requires Ordered[T]
+    requires Ord[T]
   end
 end
 "#;
@@ -156,7 +156,7 @@ fn load_incremental_equivalent_to_load_all() {
     assert_eq!(a, b,
         "SortRequiresInfo facts must match between one-shot and incremental loads");
 
-    // MyThing contributes exactly two requires facts (Eq[T] + Ordered[T]).
+    // MyThing contributes exactly two requires facts (Eq[T] + Ord[T]).
     let my_count = a.iter().filter(|s| s.contains("MyThing")).count();
     assert_eq!(my_count, 2,
         "expected two MyThing-rooted requires facts; got:\n{:#?}",

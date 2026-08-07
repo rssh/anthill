@@ -27,7 +27,7 @@
 // Conventions:
 //   - One trait per anthill prelude typeclass we generate against.
 //   - Uses `std::declval<const T&>()` for read-only operations (Eq,
-//     Ordered, IndexedSeq) — moved from `T` for value-producing ones
+//     Ord, IndexedSeq) — moved from `T` for value-producing ones
 //     (Numeric arithmetic).
 //   - `_v` shortcuts mirror std::, callable from `if constexpr`.
 
@@ -85,10 +85,10 @@ struct satisfies_numeric<T, std::void_t<
 template <typename T>
 inline constexpr bool satisfies_numeric_v = satisfies_numeric<T>::value;
 
-// ── Ordered ──────────────────────────────────────────────────────────
+// ── Ord ──────────────────────────────────────────────────────────
 //
 // Uses `<` and `==` — sufficient for the prelude `compare(a, b) -> Int`
-// surface; `>`, `>=`, `<=` are derived from those by Ordered's rules.
+// surface; `>`, `>=`, `<=` are derived from those by Ord's rules.
 template <typename T, typename = void>
 struct satisfies_ordered : std::false_type {};
 

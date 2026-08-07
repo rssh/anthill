@@ -58,7 +58,7 @@ effect provides."* So:
   `sort Error { sort T = ?; operation raise(error: T) -> Nothing effects Error[T] }`,
   `sort Branch { operation fail() -> Nothing effects Branch }`,
   `sort ModifyRuntime { operation get(target: T) -> V; operation set(target: T, value: V) -> Unit }`.
-  Typeclasses (`Eq`, `Ordered`), effects (`Error`, `Modify`), and the resumable effects
+  Typeclasses (`Eq`, `Ord`), effects (`Error`, `Modify`), and the resumable effects
   (`Suspension`, `Branch`) are **the same kind of thing**: a sort with operations. The only
   difference is what an operation *does*.
 

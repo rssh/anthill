@@ -77,7 +77,7 @@ fact Comprehension[T = Stream]
 -- Kernel verifies Stream has the required operations
 ```
 
-Pro: reuses the existing spec-sort mechanism. Consistent with `Eq`, `Ordered`, etc.
+Pro: reuses the existing spec-sort mechanism. Consistent with `Eq`, `Ord`, etc.
 Con: needs proper spec-sort checking (which depends on 011 type resolution).
 
 ### OQ2. Fixed Syntax Forms
@@ -254,6 +254,6 @@ Extensible: more power, but risks fragmentation (every library defines its own s
 - Haskell do-notation: sugar for `>>=`/`return` on any `Monad`
 - Rust `for` loops: sugar for `IntoIterator`
 - Maude mix-fix: user-defined operator syntax in OBJ-family languages
-- Anthill spec sorts: `Eq`, `Ordered`, `Numeric` in stdlib
+- Anthill spec sorts: `Eq`, `Ord`, `Numeric` in stdlib
 - Proposal 010 OQ13.9 (`Branches` effect), OQ15 (sort-defined syntax sugar)
 - Proposal 011 (Type Resolution) — prerequisite for sort-aware desugaring

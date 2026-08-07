@@ -27,7 +27,7 @@ use anthill_smt_gen::{emit_satisfiability_check, emit_satisfiability_check_with,
 const SRC: &str = r#"
 namespace test.wi680
   import anthill.prelude.{Int64, Bool}
-  import anthill.prelude.Ordered.{gte, lt, lte}
+  import anthill.prelude.Ord.{gte, lt, lte}
   import anthill.prelude.Bool.{and, or, not}
 
   -- Hand-written stand-in for the WI-669 body-derived defining rule:

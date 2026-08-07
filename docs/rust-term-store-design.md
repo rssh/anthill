@@ -454,7 +454,7 @@ Typed unification differs from standard first-order unification:
 
 2. **Constructor matching respects the sort hierarchy.** Matching `?x : Nat` against `succ(zero)` succeeds because `succ` is an entity of `Nat`. Matching `?x : Nat` against `Account(...)` fails because `Account` is not an entity of `Nat`.
 
-3. **Fn terms carry sort information.** `gt(balance(?a), zero-val)` — the engine needs to know that `gt` expects `Ordered` arguments, `balance` returns `Money`, and `Money` has `Numeric` (which extends `Ordered`). This is resolved via operation signatures in the domain.
+3. **Fn terms carry sort information.** `gt(balance(?a), zero-val)` — the engine needs to know that `gt` expects `Ord` arguments, `balance` returns `Money`, and `Money` has `Numeric` (which extends `Ord`). This is resolved via operation signatures in the domain.
 
 4. **Sort inference for bare identifiers.** A bare `zero-val` in a rule body is an `Ident` at parse time. During sort resolution, it's looked up as an operation (`zero-val() -> T`) and the concrete sort is determined from the domain's imports.
 

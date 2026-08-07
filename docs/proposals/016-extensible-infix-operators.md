@@ -445,7 +445,7 @@ Add `[infix: "..."]` as a recognized meta key. Store in KB as metadata on sorts/
 
 ### Phase 4: Stdlib annotations
 
-Add `[infix: ...]` annotations to existing prelude sorts (`Eq`, `Ordered`, `Numeric`) for documentation and tooling.
+Add `[infix: ...]` annotations to existing prelude sorts (`Eq`, `Ord`, `Numeric`) for documentation and tooling.
 
 ## Design Rationale: Why Flat Parse + Dictionary
 

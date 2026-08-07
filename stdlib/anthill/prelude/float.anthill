@@ -1,15 +1,15 @@
 -- Float: abstract spec for the built-in floating-point sort.
 -- Spec satisfaction facts (PartialEq[Float], PartialOrd[Float], NonEq[Float],
--- Numeric[Float], Ring[Float] — IEEE Float is partial, so NonEq not Eq/Ordered)
+-- Numeric[Float], Ring[Float] — IEEE Float is partial, so NonEq not Eq/Ord)
 -- live in the per-language binding files (e.g. rustland/anthill-stl/anthill/float.anthill)
 -- — see proposal 038.
 sort anthill.prelude.Float
-  import anthill.prelude.{Eq, NonEq, Ordered, Numeric}
+  import anthill.prelude.{Eq, NonEq, Ord, Numeric}
   import anthill.prelude.algebra.{Ring}
 
   -- WI-876: `Float`'s comparison surface, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/float.anthill`'s `operation_map`, which names the
-  -- IEEE functions. NO `compare`: `Float` provides `PartialOrd` and NOT `Ordered`,
+  -- IEEE functions. NO `compare`: `Float` provides `PartialOrd` and NOT `Ord`,
   -- because a `NaN` operand is UNORDERED — every comparison answers false, and there
   -- is no total `compare` for `PartialOrd`'s default derivation to bottom out in.
   -- `TotalFloat` is the lawful-key wrapper.
@@ -20,10 +20,10 @@ sort anthill.prelude.Float
   -- was serving.
   --
   -- WI-881: `max`/`min` are the IEEE-754 `maxNum`/`minNum`, and they are declared
-  -- HERE rather than inherited. `Ordered` is where the library's other `max`/`min`
+  -- HERE rather than inherited. `Ord` is where the library's other `max`/`min`
   -- live, `Float` does not provide it, and `PartialOrd` has none — so until this
   -- there was NO WAY TO TAKE THE MAXIMUM OF TWO FLOATS AT ALL. Nor would inheriting
-  -- have been right: `Ordered`'s derivation is `if gte(a, b) then a else b`, and with
+  -- have been right: `Ord`'s derivation is `if gte(a, b) then a else b`, and with
   -- a NaN operand every comparison is false, so it answers `1.0` on `(nan, 1.0)` and
   -- `nan` on `(1.0, nan)` — not commutative. The IEEE pair ABSORBS NaN instead, which
   -- is the `max` a float programmer means.
@@ -31,9 +31,9 @@ sort anthill.prelude.Float
   -- WHAT IS STILL MISSING, so the next reader does not read more into this than it
   -- says: these are reachable only by NAMING `Float`. No spec `Float` provides declares
   -- `max`, so a GENERIC `f[T](a: T, b: T) requires PartialOrd[T]` still cannot take a
-  -- maximum, where the same code over `Int64` reaches `Ordered.max`. Closing that needs
+  -- maximum, where the same code over `Int64` reaches `Ord.max`. Closing that needs
   -- a spec that owns "has a max" independent of totality, or 058 §3.8's per-provision
-  -- conditions so `Ordered`'s derivation can be conditioned rather than inherited.
+  -- conditions so `Ord`'s derivation can be conditioned rather than inherited.
   operation {
     gt(a: Float, b: Float) -> Bool         -- >, false if either operand is NaN
     gte(a: Float, b: Float) -> Bool        -- >=, false if either operand is NaN
@@ -156,8 +156,8 @@ sort anthill.prelude.Float
   rule neg(?a) <=> mul(-1.0, ?a)
 
   -- SPECIFICATION, restated. The old law was `abs(?a) <=> max(?a, neg(?a))`, and it
-  -- was DOUBLY dead: it named `Ordered.max`, which no `Float` value can reach
-  -- (`Float` provides `PartialOrd`, not `Ordered` — so `float.anthill` imported a name
+  -- was DOUBLY dead: it named `Ord.max`, which no `Float` value can reach
+  -- (`Float` provides `PartialOrd`, not `Ord` — so `float.anthill` imported a name
   -- that could never be used), and `abs` is not definable by comparison at all. `abs`
   -- CLEARS the sign bit, `-0.0` and `+0.0` compare EQUAL, and the IEEE `max` this sort
   -- now declares is documented to return EITHER input when they compare equal — so the

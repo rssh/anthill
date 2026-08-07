@@ -14,7 +14,7 @@ fn build_kb() -> anthill_core::kb::KnowledgeBase {
     let source = r#"
         namespace test.smt_gen.assumptions
           import anthill.prelude.{Float, Int64}
-          import anthill.prelude.Ordered.{lt}
+          import anthill.prelude.Ord.{lt}
 
 
           entity DistanceBounds(d_min: Float, d_max: Float)

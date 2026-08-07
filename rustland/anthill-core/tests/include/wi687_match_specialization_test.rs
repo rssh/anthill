@@ -25,7 +25,7 @@ const SRC: &str = r#"
 namespace test.wi687
   import anthill.prelude.{Int64, Bool, Option}
   import anthill.prelude.Numeric.{add, sub}
-  import anthill.prelude.Ordered.{gte}
+  import anthill.prelude.Ord.{gte}
   import anthill.prelude.Option.{some, none}
 
   entity Box(inner: Option[T = Int64], base: Int64)

@@ -321,7 +321,7 @@ fn a_provision_tie_is_still_reported_as_a_provider_tie() {
 /// swallowed by this refusal.
 ///
 /// Not hypothetical — it is `wi857_dictionary_layout_test::a_chain_free_witness_provider_
-/// still_runs` in miniature (`Ordered.compare[Ordered = Descending](7, 3)` over `Int64`,
+/// still_runs` in miniature (`Ord.compare[Ord = Descending](7, 3)` over `Int64`,
 /// whose own `compare` is the second supplier). A ≥2-count guard with no tier-1 clause
 /// refused that delivered program; this test is the local copy so the clause has a
 /// failure of its own rather than only a distant one.

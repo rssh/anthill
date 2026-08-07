@@ -295,7 +295,7 @@ harmless when that owner declares none, a loud error when it does.
 > `requires`" while the worked example below indexes the *spec's*. The
 > implementation split the same way — the producer walked the provider's chain, two
 > consumers indexed the spec's — and they agreed only when the provider was a
-> chain-free witness sort. A carrier-keyed provision (`fact Ordered[T = Int64]`,
+> chain-free witness sort. A carrier-keyed provision (`fact Ord[T = Int64]`,
 > whose provider `Int64` declares no `requires`) therefore built an arity-0
 > dictionary, and every spec with a non-empty chain died at eval. State the layout
 > once; `kb::typing::dict_layout` is its single owner in code.
@@ -313,8 +313,8 @@ nothing and a slot somebody reads names the requirement that has no provider.
 
 **Locality.** When constructing provider `W`'s dictionary, a sub-goal that `W`
 itself provides resolves to `W`'s OWN provision before any global search. The rule
-becomes necessary once the spec half is bundled: `Ordered requires PartialOrd[T]`,
-and the lawful form of an alternative ordering is a `PartialOrd` + `Ordered`
+becomes necessary once the spec half is bundled: `Ord requires PartialOrd[T]`,
+and the lawful form of an alternative ordering is a `PartialOrd` + `Ord`
 BUNDLE, so with two coexisting bundles `PartialOrd[C]` has one candidate inside
 each and a global search ties. It keys on the SELECTED provider and never on caller
 scope, so it does not make a program's meaning depend on its imports.
@@ -344,7 +344,7 @@ Worked example:
 ```anthill
 sort B[T]
   requires Eq[T]
-  requires Ordered[T]
+  requires Ord[T]
   op cmp(a: T, b: T) -> Int64
 end
 ```
@@ -366,7 +366,7 @@ The interpreter sees `fn` is a spec-op, evaluates `requirements[0]` to a `Resolv
 
 `BImpl.cmp`'s body uses `var_ref(__req_eq)` and `var_ref(__req_ord)` to access the Eq and Ord dictionaries — they're already named bindings on the frame.
 
-Note which chain those two slots come from: `Eq` and `Ordered` are **`B`'s** — the
+Note which chain those two slots come from: `Eq` and `Ord` are **`B`'s** — the
 SPEC's — `requires`, so this example reads the layout's **spec half** (slots 0 and 1,
 since the spec half is the prefix). Had `BImpl` declared `requires` of its own, its
 body's reads would name those instead and take the **provider half**, at slots 2… —
@@ -383,7 +383,7 @@ apply_within(
   args = [x, y],
   requirements = [construct_requirement(BImpl, [           -- statically constructed dict
     construct_requirement(IntEq, []),
-    construct_requirement(IntOrdered, [])
+    construct_requirement(IntOrd, [])
   ])]
 )
 ```

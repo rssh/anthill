@@ -160,13 +160,13 @@ pub enum BuiltinTag {
     /// `SuccessWithBindings`) instead of merely comparing. The object-level face
     /// of `<=>` (and `let ?v = e`). Carrier-agnostic, never dispatches.
     Unify,
-    /// `anthill.prelude.Ordered.gt(?a, ?b)` — greater-than on Int/Float constants.
+    /// `anthill.prelude.Ord.gt(?a, ?b)` — greater-than on Int/Float constants.
     Gt,
-    /// `anthill.prelude.Ordered.lt(?a, ?b)` — less-than on Int/Float constants.
+    /// `anthill.prelude.Ord.lt(?a, ?b)` — less-than on Int/Float constants.
     Lt,
-    /// `anthill.prelude.Ordered.gte(?a, ?b)` — greater-or-equal on Int/Float constants.
+    /// `anthill.prelude.Ord.gte(?a, ?b)` — greater-or-equal on Int/Float constants.
     Gte,
-    /// `anthill.prelude.Ordered.lte(?a, ?b)` — less-or-equal on Int/Float constants.
+    /// `anthill.prelude.Ord.lte(?a, ?b)` — less-or-equal on Int/Float constants.
     Lte,
     /// `anthill.prelude.Numeric.add(?a, ?b)` — arithmetic addition (equation builtin).
     Add,
@@ -4015,7 +4015,7 @@ impl KnowledgeBase {
     /// `SortProvidesInfo` provision, bind `?result` to the carrier that provision's
     /// dictionary DISPATCHES AT.
     ///
-    /// `sort ListOrd provides Ordered[T = List[T = E]]` answers `List[T = E]`; a
+    /// `sort ListOrd provides Ord[T = List[T = E]]` answers `List[T = E]`; a
     /// carrier's own `provides Desc[T = Leaf]`, a bare `provides Desc`, an
     /// own-param-bound `provides Desc[T = OwnParam]` and a namespace-level instance fact
     /// all answer the PROVIDER — which is what makes `self_provides` writable in anthill
@@ -4412,7 +4412,7 @@ impl KnowledgeBase {
         functor: Symbol,
         named: &mut [(Symbol, T)],
     ) {
-        // Ordered product (named tuple): source order IS canonical — leave it.
+        // Ord product (named tuple): source order IS canonical — leave it.
         if self.is_ordered_product_functor(functor) {
             return;
         }

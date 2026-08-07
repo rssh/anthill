@@ -45,27 +45,27 @@ fn requires_chain_memoizes_top_level_query() {
     // `requires_chain_cache_contains` — false before, true after).
     let mut kb = load_stdlib_only();
     let ordered_sym = kb
-        .try_resolve_symbol("anthill.prelude.Ordered")
-        .expect("Ordered sort");
+        .try_resolve_symbol("anthill.prelude.Ord")
+        .expect("Ord sort");
 
     // WI-343's provider-side `requires` check runs at load and walks
-    // `direct_requires_chain` for every provided spec (`fact Ordered[T=…]`
+    // `direct_requires_chain` for every provided spec (`fact Ord[T=…]`
     // among them), warming the requires-chain cache. Reset it so this test
     // measures cache growth from its own `requires_chain` calls — mirroring
     // `resolve_cache_memoizes_dispatch_at_same_goal_and_scope`'s reset below.
     kb.invalidate_requires_chain_cache();
 
-    // Cache is empty for Ordered before first call.
+    // Cache is empty for Ord before first call.
     assert!(
         !kb.requires_chain_cache_contains(ordered_sym),
-        "cache must start empty for Ordered"
+        "cache must start empty for Ord"
     );
 
     let first = requires_chain(&mut kb, ordered_sym);
-    // After first call, the cache holds Ordered's chain.
+    // After first call, the cache holds Ord's chain.
     assert!(
         kb.requires_chain_cache_contains(ordered_sym),
-        "first requires_chain(Ordered) call must populate the cache"
+        "first requires_chain(Ord) call must populate the cache"
     );
 
     // Second call returns the same content (structural equality on

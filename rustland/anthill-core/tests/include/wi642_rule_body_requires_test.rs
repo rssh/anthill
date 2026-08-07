@@ -14,7 +14,7 @@
 //!   * a POLYMORPHIC rule whose carrier is under-determined       → loads clean
 //!     (suspends as a residual at fire time, never NAF-decided; WI-067).
 //!
-//! A structural-BUILTIN spec op (`Eq.eq`, `Ordered.gt`, …) resolves without a
+//! A structural-BUILTIN spec op (`Eq.eq`, `Ord.gt`, …) resolves without a
 //! dictionary, so it is never "missing" and never flagged — see
 //! `builtin_comparison_op_on_concrete_no_instance_loads` (the stdlib itself relies
 //! on this: `needs_rebuild`'s `gt` on two `Timestamp`s).
@@ -180,7 +180,7 @@ end
     );
 }
 
-/// A structural-BUILTIN spec op (`Ordered.gt`) on a concrete sort with no `Ordered`
+/// A structural-BUILTIN spec op (`Ord.gt`) on a concrete sort with no `Ord`
 /// instance loads clean — it resolves structurally, so its requirement is never
 /// "missing". This is exactly the stdlib `needs_rebuild` pattern (`gt` on two
 /// `Timestamp`s); flagging it would break the stdlib.
@@ -188,8 +188,8 @@ end
 fn builtin_comparison_op_on_concrete_no_instance_loads() {
     let src = r#"
 namespace test.wi642.builtin_cmp
-  import anthill.prelude.{Int64, Bool, Ordered}
-  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.{Int64, Bool, Ord}
+  import anthill.prelude.Ord.{gt}
 
   sort Blob
     entity B(v: Int64)

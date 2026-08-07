@@ -1045,11 +1045,11 @@ mod tests {
     fn resolve_in_scope_parent() {
         let mut st = SymbolTable::new();
         let eq = scope(&mut st, "Eq");
-        let ordered = scope(&mut st, "Ordered");
+        let ordered = scope(&mut st, "Ord");
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
         st.add_exposed(eq, "eq");
 
-        // `Ordered` includes `Eq`
+        // `Ord` includes `Eq`
         st.add_parent(ordered, ScopeInclusion { parent_scope: eq, is_enclosing: false });
 
         match st.resolve_in_scope("eq", ordered) {
@@ -1062,7 +1062,7 @@ mod tests {
     fn resolve_excludes_type_params() {
         let mut st = SymbolTable::new();
         let eq = scope(&mut st, "Eq");
-        let ordered = scope(&mut st, "Ordered");
+        let ordered = scope(&mut st, "Ord");
         // "T" is a type param of `Eq`
         st.define("T", "Eq.T", SymbolKind::Sort, eq);
         st.add_exposed(eq, "T");

@@ -13,7 +13,7 @@ Proposal 001 unified sorts and domains syntactically: `sort X { ... }` can conta
 
 These are fundamentally different operations bundled into one syntax. The `where` clause on `import` conflated file loading with parametric instantiation.
 
-Additionally, specifications like `Eq`, `Ordered`, and `Numeric` are currently `domain` declarations but behave as sorts — they define abstract sort parameters, operations, and rules. They're algebraic specifications, not namespaces.
+Additionally, specifications like `Eq`, `Ord`, and `Numeric` are currently `domain` declarations but behave as sorts — they define abstract sort parameters, operations, and rules. They're algebraic specifications, not namespaces.
 
 ## Proposal
 
@@ -69,9 +69,9 @@ operation withdraw(a: Account, m: Money) -> Account
 The same keyword works at the sort level — a **precondition for instantiation**:
 
 ```
-sort Ordered {
+sort Ord {
   sort T
-  requires Eq[T]              -- to instantiate Ordered, T must have Eq
+  requires Eq[T]              -- to instantiate Ord, T must have Eq
   operation gt(a: T, b: T) -> Bool
   ...
 }
@@ -98,7 +98,7 @@ sort Eq {
   rule neq(?a, ?b) = not(eq(?a, ?b))
 }
 
-sort Ordered {
+sort Ord {
   sort T
   requires Eq[T]
   operation gt(a: T, b: T) -> Bool
@@ -113,7 +113,7 @@ sort Ordered {
 
 sort Numeric {
   sort T
-  requires Ordered[T]
+  requires Ord[T]
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
@@ -124,7 +124,7 @@ sort Numeric {
 }
 ```
 
-The chain `Numeric → Ordered → Eq` is expressed entirely through `requires`. No import-level binding needed.
+The chain `Numeric → Ord → Eq` is expressed entirely through `requires`. No import-level binding needed.
 
 ### 6. Interface satisfaction is a Horn clause
 
@@ -240,7 +240,7 @@ The `requires` keyword is already a soft keyword (used in operations). At sort l
 ## Implementation path
 
 1. **Rename `domain` → `namespace`** in grammar, parser, converter, loader — **done** (31b05f0)
-2. **Move prelude specs from `domain` to `sort`** (Eq, Ordered, Numeric) — **done** (b925da4)
+2. **Move prelude specs from `domain` to `sort`** (Eq, Ord, Numeric) — **done** (b925da4)
 3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits `Requirement` facts — **done** (e005ede). Also added sort-binding punning: `Eq[T]` = `Eq[T = T]` (d7dbcb3).
 4. **Validate `Name{bindings}` and `requires` constraints** — not a separate compiler pass; well-formedness checks (valid sort references, valid parameter names, arity) are expressed as constraint rules in the KB. Errors surface through the standard denial/constraint mechanism.
 
@@ -250,4 +250,4 @@ Steps 1–3 are complete. Step 4 is prelude content (constraint rules), not a co
 
 - `domain` keyword replaced by `namespace` — existing files need updating
 - `import ... where` removed — inline `Name{bindings}` and `requires` replace it
-- All algebraic specs (Eq, Ordered, Numeric) become sorts — no behavioral change, just keyword
+- All algebraic specs (Eq, Ord, Numeric) become sorts — no behavioral change, just keyword

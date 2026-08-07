@@ -71,16 +71,16 @@ fn dump_eq_lt_rewrites() {
     let printer = TermPrinter::new(&kb);
     let _ = printer; // (printer kept for future per-term rendering)
 
-    // ── Ordered.lt resolution probe ─────────────────────────────────
+    // ── Ord.lt resolution probe ─────────────────────────────────
     let names = [
-        "anthill.prelude.Ordered",
+        "anthill.prelude.Ord",
         "anthill.prelude.PartialOrd.lt",
-        "anthill.prelude.Ordered.compare",
+        "anthill.prelude.Ord.compare",
         "anthill.prelude.Int64",
         "anthill.prelude.Int64.lt",
         "anthill.prelude.Int64.compare",
-        "anthill.prelude.Int64.Ordered.lt",
-        "anthill.prelude.Int64.Ordered.compare",
+        "anthill.prelude.Int64.Ord.lt",
+        "anthill.prelude.Int64.Ord.compare",
     ];
     for name in names {
         let resolved = kb.try_resolve_symbol(name);

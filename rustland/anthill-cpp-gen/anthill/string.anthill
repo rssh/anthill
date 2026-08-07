@@ -43,7 +43,7 @@
 namespace anthill.prelude
   provides String language cpp
     operation_map {
-      -- Ordered (WI-876). `std::string`'s relational operators compare byte-by-byte as
+      -- Ord (WI-876). `std::string`'s relational operators compare byte-by-byte as
       -- UNSIGNED char (`std::char_traits<char>::lt`), which for valid UTF-8 is code-point
       -- order — the same total order rust's `str: Ord` gives, so the two hosts agree.
       -- `compare` reads its operands twice, hence the lambda.
@@ -78,9 +78,9 @@ namespace anthill.prelude
   end
 end
 
--- NO SPEC-SATISFACTION FACTS (`fact Eq[T = String]`, `fact Ordered[T = String]`, …),
+-- NO SPEC-SATISFACTION FACTS (`fact Eq[T = String]`, `fact Ord[T = String]`, …),
 -- like `float.anthill` beside this file and unlike the rust binding: a `provides` fact
 -- enters coherence and dispatch, and the cpp-gen suite needs none of them (String's own
 -- operations dispatch by carrier, not through a typeclass). This file asserts only what
 -- it is for — the C++ spellings. The rust binding keeps its set because the rust
--- runtime's typer does dispatch `Ordered`/`Eq` on `String`.
+-- runtime's typer does dispatch `Ord`/`Eq` on `String`.

@@ -56,7 +56,7 @@
 //!
 //! GUARDRAIL: the precedence change was measured corpus-inert before any arm was
 //! written (the ticket's precondition, since WI-876 gave `PartialOrd.gt/gte/lt/lte`
-//! and `Ordered.max/min` default bodies). The numbers live in
+//! and `Ord.max/min` default bodies). The numbers live in
 //! `docs/design/058-implementation.md` §12 and are NOT restated here — they are a
 //! point-in-time fact about the stdlib, and the first library provision that supplies
 //! a defaulted spec op falsifies them; one copy is findable, two rot apart.

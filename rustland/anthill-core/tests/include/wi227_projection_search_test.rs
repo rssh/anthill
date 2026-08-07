@@ -32,7 +32,7 @@ use crate::common::{collect_stdlib_and_rust_bindings, interp_for};
 
 /// Load stdlib + Rust host bindings only — no user source. Used by the
 /// nested-handle synthetic which constructs its `RequiresEntry`s by
-/// hand against stdlib symbols (Eq, Ordered).
+/// hand against stdlib symbols (Eq, Ord).
 fn load_stdlib_only() -> KnowledgeBase {
     let files = collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
@@ -148,8 +148,8 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     // `requires_chain` of one of those entries. WI-222's loader always
     // produces flat chains (transitive closure), so we hand
     // `build_dep_projection` a deliberately non-flat caller_requires
-    // = [RequiresEntry { required_sort: Ordered, ... }] and ask for
-    // a projection for `Eq` — Ordered's chain in stdlib carries Eq, so
+    // = [RequiresEntry { required_sort: Ord, ... }] and ask for
+    // a projection for `Eq` — Ord's chain in stdlib carries Eq, so
     // Strategy 2 must fire and emit
     // `requirement_at_sort(requirement_at_current(slot=0), slot=0)`.
     let mut kb = load_stdlib_only();
@@ -157,10 +157,10 @@ fn nested_handle_emits_requirement_at_sort_chain() {
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
     let ordered_sym = kb
-        .try_resolve_symbol("anthill.prelude.Ordered")
-        .expect("Ordered sort");
+        .try_resolve_symbol("anthill.prelude.Ord")
+        .expect("Ord sort");
 
-    // Hand-built caller_requires holding Ordered at slot 0 (and NOT Eq
+    // Hand-built caller_requires holding Ord at slot 0 (and NOT Eq
     // at top level). Each entry's `spec` is a plain sort term — the
     // search keys on `required_sort` for Strategies 1 and 2.
     let ordered_ref = kb.alloc(Term::Ref(ordered_sym));
@@ -170,7 +170,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     }];
 
     // The dep we're searching for: Eq. Strategy 1 fails (Eq not in
-    // caller_requires). Strategy 2 walks Ordered's requires_chain in
+    // caller_requires). Strategy 2 walks Ord's requires_chain in
     // stdlib — which carries Eq[T] — and matches at slot 0.
     let eq_ref = kb.alloc(Term::Ref(eq_sym));
     let dep = RequiresEntry {

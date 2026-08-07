@@ -638,7 +638,7 @@ int main() {{
 /// the scalar (not byte) index unit that a naive `std::string::find`/`substr` mapping
 /// would get wrong on a multi-byte prefix. The rest of the surface rides along: the
 /// build-and-run is the only place the scalar-indexed helpers, the `split` vector, and
-/// the Ordered comparators are exercised end to end.
+/// the Ord comparators are exercised end to end.
 ///
 /// `String.toUpper`/`toLower` are DELIBERATELY not exercised — they stay a loud codegen
 /// refusal (no C++17 Unicode case mapping), covered by

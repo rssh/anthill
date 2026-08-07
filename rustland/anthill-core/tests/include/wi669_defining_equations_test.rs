@@ -22,7 +22,7 @@ const SRC: &str = r#"
 namespace test.wi669
   import anthill.prelude.{Int64, Bool, Option}
   import anthill.prelude.Numeric.{add}
-  import anthill.prelude.Ordered.{gte}
+  import anthill.prelude.Ord.{gte}
   import anthill.prelude.Option.{some, none}
 
   sort Ops

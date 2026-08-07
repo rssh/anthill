@@ -116,7 +116,7 @@ fn collect_syntax_errors(root: tree_sitter::Node, source: &str) -> Vec<ParseErro
         // (`simple_type` for a missing type, `identifier` for a missing name);
         // descending would only re-derive the same hole one level deeper.
         //
-        // Ordered AFTER `is_error` so a zero-width ERROR — garbage PRESENT, not a
+        // Ord AFTER `is_error` so a zero-width ERROR — garbage PRESENT, not a
         // hole — keeps its own diagnosis rather than being recast as "missing".
         // No such node was observed in practice; this is ordering discipline, not
         // a fix for a measured case.

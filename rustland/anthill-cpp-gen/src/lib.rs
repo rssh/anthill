@@ -3752,7 +3752,7 @@ fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
         // WI-644 / proposal 004: the partial comparison ops live on PartialEq /
         // PartialOrd. Mapping them to C++ `==`/`>`/… (IEEE) is now CORRECT — these
         // are the partial specs, so the compiler and the interpreter's IEEE-for-Float
-        // builtins agree (the WI-645 acceptance). The total Eq/Ordered/TotalFloat
+        // builtins agree (the WI-645 acceptance). The total Eq/Ord/TotalFloat
         // would emit a total comparator instead (a `= default` operator== / <=> on the
         // generated struct) — a follow-up, tracked with the entity operator== gap.
         ("anthill.prelude.PartialOrd.gt",  ">"),

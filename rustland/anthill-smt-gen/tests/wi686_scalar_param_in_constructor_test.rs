@@ -35,7 +35,7 @@ fn build_kb() -> KnowledgeBase {
     let source = r#"
         namespace test.smt_gen.wi686
           import anthill.prelude.{Float, Bool}
-          import anthill.prelude.Ordered.{lt, lte, gte}
+          import anthill.prelude.Ord.{lt, lte, gte}
 
           entity Wrapper(v: Float)
 

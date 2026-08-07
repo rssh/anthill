@@ -275,7 +275,7 @@ The lift function (`anthill_smt_gen::lift_rule_to_implication_clause`) emits `(f
 `SortRequiresInfo` facts link a sort to its required specs. The required spec's laws are emitted as axioms:
 
 ```
-sort Ordered {
+sort Ord {
   sort T = ?
   requires Eq[T]    ; imports Eq laws for T
 }

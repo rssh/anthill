@@ -15,9 +15,9 @@
 //! `selected: &[]`.
 //!
 //! The fixture is `Duo`, a two-component product, ordered by a conditional witness
-//! `LexFst` whose element orderings are NAMED slots (`requires OA: Ordered[A]`,
-//! `requires OB: Ordered[B]`) — the shape §3.8 calls the lawful form of an
-//! alternative. Two PROGRAM-declared `Ordered[Int64]` rivals sit beside `Int64`'s own,
+//! `LexFst` whose element orderings are NAMED slots (`requires OA: Ord[A]`,
+//! `requires OB: Ord[B]`) — the shape §3.8 calls the lawful form of an
+//! alternative. Two PROGRAM-declared `Ord[Int64]` rivals sit beside `Int64`'s own,
 //! so each element sub-goal genuinely ties three ways and only a per-slot pin can
 //! answer it. The two rivals are opposites, which is what makes each arm's expected
 //! value differ in SIGN from the others rather than in provenance: an off-by-one in
@@ -62,10 +62,10 @@ fn load_errs(src: &str) -> Vec<String> {
 
 /// The shared fixture: `Duo` (equality only, so it has no ordering of its own),
 /// `LexFst` (the conditional witness with two NAMED element slots), and three
-/// `Ordered[Int64]` suppliers — `Int64`'s own host provision plus two opposite
+/// `Ord[Int64]` suppliers — `Int64`'s own host provision plus two opposite
 /// program witnesses.
 const PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, String, Bool, Ordered, PartialOrd, PartialEq, Eq, Pair, List, SortedSet}
+  import anthill.prelude.{Int64, String, Bool, Ord, PartialOrd, PartialEq, Eq, Pair, List, SortedSet}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Numeric.{sub}
 
@@ -88,31 +88,31 @@ const PRELUDE: &str = r#"
 
   sort Ascending
     import anthill.prelude.Numeric.{sub}
-    fact Ordered[T = Int64]
+    fact Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)
   end
 
   sort Descending
     import anthill.prelude.Numeric.{sub}
-    fact Ordered[T = Int64]
+    fact Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 
   sort LexFst
-    import anthill.prelude.{Int64, Ordered, PartialOrd, PartialEq}
+    import anthill.prelude.{Int64, Ord, PartialOrd, PartialEq}
     sort A = ?
     sort B = ?
-    requires OA: Ordered[T = A]
-    requires OB: Ordered[T = B]
+    requires OA: Ord[T = A]
+    requires OB: Ord[T = B]
     provides PartialOrd[T = Duo[A = A, B = B]]
-    provides Ordered[T = Duo[A = A, B = B]]
+    provides Ord[T = Duo[A = A, B = B]]
     operation compare(a: Duo[A = A, B = B], b: Duo[A = A, B = B]) -> Int64 =
       match a
         case duo(al, ar) ->
           match b
             case duo(bl, br) ->
-              let c = Ordered.compare(al, bl)
-              if PartialEq.eq(c, 0) then Ordered.compare(ar, br) else c
+              let c = Ord.compare(al, bl)
+              if PartialEq.eq(c, 0) then Ord.compare(ar, br) else c
   end
 "#;
 
@@ -126,23 +126,23 @@ fn program(ns: &str, ops: &str) -> String {
 fn by_fst(name: &str, bracket: &str) -> String {
     format!(
         "    operation {name}(n: Int64) -> Int64 =\n      \
-         Ordered.compare[Ordered = LexFst{bracket}](duo(l: 1, r: 9), duo(l: 2, r: 1))\n"
+         Ord.compare[Ord = LexFst{bracket}](duo(l: 1, r: 9), duo(l: 2, r: 1))\n"
     )
 }
 
 fn by_snd(name: &str, bracket: &str) -> String {
     format!(
         "    operation {name}(n: Int64) -> Int64 =\n      \
-         Ordered.compare[Ordered = LexFst{bracket}](duo(l: 5, r: 9), duo(l: 5, r: 1))\n"
+         Ord.compare[Ord = LexFst{bracket}](duo(l: 5, r: 9), duo(l: 5, r: 1))\n"
     )
 }
 
 // ── The control: without a pin the sub-goal has no answer ────────────────
 
 /// THE CONTROL FOR EVERY ARM BELOW, and the reason the leg exists at all: with three
-/// `Ordered[Int64]` suppliers the witness's OWN element sub-goal ties, and §3.3 says
+/// `Ord[Int64]` suppliers the witness's OWN element sub-goal ties, and §3.3 says
 /// the call-site bracket cannot reach it — `resolve_inner`'s step 0 fires only at
-/// `stack.is_empty()`. So `[Ordered = LexFst]` is refused, and the diagnostic
+/// `stack.is_empty()`. So `[Ord = LexFst]` is refused, and the diagnostic
 /// advertises exactly the spelling the arms below write.
 #[test]
 fn a_bare_pin_leaves_the_witnesss_own_sub_goal_ambiguous() {
@@ -261,15 +261,15 @@ fn the_nested_pin_survives_into_a_bracket_less_later_call() {
 /// both halves for; the RESOLUTION owns "provides it, but not at these bindings",
 /// because that is the only level at which the goal exists to be rendered.
 ///
-/// `Duo` is the site half: it provides `PartialEq`/`Eq` and no `Ordered` at all.
-/// `LexFst` is the resolution half: it provides `Ordered` — at `Duo`, never at
+/// `Duo` is the site half: it provides `PartialEq`/`Eq` and no `Ord` at all.
+/// `LexFst` is the resolution half: it provides `Ord` — at `Duo`, never at
 /// `Int64` — so nothing at the site can tell, and the binding-precise refusal has to
 /// come from the sub-goal's own candidate set going empty.
 #[test]
 fn a_binding_that_provides_nothing_at_the_sub_goal_is_refused() {
     let at_site = load_errs(&program("wi870.nosuch", &by_fst("go", "[OA = Duo]")));
     assert!(
-        at_site.iter().any(|e| e.contains("Duo") && e.contains("Ordered")),
+        at_site.iter().any(|e| e.contains("Duo") && e.contains("Ord")),
         "a value that provides the slot's spec NOWHERE is refused at the site, naming \
          both halves: {at_site:?}"
     );
@@ -278,7 +278,7 @@ fn a_binding_that_provides_nothing_at_the_sub_goal_is_refused() {
     assert!(
         at_bindings.iter().any(|e| e.contains(
             "the call bound slot `OA` of `wi870.nonsense.LexFst` to \
-             `wi870.nonsense.LexFst`, which provides no anthill.prelude.Ordered \
+             `wi870.nonsense.LexFst`, which provides no anthill.prelude.Ord \
              instance at these bindings"
         )),
         "…and one that provides it at OTHER bindings is refused by the resolution, in \
@@ -296,10 +296,10 @@ fn a_binding_that_provides_nothing_at_the_sub_goal_is_refused() {
 /// meaningful answer.
 ///
 /// The same name in the two positions, so the difference is the position and nothing
-/// else. `Pair` is the prelude's own lexicographic `Ordered` provider (WI-877) and is
+/// else. `Pair` is the prelude's own lexicographic `Ord` provider (WI-877) and is
 /// concrete — the very sort wi858 records as unnameable in a key.
 /// The components are `String`s, not `Int64`s, deliberately: `Pair`'s own conditions
-/// (`provides Ordered[Pair[A, B]] :- Ordered[A], Ordered[B]`) are ANONYMOUS slots, so
+/// (`provides Ord[Pair[A, B]] :- Ord[A], Ord[B]`) are ANONYMOUS slots, so
 /// they cannot be pinned, and over `Int64` they would meet this file's two rivals and
 /// tie. Measured — the first cut used `Pair[Int64, Int64]` and was refused for exactly
 /// that, one level below the thing under test.
@@ -308,7 +308,7 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
     let key = load_errs(&program(
         "wi870.check3key",
         "    operation go(n: Int64) -> Int64 =\n      \
-         Ordered.compare[Ordered = Pair](pair(fst: \"a\", snd: \"z\"), \
+         Ord.compare[Ord = Pair](pair(fst: \"a\", snd: \"z\"), \
          pair(fst: \"b\", snd: \"a\"))\n",
     ));
     assert!(
@@ -320,7 +320,7 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
     let src = program(
         "wi870.check3slot",
         "    operation go(n: Int64) -> Int64 =\n      \
-         Ordered.compare[Ordered = LexFst[OA = Pair, OB = Ascending]](\n        \
+         Ord.compare[Ord = LexFst[OA = Pair, OB = Ascending]](\n        \
          duo(l: pair(fst: \"a\", snd: \"z\"), r: 3), duo(l: pair(fst: \"b\", snd: \"a\"), r: 3))\n",
     );
     assert_eq!(
@@ -341,7 +341,7 @@ fn a_slot_binding_composes_to_any_depth() {
     let nested = |op: &str, inner: &str| {
         format!(
             "    operation {op}(n: Int64) -> Int64 =\n      \
-             Ordered.compare[Ordered = LexFst[OA = LexFst[OA = Ascending, OB = {inner}], \
+             Ord.compare[Ord = LexFst[OA = LexFst[OA = Ascending, OB = {inner}], \
              OB = Ascending]](\n        \
              duo(l: duo(l: 5, r: 9), r: 3), duo(l: duo(l: 5, r: 1), r: 3))\n"
         )
@@ -391,7 +391,7 @@ fn a_plain_type_parameter_in_the_value_selects_nothing() {
     let errs = load_errs(&program("wi870.plain", &by_fst("go", "[A = Int64]")));
     assert!(
         errs.iter().any(|e| e.contains("Ascending") && e.contains("Descending")),
-        "binding `A` says nothing about which `Ordered[Int64]` answers, so the \
+        "binding `A` says nothing about which `Ord[Int64]` answers, so the \
          element tie stands exactly as in the control: {errs:?}"
     );
 }

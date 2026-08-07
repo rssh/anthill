@@ -1,6 +1,6 @@
 # Library proposal 004: Partial vs. total equality and ordering — `PartialEq` / `Eq` / `PartialOrd` / `Ord`
 
-**Status:** Implemented (all five §"Build order" steps; the last — use-site `requires Eq` enforcement, *"`Map[K = Float]` is a load error, `Map[K = TotalFloat]` loads"* — landed with **WI-835**, 2026-07-29). Two things stay open and are **not** part of the shipped scope, both under §"Open questions" 1: `TotalFloat` is a lawful `Eq` key but is **not `Ordered`** (a functional total float order needs host support — `totalfloat.anthill` says so at its declaration), and the newtype-vs-host-`struct` surface choice is unrevisited. A **library proposal** — it restructures the stdlib equality/ordering typeclasses (`stdlib/anthill/prelude/{eq,ordered,float,set,map}.anthill`) and adds no language feature (the spec hierarchy, laws, and conformance checking it uses all already exist — §"Everything already exists"). The one kernel-touching piece — the resolver reflexivity-shortcut soundness fix (§"The soundness fix") — is an *implementation consequence* of the restructuring (not a new feature), tracked in the driver WI, exactly as [`library/003`](003-finite-collection.md)'s typer work was; per the library-proposal convention it is called out but not spun into a kernel proposal.
+**Status:** Implemented (all five §"Build order" steps; the last — use-site `requires Eq` enforcement, *"`Map[K = Float]` is a load error, `Map[K = TotalFloat]` loads"* — landed with **WI-835**, 2026-07-29). Two things stay open and are **not** part of the shipped scope, both under §"Open questions" 1: `TotalFloat` is a lawful `Eq` key but is **not `Ord`** (a functional total float order needs host support — `totalfloat.anthill` says so at its declaration), and the newtype-vs-host-`struct` surface choice is unrevisited. A **library proposal** — it restructures the stdlib equality/ordering typeclasses (`stdlib/anthill/prelude/{eq,ordered,float,set,map}.anthill`) and adds no language feature (the spec hierarchy, laws, and conformance checking it uses all already exist — §"Everything already exists"). The one kernel-touching piece — the resolver reflexivity-shortcut soundness fix (§"The soundness fix") — is an *implementation consequence* of the restructuring (not a new feature), tracked in the driver WI, exactly as [`library/003`](003-finite-collection.md)'s typer work was; per the library-proposal convention it is called out but not spun into a kernel proposal.
 
 Continues [051](../051-structural-vs-semantic-equality.md) (the `===` / semantic-`=` split): 051 separated *structural* from *semantic* equality; this proposal separates *partial* from *total (lawful)* equality — because the single `Eq` spec conflates two obligations, and IEEE `Float` is the first carrier that satisfies one but not the other.
 
@@ -21,14 +21,14 @@ Anthill's `Eq` (`stdlib/anthill/prelude/eq.anthill`) is a single spec carrying `
 Two further pressures:
 
 - **`requires Eq[T]` is operationally vacuous today.** Because the resolver treats structural equality as a universal default instance (WI-616), *every* `T` trivially "has" `Eq`, so the requirement never fails — exactly the "operationally vacuous / actively dishonest" gap 051 flagged. It becomes meaningful only once `Eq` denotes the *lawful* obligation and some carriers genuinely lack it.
-- **`Ordered` is already a *total* order.** `ordered.anthill` declares `compare_refl: compare(?a,?a) <=> 0` and `compare_antisym` and `requires Eq[T]`. Float's IEEE order is *partial* (`NaN` is unordered), so `Float` is not lawfully `Ordered` either — and today `gt(nan, 1.0) = true` in the interpreter (NaN sorts as `OrderedFloat`'s max) versus `false` compiled. The same split is owed on the ordering side.
+- **`Ord` is already a *total* order.** `ordered.anthill` declares `compare_refl: compare(?a,?a) <=> 0` and `compare_antisym` and `requires Eq[T]`. Float's IEEE order is *partial* (`NaN` is unordered), so `Float` is not lawfully `Ord` either — and today `gt(nan, 1.0) = true` in the interpreter (NaN sorts as `OrderedFloat`'s max) versus `false` compiled. The same split is owed on the ordering side.
 
 ## Everything already exists
 
 this proposal needs no new kernel feature — it composes three delivered mechanisms:
 
-- **Spec hierarchy** — a spec `requires` another: `Ordered requires Eq[T]`, `Field requires Numeric[T]`, `Collection requires Iterable[…]`. This is how `Eq requires PartialEq` and `Ord requires Eq, PartialOrd` are expressed.
-- **Laws as labelled `<=>` rules** — `Ordered.compare_refl`, `compare_antisym`, `compare_eq`. `eq_refl: eq(?a,?a) <=> true` is written the same way.
+- **Spec hierarchy** — a spec `requires` another: `Ord requires Eq[T]`, `Field requires Numeric[T]`, `Collection requires Iterable[…]`. This is how `Eq requires PartialEq` and `Ord requires Eq, PartialOrd` are expressed.
+- **Laws as labelled `<=>` rules** — `Ord.compare_refl`, `compare_antisym`, `compare_eq`. `eq_refl: eq(?a,?a) <=> true` is written the same way.
 - **Instance-law conformance checking** — `kb/load.rs` (§"requires-law ProofRecords Discharged" / Specialization witnesses, ~3866-3972, 12425): a `provides Spec[T = X]` must **discharge every one of the spec's required laws** as a proof. So a law is not aspirational — an instance that cannot prove it fails to load.
 
 The last point is what makes this proposal *principled rather than a patch*: adding `eq_refl` to `Eq` makes `provides Eq[T = Float]` **fail to load** on its own — `Float` cannot discharge `eq(?a,?a) <=> true` for `NaN`. No blocklist, no special case; the conformance checker does the rejection.
@@ -48,7 +48,7 @@ Ord[T]        requires Eq[T], PartialOrd[T]
 - **`PartialEq`** is the base — it holds the `eq`/`neq` *operations*. Any two-valued comparison lives here; `neq(?a,?b) <=> not(eq(?a,?b))` moves here unchanged.
 - **`Eq`** adds *only* the reflexivity law (a marker + obligation, no new operation). `Eq.eq` is the inherited `PartialEq.eq`; requiring `Eq[T]` means "and it is lawful."
 - **`PartialOrd`** is `compare` returning `Option[Int64]` (`none` = *unordered*, the IEEE case for a `NaN` operand); `gt`/`lt`/`gte`/`lte` derive from it and answer `false` on `none`.
-- **`Ord`** is the total order (`compare -> Int64`, the current `Ordered` renamed) with reflexivity/antisymmetry.
+- **`Ord`** is the total order (`compare -> Int64`; renamed from `Ordered`, done 2026-08-07) with reflexivity/antisymmetry.
 
 Symmetry / transitivity may be added as further `Eq`/`Ord` laws later; reflexivity is the one that decides the `Float` question and is the minimum this proposal commits to.
 
@@ -109,7 +109,7 @@ Crucially, the **structural layer is untouched**: `===`/`struct_eq`, `views_stru
 
 ### Codegen alignment (C++)
 
-`anthill-cpp-gen` maps `Eq.eq -> ==`, `Ordered.gt -> >` (lib.rs:2889-2906). Under this proposal:
+`anthill-cpp-gen` maps `Eq.eq -> ==`, `Ord.gt -> >` (lib.rs:2889-2906). Under this proposal:
 
 - **`PartialEq.eq` / `PartialOrd.*` → C++ `==` / `<` (IEEE)** — the *current* mapping, now *correct*, because these are the partial specs.
 - **`Eq` / `Ord` / `TotalFloat` → a total comparator** — a defaulted `operator==` / `operator<=>` on the generated struct (C++20 `= default`), or, for `TotalFloat`, a bit/`OrderedFloat`-style total compare. (This also closes the *separate* pre-existing gap that entity structs are emitted fields-only with no `operator==` — see WI-645 discussion.)
@@ -138,7 +138,7 @@ The mechanical part is large but shallow, and mirrors 051's `===` migration:
 
 1. **Rename the base + add the marker.** `eq`/`neq` and `neq<=>not(eq)` move to a new `sort anthill.prelude.PartialEq`; `sort anthill.prelude.Eq` becomes `requires PartialEq[T]` + `eq_refl`. Re-register the builtins (`anthill.prelude.PartialEq.eq -> SemEq`, `.neq -> SemNeq`); keep `Eq.eq` resolving to the inherited `PartialEq.eq` via the requires-chain (WI-614 dispatch) so most call sites are source-compatible.
 2. **`Ordered -> Ord`; add `PartialOrd`.** `compare`/laws stay on `Ord` (`requires Eq, PartialOrd`); the `gt/lt/gte/lte` surface + numeric-builtin registration move to `PartialOrd` (they answer `false` on `none`).
-3. **Audit `requires Eq` / `requires Ordered` sites** (stdlib + tests): the reflexivity-dependent ones — `Set`, `Map` keys, dedup, sort — stay `requires Eq` / `requires Ord`; comparison-only ones weaken to `requires PartialEq` / `requires PartialOrd`. This is the judgement part; most stdlib sites are key/dedup (stay `Eq`).
+3. **Audit `requires Eq` / `requires Ord` sites** (stdlib + tests): the reflexivity-dependent ones — `Set`, `Map` keys, dedup, sort — stay `requires Eq` / `requires Ord`; comparison-only ones weaken to `requires PartialEq` / `requires PartialOrd`. This is the judgement part; most stdlib sites are key/dedup (stay `Eq`).
 4. **`Float`**: `provides PartialEq`/`PartialOrd` (IEEE); drop any `provides Eq`. Add `TotalFloat`.
 5. **Resolver + codegen** per §above.
 
