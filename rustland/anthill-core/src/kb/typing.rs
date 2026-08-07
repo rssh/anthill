@@ -40020,8 +40020,22 @@ fn type_rule_bodies(
 /// desugaring of a rule-body `requires(X)`) into the resolver-ready
 /// `find_dictionary(spec_base, op_functor, op_arg…)` form.
 ///
-/// A rule has no caller to thread a dictionary, so the guard resolves its own
-/// requirement from the runtime binding. `requires(X)` is grounded by the rule's
+/// The guard resolves its own requirement from the runtime binding, for two
+/// reasons — and NOT for the one this comment used to give. **"A rule has no
+/// caller" is FALSE** (it was inherited from
+/// `docs/design/requirement-dictionaries.md` §3.3, now corrected there): a rule has
+/// three callers — a parent rule body's goal, a top-level query (the only
+/// caller-less one), and an EVAL FRAME via `KnowledgeBase::prove_rule_predicate`,
+/// which holds `eval::Frame::requirements` and drops them at that crossing. What is
+/// missing is a *channel*, not a caller; `ResolverFrame::assumed_facts` (WI-108) is
+/// this engine's own proof that caller-to-callee environment threading works here.
+/// The true reasons the guard re-derives are that the resolver frame has no
+/// requirement field, and that a goal's carrier may be unbound at open time — which
+/// justifies a *delayable* resolution, not the absence of a channel. Making it
+/// relational (`find_dictionary(X, ?d)` BINDS) is WI-1040;
+/// `docs/design/requirement-channel.md` is the design.
+///
+/// `requires(X)` is grounded by the rule's
 /// own body: a call to one of X's operations (`eq(?x, ?y)` for `requires(Eq[T])`)
 /// is the WITNESS whose carrier arguments' runtime types decide the instance — the
 /// same redex a `[simp]` rule fires on. This sweep finds that witness and records

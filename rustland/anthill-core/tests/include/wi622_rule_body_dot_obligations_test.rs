@@ -4,12 +4,12 @@
 //!
 //! WI-557 premise: a rule body is SLD/relational, so an op-body call-site
 //! obligation over a symbolic rule-body var legitimately FLOATS.
-//! `dispatch_dots_in_occ` types the dot with `expected: None`, so a return-only
+//! `dispatch_calls_in_occ` types the dot with `expected: None`, so a return-only
 //! type-param cannot be pinned at that isolated call site — yet SLD resolution
 //! unifies it against the goal context (or it stays a harmless phantom on a
 //! value-less return-only param). Pre-WI-622 that surfaced as a spurious
 //! `UnconstrainedTypeParam` hard load error (WI-602 had inverted
-//! `dispatch_dots_in_occ` to surface every `type_check_node` error except
+//! `dispatch_calls_in_occ` to surface every `type_check_node` error except
 //! `DotDispatchNoMatch{None}`, so this obligation now reaches the loader).
 //!
 //! Unlike the value-precondition case there is NO definite sub-case to still

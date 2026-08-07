@@ -6,10 +6,10 @@
 //! interpretation Γ at the imperative call site. A rule body is SLD/relational —
 //! there is no call-site Γ and no imperative semantics — so the obligation does
 //! not apply there. `dispatch_rule_body_dots` is ALSO a client of
-//! `check_apply_iter` (via `dispatch_dots_in_occ -> type_check_node`), with a
+//! `check_apply_iter` (via `dispatch_calls_in_occ -> type_check_node`), with a
 //! structurally empty Γ. Before WI-557 a value precondition over a rule-body
 //! variable would float (`definite_only`) and raise a spurious
-//! `UnsatisfiedPrecondition`, which `dispatch_dots_in_occ`'s `Err(_)` arm SWALLOWS
+//! `UnsatisfiedPrecondition`, which `dispatch_calls_in_occ`'s `Err(_)` arm SWALLOWS
 //! — leaving the dot UNDISPATCHED (so the bug is observable as a missed dispatch,
 //! not as a surfaced error).
 //!
@@ -132,7 +132,7 @@ fn rule_body_value_precondition_dot_dispatches() {
     // `?b.guarded(?k)` in a RULE body: `?b: Box` (from `holder.b`), `?k: Int64`
     // (from `holder.k`). The callee's `requires neq(n, 0)` would float over the
     // rule-body var `?k` and (pre-WI-557) raise an `UnsatisfiedPrecondition` that
-    // `dispatch_dots_in_occ` swallows, leaving the dot undispatched. WI-557 skips
+    // `dispatch_calls_in_occ` swallows, leaving the dot undispatched. WI-557 skips
     // the precondition check in rule-body context, so the dot dispatches: no
     // `DotApply` left, and `guarded(?b, ?k)` is applied.
     let src = format!(

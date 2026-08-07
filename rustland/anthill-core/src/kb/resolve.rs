@@ -496,8 +496,24 @@ enum FrameState {
 }
 
 /// A choice point on the explicit stack.
+///
+/// **Named for the engine it belongs to, because there are two frames.** This one
+/// is a step of SLD resolution — a resolvent (`goals`), the substitution proving
+/// it, and the assumptions in scope. [`crate::eval::Frame`] is the *other* one: an
+/// operation activation, with locals, a requirement dictionary channel and a type-
+/// argument channel. Neither converts to the other, and the two engines meet only
+/// at the bridges ([`KnowledgeBase::bridge_op_to_eval`],
+/// [`KnowledgeBase::prove_rule_predicate`]).
+///
+/// The distinction is load-bearing, not cosmetic: the claim "a rule has no caller
+/// to thread a dictionary into a frame" — written in `kb/typing.rs` and in
+/// `docs/design/requirement-dictionaries.md`, and false — read as a statement about
+/// *both* frames while being (partly) true of only this one. What this frame lacks
+/// is a requirement channel; it has callers, and it already threads a
+/// caller-inherited environment in `assumed_facts`. See
+/// `docs/design/requirement-channel.md` §1 and WI-1040.
 #[derive(Clone)]
-struct Frame {
+struct ResolverFrame {
     // WI-246: goals carry `Value` so rule-body occurrences flow into SLD as
     // `Value::Node` without lowering to hash-consed Term. During the
     // behavior-preserving carrier swap every goal is still `Value::Term`.
@@ -617,7 +633,7 @@ pub struct ResolveStats {
 /// `split_first`. Converts recursive DFS into an explicit choice-point
 /// stack.
 pub struct SearchStream {
-    stack: Vec<Frame>,
+    stack: Vec<ResolverFrame>,
     config: ResolveConfig,
     /// Per-query cache: a ground goal's carrier-agnostic [`GoalKey`] → its
     /// discrim-tree query results. Keyed by the structural fingerprint (not a
@@ -1582,7 +1598,7 @@ impl SearchStream {
         let new_delay = delay_mode.reset();
 
         self.stack.pop();
-        self.stack.push(Frame {
+        self.stack.push(ResolverFrame {
             goals: new_goals,
             subst: new_subst,
             depth: depth + 1,
@@ -1802,7 +1818,7 @@ impl SearchStream {
             let new_subst = frame.subst.clone();
             let new_assumed = frame.assumed_facts.clone();
             self.stack.pop();
-            self.stack.push(Frame {
+            self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: new_subst,
                 depth: depth + 1,
@@ -2524,7 +2540,7 @@ impl SearchStream {
                     };
                     let inherited = frame.assumed_facts.clone();
                     self.stack.pop();
-                    self.stack.push(Frame {
+                    self.stack.push(ResolverFrame {
                         goals: rotated,
                         subst: new_subst,
                         depth: new_depth,
@@ -2553,7 +2569,7 @@ impl SearchStream {
             let mut new_goals: Vec<Value> = Vec::with_capacity(body.len() + tail.len());
             new_goals.extend(body);
             new_goals.extend(tail.iter().cloned());
-            self.stack.push(Frame {
+            self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: frame.subst.clone(),
                 depth: frame.depth + 1,
@@ -2676,7 +2692,7 @@ impl SearchStream {
             }
             let new_delay = delay_mode.reset();
             let inherited = frame.assumed_facts.clone();
-            self.stack.push(Frame {
+            self.stack.push(ResolverFrame {
                 goals: remaining,
                 subst: merged,
                 depth: frame.depth + 1,
@@ -2826,7 +2842,7 @@ impl SearchStream {
                 None => new_goals.extend(fresh_nodes.into_iter().map(Value::Node)),
             }
             new_goals.extend(remaining);
-            self.stack.push(Frame {
+            self.stack.push(ResolverFrame {
                 goals: new_goals,
                 subst: merged,
                 depth: parent_depth + 1,
@@ -3146,7 +3162,7 @@ impl KnowledgeBase {
     /// caller resolving an occurrence body need not lower it to terms first.
     /// `resolve_lazy` is the thin `&[TermId]` → `Value::Term` wrapper over this.
     pub fn resolve_lazy_goals(&self, goals: Vec<Value>, config: &ResolveConfig) -> SearchStream {
-        let initial_frame = Frame {
+        let initial_frame = ResolverFrame {
             goals,
             subst: Substitution::new(),
             depth: 0,
@@ -3488,7 +3504,7 @@ impl KnowledgeBase {
         // allocating. What that reify actually did was answer by carrier — `None`
         // for everything but `Term`/`Node`, and ⊥ for a `Spliced` leaf — so the
         // narrowness was a silent wrong answer, not a narrow cost. It has no
-        // callers left and is deleted; see the module note below `Frame`.
+        // callers left and is deleted; see the module note below `ResolverFrame`.
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
             BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),

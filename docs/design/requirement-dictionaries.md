@@ -670,12 +670,34 @@ value with accessor ops, §2).
 
 ### 3.3 Where the dictionary comes from: `findDictionary` into a Γ slot
 
+> **SUPERSEDED (2026-08-07) by [`requirement-channel.md`](./requirement-channel.md)**
+> on two points. The *semantics* below — `findDictionary` resolves-or-suspends and
+> **yields** the dictionary, §3.2's unification of the guard and dictionary readings —
+> stand. What is replaced:
+>
+> 1. **"A rule has no caller" is FALSE**, and it propagated verbatim into
+>    `kb/typing.rs:40023`. A rule has three callers: a parent rule body's goal, a
+>    top-level query (the only caller-less one), and an **eval frame** via
+>    `prove_rule_predicate` — which holds `frame.requirements` and drops them at the
+>    crossing. What is missing is a *channel*, not a caller; `ResolverFrame::assumed_facts`
+>    (WI-108) is the resolver's own proof that caller→callee environment threading
+>    already works there.
+> 2. **The substrate is σ, not Γ.** `ResolveConfig.gamma` (`kb/resolve.rs:367`) is a
+>    fact overlay, global to one resolve call, seeded only by `prove_from_gamma` — not
+>    per-activation and not backtrackable. The dictionary binds to a **logical
+>    variable** in σ; the frame carries only the name→var slot map.
+>
+> Read `requirement-channel.md` §1–§5 for the replacement; the rest of this section is
+> kept because §3.4–§3.7 (attribution, suspend, the worked example, the WI-292
+> relationship) transfer unchanged.
+
 An **operation** gets its dictionary from its **caller** — threaded into
 `frame.requirements` at frame push, read via `var_ref(__req_*)`.
 
-A **rule has no caller.** SLD fires it against a *query* that supplies concrete
-**values**, from which types are read. So the rule must resolve its own
-dictionary — and the `requires T` goal *is* that populator:
+A rule's caller may hold no dictionary to thread (a top-level query holds none, and a
+parent rule body holds one only once this channel exists), and a goal's carrier may be
+unbound at open time — so the rule must be able to resolve its own dictionary, and the
+`requires T` goal *is* that populator:
 
 > `requires T` ≡ **`∃x. x = findDictionary[T]`** — resolve/construct the dictionary
 > for `T` at the current substitution and bind it into a **requirement environment
@@ -750,10 +772,12 @@ One decision is settled, one remains:
     param's per-body skolem to its canonical var so `A` and `B` are told apart.
     WI-300's rule-body weave reuses this attribution wholesale, so it **depends on
     WI-613** (§Status).
-- **[Open] Whole-rule vs. positional `requires`.** As an `∃`-goal it reads
-  positionally (ops *after* it see the slot); "bring X into scope for the rule"
-  wants it whole-body. Either hoist `requires X` to a rule-level populator, or
-  require it to precede the ops it covers.
+- **[Resolved — [`requirement-channel.md`](./requirement-channel.md) §5] Whole-rule
+  vs. positional `requires`.** It was open only under the Γ-slot substrate. With the
+  dictionary bound to a **logical variable**, a body goal that reads the slot before
+  `require[X]` binds it sees an unbound var and **delays** until it is bound. Ordering
+  becomes a performance question, not a correctness one; neither hoisting nor a
+  precede-the-ops rule is needed.
 
 ### 3.5 Suspend, by construction
 
@@ -823,13 +847,13 @@ dispatches.
    next to `reify`/`execute` (§2.6). Value-agnostic, **gated on a metaprogramming
    consumer** (like the deferred `invoke`); the runtime sorts (1–2) do not depend on
    it. Only `find_dictionary` (the `Expr` form + WI-300 resolver) is genuinely new.
-4. **Rule-body requirement goals (WI-300)** — the `findDictionary[T]` resolver
-   primitive (provides-resolution + `construct_requirement` + suspend); the Γ
-   requirement slot; the `convert_rule_body` desugaring of `requires(X)` →
-   `findDictionary` into Γ; body spec-ops dispatch by reading Γ; and the SLD→eval
-   bridge populating `frame.requirements` from Γ. Suspend-if-abstract is by
-   construction (§3.5). **Open before start:** decide §3.4's whole-rule-vs-positional
-   `requires`, and confirm the Γ-slot substrate (WI-537 / WI-328) is in place.
+4. **Rule-body requirement goals (WI-300)** — *partially delivered*: WI-300 shipped
+   the **guard tier only** (`find_dictionary(spec_base, op, witness_args)` →
+   three-valued Fire/DontFire/Suspend, `typing.rs:37655`), which **checks** the
+   requirement and does not thread it (`typing.rs:40044`). The threading half is
+   re-specified on the σ substrate by
+   [`requirement-channel.md`](./requirement-channel.md) — read that instead of this
+   item's Γ-slot phrasing; its §9 carries what is still open.
 5. **Bridge (WI-577, optional)** — codegen-emitted host bridge for the two view
    sorts, if/when a host consumer needs them (cf. the generated KB bridge, WI-540).
 
