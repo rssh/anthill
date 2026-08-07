@@ -122,6 +122,16 @@ end
 /// Contrast: in a RULE BODY, `not(goal)` is still negation-as-failure
 /// (`anthill.reflect.not`), unaffected by the op-body Bool routing. `allowed(?x)`
 /// holds for the `num` that is not `blocked` — pure NAF semantics.
+///
+/// NOTE THE MISSING HALF, which this fixture's shape is exactly why it was missed:
+/// there is no `import anthill.prelude.Bool` here, so `not` reaches
+/// `anthill.reflect.not` through the implicit-prelude FALLBACK — and a fallback is
+/// below scope resolution. Add that import and this test's own claim stopped being
+/// true: `not` became `Bool.not` and NAF silently went off. The op-body direction
+/// above HAS its import-shadow twin (`op_body_not_is_bool_even_when_reflect_not_imported`);
+/// the rule-body direction did not get one until **WI-1046**, which routes it with the
+/// mirror redirect. That ticket's suite is `wi1046_boolean_goal_routing_test`; this
+/// test stays as the un-imported baseline the pair is measured against.
 #[test]
 fn rule_body_not_stays_negation_as_failure() {
     let src = r#"

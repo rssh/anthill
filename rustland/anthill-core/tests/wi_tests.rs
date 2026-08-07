@@ -1016,6 +1016,9 @@ mod wi1027_bodyless_supplier_tie_test;
 #[path = "include/wi1032_provision_dedup_test.rs"]
 mod wi1032_provision_dedup_test;
 
+#[path = "include/wi1046_boolean_goal_routing_test.rs"]
+mod wi1046_boolean_goal_routing_test;
+
 #[path = "include/wi1034_undefined_rule_body_goal_test.rs"]
 mod wi1034_undefined_rule_body_goal_test;
 

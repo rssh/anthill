@@ -388,42 +388,30 @@ fn a_user_functor_named_tuple_is_not_a_conjunction_wrapper() {
 /// OPERATION over VALUES. Walking its arguments would be the same category error as
 /// walking a constructor's fields, so `and` was removed from both connective lists.
 ///
-/// THIS TEST PASSES WITH `and` PUT BACK, and that is not a weakness of the test — it
-/// is the measurement. The descent gate declines a BARE connective either way, so the
-/// only position where the two differ is inside a `not`; and `not(a & b)` cannot be
-/// written today — MEASURED, it parses clean, loads clean, and the rule simply DOES
-/// NOT EXIST afterwards (`try_resolve_symbol` on its head returns `None`). So the
-/// removal is a correctness cleanup with no reachable behavioural difference, and
-/// saying so here is the honest alternative to a fixture that pretends otherwise.
+/// THE ROW WI-1034 PINNED AND **WI-1046** CLOSED. It used to assert that a dangling
+/// name under `&` LOADS and that the rule is dead anyway; the whole `&`-in-a-goal
+/// construct is now refused at load, one error per site, so the dangling name inside it
+/// is never reached. Re-aimed rather than deleted, because what it measures is
+/// WI-1034's own ATTRIBUTION: the refusal must come from WI-1046's message and not
+/// from this ticket's, since the rule was dead with or without the missing name.
 ///
-/// What IS observable is pinned, with the CONTROL that attributes it: a top-level `&`
-/// carrying a dangling operand LOADS (not this ticket's refusal), and the same rule
-/// with BOTH operands present ALSO answers nothing. The rule is dead either way, so
-/// the death is not about the missing name — it is the lowering, **WI-1046**, which
-/// owns both this and the vanishing-rule measurement above. Refusing the dangling name
-/// here would report a symptom of WI-1046 under WI-1034's message and leave the row
-/// with no missing name at all still silently dead.
+/// Asserted on the `both` row — the one with NO missing name at all — precisely so it
+/// cannot pass for WI-1034's reason.
 #[test]
-fn an_undefined_name_under_a_boolean_and_is_not_a_goal() {
-    let ns = "test.wi1034.boolean_and";
-    let src = format!(
-        "namespace {ns}\n\
-         \x20 import anthill.prelude.Bool\n\
-         \x20 fact left1034(1)\n\
-         \x20 fact right1034(1)\n\
-         \x20 rule dangling(?x) :- left1034(?x) & absent1034and(?x)\n\
-         \x20 rule both(?x) :- left1034(?x) & right1034(?x)\n\
-         end\n"
-    );
-    let mut kb = crate::common::load_kb_with(&src);
+fn a_boolean_and_in_a_goal_position_is_refused_by_wi1046() {
+    let src = "namespace test.wi1034.boolean_and\n\
+               \x20 fact left1034(1)\n\
+               \x20 fact right1034(1)\n\
+               \x20 rule both(?x) :- left1034(?x) & right1034(?x)\n\
+               end\n";
+    let msg = refusal(src);
     assert!(
-        crate::common::query_unary(&mut kb, &format!("{ns}.dangling")).is_empty(),
-        "not refused here, and dead — WI-1046, not this ticket",
+        msg.contains("Goal conjunction is the COMMA"),
+        "WI-1046's refusal, not this ticket's: {msg}",
     );
     assert!(
-        crate::common::query_unary(&mut kb, &format!("{ns}.both")).is_empty(),
-        "THE CONTROL: both conjuncts hold and the rule STILL answers nothing, so the \
-         dangling row above is not dead because of the missing name — `&` in a goal \
-         position is dead however this walk treats it (WI-1046)",
+        !msg.contains("names nothing"),
+        "WI-1034's message must NOT fire here — `and` names something, the wrong \
+         thing, and attributing it to a missing name is the error this row guards: {msg}",
     );
 }

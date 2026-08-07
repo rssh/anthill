@@ -1,0 +1,393 @@
+//! WI-1046 — the boolean operators are position-directed IN FACT, not just in the spec.
+//!
+//! `docs/kernel-language.md` §6.6 (WI-529) states the design verbatim: *"`not`, `or`,
+//! and `and` each name a dispatched value operation on `Bool` … inside an operation
+//! body (evaluated), but a goal form in a rule body (resolved) … **Resolution is by
+//! syntactic position**, not by a distinct glyph or operand type."*
+//!
+//! It was not. WI-529 routed ONE direction with a redirect (`reflect.not` → `Bool.not`
+//! inside an op body) and left the rule-body direction to the implicit-prelude
+//! FALLBACK — which sits BELOW scope resolution, so any name in scope shadows it. An
+//! ordinary `import anthill.prelude.Bool` therefore repointed `not` and `|` in every
+//! rule body of that namespace at the VALUE operations, which have no resolver
+//! behaviour at all.
+//!
+//! ## MEASURED before the fix — one import, five rows
+//!
+//! | rule body | expected | no import | with `import anthill.prelude.Bool` |
+//! |---|---|---|---|
+//! | `l(?x) \| r(?x)` | 2 | 2 | **0** |
+//! | `l(?x), r(?x)` (control) | 1 | 1 | 1 |
+//! | `l(?x), not(empty(?x))` | 1 | 1 | **0** |
+//! | `l(?x), not(r(?x))` | 0 | 0 | 0 |
+//! | `l(?x) & r(?x)` | — | **0** | **0** |
+//!
+//! The `not` row is a WRONG ANSWER, not a missing one: negation-as-failure over a goal
+//! that fails must SUCCEED. The fourth row is why the third is the one to drive — it
+//! reads 0 under the defect and 0 when correct, so a suite that only checked it would
+//! have measured nothing.
+//!
+//! The comma control is what proves the import is not simply breaking the fixture.
+//!
+//! ## Two halves, two remedies
+//!
+//! **`not` / `or` are ROUTED.** `Loader::route_body_goal_boolean` is the mirror of
+//! WI-529's `redirect_op_body_boolean`, applied at GOAL POSITIONS — the flag
+//! `in_body_goal` rides from each top-level body atom down through the goal slots of
+//! whatever connectives sit above, and turns off at every data slot. Which slots those
+//! are comes from the one shared table, `KnowledgeBase::goal_arg_slots`, that the two
+//! KB goal walks read (WI-863 / WI-1034); the loader needs the answer while it is still
+//! BUILDING the body, so it cannot ask either walk, and a third hand-written copy is
+//! how the WI-1034 review found `and` listed as a conjunction in two of them.
+//!
+//! **`and` is REFUSED.** There is nothing to route it to: §6.6 says "goal conjunction
+//! is the comma (there is no `kernel.and`)". So `a & b` in a goal position had no
+//! meaning and silently did nothing; it is now a load error naming the comma.
+//!
+//! ## Blast radius: ZERO, measured over the corpus
+//!
+//! `Bool.and` / `Bool.or` / `Bool.not` appear in **no** rule-body goal position across
+//! stdlib + rust bindings, + anthill-testcases, + examples and + anthill-todo. The
+//! probe's CONTROL is that in the same walk `anthill.reflect.not` appears 3–4 times and
+//! `anthill.kernel.push_choice` once — so it was looking in the right places and the
+//! zero is a real zero. Nothing in the tree was relying on either behaviour.
+//!
+//! ## What fails per half — MEASURED by backing each one out
+//!
+//! Three pieces ship here, so three columns. "position-blind" is the flag threading
+//! defeated — every rule-body node treated as a goal, which is the obvious shortcut.
+//!
+//! | test | routing | `and` refusal | position-blind |
+//! |---|---|---|---|
+//! | `an_imported_bool_no_longer_captures_negation` | **FAILS** | ok | ok |
+//! | `an_imported_bool_no_longer_captures_disjunction` | **FAILS** | ok | ok |
+//! | `the_routing_reaches_a_nested_connective` | **FAILS** | ok | ok |
+//! | `a_goal_position_and_is_refused` | ok | **FAILS** | ok |
+//! | `the_equals_versus_ampersand_precedence_trap_is_now_loud` | ok | **FAILS** | ok |
+//! | `a_data_slot_keeps_the_value_operators` | ok | ok | **FAILS** |
+//! | `an_operation_body_still_evaluates_the_value_operators` | ok | ok | ok |
+//!
+//! Only the LAST row passes on all three, and it earns its place by guarding the other
+//! direction entirely (WI-529's half, which this must not disturb). Note especially
+//! that `a_data_slot_keeps_the_value_operators` is green under both real back-outs and
+//! red only under the shortcut — a suite without it would report "all green" for a fix
+//! that refuses every `and` a rule body mentions, data slots included.
+//!
+//! Outside this file, `wi1034_…::a_boolean_and_in_a_goal_position_is_refused_by_wi1046`
+//! is the row WI-1034 pinned and handed here (it fails on the `and` column), and
+//! `wi529_boolean_operator_split_test` owns the op-body direction this one mirrors.
+//!
+//! ## Three more the `/code-review` pass found, each DRIVEN before it was believed
+//!
+//! The last three tests in this file are theirs, and none had coverage before:
+//!
+//!   * the wrapper bit was keyed on `local_name == "tuple"` at any goal node, so a
+//!     USER predicate named `tuple` had its DATA arguments walked as goals — refused
+//!     where the identically-shaped `ordinary1046(?a & ?b)` loaded. It now rides a
+//!     second flag set only by arriving through a `tuple_wrapped` SLOT.
+//!   * folding `forall_impl` into the shared table silently changed the QUERY walk,
+//!     which had never entered a discharge. A nested implication IS a query surface
+//!     form (WI-863's doc said otherwise, and that doc is corrected), so
+//!     `not((forall(?h), hyp(?h) -: hyp(?h)))` began refusing a name the pattern
+//!     declares. The table stays honest; the DESCENT POLICY went back to the caller.
+//!   * the redirect keyed on symbol identity alone, so it captured the arity-2
+//!     RELATIONAL form `Bool.not(?a, ?r)` (WI-938) and rewrote it to the arity-1 NAF
+//!     builtin, which then succeeded VACUOUSLY — 1 solution, `?r` unbound, reported
+//!     DEFINITE. It is gated on arity now.
+//!
+//! A FOURTH finding was REFUTED by driving, and the measurement is worth keeping: in a
+//! prelude-less KB (the embedder configuration) the `and` refusal cannot fire, because
+//! `Bool.and` is not there to key on — but the construct is NOT silently dead, it is
+//! refused by WI-1034's check instead ("rule-body goal `and` names nothing"), since the
+//! operator bare-interns. Two checks, one loud outcome either way.
+//!
+//! The third is the one to note for how it was assessed: the pre-change answer was 0
+//! solutions and the post-change answer was 1, so a count-only reading said the change
+//! HELPED. Rendering the binding is what showed the 1 was fabricated.
+//!
+//! REFERENCE: WI-529 (the op-body half and the mechanism); WI-1034 (which found this);
+//! `docs/kernel-language.md` §6.6; `stdlib/anthill/kernel/kernel.anthill:48`.
+
+/// The five-row fixture, parameterized on whether `anthill.prelude.Bool` is imported.
+/// One builder so the two arms cannot drift into two programs.
+fn program(ns: &str, import_bool: bool) -> String {
+    let imp = if import_bool { "  import anthill.prelude.Bool\n" } else { "" };
+    format!(
+        "namespace {ns}\n{imp}\
+         \x20 fact left1046(1)\n\
+         \x20 fact right1046(1)\n\
+         \x20 fact empty1046(99)\n\
+         \x20 rule pipe1046(?x) :- left1046(?x) | right1046(?x)\n\
+         \x20 rule comma1046(?x) :- left1046(?x), right1046(?x)\n\
+         \x20 rule nafTrue1046(?x) :- left1046(?x), not(empty1046(?x))\n\
+         \x20 rule nafFalse1046(?x) :- left1046(?x), not(right1046(?x))\n\
+         end\n"
+    )
+}
+
+/// Solution counts for the fixture's four rules, in table order.
+fn counts(ns: &str, import_bool: bool) -> Vec<usize> {
+    let mut kb = crate::common::load_kb_with(&program(ns, import_bool));
+    ["pipe1046", "comma1046", "nafTrue1046", "nafFalse1046"]
+        .iter()
+        .map(|h| crate::common::query_unary(&mut kb, &format!("{ns}.{h}")).len())
+        .collect()
+}
+
+/// THE HEADLINE, negation half. `not(g)` in a rule body is negation-as-failure whatever
+/// is imported. Driven on the row that DISCRIMINATES: the negand FAILS, so NAF must
+/// succeed and the rule must answer — the defect turned that 1 into 0, a wrong answer.
+///
+/// The `nafFalse` row is asserted beside it deliberately: it reads 0 both when NAF works
+/// and when `not` has been captured, so it is the row that would have made a
+/// too-narrow suite green through the whole defect.
+#[test]
+fn an_imported_bool_no_longer_captures_negation() {
+    let with_import = counts("test.wi1046.naf.imported", true);
+    assert_eq!(with_import[2], 1, "NAF over a failing goal must SUCCEED: {with_import:?}");
+    assert_eq!(with_import[3], 0, "NAF over a holding goal must FAIL: {with_import:?}");
+}
+
+/// THE HEADLINE, disjunction half — and the strongest form of the claim: the two arms
+/// must be EQUAL, so an import cannot change what a rule body means at all.
+///
+/// Compared as whole rows rather than per-row constants: what WI-1046 restores is the
+/// spec's "resolution is by syntactic position", and a position-directed reading is
+/// exactly one that does not vary with the import list. The comma row rides along as
+/// the control — it never routed, so a difference there would mean the fixture, not the
+/// routing, is what moved.
+#[test]
+fn an_imported_bool_no_longer_captures_disjunction() {
+    let without = counts("test.wi1046.disj.plain", false);
+    let with = counts("test.wi1046.disj.imported", true);
+    assert_eq!(without, vec![2, 1, 1, 0], "the un-imported baseline: {without:?}");
+    assert_eq!(
+        without, with,
+        "an import must not change what a rule body MEANS — that is what \
+         `position-directed` says (§6.6): {without:?} vs {with:?}",
+    );
+}
+
+/// The routing reaches a connective NESTED under another, which is what makes it a
+/// walk rather than a top-level special case. `not(a | b)` needs BOTH: the `not` routed
+/// so the negation is entered at all, and the `or` inside it routed so the disjunction
+/// resolves — under the defect the inner `|` was `Bool.or` even when `not` was fine.
+///
+/// Driven with an empty disjunction so the expected answer (1) is the NAF-succeeds one:
+/// a row that expected 0 would pass with the whole body inert.
+#[test]
+fn the_routing_reaches_a_nested_connective() {
+    let ns = "test.wi1046.nested";
+    let src = format!(
+        "namespace {ns}\n\
+         \x20 import anthill.prelude.Bool\n\
+         \x20 fact left1046(1)\n\
+         \x20 fact empty1046(99)\n\
+         \x20 rule nested1046(?x) :- left1046(?x), not(empty1046(?x) | empty1046(?x))\n\
+         end\n"
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    assert_eq!(
+        crate::common::query_unary(&mut kb, &format!("{ns}.nested1046")).len(),
+        1,
+        "a disjunction nested under a negation must resolve, not evaluate",
+    );
+}
+
+/// `&` IN A GOAL POSITION IS REFUSED, naming the comma. There is no `kernel.and` to
+/// route it to (§6.6), so the choice was between leaving it silently inert — MEASURED,
+/// `l(?x) & r(?x)` answers 0 with BOTH facts present — and refusing it.
+///
+/// The message must carry the repair, because the repair is one character and the
+/// author cannot infer it from `Bool.and`, a name they never wrote.
+#[test]
+fn a_goal_position_and_is_refused() {
+    let src = "namespace test.wi1046.andgoal\n\
+               \x20 fact left1046(1)\n\
+               \x20 fact right1046(1)\n\
+               \x20 rule both1046(?x) :- left1046(?x) & right1046(?x)\n\
+               end\n";
+    let msg = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
+        .join("\n");
+    assert!(msg.contains("Goal conjunction is the COMMA"), "the repair must be named: {msg}");
+    assert!(msg.contains("anthill.prelude.Bool.and"), "the referent must be named: {msg}");
+    // Located, like every other rule-body refusal (WI-745): the operator's own line.
+    let (loc, _) = msg
+        .split_once(": ")
+        .unwrap_or_else(|| panic!("expected a `line:col: message` rendering, got: {msg}"));
+    assert!(loc.starts_with("4:"), "the refusal must point at the rule, got `{loc}`: {msg}");
+}
+
+/// THE CONTROL THE REFUSAL MUST NOT CONSUME: an OPERATION body still evaluates `&` /
+/// `|` / `!` as the dispatched Bool VALUE operators. That is the other half of
+/// position-directedness and the half WI-529 already delivered; this fixture is here so
+/// that a future widening of the goal-position rule has to come past it.
+///
+/// Passes with both halves backed out, by design.
+#[test]
+fn an_operation_body_still_evaluates_the_value_operators() {
+    let src = "namespace test.wi1046.opbody\n\
+               \x20 import anthill.prelude.Bool\n\
+               \x20 operation both1046(a: Bool, b: Bool) -> Bool = a & b\n\
+               \x20 operation either1046(a: Bool, b: Bool) -> Bool = a | b\n\
+               \x20 operation neither1046(a: Bool, b: Bool) -> Bool = !(a | b)\n\
+               end\n";
+    crate::common::load_kb_with(src);
+}
+
+/// …AND THE OTHER POSITION THE ROUTING MUST NOT TOUCH: a DATA slot inside a rule body.
+/// `and` in a goal's ARGUMENT is a value expression, so it stays the Bool operation and
+/// is neither routed nor refused.
+///
+/// This is the boundary the `in_body_goal` flag exists to draw — it turns off at every
+/// slot the shared `goal_arg_slots` table does not list. Without that, this program
+/// would be refused, and the refusal would be wrong. Passes either way by design (the
+/// flag is off here before and after), which is exactly why it is worth pinning: it is
+/// what a "just refuse `and` anywhere in a rule body" shortcut would break, and the
+/// shortcut is the obvious way to write this fix.
+///
+/// Spelled as an explicit `and(…)` call rather than the infix `?r = ?a & ?b`, because
+/// that spelling is NOT this case — see the test below.
+#[test]
+fn a_data_slot_keeps_the_value_operators() {
+    let src = "namespace test.wi1046.dataslot\n\
+               \x20 import anthill.prelude.Bool\n\
+               \x20 fact flag1046(true)\n\
+               \x20 rule anded1046(?r) :- flag1046(?a), flag1046(?b), eq(?r, and(?a, ?b))\n\
+               end\n";
+    crate::common::load_kb_with(src);
+}
+
+/// A PRECEDENCE TRAP THE REFUSAL MAKES LOUD, found by the control above failing on a
+/// fixture that looked like a data slot and was not.
+///
+/// `&` is priority 2 and `=` is priority 3 (§6.6), and higher binds tighter — so
+/// `?r = ?a & ?b` is `and(eq(?r, ?a), ?b)`, NOT `eq(?r, and(?a, ?b))`. The `and` is the
+/// TOP-LEVEL GOAL. Before WI-1046 that rule loaded clean and silently never fired,
+/// which is the worst possible outcome for a precedence surprise: the author's mental
+/// parse and the engine's differ and nothing says so. It is now refused at the `and`.
+///
+/// Pinned because the refusal's VALUE here is larger than for a hand-written `a & b` —
+/// nobody writes `a & b` as a goal on purpose, but `?r = ?a & ?b` is a natural thing to
+/// write and means something else.
+#[test]
+fn the_equals_versus_ampersand_precedence_trap_is_now_loud() {
+    let src = "namespace test.wi1046.precedence\n\
+               \x20 import anthill.prelude.Bool\n\
+               \x20 fact flag1046(true)\n\
+               \x20 rule anded1046(?r) :- flag1046(?a), flag1046(?b), ?r = ?a & ?b\n\
+               end\n";
+    let msg = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
+        .join("\n");
+    assert!(
+        msg.contains("Goal conjunction is the COMMA"),
+        "`?r = ?a & ?b` binds as `and(eq(?r, ?a), ?b)`, so the `and` is the goal: {msg}",
+    );
+}
+
+// ── The three the /code-review pass found, each driven ────────────────────────
+
+/// REVIEW FINDING 1 — a node is a conjunction WRAPPER because of WHERE IT SITS, never
+/// because of what it is NAMED.
+///
+/// The first cut keyed the wrapper on `local_name == "tuple"` at any goal node, so a
+/// USER predicate locally named `tuple` leaked goal-ness into its DATA arguments: this
+/// program was REFUSED while the identical one with the predicate renamed loaded. Both
+/// arms are driven together, because a test on the `tuple` arm alone would pass equally
+/// if the walk had simply stopped refusing everything.
+///
+/// The wrapper bit now rides a second flag, set only when the walk arrives through a
+/// slot the shared table marks `tuple_wrapped` — the same distinction
+/// `KnowledgeBase::tuple_goal_children` draws by only ever being called from the
+/// quantifier arm (WI-1034's own review finding, one layer down).
+#[test]
+fn a_user_predicate_named_tuple_keeps_its_arguments_as_data() {
+    let named_tuple = "namespace test.wi1046.usertuple\n\
+                       \x20 import anthill.prelude.Bool\n\
+                       \x20 fact tuple(true)\n\
+                       \x20 fact bit1046(true)\n\
+                       \x20 rule r(?x) :- bit1046(?a), bit1046(?b), tuple(?a & ?b), ?x = 1\n\
+                       end\n";
+    let renamed = named_tuple
+        .replace("test.wi1046.usertuple", "test.wi1046.usertuple2")
+        .replace("tuple(", "ordinary1046(");
+    crate::common::load_kb_with(&renamed); // the CONTROL, first: the shape is loadable
+    crate::common::load_kb_with(named_tuple);
+}
+
+/// REVIEW FINDING 2 — the shared table says which slots are goals; the DESCENT POLICY
+/// stays with each caller, and the query-pattern walk's policy is not to enter a
+/// discharge.
+///
+/// Folding `forall_impl` into `goal_arg_slots` silently changed the QUERY walk, which
+/// had listed only the bounded quantifiers. A nested implication IS a query surface
+/// form (`grammar.js`'s `_non_name_atom_term` — WI-863's doc claimed otherwise), and
+/// the query walk has no rule to collect hypotheses from, so entering it refused a name
+/// the pattern itself declares.
+///
+/// Driven through the PATTERN reader rather than a load, because that is the only place
+/// this fires; asserted under a `not`, since a bare connective is not entered either way
+/// and would measure nothing.
+#[test]
+fn a_query_pattern_discharge_does_not_refuse_its_own_hypothesis() {
+    let mut kb = crate::common::load_kb_with(
+        "namespace test.wi1046.q\n  fact seed1046(1)\n  rule ok1046(?x) :- seed1046(?x)\nend\n",
+    );
+    let qt = crate::common::query_pattern_term(
+        &mut kb,
+        "not((forall(?h), hyp1046(?h) -: hyp1046(?h)))",
+    );
+    let undefined: Vec<String> = kb
+        .undefined_query_goal_functors(qt)
+        .iter()
+        .map(|s| kb.qualified_name_of(*s).to_string())
+        .collect();
+    assert!(
+        undefined.is_empty(),
+        "a discharge DECLARES its antecedents; the query walk must not refuse them: {undefined:?}",
+    );
+}
+
+/// REVIEW FINDING 3 — the routing is gated on ARITY, so it cannot capture the
+/// RELATIONAL call form of the same spec op.
+///
+/// `Bool.not(?a, ?r)` is the WI-938 functional-relation spelling — the result rides the
+/// last argument — and it is a different call from the unary `not(goal)`. An
+/// identity-only redirect rewrote it to `anthill.reflect.not`, the arity-1 NAF builtin,
+/// which then SUCCEEDED VACUOUSLY: 1 solution with `?r` unbound (`?_`) and reported
+/// DEFINITE. That is a wrong answer, and worse than the 0 solutions it replaced.
+///
+/// The assertion is on the BINDING, not the count: a count-only test would have read
+/// "1 solution" as an improvement over the pre-change 0, which is exactly the reading
+/// that made this look like a fix. 0 solutions here is the pre-existing behaviour of
+/// the relational form on `Bool` (unrelated to WI-1046); what this pins is that the
+/// routing does not turn it into a fabricated answer.
+#[test]
+fn the_routing_does_not_capture_the_relational_call_form() {
+    let ns = "test.wi1046.relational";
+    let src = format!(
+        "namespace {ns}\n  import anthill.prelude.Bool\n\
+         \x20 fact bit1046(true)\n\
+         \x20 rule notrel1046(?r) :- bit1046(?a), Bool.not(?a, ?r)\n\
+         end\n"
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    let sols = crate::common::query_unary(&mut kb, &format!("{ns}.notrel1046"));
+    for (v, definite) in &sols {
+        let rendered = match v {
+            anthill_core::eval::Value::Term { id, .. } => {
+                anthill_core::persistence::print::TermPrinter::over(&kb).print_term(*id)
+            }
+            other => format!("{other:?}"),
+        };
+        assert!(
+            !(*definite && rendered.starts_with("?")),
+            "a DEFINITE answer must bind its result; got `{rendered}` — the arity-blind \
+             redirect made NAF succeed vacuously here",
+        );
+    }
+}

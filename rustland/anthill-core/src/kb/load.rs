@@ -284,6 +284,27 @@ pub enum LoadError {
         spec: String,
         required: String,
     },
+    /// WI-1046 (spec §6.6): a boolean operator written in a GOAL position that has no
+    /// goal reading. Today that is exactly `and` (`a & b`, or the word form): `not` and
+    /// `or` route to the resolver primitives, and there is no `kernel.and` — "goal
+    /// conjunction is the comma".
+    ///
+    /// Load-blocking, because nothing goes wrong LATER: the goal resolves to
+    /// `anthill.prelude.Bool.and`, a dispatched value operation with no resolver
+    /// behaviour, so the rule loads clean and silently never fires. MEASURED, with both
+    /// conjuncts present: `rule both(?x) :- l(?x) & r(?x)` answers ZERO where the comma
+    /// form answers one.
+    ///
+    /// Its own variant rather than an `Other` because the repair is one character and
+    /// belongs in the message, and because the operator is what the author must see —
+    /// `Bool.and` is a name they never wrote.
+    BooleanOperatorInGoalPosition {
+        /// The operator's local name (`and`) — the word form; the message gives both
+        /// spellings, since `&` is the one more often written.
+        operator: String,
+        /// Where the goal is written.
+        span: Span,
+    },
     /// WI-1033 (058 §3.8): a CONDITIONAL provision is certified by the carrier's own
     /// conditional provision of the spec it requires, and the outer conditions do not
     /// ENTAIL the inner ones — so the outer holds at bindings where the inner does not,
@@ -1275,6 +1296,7 @@ impl LoadError {
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
+            | LoadError::BooleanOperatorInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -1434,6 +1456,9 @@ impl LoadError {
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!("{}: {}", loc.format_start(*span), undefined_rule_body_goal_message(functor))
+            }
+            LoadError::BooleanOperatorInGoalPosition { operator, span } => {
+                format!("{}: {}", loc.format_start(*span), boolean_operator_in_goal_message(operator))
             }
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
@@ -1862,6 +1887,9 @@ impl std::fmt::Display for LoadError {
                 // both faces — the located `format_with_source` above and this
                 // span-less `Display` — so the two cannot drift into two wordings.
                 write!(f, "{} at {}..{}", undefined_rule_body_goal_message(functor), span.start, span.end)
+            }
+            LoadError::BooleanOperatorInGoalPosition { operator, span } => {
+                write!(f, "{} at {}..{}", boolean_operator_in_goal_message(operator), span.start, span.end)
             }
             LoadError::UnbackedProviderOperation { carrier, spec, op } => {
                 write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
@@ -4900,6 +4928,23 @@ fn undefined_rule_body_goal_message(functor: &str) -> String {
          const or builtin is declared under that name, so this goal can NEVER match and \
          the rule it is written in can never fire. Fix the spelling, or import the \
          namespace that declares `{functor}`."
+    )
+}
+
+/// WI-1046 — the ONE wording of [`LoadError::BooleanOperatorInGoalPosition`], shared by
+/// the located rendering and the span-less `Display`.
+///
+/// Gives BOTH spellings (`&` and the word form) because the operator table maps them to
+/// one functor and the author may have written either, and names the comma as the
+/// repair — which is the whole content of spec §6.6's "goal conjunction is the comma".
+fn boolean_operator_in_goal_message(operator: &str) -> String {
+    format!(
+        "`{operator}` (the `&` / `{operator}` operator) has no meaning in a rule-body GOAL \
+         position: it names `anthill.prelude.Bool.{operator}`, a boolean VALUE operation \
+         with no resolver behaviour, so this goal can never match and the rule silently \
+         answers nothing. Goal conjunction is the COMMA — write `a, b` instead of \
+         `a {operator} b` (kernel-language.md §6.6). The `&` form is still a boolean \
+         value operator inside an OPERATION body, where it is evaluated."
     )
 }
 
@@ -8506,6 +8551,27 @@ struct Loader<'a> {
     // an op body the primitives stay the default. (`and` is value-only — handled by the
     // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
     in_op_body_value: bool,
+    // WI-1046: true while building a rule-body occurrence that sits in a GOAL position
+    // — a top-level body atom, or a goal slot of a connective above it
+    // (`KnowledgeBase::goal_arg_slots`). The MIRROR of `in_op_body_value`, and the half
+    // WI-529 left out: it routed the primitives to the Bool ops inside an op body, and
+    // left the rule-body direction to the implicit-prelude FALLBACK — which any name in
+    // scope shadows. MEASURED: with `import anthill.prelude.Bool`, `not` and `|` in a
+    // rule body silently became the VALUE ops and every NAF / disjunctive rule in that
+    // namespace stopped answering (`not(false-goal)` went from 1 solution to 0 — a wrong
+    // answer, not a missing one). §6.6 says resolution is "by syntactic position"; this
+    // flag is what makes that true rather than true-unless-shadowed.
+    in_body_goal: bool,
+    // WI-1046 — this node IS the `tuple(…)` CONJUNCTION WRAPPER a quantifier body / a
+    // discharge consequent rides in, so every one of its components is a goal and its
+    // OWN functor is not one. Set only when the walk arrives through a slot the shared
+    // table marks `tuple_wrapped`; a node is never a wrapper because of its NAME.
+    //
+    // Two flags rather than one, and the review found out why: keying the wrapper on
+    // `local_name == "tuple"` at any goal node leaked goal-ness into a USER predicate
+    // locally named `tuple`, so `rule r :- tuple(?a & ?b)` was refused while the
+    // identical `ordinary(?a & ?b)` loaded — its ARGUMENT is data in both.
+    in_body_goal_wrapper: bool,
     // WI-605: set by the bare-arrow diagnostic arm when it substitutes a
     // `Term::Bottom` recovery leaf into the body being converted. Cleared at
     // `convert_expr_term` entry; read by `load_operation` / `load_const` to
@@ -8831,6 +8897,8 @@ impl<'a> Loader<'a> {
             in_effect_absence: false,
             in_type_position: false,
             in_op_body_value: false,
+            in_body_goal: false,
+            in_body_goal_wrapper: false,
             expr_body_bottom_recovery: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
@@ -9307,6 +9375,49 @@ impl<'a> Loader<'a> {
         };
         map("anthill.reflect.not", "anthill.prelude.Bool.not")
             .or_else(|| map("anthill.kernel.or", "anthill.prelude.Bool.or"))
+            .unwrap_or(sym)
+    }
+
+    /// WI-1046 — the RULE-BODY half of WI-529's position-directed boolean routing, and
+    /// the mirror of [`Self::redirect_op_body_boolean`].
+    ///
+    /// A goal-position `not` / `or` means the resolver primitive (`anthill.reflect.not`
+    /// NAF / `anthill.kernel.or` disjunction), never the dispatched `Bool` VALUE op —
+    /// which has no resolver behaviour at all, so a rule that reaches one simply stops
+    /// answering. WI-529 routed the op-body direction with a redirect and left this one
+    /// to the implicit-prelude FALLBACK, which sits BELOW scope resolution: any name in
+    /// scope shadows it. MEASURED, and this is not a corner — `import
+    /// anthill.prelude.Bool` is an ordinary thing to write:
+    ///
+    /// | rule body | without the import | with it |
+    /// |---|---|---|
+    /// | `l(?x) \| r(?x)` | 2 | **0** |
+    /// | `l(?x), not(empty(?x))` | 1 | **0** |
+    /// | `l(?x), r(?x)` (control) | 1 | 1 |
+    ///
+    /// The `not` row is a WRONG ANSWER rather than a missing one: negation-as-failure
+    /// over a goal that fails must SUCCEED, and it silently stopped doing so.
+    ///
+    /// `and` gets no redirect because it has no goal reading to be redirected TO —
+    /// spec §6.6: "goal conjunction is the comma (there is no `kernel.and`)". Rather
+    /// than leave `a & b` silently inert in a goal position (MEASURED: `l(?x) & r(?x)`
+    /// answers 0 with both facts present, with or without the import), it is REFUSED
+    /// here, naming the comma. A user's OWN `not`/`or`/`and` operation resolves to a
+    /// different symbol and is untouched, exactly as in the op-body direction.
+    fn route_body_goal_boolean(&mut self, sym: Symbol, arity: usize, span: Span) -> Symbol {
+        let q = |name: &str| self.kb.symbols.by_qualified_name.get(name).copied();
+        if arity == 2 && q("anthill.prelude.Bool.and") == Some(sym) {
+            self.errors.push(LoadError::BooleanOperatorInGoalPosition {
+                operator: "and".to_string(),
+                span,
+            });
+            return sym;
+        }
+        let map = |from: &str, to: &str, at: usize| -> Option<Symbol> {
+            (arity == at && q(from) == Some(sym)).then(|| q(to)).flatten()
+        };
+        map("anthill.prelude.Bool.not", "anthill.reflect.not", 1)
+            .or_else(|| map("anthill.prelude.Bool.or", "anthill.kernel.or", 2))
             .unwrap_or(sym)
     }
 
@@ -12299,7 +12410,22 @@ impl<'a> Loader<'a> {
                  (or its non-ParseAux child) is never a parse-only payload",
             ),
             Term::Fn { functor, pos_args, named_args } => {
+                // WI-1046: the position-directed boolean routing, applied to the
+                // functor BEFORE anything reads it — the redirected symbol is what
+                // decides which of this node's arguments are themselves goals.
+                let at_goal = std::mem::replace(&mut self.in_body_goal, false);
+                let is_wrapper = std::mem::replace(&mut self.in_body_goal_wrapper, false);
                 let new_functor = self.remap_symbol(functor, self.parsed.terms.span(parse_id));
+                // A WRAPPER is not a goal — its components are — so it is not routed.
+                let new_functor = if at_goal && !is_wrapper {
+                    self.route_body_goal_boolean(
+                        new_functor,
+                        pos_args.len(),
+                        self.parsed.terms.span(parse_id),
+                    )
+                } else {
+                    new_functor
+                };
                 if self.kb.entity_field_names(new_functor).is_some()
                     || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
@@ -12325,13 +12451,42 @@ impl<'a> Loader<'a> {
                 // `lower_effect_row` the fact-head / `provides` paths use) rather
                 // than recursing into the outer `Term::ParseAux` unreachable
                 // (positional) or dropping it via the build-site skip (named).
+                // WI-1046: which of THIS node's positional slots are goals, from the
+                // one shared table (`KnowledgeBase::goal_arg_slots`) the two KB goal
+                // walks read. A slot that is not listed is DATA — `not`'s negand is a
+                // goal, `Widget(id: …)`'s field is not — and a `tuple(…)` wrapper slot
+                // makes its own components goals, which the wrapper's own recursion
+                // handles when it is reached with the flag set.
+                // Which of THIS node's positional slots are goals, from the one shared
+                // table (`KnowledgeBase::goal_arg_slots`) the two KB goal walks read. A
+                // slot that is not listed is DATA — `not`'s negand is a goal,
+                // `Widget(id: …)`'s field is not. A `tuple_wrapped` slot holds the
+                // conjunction WRAPPER, whose components are the goals; that is carried
+                // by the second flag, so a node is a wrapper because of WHERE IT SITS
+                // and never because of what it is named.
+                let slots = if at_goal && !is_wrapper {
+                    self.kb.goal_arg_slots(new_functor)
+                } else {
+                    smallvec::SmallVec::new()
+                };
                 let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
-                for &pid in pos_args.iter() {
+                for (i, &pid) in pos_args.iter().enumerate() {
                     if let Some(child) = self.lower_effect_row_aux_occ(pid) {
                         pos.push(child);
                         continue;
                     }
+                    match slots.iter().find(|s| s.index == i) {
+                        Some(slot) if slot.tuple_wrapped => self.in_body_goal_wrapper = true,
+                        Some(_) => self.in_body_goal = true,
+                        // A wrapper's OWN components are all goals — that is what a
+                        // conjunction is — and the wrapper reached the loop with
+                        // `is_wrapper` set rather than with slots of its own.
+                        None if is_wrapper => self.in_body_goal = true,
+                        None => {}
+                    }
                     pos.push(self.build_body_atom_occurrence(pid));
+                    self.in_body_goal = false;
+                    self.in_body_goal_wrapper = false;
                 }
                 let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
                 for &(sym, pid) in named_args.iter() {
@@ -15705,7 +15860,16 @@ impl<'a> Loader<'a> {
                 // WI-618: a keyword-less `pattern -> body` lambda typo in a
                 // body goal would otherwise ride as inert arrow-term data.
                 self.check_bare_arrow_typo(tid, "a rule body", &arrow_bound);
-                body_nodes.push(self.build_body_atom_occurrence(tid));
+                // WI-1046: a top-level body atom IS a goal. The flag rides the walk
+                // from here down, turning off at every DATA slot, so the boolean
+                // routing is decided by position and not by what happens to be
+                // imported. Saved/restored rather than assigned, so a nested rule
+                // load (a proof's step rules) cannot leak the state.
+                let prev_goal = self.in_body_goal;
+                self.in_body_goal = true;
+                let atom = self.build_body_atom_occurrence(tid);
+                self.in_body_goal = prev_goal;
+                body_nodes.push(atom);
             }
         }
 

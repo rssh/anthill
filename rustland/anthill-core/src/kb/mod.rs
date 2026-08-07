@@ -1246,6 +1246,19 @@ impl TypeArgProblem {
     }
 }
 
+/// WI-1046 — one positional slot that holds a GOAL, from [`KnowledgeBase::goal_arg_slots`].
+///
+/// `tuple_wrapped` says the slot holds a `tuple(g₁, …, gₙ)` CONJUNCTION WRAPPER rather
+/// than a single goal — the shape the loader gives a bounded quantifier's body and a
+/// discharge's consequent. It rides here rather than being re-derived per reader
+/// because a reader that forgets it either walks the wrapper as a goal (whose functor
+/// names nothing, so it reports as dangling) or misses the goals inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GoalSlot {
+    pub index: usize,
+    pub tuple_wrapped: bool,
+}
+
 impl KnowledgeBase {
     /// WI-628 — the carrier-`eq` sub-proof depth budget used in production
     /// ([`Self::prove_rule_predicate`]); a `cfg(test)` field overrides it in tests.
@@ -2910,8 +2923,12 @@ impl KnowledgeBase {
     /// CLI's `report_if_unknown_functor` does for the head): an arity-0
     /// proposition reachable only through a rule body sits in no functor table yet
     /// IS declared, so the tree clears it and resolve-first's known-and-false
-    /// results still answer. `forall_impl` (not a `query` surface form) and
-    /// `ho_apply` (applies a possibly-unbound predicate variable) are not walked.
+    /// results still answer. `ho_apply` (applies a possibly-unbound predicate variable)
+    /// is not walked. Neither is `forall_impl` — WI-1046 corrected the reason: the
+    /// nested-implication form IS a query surface form (`grammar.js`'s
+    /// `_non_name_atom_term`), so "not a `query` surface form" was wrong; what keeps it
+    /// out is that its antecedents DECLARE the predicates its consequent proves, and
+    /// this walk has no rule to collect those hypotheses from.
     pub fn undefined_query_goal_functors(&self, tid: TermId) -> SmallVec<[Symbol; 4]> {
         let mut out = SmallVec::new();
         // The top-level goal commits to its head (WI-754); `under_not` starts
@@ -2943,8 +2960,19 @@ impl KnowledgeBase {
         // Follow goal branches only inside a negation: `not` opens the scope, and
         // once open every connective within it is followed. A bare disjunction /
         // quantifier is left to resolution (see the type-level doc).
+        //
+        // …EXCEPT a hereditary-Harrop DISCHARGE, which this walk does not enter at all.
+        // Its consequent is a goal slot and `goal_arg_slots` says so truthfully — but a
+        // discharge INTRODUCES its antecedents as hypotheses, and a predicate that
+        // exists only as a hypothesis carries no clause anywhere, so walking in here
+        // would refuse `not((forall(?h), hyp(?h) -: hyp(?h)))` on a name the pattern
+        // itself declares. The rule-body walk has an exemption for exactly that
+        // (`assumed_body_functors`); a query pattern has no rule to collect hypotheses
+        // from, so the policy here is not to enter. MEASURED: without this the query
+        // above reported `hyp` as an unknown functor. The DESCENT POLICY is the
+        // caller's — the shared table only says which slots are goals.
         let entering_not = self.is_negation_functor(tid);
-        if under_not || entering_not {
+        if (under_not || entering_not) && !self.is_discharge_functor(tid) {
             for child in self.goal_arg_termids(tid) {
                 self.collect_undefined_goal_functors(child, true, out);
             }
@@ -3007,6 +3035,13 @@ impl KnowledgeBase {
         }
     }
 
+    /// True iff `tid`'s head is a hereditary-Harrop DISCHARGE (`forall_impl`) — the one
+    /// goal connective [`Self::collect_undefined_goal_functors`] never enters, because
+    /// its antecedents DECLARE the predicates its consequent proves (WI-1046).
+    fn is_discharge_functor(&self, tid: TermId) -> bool {
+        matches!(self.head_functor(tid), Some(f) if self.local_name_of(f) == "forall_impl")
+    }
+
     /// True iff `tid`'s head is the negation builtin `not` — the one goal
     /// connective the walk always enters (WI-863).
     fn is_negation_functor(&self, tid: TermId) -> bool {
@@ -3023,31 +3058,60 @@ impl KnowledgeBase {
         let Term::Fn { functor, pos_args, .. } = self.get_term(tid) else {
             return SmallVec::new();
         };
-        // Recognised by name: a bounded quantifier's body is a `tuple(...)` of
-        // goals at arg 2 (the loader always wraps it; `resolve::unwrap_tuple_args`
-        // reads the same shape), and `or` / `and` are the kernel disjunction /
-        // conjunction RULES (`a | b` lowers to `or(a, b)`) — not builtins, so
-        // `builtin_of` would miss them.
-        match self.local_name_of(*functor) {
-            "forall_in" | "some_in" => {
-                return pos_args
-                    .get(2)
-                    .map(|&body| self.tuple_goal_termids(body))
-                    .unwrap_or_default();
+        let mut out = SmallVec::new();
+        for slot in self.goal_arg_slots(*functor) {
+            let Some(&child) = pos_args.get(slot.index) else { continue };
+            if slot.tuple_wrapped {
+                out.extend(self.tuple_goal_termids(child));
+            } else {
+                out.push(child);
             }
-            // `or` alone: it is the kernel disjunction RULE (`a | b` lowers to
-            // `or(a, b)`, `kernel.anthill:48`) and so is missed by `builtin_of`.
-            // `and` used to be listed here as its "conjunction" twin — MEASURED FALSE
-            // (WI-1034): no kernel rule defines it, there is no `BuiltinTag::And`, and
-            // the surface `a & b` lowers to `anthill.prelude.Bool.and`, a boolean
-            // OPERATION whose arguments are VALUES. Following them walked an
-            // operation's data as goals.
-            "or" => return pos_args.iter().take(2).copied().collect(),
+        }
+        out
+    }
+
+    /// THE ONE TABLE of which POSITIONAL slots of `functor` the resolver evaluates as
+    /// GOALS rather than as data, and whether each slot holds a `tuple(…)` conjunction
+    /// WRAPPER rather than a single goal. Empty for a plain predicate or a data
+    /// constructor — which is what keeps `Widget(id: absent(42))` out of every goal
+    /// walk.
+    ///
+    /// Three readers, deliberately: the query-pattern walk ([`Self::goal_arg_termids`],
+    /// WI-863), the rule-body walk ([`Self::body_goal_children`], WI-1034), and the
+    /// LOADER's position-directed boolean routing (WI-1046,
+    /// `Loader::build_body_atom_occurrence_inner`) — which needs the answer while it is
+    /// still BUILDING the body, so it cannot ask either walk. Three hand-written copies
+    /// of "which arguments are goals" is how the WI-1034 review found `and` listed as a
+    /// conjunction in two of them and nowhere else; the DESCENT POLICY stays with each
+    /// caller (a query walk gates on negation scope, the loader does not), only the
+    /// recognition is shared.
+    ///
+    /// Recognised by local name where the connective is a kernel RULE (`or`, and the
+    /// quantifier markers) — `builtin_of` misses those — and by builtin tag otherwise.
+    /// `and` is deliberately ABSENT: no kernel rule defines it, there is no
+    /// `BuiltinTag::And`, and `a & b` lowers to `anthill.prelude.Bool.and`, a boolean
+    /// OPERATION over values (spec §6.6: "goal conjunction is the comma"). WI-1046
+    /// refuses it at a goal position rather than walking its data as goals.
+    pub(crate) fn goal_arg_slots(&self, functor: Symbol) -> SmallVec<[GoalSlot; 2]> {
+        let slot = |index, tuple_wrapped| GoalSlot { index, tuple_wrapped };
+        match self.local_name_of(functor) {
+            // A bounded quantifier's body is a `tuple(…)` of goals at arg 2 (the loader
+            // always wraps it; `resolve::unwrap_tuple_args` reads the same shape).
+            "forall_in" | "some_in" => return SmallVec::from_elem(slot(2, true), 1),
+            // A hereditary-Harrop discharge's CONSEQUENT, likewise wrapped. Its
+            // antecedents (arg 1) are HYPOTHESES, not goals to prove, and are read by
+            // `assumed_body_functors` alone — a different question, so not a slot here.
+            "forall_impl" => return SmallVec::from_elem(slot(2, true), 1),
+            // The kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
+            // `kernel.anthill:48`), so `builtin_of` would miss it.
+            "or" => return SmallVec::from_slice(&[slot(0, false), slot(1, false)]),
             _ => {}
         }
-        match self.builtin_of(*functor) {
-            Some(BuiltinTag::Not) => pos_args.iter().take(1).copied().collect(),
-            Some(BuiltinTag::PushChoice) => pos_args.iter().take(2).copied().collect(),
+        match self.builtin_of(functor) {
+            Some(BuiltinTag::Not) => SmallVec::from_elem(slot(0, false), 1),
+            Some(BuiltinTag::PushChoice) => {
+                SmallVec::from_slice(&[slot(0, false), slot(1, false)])
+            }
             _ => SmallVec::new(),
         }
     }
@@ -3272,23 +3336,18 @@ impl KnowledgeBase {
     fn body_goal_children(&self, goal: &crate::eval::Value, span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
         let Some((functor, _)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
         let args = self.positional_children(goal, span);
-        let take = |n: usize| args.iter().take(n).cloned().collect::<Vec<_>>();
-        match self.local_name_of(functor) {
-            // `or` is the kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
-            // `kernel.anthill:48`) — not a builtin, so `builtin_of` would miss it.
-            "or" => return take(2),
-            // A bounded quantifier's / an induction axiom's body is the `tuple(…)` at
-            // arg 2, unwrapped here so the wrapper never reaches the head test.
-            "forall_in" | "some_in" | "forall_impl" => {
-                return args.get(2).map(|(t, _)| self.tuple_goal_children(t)).unwrap_or_default();
+        let mut out = Vec::new();
+        for slot in self.goal_arg_slots(functor) {
+            let Some(child) = args.get(slot.index) else { continue };
+            if slot.tuple_wrapped {
+                // Unwrapped HERE, so the wrapper never reaches the head test — its own
+                // functor names nothing and would be reported as a dangling goal.
+                out.extend(self.tuple_goal_children(&child.0));
+            } else {
+                out.push(child.clone());
             }
-            _ => {}
         }
-        match self.builtin_of(functor) {
-            Some(BuiltinTag::Not) => take(1),
-            Some(BuiltinTag::PushChoice) => take(2),
-            _ => Vec::new(),
-        }
+        out
     }
 
     /// Components of a quantifier/discharge body: the positional args of its `tuple(…)`
