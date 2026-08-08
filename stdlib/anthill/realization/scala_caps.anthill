@@ -42,20 +42,28 @@ namespace anthill.realization.scala_caps
 
     receiver_map: [],
 
+    -- SCALARS ONLY, and the SAME table `scala_std` carries (WI-1021): a `type_map`
+    -- entry says the anthill sort's VALUES ARE the host type's, which holds exactly
+    -- where anthill cannot BUILD one. Every other prelude sort is denoted by the
+    -- type codegen emits for it — `_root_.anthill.prelude.List`, not `scala.List` —
+    -- because it has anthill constructors or a provider-chosen carrier. Reasoning
+    -- and the measured defect: `scala_std.anthill`'s `type_map` comment and
+    -- docs/scala-forward-mapping.md §2.1a.
+    --
+    -- BOTH `language: "scala"` PROFILES HAVE TO SAY THE SAME THING here, and nothing
+    -- checks it. This table is not a caps-specific choice — capture-checking changes
+    -- the ARROW and the effect shape, not what an anthill sort's values are — so a
+    -- profile switch that restored `Pair -> Tuple2` would reintroduce the defect in
+    -- one step. `Stream` is the one entry caps might eventually differ on, since a
+    -- capture set is the closest thing Scala has to an effect row (WI-1062).
     type_map: [
-      TypeMapping(anthill_type: "Int64",       host_type: "Int64"),
-      TypeMapping(anthill_type: "BigInt",    host_type: "BigInt"),
-      TypeMapping(anthill_type: "Float",     host_type: "Double"),
-      TypeMapping(anthill_type: "Bool",      host_type: "Boolean"),
-      TypeMapping(anthill_type: "String",    host_type: "String"),
-      TypeMapping(anthill_type: "Duration",  host_type: "scala.concurrent.duration.Duration"),
-      TypeMapping(anthill_type: "Timestamp", host_type: "java.time.Instant"),
-      TypeMapping(anthill_type: "List",      host_type: "List"),
-      TypeMapping(anthill_type: "Option",    host_type: "Option"),
-      TypeMapping(anthill_type: "Pair",      host_type: "Tuple2"),
-      TypeMapping(anthill_type: "Set",       host_type: "Set"),
-      TypeMapping(anthill_type: "Map",       host_type: "Map"),
-      TypeMapping(anthill_type: "Stream",    host_type: "LazyList")
+      TypeMapping(anthill_type: "Int64",   host_type: "Long"),
+      TypeMapping(anthill_type: "BigInt",  host_type: "BigInt"),
+      TypeMapping(anthill_type: "Float",   host_type: "Double"),
+      TypeMapping(anthill_type: "Bool",    host_type: "Boolean"),
+      TypeMapping(anthill_type: "String",  host_type: "String"),
+      TypeMapping(anthill_type: "Unit",    host_type: "Unit"),
+      TypeMapping(anthill_type: "Nothing", host_type: "Nothing")
     ],
 
     trait_return: ImplTrait

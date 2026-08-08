@@ -2034,14 +2034,14 @@ Depth means the parameter type's whole structure, not only its sort-application 
 
 The `effects` clause is likewise **not** a position for this rule. An effect atom is a row, a projection, a value-in-type denotation or a concrete label, and where a parametric sort is written there the effects check already refuses a body that incurs a *more* specific instance than the declaration names (`effects Box` against an incurred `Box[T = Int64]`) — strict in the safe direction, so the laundering this rule prevents cannot be built through it.
 
-**The RETURN position is undecided — WI-1062 owns it.** The program below still loads, and an effectful stream reaches a slot declared `E = {}`:
+**The RETURN position is undecided — WI-1063 owns it.** The program below still loads, and an effectful stream reaches a slot declared `E = {}`:
 
 ```anthill
 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s   -- loads
 operation exploit(s: Stream[T = Int64, E = {Error}]) -> Int64 = takes_pure(widen(s))
 ```
 
-Applying this section's rule there is implemented and measured, and it refuses `widen` at its own return. It is held back because the language says two different things about the same syntax: this section reads an unwritten parameter as universally quantified *wherever* it appears, while `docs/design/type-parameter-scoping.md` §5 reads a bare return as **erased** — "the element/effect tie to `l` is GONE", a wart to be fixed by writing the type rather than a body error — and §4 records normalizing foreign bare refs in signatures as still-open WI-374 scope. Under the first reading `widen` is wrong; under the second `exploit` is, because it relies on a slot the type does not carry. Enforcing the first costs 32 tests across nine delivered tickets, including the WI-401/402/457/480/491 escape gate, whose whole mechanism is a bare abstract-spec return *conforming* by provider upcast and only then being refused. Deciding between the two readings is WI-1062, not an implementation detail.
+Applying this section's rule there is implemented and measured, and it refuses `widen` at its own return. It is held back because the language says two different things about the same syntax: this section reads an unwritten parameter as universally quantified *wherever* it appears, while `docs/design/type-parameter-scoping.md` §5 reads a bare return as **erased** — "the element/effect tie to `l` is GONE", a wart to be fixed by writing the type rather than a body error — and §4 records normalizing foreign bare refs in signatures as still-open WI-374 scope. Under the first reading `widen` is wrong; under the second `exploit` is, because it relies on a slot the type does not carry. Enforcing the first costs 32 tests across nine delivered tickets, including the WI-401/402/457/480/491 escape gate, whose whole mechanism is a bare abstract-spec return *conforming* by provider upcast and only then being refused. Deciding between the two readings is WI-1063, not an implementation detail.
 
 ### 8.2 Entity Subtyping
 

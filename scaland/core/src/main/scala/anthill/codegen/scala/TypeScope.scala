@@ -97,20 +97,30 @@ case class TypeScope(
   def withTypeParams(more: IterableOnce[(String, String)]): TypeScope =
     copy(typeParams = typeParams ++ more)
 
-  /** The one lookup. Ordered most-local-first, which is also anthill's own order:
-    * a type parameter shadows a sort of the same name, and the enclosing sort
-    * answers before the file-wide table — where it also appears, with the same
-    * arity but without the parameters to re-attach. */
+  /** The one lookup, as a precedence chain. Mostly most-local-first, which is also
+    * anthill's own order: a type parameter shadows a sort of the same name, and the
+    * enclosing sort answers before the file-wide table — where it also appears, with
+    * the same arity but without the parameters to re-attach.
+    *
+    * THE ONE INVERSION IS THE SCALARS (WI-1021), and it is the rule rather than an
+    * exception to it: a scalar has no anthill values, so its name denotes the host
+    * carrier EVERYWHERE — including inside the file that declares it. Read
+    * most-local-first, `int64.anthill`'s `operation compare(a: Int64, b: Int64)`
+    * placed as [[Placement.Enclosing]] and emitted `def compare(a: Int64, b: Int64):
+    * Int64` against the `trait Int64` that file emits: a trait no value inhabits,
+    * over a name every consumer of the same file resolves to `Long`. That is the
+    * one-name-two-types defect the whole decision removes, and it lived inside the
+    * five files declaring a scalar. `Unit` reaches this by the same route — its
+    * declaration is an opaque `sort Unit = ?`, which [[Placement.Unplaceable]] would
+    * otherwise refuse. */
   def place(anthillLeaf: String): Placement =
-    typeParams.get(anthillLeaf) match
-      case Some(p) => Placement.TypeParam(p)
-      case None if enclosing.exists(_.anthillName == anthillLeaf) =>
-        Placement.Enclosing(enclosing.get)
-      case None =>
-        fileTypes.get(anthillLeaf)
-          .map(n => Placement.Known(Names.scalaTypeName(anthillLeaf), n))
-          .orElse(TypeGen.preludeMapping(anthillLeaf))
-          .getOrElse(unreachable(anthillLeaf))
+    typeParams.get(anthillLeaf).map[Placement](Placement.TypeParam(_))
+      .orElse(TypeGen.hostScalar(anthillLeaf))
+      .orElse(enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_)))
+      .orElse(fileTypes.get(anthillLeaf)
+        .map(n => Placement.Known(Names.scalaTypeName(anthillLeaf), n)))
+      .orElse(TypeGen.preludeSort(anthillLeaf))
+      .getOrElse(unreachable(anthillLeaf))
 
   /** The name is not placed. Either Bootstrap can show a bare mention is wrong —
     * and then it refuses — or it cannot, and the name rides out unverified. */

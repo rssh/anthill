@@ -40152,7 +40152,7 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// parameter's TOP LEVEL; WI-1061 covers the slots below it — nested inside a binding, inside
 /// a callback's RESULT, inside a TUPLE COMPONENT — which is why the walk recurses and why the
 /// filler is a parameter ([`UnwrittenFill`]) rather than a constant. The RETURN position is
-/// deliberately not here — see the block comment at the caller, and **WI-1062**.
+/// deliberately not here — see the block comment at the caller, and **WI-1063**.
 ///
 /// THREE CHILDREN ARE EXCLUDED, each with its reason at its own site rather than here: an
 /// effect-ROW binding and an arrow's effects (a row, not a type), and a callback's own
@@ -40240,7 +40240,7 @@ fn rigidify_unwritten_sort_params(
         // n: Int64)` kept their unwritten rows FLEXIBLE. Both are the WI-1059 hole verbatim,
         // one carrier further in, and both were driven: `feed(f: (x: Int64) -> Stream[T =
         // Int64]) = takes_pure(f(1))` with a `{Error}`-returning callback loaded clean, as
-        // did the tuple form. They are inside a PARAMETER — the position WI-1062's two
+        // did the tuple form. They are inside a PARAMETER — the position WI-1063's two
         // readings agree about — so they belong here and not there.
         //
         // The `_` arm below is what let them through, which is why these two are written out
@@ -40455,7 +40455,7 @@ enum UnwrittenFill {
     /// coverage this arm has.
     ///
     /// The enum keeps two arms although one call site supplies each, because the RETURN
-    /// position (WI-1062) is a third caller of this same walk under this same arm, and it was
+    /// position (WI-1063) is a third caller of this same walk under this same arm, and it was
     /// built and measured before being held back — see the caller's block comment.
     Anonymous,
 }
@@ -40769,7 +40769,7 @@ fn check_operation_bodies(
                 (*n, ty.unwrap_or_else(|| t.clone()))
             })
             .collect();
-        // NOT THE RETURN TYPE — **WI-1062** owns it, and the reason is a decision the
+        // NOT THE RETURN TYPE — **WI-1063** owns it, and the reason is a decision the
         // language has not taken rather than a line missing here. WI-1061 built the walk over
         // the return and MEASURED it; the whole of it is one more call to the SAME function
         // just made above, with `UnwrittenFill::Anonymous` and `return_type`, written back
@@ -40788,7 +40788,7 @@ fn check_operation_bodies(
         // return CONFORMING by provider upcast and only then being refused with its own
         // diagnostic — materialize the return and that gate stops firing at all.
         //
-        // So the two docs read the same syntax two ways, and picking one is WI-1062's
+        // So the two docs read the same syntax two ways, and picking one is WI-1063's
         // job. The PARAMETER walk above is unaffected: both readings agree that a
         // parameter's unwritten slot is rigid in the body (WI-1059 measured it, and the
         // nested half here costs the corpus and the suite nothing).

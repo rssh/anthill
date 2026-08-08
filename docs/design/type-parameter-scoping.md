@@ -164,7 +164,7 @@ bare returns (`iterator -> Stream`; `splitFirst`'s `B = Stream`) are exactly the
 spots to make explicit.
 
 **This section and kernel-language.md §"Expansion during unification" disagree
-about the return, and WI-1062 owns the disagreement.** That section reads an
+about the return, and WI-1063 owns the disagreement.** That section reads an
 unwritten parameter as universally quantified *wherever* it appears, which makes
 `widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s` a wrong
 *declaration*; this section reads the same return as **erased**, which makes the
@@ -173,7 +173,7 @@ enforced the rule in a parameter's type, where both readings agree; the return
 stayed out because the two readings pick different culprits and enforcing the
 first costs 32 tests across nine delivered tickets — including the
 WI-401/402/457/480/491 escape gate, whose mechanism *requires* a bare
-abstract-spec return to conform first. Until WI-1062 decides, the hole is
+abstract-spec return to conform first. Until WI-1063 decides, the hole is
 reachable and pinned by `wi1061_unwritten_slot_positions_test`.
 
 ## 6. Structured and higher-kinded parameters

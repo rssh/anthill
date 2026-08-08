@@ -1,6 +1,6 @@
 //! WI-1061 — an UNWRITTEN sort parameter is RIGID when NESTED inside a binding, not only at a
 //! parameter's top level. And the RETURN position, which this ticket also owned, is PINNED
-//! open here rather than left unrecorded: **WI-1062** owns it, and the last two tests are its
+//! open here rather than left unrecorded: **WI-1063** owns it, and the last two tests are its
 //! control.
 //!
 //! WI-1059 made the rule bite in one position and said so at its site: `s: Stream[T = Int64]`
@@ -31,7 +31,7 @@
 //! provider upcast and only then being refused with its own diagnostic — materialize the
 //! return and that gate stops firing at all, so its fixtures cannot simply be updated.
 //!
-//! Two readings of one syntax, both written down. Picking one is WI-1062's job.
+//! Two readings of one syntax, both written down. Picking one is WI-1063's job.
 //!
 //! ## What fails when each piece is backed out — DRIVEN, one revert each
 //!
@@ -65,7 +65,7 @@
 //! alone the stdlib loads clean under that revert, so the row above is right and the earlier
 //! prose was measuring the other configuration.
 //!
-//! REFERENCE: WI-1059 (the parameter-position half); WI-1062 (the return position); WI-1056
+//! REFERENCE: WI-1059 (the parameter-position half); WI-1063 (the return position); WI-1056
 //! (the four spellings, kept in lockstep); WI-942/WI-392 (the two rigid families before);
 //! WI-594/WI-320 (the effect-row kind anchor the gate reads).
 
@@ -156,7 +156,7 @@ fn an_effect_row_binding_is_not_a_nested_type() {
 /// They are the WI-1059 hole verbatim, one carrier further in. `feed` never writes the row of
 /// the stream it gets back from `f(1)` — nor of the one it destructures out of `p` — and
 /// hands it to a slot that declared `E = {}`; `caller` supplies `{Error}`. Both sit inside a
-/// PARAMETER, the position WI-1062's two readings agree about, so they belong to this ticket
+/// PARAMETER, the position WI-1063's two readings agree about, so they belong to this ticket
 /// and not to that one.
 ///
 /// THE CALLBACK'S OWN PARAMETER IS NOT WALKED, and that asymmetry is the measurement, not a
@@ -235,7 +235,7 @@ fn a_body_that_holds_for_every_instantiation_still_loads() {
 /// It is the ONLY row that fails, and the stdlib loads clean under that revert — measured, so
 /// that the tie is not mistaken for something the corpus is holding up. The corpus reaches a
 /// nested self reference only in `MappedStream.splitFirst`'s RETURN, which nothing walks
-/// today (WI-1062).
+/// today (WI-1063).
 #[test]
 fn a_self_reference_nested_in_a_binding_keeps_the_sort_tie() {
     crate::common::load_kb_with(
@@ -251,7 +251,7 @@ fn a_self_reference_nested_in_a_binding_keeps_the_sort_tie() {
     );
 }
 
-/// THE RETURN POSITION, PINNED OPEN — **WI-1062**. This is not a passing capability test; it
+/// THE RETURN POSITION, PINNED OPEN — **WI-1063**. This is not a passing capability test; it
 /// records that the hole is still reachable, so that whoever closes it sees this row go red
 /// and finds the decision written down instead of rediscovering it.
 ///
@@ -267,7 +267,7 @@ fn a_return_position_unwritten_row_is_not_yet_rigid() {
 /// The same pin read for its CONSEQUENCE rather than its shape, because "the declaration
 /// loads" is the boring half. `exploit` hands `widen`'s result — whose row the type does not
 /// carry — to a slot that declared `E = {}`, and the whole chain loads: an effectful stream
-/// reaches a pure slot. That is the soundness statement WI-1062 owns, and it is asserted here
+/// reaches a pure slot. That is the soundness statement WI-1063 owns, and it is asserted here
 /// so the pin cannot be read as cosmetic.
 ///
 /// Driven, not just loaded: `exploit` is resolved from the KB, so the row above cannot pass
