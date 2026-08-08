@@ -4,6 +4,12 @@
 //! resolve. Per `docs/design/cell-runtime.md`: each `Cell.new` returns
 //! a fresh handle (opaque-handle identity), Cell.set is O(1), and
 //! cycle prevention is the typer's job.
+//!
+//! WI-1059: the fixtures below write `c: Cell[V = Int64]`, not a bare `c: Cell`. An
+//! unwritten sort parameter is universally quantified over the operation, so a body that
+//! reads the cell AS an `Int64` may not leave `V` unwritten — `read(c: Cell) -> Int64 =
+//! Cell.get(c)` claims any element type and then assumes one. Writing the element is the
+//! author saying what they meant; nothing about the Cell runtime changed.
 
 
 use anthill_core::eval::Value;
@@ -34,8 +40,8 @@ namespace test.wi205_overwrite
   import anthill.prelude.{Int64, Cell, Unit}
 
   operation make(n: Int64) -> Cell effects Modify[result] = Cell.new(n)
-  operation overwrite(c: Cell, n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
-  operation read(c: Cell) -> Int64 = Cell.get(c)
+  operation overwrite(c: Cell[V = Int64], n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
+  operation read(c: Cell[V = Int64]) -> Int64 = Cell.get(c)
 end
 "#;
     let mut interp = interp_for(src);
@@ -58,8 +64,8 @@ namespace test.wi205_distinct
   import anthill.prelude.{Int64, Cell, Unit}
 
   operation make(n: Int64) -> Cell effects Modify[result] = Cell.new(n)
-  operation set_value(c: Cell, n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
-  operation read(c: Cell) -> Int64 = Cell.get(c)
+  operation set_value(c: Cell[V = Int64], n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
+  operation read(c: Cell[V = Int64]) -> Int64 = Cell.get(c)
 end
 "#;
     let mut interp = interp_for(src);

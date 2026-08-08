@@ -18,6 +18,10 @@
 //!      and reads back through the shared `op_info` funnel as a `Value::Node`
 //!      with occurrence identity intact — the WI-348 payoff, via a real op.
 
+//!
+//! WI-1059: the fixture writes `c: Cell[V = Int64]`, not a bare `c: Cell`. An unwritten
+//! sort parameter is universally quantified over the operation, so a body that uses the
+//! cell AT an `Int64` may not leave `V` unwritten. Nothing about `OperationInfo` changed.
 use anthill_core::eval::Value;
 use anthill_core::kb::op_info;
 use anthill_core::kb::resolve::ResolveConfig;
@@ -36,7 +40,7 @@ const SRC: &str = r#"
 namespace test.wi348_op_query
   import anthill.prelude.{Int64, Cell, Unit}
 
-  operation overwrite(c: Cell, n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
+  operation overwrite(c: Cell[V = Int64], n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
 end
 "#;
 

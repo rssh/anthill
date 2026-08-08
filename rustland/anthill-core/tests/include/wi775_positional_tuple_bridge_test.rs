@@ -165,9 +165,14 @@ end
 /// parameterized-binding walk rather than either arrow path. Pre-fix this loaded
 /// and trapped with the very WI-775 error — `field_access: tuple has no
 /// component '_1'` — when the positional callee projected the name-keyed value.
+///
+/// WI-1059: the ACTUAL side now renders its unwritten effect row too — `give`'s `g` leaves
+/// `Function`'s `E` unwritten, so inside the body it is the rigid `g.E`. The rejection is
+/// the same one for the same reason (the tuple KEYING), so the assertion names the two
+/// tuple shapes and the expected type in full, and does not pin the actual side's row.
 #[test]
 fn function_vs_function_argument_type_does_not_bridge_keyings() {
-    assert_arg_mismatch(
+    let errs = match try_load_kb_with(
         r#"
 namespace test.wi775g
   import anthill.prelude.{Int64, Function}
@@ -177,8 +182,17 @@ namespace test.wi775g
     = take(g)
 end
 "#,
-        "Function[A = (acc: Int64, x: Int64), B = Int64]",
-        "Function[A = (_1: Int64, _2: Int64), B = Int64]",
+    ) {
+        Ok(_) => panic!("must NOT load: a `(_1, _2)`-keyed Function where `(acc, x)` is declared"),
+        Err(errs) => errs,
+    };
+    assert!(
+        errs.iter().any(|e| {
+            e.contains("type mismatch in take.f (op-arg)")
+                && e.contains("expected Function[A = (acc: Int64, x: Int64), B = Int64]")
+                && e.contains("A = (_1: Int64, _2: Int64)")
+        }),
+        "rejection must be the op-arg type mismatch naming BOTH tuple keyings; got: {errs:?}",
     );
 }
 

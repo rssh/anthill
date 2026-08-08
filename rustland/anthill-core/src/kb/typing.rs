@@ -7255,8 +7255,24 @@ fn visit_type(
                     // (`None`).
                     match eliminate_type_projections(kb, &ann, &env.var_bindings, None, &ctx, occ_span) {
                         Ok(elim) => {
-                            let ann_occ = value_to_pattern_annotation(kb, &elim, occ.span);
-                            pattern = with_pattern_annotation(&pattern, ann_occ);
+                            // WI-1059: the rewrite lands in the STORED tree (`LetFinal`
+                            // reassembles the `Let` from its children so a rewrite in any
+                            // of them propagates — WI-283), so it must not carry anything
+                            // whose identity is PASS-LOCAL. A `Var::Rigid` is exactly that:
+                            // it is minted fresh per body check, so a stored annotation
+                            // holding one is stale the moment the pass ends, and a second
+                            // `type_check_sorts` over the same KB compares it against that
+                            // pass's rigids — `expected L[T = ?T], got L[T = ?T]`, two
+                            // skolems rendering alike. MEASURED on `List.reverse`'s
+                            // `let seed: List[T = xs.T] = nil`, and reachable on main by
+                            // WRITING the parameter out (`xs: List[T = T]`); WI-1059 only
+                            // made the bare spelling reach it too. The eliminated form is
+                            // still what this pass CHECKS against — it just does not
+                            // outlive the pass.
+                            if !value_contains_rigid(kb, &elim) {
+                                let ann_occ = value_to_pattern_annotation(kb, &elim, occ.span);
+                                pattern = with_pattern_annotation(&pattern, ann_occ);
+                            }
                             Some(elim)
                         }
                         Err(e) => {
@@ -11662,7 +11678,24 @@ fn check_apply_iter(
                             };
                             let is_abstract = match subst.resolve_as_value(vid) {
                                 None => true,
-                                Some(Value::Term { id: bound, .. }) => is_type_param_value(kb, *bound),
+                                // WI-1059: a NEUTRAL is abstract too, and it is the form a
+                                // materialized unwritten slot takes. `drive(w: Widget) =
+                                // render(w)` used to bind nothing for `Widget.T` (the bare
+                                // receiver carried no slot), so `None` above reported it;
+                                // now the slot is there and holds `w.T`, which
+                                // `is_type_param_value` — a test for a BARE param `Ref` —
+                                // answers `false` for. Reading that as concrete silently
+                                // dropped the WI-325 diagnostic on a wholly-unimplemented
+                                // spec (measured). A projection is not concrete: it is the
+                                // OTHER spelling of "still abstract", so it demands a
+                                // `requires` exactly as the bare param does.
+                                Some(Value::Term { id: bound, .. }) => {
+                                    is_type_param_value(kb, *bound)
+                                        || matches!(
+                                            type_head(kb, &TermIdView(*bound)),
+                                            TypeHead::ExprCarried | TypeHead::RigidProjection
+                                        )
+                                }
                                 // A non-`Term` carrier (a denoted `Value::Node`
                                 // / value-in-type param, WI-302) can't be
                                 // introspected for type-param-ness here, so —
@@ -24633,13 +24666,43 @@ pub(crate) fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
 /// check, whereas a binding that mentions a type-param (`Stream.T ↦ List.T`, or
 /// a nested `C = List[T]`) stays abstract and still demands a `requires`.
 fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
+    type_value_is_ground_g(kb, tid, false)
+}
+
+/// WI-1059 — "GROUND" MEANT TWO THINGS, and a skolem is the value that separates them.
+///
+/// * `rigid_ok = false` — CONCRETE: mentions no type parameter. This is WI-387 FIX 3's
+///   question ("does this provider-fact binding COVER its spec param, or does it stay
+///   abstract and still demand a `requires`?"), and a `Var::Rigid` is abstract — it IS the
+///   enclosing sort's type parameter, skolemized.
+/// * `rigid_ok = true` — DETERMINED: nothing is left for a later pass to decide. This is
+///   WI-385's question at [`validate_arg_against_param`] ("may this pair be checked, or is
+///   conformance still someone else's to settle?"), and a skolem is fully determined — it
+///   unifies with nothing but itself, so no later pass could decide it and "leave it to
+///   dispatch" leaves it to nobody.
+///
+/// The two were ONE predicate, answering `false` for every var kind, and the conflation is
+/// exactly why WI-1059's second leak survived: `feed[E](s: Stream[T = Int64, E = E]) =
+/// takes_pure(s)` was rigidified by WI-392 all along and STILL loaded, because the rigid
+/// made the pair non-ground and the gate returned `Ok` without checking anything. Under
+/// `rigid_ok` the pair reaches `types_compatible`, whose row arm refuses it at
+/// `bind_row_tail` (WI-336: a rigid tail is not bindable) — the refusal WI-392 always
+/// intended and never reached.
+///
+/// MEASURED, and the reason this is a split rather than a one-line flip: answering `true`
+/// for BOTH consumers breaks `wi606_unqualified_dispatch_return_threading_test` — a
+/// `requires FiniteCollection[C = S, …]` on the enclosing sort stops covering its abstract
+/// parameter once that parameter's skolem reads as concrete, and the coverage check demands
+/// a `requires` the source already wrote.
+fn type_value_is_ground_g(kb: &KnowledgeBase, tid: TermId, rigid_ok: bool) -> bool {
     match kb.get_term(tid) {
+        Term::Var(Var::Rigid(_)) => rigid_ok,
         Term::Var(_) => false,
         Term::Ref(sym) | Term::Ident(sym) => !is_sort_param_symbol(kb, *sym),
         Term::Fn { functor, pos_args, named_args } => {
             !is_sort_param_symbol(kb, *functor)
-                && pos_args.iter().all(|a| type_value_is_ground(kb, *a))
-                && named_args.iter().all(|(_, a)| type_value_is_ground(kb, *a))
+                && pos_args.iter().all(|a| type_value_is_ground_g(kb, *a, rigid_ok))
+                && named_args.iter().all(|(_, a)| type_value_is_ground_g(kb, *a, rigid_ok))
         }
         Term::Const(_) | Term::Bottom => true,
         Term::ParseAux(_) => false,
@@ -24658,14 +24721,25 @@ fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
 /// this check. Conservative by design — a non-`Term` carrier returns `false`
 /// (skip) rather than risk an unsound pass or a false reject.
 fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
+    resolved_type_is_ground_g(kb, v, false)
+}
+
+/// WI-1059 — [`resolved_type_is_ground`] at the DETERMINED reading: a `Var::Rigid` counts.
+/// See [`type_value_is_ground_g`] for why the two readings are different questions and
+/// which consumer asks which. Used at the [`validate_arg_against_param`] gate only.
+fn resolved_type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool {
+    resolved_type_is_ground_g(kb, v, true)
+}
+
+fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> bool {
     match v {
-        Value::Term { id: t, .. } => type_value_is_ground(kb, *t),
+        Value::Term { id: t, .. } => type_value_is_ground_g(kb, *t, rigid_ok),
         // WI-470: an occurrence-primary type (the flipped arrow / row / parameterized
         // form) is ground exactly when its spine carries no free type-var / sort-param
         // / row-tail leaf — the same predicate `type_value_is_ground` applies to the
         // hash-consed twin, walked structurally so a flipped GROUND arrow reads as
         // ground (and is WI-385-checked) instead of being skipped as "non-Term".
-        Value::Node(occ) => node_type_is_ground(kb, occ),
+        Value::Node(occ) => node_type_is_ground_g(kb, occ, rigid_ok),
         _ => false,
     }
 }
@@ -24679,10 +24753,16 @@ fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
 /// `denoted` is ground iff its carried value has no free logical var (the same
 /// answer `type_value_is_ground(make_denoted(value))` gives). Nothing is skipped:
 /// every form's true groundness is computed.
-fn node_type_is_ground(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+/// WI-1059 — threading the DETERMINED-vs-CONCRETE reading
+/// ([`type_value_is_ground_g`]) through the occurrence carrier. Threaded rather than left at
+/// the concrete reading because
+/// both carriers must key alike (WI-1016): a rigid nested in a `Value::Node` row tail is
+/// the SAME skolem as one in the hash-consed twin, and a gate that admits one and skips the
+/// other decides the same program two ways.
+fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok: bool) -> bool {
     let child_ground = |c: &TypeChild| match c {
-        TypeChild::Ground(t) => type_value_is_ground(kb, *t),
-        TypeChild::Node(n) => node_type_is_ground(kb, n),
+        TypeChild::Ground(t) => type_value_is_ground_g(kb, *t, rigid_ok),
+        TypeChild::Node(n) => node_type_is_ground_g(kb, n, rigid_ok),
     };
     match &occ.kind {
         NodeKind::Type(tn) => match tn {
@@ -24709,7 +24789,7 @@ fn node_type_is_ground(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
             TypeNode::ExprCarried { value, member } => child_ground(value) && child_ground(member),
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
                 .iter()
-                .all(|(_, t)| resolved_type_is_ground(kb, t)),
+                .all(|(_, t)| resolved_type_is_ground_g(kb, t, rigid_ok)),
         },
         NodeKind::EffectExpr(en) => match en {
             EffectExprNode::Merge { left, right } => child_ground(left) && child_ground(right),
@@ -24952,8 +25032,13 @@ fn validate_arg_against_param(
     // a callable σ INTRODUCES (`List[T = X]` with `X := (Int64) -> Bool`) — a shallow test
     // could not see that one at all. When it fires, the SHALLOW pair is kept and the gate
     // below skips exactly as it did before this ticket.
+    // WI-1059: the DETERMINED reading — a `Var::Rigid` is not a hole, so a pair carrying one
+    // is checkable here (see [`type_value_is_ground_g`] for why this is a different question
+    // from the CONCRETE one WI-387 FIX 3 asks of the same walk). This is the gate whose skip
+    // was WI-1059's second leak: a rigidified `E` made the pair non-ground and the function
+    // returned `Ok` without checking anything.
     let mut both_ground =
-        resolved_type_is_ground(kb, &actual_g) && resolved_type_is_ground(kb, &declared_g);
+        resolved_type_is_determined(kb, &actual_g) && resolved_type_is_determined(kb, &declared_g);
     // Groundness (cheap, and the verdict on a measured 69% of calls) is tested FIRST, so a
     // conforming concrete argument never pays for the walk or the callable scan.
     let (actual_g, declared_g) = if both_ground {
@@ -24964,8 +25049,8 @@ fn validate_arg_against_param(
         if type_contains_callable(kb, &deep_a) || type_contains_callable(kb, &deep_d) {
             (actual_g, declared_g)
         } else {
-            both_ground =
-                resolved_type_is_ground(kb, &deep_a) && resolved_type_is_ground(kb, &deep_d);
+            both_ground = resolved_type_is_determined(kb, &deep_a)
+                && resolved_type_is_determined(kb, &deep_d);
             (deep_a, deep_d)
         }
     };
@@ -26193,11 +26278,6 @@ fn bare_spec_arg_self_projection(
     else {
         return None;
     };
-    // The argument must be a BARE sort ref to that same base — an already-applied
-    // argument (`s: Stream[S, EffS]`) threads through the ordinary arm unchanged.
-    if extract_sort_ref_sym(kb, &arg.ty) != Some(field_base) {
-        return None;
-    }
     if bindings.is_empty() {
         return None;
     }
@@ -26211,6 +26291,32 @@ fn bare_spec_arg_self_projection(
         },
         _ => return None,
     };
+    // The argument must be a BARE sort ref to that same base — an already-applied
+    // argument (`s: Stream[S, EffS]`) threads through the ordinary arm unchanged.
+    //
+    // WI-1059: …or the SAME receiver with its unwritten slots MATERIALIZED, which is what
+    // a bare one now looks like inside an operation body: `s: Stream` is bound at
+    // `Stream[T = s.T, E = s.E]` ([`rigidify_unwritten_sort_params`]). It is the same
+    // receiver and must thread the same way — in particular the effect-row param must
+    // still bind the single-label ROW `{s.E}` rather than the bare projection, which is
+    // the whole point of the loop below. MEASURED: without this,
+    // `mapped(s, f)` built `MappedStream[ES = s.E, …]` where the provider view wants
+    // `ES = {s.E}`, and `bare_map`'s declared `Stream[E = {s.E, EffP}]` return stopped
+    // conforming (wi594). Recognized by SHAPE — every binding is this receiver's own
+    // projection of that very parameter — so a genuinely-applied argument still takes the
+    // ordinary arm.
+    let arg_is_receiver = extract_sort_ref_sym(kb, &arg.ty) == Some(field_base)
+        || match extract_type(kb, &arg.ty) {
+            TypeExtractor::Parameterized { base, bindings: abs } => {
+                base == field_base
+                    && !abs.is_empty()
+                    && abs.iter().all(|(k, v)| is_self_projection_of(kb, v, recv, *k))
+            }
+            _ => false,
+        };
+    if !arg_is_receiver {
+        return None;
+    }
     let (span, owner) = (arg.node.span, arg.node.owner);
     let base_ref = kb.make_sort_ref(field_base);
     let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
@@ -26238,6 +26344,15 @@ fn bare_spec_arg_self_projection(
         proj_bindings.push((*field_key, proj_val));
     }
     Some(parameterized_value(kb, base_ref, &proj_bindings, span, owner))
+}
+
+/// WI-1059 — is `v` exactly `⟨recv⟩.<key>`, the projection [`rigidify_unwritten_sort_params`]
+/// fills an unwritten slot with? The SHAPE test that lets a materialized receiver be
+/// recognized as the bare one it spells out — see [`bare_spec_arg_self_projection`].
+fn is_self_projection_of(kb: &KnowledgeBase, v: &Value, recv: Symbol, key: Symbol) -> bool {
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, v) else { return false };
+    extract_sort_ref_sym(kb, &value) == Some(recv)
+        && short_name_of(kb.local_name_of(member)) == short_name_of(kb.local_name_of(key))
 }
 
 /// True iff `t` is already an `effects_rows(EffectExpression)` Type — so an
@@ -26303,6 +26418,67 @@ fn carrier_provision_short_bindings(
             })
             .collect(),
     )
+}
+
+/// The type an entity FIELD's supplied argument is INFERRED from (WI-594/WI-599).
+///
+/// WI-594: a bare spec receiver into a parameterized field threads its element AND effect
+/// through its self-projection. WI-599: a bare CARRIER value whose sort merely PROVIDES the
+/// field's spec threads through the carrier's provision. Else the raw inferred type.
+fn field_arg_type(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    declared_type: &Value,
+    r: &TypeResult,
+) -> Value {
+    bare_spec_arg_self_projection(kb, declared_type, r)
+        .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
+        .unwrap_or_else(|| r.ty.clone())
+}
+
+/// WI-1059 — VALIDATE one supplied field value against its declared field type: the raw
+/// inferred type first, and only on failure the [`field_arg_type`] rebuild.
+///
+/// STRICTLY ADDITIVE, and that ordering is the whole point. The rebuild exists to feed
+/// INFERENCE, and it can name things the raw type does not — a bare `nil` into a
+/// `List[T = Int64]` field rebuilds to `List[T = nil.T]`, a neutral that matches nothing.
+/// The validation loop used to sidestep that by reading the raw type and relying on the
+/// groundness gate to skip whatever needed a rebuild; once a skolem counts as ground
+/// ([`type_value_is_ground`]) that skip is gone, and a raw `c : ?C` is refused against the
+/// very field the inference loop just threaded it into (`FiniteCollection.map`'s
+/// `fmapped(c, f)`, measured). Trying the raw type first keeps every value that conformed
+/// before conforming; the rebuild only rescues one the raw reading cannot express.
+///
+/// The retry runs on a CLONED subst committed only on success, so a failed first attempt
+/// cannot leak partial bindings into the retry or the caller.
+#[allow(clippy::too_many_arguments)]
+fn validate_field_arg(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &mut Substitution,
+    r: &TypeResult,
+    declared_type: &Value,
+    span: Option<Span>,
+    ctor_sym: Symbol,
+    field_sym: Symbol,
+) -> ArgValidation {
+    let ctx = TypeErrorContext::EntityField { entity: ctor_sym, field: field_sym };
+    let mut probe = subst.clone();
+    let first =
+        validate_arg_against_param(kb, &mut probe, &r.ty, declared_type, span, ctx.clone());
+    if !matches!(first, ArgValidation::Fail(_)) {
+        *subst = probe;
+        return first;
+    }
+    let rebuilt = field_arg_type(kb, env, declared_type, r);
+    let mut probe = subst.clone();
+    match validate_arg_against_param(kb, &mut probe, &rebuilt, declared_type, span, ctx) {
+        ArgValidation::Fail(_) => first,
+        ok => {
+            *subst = probe;
+            ok
+        }
+    }
 }
 
 /// WI-599 — a CARRIER-PARAM-spec constructor field fed a carrier VALUE that
@@ -26478,13 +26654,7 @@ fn check_constructor_iter(
     for (field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                // WI-594: a bare spec receiver into a parameterized field threads
-                // its element AND effect through its self-projection. WI-599: a
-                // bare CARRIER value whose sort merely PROVIDES the field's spec
-                // threads through the carrier's provision. Else the raw type.
-                let arg_ty = bare_spec_arg_self_projection(kb, declared_type, r)
-                    .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
-                    .unwrap_or_else(|| r.ty.clone());
+                let arg_ty = field_arg_type(kb, env, declared_type, r);
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -26494,9 +26664,7 @@ fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some((_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                let arg_ty = bare_spec_arg_self_projection(kb, declared_type, r)
-                    .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
-                    .unwrap_or_else(|| r.ty.clone());
+                let arg_ty = field_arg_type(kb, env, declared_type, r);
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -26515,18 +26683,23 @@ fn check_constructor_iter(
     // BEFORE the expected-seed and bail before the type is built for a constructor
     // we've proven ill-formed. WI-408: a bare `T` in an `Option[T]` field is
     // accepted by RECORDING a some-coercion, materialized below.
-    // WI-594: this loop uses the ORIGINAL bare `r.ty`, NOT the self-projection the
-    // inference loops above may have substituted — by design. The projection
-    // rebuild feeds INFERENCE only; validation is groundness-gated and a bare-spec
-    // receiver (`Stream`) is not ground, so it is skipped here regardless.
+    // WI-1059: this loop judges the SAME type the inference loops above unified —
+    // [`field_arg_type`], not the raw `r.ty`. The two used to differ, and the note
+    // that stood here said why the difference was harmless: "validation is
+    // groundness-gated and a bare-spec receiver (`Stream`) is not ground, so it is
+    // skipped here regardless". That was true only while a RIGID counted as
+    // non-ground. Once a skolem is ground ([`type_value_is_ground`]), the raw `c : ?C`
+    // reaches the check and is refused against the very field the inference loop had
+    // just threaded it into — `FiniteCollection.map`'s `fmapped(c, f)`, measured. One
+    // spelling for both loops is the fix: a rebuild good enough to INFER from is the
+    // one to JUDGE against.
     let mut field_type_errors: Vec<TypeError> = Vec::new();
     let mut some_wraps: Vec<(usize, Value)> = Vec::new();
     for (field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                match validate_arg_against_param(
-                    kb, &mut subst, &r.ty, declared_type, span,
-                    TypeErrorContext::EntityField { entity: ctor_sym, field: *field_sym },
+                match validate_field_arg(
+                    kb, env, &mut subst, r, declared_type, span, ctor_sym, *field_sym,
                 ) {
                     ArgValidation::Ok => {}
                     ArgValidation::WrapSome { declared } => {
@@ -26540,9 +26713,8 @@ fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some((field_sym, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                match validate_arg_against_param(
-                    kb, &mut subst, &r.ty, declared_type, span,
-                    TypeErrorContext::EntityField { entity: ctor_sym, field: *field_sym },
+                match validate_field_arg(
+                    kb, env, &mut subst, r, declared_type, span, ctor_sym, *field_sym,
                 ) {
                     ArgValidation::Ok => {}
                     ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
@@ -27614,6 +27786,47 @@ pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param:
 
 // ── WI-376: expression-carried projection elimination ──────────
 
+/// WI-1059 — does a type [`Value`] contain a `Var::Rigid` anywhere? The predicate behind
+/// ONE invariant: **a skolem minted by the body check may not be written into the stored
+/// tree.** Rigids are minted per body check ([`rigidify_op_type_params`], WI-392/WI-424,
+/// and [`rigidify_unwritten_sort_params`]), so a stored node holding one is stale as soon
+/// as the pass ends — and a second `type_check_sorts` over the same KB then compares last
+/// pass's skolem against this pass's, which render identically and are not equal.
+///
+/// Structural rather than a head test, for the reason [`value_contains_projection`] gives:
+/// the rigid that matters sits in a BINDING (`List[T = ?T]`), never at the head.
+fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
+    if let Value::Term { id, .. } = ty {
+        if matches!(kb.get_term(*id), Term::Var(Var::Rigid(_))) {
+            return true;
+        }
+    }
+    if matches!(ty, Value::Var(Var::Rigid(_))) {
+        return true;
+    }
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { bindings, .. } => {
+            bindings.iter().any(|(_, v)| value_contains_rigid(kb, v))
+        }
+        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
+            value_contains_rigid(kb, &param)
+                || value_contains_rigid(kb, &result)
+                || value_contains_rigid(kb, &effects)
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            fields.iter().any(|(_, v)| value_contains_rigid(kb, v))
+        }
+        TypeExtractor::EffectsRows(e) => value_contains_rigid(kb, &e),
+        TypeExtractor::ExprCarried { value, .. } => value_contains_rigid(kb, &value),
+        TypeExtractor::RigidTypeProjection { subject, .. } => value_contains_rigid(kb, &subject),
+        TypeExtractor::Denoted(_)
+        | TypeExtractor::SortRef(_)
+        | TypeExtractor::TypeVar(_)
+        | TypeExtractor::Nothing
+        | TypeExtractor::Error => false,
+    }
+}
+
 /// WI-376: does a type [`Value`] contain an expression-carried projection
 /// (`ExprCarried`) anywhere in its structure? Carrier-agnostic (reads via
 /// [`extract_type`], so a `Value::Node` parameterized type is walked too). Used both
@@ -28305,6 +28518,17 @@ fn resolve_field_type(
     // DataProvider[P]`). A concrete field type carries no declaring sort.
     let decl_sort = match &resolved {
         Value::Term { id: t, .. } if is_type_param_value(kb, *t) => Some(sort_sym),
+        // WI-1059: the SAME abstract parameter, wearing its receiver path. Once an
+        // unwritten slot is materialized ([`rigidify_unwritten_sort_params`]) the receiver
+        // is `State[P = s.P]`, so `build_pattern_subst` resolves the field `provider : P`
+        // through that binding and `resolved` arrives as the projection `s.P` rather than
+        // the bare param `Ref(P)`. It denotes exactly what it did before — THIS instance's
+        // `P` — so `sort_sym` is still the sort whose `requires` chain lends it an
+        // interface. Without this the receiver reads as "abstract with no concrete sort"
+        // and `s.provider.K` stops forming its neutral (measured: wi376, wi399, wi400,
+        // wi430). Gated on the member NAMING one of `sort_sym`'s declared parameters, so an
+        // ordinary field projection is untouched.
+        _ if projected_param_of_sort(kb, &resolved, Some(sort_sym)).is_some() => Some(sort_sym),
         _ => None,
     };
     Ok((resolved, decl_sort))
@@ -28575,7 +28799,19 @@ fn project_type_member(
         let carrier_key = match arg_ty {
             Value::Term { id: t, .. } => subject_key_of_term(kb, *t),
             _ => None,
-        };
+        }
+        // WI-1059: a materialized slot spells the parameter as the projection `s.P`, whose
+        // head is `ExprCarried` and so has no subject key of its own. Key it by the
+        // PARAMETER it names — `<decl_sort>.P`'s alias var, the identity every other
+        // spelling of that parameter already resolves to (see [`sym_subject_key`]). This
+        // keeps WI-430's carrier precision: `s.P` and `s.Q` key to different params, so a
+        // `requires` bound carrying `Q` still does not lend its member to a `P`-typed
+        // receiver. It deliberately does NOT distinguish `s.P` from `t.P` — both ARE
+        // `State.P`, and which RECEIVER a neutral projects off is the ζ arm's question,
+        // decided by comparing receivers structurally, not this bound lookup's.
+        .or_else(|| {
+            projected_param_of_sort(kb, arg_ty, Some(decl_sort)).map(|p| sym_subject_key(kb, p))
+        });
         if let Some(key) = carrier_key {
             if abstract_member_declared_by_requires(kb, decl_sort, key, member) {
                 return Ok(ProjResult::Neutral);
@@ -28966,6 +29202,33 @@ enum SubjectKey {
     Sym(Symbol),
 }
 
+/// WI-1059 — if `ty` is a projection `⟨r⟩.M` whose member `M` names a DECLARED type
+/// parameter of `sort_sym`, the qualified symbol of that parameter (`<sort_sym>.M`).
+///
+/// The reader for one fact: a materialized unwritten slot spells its parameter as the
+/// projection off the value that carries it ([`rigidify_unwritten_sort_params`]), so
+/// `State`'s `P` reaches the projection machinery as `s.P` instead of `Ref(P)`. It is the
+/// same parameter — a different SPELLING of it, exactly as `type_param_global_var` bridges
+/// the short and op-scoped spellings — and the two sites that must not be fooled by the
+/// change of spelling are [`resolve_field_type`]'s declaring-sort verdict and
+/// [`project_type_member`]'s carrier key.
+///
+/// `None` for a non-projection, for a projection off a member that is not a parameter (an
+/// ordinary field), and when `sort_sym` is absent.
+fn projected_param_of_sort(
+    kb: &KnowledgeBase,
+    ty: &Value,
+    sort_sym: Option<Symbol>,
+) -> Option<Symbol> {
+    let sort_sym = sort_sym?;
+    let TypeExtractor::ExprCarried { member, .. } = extract_type(kb, ty) else { return None };
+    let short = short_name_of(kb.local_name_of(member)).to_owned();
+    if !kb.type_params_of_sort(sort_sym).iter().any(|d| *d == short) {
+        return None;
+    }
+    qualified_type_param_sym(kb, sort_sym, &short)
+}
+
 fn subject_key_of_term(kb: &KnowledgeBase, t: TermId) -> Option<SubjectKey> {
     match kb.get_term(t) {
         Term::Var(Var::Global(v) | Var::Rigid(v)) => Some(SubjectKey::Var(v.raw())),
@@ -29301,8 +29564,38 @@ fn bind_and_label_pattern(
             // WI-819: decoded by `pattern_annotation_value`, the one reader —
             // carrier-preserving, so a `denoted`-bearing binder annotation is
             // compared as itself rather than flattened.
-            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> =
-                type_ann.map(|ann| (ann, pattern_annotation_value(kb, ann)));
+            // WI-1059: the annotation is discharged to the SAME level as the context
+            // before the two are compared. `let seed: List[T = xs.T]` states a
+            // projection; the context that reaches here has already had its projections
+            // eliminated at the let site, so comparing the two raw reports a
+            // contradiction between a type and itself — `expected List[T = ?T], got
+            // List[T = xs.T]`. WI-819 avoided that by writing the ELIMINATED form back
+            // onto the pattern, but that form can hold a pass-local skolem and the
+            // pattern lands in the stored tree ([`value_contains_rigid`]), so the
+            // discharge belongs here, where it is read, rather than in what is kept. The
+            // env is the same `Symbol -> type` resolver the let site used.
+            //
+            // An undischargeable projection keeps the RAW annotation, and the reason is not
+            // "the let site already raised on it" — that covers `Expr::Let` only, while this
+            // function also serves LAMBDA and MATCH-BRANCH binders, which have no such site.
+            // The reason is that this call only COMPARES: it feeds
+            // `binder_annotation_conflict`, whose job is to report a contradiction the
+            // author wrote, and refusing here would report the ELIMINATION's failure under
+            // the binder-annotation context — a worse message for a different defect.
+            // Whoever owns a binder-annotation projection that cannot be discharged (no
+            // caller does today — the lambda paths thread a context type instead) should
+            // raise it where the projection is FORMED, not here.
+            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann.map(|ann| {
+                let v = pattern_annotation_value(kb, ann);
+                let v = if value_contains_projection(kb, &v) {
+                    let ctx = TypeErrorContext::LetBinding { var: *name };
+                    eliminate_type_projections(kb, &v, &env.var_bindings, None, &ctx, Some(ann.span.span))
+                        .unwrap_or(v)
+                } else {
+                    v
+                };
+                (ann, v)
+            });
             if let (Some(ctx), Some((ann_occ, ann))) = (scrutinee_type.as_ref(), ann_ty.as_ref()) {
                 if let Some(err) =
                     binder_annotation_conflict(kb, *name, ctx, ann, Some(ann_occ.span.span))
@@ -39854,6 +40147,176 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// reaching here can fail this test today. It is kept as a total match rather than an
 /// assertion because a `Rigid`/`DeBruijn` entry would be a caller bug, not user input,
 /// and skolemizing one would be worse than leaving it alone.
+/// WI-1059 — materialize a declared PARAMETER type's UNWRITTEN sort parameters as fresh
+/// `Var::Rigid` skolems, for the duration of the operation's body check.
+///
+/// THE THIRD FAMILY. [`rigidify_op_type_params`] skolemizes two: the operation's own `[T]`
+/// (WI-392) and its enclosing sort's (WI-942). A parameter of ANOTHER sort left unwritten
+/// in a parameter's TYPE — `Stream`'s `E` in `s: Stream[T = Int64]` — is in neither, and
+/// there is no variable to skolemize because the slot was never materialized at all: a
+/// partial application carries only the bindings it wrote, and a bare `Ref(S)` carries
+/// none. So this MINTS the slot and its skolem together.
+///
+/// The rule it enforces is `docs/kernel-language.md` §"Expansion during unification": an
+/// unwritten parameter is a NEW variable per instantiation, so the operation is universally
+/// quantified over it and its body may only do what holds for EVERY value of it. Inside the
+/// body it is therefore rigid; at a CALL it is flexible again and binds from the argument.
+/// Same variable, two positions — and this rewrite is confined to the body, so the call side
+/// is untouched (it rebuilds `OpInfo.params` only; the KB's `OperationInfo` fact, which
+/// every call site reads, keeps its flexible slots).
+///
+/// THE SKOLEM IS THE PROJECTION `s.E`, NOT A FRESH VAR — and this is the whole design, so
+/// it is worth saying why the obvious alternative is wrong. A fresh `Var::Rigid` per slot is
+/// sound but ANONYMOUS: nothing else can name it. The stdlib names these parameters
+/// constantly — `operation collect(s: Stream) -> List[T = s.T]` — and `s.T` is already a
+/// RIGID neutral (WI-400 ζ: "its own rigid type, equal only to an identical neutral, never
+/// to a concrete type"). Minting a fresh var instead desynchronizes the two: the body's `s`
+/// would carry `T = ?T₁` while the declared return still said `s.T`, and the pair no longer
+/// matches. MEASURED — the fresh-var cut cost 27 stdlib load errors, almost all of the shape
+/// `expected List[T = s.T], got List[T = ?T]`, and not one of them was a wrong program.
+///
+/// So the unwritten slot is filled with the name the language already gives it. That name is
+/// rigid by the mechanism already in place, which is why this needs no new rule in the
+/// subtype relation: `Stream[T = Int64, E = s.E]` against `Stream[T = Int64, E = {}]` is
+/// refused by the ζ arm, and the message names `s.E` — the row the body may not assume.
+/// [`refine_self_receiver_body_type`] builds the identical projection for the identical
+/// reason (a bare self-receiver return pinned to `l.T`); this is that pinning applied to the
+/// parameter instead of the result.
+///
+/// ALL FOUR SPELLINGS OF ONE TYPE ARRIVE HERE ALIKE, which is what makes them agree (the
+/// WI-1056 measurement, whose four rows this ticket keeps in lockstep at the new verdict):
+/// the explicit `[E]` needs nothing from this function (WI-392 already rigidified it, and
+/// the check reaches it once a skolem counts as ground — see [`type_value_is_ground`]);
+/// `E = ?` arrives as a written binding whose value is a still-FLEX var and is replaced by
+/// the projection; `Stream[T = Int64]` and the bare `Stream` arrive missing the slot, and it
+/// is minted. A slot written CONCRETE, or written as the op's own rigid, is left alone.
+///
+/// PARAMETER TYPES ONLY — **WI-1060**, not an unowned gap. Not the return type and not the
+/// declared effects, though [`rigidify_op_type_params`]'s substitution is applied to all
+/// three. The universal quantification reads the other way in a RESULT position (the body
+/// must PRODUCE a value good for every instantiation, not consume one) and a return type
+/// has no carrier VALUE to project off, so the filler there can only be a fresh anonymous
+/// rigid — the one this function measured at 27 stdlib errors in THIS position. The hole is
+/// real and driven: `widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s`
+/// loads.
+///
+/// SELF AND FOREIGN REFERENCES FILL THE SLOT DIFFERENTLY, and `docs/design/type-parameter-
+/// scoping.md` §3 is what decides which: "Within the sort's own definition, a bare self-sort
+/// reference participates in that tie — `append(xs: List, ys: List)` declared *inside*
+/// `sort List` ties both parameters (and the return) to *this* sort's `T`", whereas two
+/// FOREIGN references "do not silently share a variable across a signature". So a self
+/// reference's unwritten slot is THIS instance's parameter — the enclosing sort's rigid,
+/// which WI-424 already minted — and only a foreign one is fresh-per-occurrence and takes
+/// the projection. MEASURED, and this split is why it is here: filling a self reference with
+/// a projection refused `Pair.compare(a: Pair, b: Pair)` at `expected a.A, got b.A`, which
+/// is the member tie read as its own negation.
+///
+/// TOP LEVEL ONLY — **WI-1060** again, and for the same reason the projection is the right
+/// filler: a slot nested inside a binding (`s: List[T = Stream]` leaves `Stream`'s
+/// parameters unwritten too) has NO path that names it, so the only filler available there
+/// is an anonymous fresh rigid — and that reintroduces exactly the desynchronization
+/// measured above, since a return type spelling the same nested bare sort would mint a
+/// second, unrelated one. Driven: `feed(l: List[T = Stream[T = Int64]]) = takes_pure(l)`
+/// loads. Left as written.
+fn rigidify_unwritten_sort_params(
+    kb: &mut KnowledgeBase,
+    param_name: Symbol,
+    ty: &Value,
+    parent_sort: Option<Symbol>,
+    rigidify: &Substitution,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    let (base, written) = match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => (s, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return ty.clone(),
+    };
+    // Exactly "the parameters an unwritten slot would expand to a fresh var for" — the
+    // same table the WI-1056 acceptance arm consults, so the two cannot disagree about
+    // which slots a partial application is missing.
+    let declared = sort_type_params_as_pairs(kb, base);
+    if declared.is_empty() {
+        return ty.clone();
+    }
+    let is_self =
+        parent_sort.is_some_and(|p| kb.canonical_sort_sym(p) == kb.canonical_sort_sym(base));
+    let key_match = BindingKeyMatch::for_bases(kb, base, base);
+    let recv = kb.alloc(Term::Ref(param_name));
+    let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(declared.len().max(written.len()));
+    let mut consumed = vec![false; written.len()];
+    let mut minted = false;
+    for (param, canonical) in declared.iter() {
+        let slot = binding_index_for_param(kb, &written, *param, key_match);
+        if let Some(i) = slot {
+            consumed[i] = true;
+            let (k, v) = &written[i];
+            // A slot written `?` is an unwritten one spelled out (kernel-language
+            // §"Expansion during unification" — the four ways mean the same thing), and
+            // it arrives here as a still-FLEX var. Anything else the author wrote —
+            // a concrete type, the op's own `[E]` (already a rigid), the enclosing sort's
+            // param — is what they meant, and stands.
+            if !value_is_flex_var(kb, v) {
+                bindings.push((*k, v.clone()));
+                continue;
+            }
+        }
+        let fill = if is_self {
+            // THIS instance's parameter: the sort's canonical var run through the
+            // rigidify substitution WI-424 built, so the slot holds the same skolem every
+            // other mention of the parameter in this body already resolves to.
+            Value::term(walk_type_deep(kb, rigidify, *canonical))
+        } else {
+            // Built byte-identically to the loader's `s.E` — `make_expr_carried(Ref(recv),
+            // intern(short))`, the SHORT member name — and keyed by the carrier's own
+            // `<sort>.<P>` symbol, so it is the same neutral a hand-written `s.E` produces
+            // and compares to one by path identity.
+            //
+            // BARE, INCLUDING FOR AN EFFECT-ROW PARAMETER — the single-label row `{s.E}` an
+            // effect slot ultimately wants is wrapped where the receiver is CONSUMED
+            // ([`bare_spec_arg_self_projection`]), not here. Wrapping it at the fill was
+            // tried and reverted: the row makes the slot's value strictly LARGER than the
+            // projection it contains, so the author-projection fixpoint in
+            // `check_operation_bodies` re-wraps every round (`{s.E}`, `{{s.E}}`, …) and
+            // never converges — measured as a stack overflow on a program as small as
+            // `operation ok(s: Stream[T = Int64]) -> Int64 = 1`. Keeping the fill bare is
+            // also what lets [`is_self_projection_of`] recognize a materialized receiver by
+            // shape; a wrapped fill would silently stop matching there and disable the
+            // WI-594 effect threading.
+            let short = short_name_of(kb.local_name_of(*param)).to_owned();
+            let member = kb.intern(&short);
+            Value::term(kb.make_expr_carried(recv, member))
+        };
+        bindings.push((*param, fill));
+        minted = true;
+    }
+    if !minted {
+        return ty.clone();
+    }
+    // A written binding matching no declared parameter is CARRIED, not dropped — it is a
+    // malformed or cross-keyed type, and losing it here would silently change what the
+    // body is checked against. Whoever owns that diagnosis still sees it.
+    for (i, kv) in written.iter().enumerate() {
+        if !consumed[i] {
+            bindings.push(kv.clone());
+        }
+    }
+    let base_ref = kb.make_sort_ref(base);
+    parameterized_value(kb, base_ref, &bindings, span, owner)
+}
+
+/// Is this type value a still-FLEX logical variable — the carrier an explicit `?` in a type
+/// binding takes? A `Var::Rigid` answers `false`: it is a skolem the op's own `[E]` or its
+/// enclosing sort's parameter already pinned, and re-spelling it as a projection would
+/// rename a variable the rest of the signature refers to.
+fn value_is_flex_var(kb: &KnowledgeBase, v: &Value) -> bool {
+    match v {
+        Value::Term { id, .. } => matches!(kb.get_term(*id), Term::Var(Var::Global(_))),
+        Value::Var(Var::Global(_)) => true,
+        _ => false,
+    }
+}
+
 fn rigidify_op_type_params(
     kb: &mut KnowledgeBase,
     type_params: &[(Symbol, Var)],
@@ -40085,6 +40548,21 @@ fn check_operation_bodies(
             rigidify_subst = rigidify;
             (params, return_type, declared_effects)
         };
+        // WI-1059: the THIRD family of rigids — a parameter of ANOTHER sort left
+        // unwritten in a parameter's TYPE. Runs for EVERY op, including one that
+        // declares no `[T]` and sits in no parametric sort (the two-family branch
+        // above is skipped entirely for those, and `feed(s: Stream[T = Int64])` is
+        // exactly that shape). AFTER the substitution, so a slot written as the op's
+        // own `[E]` is already the rigid WI-392 minted and is not skolemized twice.
+        let params: Vec<(Symbol, Value)> = params
+            .iter()
+            .map(|(n, t)| {
+                let ty = rigidify_unwritten_sort_params(
+                    kb, *n, t, parent_of_op, &rigidify_subst, body_node.span, body_node.owner,
+                );
+                (*n, ty)
+            })
+            .collect();
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
             return_type,
@@ -40220,26 +40698,39 @@ fn check_operation_bodies(
             }
         }
 
-        // WI-491: a COVARIANT return rooted at the receiver — a TOP-LEVEL
-        // expression-carried projection of one parameter's own type
-        // (`operation iterator(m: MappedStream) -> m.Sort = m`, `m.Sort` = the
-        // whole type of `m`; also a member form `m.T`) — is eliminated against
-        // the op's own parameter types BEFORE the conformance and escape checks.
-        // Then the body (`= m`, type `MappedStream`) conforms to the projected
-        // type, and the WI-401 avoidance gate sees the input-rooted concrete type
-        // (`m.Sort` ⟹ `MappedStream`, same sort as the body ⟹ admitted) rather
-        // than the raw `ExprCarried`, which has no sort functor. Only the
-        // WHOLE-TYPE top-level form is rewritten here; a NESTED projection in the
-        // return (`Stream[T = l.T, E = {}]`, List's iterator) is left to the
-        // existing conformance machinery (`refine_self_receiver_body_type` + the
-        // ζ/neutral arms of `unify_types`); an abstract receiver eliminates to the
-        // same neutral (`-> p.K = m`, WI-400), unchanged.
-        let effective_return = if matches!(
-            extract_type(kb, &op.return_type),
-            TypeExtractor::ExprCarried { .. }
-        ) {
-            let param_map: HashMap<Symbol, Value> =
-                op.params.iter().map(|(n, t)| (*n, t.clone())).collect();
+        // WI-1059: the params AS BOUND — after the projection fixpoint above, which may
+        // have rewritten them. The return type and the declared effects are discharged
+        // against exactly these, so a projection in a signature and the same projection in
+        // the body resolve through one table.
+        let param_map: HashMap<Symbol, Value> = op
+            .params
+            .iter()
+            .map(|(n, t)| (*n, env.lookup_var(*n).unwrap_or_else(|| t.clone())))
+            .collect();
+
+        // WI-491: a COVARIANT return rooted at the receiver — an expression-carried
+        // projection of one parameter's own type (`operation iterator(m: MappedStream)
+        // -> m.Sort = m`, `m.Sort` = the whole type of `m`; also a member form `m.T`) —
+        // is eliminated against the op's own parameter types BEFORE the conformance and
+        // escape checks. Then the body (`= m`, type `MappedStream`) conforms to the
+        // projected type, and the WI-401 avoidance gate sees the input-rooted concrete
+        // type (`m.Sort` ⟹ `MappedStream`, same sort as the body ⟹ admitted) rather
+        // than the raw `ExprCarried`, which has no sort functor.
+        //
+        // WI-1059 widened the gate from the TOP-LEVEL form to a projection ANYWHERE
+        // ([`value_contains_projection`], the same predicate the parameter fixpoint
+        // above uses). The note that stood here said a NESTED projection
+        // (`-> List[T = s.T]`, `-> Stream[T = l.T, E = {}]`) was "left to the existing
+        // conformance machinery" — and that worked only while the receiver was ABSTRACT:
+        // with `s: Stream` carrying no `T` binding, `s.T` survived on BOTH sides and the
+        // ζ arm matched neutral to neutral. Once an unwritten parameter is materialized
+        // ([`rigidify_unwritten_sort_params`]), the receiver is MANIFEST, so the body
+        // resolves `s.T` to the enclosing rigid while the declared return still read the
+        // raw neutral — `expected List[T = s.T], got List[T = ?T]`, measured across the
+        // stdlib. Eliminating both against one param table is what keeps them the same
+        // type. An abstract receiver still eliminates to the same neutral (`-> p.K = m`,
+        // WI-400), unchanged.
+        let effective_return = if value_contains_projection(kb, &op.return_type) {
             match eliminate_type_projections(
                 kb,
                 &op.return_type,
@@ -40264,6 +40755,43 @@ fn check_operation_bodies(
         } else {
             op.return_type.clone()
         };
+
+        // WI-1059: the DECLARED EFFECTS get the same discharge as the return, against the
+        // same param table, and for the same reason: `Stream.collect(s: Stream) effects
+        // s.E` reads its row off the receiver, and once `s` carries its slot the BODY
+        // incurs the enclosing rigid `?E` while the declared atom is still the neutral
+        // `s.E` — `expected declared: [s.E], got undeclared effect: ?E`, seven of them
+        // across `sort Stream` alone. An atom carrying no projection (a concrete label, a
+        // denoted `Modify[c]`, a row var) is left untouched, and an UNDISCHARGEABLE one is
+        // surfaced rather than silently kept — the same policy as the return.
+        let mut effect_proj_failed = None;
+        let effective_effects: Vec<Value> = op
+            .declared_effects
+            .iter()
+            .map(|e| {
+                if !value_contains_projection(kb, e) {
+                    return e.clone();
+                }
+                match eliminate_type_projections(
+                    kb,
+                    e,
+                    &param_map,
+                    None,
+                    &TypeErrorContext::OperationEffects { op_name: op.op_sym },
+                    op.span,
+                ) {
+                    Ok(elim) => elim,
+                    Err(err) => {
+                        effect_proj_failed.get_or_insert(err);
+                        e.clone()
+                    }
+                }
+            })
+            .collect();
+        if let Some(err) = effect_proj_failed {
+            errors.push(err);
+            continue;
+        }
 
         // WI-270: thread the declared return type as the body's
         // top-down `expected`. The body's `let v: T = …`-style
@@ -40388,11 +40916,19 @@ fn check_operation_bodies(
                 // ORIGINAL Global var (`walk_type_deep_value` does not rewrite
                 // inside occurrence carriers), so resolving through the
                 // rigidify maps it to the same Rigid the declared atom became.
+                // WI-1059: over `effective_effects` — the declared atoms with their
+                // receiver projections discharged — not the raw `op.declared_effects`.
+                // The DISPLAY is built from the same list, so a diagnostic names the atoms
+                // AS DISCHARGED: `effects s.E` on a manifest receiver prints the row it
+                // resolved to, not the written `s.E`. That is the honest rendering for this
+                // message, whose two halves must be comparable — printing the written form
+                // beside a resolved incurred effect is what made the pre-WI-441 version
+                // report `expected [E], got ?_` for a row that matched.
                 let canon_subst = (*op.rigidify).clone();
-                let declared_canon: Vec<Value> = op.declared_effects.iter()
+                let declared_canon: Vec<Value> = effective_effects.iter()
                     .map(|e| walk_type_deep_value(kb, &canon_subst, e))
                     .collect();
-                let declared_display: Vec<String> = op.declared_effects.iter()
+                let declared_display: Vec<String> = effective_effects.iter()
                     .map(|e| type_display_name_value(kb, e))
                     .collect();
                 for effect in &ext_effects {
