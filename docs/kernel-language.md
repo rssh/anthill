@@ -1992,7 +1992,32 @@ The kernel enforces a **structural type system**:
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
 
-**Expansion during unification.** A parametric sort referenced as a type with some or all of its declared parameters unbound unifies as that sort applied to a **fresh variable for each unbound parameter**. A bare reference is the all-unbound case — `Stream` ≡ `Stream[T = ?, E = ?]` — and a partial one fills the rest — `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]`. The typer performs this expansion at **every sort application** — wherever a parametric sort appears as a type, including a bare reference unified against another bare reference — so the parameters participate even when the source writes no binding for them. The expansion covers **every** declared parameter: ordinary type parameters and effect-row parameters (`effects E`; proposal 045 §2) alike. It is the type-level counterpart of the partial-entity-pattern expansion (§8.3), and follows directly from "types are terms" (§4.4) — the same generalize-missing-arguments-to-fresh-variables mechanism, applied to the type sublanguage. Its effect is that a signature written against a bare sort still threads bindings: a parameter declared `s: Stream`, unified against an argument of type `Stream[T = Int64, E = {}]`, binds the expanded `T` and `E`, so both the element type and the access effect ground at the call instead of silently dropping. Without it, a bare `Ref(Stream)` carries no slots and unification binds nothing. In **type position** a bare parametric sort name is always an instantiation, so — unlike entity *data* terms, where bare `account` stays a reference and only `account()` expands — no parentheses are needed to trigger it. A *cross-sort* case, where the argument's sort merely *provides* the expected spec (a `List` used as a `Stream`), is the complementary mechanism: provider admissibility (§8.2) supplies the parameter bindings from the provider fact. See proposal 045 §5.1.1 for the effect-row instance and `docs/proposals/library/002` for the `Stream`/`iterator` walk.
+**Expansion during unification.** A parametric sort referenced as a type with some or all of its declared parameters unbound unifies as that sort applied to a **fresh variable for each unbound parameter**. The four ways of leaving a parameter unwritten — a bare reference, a partial application, an explicit `?`, and an operation type parameter — all mean the same thing and are checked alike (WI-1056). A bare reference is the all-unbound case — `Stream` ≡ `Stream[T = ?, E = ?]` — and a partial one fills the rest — `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]`. The typer performs this expansion at **every sort application** — wherever a parametric sort appears as a type, including a bare reference unified against another bare reference — so the parameters participate even when the source writes no binding for them. The expansion covers **every** declared parameter: ordinary type parameters and effect-row parameters (`effects E`; proposal 045 §2) alike. It is the type-level counterpart of the partial-entity-pattern expansion (§8.3), and follows directly from "types are terms" (§4.4) — the same generalize-missing-arguments-to-fresh-variables mechanism, applied to the type sublanguage. Its effect is that a signature written against a bare sort still threads bindings: a parameter declared `s: Stream`, unified against an argument of type `Stream[T = Int64, E = {}]`, binds the expanded `T` and `E`, so both the element type and the access effect ground at the call instead of silently dropping. Without it, a bare `Ref(Stream)` carries no slots and unification binds nothing. In **type position** a bare parametric sort name is always an instantiation, so — unlike entity *data* terms, where bare `account` stays a reference and only `account()` expands — no parentheses are needed to trigger it. A *cross-sort* case, where the argument's sort merely *provides* the expected spec (a `List` used as a `Stream`), is the complementary mechanism: provider admissibility (§8.2) supplies the parameter bindings from the provider fact. See proposal 045 §5.1.1 for the effect-row instance and `docs/proposals/library/002` for the `Stream`/`iterator` walk.
+
+**An unwritten parameter is fresh at each call, so the BODY must hold for every instantiation of it.** The expansion above says what an unwritten parameter means at a call — a fresh variable, bound there from the argument. That is also what it means for the declaration: `s: Stream[T = Int64]` is `s: Stream[T = Int64, E = ?]`, and `?` is a *new* variable per instantiation, so the operation is universally quantified over it. A body may therefore only do what holds for **every** `E`:
+
+```anthill
+operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64   -- demands NO effects
+
+operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s) -- REFUSED: E is any row, not {}
+```
+
+`feed` is refused at its own declaration, not at its callers: it claims to accept a stream at any row and then hands it to something that accepts only the empty one. The two spellings that say the same thing are refused the same way — `feed[E](s: Stream[T = Int64, E = E])` names the quantification explicitly, and a bare `feed(s: Stream)` leaves both parameters unwritten. An author who means the empty row writes it:
+
+```anthill
+operation feed(s: Stream[T = Int64, E = {}]) -> Int64 = takes_pure(s)   -- accepted
+```
+
+Inside a body, then, an unwritten parameter is **rigid** — a skolem that unifies with nothing but itself — exactly as an operation's own `[T]` and its enclosing sort's parameters already are. At a *call* it is flexible again, and binds from the argument. Same variable, two positions, and confusing them is what the rule exists to prevent.
+
+**The loader does not enforce this today (WI-1059, measured).** An unwritten parameter of *another* sort is never rigidified, so inside the body it is flexible and satisfies any demand; each half then looks correct alone, and the pair composes into an unsound program:
+
+```anthill
+operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s)            -- loads (should be refused)
+operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)   -- loads: E binds to {Error}
+```
+
+An effectful stream reaches an operation that declared it wanted none. Read the paragraphs above as the intended discipline and not as a statement about what loads.
 
 ### 8.2 Entity Subtyping
 

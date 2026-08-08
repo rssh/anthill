@@ -34558,19 +34558,35 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         // is `None`), still rejects: this LOOSENS the cross-sort case only and
         // cannot newly-reject existing code.
         //
-        // WI-1056 TRIED TO LOOSEN THE SAME-BASE CASE AND BACKED IT OUT, which is worth a
-        // sentence because the argument for loosening is superficially strong.
-        // kernel-language §"Expansion during unification" does say a partial application
-        // means the sort applied to a fresh variable per unbound parameter, and the BARE
-        // form is already accepted (a bare `Ref` never reaches this function). But that
-        // section is about UNIFICATION — [`unify_parameterized_view`] reads it
-        // width-tolerantly and says in the same breath that "the subtype twin is the
-        // direction that rejects" — and a fresh variable is not a subtype of a concrete
-        // demand. DRIVEN: with the same-base case accepted, `operation feed(s: Stream[T =
-        // Int64]) -> Int64 = takes_pure(s)` type-checked against `takes_pure(s: Stream[T =
-        // Int64, E = {}])`, an effectful stream reaching a slot declared pure. Whether the
-        // BARE form should therefore reject too is a real question and NOT WI-1056's; the
-        // corpus case that raised it (`logical_stream.anthill:73`) is fixed at its source.
+        // WI-1056 — THE SAME-BASE MISSING PARAM is taken by the arm below, and the case
+        // for it is not the spec sentence but a MEASUREMENT of the language as it stands.
+        // ONE type, FOUR spellings, and only the partial one was refused:
+        //
+        //     operation feed[U](b: Box[T = Int64, U = U]) -> …   LOADS
+        //     operation feed(b: Box)                     -> …   LOADS
+        //     operation feed(b: Box[T = Int64, U = ?])   -> …   LOADS
+        //     operation feed(b: Box[T = Int64])          -> …   REFUSED   ← the outlier
+        //
+        // against `takes_full(b: Box[T = Int64, U = Bool])`, and identically for an
+        // EFFECT ROW (`Stream[T = Int64]` vs `Stream[T = Int64, E = {}]`). Writing the
+        // wildcard out — `U = ?` — is the same type as omitting it, and it already
+        // conformed; so did the bare form and the explicit operation type parameter. The
+        // arm below makes the fourth spelling agree with the other three.
+        //
+        // A FIRST CUT REVERTED THIS ON A FALSE CONTROL, and the mistake is worth keeping
+        // because it is easy to repeat: the effect-row program above was observed to flip
+        // from REFUSED to accepted when the arm landed, and read as a regression it
+        // introduced. It is not — the identical acceptance is reachable on main by writing
+        // `E = ?` or the bare `Stream`. The control measured "did this arm change THIS
+        // program's verdict" and never asked "was that verdict already obtainable by
+        // spelling the same type differently".
+        //
+        // WHETHER THE PERMISSIVE READING IS RIGHT AT ALL is a real and separate question —
+        // an unwritten row means "unknown effects", which arguably must not satisfy "no
+        // effects" — but it is pre-existing and belongs to all four spellings, not to this
+        // one. **WI-1059** owns it, and the cost of the restrictive answer is measured
+        // there (33 stdlib load errors, and only after patching BOTH carrier arms —
+        // WI-1016).
         // WI-764: keyed via [`binding_for_param`] — raw identity here rejected a WRITTEN
         // `Relation[T = .., E = ..]` annotation against the very relation it describes.
         let ok = match binding_for_param(kb, &actual_bindings, *param, key_match) {
@@ -34583,6 +34599,28 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                         .map(|(_, v)| *v)
                 });
                 match pv {
+                    // WI-1056 — the SAME-BASE partial application (see the note above the
+                    // loop for the four-spelling measurement that decides it).
+                    //
+                    // GATED ON THE ACTUAL'S OWN DECLARED PARAMETERS, so this admits a
+                    // partial application and NOT a type missing something its base never
+                    // had: a `param` the actual's base does not declare is a malformed
+                    // expected type (or a cross-sort key the arm below owns), and it still
+                    // rejects. `sort_type_params_as_pairs` is exactly "the parameters an
+                    // unwritten slot would expand to a fresh var for" — it already filters
+                    // to the slots whose alias target is a `Var`, i.e. the ones with
+                    // nothing else to fill them.
+                    _ if actual_base == expected_base
+                        && binding_for_param(
+                            kb,
+                            &sort_type_params_as_pairs(kb, actual_base),
+                            *param,
+                            key_match,
+                        )
+                        .is_some() =>
+                    {
+                        true
+                    }
                     Some(pv) => {
                         // WI-461: the provider value carries the carrier's canonical param
                         // refs (`provides Stream[T, {}]` holds List's `T`), which the

@@ -17,7 +17,7 @@
 //! |---|---|
 //! | `webots/lf1/safety_common.anthill:236` (`Vec3(x: …)` in an `=` goal) | TYPER GAP, fixed |
 //! | `webots/lf1/safety_gps.anthill:154` (`Pose(position: …)`) | TYPER GAP, fixed (same fix) |
-//! | `stdlib/prelude/logical_stream.anthill:73` (`splitFirst(?a) = some(pair(…))`) | SOURCE error, fixed at source |
+//! | `stdlib/prelude/logical_stream.anthill:73` (`splitFirst(?a) = some(pair(…))`) | TYPER GAP, fixed (+ source clarified) |
 //! | `stdlib/prelude/bigint.anthill:39` (`sub(?n, 1)`) | SOURCE error, fixed at source |
 //! | `webots/lf1/safety_common.anthill:277,278,279` (`?p1.position`) | the standing WI-282 EXEMPTION |
 //!
@@ -29,21 +29,21 @@
 //!   free-standing `entity E(…)`. An operation body never notices, because the LOADER's
 //!   `ApplyOrConstructor` drain already asks the right one; a rule body does not take that
 //!   drain.
-//! * **The source errors.** `bigint`'s induction schema wrote bare `0` / `1` where
+//! * **The partial-application gap.** `parameterized_compatible_view` refused a same-base
+//!   actual that omits a declared parameter — the ONLY one of four spellings of that type
+//!   to be refused: the bare form, the explicit `U = ?`, and an operation type parameter
+//!   all conformed already. See `all_four_spellings_of_one_type_conform_alike`, and its
+//!   doc for the false control that briefly reverted this fix. Whether the permissive
+//!   reading is right AT ALL is pre-existing and belongs to all four spellings —
+//!   **WI-1059**.
+//! * **The source error.** `bigint`'s induction schema wrote bare `0` / `1` where
 //!   `BigInt` is declared — a small integer literal is an `Int64` (only an i64 OVERFLOW
-//!   parses as `BigInt`) and there is no implicit widening. And `logical_stream`'s
-//!   `interleave` wrote `LogicalStream[?A]`, binding T alone and leaving the WI-714 effect
-//!   row to the sort's default, so the derived rule under it had a tail typed
-//!   `LogicalStream[T = ?]` where `splitFirst` returns `LogicalStream[T = s.T, E = s.E]`.
-//! * **A TYPER FIX THAT WAS BUILT AND BACKED OUT**, which is why the second of those is a
-//!   source error. `logical_stream`'s site first read as a typer gap —
-//!   `parameterized_compatible_view` refuses a same-base PARTIAL application where the
-//!   BARE form is accepted, though kernel-language §"Expansion during unification" says
-//!   both mean the same. Loosening it was UNSOUND (an effectful `Stream[T = Int64]`
-//!   reached a slot declared `E = {}`); that section governs UNIFICATION, and a fresh
-//!   variable is not a subtype of a concrete demand. **WI-1059** owns the asymmetry, with
-//!   both directions' costs measured; `a_partial_type_application_is_refused_where_a_bare_one_is_accepted`
-//!   pins today's behaviour so it cannot move unnoticed.
+//!   parses as `BigInt`) and there is no implicit widening.
+//!
+//! `logical_stream`'s `interleave` is corrected too, though the typer fix alone would have
+//! made it load: written `LogicalStream[?A]` it bound T and left the WI-714 effect row to
+//! the sort's default, and it now shares one row variable across both inputs and the
+//! result — which is what fair disjunction does. That is a clarification, not the fix.
 //! * **The exemption** is not new and is not a blanket skip: an UNRESOLVED dot receiver
 //!   (`undecidable_by_this_typer`) has been tolerated since WI-282, because a rule head
 //!   declares no types. A dot on a KNOWN receiver still refuses — see
@@ -70,21 +70,21 @@
 //! `UnknownApplyFunctor`), and `?P(…)` / reflect arguments land in `List[T = Term]`
 //! positions. **WI-1058** owns it.
 //!
-//! ## What fails when each piece is backed out — DRIVEN, four reverts, one run each
+//! ## What fails when each piece is backed out — DRIVEN, one revert each
 //!
-//! | test | policy | ctor gate | dedup | exemption |
-//! |---|---|---|---|---|
-//! | `a_genuine_type_error_in_a_rule_body_is_refused_at_load` | **FAILS** | ok | ok | ok |
-//! | `the_rule_body_and_the_operation_body_report_the_same_error` | **FAILS** | ok | ok | †  |
-//! | `an_eponymous_constructor_constructs_in_a_rule_body` | **FAILS** | **FAILS** | ok | †  |
-//! | `a_free_standing_entity_constructs_in_a_rule_body` | **FAILS** | **FAILS** | ok | †  |
-//! | `a_sort_nested_constructor_still_constructs` | **FAILS** | ok | ok | †  |
-//! | `one_leaf_inside_nested_body_less_atoms_is_reported_once` | **FAILS** | ok | **FAILS** | †  |
-//! | `an_unresolved_receiver_is_exempt_and_a_known_one_is_not` | ok | ok | ok | **FAILS** |
-//! | `an_imported_equation_functor_is_exempt_and_an_unresolved_one_is_not` | **FAILS** | ok | ok | **FAILS** |
-//! | `a_partial_type_application_is_refused_where_a_bare_one_is_accepted` | ok | ok | ok | †  |
-//! | `the_bigint_induction_schema_is_typed_at_bigint` | ok | ok | ok | †  |
-//! | `the_corpus_still_loads` | ok | ok | ok | **FAILS** |
+//! | test | policy | ctor gate | partial-app | dedup | exemption |
+//! |---|---|---|---|---|---|
+//! | `a_genuine_type_error_in_a_rule_body_is_refused_at_load` | **FAILS** | ok | ok | ok | ok |
+//! | `the_rule_body_and_the_operation_body_report_the_same_error` | **FAILS** | ok | ok | ok | †  |
+//! | `an_eponymous_constructor_constructs_in_a_rule_body` | **FAILS** | **FAILS** | ok | ok | †  |
+//! | `a_free_standing_entity_constructs_in_a_rule_body` | **FAILS** | **FAILS** | ok | ok | †  |
+//! | `a_sort_nested_constructor_still_constructs` | **FAILS** | ok | ok | ok | †  |
+//! | `one_leaf_inside_nested_body_less_atoms_is_reported_once` | **FAILS** | ok | ok | **FAILS** | †  |
+//! | `an_unresolved_receiver_is_exempt_and_a_known_one_is_not` | ok | ok | ok | ok | **FAILS** |
+//! | `an_imported_equation_functor_is_exempt_and_an_unresolved_one_is_not` | **FAILS** | ok | ok | ok | **FAILS** |
+//! | `all_four_spellings_of_one_type_conform_alike` | ok | ok | **FAILS** | ok | †  |
+//! | `the_bigint_induction_schema_is_typed_at_bigint` | ok | ok | ok | ok | †  |
+//! | `the_corpus_still_loads` | ok | ok | ok | ok | **FAILS** |
 //!
 //! **†  is COLLATERAL, not coverage**, and it is the most informative cell in the table:
 //! backing out the exemptions stops the STDLIB ITSELF from loading, so every test here
@@ -248,31 +248,34 @@ fn constructor_is_checked(ns: &str, decl: &str, ctor: &str) {
     );
 }
 
-/// A PARTIAL type application does NOT silently conform to a fuller one, and this test
-/// exists because WI-1056 briefly made it do so.
+/// ONE type, FOUR spellings, ONE verdict — and the fourth is the only one this ticket
+/// had to change.
 ///
-/// The corpus site that raised the question (`logical_stream.anthill:73`) is fixed at its
-/// SOURCE instead — `interleave` now writes its effect row explicitly and shares one row
-/// variable across both inputs and the result, which is what fair disjunction does. The
-/// typer change that was tried first — accepting a same-base actual that omits a parameter
-/// the expected side binds, on the strength of kernel-language §"Expansion during
-/// unification" — was a SOUNDNESS REGRESSION, found by review and confirmed by driving:
-/// that section is about UNIFICATION (`unify_parameterized_view` is width-tolerant and
-/// says so, adding that "the subtype twin is the direction that rejects"), and a fresh
-/// variable is not a subtype of a concrete demand.
+/// `Box[T = Int64]` omits a declared parameter; `Box[T = Int64, U = ?]` writes the same
+/// wildcard out; `Box` omits both; `feed[U](b: Box[T = Int64, U = U])` names it as an
+/// operation type parameter. They denote the same thing, and kernel-language
+/// §"Expansion during unification" says so. THREE of them already conformed to
+/// `Box[T = Int64, U = Bool]`; only the partial one was refused, because a bare `Ref`
+/// never reaches `parameterized_compatible_view` and an explicit `?` is a value in the
+/// bindings list, while an OMITTED slot hit the `None` arm that rejected.
 ///
-/// THE ASYMMETRY IS REAL AND STAYS OPEN: the BARE form `Box` is accepted against
-/// `Box[T = Int64, U = Bool]` (a bare `Ref` never reaches `parameterized_compatible_view`
-/// at all) while the PARTIAL `Box[T = Int64]` is refused. Both arms are asserted here so a
-/// later change cannot move one without noticing the other. Which direction closes it is a
-/// design question — loosening the partial arm launders effect rows, tightening the bare
-/// arm touches every `s: Stream`-style signature in the corpus — and it is **WI-1059**.
+/// THE EFFECT-ROW HALF IS THE SAME TEST, and it is here because a first cut REVERTED this
+/// fix over it. `feed(s: Stream[T = Int64])` against `takes_pure(s: Stream[T = Int64,
+/// E = {}])` does flip from refused to accepted when the arm lands, which read as a
+/// soundness regression — an effectful stream reaching a slot declared pure. It is not one:
+/// the identical acceptance is reachable without the fix by writing `E = ?` or the bare
+/// `Stream`, as the row below asserts. The control had measured "did this change THIS
+/// program's verdict" instead of "was that verdict already obtainable another way".
 ///
-/// Passes on main and passes with every WI-1056 piece backed out, BY DESIGN: it pins the
-/// status quo the ticket ended up preserving, and it is the guard that says so.
+/// Whether the permissive reading is right AT ALL is a separate, pre-existing question
+/// belonging to all four spellings — **WI-1059**, where the restrictive answer's cost is
+/// measured. This test pins only that they AGREE.
+///
+/// CONTROL: back out the arm and the two `partial` rows fail while the other six pass —
+/// which is exactly the asymmetry, and exactly why the other six are here.
 #[test]
-fn a_partial_type_application_is_refused_where_a_bare_one_is_accepted() {
-    let src = |param: &str| {
+fn all_four_spellings_of_one_type_conform_alike() {
+    let boxed = |param: &str, op: &str| {
         format!(
             "namespace test.wi1056.partial\n\
              \x20 import anthill.prelude.{{Int64, Bool}}\n\
@@ -285,17 +288,36 @@ fn a_partial_type_application_is_refused_where_a_bare_one_is_accepted() {
              \x20 end\n\
              \n\
              \x20 operation takes_full(b: Box[T = Int64, U = Bool]) -> Int64 = Box.get(b)\n\
-             \x20 operation feed(b: {param}) -> Int64 = takes_full(b)\n\
+             \x20 operation {op}(b: {param}) -> Int64 = takes_full(b)\n\
              end\n",
         )
     };
-    crate::common::load_kb_with(&src("Box"));
-    let msg = refusal(&src("Box[T = Int64]"));
-    assert!(
-        msg.contains("takes_full.b") && msg.contains("Box[T = Int64]"),
-        "a partial application must not satisfy a parameter the expected side binds \
-         concretely — accepting it launders an unwritten slot: {msg}",
-    );
+    let streamed = |param: &str, op: &str| {
+        format!(
+            "namespace test.wi1056.erow\n\
+             \x20 import anthill.prelude.{{Int64, Bool, Stream, List}}\n\
+             \x20 operation takes_pure(s: Stream[T = Int64, E = {{}}]) -> Int64\n\
+             \x20 operation {op}(s: {param}) -> Int64 = takes_pure(s)\n\
+             end\n",
+        )
+    };
+    // (spelling, operation header) — the op-type-param row needs its own `[U]` / `[E]`.
+    for (param, op) in [
+        ("Box[T = Int64, U = U]", "feed[U]"),   // explicit operation type parameter
+        ("Box", "feed"),                         // bare: all parameters unwritten
+        ("Box[T = Int64, U = ?]", "feed"),      // wildcard written out
+        ("Box[T = Int64]", "feed"),             // PARTIAL — the spelling this ticket fixed
+    ] {
+        crate::common::load_kb_with(&boxed(param, op));
+    }
+    for (param, op) in [
+        ("Stream[T = Int64, E = E]", "feed[E]"),
+        ("Stream", "feed"),
+        ("Stream[T = Int64, E = ?]", "feed"),
+        ("Stream[T = Int64]", "feed"),
+    ] {
+        crate::common::load_kb_with(&streamed(param, op));
+    }
 }
 
 /// ONE leaf error inside NESTED body-less atoms is reported ONCE.
@@ -445,7 +467,7 @@ fn the_bigint_induction_schema_is_typed_at_bigint() {
 ///
 /// NOT a formality, and the back-out matrix is what says so: it FAILS when the exemptions
 /// are backed out, because the STDLIB itself then no longer loads — exactly the failure
-/// mode a suite of small fixtures cannot see. It passes under the other three reverts,
+/// mode a suite of small fixtures cannot see. It passes under the other four reverts,
 /// where it is the non-regression it looks like. (The `examples/` and `anthill-todo` tiers were measured the same way through
 /// `anthill load`; they are not loadable as one batch here — two `classic-mini` files
 /// collide on a bare `List` — so the tier this file asserts is the one the harness owns.)
