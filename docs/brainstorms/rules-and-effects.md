@@ -29,8 +29,13 @@ Measured, so the ground is firm:
 | same law untagged | loads clean, inert |
 | binding `Effect = {}` at List's **provision** | changes nothing — the gate reads the *operation's* declared row |
 
-`List` does not declare its own `insert`/`isEmpty`, so in the stdlib as it stands
-there is nowhere to put this law where it would fire.
+Placed inside `List` instead of on the spec, the law is refused **once**, not
+twice: `List` declares its **own** pure `insert` (`operation insert(c: List,
+elem: T) -> List = cons(head: elem, tail: c)`, list.anthill:254 — a body, no
+effects clause), so that leg passes. What `List` does not declare is `isEmpty`;
+it imports `Stream.{isEmpty}`, whose row is `{s.E}` — the receiver's effect
+parameter, projected. So in the stdlib as it stands there is still nowhere to put
+this law where it would fire, but the obstacle is one operation, not two.
 
 ## The five decisions that meet here
 
