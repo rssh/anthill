@@ -223,6 +223,16 @@ equation**, not a new refutation engine. That is a well-scoped question: can
 `refute_guard` reach WI-580's derived equation for the operation in argument
 position?
 
+**The open design question underneath this is PRE-OPENED as WI-1051**: does the
+abstract interpreter maintain and propagate a **Γ** — an environment of facts
+about the intermediate values it computes — or does Γ stay a purely syntactic
+flow environment fed only by branch conditions? Effect discharge is one consumer;
+the value-precondition check (WI-539/WI-602), in-body proofs (WI-538), WI-537's
+two deferred Γ producers, and the `has_effect`/`hasno_effect` reification below
+are others. It is a shared substrate, so its shape wants deciding against several
+consumers at once rather than being retrofitted for this one — which is why it is
+pre-opened rather than open.
+
 **And it is the effect-elimination rule Q3 said we do not have.** Q3 deferred the
 polymorphic case because "effect-elimination rules … are not known". This is one,
 for the *guarded* case: refute the guard, drop the atom. It does not help the
