@@ -37,42 +37,29 @@ fn load_warning_other_renders_as_advisory() {
 }
 
 #[test]
-fn clean_stdlib_load_carries_only_permanent_finite_shadows() {
-    // End-to-end: the channel is wired through `load_all` → `LoadResult`.
-    // The field threads out of the merged result and carries no SPURIOUS
-    // advisories. The only warnings are the KNOWN requires-shadows from
-    // finiteness (proposal library/003): `FiniteCollection` (which `requires
-    // Iterable`) re-homes ops `Iterable` also carries, so WI-346 flags the shadow.
-    //   * Phase A (WI-585), TRANSITIONAL: `size` / `foldLeft` / `foldRight` — Phase
-    //     C (WI-589) REMOVED these from `Iterable`, so they no longer shadow and
-    //     their three warnings are GONE (the comment's earlier prediction realized).
-    //   * Phase B (WI-588), PERMANENT: `map` / `filter` — `Iterable` KEEPS its
-    //     lazy (maybe-infinite → `Stream`) `map`/`filter`, while `FiniteCollection`
-    //     adds finite (→ `FiniteStream`) ones; both coexist by design (dispatch
-    //     picks the finite one on a finite carrier by provision-graph distance),
-    //     so these two shadows REMAIN after Phase C. (Teaching WI-346 to not warn
-    //     on a covariant-return refinement would silence them — a possible follow-up.)
-    // After Phase C the count is exactly the 2 permanent map/filter shadows.
+fn clean_stdlib_load_carries_no_warnings() {
+    // End-to-end: the channel is wired through `load_all` → `LoadResult`. The
+    // field threads out of the merged result and carries NOTHING — the stdlib
+    // is warning-free, so every `anthill check` / `anthill query` is too.
+    //
+    // History of this count, because each step was a different kind of fix:
+    //   * WI-585 Phase A, TRANSITIONAL: `size` / `foldLeft` / `foldRight` were
+    //     re-homed onto `FiniteCollection` (which `requires Iterable`) while
+    //     still living on `Iterable`, so WI-346 flagged five shadows. Phase C
+    //     (WI-589) REMOVED them from `Iterable` — the source shape went away and
+    //     three warnings with it.
+    //   * WI-588 Phase B, PERMANENT: `map` / `filter` — `Iterable` KEEPS its lazy
+    //     (maybe-infinite → `Stream`) pair while `FiniteCollection` adds finite
+    //     (→ `FiniteCollection`) ones. Both coexist BY DESIGN, so no source edit
+    //     could remove these two. WI-1048 fixed the LINT instead: the two are a
+    //     deliberate refinement (different return type), not an accidental
+    //     collision, and `requires_shadow_is_confusable` no longer flags them.
+    //
+    // WI-1048 BACKED OUT: this test fails with the two map/filter shadows. The
+    // lint is NOT retired — `wi346_requires_shadow_test` and
+    // `wi1048_requires_shadow_refinement_test::parametric_same_signature_shadow_still_warns`
+    // are the same-signature cases that must, and do, still warn.
     let result = load_stdlib_result().expect("stdlib should load cleanly");
     let msgs: Vec<String> = result.warnings.iter().map(|w| w.to_string()).collect();
-    let is_finite_shadow = |m: &String| {
-        m.contains("in `anthill.prelude.FiniteCollection`")
-            && m.contains("shadows the inherited `anthill.prelude.Iterable.")
-    };
-    let unexpected: Vec<&String> = msgs.iter().filter(|m| !is_finite_shadow(m)).collect();
-    assert!(unexpected.is_empty(),
-        "the only stdlib warnings should be the FiniteCollection/Iterable \
-         shadows; got unexpected: {unexpected:?}");
-    for op in ["map", "filter"] {
-        assert!(msgs.iter().any(|m| is_finite_shadow(m) && m.contains(&format!("`{op}`"))),
-            "expected the FiniteCollection shadow warning for `{op}`; got: {msgs:?}");
-    }
-    // The transitional size/foldLeft/foldRight shadows are GONE post-Phase-C
-    // (those ops no longer exist on Iterable to be shadowed).
-    for op in ["size", "foldLeft", "foldRight"] {
-        assert!(!msgs.iter().any(|m| is_finite_shadow(m) && m.contains(&format!("`{op}`"))),
-            "the Phase-C-removed `{op}` must no longer produce a shadow warning; got: {msgs:?}");
-    }
-    assert_eq!(msgs.len(), 2,
-        "exactly the two permanent map/filter shadows after Phase C; got: {msgs:?}");
+    assert!(msgs.is_empty(), "the stdlib must load with no warnings; got: {msgs:?}");
 }

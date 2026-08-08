@@ -7370,6 +7370,16 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
 /// own op IS the override (own-op-beats-inherited), which is intentional. Only
 /// the spec's *direct* own ops are compared (not transitively inherited ones) —
 /// the common, on-the-nose case; transitive shadows can be a follow-up.
+///
+/// WI-1048 — a name match is NOT sufficient. This pass used to compare short
+/// names alone, and so fired on `FiniteCollection.map`/`filter`, a DELIBERATE
+/// refinement of `Iterable`'s (proposal library/003, WI-599: the finite ones
+/// return a `FiniteCollection`, so `xs.map(f).size()` keeps type-checking) —
+/// advising a rename that would destroy the design. A spec hierarchy refining an
+/// inherited operation is a normal thing to write, and no `sort_provides`
+/// exemption covers it. The name match now only nominates a candidate;
+/// [`super::typing::requires_shadow_is_confusable`] decides, and warns unless
+/// the two operations are CONFIDENTLY distinguishable at a call site.
 fn check_requires_shadows(kb: &mut KnowledgeBase) -> Vec<LoadWarning> {
     // Own declared ops per sort — an owned snapshot, so no immutable borrow of
     // `kb` is held across the `&mut`/`&` calls in the loop below.
@@ -7389,17 +7399,29 @@ fn check_requires_shadows(kb: &mut KnowledgeBase) -> Vec<LoadWarning> {
             if super::typing::sort_provides(kb, sort, spec) { continue; }
             let Some(spec_ops) = own.get(&spec) else { continue };
             if spec_ops.is_empty() { continue; }
-            let spec_short: std::collections::HashSet<String> =
-                spec_ops.iter().map(|&s| op_short(kb, s)).collect();
             for &op in ops {
                 let osn = op_short(kb, op);
-                if spec_short.contains(&osn) {
-                    warnings.push(LoadWarning::RequiresShadow {
-                        sort: kb.qualified_name_of(sort).to_string(),
-                        op: osn,
-                        spec: kb.qualified_name_of(spec).to_string(),
-                    });
+                // At most one spec op carries a given short name, so `find` is
+                // exhaustive: a sort declaring `op` TWICE mints ONE symbol (the
+                // second `define` returns the first), not two. What that sort
+                // does produce is two `OperationInfo` facts for that one symbol,
+                // and `lookup_operation_info` inside the gate below then answers
+                // by DECLARATION ORDER — measured. That is WI-1049, and it is
+                // upstream of this lint: every signature reader goes through the
+                // same decode, and the pre-WI-1048 lint escaped it only by never
+                // reading a signature. Zero occurrences in the stdlib (345 ops).
+                let Some(&spec_op) = spec_ops.iter().find(|&&s| op_short(kb, s) == osn)
+                else { continue };
+                if !super::typing::requires_shadow_is_confusable(
+                    kb, spec, spec_op, op, &entry.spec,
+                ) {
+                    continue;
                 }
+                warnings.push(LoadWarning::RequiresShadow {
+                    sort: kb.qualified_name_of(sort).to_string(),
+                    op: osn,
+                    spec: kb.qualified_name_of(spec).to_string(),
+                });
             }
         }
     }

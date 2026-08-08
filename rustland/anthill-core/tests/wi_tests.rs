@@ -1082,6 +1082,9 @@ mod wi1042_defaulted_gate_test;
 #[path = "include/wi1045_one_dictionary_representation_test.rs"]
 mod wi1045_one_dictionary_representation_test;
 
+#[path = "include/wi1048_requires_shadow_refinement_test.rs"]
+mod wi1048_requires_shadow_refinement_test;
+
 // Guards this very layout: every include/ file registered exactly once, across
 // anthill-core, anthill-cli and anthill-todo. An unregistered file is compiled
 // never and run never, silently.

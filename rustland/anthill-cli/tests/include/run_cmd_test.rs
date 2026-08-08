@@ -195,8 +195,11 @@ fn ambiguous_symbol_blocks_the_run() {
 /// program still RUNS.
 ///
 /// The fixture triggers its OWN advisory, so this does not depend on the
-/// stdlib's incidental shadow warnings — those are a wart whose message invites
-/// its own removal, and anchoring here would fail the day someone removes it.
+/// stdlib's incidental shadow warnings — which was the right call: WI-1048
+/// removed them (they were a false positive on a deliberate refinement), and the
+/// stdlib now loads warning-free. The fixture's shadow is the genuine article —
+/// `requires Pingable` binds nothing, so the spec op's type stays an unbound
+/// parameter and nothing distinguishes it from `Shadower.ping` at a call site.
 #[test]
 fn advisory_warnings_print_but_do_not_block() {
     let path = fixtures_dir().join("advisory-warning.anthill");

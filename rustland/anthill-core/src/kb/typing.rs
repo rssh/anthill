@@ -21795,6 +21795,12 @@ fn provider_requires_subgoals(
 /// would silently fall back to naming the spec's parameter instead of the
 /// container's. The WI-511 `Fn{c}` → `Ref(c)` flip is exactly the kind of change
 /// that would otherwise have to be applied to both by hand.
+///
+/// [`type_ctor_view`] (WI-1048) reads the same equivalence and then some — it also
+/// admits an APPLIED `Fn`, because there a bare name and an application of it are
+/// the same constructor with one side eliding its arguments. It is deliberately not
+/// expressed in terms of this function: the question there is "which constructor",
+/// not "is this a bare name".
 fn requires_bare_name_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
     match kb.get_term(v) {
         Term::Ref(s) | Term::Ident(s) => Some(*s),
@@ -22234,6 +22240,214 @@ fn instance_binding_type_ok(
     } else {
         types_compatible(kb, &mut subst, &spec_v, &bound_v)
     })
+}
+
+/// WI-1048 — can a call site CONFUSE a requires-shadow with the operation it
+/// shadows? This is the gate on WI-346's lint (`load::check_requires_shadows`),
+/// which until now compared SHORT NAMES ONLY and so could not tell a deliberate
+/// REFINEMENT from an accidental collision.
+///
+/// The lint exists for the author who believed `requires` overrides. That belief
+/// only costs anything when the two operations are INTERCHANGEABLE at a call
+/// site: `xs.op(…)` picks one, the author expected the other, and nothing
+/// complains. When the two are distinguishable — different arity, a different
+/// parameter type, a different return type — they are distinct operations by
+/// construction, dispatch picks the more specific one deterministically, and a
+/// mismatched expectation is already a LOUD type error naming both types
+/// (measured on `FiniteCollection.map` vs `Iterable.map`, WI-1048).
+///
+/// So: **warn unless the two are confidently distinguishable.** Every leg that
+/// cannot be decided falls open to "confusable" — i.e. to warning, WI-346's
+/// pre-existing behaviour. The lint can therefore only get QUIETER where a
+/// difference is proven, never silently retire itself on a comparison this
+/// function failed to make.
+///
+/// Legs, in order:
+///  * ARITY — always decidable.
+///  * PARAM types, pairwise — decided only when both sides are `Value::Term`.
+///    A callback parameter carrying a `denoted` effect (`-Modify[x]`) is a
+///    `Value::Node` with no `TermId`, so σ cannot rewrite it and it is not
+///    compared. Both `map`/`filter` pairs have exactly such a parameter, which
+///    is why the param leg is NOT what silences them.
+///  * RETURN type — same `Value::Term` gate. This is the leg that decides the
+///    stdlib pair (`Stream[…]` vs `FiniteCollection[…]`, different functors).
+///
+/// EFFECTS are deliberately NOT a leg. An effect row does not distinguish two
+/// operations at a call site — the call is spelled identically either way — and
+/// an author who restated the spec's signature with a narrower row is exactly
+/// the author who believed `requires` overrides. Adding effects would silence
+/// that. (Effect refinement IS checked, on the `provides` direction, by
+/// [`check_override_refinement`].)
+///
+/// Params are paired POSITIONALLY, as in [`check_override_refinement`] and
+/// [`check_instance_fact_op_signatures`] — an override aligns with the spec by
+/// position, not by parameter name.
+///
+/// A type leg is decided by [`types_definitely_differ`], for which a type
+/// PARAMETER is a wildcard: `requires Pingable` binding nothing leaves the spec
+/// op's `x: Pingable.T` un-σ-substituted, and an unbound parameter is not a
+/// different type from the shadow's `x: Int64` — it is an UNKNOWN one, which
+/// `Int64` instantiates. That case must keep warning, and does.
+///
+/// `spec_view` is the `requires Spec[…]` clause, whose type-param bindings are
+/// σ: the spec's parameters are rewritten into the shadowing sort's vocabulary
+/// before comparison (`Sp.T ↦ Carrier`), exactly as
+/// [`check_instance_fact_op_signatures`] does for a provision. Its OP bindings
+/// are not σ and are skipped by [`type_param_sym_of_binding`]. σ is what lets a
+/// leg be decided at all where the spec states its type abstractly.
+pub(crate) fn requires_shadow_is_confusable(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    spec_op: Symbol,
+    local_op: Symbol,
+    spec_view: &Value,
+) -> bool {
+    // No `OperationInfo` for one of them ⇒ nothing to compare ⇒ warn.
+    let (Some(spec_info), Some(local_info)) = (
+        super::op_info::lookup_operation_info(kb, spec_op),
+        super::op_info::lookup_operation_info(kb, local_op),
+    ) else {
+        return true;
+    };
+    if spec_info.params.len() != local_info.params.len() {
+        return false; // different arity — a call site cannot confuse them
+    }
+    let spec_qn = kb.qualified_name_of(spec).to_string();
+    let sigma: Vec<(Symbol, TermId)> = unwrap_spec_view_value(kb, spec_view)
+        .map(|(_, bindings)| {
+            bindings
+                .iter()
+                .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, &spec_qn).map(|p| (p, *v)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Params then return, cloned out of the two records so the `&mut kb`
+    // substitution below is not fighting the borrow they are read through.
+    let pairs: Vec<(Value, Value)> = spec_info
+        .params
+        .iter()
+        .map(|(_, t)| t)
+        .chain(std::iter::once(&spec_info.return_type))
+        .zip(
+            local_info
+                .params
+                .iter()
+                .map(|(_, t)| t)
+                .chain(std::iter::once(&local_info.return_type)),
+        )
+        .map(|(s, l)| (s.clone(), l.clone()))
+        .collect();
+    for (spec_ty, local_ty) in pairs {
+        let (Value::Term { id: spec_t, .. }, Value::Term { id: local_t, .. }) = (&spec_ty, &local_ty)
+        else {
+            continue; // a denoted carrier — undecidable, falls open to "confusable"
+        };
+        let spec_sub = if sigma.is_empty() {
+            *spec_t
+        } else {
+            substitute_impl_params_alloc(kb, *spec_t, &sigma)
+        };
+        if types_definitely_differ(kb, spec_sub, *local_t) {
+            return false; // a confidently different type — distinct operations
+        }
+    }
+    true
+}
+
+/// WI-1048 — can these two type terms NEVER denote the same type? The
+/// one-directional half of a comparison: `true` is a proof of difference,
+/// `false` means "same, or not provably different". Never the other way round,
+/// because [`requires_shadow_is_confusable`] warns on everything it cannot
+/// prove distinct.
+///
+/// A TYPE PARAMETER on either side is a WILDCARD — that is the whole subtlety
+/// here, and two independent cases need it:
+///  * an UNBOUND spec parameter. `requires Pingable` (no bindings) leaves the
+///    spec op's `x: Pingable.T` with nothing for σ to substitute; against the
+///    shadow's `x: Int64` that is not a difference, it is an unknown that
+///    `Int64` instantiates. Calling it "different" would silence exactly the
+///    accidental collision WI-346 exists for.
+///  * each operation's OWN variable for its own type parameter.
+///    `Iterable.map[Dst]` and `FiniteCollection.map[Dst]` both spell `Dst`, but
+///    the loader mints a distinct `VarId` per operation (`VarId` compares by id,
+///    not name), so hash-cons identity reads two identical signatures as
+///    different — retiring the lint for precisely the generic operations it most
+///    needs to cover.
+/// Both are wildcards, so neither can carry a proof of difference. What DOES
+/// carry one is a disagreement at a position where neither side is a parameter:
+/// `Stream[…]` vs `FiniteCollection[…]` differ in their head functor, which no
+/// instantiation can reconcile — the stdlib pair, decided.
+///
+/// ELISION IS NOT DIFFERENCE, and it is the second thing that has to fall open.
+/// `Stream[T = Int64]` and `Stream[T = Int64, E = {}]` name the same constructor;
+/// the first simply leaves `E` unstated, and an unstated argument instantiates to
+/// whatever stands opposite it. So is a bare `List` against `List[T = Int64]` —
+/// a name reference IS the nullary spelling of its own constructor, which is what
+/// [`type_ctor_view`] reads both sides through. Hence only positions BOTH sides
+/// state are compared, and a differing argument COUNT proves nothing: what proves
+/// a difference is the head constructor disagreeing, or a stated argument the two
+/// give incompatible values for.
+///
+/// Anything that is not constructor-headed on both sides is UNDECIDED, not
+/// different — the fail-open direction the contract above requires. Hash-cons
+/// identity would be exact for two ground literals but wrong for every mixed
+/// pair, and this predicate is not the place to enumerate which is which.
+fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+    if a == b {
+        return false;
+    }
+    // `is_type_param_value` tests the HEAD, which is what a wildcard needs: a
+    // parameter NESTED inside a concrete constructor (`List[T = C]`) leaves the
+    // constructor itself decidable, and the nested position is reached by the
+    // recursion below and wildcarded there.
+    if is_type_param_value(kb, a) || is_type_param_value(kb, b) {
+        return false;
+    }
+    let (Some((fa, pa, na)), Some((fb, pb, nb))) =
+        (type_ctor_view(kb, a), type_ctor_view(kb, b))
+    else {
+        return false; // not constructor-headed on both sides — undecided
+    };
+    if fa != fb {
+        return true; // a different constructor, which no instantiation reconciles
+    }
+    // Shared positions only. A position one side elides is unstated, not other.
+    if pa.iter().zip(pb.iter()).any(|(x, y)| types_definitely_differ(kb, *x, *y)) {
+        return true;
+    }
+    na.iter().any(|(k, x)| {
+        nb.iter()
+            .find(|(k2, _)| k2 == k)
+            .is_some_and(|(_, y)| types_definitely_differ(kb, *x, *y))
+    })
+}
+
+/// A type term read as `(constructor, positional args, named args)`. A bare name
+/// reference is its own constructor applied to nothing — `Ref(List)` and
+/// `Fn{List, [], [T = Int64]}` are the same constructor, one stating an argument
+/// the other elides. `None` for a term that names no constructor at all (a
+/// literal, a tuple), which [`types_definitely_differ`] treats as undecided.
+/// WI-1048.
+///
+/// The `Ref`/`Ident`/nullary-`Fn` collapse is load-bearing beyond the elision
+/// case: it is the same equivalence [`substitute_impl_params_alloc`] rewrites
+/// between (see [`requires_bare_name_sym`], its owner on the `requires`-binding
+/// side), so a σ-substituted spec type compares equal to the identical type the
+/// loader built directly. Without it the two `*_is_silent` tests in
+/// `wi1048_requires_shadow_refinement_test` go undecided — measured, they are
+/// what fails.
+fn type_ctor_view(
+    kb: &KnowledgeBase,
+    t: TermId,
+) -> Option<(Symbol, SmallVec<[TermId; 4]>, SmallVec<[(Symbol, TermId); 2]>)> {
+    match kb.get_term(t) {
+        Term::Fn { functor, pos_args, named_args } => {
+            Some((*functor, pos_args.clone(), named_args.clone()))
+        }
+        Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new(), SmallVec::new())),
+        _ => None,
+    }
 }
 
 /// User precondition clauses of an operation — its `requires` field minus the

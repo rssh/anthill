@@ -4,9 +4,16 @@
 -- is the WI-346 `LoadWarning::RequiresShadow` advisory: legal but suspicious.
 --
 -- This fixture triggers its OWN advisory rather than leaning on the stdlib's
--- (FiniteCollection.map/filter shadow Iterable's, on every load) — those are a
--- wart whose own message says to rename to silence, so a test anchored on them
--- would fail the day someone takes that advice, for no WI-744 reason.
+-- (FiniteCollection.map/filter used to shadow Iterable's on every load) — and
+-- that was the right call: WI-1048 removed those, the stdlib now loads
+-- warning-free, and a test anchored on them would have gone with them.
+--
+-- The shadow here is the genuine article WI-346 exists for: `requires Pingable`
+-- binds nothing, so `Pingable.ping`'s `x: T` / `-> T` stay UNBOUND parameters.
+-- An unbound parameter is an unknown type, not a different one, so nothing
+-- distinguishes it from `Shadower.ping(x: Int64) -> Int64` at a call site — do
+-- not "fix" this fixture by binding T or by changing ping's signature, which
+-- would make the two distinguishable and silence the advisory this test needs.
 namespace my.advisory
   import anthill.cli.Main
   import anthill.prelude.Console.{console, println, ConsoleOutput}
