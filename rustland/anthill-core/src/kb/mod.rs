@@ -33,7 +33,7 @@ pub(crate) mod test_support;
 
 /// WI-669: body-derived defining-equation types, produced by
 /// `KnowledgeBase::op_defining_equations` for the prover/SMT tier.
-pub use body_specialize::{DefiningEquation, DefiningGuard};
+pub use body_specialize::{DefiningEquation, DefiningGuard, EquationBlock};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

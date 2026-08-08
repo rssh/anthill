@@ -38981,7 +38981,7 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             if !reported.insert(f) {
                 continue;
             }
-            let Some(row) = kb.effect_row_blocking_equations(f) else {
+            let Some(block) = kb.effect_row_blocking_equations(f) else {
                 continue;
             };
             // Name the rule (label if any) — built here, only on an actual violation.
@@ -38994,18 +38994,47 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 span: kb.functor_span(f).map(|s| s.span),
                 context: TypeErrorContext::OperationEffects { op_name: f },
                 expected: format!(
-                    "{label} `[simp]`/`[unfold]` rewrite not to mention effectful \
-                     operation `{}`",
+                    "{label} `[simp]`/`[unfold]` rewrite not to mention {} operation `{}`",
+                    match block {
+                        super::body_specialize::EquationBlock::Effectful(_) => "effectful",
+                        super::body_specialize::EquationBlock::Polymorphic(_) =>
+                            "effect-polymorphic",
+                    },
                     kb.qualified_name_of(f),
                 ),
-                actual: format!(
-                    "operation `{}` carries effect row {row} — a directional rewrite \
-                     DUPLICATES, REORDERS, or DROPS the matched call, which no effect \
-                     tolerates (an External call rewritten twice runs twice); an \
-                     effectful operation is not equational. Proposal 054 §\"Consumers \
-                     that must decline it\".",
-                    kb.qualified_name_of(f),
-                ),
+                // WI-1049 — one arm per case, NOT a shared prefix plus a suffix.
+                // Composing them doubled the claim ("… is not a function — … an
+                // effectful operation is not equational") and moved the sentence
+                // boundary, which broke `wi757`'s `EFFECTFUL_REWRITE_MARKER` on
+                // capitalization alone. The Effectful text is therefore byte-identical
+                // to the pre-WI-1049 wording: that arm was never the defect.
+                //
+                // The polymorphic repair is measured, not guessed: a law over a
+                // carrier's OWN pure `insert`/`isEmpty` loads clean under `[simp]`,
+                // while the same law on the effect-polymorphic spec is refused.
+                actual: match block {
+                    super::body_specialize::EquationBlock::Effectful(ref row) => format!(
+                        "operation `{}` carries effect row {row} — a directional rewrite \
+                         DUPLICATES, REORDERS, or DROPS the matched call, which no effect \
+                         tolerates (an External call rewritten twice runs twice); an \
+                         effectful operation is not equational. Proposal 054 §\"Consumers \
+                         that must decline it\".",
+                        kb.qualified_name_of(f),
+                    ),
+                    super::body_specialize::EquationBlock::Polymorphic(ref row) => format!(
+                        "operation `{}` is effect-POLYMORPHIC — its row {row} is a row \
+                         VARIABLE, not an effect, so the operation is pure at a pure carrier \
+                         and effectful at an effectful one. A directional rewrite DUPLICATES, \
+                         REORDERS, or DROPS the matched call, which no effect tolerates, and \
+                         the row is not known until a carrier binds it — while a declaration \
+                         here binds EVERY carrier. Declare the equation where the row is \
+                         already concrete (on a carrier whose own operations are pure) rather \
+                         than on the sort that leaves `{}` open. Proposal 054 §\"Consumers \
+                         that must decline it\".",
+                        kb.qualified_name_of(f),
+                        row.trim_matches(['{', '}']),
+                    ),
+                },
             });
         }
     }

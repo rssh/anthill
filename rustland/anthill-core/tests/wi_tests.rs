@@ -1082,6 +1082,9 @@ mod wi1042_defaulted_gate_test;
 #[path = "include/wi1045_one_dictionary_representation_test.rs"]
 mod wi1045_one_dictionary_representation_test;
 
+#[path = "include/wi1049_effect_polymorphic_diagnostic_test.rs"]
+mod wi1049_effect_polymorphic_diagnostic_test;
+
 #[path = "include/wi1048_requires_shadow_refinement_test.rs"]
 mod wi1048_requires_shadow_refinement_test;
 

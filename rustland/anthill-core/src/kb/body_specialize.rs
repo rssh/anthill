@@ -1001,6 +1001,54 @@ fn goal_value_args(
     Some(pos_args.get(..n)?.to_vec())
 }
 
+/// WI-1049 — WHY an operation's effect row blocks equational treatment. Both
+/// arms refuse; they differ in what is true of the operation, and therefore in
+/// what the reader should do about it.
+///
+/// The distinction is not cosmetic. `Effectful` is a property of the OPERATION
+/// and no carrier can undo it. `Polymorphic` is a property of the DECLARATION
+/// SITE only — the row is a variable, so the same operation is pure at a pure
+/// carrier and effectful at an effectful one, and the refusal is for the
+/// instantiations that have not been written yet. The repair differs to match:
+/// an effectful op is simply not equational, while a polymorphic one has its
+/// equation declared somewhere the row is already concrete.
+#[derive(Debug, Clone)]
+pub enum EquationBlock {
+    /// At least one row member is a concrete effect label (`External`,
+    /// `Modify`, `Error`). The operation is not a function, full stop.
+    Effectful(String),
+    /// EVERY row member is a row/type variable (`effects E`). The operation is
+    /// effect-POLYMORPHIC, NOT effectful — refused conservatively, because an
+    /// equation declared here fires at every instantiation including effectful
+    /// ones (see [`KnowledgeBase::effect_row_blocking_equations`]).
+    Polymorphic(String),
+}
+
+impl EquationBlock {
+    /// The rendered row, for a caller that only wants to name it.
+    pub fn row(&self) -> &str {
+        match self {
+            EquationBlock::Effectful(r) | EquationBlock::Polymorphic(r) => r,
+        }
+    }
+}
+
+impl std::fmt::Display for EquationBlock {
+    /// The sentence that says what is wrong with THIS operation — the part the
+    /// two consumers share; each adds its own "so this construct is declined".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EquationBlock::Effectful(row) => write!(f,
+                "carries effect row {row}, and an effectful operation is not a function"),
+            EquationBlock::Polymorphic(row) => write!(f,
+                "is effect-POLYMORPHIC — its row {row} is a row VARIABLE, not an effect, so \
+                 the operation is pure at a pure carrier and effectful at an effectful one. \
+                 The row is not known until a carrier binds it, and a declaration here binds \
+                 EVERY carrier, so it is declined for the instantiations that are effectful"),
+        }
+    }
+}
+
 impl KnowledgeBase {
     /// Proposal 054 §"Consumers that must decline it — loudly" (WI-702): the
     /// rendered effect row of `op` when that row is NON-EMPTY, else `None`.
@@ -1029,7 +1077,16 @@ impl KnowledgeBase {
     /// instantiation. No stdlib rule mentions such an op (the whole-stdlib load in
     /// `github_todo_test` is the standing control); weakening to present-labels-only
     /// would make the gate unsound for the effectful instantiation.
-    pub fn effect_row_blocking_equations(&self, op: Symbol) -> Option<String> {
+    ///
+    /// WI-1049 — the VERDICT is unchanged, but the two cases are now told apart, so
+    /// a diagnostic can stop calling the second one "effectful". Driven: a law over
+    /// `PersistentCollection.insert` / `Iterable.isEmpty` is refused with the words
+    /// "an effectful operation is not equational" — and neither op is effectful.
+    /// Both carry a row VARIABLE (`effects Effect` / `effects E`), and `List`'s
+    /// provision is documented PURE (`list.anthill`: "grounded to `{}` at the
+    /// consumption boundary"). The message sent a reader looking for an effect that
+    /// is not there; [`EquationBlock`] lets the caller say what is actually wrong.
+    pub fn effect_row_blocking_equations(&self, op: Symbol) -> Option<EquationBlock> {
         let info = lookup_operation_info(self, op)?;
         if info.effects.is_empty() {
             return None;
@@ -1039,7 +1096,22 @@ impl KnowledgeBase {
             .iter()
             .map(|e| super::typing::type_display_name_value(self, e))
             .collect();
-        Some(format!("{{{}}}", labels.join(", ")))
+        let row = format!("{{{}}}", labels.join(", "));
+        // EVERY member a variable ⇒ the row is unknown until a carrier binds it.
+        // A member this cannot read (a `denoted` `Value::Node` row element) counts
+        // as concrete: that keeps an unclassifiable row on the pre-WI-1049 wording
+        // rather than promising a purity the reader cannot check.
+        let polymorphic = info.effects.iter().all(|e| match e {
+            crate::eval::value::Value::Term { id, .. } => {
+                super::typing::is_type_param_value(self, *id)
+            }
+            _ => false,
+        });
+        Some(if polymorphic {
+            EquationBlock::Polymorphic(row)
+        } else {
+            EquationBlock::Effectful(row)
+        })
     }
 
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
@@ -1328,12 +1400,11 @@ impl KnowledgeBase {
                         // `defining_equations`; the emitter then rejects the
                         // un-synthesized goal downstream). Emitting here — not inside
                         // the shared reducer — is what keeps it from double-firing.
-                        if let Some(row) = self.effect_row_blocking_equations(f) {
+                        if let Some(block) = self.effect_row_blocking_equations(f) {
                             eprintln!(
-                                "[anthill] operation `{}` carries effect row {row} — \
-                                 an effectful operation is not a function, so it has \
-                                 no defining equations (proposal 054 §\"Consumers \
-                                 that must decline it\")",
+                                "[anthill] operation `{}` {block}, so it has no \
+                                 defining equations (proposal 054 §\"Consumers that \
+                                 must decline it\")",
                                 self.qualified_name_of(f),
                             );
                             continue;

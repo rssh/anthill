@@ -219,12 +219,19 @@ fn effect_row_blocking_equations_names_the_row() {
     let bump = op_sym(&kb, "bump");
     let bump_pure = op_sym(&kb, "bump_pure");
     // The predicate the LOUD decline renders through names the offending row …
-    let row = kb
+    let block = kb
         .effect_row_blocking_equations(bump)
         .expect("an effectful op reports a blocking effect row");
     assert!(
-        row.contains("External"),
-        "the reported row must name External, got `{row}`"
+        block.row().contains("External"),
+        "the reported row must name External, got `{}`", block.row()
+    );
+    // WI-1049 — and it must be classified EFFECTFUL, not effect-polymorphic:
+    // `{External}` is a concrete label, so no carrier can make this op pure.
+    // The `Polymorphic` arm is driven in `wi1049_effect_polymorphic_*`.
+    assert!(
+        matches!(block, anthill_core::kb::EquationBlock::Effectful(_)),
+        "a concretely-`External` row is Effectful, not Polymorphic; got {block:?}"
     );
     // … and a pure op reports nothing (no false positive ⇒ no spurious diagnostic).
     assert!(
