@@ -12,7 +12,7 @@
 //! | defaulted (`= 1`) | instance fact | operation body | **7** | REFUSED |
 //! | defaulted (`= 1`) | instance fact | rule body | **7** | REFUSED |
 //! | body-less | instance fact | operation body | **7** | REFUSED |
-//! | body-less | instance fact | rule body | **7** | `[]` — silent (WI-1043; the REFUSED this row used to claim was wi1027 probe-fixture contamination) |
+//! | body-less | instance fact | rule body | **7** | REFUSED (WI-1043; this row read `[]` when it was measured, and the REFUSED it claimed BEFORE that was wi1027 probe-fixture contamination) |
 //! | body-less | witness sort | operation body | **7** | REFUSED |
 //!
 //! Row 5 is the loudest: the qualified spelling of that program answers 9 without the
@@ -155,11 +155,14 @@
 ///     row measured, which is what makes "the same tie, a different spelling" a fact
 ///     about one text rather than about two that happen to look alike.
 ///
-/// [`body_less`] stays LOCAL and is the one thing not shared: WI-1027's own doc argues
-/// that the ` = 1` token is the whole discriminator between the two guards, so a builder
-/// that could emit either half would hide at each call site which half is under test.
-/// (`wi1027::program` is that half but hardwires a QUALIFIED `probe`, which is the
-/// spelling this file exists to contrast with.)
+/// [`body_less`] is this file's own, and `pub(crate)` since **WI-1043**, whose subject is
+/// the same builder's rule-body tail. What WI-1027's doc argues must not be shared is a
+/// builder PARAMETERIZED over the ` = 1` token — that token is the whole discriminator
+/// between the two guards, and one builder emitting either half would hide at each call
+/// site which half is under test. This builder emits the body-less half and says so in
+/// its name, so sharing it is the cluster's ordinary sibling reuse. (`wi1027::program` is
+/// that half too but hardwires a QUALIFIED `probe`, which is the spelling this file exists
+/// to contrast with.)
 use anthill_core::eval::EvalError;
 
 use crate::wi1010_defaulted_op_instance_fact_test::probe;
@@ -169,9 +172,9 @@ use crate::wi1026_rule_body_spec_op_dispatch_test::{
 };
 use crate::wi1027_bodyless_supplier_tie_test::{assert_supplier_tie, RIVAL_WITNESS};
 
-/// A `describe` with NO default body — WI-1027's half. See the import block for why this
-/// one is not shared.
-fn body_less(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
+/// A `describe` with NO default body — WI-1027's half. See the import block for the
+/// sharing rule this one follows.
+pub(crate) fn body_less(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64

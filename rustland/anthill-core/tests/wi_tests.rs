@@ -1081,6 +1081,8 @@ mod wi1036_builtin_defaulted_dispatch_test;
 mod wi1042_defaulted_gate_test;
 #[path = "include/wi1045_one_dictionary_representation_test.rs"]
 mod wi1045_one_dictionary_representation_test;
+#[path = "include/wi1043_bodyless_rule_body_test.rs"]
+mod wi1043_bodyless_rule_body_test;
 
 #[path = "include/wi1049_effect_polymorphic_diagnostic_test.rs"]
 mod wi1049_effect_polymorphic_diagnostic_test;

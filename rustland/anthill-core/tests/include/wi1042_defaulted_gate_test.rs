@@ -3,7 +3,7 @@
 //! Three sites decide what to do with a call on a spec operation that HAS a default
 //! body: `check_apply_iter`'s WI-444 block (pin the carrier's supplied impl, or refuse a
 //! tie), `dot_member_dispatch_decision`'s defaulted leg (the same decision reached by the
-//! dot spelling, WI-1035), and `expr_needs_call_dispatch` (the WI-1026 rule-body walk
+//! dot spelling, WI-1035), and `call_dispatch_shape` (the WI-1026 rule-body walk
 //! trigger). They spelled the gate two different ways, and the equivalence was held by a
 //! doc comment 30 000 lines away.
 //!

@@ -395,10 +395,10 @@ Full workspace green (29 binaries, 4295 tests).
 | defaulted (`= 1`) | instance fact | operation body | **7** | REFUSED (§14) |
 | defaulted (`= 1`) | instance fact | rule body | **7** | REFUSED (§14/§20) |
 | body-less | instance fact | operation body | **7** | REFUSED (§15) |
-| body-less | instance fact | rule body | **7** | **`[]` — silent (WI-1043)** |
+| body-less | instance fact | rule body | **7** | REFUSED (§23) |
 | body-less | witness sort | operation body | **7** | REFUSED (§15) |
 
-**The rule-body body-less cell above is a 2026-08-07 correction** — this table used to claim REFUSED there, and the claim was contamination of exactly the class §20 diagnosed: the wi1027 fixture's hardwired `probe` *operation* is what the refusal fired on (it locates at the probe's line), not the rule body. Driven without the probe, the two-supplier program loads clean and answers `[]`: `expr_needs_call_dispatch` requires `op_has_runnable_body`, so a body-less named call in a rule body is never typed and no other refusal path exists. The hole is owned by **WI-1043**.
+**The rule-body body-less cell above was corrected twice on 2026-08-07/08, and the correction is the reason §23 exists.** This table first claimed REFUSED there by contamination of exactly the class §20 diagnosed: the wi1027 fixture's hardwired `probe` *operation* is what the refusal fired on (it locates at the probe's line), not the rule body. Driven without the probe, the two-supplier program loaded clean and answered `[]` — the walk trigger required `op_has_runnable_body`, so a body-less named call in a rule body was never typed and no other refusal path existed. **§23 (WI-1043) closed it**, and the cell now reads REFUSED for the reason it always claimed to.
 
 The last row is the loudest: without §15's guard the qualified spelling of that program answers **9**, with it the program is refused, and the dot answered **7** throughout. Two texts, three outcomes, decided by which spelling the author reached for.
 
@@ -459,3 +459,30 @@ The middle row is why "both sides are builtin, so the pin is unreadable" was the
 **Back-out matrix, driven per test.** Restoring `!is_builtin` fails exactly two of the five: the tie refusal and the operand fold. Three pass either way by design and say so at their sites — the rewrite observer (an absence the clause never affected), the stdlib-family tag bound, and the goal-position silence pinned for WI-879.
 
 Full workspace green (29 binaries, 4326 tests).
+
+## 23. WI-1043 — the body-less half of a rule body, and the backlog behind it (DELIVERED 2026-08-08)
+
+§21's corrected cell, closed. §20 admitted only DEFAULTED spec ops to the rule-body dispatch walk, on the reasoning that a body-less op "has no default to shadow, so `reduce_op_value` leaves it un-ground and the goal residualizes rather than answering wrongly". **Residualizing is the wrong answer**, and every supply shape was measured before anything changed — one rule body (`rule answer(?r) :- Desc.describe(leaf(), ?r)`) against its operation-body twin:
+
+| suppliers | rule body | operation body | after |
+|---|---|---|---|
+| own member + provision | `[]` | `7` | `7` |
+| witness sort alone | `[]` qualified / **REFUSED** dot | `9` | `9`, both spellings |
+| instance fact alone | `[]` | `9` | `[]` — **WI-1057** |
+| own member + instance fact | `[]` | REFUSED | **REFUSED** |
+| own member + witness | `[]` | REFUSED | **REFUSED** |
+| own member, NO provision | `[]` | loads, fails at the CALL | **REFUSED at load** |
+
+**Three pieces, and the third was found by driving the second.** The walk gate (`spec_op_call_parent`, the union of the two halves, asked by `call_dispatch_shape`) admits the body-less half so the call reaches the WI-210 block and §15's supplier-tie guard — that is the whole LOAD face. The goal shape (`dispatched_relation_arity`) makes the resolver read the typer's PIN: `functional_relation_arity` asks "has a runnable body?" of the SPELLED functor, and a body-less spec op has none, so the goal `f(a…, ?r)` never became the call `f(a…)` that `reduce_op_value` folds — the pin was written, carried, and never consulted. And the witness escape (`carrier_provided_by_witness`) keeps the newly-typed arguments from feeding the rule-body requirement check a question it answers wrongly.
+
+**That third piece fixes a PRE-EXISTING refusal of a legal program, and it is a WI-450 consequence.** `sort_provides` walks the CARRIER's own out-edges, and a witness provision (`sort Rival provides Desc[T = Leaf]`) is filed under the witness — so the rule-body requirement check read a witness-supplied carrier as having no instance and demanded a `requires` clause for a requirement already met. Measured on main, through the DOT spelling (typed since WI-282, hence already reaching the check): REFUSED, while the operation-body twin answers 9. Widening would have extended that refusal to the qualified spelling, because what feeds the check is the argument's `inferred_type` and only a typed atom has one.
+
+**What is NOT reported, which is the narrowing that let this ship at all.** An `=` goal loads as a call on the body-less `PartialEq.eq`, so this shape is what rule bodies are largely made of: the gate newly decides **133** call sites on a whole-corpus load (stdlib + host bindings + `examples/` + `anthill-todo` + `anthill-testcases`; 28 on stdlib + bindings alone). Rule bodies have never been type-checked, and typing those atoms surfaces **19 leaf errors** — 15 `DotDispatchNoMatch`, 2 `TypeMismatch`, 2 `UnknownApplyFunctor`, **zero dispatch verdicts** — which reported would render as 7 load errors in 4 files. Every one of those programs loads and runs today. The frame therefore reports only the two TIES from this shape, and only for the call it is deciding, holding the pre-WI-1043 status quo for the rest; the general check is **WI-1056**. The list is POSITIVE (the two tie variants) rather than a deny-list of the three seen, so a new error variant defaults to the status quo instead of silently refusing the corpus.
+
+**And "only for the call it is deciding" is a REGRESSION FIX, found by this ticket's own /code-review.** The frame types the whole atom, so a tie on a call NESTED inside it — `eq(?r, leaf().describe())`, the common spelling once `=` is a `PartialEq.eq` call — was re-derived here after the recursion had already decided that child and reported it: one refusal printed twice, and for the dot spelling a regression against pre-WI-1043 behaviour. The identity is the pair `(spec op, span)`, both of which `check_apply_iter` takes from the deciding node.
+
+**The clause the first cut got wrong, found by the suite and not by reasoning.** Admitting the shape made `dispatch_calls_in_occ` hand the whole atom to `type_check_node`, which swallowed two delivered rule-body diagnostics — `eq(?v, ?p.bogus)`'s member-not-found on a KNOWN receiver (WI-282) and `eq(?r, ?b.guarded(0))`'s definite value-precondition violation (WI-602) — because both are raised INSIDE an `eq` atom and this shape's error policy is tie-only. The walk now recurses INTO a body-less atom as well as deciding it: the shape is admitted for a dispatch verdict, not to take the subtree over.
+
+**One row deliberately left, with its trap measured: WI-1057.** An implementation supplied only by an instance fact has no static pin (the dispatch resolution does not read those bindings, WI-431 inc 2), so it is discoverable by VALUE alone — an operation body reaches it through eval, a rule body has two early returns in the way, both on the spelled functor's missing body. The naive fix makes it worse and that is why it is a ticket: admitting a body-less op to the functional-relation view and bridging to eval bound `?r` to the UN-REDUCED call and reported it as a DEFINITE answer — a wrong answer where there was a missing one.
+
+Back-out matrix driven per piece, four reverts (at `wi1043_bodyless_rule_body_test`). Full workspace green (29 binaries, 4384 tests).

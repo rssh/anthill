@@ -256,7 +256,7 @@ fn a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_bo
 /// body LOADS CLEAN. That is the whole of what the clause bought, it was in neither
 /// reason WI-1026 gave for it, and it is why the clause goes.
 ///
-/// CONTROL: restore `!kb.is_builtin(f)` at `expr_needs_call_dispatch` and this test's
+/// CONTROL: restore `!kb.is_builtin(f)` at `call_dispatch_shape` and this test's
 /// second assertion fails (driven, not predicted — the program loads clean and the query
 /// answers nothing). The operation-body assertion passes either way BY DESIGN: it is the
 /// both-ways half that says the two positions now agree, and it fails only if WI-1012's
