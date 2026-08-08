@@ -233,7 +233,7 @@ abstract interpreter maintain and propagate a **Γ** — an environment of facts
 about the intermediate values it computes — or does Γ stay a purely syntactic
 flow environment fed only by branch conditions? Effect discharge is one consumer;
 the value-precondition check (WI-539/WI-602), in-body proofs (WI-538), WI-537's
-two deferred Γ producers, and the `has_effect`/`hasno_effect` reification below
+two deferred Γ producers, and the `effect_present`/`effect_absent` reification below
 are others. It is a shared substrate, so its shape wants deciding against several
 consumers at once rather than being retrofitted for this one — which is why it is
 pre-opened rather than open.
@@ -246,7 +246,7 @@ stands — but it marks where the boundary actually is.
 
 ### a vocabulary question this raises
 
-Should the rule dictionary gain `has_effect` / `hasno_effect` as **predicates**?
+Should the rule dictionary gain `effect_present` / `effect_absent` as **predicates**?
 The subject is the **effect row**, and the question is **binary**: the row is
 *present* (non-empty) or *absent* (empty). Not "does it carry effect `E`" —
 per-label questions are a different, later thing.
@@ -256,7 +256,7 @@ Guarded effects already condition an *effect* on a *predicate*
 the row — and it has no spelling today.
 
 **There are TWO predicates here, not one, and they are not interchangeable.** A
-first draft of this section wrote `hasno_effect(head(insert(?x,?e)))` with no
+first draft of this section wrote `effect_absent(head(insert(?x,?e)))` with no
 effect argument, which is wrong for the case that motivated it: `head`'s row is
 `{ Error[EmptyStream] :- isEmpty(xs), s.E }`, so even after the guard is refuted
 `s.E` remains. The whole-row claim is false there, while the thing we actually
@@ -264,7 +264,7 @@ want — that `Error[EmptyStream]` is gone — is true.
 
 ```
 -- (a) PER-LABEL. Is this effect in the term's row? What guard discharge needs.
-hasno_effect(head(insert(?x, ?e)), Error[EmptyStream])
+effect_absent(head(insert(?x, ?e)), Error[EmptyStream])
 
 -- (b) WHOLE-ROW. Is the row empty at all? What the [simp] gate asks.
 row_empty(insert(?c, ?x))
@@ -284,7 +284,7 @@ Which one each consumer wants, so the choice is not made by accident:
 (b) is expressible as (a) universally quantified, or kept primitive; worth
 deciding, since (b) is the one that already exists internally.
 
-**And the argument is a TERM, analysed, not a value computed.** `hasno_effect`
+**And the argument is a TERM, analysed, not a value computed.** `effect_absent`
 asks about a term's *typing*, so it is a reflective predicate — nearer
 `anthill.reflect` than an ordinary goal. That is not alien here (occurrence-valued
 operations and the `Term`/`KB` reflect surface exist), but it decides where the
@@ -292,9 +292,8 @@ predicate lives and what it may be applied to.
 
 ### naming
 
-`has_effect` / `hasno_effect` are placeholders and should not survive.
-**`effect_present(X, E)` / `effect_absent(X, E)`** is the better pair, for a
-reason beyond taste: *present* is already this system's own word for exactly this
+**`effect_present(X, E)` / `effect_absent(X, E)`**, chosen for a reason beyond
+taste: *present* is already this system's own word for exactly this
 property — a guarded atom is "**present** iff `guard` is not refuted"
 (`node_occurrence.rs`, proposal 048). Reusing it keeps one vocabulary instead of
 minting a second for the same idea.
@@ -303,7 +302,7 @@ One caveat any name must survive: the pair is **not** a simple
 positive/negative. Under the never-NAF discipline below, `effect_absent` requires
 a *positive refutation* of the guard, so it means "provably cannot occur", not
 "not observed" — and there is a third state, undetermined, where neither holds. A
-name suggesting plain negation (`not_has_effect`) would mislead about that. If
+name suggesting plain negation (`not_effect_present`) would mislead about that. If
 the modality should be visible in the name itself, `effect_possible` /
 `effect_impossible` says it outright at the cost of length.
 
@@ -320,11 +319,11 @@ operation div(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq
 reads directly as
 
 ```
-has_effect(div(?a, ?b), Error[DivisionByZero])   :- eq(?b, 0)      -- the declaration, verbatim
-hasno_effect(div(?a, ?b), Error[DivisionByZero]) :- neq(?b, 0)     -- its REFUTATION
+effect_present(div(?a, ?b), Error[DivisionByZero]) :- eq(?b, 0)      -- the declaration, verbatim
+effect_absent (div(?a, ?b), Error[DivisionByZero]) :- neq(?b, 0)     -- its REFUTATION
 ```
 
-**Mind the polarity: `hasno_effect` carries the refutation of the guard, not the
+**Mind the polarity: `effect_absent` carries the refutation of the guard, not the
 guard.** `Err :- eq(b,0)` says the error is present *when* `b = 0`, so absence is
 conditioned on `neq(b, 0)`. Getting this backwards would license dropping the
 error exactly where it fires.
@@ -353,8 +352,8 @@ Two things make this cheaper and more coherent than it first looks:
   **undetermined** — and the undetermined case is precisely the polymorphic row
   (`E` is neither provably empty nor provably non-empty until a carrier binds
   it). Under the established polarity — "act on a DECIDED obligation, never on an
-  UNDETERMINED one" (WI-602, WI-067/WI-292) — *neither* `has_effect` nor
-  `hasno_effect` should succeed there. That is the same refusal Q3 decided,
+  UNDETERMINED one" (WI-602, WI-067/WI-292) — *neither* `effect_present` nor
+  `effect_absent` should succeed there. That is the same refusal Q3 decided,
   arrived at from the predicate's own discipline.
 
 Open: whether it is a genuine predicate over terms (needing the typer's row as a
