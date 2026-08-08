@@ -71,6 +71,13 @@ namespace anthill.realization
   entity LanguageMapping(
     language      : String,                         -- "rust", "scala", "python"
     profile       : Option[T = String],             -- "std", "no_std", etc.
+    -- Host-language version the emitted code targets ("3.8.4" for Scala). A codegen
+    -- backend that writes a manifest (an sbt `scalaVersion`, a Cargo `edition`) needs
+    -- a version to write, and hardcoding one in the emitter puts it out of reach of
+    -- the profile that governs every other emission decision. `none` where the
+    -- backend emits no manifest, which is why this is optional rather than required —
+    -- a mapping that names no version is a mapping that never has to write one.
+    language_version : Option[T = String],
     effect_map    : List[T = EffectMapping],
     receiver_map  : List[T = ReceiverRule],          -- effect-independent receiver rules
     type_map      : List[T = TypeMapping],

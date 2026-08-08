@@ -25,6 +25,14 @@ namespace anthill.realization.scala_std
     language: "scala",
     profile: some("std"),
 
+    -- Scala version the emitted project targets — the `scalaVersion` scala-gen writes
+    -- into the generated `build.sbt`. Lives here rather than in the emitter because
+    -- this file is what governs Scala emission; changing the target is a profile
+    -- decision, not a code change. Kept in step with scaland's own `build.sbt`
+    -- (`scala3Version`) today, but they are separate questions: this is what generated
+    -- code is COMPILED AS, that is what scaland itself is BUILT WITH.
+    language_version: some("3.8.4"),
+
     -- Effect → host syntax (semantic: what the effect means)
     effect_map: [
       -- Modify X: take X by value, return updated X. Scala-idiomatic

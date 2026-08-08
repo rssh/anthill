@@ -1,11 +1,45 @@
 package anthill.codegen.scala
 
-import anthill.parse.Parser
+import anthill.kb.KnowledgeBase
+import anthill.load.{EmbeddedStdlib, Loader, Prelude}
+import anthill.parse.{ParsedFile, Parser}
+
+import java.nio.file.Paths
+
+/** The advertised stdlib, parsed ONCE per JVM.
+  *
+  * An OBJECT and not a suite member: sbt runs every suite in one JVM (no `fork`), so a
+  * per-instance `lazy val` caches within its own class only, and each suite that wants
+  * the stdlib pays the ~0.5s parse again. That is most of a suite's wall clock here —
+  * measured at roughly a fifth of scaland's total before this was hoisted. Loading is
+  * cheap by comparison (~0.07s) and stays per-KB, so tests keep their isolation.
+  */
+object StdlibFixture:
+
+  val dir: String = sys.env.getOrElse("ANTHILL_STDLIB",
+    System.getProperty("user.dir") + "/../stdlib")
+
+  lazy val parsed: IndexedSeq[ParsedFile] =
+    val (files, parseErrs) = EmbeddedStdlib.parseFromDir(Paths.get(dir))
+    assert(parseErrs.isEmpty, s"stdlib parse errors: $parseErrs")
+    files
+
+  /** The stdlib plus any extra parsed files, loaded into one KB. The loader's verdict is
+    * READ and not discarded — a KB that never finished loading would let every assertion
+    * over it pass against a half-built index. */
+  def kbWith(extra: ParsedFile*): KnowledgeBase =
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val loadErrs = Loader.loadAll(kb, parsed ++ extra)
+    assert(loadErrs.isEmpty, s"load errors: $loadErrs")
+    kb
 
 class BootstrapTest extends munit.FunSuite:
 
-  private val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
-    System.getProperty("user.dir") + "/../stdlib")
+  private val stdlibDir = StdlibFixture.dir
+
+  /** The plain stdlib KB, loaded once for the suite. */
+  private lazy val stdlibKb: KnowledgeBase = StdlibFixture.kbWith()
 
   private def parseStdlib(rel: String) =
     val src = scala.io.Source.fromFile(s"$stdlibDir/$rel")
@@ -308,14 +342,126 @@ class BootstrapTest extends munit.FunSuite:
     // invokes once after merging all per-file outputs.
     val a = Bootstrap.generate(parseStdlib("anthill/prelude/option.anthill"))
     val b = Bootstrap.generate(parseStdlib("anthill/prelude/eq.anthill"))
-    val merged = a ++ b :+ Bootstrap.buildSbt
+    // A version no profile would ever declare, so the assertion below can only pass by
+    // `buildSbt` USING its parameter. Reintroducing a hardcoded default — the thing this
+    // seam exists to prevent — fails here rather than emitting a plausible wrong number.
+    val merged = a ++ b :+ Bootstrap.buildSbt("9.9.9-test")
     val buildSbts = merged.filter(_.relPath == "build.sbt")
     assertEquals(buildSbts.size, 1, s"expected exactly one build.sbt in merged tree; got ${buildSbts.size}")
-    assert(buildSbts.head.contents.contains("scalaVersion"),
-      s"build.sbt missing scalaVersion:\n${buildSbts.head.contents}")
+    assert(buildSbts.head.contents.contains("scalaVersion := \"9.9.9-test\""),
+      s"build.sbt must emit the version it was given:\n${buildSbts.head.contents}")
     // generate() itself never emits build.sbt
     assert(!a.exists(_.relPath == "build.sbt"),
       "generate() should not emit build.sbt; that's a separate API")
     assert(!b.exists(_.relPath == "build.sbt"),
       "generate() should not emit build.sbt; that's a separate API")
+  }
+
+  test("the emitted scalaVersion comes from scala_std's LanguageMapping, not the emitter") {
+    // DRIVES the chain end to end: load the stdlib KB, resolve the `scala_std` profile,
+    // read `language_version` off it, and emit a build.sbt from what came back. Every
+    // link is exercised — a test that only asserted `ScalaProfile` returns a string
+    // would keep passing if `buildSbt` ignored it.
+    //
+    // FAILS WHEN BACKED OUT, specifically: delete `language_version` from
+    // `scala_std.anthill` and this reports `FieldOmitted`; drop it from the
+    // `LanguageMapping` entity in `realization.anthill` and the stdlib stops loading, so
+    // `stdlibKb` fails first; give `buildSbt` a hardcoded version again and the emitted
+    // text stops tracking the fact. It cannot pass with the seam removed.
+    // No literal version is pinned here on purpose. `3.8.4` already lives in
+    // `scala_std.anthill` and `scaland/build.sbt`, and those two are documented as free
+    // to diverge; a third copy in a test would make every profile retarget an edit here
+    // for no added coverage. What is asserted is the PROPERTY — the emitted manifest is
+    // whatever the profile said — which is the thing that can actually regress.
+    val version = ScalaProfile.languageVersion(stdlibKb) match
+      case LanguageVersion.Declared(v) => v
+      case other => fail(
+        s"scala_std must declare a language_version; got $other")
+
+    assertEquals(Bootstrap.buildSbt(version).contents, s"scalaVersion := \"$version\"\n",
+      "the emitted manifest must be exactly the profile's version")
+  }
+
+  test("an omitted language_version and an explicit `none` are different answers") {
+    // The two absence cases side by side in ONE test, because they are one distinction
+    // and asserting them apart made each half depend on the other for its meaning.
+    // Collapsing `DeclaredAbsent` and `FieldOmitted` in `ScalaProfile` cannot keep both
+    // assertions below green — that is the whole control, and it is now local.
+    //
+    // Scaland can tell these apart because an omitted named argument is genuinely absent
+    // from the loaded fact: `Loader.reallocTerm` copies `namedArgs` verbatim and pads
+    // nothing. (Rustland's loader pads with an unbound var — a different mechanism, and
+    // not the one this runs against.)
+    val kb = StdlibFixture.kbWith(parseSource(
+      """
+      namespace test.langver
+        import anthill.realization.{LanguageMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "manifestless",
+          profile: some("std"),
+          language_version: none,
+          effect_map: [],
+          receiver_map: [],
+          type_map: [],
+          trait_return: ImplTrait
+        )
+      end
+      """, "langver.anthill"))
+    // `rust_std` ships a mapping and never writes the field — it emits no sbt-like
+    // manifest. MEASURED: deleting `language_version` from scala_std.anthill made the
+    // chain test above report `FieldOmitted` by this same absent-field route.
+    assertEquals(
+      ScalaProfile.languageVersion(kb, language = "rust", profile = "std"),
+      LanguageVersion.FieldOmitted,
+      "rust_std omits language_version, so it must report the field absent, not a value")
+    assertEquals(
+      ScalaProfile.languageVersion(kb, language = "manifestless", profile = "std"),
+      LanguageVersion.DeclaredAbsent,
+      "an explicitly-declared `none` is a decision, not a missing field")
+  }
+
+  test("a malformed language_version is refused loudly, not read as absent") {
+    // Both throw paths. They exist so that `DeclaredAbsent` means "the fact said none"
+    // and nothing else — without them a junk value falls through to the same answer as a
+    // deliberate `none`, which is how the arms this replaced managed to be dead code.
+    def mapping(lang: String, version: String) = parseSource(
+      s"""
+      namespace test.malformed_$lang
+        import anthill.realization.{LanguageMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "$lang",
+          profile: some("std"),
+          language_version: $version,
+          effect_map: [],
+          receiver_map: [],
+          type_map: [],
+          trait_return: ImplTrait
+        )
+      end
+      """, s"malformed_$lang.anthill")
+
+    val kb = StdlibFixture.kbWith(mapping("notanoption", "42"), mapping("notastring", "some(42)"))
+    val bare = intercept[IllegalStateException](
+      ScalaProfile.languageVersion(kb, language = "notanoption", profile = "std"))
+    assert(bare.getMessage.contains("not an Option term"),
+      s"refusal must say what was wrong: ${bare.getMessage}")
+    val wrapped = intercept[IllegalStateException](
+      ScalaProfile.languageVersion(kb, language = "notastring", profile = "std"))
+    assert(wrapped.getMessage.contains("not a string literal"),
+      s"refusal must say what was wrong: ${wrapped.getMessage}")
+  }
+
+  test("ScalaProfile reports no mapping for an unknown language or profile") {
+    assertEquals(
+      ScalaProfile.languageVersion(stdlibKb, language = "cobol", profile = "std"),
+      LanguageVersion.NoSuchMapping,
+      "a language with no LanguageMapping fact must not report a version")
+    assertEquals(
+      ScalaProfile.languageVersion(stdlibKb, language = "scala", profile = "no-such"),
+      LanguageVersion.NoSuchMapping,
+      "a real language at an unknown profile is still no mapping")
   }

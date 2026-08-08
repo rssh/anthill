@@ -27,7 +27,7 @@ object Names:
     val converted =
       if s.contains('_') then toCamel(s, firstLower = false)
       else if s.isEmpty || s.charAt(0).isUpper then s
-      else s.charAt(0).toUpper + s.substring(1)
+      else s"${s.charAt(0).toUpper}${s.substring(1)}"
     if isReserved(converted) then s"`$converted`" else converted
 
   /** Split on `_`, lowercase the first segment, PascalCase each
@@ -44,7 +44,7 @@ object Names:
         sb.toString
 
   private def capitalize(s: String): String =
-    if s.isEmpty then s else s.charAt(0).toUpper + s.substring(1).toLowerCase
+    if s.isEmpty then s else s"${s.charAt(0).toUpper}${s.substring(1).toLowerCase}"
 
   /** Scala 3 reserved words that would collide with anthill identifiers. */
   private val reserved = Set(

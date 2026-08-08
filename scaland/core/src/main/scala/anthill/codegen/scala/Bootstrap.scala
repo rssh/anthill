@@ -69,9 +69,20 @@ object Bootstrap:
   /** Project-level `build.sbt` for an output tree. Bootstrap is per-file, so
     * callers fold many `generate()` results into one tree and call this once
     * to write the project-global file — avoids the per-file last-write-wins
-    * footgun. */
-  def buildSbt: GeneratedFile =
-    GeneratedFile("build.sbt", "scalaVersion := \"3.6.3\"\n")
+    * footgun.
+    *
+    * `scalaVersion` is a PARAMETER and has no default on purpose. Its source of truth is
+    * the `scala_std` `LanguageMapping`'s `language_version`, read by
+    * [[ScalaProfile.languageVersion]] — and a default here would be a second answer to a
+    * question the profile already answers, silently winning whenever a caller forgot to
+    * ask. This is not the same question as `build.sbt`'s `scala3Version`, which is what
+    * scaland itself is COMPILED WITH; they agree today but are free not to.
+    *
+    * `Bootstrap` still reads no KB (proposal 034) — the caller resolves the profile and
+    * passes the value in, which is what keeps this a pure function of its inputs.
+    */
+  def buildSbt(scalaVersion: String): GeneratedFile =
+    GeneratedFile("build.sbt", s"scalaVersion := \"$scalaVersion\"\n")
 
   // ── Namespace ───────────────────────────────────────────────────
 

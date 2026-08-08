@@ -1,4 +1,4 @@
-val scala3Version = "3.6.3"
+val scala3Version = "3.8.4"
 
 lazy val root = project
   .in(file("."))
@@ -20,7 +20,13 @@ lazy val core = project
     // replaced. A warning would not have carried; the whole point is that ADDING an
     // `Item` kind must stop the build until someone decides what the loader does with it.
     // Costs nothing today: core compiles clean with it (the only standing warnings are
-    // four non-local returns, a different id).
+    // four non-local returns, a different id — re-measured under 3.8.4).
+    //
+    // VERIFIED, and the only way to verify it: nothing in the tree exercises this flag, so
+    // a bump that silently retired the E029 id would drop the guard with no test failing.
+    // Control run at the 3.6.3 -> 3.8.4 bump — commenting out `atItem`'s `ConstraintItem`
+    // arm produced `[E029] Pattern Match Exhaustivity Error`, naming that arm. Re-run it
+    // by hand at the next bump; there is nothing else that can.
     scalacOptions += "-Wconf:id=E029:e",
     libraryDependencies ++= Seq(
       "com.lihaoyi" %% "fastparse" % "3.1.1",

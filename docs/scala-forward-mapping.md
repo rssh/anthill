@@ -48,6 +48,15 @@ trait / case-class definitions land in `src/main/scala/`; rule-derived
 ScalaCheck properties land in `src/test/scala/`. A consumer who wants
 only the definitions can drop the `src/test/` tree.
 
+The `scalaVersion` written into `build.sbt` comes from the selected profile's
+`LanguageMapping.language_version` (`some("3.8.4")` in `scala_std`) — the same
+KB-read channel as every other emission decision, not a constant in the emitter.
+Retargeting generated code is therefore a profile edit. Note this is a *different*
+question from the version the anthill toolchain itself is built with; the two agree
+today but nothing requires them to. A mapping whose backend writes no versioned
+manifest declares `language_version: none`, which is deliberately distinct from
+omitting the field.
+
 Anthill `namespace` segments map directly to the package path;
 hyphens in identifiers become underscores.
 
