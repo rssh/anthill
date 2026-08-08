@@ -139,7 +139,7 @@ object TypeGen:
     * in the `TypeMapping` schema at all, so it cannot be cross-checked even in
     * principle. Bootstrap reads no KB by design (proposal 034), so the fix is the
     * shape `buildSbt` already has — the caller resolves the profile and passes the
-    * table in — and it needs the arity schema question settled first: WI-1056. Do
+    * table in — and it needs the arity schema question settled first: WI-1060. Do
     * not add entries here to "catch up" with the fact, because whether an anthill
     * sort should map to a host type AT ALL is WI-1021's open question and
     * `Duration` is one of the sorts it covers (primitives.anthill declares it as a

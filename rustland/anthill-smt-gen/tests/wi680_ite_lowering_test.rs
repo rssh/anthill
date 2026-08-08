@@ -28,7 +28,7 @@ const SRC: &str = r#"
 namespace test.wi680
   import anthill.prelude.{Int64, Bool}
   import anthill.prelude.Ord.{gte, lt, lte}
-  import anthill.prelude.Bool.{and, or, not}
+  import anthill.prelude.Bool.{and, or, not, ite}
 
   -- Hand-written stand-in for the WI-669 body-derived defining rule:
   -- clamp(x) = if x >= 0 then x else 0, spelled with the `ite` functor
@@ -92,37 +92,34 @@ fn emit(rule: &str) -> String {
         .unwrap_or_else(|e| panic!("emit {rule}: {}", e.message))
 }
 
-/// WI-894 — THE SAME SOURCE WITH `ite` IMPORTED. `SRC` writes a bare, un-imported `ite`,
-/// which still interns bare, so `is_ite_op`'s short-name arm carries it; that is the ONLY
-/// spelling this file used to exercise. Once a rule-introduced functor is scoped to its
-/// declaring sort (WI-894), `import anthill.prelude.Bool.{ite}` resolves and the very
-/// same rules reach smt-gen as `anthill.prelude.Bool.ite` instead — MEASURED to die
-/// `unhandled arithmetic op 'anthill.prelude.Bool.ite'` before the qualified arm existed.
-/// The stdlib's own `ordered.anthill` / `int64.anthill` take this path now, so the
-/// un-imported spelling alone is no longer representative.
+/// WI-894 — an `ite` reached through `import anthill.prelude.Bool.{ite}` lowers by its
+/// QUALIFIED name. Before the qualified arm existed this MEASURED as
+/// `unhandled arithmetic op 'anthill.prelude.Bool.ite'`; the stdlib's own
+/// `ordered.anthill` / `int64.anthill` take this path.
 ///
-/// DERIVED from `SRC` by adding one import line rather than copied, so the two cannot
-/// drift. Same reason `wi893_comment_eats_simp_test`'s `without_comments` derives its
-/// control half. (Only `clamp_negative` is emitted below — the other rules ride along
-/// to keep the sources identical, not because they are exercised.)
-fn imported_src() -> String {
-    let marker = "  import anthill.prelude.Bool.{and, or, not}\n";
-    assert!(SRC.contains(marker), "SRC's Bool import line moved; update this derivation");
-    SRC.replace(marker, &format!("{marker}  import anthill.prelude.Bool.{{ite}}\n"))
-}
-
-/// LOADED STRICTLY, and that is the whole point of the test rather than a detail.
-/// `is_ite_op` still matches the bare short name — so if the import ever stopped
-/// resolving, `ite` would intern bare, the SMT would still contain `(ite ...)`, and this
-/// test would pass while exercising the pre-WI-894 path it exists to distinguish from.
-/// WI-887 recorded this harness hiding a live load error in this very file.
+/// WI-1056 — `SRC` NOW CARRIES THE IMPORT, and this test no longer derives a second
+/// source from it. It used to contrast the imported spelling against `SRC`'s BARE,
+/// UN-IMPORTED `ite`, which interned bare and rode `is_ite_op`'s short-name arm. That
+/// program is not legal and now says so: `ite` is a member of sort `Bool`, and a rule
+/// body naming it bare is refused with WI-565's repair ("call it qualified as
+/// `Bool.ite(…)`"). Nothing reported it while rule bodies went unchecked — the `ite`
+/// sits inside `?r = ite(…)`, an `=` goal, which is exactly the shape WI-1043 made a
+/// call site and WI-1056 made a checked one. So the bare spelling is gone from this
+/// file because it cannot be written, not because it stopped mattering; this file's
+/// doc had already recorded that it "is no longer representative".
+///
+/// LOADED STRICTLY, which is what keeps the claim falsifiable: `is_ite_op` still matches
+/// a bare short name, so a silently-unresolving import would leave the SMT containing
+/// `(ite ...)` and this test green on the wrong path. The qualified-symbol assertion
+/// below plus a loader that swallows no `Err` is what rules that out. WI-887 recorded
+/// this harness hiding a live load error in this very file.
 ///
 /// WI-966: `load_kb_with` is now that strict loader for the whole crate (the discarding
 /// twin this doc used to warn about is gone), so what makes the claim falsifiable is the
 /// qualified-symbol assertion below plus the fact that no loader here swallows an `Err`.
 #[test]
 fn an_imported_ite_lowers_by_its_qualified_name() {
-    let kb = load_kb_with(&imported_src());
+    let kb = load_kb_with(SRC);
     assert!(
         kb.has_qualified_name("anthill.prelude.Bool.ite"),
         "WI-894 must give the rule-introduced `ite` a qualified identity, or the import \

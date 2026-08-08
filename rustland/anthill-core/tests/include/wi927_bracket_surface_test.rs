@@ -19,6 +19,19 @@
 //! shape (`sort Holder { sort T = ?; entity mk(value: T) }`), which was unaffected
 //! throughout — so a green run says the two surfaces agree, not that the check
 //! stopped running.
+//!
+//! WI-1056 — WHY THE BRACKET SITS INSIDE `takes_type927(…)` RATHER THAN DIRECTLY IN
+//! THE `eq`. A parameterized sort application is a legal VALUE only in a slot that
+//! expects the reflect `Type` (WI-707/WI-206: a sort name has no value reading
+//! outside one, so a bare `Int64` in an ordinary value position is refused). These
+//! fixtures used to write `eq(?x, Holder[T = Int64])`, where `eq`'s parameter is the
+//! `PartialEq` carrier — not a `Type` slot — so the type arguments were typed as
+//! VALUES and the load was ill-typed. MEASURED: the identical program written in an
+//! OPERATION body is refused too, and always was; the rule-body spelling only looked
+//! clean because rule bodies were never type-checked, which WI-1043/WI-1056 changed.
+//! The `Type`-typed parameter is what the surface under test actually needs, and this
+//! file's subject — that a bracket binds a TYPE PARAMETER and is never desugared into
+//! a FIELD — is unchanged by it.
 
 use crate::common::try_load_kb_with;
 
@@ -31,11 +44,12 @@ fn eponymous(body: &str) -> String {
     format!(
         r#"
 namespace test.wi927
-  import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.{{Int64, Bool, Type}}
   sort Box
     sort T = ?
     entity Box(value: T)
   end
+  operation takes_type927(t: Type) -> Bool
 {body}
 end
 "#
@@ -46,11 +60,12 @@ fn control(body: &str) -> String {
     format!(
         r#"
 namespace test.wi927ctl
-  import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.{{Int64, Bool, Type}}
   sort Holder
     sort T = ?
     entity mk(value: T)
   end
+  operation takes_type927(t: Type) -> Bool
 {body}
 end
 "#
@@ -59,10 +74,10 @@ end
 
 #[test]
 fn a_named_bracket_on_an_eponymous_sort_is_a_type_application() {
-    let ctl = errors(&control("  rule ok(?x) :- eq(?x, Holder[T = Int64])"));
+    let ctl = errors(&control("  rule ok(?x) :- eq(?x, takes_type927(Holder[T = Int64]))"));
     assert!(ctl.is_empty(), "the non-eponymous control must load clean; got {ctl:?}");
 
-    let errs = errors(&eponymous("  rule ok(?x) :- eq(?x, Box[T = Int64])"));
+    let errs = errors(&eponymous("  rule ok(?x) :- eq(?x, takes_type927(Box[T = Int64]))"));
     assert!(
         errs.is_empty(),
         "a bracketed type application over an eponymous sort must load — its \
@@ -75,10 +90,10 @@ fn a_positional_bracket_is_not_desugared_into_a_field() {
     // The nastier half: the positional->named desugar filled the entity's `value`
     // field with the type argument, so the type-arg check downstream complained
     // about a label the author never wrote.
-    let ctl = errors(&control("  rule ok(?x) :- eq(?x, Holder[Int64])"));
+    let ctl = errors(&control("  rule ok(?x) :- eq(?x, takes_type927(Holder[Int64]))"));
     assert!(ctl.is_empty(), "the non-eponymous control must load clean; got {ctl:?}");
 
-    let errs = errors(&eponymous("  rule ok(?x) :- eq(?x, Box[Int64])"));
+    let errs = errors(&eponymous("  rule ok(?x) :- eq(?x, takes_type927(Box[Int64]))"));
     assert!(
         errs.is_empty(),
         "a POSITIONAL bracket binds the sort's declared type param, not the \

@@ -5,8 +5,6 @@
 namespace anthill.kernel
   import anthill.reflect.{Term}
 
-  sort T = ?
-
   -- Binary choice point. Splits the current goal queue into two branches
   -- that share the frame's tail: [?a, ...tail] tried first, [?b, ...tail]
   -- on backtrack. Both branches inherit σ unchanged.
@@ -17,7 +15,20 @@ namespace anthill.kernel
   -- frame effect rather than a return value (parallels Eq.eq). `-> Bool` names
   -- the test outcome; the substitution it really produces is the term-level
   -- `anthill.reflect.unify` face. Never dispatches — structural only.
-  operation unify(a: T, b: T) -> Bool
+  --
+  -- WI-1056: an OPERATION-LEVEL type parameter, for the reason `struct_eq` below
+  -- already states — it is not a spec op, so nothing binds a carrier parameter for
+  -- it per call. Written `(a: T, b: T)` against a NAMESPACE-level `sort T = ?`,
+  -- every `<=>` in every program shared ONE symbol as its argument type, so a rule
+  -- variable typed from this signature came out as the bare `T`: `rule f(?x) <=>
+  -- ?y :- …, ?y = 1` then compared `1` against `T` and read as a mismatch. Nothing
+  -- reported it while rule bodies went unchecked (WI-1043/WI-1056).
+  --
+  -- That `sort T = ?` is DELETED with this change rather than left in place: `unify`
+  -- was its last user, and a namespace-scoped wildcard sort named `T` is precisely
+  -- the thing a future member would pick up by writing a bare `T` — re-creating the
+  -- defect silently.
+  operation unify[T](a: T, b: T) -> Bool
 
   -- Structural identity test (proposal 051 / WI-615). The `===` operator: a
   -- total, carrier-agnostic, dispatch-free comparison of two values by raw

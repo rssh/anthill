@@ -33,9 +33,21 @@ sort anthill.prelude.BigInt
   -- Strong induction on non-negative BigInt. Proposal 025 §Auto-generated
   -- induction rules. ?P holds for all n ≥ 0 if it holds at 0 and is
   -- preserved by the predecessor IH at every positive n.
+  --
+  -- WI-1056: the bounds are written `to_bigint(0)` / `to_bigint(1)` because a
+  -- small integer literal is an `Int64` — only one that OVERFLOWS i64 parses as
+  -- a `BigInt` (see this file's header), and there is no implicit widening. With
+  -- the literals written bare this rule was ill-typed at every one of the three
+  -- sites: `?n` is a `BigInt` (`gt`'s own parameter says so), so `sub(?n, 1)`
+  -- passed an `Int64` where `BigInt` is declared. Only that one was ever
+  -- REPORTED — `sub` is `Numeric.sub`, a body-less spec op, and WI-1043 made a
+  -- rule-body call on one a call site; `gt` is BigInt's own member and `?P` is a
+  -- predicate variable, so neither is type-checked yet (the general rule-body
+  -- check is WI-1058). All three are corrected together, since a
+  -- schema that is coherent only where something happens to look is not coherent.
   rule induction(?P)
-    :- ?P(0),
+    :- ?P(to_bigint(0)),
        (forall(?n),
-          gt(?n, 0), ?P(sub(?n, 1))
+          gt(?n, to_bigint(0)), ?P(sub(?n, to_bigint(1)))
           -: ?P(?n))
 end
