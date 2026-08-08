@@ -163,11 +163,32 @@ sort WorkStatus {                           enum WorkStatus {
 
 Nullary constructors become parameterless `case`s; constructors with fields become parameterized.
 
+**When the sort has type parameters, a case must mention every one of them** — Scala infers an
+enum case's parent arguments from its fields, and a case that leaves a parameter unmentioned is
+`cannot determine type argument for enum parent class …, type parameter type T is invariant`. Such
+a case is emitted with the sort's own parameters and an explicit parent:
+
+```
+sort List {                                 enum List[T] {
+  sort T                         →            case Nil[T]() extends List[T]
+  entity nil                                  case Cons(head: T, tail: List[T])
+  entity cons(head: T,                      }
+    tail: List)
+}
+```
+
+`Cons` mentions `T` in its fields, so it keeps the inferred form; `Nil` does not, so it names its
+parent. `extends List[T]` and not the covariant idiom `extends List[Nothing]`: anthill's `nil` is
+polymorphic — a `List[T]` for every `T` — and an anthill sort declares no variance, so
+`List[Nothing]` would be a value no `List[Int]` context could accept. The rule is parameter
+COVERAGE, not arity: `entity left(v: L)` in a two-parameter `sort Either[L, R]` has a field and
+still leaves `R` uninferable, so it takes the explicit form too (WI-1055).
+
 When the enum sort also has operations, those become **abstract methods on a companion `trait`** (e.g. `LogicalStreamOps[T]`), not implemented methods on the companion object. Concrete implementations come from `Implementation` facts or `Quoted` terms; rules in the spec become ScalaCheck properties that verify any implementation.
 
 ```
 sort LogicalStream {                        enum LogicalStream[T] {
-  sort T                                      case Empty
+  sort T                                      case Empty[T]() extends LogicalStream[T]
   entity Empty                                case Cons(head: T, tail: LogicalStream[T])
   entity Cons(                   →          }
     head: T,                                trait LogicalStreamOps[T] {

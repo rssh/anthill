@@ -40191,7 +40191,7 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// the projection; `Stream[T = Int64]` and the bare `Stream` arrive missing the slot, and it
 /// is minted. A slot written CONCRETE, or written as the op's own rigid, is left alone.
 ///
-/// PARAMETER TYPES ONLY — **WI-1060**, not an unowned gap. Not the return type and not the
+/// PARAMETER TYPES ONLY — **WI-1061**, not an unowned gap. Not the return type and not the
 /// declared effects, though [`rigidify_op_type_params`]'s substitution is applied to all
 /// three. The universal quantification reads the other way in a RESULT position (the body
 /// must PRODUCE a value good for every instantiation, not consume one) and a return type
@@ -40211,7 +40211,7 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// a projection refused `Pair.compare(a: Pair, b: Pair)` at `expected a.A, got b.A`, which
 /// is the member tie read as its own negation.
 ///
-/// TOP LEVEL ONLY — **WI-1060** again, and for the same reason the projection is the right
+/// TOP LEVEL ONLY — **WI-1061** again, and for the same reason the projection is the right
 /// filler: a slot nested inside a binding (`s: List[T = Stream]` leaves `Stream`'s
 /// parameters unwritten too) has NO path that names it, so the only filler available there
 /// is an anonymous fresh rigid — and that reintroduces exactly the desynchronization

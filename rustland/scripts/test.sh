@@ -51,10 +51,58 @@ half=$(( cpus / 2 )); [ "$half" -lt 1 ] && half=1
 # Crates whose tests spawn the built binary — the throttled tier.
 SPAWNING_CRATES=(anthill-cli anthill-todo)
 
-ts=$(date +%Y%m%d-%H%M%S)
 mkdir -p target
+
+# ── One run at a time ────────────────────────────────────────────────────────
+#
+# Two concurrent runs share one `target/` and fight over the cargo build lock,
+# so the second sits blocked while both starve the machine — MEASURED, a second
+# run started beside a live one produced 8 seconds of output and then nothing
+# for 16 minutes, and the contention was enough to blow a 30s test timeout in an
+# unrelated suite.
+#
+# The symlink is why this has to be a REFUSAL and not a warning. `test-run-
+# latest.log` is claimed at STARTUP, so the second run takes it from the first
+# and then dies holding it: `test-status.sh` reads `latest`, faithfully reports
+# a dead 8-second run, and the live one becomes invisible. A stale pid file is
+# not that hazard — it is a file whose process is gone, which `kill -0` settles.
+#
+# `--force` overrides, because the lock is advisory and a wedged run should not
+# need a manual `rm`.
+force=0
+for a in "$@"; do [ "$a" = "--force" ] && force=1; done
+if [ "$force" = 1 ]; then
+  set -- "${@/--force/}"                     # drop it before cargo sees it
+  # A lone `--force` leaves one empty arg, which cargo reads as an empty
+  # selector; strip empties so `test.sh --force` means the same as `test.sh`.
+  args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+  set -- ${args+"${args[@]}"}
+fi
+
+pidfile="target/test-run.pid"
+if [ "$force" = 0 ] && [ -e "$pidfile" ]; then
+  read -r prev_pid prev_log < "$pidfile" || true
+  if [ -n "${prev_pid:-}" ] && kill -0 "$prev_pid" 2>/dev/null; then
+    prev_started=$(ps -o lstart= -p "$prev_pid" 2>/dev/null | sed 's/^ *//;s/ *$//')
+    prev_age=$(ps -o etime= -p "$prev_pid" 2>/dev/null | tr -d ' ')
+    {
+      echo "test.sh: a run is already in flight"
+      echo "  pid:  ${prev_pid}  (started ${prev_started:-?}, ${prev_age:-?} ago)"
+      echo "  log:  rustland/${prev_log:-<unknown>}"
+      echo "refusing to start a second run on the same target dir."
+      echo "(pass --force to override)"
+    } >&2
+    exit 2
+  fi
+fi
+
+ts=$(date +%Y%m%d-%H%M%S)
 log="target/test-run-${ts}.log"
 ln -sfn "test-run-${ts}.log" target/test-run-latest.log
+printf '%s %s\n' "$$" "${log}" > "$pidfile"
+# Removed however we leave — including the `set -e` paths and Ctrl-C — so the
+# next run is never refused by a corpse.
+trap 'rm -f "$pidfile"' EXIT
 
 start=$(date +%s)
 prefix_elapsed() {

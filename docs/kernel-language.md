@@ -2012,7 +2012,7 @@ Inside a body, then, an unwritten parameter is **rigid** — a skolem that unifi
 
 **How the slot is named (WI-1059).** The skolem an unwritten slot takes is the *projection off the value that carries it* — `s: Stream[T = Int64]` is checked as `s: Stream[T = Int64, E = s.E]` — and not a fresh anonymous variable. `s.E` is already rigid by §"path-dependent types" (a neutral equals only an identical neutral, never a concrete type), and it is the name a signature can already write: `operation collect(s: Stream) -> List[T = s.T]` says `s.T` in its own return, and the body must resolve the parameter to the *same* thing that return does. A *self*-sort reference is the exception, and §3 of `docs/design/type-parameter-scoping.md` is what decides it: within a sort's own definition a bare self reference participates in the parametricity tie, so `append(xs: List, ys: List)` declared inside `sort List` ties both to *this* sort's `T` rather than giving each its own projection.
 
-**Enforced in a parameter's type, at its top level (WI-1059 delivered; WI-1060 open).** The program below is refused at `feed`'s own declaration, naming the row it may not assume:
+**Enforced in a parameter's type, at its top level (WI-1059 delivered; WI-1061 open).** The program below is refused at `feed`'s own declaration, naming the row it may not assume:
 
 ```anthill
 operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s)
@@ -2022,7 +2022,7 @@ operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)
 
 Note that a *bare* reference says strictly less than a partial one: `Stream` leaves `T` unwritten too, so `feed(s: Stream)` may no more hand its stream to an `Int64`-element slot than it may assume a row. The four spellings are one type only in the parameters they all leave unwritten.
 
-The other two positions are **stated here but not yet enforced** — read them as the intended discipline, not as what loads. Both are measured, and **WI-1060** owns them:
+The other two positions are **stated here but not yet enforced** — read them as the intended discipline, not as what loads. Both are measured, and **WI-1061** owns them:
 
 ```anthill
 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s   -- loads; should be refused
