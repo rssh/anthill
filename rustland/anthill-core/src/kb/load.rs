@@ -700,6 +700,36 @@ pub enum LoadError {
         /// One `(keyword, rendered location)` per declaration, in source order.
         sites: Vec<(&'static str, String)>,
     },
+    /// WI-1049 — AN OPERATION NAME IS DECLARED AT MOST ONCE PER SCOPE. Two
+    /// `operation` declarations of one name in one scope reach ONE symbol
+    /// (`SymbolTable::define` merges — "one name in one scope is still one symbol",
+    /// WI-926), so the second does not overload; it leaves a second
+    /// `anthill.reflect.OperationInfo` fact under that one name and every signature
+    /// reader answers from whichever fact it reaches FIRST. The harm is that the
+    /// load stops being a function of the program: measured, one sort declaring
+    /// `q_op(x: T, y: T)` and `q_op(x: T)` answers arity 2 or 1 purely by which was
+    /// written first, and loads clean either way.
+    ///
+    /// Carries no `span` and is NOT wrapped in [`LoadError::Located`], for
+    /// [`Self::DuplicateTypeDeclaration`]'s reason: the two declarations may sit in
+    /// different files and one file prefix cannot name both, so `sites` is
+    /// pre-rendered.
+    DuplicateOperationDeclaration {
+        /// The operation's QUALIFIED name — which names the scope and the name at
+        /// once, and is total (an operation carrying an `OperationInfo` fact is a
+        /// resolved symbol by construction).
+        op: String,
+        /// One rendered location per DISTINCT written declaration, in load order.
+        /// Always at least two — its length IS the verdict, so the error cannot be
+        /// built with fewer.
+        sites: Vec<String>,
+        /// How many `OperationInfo` records the kernel ended up keeping under the
+        /// name. CORROBORATION, not the verdict (see
+        /// `check_duplicate_operation_declarations`): 1 says the second
+        /// declaration was wholly lost, more than 1 says the read is order-
+        /// dependent. Never assume 2.
+        facts: usize,
+    },
     /// WI-582 / WI-903 — a typed rule pattern (`?x: T`) written on a rule shape
     /// whose firing site never consults it. The bound has exactly ONE enforcer:
     /// the resolver's `apply_eq_rules`, via [`super::typing::typed_pattern_bounds_hold`],
@@ -1646,6 +1676,9 @@ impl LoadError {
             LoadError::DuplicateTypeDeclaration { name, scope_name, sites } => {
                 duplicate_type_message(name, scope_name, sites)
             }
+            LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
+                duplicate_operation_message(op, sites, *facts)
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -1828,6 +1861,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::DuplicateTypeDeclaration { name, scope_name, sites } => {
                 write!(f, "{}", duplicate_type_message(name, scope_name, sites))
+            }
+            LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
+                write!(f, "{}", duplicate_operation_message(op, sites, *facts))
             }
             LoadError::UnresolvedImport { path, span } => {
                 write!(f, "unresolved import '{}' at {}..{}", path, span.start, span.end)
@@ -3065,6 +3101,39 @@ fn duplicate_type_message(name: &str, scope_name: &str, sites: &[(&'static str, 
          members join the first's, silently. Rename one, or move the members into a \
          `namespace {name} … end` at the same address, which adds to the type without \
          redefining it."
+    )
+}
+
+/// WI-1049 — THE ONE-DECLARATION-PER-NAME SENTENCE, one owner, for
+/// [`duplicate_type_message`]'s reason: `LoadError` renders through two paths and
+/// this diagnostic's locations are already baked into `sites`, so a second
+/// hand-kept copy would drift with only one of them under test.
+///
+/// Says WHY rather than only what: an author who wrote two signatures believes
+/// they overloaded, and the message has to replace that belief — a scope maps a
+/// name to one symbol, so the second declaration merged into the first and its
+/// signature was lost. It also names the two things that ARE legal and would
+/// otherwise look identical from here: the same name on a different sort (carrier
+/// dispatch, §8.7's ladder), and a `rule` whose head names the operation (a law
+/// about it, not a redeclaration).
+fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> String {
+    let rendered = sites
+        .iter()
+        .map(|at| format!("`operation` at {at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "operation '{op}' is declared more than once in its scope ({} \
+         declarations): {rendered} — Anthill has no signature-keyed overloading. A \
+         scope maps a name to one symbol, so the second `operation` did not \
+         introduce a second operation: it merged into the first, and the kernel \
+         kept {facts} signature record{} under that one name — so which signature \
+         it reports came down to which was written first. Rename one. Same-named \
+         operations on DIFFERENT sorts are fine — those are distinct symbols \
+         chosen by carrier — and a `rule` whose head names this operation is a law \
+         about it, not a second declaration.",
+        sites.len(),
+        if facts == 1 { "" } else { "s" },
     )
 }
 
@@ -5245,6 +5314,13 @@ fn load_phase_inner(
     // absent from the phase-1 index would otherwise silently resolve to `None`/the
     // wrong var. A no-op on the first (or only) load — the field starts `None`.
     kb.sort_alias_index = None;
+    // WI-1049 — same reset, and it is what makes the duplicate-operation refusal
+    // mean anything: the log takes one entry per `Item::Operation` THIS phase
+    // converts, and `check_duplicate_operation_declarations` reads its COUNT. Carry
+    // a prior phase's entries in and a clean `load_incremental` re-load of
+    // already-loaded files reads two declarations of every operation and refuses
+    // the lot.
+    kb.op_decl_sites.clear();
     // WI-660 — same reset for the SortProvidesInfo (provider) index, same reason:
     // it is rebuilt at this phase's type-check (`build_provides_index`), and the
     // dispatch/coherence consumers use it with no fallback-on-miss (a `Some` index
@@ -5327,6 +5403,15 @@ fn load_phase_inner(
     if item_timing {
         print_item_timings(&format!("load_with_visited x {}", files.len()));
     }
+    // WI-1049: an operation name is declared at most once per scope. HERE, and not
+    // beside the other whole-KB checks below, because `load_operation` is the only
+    // site that logs an operation declaration (so the log is complete by now) and
+    // because everything after this point reads a signature — `build_op_signatures`
+    // caches the FIRST `OperationInfo` per name, and a duplicate would have every
+    // downstream error reported against a signature the author may not even have
+    // written. Load-blocking: the read it corrupts is order-dependent and silent.
+    all_errors.extend(check_duplicate_operation_declarations(kb));
+    mark!("check_duplicate_operation_declarations");
     resolve_instantiations(kb);
     mark!("resolve_instantiations");
     register_requires_axiom_witnesses(kb);
@@ -7357,6 +7442,106 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
     out
 }
 
+/// WI-1049 — AN OPERATION NAME IS DECLARED AT MOST ONCE PER SCOPE
+/// (kernel-language.md §8.7). Load-blocking.
+///
+/// THE PROPERTY, not the refusal: a load must be a function of the program, not of
+/// its spelling order. Two `operation` declarations of one name in one scope reach
+/// ONE symbol, so the second leaves a second `OperationInfo` fact under that name,
+/// and `op_info::lookup_operation_info` / `build_op_signatures` answer from
+/// whichever they reach FIRST. Measured on `q_op(x: T, y: T)` + `q_op(x: T)`: the
+/// same sort reports arity 2 or 1 by declaration order, loading clean either way.
+/// Making the read DETERMINISTIC would have restored order-independence and still
+/// left one written `operation` silently unreachable; the refusal gives both.
+///
+/// THE VERDICT IS HOW MANY `Item::Operation`s THIS LOAD PHASE CONVERTED for the
+/// name (`KnowledgeBase::op_decl_sites`, cleared per phase). Picking that took
+/// refuting the two obvious alternatives:
+///   * "the symbol table already has this name", in `scan_definitions` pass 1 —
+///     fires on every prelude operation. The bootstrap PRE-DEFINES operation
+///     symbols (`kb.symbols.define("eq", "anthill.prelude.PartialEq.eq", …)`,
+///     WI-718/WI-967) into the scope the stdlib source then declares `operation eq`
+///     in. This pass is immune because the bootstrap converts no `Item::Operation`,
+///     so it logs nothing — `wi1049_duplicate_operation_declaration_test`'s stdlib
+///     control is the pin.
+///   * the `OperationInfo` FACT count, which the ticket proposed on the premise
+///     that it "survives the same file being scanned twice". MEASURED FALSE: the
+///     three `*_idempotent_across_loads` suites re-present the stdlib through
+///     `load_incremental`, and every type-parameter-bearing operation banks a
+///     SECOND `OperationInfo` — `load_operation` mints a `fresh_var` per declared
+///     type parameter, so the re-emitted head differs from the first and cannot
+///     hash-cons to it. A fact-count verdict refuses a clean re-load. The fact
+///     count is kept in the message as corroboration, never as the verdict.
+///
+/// PER PHASE IS THE WHOLE DE-DUPLICATION, and deliberately no more. An earlier cut
+/// keyed each site on `(source text, span)` so that one file re-presented under two
+/// names collapsed — and it also collapsed two GENUINELY DISTINCT files whose text
+/// happened to be identical, which is the very duplicate this pass exists to catch
+/// and which `DuplicateTypeDeclaration` does not cover when the files declare no
+/// sort (found by `/code-review`, reproduced with a control). Within one phase,
+/// two entries are two `Item::Operation`s in the program AS PRESENTED. The
+/// consequence, stated rather than discovered later: handing the CLI the on-disk
+/// `stdlib/` while it also embeds its own copy now reports every operation twice —
+/// that configuration already fails loudly on `DuplicateTypeDeclaration` for every
+/// sort in it (`--no-stdlib` is the supported spelling), and a duplicate it names
+/// beats a duplicate it hides.
+///
+/// WHAT IS DELIBERATELY NOT REFUSED, so the boundary is stated rather than silent:
+///   * a `rule` whose head names an operation — a law about it (WI-818), or the
+///     `[simp]` defining equation that gives a body-less operation its meaning
+///     (WI-881). It is not an `Item::Operation`, so it logs no declaration, and
+///     that is the design: measured, all 345 stdlib operation symbols carry kind
+///     `Operation` alone.
+///   * the same name on a DIFFERENT sort — distinct symbols, chosen by carrier
+///     (§8.7's ladder, WI-1048). Keyed by symbol, so out of reach by construction.
+///   * `const`+`const`, `operation`+`const`, `entity`+`operation`. Same
+///     silent-merge family, each needing its own record and its own evidence;
+///     `const` has no `ConstInfo` to count. Not this pass's — see the ticket.
+///
+/// Runs immediately after the per-file load loop: `load_operation` is the only
+/// site that logs a declaration (and the only producer of `OperationInfo` facts),
+/// so both are complete by then, and nothing downstream has yet cached a signature
+/// off the wrong record.
+fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // By symbol index: `HashMap` iteration order is not an order, and two runs over
+    // one corpus must report identically.
+    let mut dups: Vec<(Symbol, &[SourceSpan])> = kb.repeated_op_decl_sites().collect();
+    if dups.is_empty() {
+        return Vec::new(); // the universal case: no fact walk at all
+    }
+    dups.sort_by_key(|(s, _)| s.index());
+    let fact_counts = super::op_info::operation_info_fact_counts(kb);
+    dups.into_iter()
+        .map(|(op, sites)| LoadError::DuplicateOperationDeclaration {
+            op: kb.qualified_name_of(op).to_string(),
+            sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+            facts: fact_counts.get(&op).copied().unwrap_or(0),
+        })
+        .collect()
+}
+
+/// WI-1049 — one declaration site as `path:line:col`.
+///
+/// A source registered by NAME only holds no text to index a `line:col` against,
+/// so it renders as a byte range under the registry's display name rather than
+/// being dropped: a dropped site would leave the refusal naming fewer places than
+/// it counted. Unreachable today (`Loader::new` always registers the parsed text,
+/// and a file containing an `operation` is not empty), and kept total anyway.
+fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
+    match kb.sources.provenance(site.source) {
+        Some((path, text)) => {
+            let at = LineIndex::new(&text).format_start(site.span);
+            crate::span::render_located(path.as_deref(), at, true)
+        }
+        None => format!(
+            "{} bytes {}..{}",
+            kb.sources.name(site.source),
+            site.span.start,
+            site.span.end
+        ),
+    }
+}
+
 /// WI-346 — requires-shadow lint. A sort that `requires` a spec and declares a
 /// local operation whose short name matches one of that spec's *own* operations
 /// shadows the inherited name. Per `kernel-language.md` §8.7 those are distinct,
@@ -7404,12 +7589,12 @@ fn check_requires_shadows(kb: &mut KnowledgeBase) -> Vec<LoadWarning> {
                 // At most one spec op carries a given short name, so `find` is
                 // exhaustive: a sort declaring `op` TWICE mints ONE symbol (the
                 // second `define` returns the first), not two. What that sort
-                // does produce is two `OperationInfo` facts for that one symbol,
-                // and `lookup_operation_info` inside the gate below then answers
-                // by DECLARATION ORDER — measured. That is WI-1049, and it is
-                // upstream of this lint: every signature reader goes through the
-                // same decode, and the pre-WI-1048 lint escaped it only by never
-                // reading a signature. Zero occurrences in the stdlib (345 ops).
+                // used to produce is two `OperationInfo` facts for that one
+                // symbol, which made `lookup_operation_info` inside the gate below
+                // answer by DECLARATION ORDER. WI-1049 refuses that pair at load
+                // (`check_duplicate_operation_declarations`), upstream of this
+                // lint, so by here a name reaching a signature reader has exactly
+                // one signature. Zero occurrences in the stdlib (345 ops).
                 let Some(&spec_op) = spec_ops.iter().find(|&&s| op_short(kb, s) == osn)
                 else { continue };
                 if !super::typing::requires_shadow_is_confusable(
@@ -16238,6 +16423,14 @@ impl<'a> Loader<'a> {
     fn load_operation(&mut self, o: &Operation, domain: Symbol) {
         let op_sort = ClauseKind::Operation;
         let functor = self.remap_name(&o.name);
+
+        // WI-1049 — log WHERE this declaration was written, before anything can
+        // fail out of the conversion below. A second `operation` of the same name
+        // in the same scope reaches this same `functor` (one name in one scope is
+        // one symbol, WI-926), so the log grows and
+        // `check_duplicate_operation_declarations` can name both lines.
+        let decl_site = SourceSpan::from_span(self.source_id, o.span);
+        self.kb.record_op_decl_site(functor, decl_site);
 
         // Set owner for expression occurrences
         let prev_owner = self.current_owner;

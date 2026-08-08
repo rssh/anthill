@@ -168,6 +168,33 @@ fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
     out
 }
 
+/// WI-1049 — HOW MANY `OperationInfo` FACTS CARRY EACH OPERATION SYMBOL, in one
+/// walk. An operation IS its qualified name (one name in one scope is one symbol,
+/// WI-926), so more than one fact per symbol means every signature reader —
+/// [`lookup_operation_info`], [`declared_arity`], [`build_op_signatures`] — answers
+/// from whichever fact the walk reaches FIRST.
+///
+/// NOT A DUPLICATE-DECLARATION VERDICT, and the distinction is measured, not
+/// cautionary: `load_incremental` re-presents already-loaded files, and every
+/// type-parameter-bearing operation then banks a SECOND fact — `load_operation`
+/// mints a `fresh_var` per declared type parameter, so the re-emitted head cannot
+/// hash-cons to the first. One clean re-load, two facts, one declaration.
+/// `load::check_duplicate_operation_declarations` counts DECLARATIONS
+/// and carries this number only as corroboration in its message.
+///
+/// Un-deduped by symbol is exactly the point, so this is NOT
+/// [`all_operation_effects`]' "one row per fact" in another spelling — that one
+/// wants every row, this one wants the COUNT of rows per name.
+pub fn operation_info_fact_counts(
+    kb: &KnowledgeBase,
+) -> std::collections::HashMap<Symbol, usize> {
+    let mut counts = std::collections::HashMap::new();
+    for (op_sym, _) in operation_info_fact_heads(kb) {
+        *counts.entry(op_sym).or_insert(0) += 1;
+    }
+    counts
+}
+
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
 /// any. None means no OperationInfo fact carries `name = op_sym`.
 ///

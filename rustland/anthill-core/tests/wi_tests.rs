@@ -1088,6 +1088,9 @@ mod wi1049_effect_polymorphic_diagnostic_test;
 #[path = "include/wi1048_requires_shadow_refinement_test.rs"]
 mod wi1048_requires_shadow_refinement_test;
 
+#[path = "include/wi1049_duplicate_operation_declaration_test.rs"]
+mod wi1049_duplicate_operation_declaration_test;
+
 // Guards this very layout: every include/ file registered exactly once, across
 // anthill-core, anthill-cli and anthill-todo. An unregistered file is compiled
 // never and run never, silently.

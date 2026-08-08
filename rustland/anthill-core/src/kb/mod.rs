@@ -791,6 +791,23 @@ pub struct KnowledgeBase {
     /// signature; they just read/write `record.body`.
     pub(crate) op_records: HashMap<Symbol, op_info::OperationRecord>,
 
+    /// WI-1049 — WHERE each `operation <name>` THIS LOAD PHASE converted was
+    /// written: one entry per `Item::Operation`, keyed by the symbol it landed on.
+    /// Two entries under one symbol means one name was declared twice in one scope
+    /// (`SymbolTable::define` merges them, WI-926), which
+    /// `load::check_duplicate_operation_declarations` refuses — naming both lines,
+    /// which is why this is a `Vec` and not the single span `functor_spans` keeps
+    /// (first-write-wins, so it can only ever name the first).
+    ///
+    /// PER LOAD PHASE, cleared at the top of `load::load_phase_inner` beside the
+    /// WI-659/660/671 index resets, and that is load-bearing rather than tidy: a
+    /// `load_incremental` re-load converts every already-loaded declaration a
+    /// second time, so a log that outlived the phase would read two declarations of
+    /// every operation and refuse a clean re-load. Within one phase the count needs
+    /// no de-duplication — two entries are two `Item::Operation`s in the program as
+    /// presented, whether they sit in one file or in two files with identical text.
+    pub(crate) op_decl_sites: HashMap<Symbol, Vec<crate::span::SourceSpan>>,
+
     /// WI-727 (proposal 056) — the VARIADIC CAPTURE parameter of each operation that
     /// declares one: `op_sym → the name symbol of its `...args: R` capture parameter`.
     /// Populated by the loader, read O(1) by the typer's argument matching
@@ -1294,6 +1311,7 @@ impl KnowledgeBase {
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
+            op_decl_sites: HashMap::new(),
             op_capture_params: HashMap::new(),
             named_requirement_slots: HashMap::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
@@ -1490,6 +1508,25 @@ impl KnowledgeBase {
     /// fast path.
     pub(crate) fn op_record(&self, op_sym: Symbol) -> Option<&op_info::OperationRecord> {
         self.op_records.get(&op_sym)
+    }
+
+    /// WI-1049 — record WHERE one written `operation <name>` landed on `op_sym`.
+    /// Appends, because a second declaration of one name in one scope reaches the
+    /// SAME symbol (`SymbolTable::define` merges, WI-926) and the refusal must name
+    /// both lines. Called once per `Item::Operation` the loader converts.
+    pub(crate) fn record_op_decl_site(&mut self, op_sym: Symbol, site: crate::span::SourceSpan) {
+        self.op_decl_sites.entry(op_sym).or_default().push(site);
+    }
+
+    /// WI-1049 — operations THIS load phase wrote more than one declaration for,
+    /// with their sites in load order. The duplicate refusal's whole input.
+    pub(crate) fn repeated_op_decl_sites(
+        &self,
+    ) -> impl Iterator<Item = (Symbol, &[crate::span::SourceSpan])> + '_ {
+        self.op_decl_sites
+            .iter()
+            .filter(|(_, sites)| sites.len() > 1)
+            .map(|(s, sites)| (*s, sites.as_slice()))
     }
 
     /// Proposal 039 / WI-084 — the declared type of a term-level constant, if
