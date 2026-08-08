@@ -17,7 +17,9 @@ namespace anthill.realization.scala_std
   -- Default profile: pure-functional, non-monadic
   -- ================================================================
   --
-  -- `scala_std` keeps generated Scala dependency-free: `Modify` returns
+  -- `scala_std` keeps generated Scala free of third-party EFFECT deps (it still
+  -- needs the emitted `anthill.prelude` for anthill's own sorts — WI-1021,
+  -- docs/scala-forward-mapping.md §2.1a): `Modify` returns
   -- updated state by value, `Error` returns `Either[E, R]`. No IO/ZIO
   -- machinery — alternative profiles (scala_cats_effect / scala_zio)
   -- swap that in.
@@ -50,20 +52,36 @@ namespace anthill.realization.scala_std
     -- has no analog in Scala — JVM references are cheap.
     receiver_map: [],
 
+    -- SCALARS ONLY (WI-1021). A `type_map` entry says the anthill sort's VALUES
+    -- ARE the host type's values, and that is true exactly where anthill cannot
+    -- BUILD one: `Int64` declares no `entity` and nothing but a literal makes one,
+    -- so `Long` is the carrier and nothing else could be. (`Long`, not `Int`:
+    -- anthill's Int64 is 64-bit — rust_std says `i64`, cpp_std `int64_t` — and
+    -- Scala's `Int` is 32-bit, so every value above 2^31-1 would truncate.)
+    --
+    -- Every other prelude sort is denoted by the type codegen EMITS for it —
+    -- `anthill.prelude.List`, not `scala.List` — because it either has anthill
+    -- constructors (`List`'s nil/cons, `Option`'s none/some, `Pair`'s pair) or is
+    -- representation-defined with the carrier chosen by a provider (`Set`, `Map`,
+    -- `Stream`). Measured before those entries were removed: pair.anthill emitted
+    -- `enum Pair[A, B]` and list.anthill, in the same output tree, emitted
+    -- `Option[Tuple2[T, List[T]]]` — one anthill name denoting two unrelated Scala
+    -- types, the host one structural where anthill's `Pair` has named fields, its
+    -- own `eq`, and four conditioned `provides` clauses no `Tuple2` can carry.
+    -- `Stream` was the same defect showing as arity: it carries an effect row and
+    -- `LazyList` takes one parameter. See docs/scala-forward-mapping.md §2.1a.
+    --
+    -- `Duration` and `Timestamp` went with them: primitives.anthill declares both
+    -- as sorts WITH constructors and Bootstrap emits them, so a host entry would
+    -- silently pick host-over-nominal for a sort that has its own values.
     type_map: [
-      TypeMapping(anthill_type: "Int64",       host_type: "Int64"),
-      TypeMapping(anthill_type: "BigInt",    host_type: "BigInt"),
-      TypeMapping(anthill_type: "Float",     host_type: "Double"),
-      TypeMapping(anthill_type: "Bool",      host_type: "Boolean"),
-      TypeMapping(anthill_type: "String",    host_type: "String"),
-      TypeMapping(anthill_type: "Duration",  host_type: "scala.concurrent.duration.Duration"),
-      TypeMapping(anthill_type: "Timestamp", host_type: "java.time.Instant"),
-      TypeMapping(anthill_type: "List",      host_type: "List"),
-      TypeMapping(anthill_type: "Option",    host_type: "Option"),
-      TypeMapping(anthill_type: "Pair",      host_type: "Tuple2"),
-      TypeMapping(anthill_type: "Set",       host_type: "Set"),
-      TypeMapping(anthill_type: "Map",       host_type: "Map"),
-      TypeMapping(anthill_type: "Stream",    host_type: "LazyList")
+      TypeMapping(anthill_type: "Int64",   host_type: "Long"),
+      TypeMapping(anthill_type: "BigInt",  host_type: "BigInt"),
+      TypeMapping(anthill_type: "Float",   host_type: "Double"),
+      TypeMapping(anthill_type: "Bool",    host_type: "Boolean"),
+      TypeMapping(anthill_type: "String",  host_type: "String"),
+      TypeMapping(anthill_type: "Unit",    host_type: "Unit"),
+      TypeMapping(anthill_type: "Nothing", host_type: "Nothing")
     ],
 
     -- Return abstract sorts via the trait's type parameter — Scala 3

@@ -82,8 +82,8 @@ hyphens in identifiers become underscores.
 | `requires Eq[T]` | upper bound or `using Eq[T]` |
 | `fact SortName` (inside sort body) | `extends SortName` |
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
-| `List[X]` | `List[X]` (Scala `scala.collection.immutable.List`) |
-| `Option[X]` | `Option[X]` |
+| `Int64` / `Float` / `Bool` / `String` / `BigInt` / `Unit` / `Nothing` | `scala.Long` / `scala.Double` / `scala.Boolean` / `java.lang.String` / `scala.math.BigInt` / `scala.Unit` / `scala.Nothing` — see §2.1a |
+| `List[X]` / `Option[X]` / `Pair[A, B]` / `Set[X]` / `Map[K, V]` / `Stream[T, E]` | the prelude's OWN emitted type: `anthill.prelude.List[X]` … — see §2.1a |
 | `rule` (law) | ScalaCheck property in `src/test/scala/.../<Sort>Laws.scala` |
 | `Quoted("scala", source)` | verbatim Scala code inserted as-is |
 | `constraint` (denial) | property in `src/test/scala/.../<Sort>Laws.scala` |
@@ -109,6 +109,66 @@ namespace banking.transfers      →  package banking { object transfers { ... }
 ```
 
 Visibility: items keep their default Scala visibility (public) — anthill names are visible by default. `internal` items get `private[packageName]`.
+
+### 2.1a Prelude Names: Host Type or Anthill Type (WI-1021)
+
+A prelude name reaching the output has exactly two possible destinations, and the
+test between them is **whether anthill can build a value of the sort**.
+
+**A scalar cannot be built in anthill.** `int64.anthill` declares no `entity` and
+nothing but a literal makes an `Int64`, so the host type *is* the carrier and there
+is no rival anthill value for it to disagree with. `Int64`, `Float`, `Bool`,
+`String`, `BigInt`, `Unit` and `Nothing` map to their host counterparts —
+`Int64` to **`Long`**, since anthill's `Int64` is 64-bit (`rust_std` maps it to
+`i64`, `cpp_std` to `int64_t`) and Scala's `Int` is not.
+
+This applies **inside the scalar's own file too**: `int64.anthill`'s
+`operation compare(a: Int64, b: Int64) -> Int64` emits
+`def compare(a: scala.Long, b: scala.Long): scala.Long` on the `trait Int64` it
+declares. The trait is the *algebra*; the host type is the *carrier*. Reading the
+enclosing sort first instead gave `def compare(a: Int64, b: Int64): Int64` — a trait
+no value inhabits, with the same anthill name meaning `Long` in every consumer.
+
+**Every other prelude sort is denoted by the type the prelude itself emits**
+(`anthill.prelude.Option[X]`). Either it has anthill constructors — `List`'s
+`nil`/`cons`, `Option`'s `none`/`some`, `Pair`'s `pair` — or it is
+representation-defined with the carrier chosen by a provider (`Set`, `Map`,
+`Stream`). In both cases codegen emits a Scala declaration for it, and rewriting a
+use of that name to a host type would make one anthill name denote two unrelated
+Scala types in one output tree.
+
+That is not hypothetical: `Pair` mapped to `Tuple2`, so `pair.anthill` emitted
+`enum Pair[A, B]` and `list.anthill` emitted `Option[Tuple2[T, List[T]]]` — the
+structural host tuple where anthill's `Pair` has named fields, its own `eq`, and
+four conditioned `provides` clauses no `Tuple2` can carry. `Stream` showed the same
+defect as an outright arity conflict: `Stream[Element, E]` carries an effect row and
+`LazyList` has one parameter.
+
+**`_root_`-anchored, not bare and not merely qualified.** A bare name in
+`package anthill.prelude` resolves against that package's own members before Scala's
+root imports, and the prelude declares `Option`, `List`, `Set`, `Map` *and*
+`trait String`, `trait BigInt`, `trait Nothing`. So a bare emission meant different
+things depending on what else was in the compilation — measured, `Duration(5, "m")`
+against `case class Duration(amount: Long, unit: String)` is
+`Found: ("m" : String), Required: anthill.prelude.String` with `string.anthill`
+present and compiles without it. Plain qualification is not enough either: a relative
+`anthill.prelude.Option` is captured by a project that has its own `anthill`
+package segment. Both tables therefore emit `_root_.`-anchored names, which costs
+verbosity in generated source and nothing else.
+
+**A consumer of a prelude sort depends on the emitted prelude.** A project emitting
+`_root_.anthill.prelude.Option` needs `anthill.prelude` on its classpath — generate
+the prelude alongside it. This is the one place the profile's "dependency-free"
+property (§4) does not reach: the *effect* shapes stay dependency-free, the prelude
+*types* are anthill's own. A name the prelude does not emit — `Map`, currently
+refused — therefore fails naming exactly the missing declaration, rather than
+silently binding `scala.Map`.
+
+> The worked examples in the rest of this document write `Boolean`, `Double` and
+> `Option[X]` bare. They are schematics of the *shape* of an emission, not
+> transcripts: real output carries the `_root_.` anchoring above, so the emitted
+> form of `def eq(a: T, b: T): Boolean` is
+> `def eq(a: T, b: T): _root_.scala.Boolean`.
 
 ### 2.2 Sort with Operations (No Constructors) → Trait
 
@@ -367,7 +427,9 @@ import banking.{Account, Money}
 
 ## 3. Effect-system profile choices
 
-The `scala_std` profile is intentionally *purely-functional but non-monadic*: `Modify` returns updated state, `Error` returns `Either`, no `IO`/`ZIO` machinery. This keeps the bootstrap-codegen path simple and the generated code dependency-free.
+The `scala_std` profile is intentionally *purely-functional but non-monadic*: `Modify` returns updated state, `Error` returns `Either`, no `IO`/`ZIO` machinery. This keeps the bootstrap-codegen path simple and the generated code free of any third-party *effect* dependency.
+
+It is not free of `anthill.prelude` itself: a program using anthill's `Option`, `List` or `Pair` reaches the type the prelude emits, not `scala.Option` (§2.1a), so the emitted prelude belongs on the classpath. That is a consequence of those sorts being anthill's own, not a profile choice — `scala_caps` has it too.
 
 Three alternative profiles are reserved:
 
