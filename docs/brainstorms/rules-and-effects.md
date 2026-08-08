@@ -253,14 +253,42 @@ per-label questions are a different, later thing.
 
 Guarded effects already condition an *effect* on a *predicate*
 (`Error[EmptyStream] :- isEmpty(s)`); this is the dual — conditioning a *rule* on
-the row being absent — and it has no spelling today. With it, the law in Q1 could
-carry its real precondition, and Q2's proof obligation would have a goal form to
-target:
+the row — and it has no spelling today.
+
+**There are TWO predicates here, not one, and they are not interchangeable.** A
+first draft of this section wrote `hasno_effect(head(insert(?x,?e)))` with no
+effect argument, which is wrong for the case that motivated it: `head`'s row is
+`{ Error[EmptyStream] :- isEmpty(xs), s.E }`, so even after the guard is refuted
+`s.E` remains. The whole-row claim is false there, while the thing we actually
+want — that `Error[EmptyStream]` is gone — is true.
 
 ```
-hasno_effect(head(insert(?x, ?e)))          -- a goal a proof can discharge
-rule isEmpty(insert(?c,?x)) <=> false :- hasno_effect(insert(?c,?x))
+-- (a) PER-LABEL. Is this effect in the term's row? What guard discharge needs.
+hasno_effect(head(insert(?x, ?e)), Error[EmptyStream])
+
+-- (b) WHOLE-ROW. Is the row empty at all? What the [simp] gate asks.
+row_empty(insert(?c, ?x))
+
+rule isEmpty(insert(?c,?x)) <=> false :- row_empty(insert(?c,?x))
 ```
+
+Which one each consumer wants, so the choice is not made by accident:
+
+| consumer | needs |
+|---|---|
+| guarded-effect discharge (Q4a, WI-067) | **(a)** — drop one atom, leave the rest of the row alone |
+| the `[simp]` formation gate | **(b)** — nothing may be dropped, so the row must be empty |
+| Q1's law precondition | **(b)** — the law is about discarding the whole computation |
+| Q7's "both sides carry the same row" | neither — that needs row **equality**, a third thing |
+
+(b) is expressible as (a) universally quantified, or kept primitive; worth
+deciding, since (b) is the one that already exists internally.
+
+**And the argument is a TERM, analysed, not a value computed.** `hasno_effect`
+asks about a term's *typing*, so it is a reflective predicate — nearer
+`anthill.reflect` than an ordinary goal. That is not alien here (occurrence-valued
+operations and the `Term`/`KB` reflect surface exist), but it decides where the
+predicate lives and what it may be applied to.
 
 Two things make this cheaper and more coherent than it first looks:
 
