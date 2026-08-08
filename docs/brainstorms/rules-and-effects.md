@@ -247,21 +247,40 @@ stands — but it marks where the boundary actually is.
 ### a vocabulary question this raises
 
 Should the rule dictionary gain `has_effect` / `hasno_effect` as **predicates**?
+The subject is the **effect row**, and the question is **binary**: the row is
+*present* (non-empty) or *absent* (empty). Not "does it carry effect `E`" —
+per-label questions are a different, later thing.
+
 Guarded effects already condition an *effect* on a *predicate*
-(`Error[EmptyStream] :- isEmpty(s)`); the dual — conditioning a *rule* on the
-*absence of an effect* — has no spelling. With it, the law in Q1 could be written
-with its real precondition, and the proof obligation in Q2 would have a goal form
-to target:
+(`Error[EmptyStream] :- isEmpty(s)`); this is the dual — conditioning a *rule* on
+the row being absent — and it has no spelling today. With it, the law in Q1 could
+carry its real precondition, and Q2's proof obligation would have a goal form to
+target:
 
 ```
 hasno_effect(head(insert(?x, ?e)))          -- a goal a proof can discharge
 rule isEmpty(insert(?c,?x)) <=> false :- hasno_effect(insert(?c,?x))
 ```
 
-Open: whether that is a genuine predicate over terms (needing the typer's row as
-a queryable value) or sugar for an obligation. Note it would give the row a
-*reified* form, which is the same thing Q7's "both sides carry the same row"
-needs — worth designing once.
+Two things make this cheaper and more coherent than it first looks:
+
+- **It reifies a predicate that already exists internally.** "Is this row empty?"
+  is exactly what `effect_row_blocking_equations` computes today to decide the
+  gate. Exposing it is a reification, not a new analysis.
+- **Its polarity reproduces the Q3 decision instead of fighting it.** A binary
+  predicate has *three* outcomes in practice — present, absent, and
+  **undetermined** — and the undetermined case is precisely the polymorphic row
+  (`E` is neither provably empty nor provably non-empty until a carrier binds
+  it). Under the established polarity — "act on a DECIDED obligation, never on an
+  UNDETERMINED one" (WI-602, WI-067/WI-292) — *neither* `has_effect` nor
+  `hasno_effect` should succeed there. That is the same refusal Q3 decided,
+  arrived at from the predicate's own discipline.
+
+Open: whether it is a genuine predicate over terms (needing the typer's row as a
+queryable value) or sugar for an obligation. Either way it gives the row a
+**reified** form — the same thing Q7's "both sides carry the same row" needs, and
+the same thing an abstract Γ (WI-1051) would want. Three consumers, one
+representation question; design it once.
 
 ## Q5 — where may a law be WRITTEN?
 
