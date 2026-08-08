@@ -373,3 +373,91 @@ fn finite_map_keeps_a_pipeline_consumable() {
         "`xs.map(f).size()` over a finite source must stay consumable; \
          got: {errs:?}");
 }
+
+// ── WI-1052: a SORT ALIAS is not a different type ───────────────────────
+//
+// `types_definitely_differ` returning true is a PROOF the two types cannot be
+// reconciled. `type_ctor_view` reads a type as `(constructor, args)`, and before
+// WI-1052 it did not expand a `SortAlias`, so `IntList` and its own definition
+// `List[T = Int64]` compared as two different constructors — a FALSE proof, which
+// fails CLOSED: it silently swallows the shadow warning. Found by `/code-review`
+// on WI-1049; resolved inline rather than left as a ticket.
+//
+// The two fixtures below differ ONLY in how the return type is SPELLED, and that
+// is the whole experiment (the WI-979 idiom): a lint whose verdict turns on the
+// spelling of a type is the very thing WI-1048 exists to stop.
+
+/// The one that FAILS when the alias expansion is backed out — it loads silent.
+#[test]
+fn wi1052_alias_spelled_return_type_still_warns() {
+    let warnings = load_warnings(ALIAS_SPELLING);
+    assert!(
+        warnings.iter().any(|w|
+            w.contains("wi1052.alias.AReq")
+                && w.contains("a_op")
+                && w.contains("wi1052.alias.ASpec")),
+        "`IntList` IS `List[T = Int64]`; naming it through its alias is not a \
+         proven difference and must not silence the shadow; got: {warnings:?}");
+}
+
+/// CONTROL — passes either way BY DESIGN: the expanded spelling always warned.
+/// It is what makes the test above an experiment about the ALIAS and not about
+/// whether the lint fires on this shape at all.
+#[test]
+fn wi1052_expanded_return_type_warns_identically() {
+    let alias = shadow_warnings_for(ALIAS_SPELLING, "wi1052.alias");
+    let expanded = shadow_warnings_for(EXPANDED_SPELLING, "wi1052.alias");
+    assert!(!expanded.is_empty(), "the expanded spelling must warn: control failed");
+    assert_eq!(
+        alias, expanded,
+        "the two fixtures differ only in the SPELLING of one return type, so the \
+         diagnostic must be identical");
+}
+
+/// `sort IntList = List[T = Int64]` used as `a_op`'s return type.
+const ALIAS_SPELLING: &str = r#"
+    namespace wi1052.alias
+      import anthill.prelude.{Int64, List, nil}
+      sort IntList = List[T = Int64]
+      sort ASpec
+        sort T = ?
+        operation a_op(x: T) -> List[T = Int64]
+      end
+      sort ACar
+        entity ac(id: Int64)
+      end
+      sort AReq
+        requires ASpec[T = ACar]
+        operation a_op(x: ACar) -> IntList = nil
+      end
+    end
+"#;
+
+/// `ALIAS_SPELLING` with the alias written out, and NOTHING else changed.
+const EXPANDED_SPELLING: &str = r#"
+    namespace wi1052.alias
+      import anthill.prelude.{Int64, List, nil}
+      sort IntList = List[T = Int64]
+      sort ASpec
+        sort T = ?
+        operation a_op(x: T) -> List[T = Int64]
+      end
+      sort ACar
+        entity ac(id: Int64)
+      end
+      sort AReq
+        requires ASpec[T = ACar]
+        operation a_op(x: ACar) -> List[T = Int64] = nil
+      end
+    end
+"#;
+
+/// This fixture's shadow warnings, in a stable order.
+fn shadow_warnings_for(src: &str, ns: &str) -> Vec<String> {
+    let mut w: Vec<String> = load_warnings(src)
+        .into_iter()
+        .filter(|w| w.contains(ns))
+        .collect();
+    w.sort();
+    w
+}

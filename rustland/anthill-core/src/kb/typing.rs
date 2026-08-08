@@ -22437,18 +22437,57 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
 /// loader built directly. Without it the two `*_is_silent` tests in
 /// `wi1048_requires_shadow_refinement_test` go undecided — measured, they are
 /// what fails.
+///
+/// WI-1052 — A SORT ALIAS IS EXPANDED FIRST, for the same reason. `sort IntList =
+/// List[T = Int64]` names one type twice, so reading `IntList` as its own
+/// constructor made it "definitely different" from `List[T = Int64]` — a FALSE
+/// proof, and one that fails CLOSED: [`types_definitely_differ`] is consulted to
+/// decide whether a shadow is confusable, so a bogus difference SILENCES the
+/// warning. Measured, with a control: the fixture in
+/// `wi1052_alias_spelled_return_type_still_warns` loaded silent while the same
+/// file with the alias written out warned — a verdict turning on how the author
+/// spelled a type, which is exactly what WI-1048 exists to stop.
+///
+/// Only the BARE-NAME spelling is followed (`Ref`/`Ident`/argument-less `Fn`).
+/// An alias head carrying arguments would lose them if the expansion simply
+/// replaced the term, and UNDECIDED is the safe answer there — as it is when the
+/// chain exceeds [`ALIAS_EXPANSION_LIMIT`], which is a bound on user input rather
+/// than a claim that no alias chain is longer.
 fn type_ctor_view(
     kb: &KnowledgeBase,
     t: TermId,
 ) -> Option<(Symbol, SmallVec<[TermId; 4]>, SmallVec<[(Symbol, TermId); 2]>)> {
-    match kb.get_term(t) {
-        Term::Fn { functor, pos_args, named_args } => {
-            Some((*functor, pos_args.clone(), named_args.clone()))
+    let mut t = t;
+    for _ in 0..ALIAS_EXPANSION_LIMIT {
+        let (sym, view) = match kb.get_term(t) {
+            Term::Fn { functor, pos_args, named_args } => (
+                *functor,
+                (*functor, pos_args.clone(), named_args.clone()),
+            ),
+            Term::Ref(s) | Term::Ident(s) => (*s, (*s, SmallVec::new(), SmallVec::new())),
+            _ => return None, // not constructor-headed — undecided
+        };
+        // Bare name only: an application states arguments the expansion does not.
+        if view.1.is_empty() && view.2.is_empty() {
+            if let Some(expanded) = resolve_sort_alias(kb, sym) {
+                // `!=` catches a one-step self-alias; the loop bound catches longer
+                // cycles, so neither can spin here.
+                if expanded != t {
+                    t = expanded;
+                    continue;
+                }
+            }
         }
-        Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new(), SmallVec::new())),
-        _ => None,
+        return Some(view);
     }
+    None
 }
+
+/// WI-1052 — how many `SortAlias` hops [`type_ctor_view`] follows before giving up
+/// and answering UNDECIDED. Chains in the corpus are one hop; the bound exists so a
+/// cyclic or pathological set of aliases cannot spin, not because a longer chain is
+/// known to be illegal.
+const ALIAS_EXPANSION_LIMIT: usize = 16;
 
 /// User precondition clauses of an operation — its `requires` field minus the
 /// loader's auto-inferred `EffectsRuntime[Effects=E]` entries (WI-320), which
