@@ -10940,7 +10940,7 @@ fn check_apply_iter(
         //
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
         // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
-        // defaulted leg, [`expr_needs_call_dispatch`]'s rule-body walk trigger,
+        // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger,
         // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
@@ -13094,7 +13094,7 @@ fn dot_member_dispatch_decision(
     // ("ONE `spec_op_parent_sort`, deliberately") was a micro-optimization of a path this
     // function's own contract measures at ZERO own-member dots across the corpus; 51 µs on
     // a branch that never runs buys nothing, and it bought a second reading of "defaulted".
-    // The hot reader is `expr_needs_call_dispatch` (~745 calls/load), which pays it once; the
+    // The hot reader is `call_dispatch_shape` (~745 calls/load), which pays it once; the
     // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
         // BODY-LESS — a different question with a different condition; see
@@ -16494,8 +16494,10 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 ///     carrier's supplied implementation or refuses a tie;
 ///   * [`dot_member_dispatch_decision`]'s DEFAULTED leg, the same decision reached by
 ///     the dot spelling (WI-1035);
-///   * [`expr_needs_call_dispatch`], the WI-1026 rule-body walk trigger — this gate and
-///     nothing else since WI-1036 deleted its `!is_builtin` clause;
+///   * [`call_dispatch_shape`], the WI-1026 rule-body walk trigger — this gate and
+///     nothing else since WI-1036 deleted its `!is_builtin` clause. WI-1043 turned that
+///     site's ADMISSION into [`spec_op_call_parent`] (both halves) and left this gate
+///     naming WHICH half, which is what its error tail is keyed on;
 ///   * [`defaulted_spec_op_witness_grounds_soundly`], WI-1040's last witness scan — a
 ///     FOURTH reader, found by this ticket's own review, which asked the question by name
 ///     while reading only the body-AGNOSTIC parent and leaning on caller scan order for
@@ -16526,15 +16528,17 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 ///   * [`dot_member_dispatch_decision`] reaches its leg only through
 ///     `find_spec_op_for_provided_sort` → `find_operation_in_scope`, which finds symbols
 ///     BY WALKING the `OperationInfo` facts;
-///   * [`expr_needs_call_dispatch`] is asked per `Expr::Apply` functor, where a symbol
+///   * [`call_dispatch_shape`] is asked per `Expr::Apply` functor, where a symbol
 ///     with no `OperationInfo` must answer `false` — the strict read IS the requirement
-///     there, not a precondition (see the measurement below).
+///     there, not a precondition (see the measurement below). Since WI-1043 the
+///     admission is [`spec_op_call_parent`], which carries that same probe as its own
+///     clause for exactly this reason; this gate is asked BEHIND it.
 ///
 /// THE STRICT READ IS NOT MERELY THE STRONGER ONE — IT IS REQUIRED, and that was MEASURED
 /// after this ticket's review called the first justification here vacuous. Give this gate
 /// the old body test and **15 tests across 5 suites fail** (`wi936`, `wi618`,
 /// `parameterized_provides_block`, `sql_store_example`, and this ticket's own). FOURTEEN
-/// of them come from [`expr_needs_call_dispatch`]: the rule-body walk then fires
+/// of them come from [`call_dispatch_shape`]: the rule-body walk then fires
 /// `type_check_node` on an entity constructor declared inside a parametric sort — which
 /// is what `operation_has_no_body`'s doc means by "so non-operation symbols are not
 /// misclassified" — and re-conjoining [`op_has_runnable_body`] at that site alone restores
@@ -16564,7 +16568,7 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 /// `spec_op_parent_sort`) to the same 523 calls: 466 reach the body probe and 80 the
 /// parametric leg. Read it as an ordering comparison and not as history — the three call
 /// sites did not previously share one gate, so nothing ever ran the old order over this
-/// exact call set. [`expr_needs_call_dispatch`]'s own doc carries the per-site count for
+/// exact call set. [`call_dispatch_shape`]'s own doc carries the per-site count for
 /// the walk trigger (~745 per load on examples/github-todo); WI-1036 deleted the
 /// `!is_builtin` clause that used to shield it, so every one of those calls now reaches
 /// this gate's own legs.
@@ -16573,6 +16577,42 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
     if !op_has_runnable_body(kb, op_sym) {
         return None;
     }
+    sort_is_parametric(kb, parent_sym).then_some(parent_sym)
+}
+
+/// WI-1043 — THE WALK TRIGGER'S gate: `op_sym` is an OPERATION declared by a
+/// PARAMETRIC sort, i.e. a spec op of EITHER half — [`defaulted_spec_op_parent`]'s
+/// (a runnable default a carrier may override) or [`lookup_spec_op_dispatch`]'s
+/// (body-less, resolved by call-site dispatch). Returns the parent spec sort.
+///
+/// ONE reader — [`call_dispatch_shape`] — and it is the union because
+/// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
+/// or refuses a defaulted call, the WI-210 block dispatches a body-less one and
+/// [`refuse_unarbitrated_supplier_tie`] refuses ITS tie. WI-1026 admitted only the
+/// defaulted half, so a rule body naming a BODY-LESS spec op reached no dispatch
+/// decision at all: MEASURED, `rule answer(?r) :- Desc.describe(leaf(), ?r)` on a
+/// body-less `describe` loaded CLEAN and answered `[]` for every supply shape — one
+/// supplier, two suppliers, own member or instance fact alike — while the identical
+/// call in an operation body pins the supplied impl and refuses the tie at load
+/// (WI-1027). Same program, two verdicts, decided by where the call is written.
+///
+/// THE OPERATION-HOOD LEG IS NOT DECORATION and is the one clause a reader will try to
+/// drop, since [`spec_op_parent_sort`] already spells "member of a parametric sort".
+/// That predicate is operation-AGNOSTIC: `anthill.prelude.Option.some`, an entity
+/// constructor declared inside a parametric sort, passes it. WI-1042 measured what
+/// admitting that population at THIS site costs — 14 tests across 4 suites, the walk
+/// firing `type_check_node` on entity-constructor calls. Both halves' own gates carry
+/// the same leg (`op_has_runnable_body` / `operation_has_no_body` each require an
+/// `OperationInfo`), so asking for one directly is what makes this their union and not
+/// a wider third reading. `wi1043_bodyless_rule_body_test::the_walk_gate_is_exactly_-
+/// the_two_halves` drives that equality over the corpus.
+///
+/// CLAUSE ORDER as [`defaulted_spec_op_parent`] measured it: the name split first (the
+/// cheap non-operation early-out — every relational atom head leaves here), then the
+/// `OperationInfo` probe, then [`sort_is_parametric`]'s O(|symbols|) leg last.
+pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
+    super::op_info::lookup_operation_info(kb, op_sym)?;
     sort_is_parametric(kb, parent_sym).then_some(parent_sym)
 }
 
@@ -41270,13 +41310,19 @@ fn check_one_spec_op_requirement(
     //     takes before its `NoCandidates` arm; `sort_provides` sees a sort as NOT
     //     providing ITSELF, so without this a self-receiver call (`splitFirst(s)` on
     //     a `Stream`) reads as a spurious `DontFire` ([`carrier_is_abstract_spec`]).
+    //   * WI-1043 — a WITNESS-PROVIDED carrier ([`carrier_provided_by_witness`]): the
+    //     instance exists and this guard's question cannot see it.
     let outcome = simp_guard_holds_core(kb, functor, spec_sort, |i| {
         aligned
             .as_ref()
             .and_then(|args| args.get(i))
             .and_then(|a| a.inferred_type())
             .and_then(|t| sort_functor_of_view(kb, &t))
-            .filter(|s| !is_sort_param_symbol(kb, *s) && !carrier_is_abstract_spec(kb, *s))
+            .filter(|s| {
+                !is_sort_param_symbol(kb, *s)
+                    && !carrier_is_abstract_spec(kb, *s)
+                    && !carrier_provided_by_witness(kb, spec_sort, *s)
+            })
     });
     // `Fire` (satisfiable) and `Suspend` (under-determined) are never errors —
     // only a ground carrier that provides no instance is statically missing.
@@ -41298,6 +41344,52 @@ fn check_one_spec_op_requirement(
         spec_sort_sym: spec_sort,
         abstract_params,
     });
+}
+
+/// WI-1043 — is `carrier` an instance of `spec_sort` through a WITNESS provision, i.e.
+/// one that ANOTHER sort declares for it (`sort Rival provides Desc[T = Leaf]`, WI-450)?
+///
+/// [`sort_provides`] walks the CARRIER'S OWN out-edges, and a witness provision is not
+/// one of them — it is filed under the witness. So the two answers differ exactly on
+/// this shape, and [`check_one_spec_op_requirement`]'s guard, which asks
+/// `sort_provides`, reads a witness-supplied carrier as having no instance and demands a
+/// `requires` clause for a requirement that is already met.
+///
+/// A LOAD REFUSAL OF A LEGAL PROGRAM, MEASURED both before and after WI-1043's widening:
+/// `sort Rival provides Desc[T = Leaf]` supplying a body-less `Desc.describe`, called as
+/// `leaf().describe(?r)` from a rule body, is refused with "missing `requires Desc[T =
+/// …]`" — while the SAME call in an operation body loads and answers the supplied `9`.
+/// It predates this ticket on the dot spelling (which the WI-282 walk has always typed)
+/// and WI-1043's widening would have extended it to the qualified spelling, since what
+/// feeds the guard is the argument's `inferred_type` and only a typed atom has one.
+///
+/// The verdict this produces is `Suspend`, not `Fire`: the guard's question is
+/// `sort_provides` and this says only that the question is the wrong one for this
+/// carrier — the same reading the two filters beside it already have (an abstract type
+/// param, an abstract spec sort). WI-450's carrier-as-artifact limit (058 §12) is the
+/// reason all three exist.
+///
+/// `witness_dispatch_carrier` is the ONE owner of "what counts as a witness, and for
+/// which carrier", shared with [`provision_supplier`]; it answers `None` for a provider
+/// that IS its own carrier, which is `sort_provides`' own case.
+///
+/// BINDING-BLIND, EXACTLY AS THE QUESTION IT CORRECTS IS. This asks whether SOME witness
+/// provision of the spec names this carrier, not whether one does at the call's other
+/// type arguments — so for a multi-parameter spec a provision at `Desc[T = Leaf, U =
+/// Int64]` declines the diagnostic for a call at `U = String` too. That is not a new
+/// imprecision: [`sort_provides`], the guard's own test and the one this stands beside,
+/// is a carrier-to-spec reachability question with no bindings in it either, and the
+/// guard reads only argument SORT HEADS ([`simp_guard_holds_core`]), which is all a
+/// binding-precise answer could be built from here. The direction is decline-only — it
+/// withholds a diagnostic, never accepts a dispatch — and closing it means giving this
+/// check the call's σ, which is the same input WI-653's carrier-alignment machinery
+/// wants and which the site above already defers to a driver (see the WI-653 note in
+/// [`check_one_spec_op_requirement`]).
+fn carrier_provided_by_witness(kb: &KnowledgeBase, spec_sort: Symbol, carrier: Symbol) -> bool {
+    let carrier_canon = kb.canonical_sort_sym(carrier);
+    provisions_of_spec(kb, spec_sort).any(|(provider, spec_t, _)| {
+        witness_dispatch_carrier(kb, spec_sort, provider, spec_t) == Some(carrier_canon)
+    })
 }
 
 /// Is `spec` a `SortView` wrapper? Same discriminant [`unwrap_spec_view`] uses
@@ -42352,15 +42444,15 @@ fn align_call_args_to_params(
     Some(out)
 }
 
-/// WI-282 / WI-1026: recursively rewrite the calls a rule body's dispatch DECIDES —
-/// an `Expr::DotApply`, and a DIRECT call on a defaulted spec op — to their
-/// dispatched form, preserving all non-call structure (`reassemble`'s ptr-eq
-/// short-circuit keeps unchanged subtrees allocation-free). Each is dispatched as a
-/// unit via the typer's own walk (`type_check_node`), which recurses into the
-/// receiver — so a nested `?x.a.b` chain dispatches outward-in through one call,
-/// never double-visited here. A pattern occurrence (`as_expr` = `None`) is left
-/// unchanged: a dot in a pattern's type annotation is a TYPE projection, not a
-/// value dispatch.
+/// WI-282 / WI-1026 / WI-1043: recursively rewrite the calls a rule body's dispatch
+/// DECIDES — an `Expr::DotApply`, and a DIRECT call on a spec op of either half — to
+/// their dispatched form, preserving all non-call structure (`reassemble`'s ptr-eq
+/// short-circuit keeps unchanged subtrees allocation-free). A dot or a DEFAULTED call is
+/// dispatched as a unit via the typer's own walk (`type_check_node`), which recurses into
+/// the receiver — so a nested `?x.a.b` chain dispatches outward-in through one call,
+/// never double-visited here. A BODY-LESS call is walked into first and then decided (see
+/// the acting arm). A pattern occurrence (`as_expr` = `None`) is left unchanged: a dot in
+/// a pattern's type annotation is a TYPE projection, not a value dispatch.
 ///
 /// WI-1026 added the second shape and with it the second REASON. A rule body naming
 /// a defaulted spec op directly (`Desc.describe(leaf(), ?r)`) has no dot to trigger
@@ -42373,66 +42465,49 @@ fn align_call_args_to_params(
 /// ONE owner rather than growing a rule-body copy (058 §3.1/§3.7: dispatch answers
 /// by the value, and a read that SELECTS goes loud on the second candidate).
 ///
-/// NARROWED to a defaulted spec-op head, deliberately, and this is the clause a
-/// reader is most likely to drop. `type_rule_bodies` has never type-checked
-/// rule-body calls, so widening to every `Expr::Apply` would report the whole
-/// backlog of never-checked rule bodies as new load errors — a corpus-wide change
-/// of a different kind, not this ticket's dispatch question. **OWNED BY WI-1043**,
-/// which records the general-`Expr::Apply` population (a rule-body call that is
-/// neither a dot, nor a defaulted spec op, nor a body-less one stays untyped) as its
-/// residue.
+/// WI-1043 added the BODY-LESS half — the same rule one guard over
+/// (`refuse_unarbitrated_supplier_tie` rather than `refuse_defaulted_supplier_tie`), and
+/// the sentence that used to exclude it was wrong on its own terms: "it has no default to
+/// shadow, so `reduce_op_value` leaves it un-ground and the goal residualizes rather than
+/// answering wrongly" — residualizing IS the wrong answer. MEASURED, every supply shape
+/// answered `[]` from a rule body where the same call in an operation body pins the
+/// supplied implementation or is REFUSED at load. The gate is [`spec_op_call_parent`],
+/// the union of the two halves, written once in [`defaulted_spec_op_parent`]'s
+/// neighbourhood rather than as a fourth spelling (WI-1042).
 ///
-/// A BODY-LESS spec op is out too: it has no default to shadow, so `reduce_op_value`
-/// leaves it un-ground and the goal residualizes rather than answering wrongly. That
-/// sentence cited WI-1027, which is DELIVERED and owns the OPERATION-body half only —
-/// **the rule-body half is WI-1043**, which measured it: a body-less spec op with two
-/// suppliers, called from a rule body, loads clean and answers `[]` where the spec
-/// claimed REFUSED. WI-1043 widens this gate or records at it why it may not; either
-/// way the clause is written once, in [`defaulted_spec_op_parent`]'s neighbourhood
-/// rather than as a fourth spelling (WI-1042).
+/// STILL NARROWED at the general `Expr::Apply`, deliberately, and this is the clause a
+/// reader is most likely to drop. `type_rule_bodies` has never type-checked rule-body
+/// calls, so widening to EVERY apply would report the whole backlog of never-checked rule
+/// bodies as new load errors — a corpus-wide change of a different kind, not a dispatch
+/// question. **OWNED BY WI-1056**, which owns that population (a rule-body call that is
+/// neither a dot nor a spec op stays untyped) together with the same backlog seen from
+/// the other side: the failures a body-less atom's type-check finds and this frame does
+/// not report ([`CallDispatch::reports_every_failure`], where the 41-error measurement
+/// is).
 fn dispatch_calls_in_occ(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
-    match occ.as_expr() {
-        // ONE predicate for the shapes this walk decides, shared with the pre-scan
-        // ([`occ_needs_call_dispatch`]) so a shape walked but not acted on, or acted
-        // on but not walked, is impossible — and ONE error tail for both, since the
-        // policy below is about type_check_node's outcome, not about which shape
-        // produced it.
-        Some(e) if expr_needs_call_dispatch(kb, e) => match type_check_node(kb, env, occ, None) {
-            // `result.node` is the dispatched tree (method `Apply` / reflect
-            // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
-            // the same form an op body's call rewrites to.
-            Ok(result) => result.node,
-            // The ONE deliberately-tolerated failure: an UNRESOLVED receiver
-            // (`receiver_sort: None`) is not a value dispatch we can decide —
-            // either a polymorphic body var with no constraining goal, or
-            // (load-bearing) the reflect `Expr.dot_apply` CONSTRUCTOR carried as
-            // data in a rule body (an `Expr` induction principle / reflection
-            // rule), which `materialize_from_handle` collapses to `Expr::DotApply`
-            // via the WI-425 isomorphism. Erroring there would reject every program
-            // defining such a sort; leave it untouched (the pre-WI-282 status quo —
-            // the dot flows to SLD structurally). This is the sole case where a
-            // `DotApply` legitimately survives type-check.
-            Err(TypeError::DotDispatchNoMatch { receiver_sort: None, .. }) => Rc::clone(occ),
-            // Every OTHER failure is a REAL error — surface it, never a silent skip
-            // (project principle: loud over silent; the `Err(_) => Rc::clone(occ)`
-            // catch-all this replaced masked genuine errors — a member-not-found on
-            // a KNOWN receiver [`?p.bogus`], a WI-602 DEFINITE value-precondition
-            // violation [`?b.guarded(0)`], any type / arity / effect mismatch inside
-            // the dispatched form). A rule-body FLOAT is NOT one of these: the
-            // WI-557/602 gate skips it, so `check_apply_iter` returns `Ok` and the
-            // call dispatches clean (`rule_body_value_precondition_dot_dispatches`).
-            // The node is left in place so downstream still sees an un-rewritten one.
-            Err(e) => {
-                errors.push(e);
-                Rc::clone(occ)
-            }
-        },
-        Some(expr) => {
+    // ONE predicate for the shapes this walk decides, shared with the pre-scan
+    // ([`occ_needs_call_dispatch`]) so a shape walked but not acted on, or acted on
+    // but not walked, is impossible. It answers WHICH shape, because the error tail
+    // below is not the same for all three (WI-1043).
+    let shape = occ.as_expr().and_then(|e| call_dispatch_shape(kb, e));
+    // WI-1043 — a BODY-LESS spec-op call is walked INTO as well as decided, so every
+    // node beneath it keeps the decision and the error policy it had before this
+    // ticket; the shape was admitted for a DISPATCH VERDICT, not to take the subtree
+    // over. `type_check_node` types the whole atom, and this frame's tail reports only
+    // TIES for that shape, so handing it the subtree SWALLOWED two delivered rule-body
+    // diagnostics — `eq(?v, ?p.bogus)`'s member-not-found on a KNOWN receiver (WI-282)
+    // and `eq(?r, ?b.guarded(0))`'s definite value-precondition violation (WI-602),
+    // both raised INSIDE an `eq` atom, which loads as a call on the body-less
+    // `PartialEq.eq`. MEASURED as two suite failures, not predicted. The two older
+    // shapes do not recurse: `type_check_node` owns their subtree and reports all of it.
+    let walked = match (shape, occ.as_expr()) {
+        (Some(CallDispatch::Checked), _) | (_, None) => Rc::clone(occ),
+        (_, Some(expr)) => {
             // Collect child clones first so the immutable borrow on `occ` ends
             // before the mutable-`kb` recursion below.
             let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -42443,17 +42518,157 @@ fn dispatch_calls_in_occ(
                 .collect();
             super::simp_rewrite::reassemble(occ, &new_children)
         }
-        None => Rc::clone(occ),
+    };
+    let Some(shape) = shape else { return walked };
+    // Everything below reads `walked`, never the parameter: for the recursing shape the
+    // children may have been rewritten, and both the type-check and the node this returns
+    // must see that tree. It is the same `Rc` for the two non-recursing shapes.
+    match type_check_node(kb, env, &walked, None) {
+        // `result.node` is the dispatched tree (method `Apply` / reflect
+        // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
+        // the same form an op body's call rewrites to.
+        Ok(result) => result.node,
+        // The ONE deliberately-tolerated failure: an UNRESOLVED receiver
+        // (`receiver_sort: None`) is not a value dispatch we can decide —
+        // either a polymorphic body var with no constraining goal, or
+        // (load-bearing) the reflect `Expr.dot_apply` CONSTRUCTOR carried as
+        // data in a rule body (an `Expr` induction principle / reflection
+        // rule), which `materialize_from_handle` collapses to `Expr::DotApply`
+        // via the WI-425 isomorphism. Erroring there would reject every program
+        // defining such a sort; leave it untouched (the pre-WI-282 status quo —
+        // the dot flows to SLD structurally). This is the sole case where a
+        // `DotApply` legitimately survives type-check.
+        Err(TypeError::DotDispatchNoMatch { receiver_sort: None, .. }) => walked,
+        // Every OTHER failure is a REAL error — surface it, never a silent skip
+        // (project principle: loud over silent; the `Err(_) => Rc::clone(occ)`
+        // catch-all this replaced masked genuine errors — a member-not-found on
+        // a KNOWN receiver [`?p.bogus`], a WI-602 DEFINITE value-precondition
+        // violation [`?b.guarded(0)`], any type / arity / effect mismatch inside
+        // the dispatched form). A rule-body FLOAT is NOT one of these: the
+        // WI-557/602 gate skips it, so `check_apply_iter` returns `Ok` and the
+        // call dispatches clean (`rule_body_value_precondition_dot_dispatches`).
+        // The node is left in place so downstream still sees an un-rewritten one.
+        //
+        // …EXCEPT for the shape WI-1043 admitted, whose reporting rule is
+        // narrower and is stated at [`CallDispatch::reports_every_failure`].
+        Err(e) => {
+            if shape.reports_every_failure() {
+                errors.push(e);
+            } else {
+                errors.extend(
+                    e.flatten().into_iter().filter(|e| own_call_tie(&walked, e)),
+                );
+            }
+            walked
+        }
     }
 }
 
-/// WI-282 / WI-1026: is THIS node a call [`dispatch_calls_in_occ`] must decide — an
-/// `Expr::DotApply`, or (WI-1026) a direct call to a DEFAULTED spec op?
+/// WI-1043 — WHICH shape [`dispatch_calls_in_occ`] is deciding, and hence which of its
+/// failures it may report. Three shapes reach the same `type_check_node` call; two of
+/// them have been reaching it since WI-282 / WI-1026 and the third was admitted here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CallDispatch {
+    /// An `Expr::DotApply` (WI-282) or a direct call on a DEFAULTED spec op (WI-1026).
+    Checked,
+    /// WI-1043 — a direct call on a BODY-LESS spec op.
+    BodyLessSpecOp,
+}
+
+impl CallDispatch {
+    /// WI-1043 — may a failure of `type_check_node` on this shape become a load error?
+    ///
+    /// FOR THE TWO OLDER SHAPES, YES, and the reasons are at the tail that asks. For the
+    /// BODY-LESS one, only the 058 tie refusals of its OWN call ([`own_call_tie`]) — and
+    /// this narrowing is the whole reason WI-1043's widening could ship, so it is a
+    /// MEASUREMENT and not a caution:
+    ///
+    /// A rule body has NEVER been type-checked (`type_rule_bodies` decides dispatch, it
+    /// does not check types), and body-less spec ops are what its atoms are mostly MADE
+    /// of: an `=` goal loads as a call on `PartialEq.eq`. Admitting the shape without
+    /// this clause reports the whole backlog of that never-run pass as new load errors.
+    /// MEASURED PER LOAD (counters at this arm, 2026-08-08): **133** newly decided
+    /// body-less call sites on a whole-corpus load — stdlib + host bindings + `examples/`
+    /// + `anthill-todo` + `anthill-testcases`, 28 of them on stdlib + bindings alone —
+    /// whose failures are **19 leaf errors**: 15 `DotDispatchNoMatch` (a nested dot the
+    /// per-node tolerated arm above used to swallow, now typed as part of its enclosing
+    /// atom), 2 `TypeMismatch` (`?P(sub(?n, 1))` in `bigint`'s induction rule, whose `1`
+    /// is an `Int64` literal where `BigInt` is expected; `splitFirst(?a) = some(pair(…))`
+    /// in `logical_stream`, whose two sides differ by an effect row) and 2
+    /// `UnknownApplyFunctor` (an entity constructor inside an `=` goal in
+    /// `examples/webots-modelling`). **ZERO of the 19 is a dispatch verdict.** Reported,
+    /// they render as 7 load errors in 4 files — every one of those programs loads and
+    /// runs today. Refusing them is a corpus-wide change of a different kind, the same
+    /// one WI-1026 declined for the general-`Expr::Apply` population and for the same
+    /// reason, and it is **WI-1056** that owns it.
+    ///
+    /// SO THIS IS NOT A SILENT SKIP OF A NEW FAILURE. It is the pre-WI-1043 status quo
+    /// (the call was not typed at all) held for everything except the ONE question this
+    /// widening asks. The list is POSITIVE rather than a deny-list of those three
+    /// variants so that a NEW error variant defaults to the status quo instead of
+    /// silently refusing the corpus.
+    fn reports_every_failure(self) -> bool {
+        match self {
+            CallDispatch::Checked => true,
+            CallDispatch::BodyLessSpecOp => false,
+        }
+    }
+}
+
+/// WI-1043 — is `e` a 058 TIE raised for `occ`'s OWN call? The two questions a BODY-LESS
+/// spec-op call may report from [`dispatch_calls_in_occ`], and the only two.
+///
+/// THE TIES, because they are the whole of "a read that SELECTS goes loud on the second
+/// candidate" (§3.7 / §4.9): [`TypeError::AmbiguousSpecOpDispatch`] is WI-1027's supplier
+/// tie (two TEXTS supplying one carrier), [`TypeError::DispatchAmbiguous`] the provider
+/// tie the same block yields to
+/// (`wi1027…::a_provision_tie_is_still_reported_as_a_provider_tie`).
+/// [`TypeError::DispatchNoMatch`] is deliberately NOT one of them, and its absence is
+/// what a reader will question: "the dispatch resolved nothing" is not a tie — on an
+/// abstract rule-body carrier it is the ORDINARY outcome (no enclosing operation's
+/// `requires` can license the call, so `check_apply_iter`'s NoMatch arm has nothing to
+/// yield to) — and admitting it would refuse programs on a question this ticket does not
+/// own.
+///
+/// **OWN CALL, and that clause is a REGRESSION FIX, not a refinement.** This frame types
+/// the WHOLE atom, so a tie on a call NESTED inside it is re-derived here after the
+/// recursion above already decided that child and reported it — the same refusal printed
+/// twice at one span. DRIVEN on this ticket's own fixture (found by its /code-review, not
+/// predicted): `rule answer(?r) :- eq(?r, leaf().describe())` reported the tie TWICE,
+/// where before this ticket the dot child reported it exactly once. `=` goals load as
+/// `PartialEq.eq` calls, so every tie'd call written inside one hits it. The identity is
+/// the pair `(op, span)`: the dispatched SPEC OP and the call site, both of which
+/// `check_apply_iter` takes from this very node (`span = Some(node.span.span)`), so a
+/// descendant differs in one or the other. `a_tie_nested_in_an_eq_goal_is_reported_once`
+/// is the driver.
+fn own_call_tie(occ: &Rc<NodeOccurrence>, e: &TypeError) -> bool {
+    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return false };
+    let here = Some(occ.span.span);
+    match e {
+        TypeError::AmbiguousSpecOpDispatch { op, span, .. }
+        | TypeError::DispatchAmbiguous { op, span, .. } => op == functor && *span == here,
+        _ => false,
+    }
+}
+
+/// WI-282 / WI-1026 / WI-1043: is THIS node a call [`dispatch_calls_in_occ`] must decide
+/// — an `Expr::DotApply`, or a direct call on a spec op (DEFAULTED, WI-1026; or
+/// BODY-LESS, WI-1043)? Answers WHICH, since the error tail differs.
 ///
 /// THE one predicate, asked by the walk's acting arm and by its pre-scan
 /// ([`occ_needs_call_dispatch`]) alike. Two spellings of "which shapes we decide"
 /// is the drift this ticket was created by: a shape walked but not acted on costs
 /// a pass, a shape acted on but not walked is silent.
+///
+/// **WI-1043 — the spec-op arm is [`spec_op_call_parent`], BOTH halves.** WI-1026
+/// admitted the defaulted half only, on the reasoning that a body-less op "has no default
+/// to shadow, so `reduce_op_value` leaves it un-ground and the goal residualizes rather
+/// than answering wrongly". Residualizing IS the wrong answer: MEASURED, `rule answer(?r)
+/// :- Desc.describe(leaf(), ?r)` on a body-less `describe` loaded clean and answered `[]`
+/// for EVERY supply shape — with one supplier, where the identical call in an operation
+/// body answers the supplied value, and with two, where that call is REFUSED at load
+/// (WI-1027). The half is admitted here so both reach `check_apply_iter`'s two blocks,
+/// which is where the pin and the refusal already live.
 ///
 /// **WI-1036 — the spec-op arm is [`defaulted_spec_op_parent`] AND NOTHING ELSE.** It was
 /// that gate plus `!kb.is_builtin(f)`, excluding the `PartialOrd.{gt,gte,lt,lte}` family
@@ -42498,16 +42713,32 @@ fn dispatch_calls_in_occ(
 /// and `builtin_cmp` fails silently on operands it cannot compare. Classifying it does
 /// not help; **WI-879 owns it**, and its acceptance is exactly that such a comparison
 /// "either answers correctly or raises, never silently fails".
-fn expr_needs_call_dispatch(kb: &KnowledgeBase, expr: &Expr) -> bool {
+fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr) -> Option<CallDispatch> {
     match expr {
-        Expr::DotApply { .. } => true,
-        Expr::Apply { functor, .. } => defaulted_spec_op_parent(kb, *functor).is_some(),
-        _ => false,
+        Expr::DotApply { .. } => Some(CallDispatch::Checked),
+        // TWO gate calls, and the second is [`defaulted_spec_op_parent`] rather than the
+        // bare body probe it conjoins, deliberately: naming the half by re-asking the
+        // OWNER is what makes a clause added there reach this site too — the WI-1042
+        // drift. MEASURED rather than assumed to be cheap, as reaches of
+        // [`sort_is_parametric`] (51 µs, O(|symbols|)) per stdlib + host-bindings load:
+        // 1004 before this ticket, 1170 with the union admitting, **1178** with the
+        // owner re-asked. The second call costs 8, because it runs its body probe BEFORE
+        // the parametric leg — so it returns early for exactly the population this arm
+        // added, and pays the leg twice only for the handful of DEFAULTED spec-op call
+        // sites (WI-1036 counted 4–5 of those).
+        Expr::Apply { functor, .. } => spec_op_call_parent(kb, *functor).map(|_| {
+            if defaulted_spec_op_parent(kb, *functor).is_some() {
+                CallDispatch::Checked
+            } else {
+                CallDispatch::BodyLessSpecOp
+            }
+        }),
+        _ => None,
     }
 }
 
 /// WI-282 / WI-1026: does `occ` CARRY, anywhere in its subtree, a node
-/// [`expr_needs_call_dispatch`] answers for? A cheap pre-scan so the dispatch walk
+/// [`call_dispatch_shape`] answers for? A cheap pre-scan so the dispatch walk
 /// skips rule bodies with none. Explicit-stack walk (matching its sibling
 /// [`occurrence_contains_functor`]) so a deeply-nested body can't overflow the host
 /// stack.
@@ -42515,12 +42746,12 @@ fn expr_needs_call_dispatch(kb: &KnowledgeBase, expr: &Expr) -> bool {
 /// The conditions share ONE pre-scan because they share one walk: a body with only
 /// a spec-op call still needs the var-type env installed, which is what
 /// `type_rule_bodies` builds around this gate. Still cheap after WI-1026 widened it
-/// — see [`expr_needs_call_dispatch`] for the measurement that says so.
+/// — see [`call_dispatch_shape`] for the measurement that says so.
 fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         if let Some(expr) = o.as_expr() {
-            if expr_needs_call_dispatch(kb, expr) {
+            if call_dispatch_shape(kb, expr).is_some() {
                 return true;
             }
             for_each_child(expr, |c| stack.push(Rc::clone(c)));

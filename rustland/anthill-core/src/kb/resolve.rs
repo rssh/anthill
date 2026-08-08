@@ -1309,7 +1309,7 @@ impl SearchStream {
         }) {
             {
             if pos_arity > 0
-                && kb.functional_relation_arity(f) == Some(pos_arity - 1)
+                && kb.dispatched_relation_arity(&goal_val, f) == Some(pos_arity - 1)
             {
                 let n = pos_arity - 1;
                 // Rebuild the call in the OCCURRENCE carrier: `reduce_op_value`
@@ -6945,6 +6945,45 @@ impl KnowledgeBase {
             return None;
         }
         Some(params)
+    }
+
+    /// WI-1043 — [`Self::functional_relation_arity`] asked of the operation the goal
+    /// DISPATCHES to, which is the typer's pin when there is one.
+    ///
+    /// A rule-body goal on a BODY-LESS spec op (`Desc.describe(leaf(), ?r)`) is pinned by
+    /// `check_apply_iter` to the carrier's implementation exactly as the same call in an
+    /// operation body is — but every clause of the sibling above reads the SPELLED
+    /// functor, and a body-less spec op has no body by definition, so the sibling
+    /// answered `None` and the goal residualized: MEASURED, the rule answered `[]` where
+    /// the operation body answered the supplied `7`. Reading the pin here is the goal
+    /// shape's half of the same rule `reduce_op_value` already follows one level down
+    /// (`classified_apply_target().unwrap_or(functor)`, WI-1026) — without it the pin is
+    /// written, carried, and never consulted, because the goal never becomes a call.
+    ///
+    /// **THE RULE-LESS CLAUSE STAYS ON THE SPELLED FUNCTOR, and it is the one that makes
+    /// this two questions rather than one.** "Does a hand-written clause of this functor
+    /// win?" is about the name the goal is written with; "is there a runnable, effect-free
+    /// body of arity n?" is about the target. A body-less spec op whose clauses live in a
+    /// separate `rule {}` — `Ord.lt`, the shape WI-237's doc names — must resolve through
+    /// those clauses, and asking the pin's rule-set instead would shadow them with the
+    /// pinned body. Reading the effect clause off the TARGET is deliberate too: an
+    /// override may declare an effect the spec's signature did not (WI-453), and an
+    /// effectful op is not a logical relation whichever side declares it.
+    ///
+    /// `Value::Node` only: the pin lives on the occurrence (`CallClass::PinNow`), so a
+    /// `Value::Term` goal carries none and this is the sibling verbatim.
+    fn dispatched_relation_arity(&self, goal: &Value, f: Symbol) -> Option<usize> {
+        let pinned = match goal {
+            Value::Node(o) => o.classified_apply_target().filter(|t| *t != f),
+            _ => None,
+        };
+        let Some(target) = pinned else {
+            return self.functional_relation_arity(f);
+        };
+        if self.rules_by_functor_iter(f).next().is_some() {
+            return None;
+        }
+        self.functional_relation_arity(target)
     }
 
     /// WI-580 (design §3.3): abstract-interpretation fallback for a suspended
