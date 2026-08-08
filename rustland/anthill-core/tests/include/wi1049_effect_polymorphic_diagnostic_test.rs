@@ -77,6 +77,40 @@ fn polymorphic_row_is_not_reported_as_effectful() {
 }
 
 #[test]
+fn path_dependent_row_projection_is_polymorphic_too() {
+    // The second spelling of "the row is a parameter": `effects s.E` — the
+    // RECEIVER's effect parameter, projected (WI-376/WI-606). `Stream.isEmpty`
+    // is written exactly this way.
+    //
+    // FOUND BY DRIVING the law one place further in: inside `List`, the
+    // `insert` leg passes (List declares its OWN pure `insert`, list.anthill:254
+    // — an earlier claim that it declares neither was wrong), leaving
+    // `Stream.isEmpty`'s `{s.E}` as the only refusal. Reading the HEAD alone
+    // called that `Effectful`, reproducing the misdescription WI-1049 exists to
+    // fix, one term shape along.
+    //
+    // BACKED OUT (the `ExprCarried` arm of `effect_member_is_parametric`): this
+    // test FAILS — `{s.E}` reverts to `Effectful`. The other tests in this file
+    // pass either way; they never exercise a projection.
+    let src = r#"
+        namespace wi1049.proj
+          import anthill.prelude.{Int64, Bool}
+          sort Feed
+            sort T = ?
+            effects E = ?
+            operation peek(f: Feed) -> Bool effects f.E
+          end
+        end
+    "#;
+    let block = block_for(src, "wi1049.proj.Feed.peek")
+        .expect("a projected row still blocks equational treatment");
+    assert!(matches!(block, EquationBlock::Polymorphic(_)),
+        "`effects f.E` projects the receiver's row PARAMETER — polymorphic, not \
+         effectful; got {block:?}");
+    assert!(block.row().contains("E"), "the row must still be named: {}", block.row());
+}
+
+#[test]
 fn concrete_effect_still_reads_as_effectful() {
     // CONTROL — passes with and without the change, by design. A concrete label
     // must keep the original classification and the original claim: no carrier

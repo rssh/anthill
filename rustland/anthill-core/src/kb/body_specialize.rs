@@ -1101,17 +1101,55 @@ impl KnowledgeBase {
         // A member this cannot read (a `denoted` `Value::Node` row element) counts
         // as concrete: that keeps an unclassifiable row on the pre-WI-1049 wording
         // rather than promising a purity the reader cannot check.
-        let polymorphic = info.effects.iter().all(|e| match e {
-            crate::eval::value::Value::Term { id, .. } => {
-                super::typing::is_type_param_value(self, *id)
-            }
-            _ => false,
-        });
+        let polymorphic = info.effects.iter().all(|e| self.effect_member_is_parametric(e));
         Some(if polymorphic {
             EquationBlock::Polymorphic(row)
         } else {
             EquationBlock::Effectful(row)
         })
+    }
+
+    /// WI-1049 — is one effect-row member a PARAMETER rather than an effect? Two
+    /// spellings, and both had to be driven to find the second:
+    ///
+    ///   * a bare row parameter — `effects E` on a spec that declares
+    ///     `effects E = ?` (`PersistentCollection.insert`, `Iterable.isEmpty`);
+    ///   * a PATH-DEPENDENT projection of one — `effects s.E` (`Stream.isEmpty`,
+    ///     WI-376/WI-606), where the row is the *receiver's* effect parameter.
+    ///
+    /// The second is what a law placed inside `List` runs into: `List.insert` is
+    /// its own pure operation and passes, and the only thing left refusing the
+    /// law is `Stream.isEmpty`'s `{s.E}` — which is a parameter projected off a
+    /// formal receiver, not an effect. Reading only the head (`is_type_param_value`)
+    /// called it `Effectful`, reproducing the very misdescription WI-1049 set out
+    /// to fix, one term shape further along.
+    ///
+    /// In THIS position the receiver is always a formal parameter — these are
+    /// declared rows, read off `OperationInfo`, before any call grounds them
+    /// (`eliminate_type_projections` is what grounds one at a call site). So an
+    /// `ExprCarried` projection here is parametric by construction; there is no
+    /// concrete-receiver case to exclude.
+    ///
+    /// NOT a deep `contains_type_param` walk, deliberately: that would classify
+    /// `Modify[c]` and `Error[T = P]` as parametric because a parameter appears
+    /// somewhere INSIDE them. Those are concrete effects applied to arguments —
+    /// the effect is `Modify`, whichever cell it names. The question is only ever
+    /// about the row member's HEAD.
+    fn effect_member_is_parametric(&self, e: &crate::eval::value::Value) -> bool {
+        // A path-dependent projection (`s.E`) — carrier-agnostically, since one
+        // can ride as a `Value::Node` as well as a `Value::Term`.
+        if matches!(
+            super::typing::extract_type(self, e),
+            super::typing::TypeExtractor::ExprCarried { .. }
+        ) {
+            return true;
+        }
+        match e {
+            crate::eval::value::Value::Term { id, .. } => {
+                super::typing::is_type_param_value(self, *id)
+            }
+            _ => false,
+        }
     }
 
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
