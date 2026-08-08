@@ -290,6 +290,59 @@ asks about a term's *typing*, so it is a reflective predicate — nearer
 operations and the `Term`/`KB` reflect surface exist), but it decides where the
 predicate lives and what it may be applied to.
 
+### naming
+
+`has_effect` / `hasno_effect` are placeholders and should not survive.
+**`effect_present(X, E)` / `effect_absent(X, E)`** is the better pair, for a
+reason beyond taste: *present* is already this system's own word for exactly this
+property — a guarded atom is "**present** iff `guard` is not refuted"
+(`node_occurrence.rs`, proposal 048). Reusing it keeps one vocabulary instead of
+minting a second for the same idea.
+
+One caveat any name must survive: the pair is **not** a simple
+positive/negative. Under the never-NAF discipline below, `effect_absent` requires
+a *positive refutation* of the guard, so it means "provably cannot occur", not
+"not observed" — and there is a third state, undetermined, where neither holds. A
+name suggesting plain negation (`not_has_effect`) would mislead about that. If
+the modality should be visible in the name itself, `effect_possible` /
+`effect_impossible` says it outright at the cost of length.
+
+### the guarded declaration IS the definition
+
+The per-label predicate needs no new analysis, because a guarded effect atom is
+already a Horn clause written in effect-row syntax. From the stdlib
+(`int64.anthill:65`):
+
+```anthill
+operation div(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }
+```
+
+reads directly as
+
+```
+has_effect(div(?a, ?b), Error[DivisionByZero])   :- eq(?b, 0)      -- the declaration, verbatim
+hasno_effect(div(?a, ?b), Error[DivisionByZero]) :- neq(?b, 0)     -- its REFUTATION
+```
+
+**Mind the polarity: `hasno_effect` carries the refutation of the guard, not the
+guard.** `Err :- eq(b,0)` says the error is present *when* `b = 0`, so absence is
+conditioned on `neq(b, 0)`. Getting this backwards would license dropping the
+error exactly where it fires.
+
+And it must be a **constructive** refutation. WI-067 already decided this in the
+same words: *"drop the guarded element only on a positive proof of ¬G (never
+NAF)"*, and framed the whole mechanism as *"SLD refutation over the
+effect-row-as-Horn-theory"*. So this section is not proposing a new predicate so
+much as **naming one that WI-067's discharge already computes** — which is the
+strongest argument for the reification, and also the reason it is cheap.
+
+**What the Horn reading does NOT cover is exactly the boundary Q3 drew.** A
+guarded atom has a clause. An *unguarded* atom (`s.E`, `{External}`) has none, so
+there is nothing to refute; a row *variable* has none either. Both stay
+**undetermined**, and under the never-NAF discipline neither predicate succeeds
+there. The Horn reading therefore buys the guarded case and leaves the
+polymorphic case exactly where Q3 put it — which is a consistency check on both.
+
 Two things make this cheaper and more coherent than it first looks:
 
 - **It reifies a predicate that already exists internally.** "Is this row empty?"
