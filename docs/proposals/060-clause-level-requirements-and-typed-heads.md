@@ -141,7 +141,7 @@ member read through the type, which is why they share the name.
 
 - **Derived for an all-nullary closed ADT** (the WI-743 finiteness gate): the
   loader derives `domain(red())`, `domain(green())`, `domain(blue())` from
-  `sort Colour`'s variants — declaration order, once each. The 058 §3.9 move
+  `sort Colour`'s variants — declaration order, once each. The 058 §3.10 move
   (derive a row from structure), applied to values.
 - **User-definable for any sort** — a hand-written `domain` makes any sort a
   generator. Today's wrapper pattern (`sort Palette` + three `palette(c: …)`

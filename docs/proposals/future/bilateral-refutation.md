@@ -1,179 +1,126 @@
-# Future: Bilateral refutation — negative evidence as a first-class channel
+# Future: Refutation as evidence — what two-sided type theory offers anthill
 
-> **Stub** (2026-08-06) — to be extended. Unnumbered (see [README](README.md)).
-
-## Idea
-
-Anthill already carries **four hand-rolled instances of one mechanism**:
-*a refutation is evidence, and it is not the same thing as failure-to-prove.*
-Each was invented locally, for a local problem, under a local name. Name the
-mechanism once and they condense.
-
-1. **`NonEq`** (`stdlib/anthill/prelude/eq.anthill:43`). A carrier declares its
-   equality non-reflexive by **exhibiting a witness** — `nonEqRefl()` returns a
-   `w` with `eq(w, w) = false`. The file already says what this is: "the
-   constructive form of `∃x. eq(x, x) = false` (Anthill has no `∃` in rule
-   bodies, so the existential is Skolemized to a nullary witness operation)."
-   `Eq` ⊥ `NonEq` is checked at load (WI-658); a carrier providing **neither** is
-   unconstrained. The `Map[K = Float]` refusal is deliberately *negative* — it
-   fires on a witnessed `NonEq`, never on an absent `Eq`
-   (`docs/kernel-language.md:2043`).
-2. **`ProofResult.Disproved(counterexample: Term, solver: String)`**
-   (`stdlib/anthill/prelude/meta.anthill`, the `ProofResult` enum) — a refutation with its witness,
-   already a distinct constructor.
-3. **The `⊥`-headed denial** (`docs/kernel-language.md:994`) — a clause with no
-   positive conclusion.
-4. **Typing judgements as goals.** `(?x: T)` desugars to a
-   `TypeOf(occ: ?x, type: T)` body goal (`rustland/anthill-core/src/parse/convert.rs:3727`),
-   and hypothetical goals push antecedents as scoped assumptions resolved as
-   `Candidate::Assumption` (`kb/resolve.rs:296`, `:1483`). Assumptions about
-   arbitrary *positioned* terms, not just variables — proposal 022's occurrences.
-
-A fifth signal is the **third outcome anthill keeps rediscovering without
-naming**: `=` on a non-ground operand *suspends*; an overriding carrier buried
-in non-overriding structure *suspends*; an over-budget compare "degrades to
-*undecided*, never to a wrong verdict" (`docs/kernel-language.md:2049`–`2051`).
-Proved / refuted / undetermined is not a degradation — it is the honest state of
-a system that does not assume excluded middle.
+> **Stub** (2026-08-08) — to be extended. Unnumbered (see [README](README.md)).
 
 ## Basis
 
 > Celia Mengyue Li, Steven Ramsay. *Logical Foundations of Two-Sided Type
-> Theory*. **Journal of the ACM**, 2026. arXiv:[2607.14325](https://arxiv.org/abs/2607.14325).
+> Theory*. **arXiv:[2607.14325](https://arxiv.org/abs/2607.14325)**, 15 Jul 2026
+> (81 pp., formatted for submission; no journal-ref, so cite as a preprint).
 
 Two-sided type systems (Ramsay & Walpole, *Ill-Typed Programs Don't Evaluate*,
 POPL'24, [10.1145/3632909](https://doi.org/10.1145/3632909)) generalise the
-typing judgement to a sequent `M₁:A₁, …, Mₖ:Aₖ ⊢ N₁:B₁, …, Nₘ:Bₘ` — assumptions
-about **arbitrary terms**, and **any number** of conclusions, including zero
-(`add(x, λy.y) : Nat ⊢` is a certificate that the program is defective). The
-JACM paper supplies the propositions-as-types reading: **bilateral logic**.
+typing judgement to a sequent `M₁:A₁, …, Mₖ:Aₖ ⊢ N₁:B₁, …, Nₘ:Bₘ`: assumptions
+about **arbitrary terms**, and **any number** of conclusions — including zero,
+where `add(x, λy.y) : Nat ⊢` certifies the program is defective (it is
+meaningful *because the right side is empty*; the "or diverges" slack the
+reading allows attaches to the right-hand conclusions).
+
+This paper supplies the propositions-as-types reading: **bilateral logic**.
 Wansing's 2Int has two mutually inductive primitive judgements, proof and *dual
-proof*; Nelson's strong negation `~A` switches sides of the turnstile with **no
-term former** (the same term is the evidence). New systems `2λInt`, `2λInt~`,
-`2λHOL` (two-sided Geuvers' λHOL), proved consistent, strongly normalising, and
-satisfying the existence property **and its dual**.
+proof*; Nelson's strong negation `~A` is added on top, and (Wansing's design)
+has **no term former** — the same term is the evidence, transported across the
+turnstile. Three systems: `2λInt`, `2λInt~` (both shown to correspond exactly to
+2Int and its strong-negation extension, Thm 3.15 / Cor 3.16), and `2λHOL`.
+**Only `2λHOL`** is proved consistent, strongly normalising, and to satisfy the
+existence property and its dual — the two propositional systems carry
+correspondence results only.
 
-Two results carry the design:
+Two ideas carry over:
 
-- **Constructive refutation** (Prawitz, quoted at p.5): refuting `A ∧ B` by
-  deriving absurdity from it does *not* say which conjunct failed. Genuine
-  refutation has its own rules, structured by the connective.
-- **Dual Existence Property** (Thm 7.8(ii)): a refutation of `∀a:K. A` *directly
-  yields* a witness `B` and a refutation of `A[B/a]`. Their Example 7.11 —
-  refuting reachability yields the edge-closed set omitting the target, i.e. the
-  inductive invariant. Example 7.10 is equality: intuitionistic `¬(A =ₖ B)` has
-  uninformative content, whereas a refutation *is* a property satisfied by `A`
-  and not `B`.
+- **Constructive refutation** (Prawitz, p.5): refuting `A ∧ B` by deriving
+  absurdity from it does not say *which* conjunct failed. Genuine refutation has
+  its own rules, structured by the connective.
+- **Dual Existence Property** (Thm 7.8(ii)): a refutation of `∀a:K. A` yields a
+  witness `B` and a refutation of `A[B/a]`. Example 7.11 — refuting reachability
+  yields the edge-closed set omitting the target, i.e. the inductive invariant.
+  Example 7.10 is equality: a refutation of `A =ₖ B` is a property `P` together
+  with **a proof of `P A` and a refutation of `P B`** — note the second half is
+  itself a refutation, not an absence.
 
-**The load-bearing discipline** (paper §8): on the left, `M : A` means *M is a
-refutation of A* — strictly **stronger** than "M is not of type A", and the
-strengthening is what makes their rules sound. `NonEq` already honours it (a
-witness, not an absence). Any generalisation must; a `refutes` channel that
-quietly admits "we could not prove it" would be unsound in exactly the way the
-paper documents.
+**The load-bearing discipline** (§8): on the left, `M : A` means *M is a
+refutation of A*. The paper is explicit that this **supersedes** the earlier
+POPL'24 reading ("M is not a term of type A") and that the strengthening "is
+necessary for the soundness of our rules". A channel that admits "we could not
+prove it" reproduces exactly the unsoundness §8 warns against.
 
-## What it condenses
+## What it says about anthill
 
-- **`Eq`/`NonEq` — settled, and mostly *against* a negative channel.** See
-  [proposal 058 §3.9](../058-modular-instances.md). The use-site question is
-  answered positively: derive `Eq` congruently from the parts (`provides
-  Eq[Pair[A,B]] :- Eq[A], Eq[B]`) and let the check read that, discharging an
-  abstract parameter by the enclosing `requires` as an assumption. A negative
-  channel is *not* needed for it — the earlier framing here was wrong.
+**One thing, narrow and real.** `Eq`'s reflexivity law is never discharged per
+instance (`stdlib/anthill/prelude/eq.anthill`: "documentation-only … NOT
+discharged per instance"), so nothing inspects reflexivity and nothing stops a
+carrier claiming a lawfulness it lacks. `provides Eq[Float]` is blocked *only*
+because `NonEq[Float]` is declared and the WI-658 exclusion fires. That is
+refutation earning its place: **the checkable shadow of an unchecked law, used
+to refuse a false claim at the declaration.** It is a declaration-side
+exclusion, not a use-site mechanism.
 
-  What survives is narrow and worth keeping: `eq_refl` is never discharged per
-  instance, so nothing stops a carrier claiming a lawfulness it lacks, and
-  `NonEq[Float]` is the only thing blocking `provides Eq[Float]` today
-  (`eq.anthill:39`). That is a **declaration**-side exclusion, needing a witness
-  because `eq(w,w) = false` is a computation while the universal law is not.
-  Refutation earns its place as the checkable shadow of an unchecked law — not
-  as a way to answer questions the positive channel can answer itself.
-- **Monotone negation.** `not(G)` is NAF: closed-world, needs stratification
-  (`docs/kernel-language.md:2060`), needs the static allowedness check for `<=>`
-  under negation (WI-525), and is the operator that breaks proposal 053's
-  monotonicity. A refutation goal — succeeds only on positive negative evidence
-  — is **monotone**: no stratification, safe under incremental assertion, no
-  retract guard. That is a payoff on machinery already built.
-- **`Disproved` out of `Failed`.** `ObligationStatus` is two-valued —
-  `Discharged | Failed(result)` (`stdlib/anthill/realization/realization.anthill:293`)
-  — so a counterexample-with-witness files alongside `Timeout` and `Unknown`. A
-  counterexample is *stable* under KB growth; a timeout is not. Correspondingly
-  the SMT encoding documents only the `unsat` direction
-  (`docs/kernel-language.md:1048`): a `sat` model **is** a refutation term and
-  should be registered as evidence, not discarded as a non-proof.
-- **Coimplication as the shape of the partial/total splits.** `A ≻ B` ("A but
-  not B") is proved by a pair: a proof of `A` and a refutation of `B`. Float's
-  actual status is `PartialEq ≻ Eq`, and the pair is exactly
-  (`provides PartialEq[Float]`, `nonEqRefl() = nan`). The `PartialEq`/`Eq` and
-  `PartialOrd`/`Ord` splits of proposal library/004 are one algebraic form,
-  not a family of hand-cut pairs.
-- **Strong decidability as the property that licenses NAF.** The paper's
-  Example 7.12: `SDec_K P = ∀x:K. P x ∨ ~(P x)` — every input yields a proof
-  *or* a refutation. That is the semantic condition under which
-  negation-as-failure is sound as refutation. Stratification is the syntactic
-  approximation anthill uses today.
+`NonEq` even has the Skolemised shape the Dual Existence Property predicts —
+`eq.anthill` calls its witness operation "the constructive form of
+`∃x. eq(x, x) = false`". *Caveat, measured:* the witness is
+`rule nonEqRefl() <=> nan` with no `[simp]`, and an untagged equational rule is
+**inert** (kernel-language.md §5.3), with no host `operation_map` entry. So the
+witness is not executable today; what blocks `provides Eq[Float]` is the
+declaration plus the load check, not a computation.
 
-## Staying Horn — what is *not* proposed
+**The use-site question is settled the other way.** Deriving `Eq` congruently
+from a composite's parts and reading that goal positively — 058 §3.10 — is the
+answer there, and WI-869 has since measured it at `pair.anthill`. A negative
+channel is not needed for it. One spec's worth of hand-rolled refutation does
+not justify a general channel; this stays speculative until a second instance
+appears.
 
-The head-side `Δ` (multiple conclusions) would break SLD's single-goal-stack
-model; it needs hyper-resolution or tableaux. `docs/kernel-language.md:1042`
-reserves `;`/`|` in head position for a future disjunctive-head proposal — **do
-not cash that reservation on the strength of this paper.**
+## Ideas worth keeping, each with its real gap
 
-It is not necessary. In 2Int, dual proof is itself rule-defined and *mutually
-inductive with* proof. So refutation reifies as a **positive predicate over a
-dual index** — `refutes(S, C)` beside `S[C]` — and everything stays Horn: SLD,
-the clause store, and the discrimination tree (which keys on structure, never on
-identity) apply unchanged. What must be added is the mutual recursion between
-the two families and the never-both check — which for `Eq`/`NonEq` already
-exists (WI-658), scoped to one spec.
+- **`Disproved` deserves a status peer.** `ProofResult` already has
+  `Disproved(counterexample, solver)`, and the SMT backend already produces it:
+  `"sat" => Verdict::Disproved(…)` reaches `ProofRecord.result =
+  Failed(Disproved(…))`. Nothing is discarded — the earlier claim here that it
+  was is **wrong**. The real gaps are three: the parsed model is thrown away and
+  raw stdout is wrapped as one string against a `Term`-typed field;
+  `produce_models` defaults false and no shipped `.anthill` passes
+  `z3(model: true)`, so the stored counterexample is literally `"sat"`; and
+  `ObligationStatus` is `Pending | Discharged(result) | Failed(result)` — three
+  members, with `Discharged` already *carrying* a `ProofResult`, so
+  `Discharged(Disproved(…))` is representable and the interesting question is
+  which of the three a refutation belongs under, not "add a variant". Note also
+  that an SMT `sat` is non-entailment **relative to the axioms at check time**;
+  KB growth can invalidate it, so it is not straightforwardly "stable".
+- **A monotone alternative to NAF.** A refutation goal succeeding only on
+  positive evidence is monotone, where `not(G)` is not. What licenses `not`
+  today is *not* stratification — there is none in the tree (zero hits for
+  `stratif`/`stratum`; kernel-language.md's claim is stale). It is a groundness
+  gate, delay-and-rotate, a definite/residual/truncated verdict, and a depth
+  bound. Any payoff must be measured against that, not against a component that
+  was never built.
+- **Coimplication as a shape for the partial/total splits.** In the paper a
+  proof of `A ≻ B` is **a refutation of `A` together with a proof of `B`**
+  (Fig. 3 `≻R`; Appendix rule (9)) — so Float's status is `Eq ≻ PartialEq`:
+  refutation of lawful `Eq`, proof of `PartialEq`. (An earlier draft here had
+  the operands reversed.)
 
-One consequence worth stating: `docs/kernel-language.md:1053` refuses to make
-denials citable because "the body has no satisfying instance, which has no
-determinate conclusion to lift as `body ⇒ head`." Under the bilateral reading
-that is a consequence of having one citation form, not a fact about denials — a
-dual proof is evidence, cited to *refute*. Whether to add a dual citation is
-open; it is not a prerequisite for anything above.
+## What is *not* proposed
 
-## Scope / open work
+Disjunctive heads. `kernel-language.md` reserves `;`/`|` for them — but note
+anthill **already has multiple conclusions** in head position: multi-head
+`H1, H2 :- B` is conjunctive sugar desugaring to N Horn clauses. It is the
+*disjunctive* reading that would need a different proof search (hyper-resolution
+or tableaux), and nothing here argues for it.
 
-- **The `Eq` half is settled and is not on this list** — WI-869 shipped
-  per-provision conditions (058 §3.8) and measured the result at
-  `stdlib/anthill/prelude/pair.anthill`: `Set[T = Pair[Float, Int64]]` still
-  loads, "not an over-claim any more … but no POSITIVE use-site check for
-  `requires Eq` exists." The answer is 058 §3.9's congruent positive
-  derivation, not a refutation channel. What is left for refutation there is
-  only the declaration-side exclusion, below.
-- The `refutes S[C]` surface, **if** a second spec ever needs it: spelling,
-  where the Skolem witness operation is declared, and how it relates to
-  `provides`. `NonEq` is the sole instance today, and one instance does not
-  justify a channel — this stays speculative until a second one appears.
-- Generic `S ⊥ refutes S` exclusion replacing the per-spec check (WI-658) —
-  worth doing only alongside that second instance.
-- Interaction with proposal 053 (fact monotonicity): a refutation is monotone,
-  so it should need no retract guard — confirm against the per-functor default.
-- `SDec` declaration and check, and whether it can replace stratification as the
-  NAF soundness criterion or only supplement it.
-- Whether the `ObligationStatus` change is separable. **It is** — promoting
-  `Disproved` to a status peer of `Discharged`, and keeping the SMT `sat` model
-  as evidence, is the smallest slice with independent value and no dependency on
-  the rest.
+Nor does the higher-order layer transfer. `2λHOL` has type-level λ and ∀ over
+kinds, which would contradict the representation note in `CLAUDE.md`; anthill's
+types are first-order terms with logical variables. Note the consequence: the
+one system carrying the metatheory is the one that does not transfer.
 
-## Does not transfer
+`SDec` (Example 7.12, `∀x:K. P x ∨ ~(P x)`) is sometimes read as the property
+licensing NAF. That inference is **not the paper's** — it never mentions
+negation as failure, and its footnote 9 declines to assume `A` and `~A` are
+inconsistent. `SDec` is also stated with a type-level λ over a predicate
+variable, i.e. in the layer above.
 
-`2λHOL` is higher-order: type-level λ, ∀ over kinds, β-conversion **of types**.
-Anthill's types are first-order terms with logical variables and unification.
-Importing that layer would also contradict the representation note in
-`CLAUDE.md` (hash-consing is inappropriate for binders), and none of the above
-needs it — the applicable content is the *judgement shape and the refutation
-discipline*, not the higher-order machinery.
+## Open
 
-Their `M : A` also means "evaluates to a value of type `A`, **or diverges**" —
-that slack is what makes `add(x, λy.y) : Nat ⊢` a meaningful certificate.
-Anthill's typing is sort membership plus spec provision, so the certificates say
-something different; the effect and finiteness work is where the two would have
-to meet.
-
-## Promotion
-
-Assign a main-sequence proposal number and move out of `future/` when scheduled.
+- Whether a second spec ever wants a witnessed refutation. Until one does,
+  `NonEq` is a one-off and should stay one.
+- The three `Disproved` gaps above — the model-term one is the prerequisite;
+  the others are cheap once a structured counterexample exists.

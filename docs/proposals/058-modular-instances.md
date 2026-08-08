@@ -1,6 +1,6 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
-**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will; §3.9's congruent positive lawfulness, the use-site discharge WI-869 left unread, is proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will; §3.10's congruent positive lawfulness, the use-site discharge WI-869 left unread, is proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -136,7 +136,20 @@ provides(?W, PartialOrd[T = ?X]) :- provides(?W, Ord[T = ?X])
 
 Deriving beats writing both floors: two hand-written provisions permit a bundle whose halves disagree, whereas one `compare` cannot. The rule does **not** generalize to "a spec provides what it requires" — `Ord requires Eq` as well, and §3.7 refuses a second `Eq` provider permanently, since unification-fired dispatch has no call site to select at. It is narrower: **derive the provision for a required floor iff the upper floor's laws determine that floor's surface *and* the floor is selectable.** `PartialOrd` qualifies; `Eq` does not. Two mechanics it must respect, both recorded at the declaration: the derivation adds a provision **row**, never a second op declaration (`ordered.anthill:24` — declaring `gt`/`lt` on both specs gives a carrier providing both two `sort_ops` entries for one short name, "and which one wins is HashMap-iteration order — a coin flip, not a rule"); and the inherited default bodies read `Ord.compare`, which `PartialOrd` does not `requires`, so the per-provision condition above is also what states that they are backed only where `Ord[T]` holds (`ordered.anthill:35`, which names this very clause as the fix). Companion rule: **a provider's dictionary resolves a sub-goal the provider itself provides to its own provision**; global search serves the rest — locality by *selected provider*, independent of caller scope.
 
-### 3.9 Lawfulness derives positively — the missing use-site discharge *(proposed)*
+### 3.9 Dictionaries are PASSED at run time — instances are never CHOSEN at run time
+
+When a body dispatches through an abstract slot — `report[T, O](s: SortedSet[T = T, O = O])` — the provider arrives as a **dictionary in the frame**, passed like an argument: two calls may carry two different orders through one body. That is ordinary dictionary passing, the delivered threading.
+
+What does not exist is an operation that *selects* a dictionary from runtime data. Every dictionary in flight was **selected** where the typer or loader resolved the witness (the §3.2 ladder at a pinned site; the load-built `provides`/sort-ops tables for a rule clause); run time copies it along — or, in a rule clause, **composes** it at fire time from the already-selected table entries, keyed by the witness value's carried type. Fetch-and-compose is reads over decided entries, not choice — run time performs no typing operations ([`../design/requirement-channel.md`](../design/requirement-channel.md) §2.1, §4; WI-300 delivered the checking half, WI-1040 is the binding half). A locally derivable dictionary and a caller-supplied one must **agree** (WI-860); a supplied one decides only where local derivation cannot (`Unresolvable`/`Ambiguous`, WI-855). "Choosing at run time" therefore always means *which statically-resolved branch executed*:
+
+```anthill
+if cfg then report(SortedSet.empty[T = String, O = ByLength]())
+       else report(SortedSet.empty[T = String, O = Alphabetical]())
+```
+
+Each branch's dictionary is static; only the branch taken is runtime. Two consequences: a witness is not a value (`let o = if cfg then ByLength else …` is unwritable — sorts are not terms), and a first-class dictionary *value* — delivered as the runtime sorts `Dictionary[S]` / `OpRef[A]` (WI-577), bindable to a clause variable by `?d = require[X]` (proposal 060) — may fill an anonymous slot — a constraint records nothing in the type — but never a named one: a named slot is a type parameter, and a value cannot determine a type.
+
+### 3.10 Lawfulness derives positively — the missing use-site discharge *(proposed)*
 
 WI-869 conditioned the provisions; nothing yet **reads** the resulting failure. `stdlib/anthill/prelude/pair.anthill:55` records the measurement: `Set[T = Pair[Float, Int64]]` still **loads** although `Eq[Pair[Float, Int64]]` does not hold — "not an over-claim any more — the provision is conditioned and the goal genuinely fails — but no POSITIVE use-site check for `requires Eq` exists," and, measured, **a key providing nothing at all is accepted too**. Conditioning a provision changes what is *derivable*. It does not change what any use site *checks*.
 
@@ -169,19 +182,6 @@ So the remit narrows to one sentence: **`NonEq` is the checkable shadow of an un
 **Boundaries.** `Eq` stays coherent (§3.7) — one provider per carrier, never selectable — so a derived provision must be *the* provision, not a second candidate. The derivation is conditional in §3.8's sense, so it admits and never ranks. And it adds a provision **row**, never a second op declaration.
 
 **To measure before drafting further.** (1) Whether `Map[K = (a: Float)]` is refused *today*: `docs/kernel-language.md` lists it as a gap, but a named tuple with concrete fields is inside WI-664's delivered scope, and `wi664_composite_eq_test.rs` drives the derivation and the `provides Eq[Point]` conflict but **no use-site refusal**. (2) What `map.anthill:11`'s other reason — "WI-616's universal structural default would make the positive reading vacuous" — actually denotes; it is not reconstructible from the sources, since `Float` provides `PartialEq` + `NonEq` and not `Eq`, so a check reading provision *rows* is not obviously vacuous. (2) decides whether the check may be flipped at all.
-
-### 3.10 Dictionaries are PASSED at run time — instances are never CHOSEN at run time
-
-When a body dispatches through an abstract slot — `report[T, O](s: SortedSet[T = T, O = O])` — the provider arrives as a **dictionary in the frame**, passed like an argument: two calls may carry two different orders through one body. That is ordinary dictionary passing, the delivered threading.
-
-What does not exist is an operation that *selects* a dictionary from runtime data. Every dictionary in flight was **selected** where the typer or loader resolved the witness (the §3.2 ladder at a pinned site; the load-built `provides`/sort-ops tables for a rule clause); run time copies it along — or, in a rule clause, **composes** it at fire time from the already-selected table entries, keyed by the witness value's carried type. Fetch-and-compose is reads over decided entries, not choice — run time performs no typing operations ([`../design/requirement-channel.md`](../design/requirement-channel.md) §2.1, §4; WI-300 delivered the checking half, WI-1040 is the binding half). A locally derivable dictionary and a caller-supplied one must **agree** (WI-860); a supplied one decides only where local derivation cannot (`Unresolvable`/`Ambiguous`, WI-855). "Choosing at run time" therefore always means *which statically-resolved branch executed*:
-
-```anthill
-if cfg then report(SortedSet.empty[T = String, O = ByLength]())
-       else report(SortedSet.empty[T = String, O = Alphabetical]())
-```
-
-Each branch's dictionary is static; only the branch taken is runtime. Two consequences: a witness is not a value (`let o = if cfg then ByLength else …` is unwritable — sorts are not terms), and a first-class dictionary *value* — delivered as the runtime sorts `Dictionary[S]` / `OpRef[A]` (WI-577), bindable to a clause variable by `?d = require[X]` (proposal 060) — may fill an anonymous slot — a constraint records nothing in the type — but never a named one: a named slot is a type parameter, and a value cannot determine a type.
 
 ## 4. Syntax
 

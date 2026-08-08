@@ -19,7 +19,9 @@ back-references).
 - [first-class-operations.md](first-class-operations.md) — a bare operation name
   as a first-class function value (`Value::OpRef`), `()` as uniform application;
   the operation half deferred from proposal 039 (term-level constants).
-- [bilateral-refutation.md](bilateral-refutation.md) — refutation as first-class
-  evidence, distinct from failure-to-prove; condenses `NonEq`, `Disproved`,
-  `⊥`-denials and the "undecided" third state into one `refutes` channel.
-  Stays Horn (dual index, not disjunctive heads).
+- [bilateral-refutation.md](bilateral-refutation.md) — two-sided type theory
+  (Li & Ramsay) read against anthill. Mostly a **negative** result: the `Eq`
+  use-site question is answered positively by 058 §3.10, so no `refutes`
+  channel is warranted on one instance. What survives is `NonEq` as the
+  checkable shadow of a law that is never discharged, plus three concrete gaps
+  behind `ProofResult.Disproved`.
