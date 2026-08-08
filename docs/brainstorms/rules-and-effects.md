@@ -59,10 +59,47 @@ An untagged equation never rewrites, so 054's duplicate/reorder/drop argument
 does not reach it. Today it is allowed (measured: the untagged form loads
 clean). Is that deliberate or incidental?
 
-Sharpen: a law is a claim about the world. `isEmpty(insert(c,x)) = false` over an
-`insert` that *allocates* is still a true claim about the returned collection —
-the effect is not part of the equation's subject. If laws are for proof and
-specification, effect-freedom may be the wrong precondition for *stating* one.
+**Effects are not uniform for this question, and that is the whole of Q1.**
+The first draft of this section argued from *allocation* — "`isEmpty(insert(c,x))
+= false` over an `insert` that allocates is still a true claim about the returned
+collection, so effect-freedom is the wrong precondition for stating a law". That
+generalized from the easy case. It is false for `Error`.
+
+`Error` is a **control** effect: `operation raise(error: T) -> Nothing`
+(effects.anthill), and `sort Nothing` is uninhabited. On the raising path
+`insert(c,x)` produces **no value at all**, so `isEmpty(…)` is never applied and
+the equation has no witness. `isEmpty` after an error has no sense — the LHS is
+not *false*, it is *undefined*.
+
+So split by whether the effect can remove the value:
+
+- **Control effects** — `Error` (→ `Nothing`), `Branch` (proposal 027:
+  zero-or-many results), non-termination. The LHS may denote nothing. A value
+  equation holds at best **on the defined path**, and it is not a claim about
+  the whole operation.
+- **Value-preserving effects** — allocation, logging, `Modify` on unrelated
+  state. The LHS always denotes; the equation about that value can hold
+  unconditionally.
+
+**And this is the strongest form of 054's argument, not a weakening of it.**
+Rewriting `isEmpty(insert(c,x)) → false` over an `Error`-carrying `insert`
+does not merely lose a side effect — it turns a program that *raises* into one
+that *answers `false`*. A **wrong answer**, not a lost effect. 054 argues
+"duplicates, reorders, or drops"; for a control effect, *drops* is a soundness
+bug in the value.
+
+Two consequences worth carrying forward:
+
+- **The sound law is spelled differently.** What actually holds for an effectful
+  `insert` is the effect-preserving form — *run the insert, then answer `false`*
+  — where both sides raise identically and nothing is dropped. That is a
+  different equation from the one written. Whether anthill can spell it (a
+  sequencing/monadic reading of `<=>`) is open, and it is the honest target for
+  anyone who wants this law over an effectful carrier.
+- **The conditional form is not a new mechanism.** Guarded effect atoms already
+  exist: `effects { s.E, Error[EmptyStream] :- isEmpty(s) }` (`Stream.head`,
+  `List.head`). A law conditioned on the non-raising path is the same shape
+  pointed the other way.
 
 ## Q2 — does the answer differ per tag?
 
@@ -86,6 +123,14 @@ Candidate shape, and it is not new here — 054 §3.4.1 already floats the analo
 for `requires` ("carrying the dictionary as an equation antecedent is a future
 relaxation"): admit the law as a **conditional equation**, firing only where the
 instantiated row is `{}`.
+
+**Q1 makes the polymorphic refusal stronger, not weaker.** A row variable can be
+instantiated to `Error`. So the current refusal is not merely conservative about
+"an effect might run zero times" — it is protecting against the control-effect
+case, where dropping the call changes the *answer*. Anyone relaxing this (WI-1050)
+should note that "the instantiated row is `{}`" and "the instantiated row contains
+no control effect" are different conditions, and only the first is obviously
+sound for a rewrite that drops a call.
 
 ## Q4 — if conditional, where is the condition checked?
 
@@ -140,6 +185,13 @@ The current design says both at once: `[simp]` is the enablement (so an untagged
 law is pure specification and inert), yet formation is gated on effects for
 tagged and untagged alike at the same site. Q1 is the narrow form of this
 question; Q6 is why it keeps coming back.
+
+Q1 adds a middle term the dichotomy was missing. Even read purely as
+specification, a law over a **control**-effecting operation is not
+unconditionally true — it holds on the defined path. So the answer is not
+"specification ⇒ no effect gate"; it is that a law over an effectful operation
+needs a **reading** (total? partial? effect-preserving?) before it needs a gate.
+Pick the reading first, and what to check follows.
 
 ## References
 
