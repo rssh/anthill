@@ -20,8 +20,9 @@
 //! ## Why the return position is not closed here — MEASURED, not deferred on a hunch
 //!
 //! The walk works in the return: pass the return type through the same function and `widen`
-//! below is refused at `widen.return`, `expected E = ?E`. It costs **32 tests across nine
-//! delivered tickets**, and not as a batch of small fixes — it contradicts a delivered reading
+//! below is refused at `widen.return`, `expected E = ?E`. It costs **40 tests across thirteen
+//! delivered tickets** (WI-353/374/401/402/405/457/480/488/491/734/762/776/839, plus this
+//! file's own two pins, which flip by design), and not as a batch of small fixes — it contradicts a delivered reading
 //! of the same syntax. `docs/design/type-parameter-scoping.md` §5 says a bare return is
 //! ERASED ("the element/effect tie to `l` is GONE"), a wart to be fixed by writing the type
 //! and NOT a body error; §4 records normalizing foreign bare refs in signatures as the

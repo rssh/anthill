@@ -40776,9 +40776,10 @@ fn check_operation_bodies(
         // over `OpInfo.return_type` (the only two readers are the conformance check via
         // `effective_return` and the WI-314 boundary masking, and both are body-side). It
         // works and it refuses the hole — `widen(s: Stream[T = Int64, E = {Error}]) ->
-        // Stream[T = Int64] = s` fails at `widen.return`, `expected E = ?E` — but it costs 32
-        // tests across nine delivered tickets, because it contradicts a delivered reading of
-        // the same syntax:
+        // Stream[T = Int64] = s` fails at `widen.return`, `expected E = ?E` — but it costs 40
+        // tests across thirteen delivered tickets (measured on THIS tree, with the arrow and
+        // tuple arms above in place; an earlier count of 32/nine was taken before them and was
+        // also mis-tallied), because it contradicts a delivered reading of the same syntax:
         // `docs/design/type-parameter-scoping.md` §5 says a bare return is ERASED ("the
         // element/effect tie to `l` is GONE"), a wart to be fixed by writing the type, NOT a
         // body error — and §4 records normalizing foreign bare refs in signatures as the

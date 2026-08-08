@@ -171,7 +171,7 @@ unwritten parameter as universally quantified *wherever* it appears, which makes
 wrong site the *consumer* that relies on the missing slot. WI-1059 and WI-1061
 enforced the rule in a parameter's type, where both readings agree; the return
 stayed out because the two readings pick different culprits and enforcing the
-first costs 32 tests across nine delivered tickets — including the
+first costs 40 tests across thirteen delivered tickets — including the
 WI-401/402/457/480/491 escape gate, whose mechanism *requires* a bare
 abstract-spec return to conform first. Until WI-1063 decides, the hole is
 reachable and pinned by `wi1061_unwritten_slot_positions_test`.
