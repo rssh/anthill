@@ -43,17 +43,24 @@
 //!   under the witness. This one FIXES A PRE-EXISTING REFUSAL as well as preventing a new
 //!   one; see row 2.
 //!
-//! ## What is NOT reported, and why that is the narrowing that let this ship
+//! ## What this ticket did NOT report — and what WI-1056 then did
 //!
 //! An `=` goal loads as a call on `PartialEq.eq`, so body-less spec ops are what rule
 //! bodies are largely MADE of: the gate newly decides **133** call sites on a whole-corpus
-//! load (28 on stdlib + host bindings alone). Rule bodies have never been type-checked,
-//! and typing those atoms surfaces **19 leaf errors**, rendering as 7 load errors in 4
-//! files — **none of them a dispatch verdict**, all of them programs that load and run
-//! today. The frame therefore reports only the two TIES from this shape, and only for the
-//! call it is deciding; the backlog is **WI-1056**. The full argument, the per-variant
-//! counts and the reason the list is positive rather than a deny-list are at
-//! `CallDispatch::reports_every_failure`.
+//! load (28 on stdlib + host bindings alone). Rule bodies had never been type-checked, and
+//! typing those atoms surfaced **19 leaf errors**, rendering as 7 load errors in 4 files —
+//! **none of them a dispatch verdict**, all of them programs that loaded and ran. THIS
+//! ticket therefore reported only the two TIES from this shape, and only for the call it
+//! was deciding.
+//!
+//! **WI-1056 has since decided all 7 and widened the policy**, so a body-less atom now
+//! reports every failure its type-check finds: two were typer gaps (an eponymous /
+//! free-standing entity CONSTRUCTOR applied in a rule body; a same-base PARTIAL type
+//! application refused against a fuller one), one was a source error in
+//! `stdlib/anthill/prelude/bigint.anthill`, and the rest are the standing WI-282
+//! unresolved-receiver exemption. See `wi1056_rule_body_type_check_test` and
+//! `dispatch_calls_in_occ`'s doc. What remains narrowed is the general `Expr::Apply`
+//! (**WI-1058**).
 //!
 //! ## What fails if this is backed out — MEASURED per piece, one revert each, four runs
 //!
@@ -378,10 +385,10 @@ fn a_fact_route_supplier_is_still_unreachable_from_a_rule_body() {
 /// a regression against pre-WI-1043 behaviour, where the child reported it exactly once.
 /// Found by this ticket's /code-review, driven here.
 ///
-/// CONTROL: drop `own_call_tie`'s `(op, span)` identity — report every tie the atom's
-/// type-check finds — and both arms report 2 lines. The flat-case assertion in
-/// `a_witness_rival_tie_carries_the_witness_repair` cannot see it: there the tie IS the
-/// atom's own call.
+/// CONTROL: drop the duplicate guard — WI-1043's `own_call_tie` `(op, span)` identity,
+/// and since WI-1056 the `already_reported` key that replaced it — and both arms report 2
+/// lines. The flat-case assertion in `a_witness_rival_tie_carries_the_witness_repair`
+/// cannot see it: there the tie IS the atom's own call.
 #[test]
 fn a_tie_nested_in_an_eq_goal_is_reported_once() {
     let ns = "test.wi1043.nested";

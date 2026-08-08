@@ -62,8 +62,18 @@ sort anthill.prelude.LogicalStream
 
   operation guard(cond: Bool) -> LogicalStream[Unit]   -- filter
 
-  operation interleave(a: LogicalStream[?A], b: LogicalStream[?A])
-    -> LogicalStream[?A]                               -- fair disjunction
+  -- WI-1056: writes the effect row EXPLICITLY, and shares one row variable across both
+  -- inputs and the result — which is what fair disjunction actually does. Written
+  -- `LogicalStream[?A]`, this bound T alone and left E to the sort's `effects E = ?`
+  -- default, so the derived rule below (whose `?rest` takes its type from THIS signature)
+  -- had a tail typed `LogicalStream[T = ?]` while `splitFirst` returns the fuller
+  -- `LogicalStream[T = s.T, E = s.E]` — the two sides of that rule's `=` differed by the
+  -- WI-714 row alone. Nothing reported it until a rule body was type-checked
+  -- (WI-1043/WI-1056). `mplus` and `empty` above are left as written: they are not in a
+  -- rule that relates them to a row-carrying return, so widening them here would be a
+  -- change with nothing measuring it.
+  operation interleave(a: LogicalStream[T = ?A, E = ?E], b: LogicalStream[T = ?A, E = ?E])
+    -> LogicalStream[T = ?A, E = ?E]                   -- fair disjunction
 
   -- ================================================================
   -- Derived rules

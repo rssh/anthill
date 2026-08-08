@@ -9945,7 +9945,35 @@ fn check_apply_iter(
     // Materializer fallback: bare-functor constructor invocations land
     // in `Apply`; route them through the constructor checker so
     // type-param inference still fires.
-    if kb.is_constructor_symbol(fn_sym) {
+    //
+    // WI-1056 — the question is [`KnowledgeBase::is_entity_constructor`]'s, not
+    // [`KnowledgeBase::is_constructor_symbol`]'s, and the difference is exactly this
+    // arm's population. `is_constructor_symbol` answers "is a CONSTRUCTOR OF some
+    // enclosing sort", which WI-926 deliberately made FALSE for an eponymous `sort E {
+    // entity E(…) }` (it is not a constructor OF anything — it IS the sort) and which
+    // was never true for a free-standing `entity E(…)`. `is_entity_constructor` is the
+    // one owner of "does an APPLICATION of this functor construct an entity value", and
+    // this site is applied position — the exact reading its doc reserves for callers
+    // like this one.
+    //
+    // THE OTHER PRODUCER already answers it that way and this one is its twin, which is
+    // why the two must not diverge: the loader's `ApplyOrConstructor` drain builds an
+    // `Expr::Constructor` off `is_entity_constructor`, so every expression the LOADER
+    // walks (an operation body) never reaches here at all. A RULE BODY does not take
+    // that drain — `build_body_atom_occurrence` hands an entity-headed atom to
+    // `materialize_from_handle`, which builds a structural `Expr::Apply` for EVERY
+    // domain `Term::Fn` — so this gate is the only thing that classifies it, and with
+    // the narrow predicate a sort-nested `Q(a: 1)` typed while the eponymous `P(a: 1)`
+    // beside it died as `UnknownApplyFunctor`.
+    //
+    // MEASURED, not predicted (WI-1043's widening is what made a rule body ask): `?p =
+    // P(a: 1)` on `sort P { entity P(a: Int64) }` reported "unknown apply functor: P"
+    // where the same construction in an OPERATION body loads clean, and the corpus
+    // carried two — `Vec3(x: …)` inside an `=` goal at
+    // `examples/webots-modelling/lf1/safety_common.anthill:236` (eponymous, from
+    // `stdlib/anthill/geometry.anthill`) and `Pose(position: …)` at `safety_gps.anthill:154`
+    // (free-standing). Both are programs that load and run today.
+    if kb.is_entity_constructor(fn_sym) {
         return check_constructor_iter(
             kb, env, flow, fn_sym, pos_args, named_args, pos_results, named_results, span,
             expected, occ,
@@ -10014,6 +10042,42 @@ fn check_apply_iter(
     // gate for the reason it exists there: in a rule body the application is a term
     // in a goal, not a citation in functional code.
     if !env.in_rule_body() && kb.has_kind(fn_sym, crate::intern::SymbolKind::EquationFunctor) {
+        let census = super::simp_rewrite::equation_clause_census(kb, fn_sym);
+        return Err(TypeError::UnreducedEquationFunctor { span, functor: fn_sym, census });
+    }
+
+    // WI-1056 — the same question ASKED IN A RULE BODY, where the answer is the same
+    // ("this is an equation functor, not a call to type") but its consequence is not.
+    // The gate above says a rule body must not report it; it did not say what happens
+    // instead, and what happened was a fall-through to Path 3, refusing the node anyway
+    // under a vaguer name. So the gate withheld one diagnostic and let a worse one
+    // through — invisible while rule bodies went unchecked.
+    //
+    // MEASURED on `bool.anthill`'s `ite`, whose two `[simp]` equations ARE its whole
+    // definition ("no operation is the only correct form" — an operation would have to
+    // take thunks, since the untaken branch must never evaluate). `rule clamp(?x, ?r) :-
+    // ?r = ite(gte(?x, 0), ?x, 0)` reported "`ite` is a member of sort Bool, not in
+    // scope as a bare name here": a misdiagnosis twice over, since the program imports
+    // it and importing cannot help — the real reason is "not an operation".
+    // `ordered.anthill` writes the same bare call in a rule HEAD, which this walk never
+    // visits, so one expression was legal on one side of `:-` and refused on the other.
+    //
+    // STILL AN `Err`, and deliberately, though the rule-body policy will not report it
+    // ([`dispatch_calls_in_occ`]'s exemption): failing here is what stops the ENCLOSING
+    // atom's type-check, which is the pre-WI-1056 behaviour and the correct one. The
+    // first cut returned `Ok` with a fresh type var instead, on the reasoning that
+    // "unconstrained is the truthful answer" — and it was truthful and WRONG: with the
+    // `=` goal's right-hand type unknown, `PartialEq.eq`'s carrier no longer pinned and
+    // the atom was refused for AMBIGUOUS DISPATCH across all 11 `PartialEq` instances.
+    // A type this typer cannot know must not be offered to a dispatch that needs it.
+    //
+    // NARROWER THAN ITS TWIN by one clause: an operation reading, if the symbol has one,
+    // WINS. `SymbolKind` is a SET, so one name can carry both, and in a rule body such a
+    // symbol reaches Path 1 today — this must not take that away.
+    if env.in_rule_body()
+        && kb.has_kind(fn_sym, crate::intern::SymbolKind::EquationFunctor)
+        && lookup_operation_info_full(kb, fn_sym).is_none()
+    {
         let census = super::simp_rewrite::equation_clause_census(kb, fn_sym);
         return Err(TypeError::UnreducedEquationFunctor { span, functor: fn_sym, census });
     }
@@ -34493,6 +34557,20 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         // or a SAME-base actual genuinely missing the param (`cross_sort_provider`
         // is `None`), still rejects: this LOOSENS the cross-sort case only and
         // cannot newly-reject existing code.
+        //
+        // WI-1056 TRIED TO LOOSEN THE SAME-BASE CASE AND BACKED IT OUT, which is worth a
+        // sentence because the argument for loosening is superficially strong.
+        // kernel-language §"Expansion during unification" does say a partial application
+        // means the sort applied to a fresh variable per unbound parameter, and the BARE
+        // form is already accepted (a bare `Ref` never reaches this function). But that
+        // section is about UNIFICATION — [`unify_parameterized_view`] reads it
+        // width-tolerantly and says in the same breath that "the subtype twin is the
+        // direction that rejects" — and a fresh variable is not a subtype of a concrete
+        // demand. DRIVEN: with the same-base case accepted, `operation feed(s: Stream[T =
+        // Int64]) -> Int64 = takes_pure(s)` type-checked against `takes_pure(s: Stream[T =
+        // Int64, E = {}])`, an effectful stream reaching a slot declared pure. Whether the
+        // BARE form should therefore reject too is a real question and NOT WI-1056's; the
+        // corpus case that raised it (`logical_stream.anthill:73`) is fixed at its source.
         // WI-764: keyed via [`binding_for_param`] — raw identity here rejected a WRITTEN
         // `Relation[T = .., E = ..]` annotation against the very relation it describes.
         let ok = match binding_for_param(kb, &actual_bindings, *param, key_match) {
@@ -42475,15 +42553,38 @@ fn align_call_args_to_params(
 /// the union of the two halves, written once in [`defaulted_spec_op_parent`]'s
 /// neighbourhood rather than as a fourth spelling (WI-1042).
 ///
+/// WI-1056 took the ERROR POLICY: a body-less atom now reports every failure its
+/// type-check finds, not only the two 058 ties of its own call. That is the FIRST rule-body
+/// type check the language has ever run, so what it costs was decided site by site rather
+/// than assumed — the corpus's 7 reports in 4 files split THREE ways, and only the last is
+/// an exemption:
+///
+///   * **Two were typer gaps, fixed.** An entity CONSTRUCTOR applied in a rule body died as
+///     `UnknownApplyFunctor` whenever it was eponymous or free-standing, because this
+///     site's gate asked `is_constructor_symbol` where the question is
+///     `is_entity_constructor` (`check_apply_iter`, WI-926/WI-1056). And a same-base
+///     PARTIAL type application was refused against a fuller one — `Box[T = Int64]` against
+///     `Box[T = Int64, U = Bool]` — although the BARE form `Box` was already accepted, both
+///     halves of one spec sentence (kernel-language §"Expansion during unification")
+///     decided opposite ways ([`parameterized_compatible_view`]).
+///   * **One was a source error, fixed at its source.** `stdlib/anthill/prelude/bigint.anthill`'s
+///     induction schema wrote bare `0` / `1` where `BigInt` is declared; a small literal is
+///     an `Int64` and there is no implicit widening.
+///   * **Seven reports at 4 sites were the standing WI-282 exemption**, and stay
+///     unreported: an untyped rule-head variable as a dot receiver
+///     ([`undecidable_by_this_typer`]).
+///
 /// STILL NARROWED at the general `Expr::Apply`, deliberately, and this is the clause a
-/// reader is most likely to drop. `type_rule_bodies` has never type-checked rule-body
-/// calls, so widening to EVERY apply would report the whole backlog of never-checked rule
-/// bodies as new load errors — a corpus-wide change of a different kind, not a dispatch
-/// question. **OWNED BY WI-1056**, which owns that population (a rule-body call that is
-/// neither a dot nor a spec op stays untyped) together with the same backlog seen from
-/// the other side: the failures a body-less atom's type-check finds and this frame does
-/// not report ([`CallDispatch::reports_every_failure`], where the 41-error measurement
-/// is).
+/// reader is most likely to drop. A rule-body call that is neither a dot nor a spec op is
+/// still not typed at all. It is not the same size of question, and that is MEASURED, not
+/// assumed: with this walk's gate widened to every `Expr::Apply`, a stdlib + host-bindings
+/// load alone reports **468** errors (173 distinct), against **2** for the body-less shape.
+/// They are not a backlog of small mistakes — they are two whole readings the typer does
+/// not yet have. A rule NAME applied to arguments is a relational SUBGOAL, not a value
+/// (`check_apply_iter`'s WI-714 arm is gated `!in_rule_body` for exactly that reason, so
+/// every such subgoal falls through to `UnknownApplyFunctor`); and a `?P(…)` / reflect
+/// argument reaches `List[T = Term]` positions the walk types structurally. Both must be
+/// answered before the gate can widen. **OWNED BY WI-1058.**
 fn dispatch_calls_in_occ(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -42505,6 +42606,15 @@ fn dispatch_calls_in_occ(
     // both raised INSIDE an `eq` atom, which loads as a call on the body-less
     // `PartialEq.eq`. MEASURED as two suite failures, not predicted. The two older
     // shapes do not recurse: `type_check_node` owns their subtree and reports all of it.
+    // WI-1056 — where this atom's descendants START reporting. [`already_reported`] is
+    // matched against the TAIL from here, never the whole accumulator: `errors` belongs to
+    // `type_rule_bodies` and spans every atom of every rule in the batch, and the dedup key
+    // is the rendered `(span, message)` — which `TypeError::span` answers `None` for on
+    // some variants. Keyed against the whole vector, two genuinely distinct UNLOCATED
+    // errors that render alike, in different rules, would collapse to one report and the
+    // second would only appear on a later load. The question this guard asks is "did a
+    // descendant of THIS node already say it", so the tail is exactly its domain.
+    let mark = errors.len();
     let walked = match (shape, occ.as_expr()) {
         (Some(CallDispatch::Checked), _) | (_, None) => Rc::clone(occ),
         (_, Some(expr)) => {
@@ -42528,18 +42638,7 @@ fn dispatch_calls_in_occ(
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
         // the same form an op body's call rewrites to.
         Ok(result) => result.node,
-        // The ONE deliberately-tolerated failure: an UNRESOLVED receiver
-        // (`receiver_sort: None`) is not a value dispatch we can decide —
-        // either a polymorphic body var with no constraining goal, or
-        // (load-bearing) the reflect `Expr.dot_apply` CONSTRUCTOR carried as
-        // data in a rule body (an `Expr` induction principle / reflection
-        // rule), which `materialize_from_handle` collapses to `Expr::DotApply`
-        // via the WI-425 isomorphism. Erroring there would reject every program
-        // defining such a sort; leave it untouched (the pre-WI-282 status quo —
-        // the dot flows to SLD structurally). This is the sole case where a
-        // `DotApply` legitimately survives type-check.
-        Err(TypeError::DotDispatchNoMatch { receiver_sort: None, .. }) => walked,
-        // Every OTHER failure is a REAL error — surface it, never a silent skip
+        // Every failure is a REAL error — surface it, never a silent skip
         // (project principle: loud over silent; the `Err(_) => Rc::clone(occ)`
         // catch-all this replaced masked genuine errors — a member-not-found on
         // a KNOWN receiver [`?p.bogus`], a WI-602 DEFINITE value-precondition
@@ -42549,106 +42648,162 @@ fn dispatch_calls_in_occ(
         // call dispatches clean (`rule_body_value_precondition_dot_dispatches`).
         // The node is left in place so downstream still sees an un-rewritten one.
         //
-        // …EXCEPT for the shape WI-1043 admitted, whose reporting rule is
-        // narrower and is stated at [`CallDispatch::reports_every_failure`].
+        // …except [`undecidable_by_this_typer`], and — for the RECURSING shape —
+        // what a descendant has already reported ([`already_reported`]).
         Err(e) => {
-            if shape.reports_every_failure() {
-                errors.push(e);
-            } else {
-                errors.extend(
-                    e.flatten().into_iter().filter(|e| own_call_tie(&walked, e)),
-                );
+            match shape {
+                // Owns its whole subtree and does not recurse, so `mark` is its own
+                // start and there is nothing beneath it to have reported already.
+                CallDispatch::Checked => {
+                    debug_assert_eq!(mark, errors.len(), "a non-recursing shape reported nothing yet");
+                    if !undecidable_by_this_typer(&e) {
+                        errors.push(e);
+                    }
+                }
+                // WI-1056 — the widening. WI-1043 admitted this shape for a dispatch
+                // VERDICT and reported only the two 058 ties of its own call, because
+                // reporting the rest refused the corpus; the corpus is now clean (see
+                // this function's doc for what had to be fixed to make it so), so the
+                // shape reports what type-checking actually found. LEAF BY LEAF rather
+                // than as one `Multiple`: this frame types a WHOLE ATOM whose parts were
+                // decided separately, so the aggregate is not one call's diagnostic.
+                CallDispatch::BodyLessSpecOp => {
+                    for leaf in e.flatten() {
+                        if undecidable_by_this_typer(&leaf)
+                            || already_reported(kb, &errors[mark..], &leaf)
+                        {
+                            continue;
+                        }
+                        errors.push(leaf);
+                    }
+                }
             }
             walked
         }
     }
 }
 
-/// WI-1043 — WHICH shape [`dispatch_calls_in_occ`] is deciding, and hence which of its
-/// failures it may report. Three shapes reach the same `type_check_node` call; two of
-/// them have been reaching it since WI-282 / WI-1026 and the third was admitted here.
+/// WI-282 / WI-1056 — the deliberately-tolerated failures, asked at both places
+/// [`dispatch_calls_in_occ`] can meet one: on a `Checked` shape's whole error, and on each
+/// LEAF a recursing body-less atom's type-check produced. Two spellings of an exemption is
+/// how an exemption silently stops applying — the leaf form is the one WI-1043's narrow
+/// policy never had to ask, and it is exactly where the corpus lives.
+///
+/// Both are cases the typer CANNOT decide rather than cases it declines to report, and
+/// both hold a status quo that predates the widening. There are two, and no more:
+///
+/// **An UNRESOLVED dot receiver** (`receiver_sort: None`, WI-282) is not a value dispatch
+/// we can decide — either a polymorphic body var with no constraining goal (`rule f(?d,
+/// ?p1, ?p2) :- ?dx = ?p1.position.x - …`: a rule head declares no types, so `?p1` HAS no
+/// sort at load), or (load-bearing) the reflect `Expr.dot_apply` CONSTRUCTOR carried as
+/// data in a rule body (an `Expr` induction principle / reflection rule), which
+/// `materialize_from_handle` collapses to `Expr::DotApply` via the WI-425 isomorphism.
+/// Erroring there would reject every program defining such a sort; leave it untouched (the
+/// pre-WI-282 status quo — the dot flows to SLD structurally). This is the sole case where
+/// a `DotApply` legitimately survives type-check. MEASURED as the whole of what WI-1056's
+/// widening would otherwise have newly refused in the corpus once the three real defects
+/// were fixed: 7 reports at 4 sites, all in
+/// `examples/webots-modelling/lf1/safety_common.anthill` (`?p1.position`,
+/// `?pose_prev.roll`), every one an untyped rule-head variable.
+///
+/// **An EQUATION-INTRODUCED functor applied in a rule body** (WI-898's question asked on
+/// the rule-body side; see `check_apply_iter`'s arm for where it is raised and why it must
+/// stay an `Err`). `ite` is the live case and it is not an accident of the stdlib:
+/// `bool.anthill` argues that `ite` CANNOT be an operation, because an operation would
+/// evaluate both branches. So there is no signature to check the call against, and its
+/// `[simp]` clauses give a type only per redex — the typer has no reading, and inventing
+/// one is worse than having none (measured: a fresh type var unpinned the enclosing `=`
+/// goal's carrier and refused the program for ambiguous dispatch instead). Reporting it
+/// would refuse `rule clamp(?x, ?r) :- ?r = ite(gte(?x, 0), ?x, 0)`, a program smt-gen
+/// lowers to `(ite …)` today, and whose twin in a rule HEAD this walk never even visits.
+/// The exemption is on the RESOLVED functor: a bare `ite` with no `import
+/// anthill.prelude.Bool.{ite}` interns bare, carries no kind, and is still refused —
+/// correctly, since without the import it reaches none of the `[simp]` rules either.
+///
+/// APPLIED TO BOTH SHAPES, and that was questioned in review as an unmeasured extension —
+/// it is deliberate, and here is the case. `rule r(?v, ?c) :- ?v = Wv(n: 1).foo(ite(?c, 1,
+/// 0))` puts the same untypeable functor in an argument of a DOT on a KNOWN receiver: that
+/// dot is a `Checked` shape, `collect_arg_errors` hands back its one failing argument's
+/// error unwrapped, and without the exemption on this side the program is refused for a
+/// reason that is not about the dot. It is the same expression in the same position as the
+/// body-less case, so one exemption covers it. What that costs is real and worth naming:
+/// the enclosing call is then not checked or dispatched either, because its argument has
+/// no type.
+///
+/// WHAT IT DOES NOT CHECK, stated rather than left to be discovered: nothing about the
+/// call itself survives, ARITY INCLUDED — `rule r(?x, ?r) :- ?r = ite(?x)` loads clean
+/// against a three-argument functor. The `[simp]` clause census is taken at the raise site
+/// and carries counts, not arities, so even that would need a new walk. Deriving a type
+/// (and an arity) from a functor's `[simp]` clauses is the reading that would retire this
+/// exemption; **WI-1058** owns it, together with the other rule-body readings the typer
+/// lacks.
+fn undecidable_by_this_typer(e: &TypeError) -> bool {
+    matches!(
+        e,
+        TypeError::DotDispatchNoMatch { receiver_sort: None, .. }
+            | TypeError::UnreducedEquationFunctor { .. }
+    )
+}
+
+/// WI-1056 — is `leaf` a report `errors` already carries?
+///
+/// **A REGRESSION GUARD, not tidiness**, and it is the clause that replaces WI-1043's
+/// `own_call_tie`. [`dispatch_calls_in_occ`] both RECURSES into a body-less atom and then
+/// type-checks the whole atom, so every failure inside one is derived once by the
+/// descendant that owns it and again by each body-less ancestor. `=` goals load as
+/// `PartialEq.eq` calls and arithmetic loads as `Numeric` calls, so the ancestors nest:
+/// MEASURED on `safety_common.anthill:277` (`?dx = ?p1.position.x - ?p2.position.x`), one
+/// dot reported TWICE — once from the enclosing `-` and once from the enclosing `=`. That
+/// is the same defect WI-1043 found for a nested TIE and fixed with an (op, span) identity
+/// on this node's own call; the widened policy cannot use that identity, because a failure
+/// belonging to a descendant that is NOT itself a decided shape has no other reporter and
+/// must survive.
+///
+/// KEYED ON WHAT THE USER SEES — `(span, format)`, the rendered report — because that is
+/// exactly the claim being deduplicated: two errors that print identically at one source
+/// location ARE one report, whatever internal shape produced them. `TypeError` has no
+/// `PartialEq` (it carries `Value`s), and a coarser key (the variant + span) would collapse
+/// two genuinely different findings at one span.
+///
+/// FLATTENS the already-pushed errors, because a `Checked` shape pushes its `Multiple`
+/// intact while this shape pushes leaves: without it a leaf inside a dot's aggregate would
+/// not be recognised and the duplicate would come back.
+///
+/// O(n²) over the reports of ONE rule body, on the failure path only — a load that reaches
+/// it is already being refused.
+fn already_reported(kb: &KnowledgeBase, reported_beneath: &[TypeError], leaf: &TypeError) -> bool {
+    let key = (leaf.span(kb), leaf.format(kb));
+    reported_beneath.iter().any(|e| {
+        e.clone().flatten().iter().any(|l| (l.span(kb), l.format(kb)) == key)
+    })
+}
+
+/// WI-1043 — WHICH shape [`dispatch_calls_in_occ`] is deciding: it governs whether the
+/// walk RECURSES into the node before deciding it, and how a failure is reported. Three
+/// surface shapes reach the same `type_check_node` call; two of them have been reaching it
+/// since WI-282 / WI-1026 and the third was admitted by WI-1043.
+///
+/// WI-1056 retired the third distinction this carried — `reports_every_failure`, WI-1043's
+/// narrowing to the two 058 TIES of the deciding call. That clause was what let WI-1043
+/// ship: an `=` goal loads as a call on the body-less `PartialEq.eq`, so this shape is
+/// most of what a rule body is made of, and a rule body had never been type-checked
+/// (`type_rule_bodies` decides dispatch; it does not check types). MEASURED PER LOAD at
+/// the acting arm (2026-08-08): **133** newly decided body-less call sites on a
+/// whole-corpus load — stdlib + host bindings + `examples/` + `anthill-todo` +
+/// `anthill-testcases`, 28 of them on stdlib + bindings alone — whose failures were **19
+/// leaf errors** (15 `DotDispatchNoMatch`, 2 `TypeMismatch`, 2 `UnknownApplyFunctor`,
+/// **zero** dispatch verdicts), rendering as 7 load errors in 4 files, every one a program
+/// that loaded and ran. WI-1056 decided all of them — see [`dispatch_calls_in_occ`]'s doc
+/// for the three defects that had to be FIXED and the one exemption that stands — so the
+/// narrowing has nothing left to withhold and the shape now reports what it finds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CallDispatch {
     /// An `Expr::DotApply` (WI-282) or a direct call on a DEFAULTED spec op (WI-1026).
+    /// Does NOT recurse: `type_check_node` owns its subtree and reports all of it.
     Checked,
-    /// WI-1043 — a direct call on a BODY-LESS spec op.
+    /// WI-1043 — a direct call on a BODY-LESS spec op. RECURSES first (see
+    /// [`dispatch_calls_in_occ`]), then decides the whole atom.
     BodyLessSpecOp,
-}
-
-impl CallDispatch {
-    /// WI-1043 — may a failure of `type_check_node` on this shape become a load error?
-    ///
-    /// FOR THE TWO OLDER SHAPES, YES, and the reasons are at the tail that asks. For the
-    /// BODY-LESS one, only the 058 tie refusals of its OWN call ([`own_call_tie`]) — and
-    /// this narrowing is the whole reason WI-1043's widening could ship, so it is a
-    /// MEASUREMENT and not a caution:
-    ///
-    /// A rule body has NEVER been type-checked (`type_rule_bodies` decides dispatch, it
-    /// does not check types), and body-less spec ops are what its atoms are mostly MADE
-    /// of: an `=` goal loads as a call on `PartialEq.eq`. Admitting the shape without
-    /// this clause reports the whole backlog of that never-run pass as new load errors.
-    /// MEASURED PER LOAD (counters at this arm, 2026-08-08): **133** newly decided
-    /// body-less call sites on a whole-corpus load — stdlib + host bindings + `examples/`
-    /// + `anthill-todo` + `anthill-testcases`, 28 of them on stdlib + bindings alone —
-    /// whose failures are **19 leaf errors**: 15 `DotDispatchNoMatch` (a nested dot the
-    /// per-node tolerated arm above used to swallow, now typed as part of its enclosing
-    /// atom), 2 `TypeMismatch` (`?P(sub(?n, 1))` in `bigint`'s induction rule, whose `1`
-    /// is an `Int64` literal where `BigInt` is expected; `splitFirst(?a) = some(pair(…))`
-    /// in `logical_stream`, whose two sides differ by an effect row) and 2
-    /// `UnknownApplyFunctor` (an entity constructor inside an `=` goal in
-    /// `examples/webots-modelling`). **ZERO of the 19 is a dispatch verdict.** Reported,
-    /// they render as 7 load errors in 4 files — every one of those programs loads and
-    /// runs today. Refusing them is a corpus-wide change of a different kind, the same
-    /// one WI-1026 declined for the general-`Expr::Apply` population and for the same
-    /// reason, and it is **WI-1056** that owns it.
-    ///
-    /// SO THIS IS NOT A SILENT SKIP OF A NEW FAILURE. It is the pre-WI-1043 status quo
-    /// (the call was not typed at all) held for everything except the ONE question this
-    /// widening asks. The list is POSITIVE rather than a deny-list of those three
-    /// variants so that a NEW error variant defaults to the status quo instead of
-    /// silently refusing the corpus.
-    fn reports_every_failure(self) -> bool {
-        match self {
-            CallDispatch::Checked => true,
-            CallDispatch::BodyLessSpecOp => false,
-        }
-    }
-}
-
-/// WI-1043 — is `e` a 058 TIE raised for `occ`'s OWN call? The two questions a BODY-LESS
-/// spec-op call may report from [`dispatch_calls_in_occ`], and the only two.
-///
-/// THE TIES, because they are the whole of "a read that SELECTS goes loud on the second
-/// candidate" (§3.7 / §4.9): [`TypeError::AmbiguousSpecOpDispatch`] is WI-1027's supplier
-/// tie (two TEXTS supplying one carrier), [`TypeError::DispatchAmbiguous`] the provider
-/// tie the same block yields to
-/// (`wi1027…::a_provision_tie_is_still_reported_as_a_provider_tie`).
-/// [`TypeError::DispatchNoMatch`] is deliberately NOT one of them, and its absence is
-/// what a reader will question: "the dispatch resolved nothing" is not a tie — on an
-/// abstract rule-body carrier it is the ORDINARY outcome (no enclosing operation's
-/// `requires` can license the call, so `check_apply_iter`'s NoMatch arm has nothing to
-/// yield to) — and admitting it would refuse programs on a question this ticket does not
-/// own.
-///
-/// **OWN CALL, and that clause is a REGRESSION FIX, not a refinement.** This frame types
-/// the WHOLE atom, so a tie on a call NESTED inside it is re-derived here after the
-/// recursion above already decided that child and reported it — the same refusal printed
-/// twice at one span. DRIVEN on this ticket's own fixture (found by its /code-review, not
-/// predicted): `rule answer(?r) :- eq(?r, leaf().describe())` reported the tie TWICE,
-/// where before this ticket the dot child reported it exactly once. `=` goals load as
-/// `PartialEq.eq` calls, so every tie'd call written inside one hits it. The identity is
-/// the pair `(op, span)`: the dispatched SPEC OP and the call site, both of which
-/// `check_apply_iter` takes from this very node (`span = Some(node.span.span)`), so a
-/// descendant differs in one or the other. `a_tie_nested_in_an_eq_goal_is_reported_once`
-/// is the driver.
-fn own_call_tie(occ: &Rc<NodeOccurrence>, e: &TypeError) -> bool {
-    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return false };
-    let here = Some(occ.span.span);
-    match e {
-        TypeError::AmbiguousSpecOpDispatch { op, span, .. }
-        | TypeError::DispatchAmbiguous { op, span, .. } => op == functor && *span == here,
-        _ => false,
-    }
 }
 
 /// WI-282 / WI-1026 / WI-1043: is THIS node a call [`dispatch_calls_in_occ`] must decide
