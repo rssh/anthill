@@ -163,16 +163,27 @@ result type**: a projection (`Stream[T = l.T]`), a written effect row
 bare returns (`iterator -> Stream`; `splitFirst`'s `B = Stream`) are exactly the
 spots to make explicit.
 
-**This section and kernel-language.md §"Expansion during unification" disagree
-about the return, and WI-1063 owns the disagreement.** That section reads an
-unwritten parameter as universally quantified *wherever* it appears, which makes
-`widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s` a wrong
-*declaration*; this section reads the same return as **erased**, which makes the
-wrong site the *consumer* that relies on the missing slot. WI-1059 and WI-1061
-enforced the rule in a parameter's type, where both readings agree; the return
-stayed out because the two readings pick different culprits and enforcing the
-first costs 40 tests across thirteen delivered tickets — including the
-WI-401/402/457/480/491 escape gate, whose mechanism *requires* a bare
+**This section is the only one that states a reading of the RETURN, and
+WI-1063 owns whether it stands.** `widen(s: Stream[T = Int64, E = {Error}]) ->
+Stream[T = Int64] = s` composed with a consumer that demands `E = {}` loads
+today, and an effectful stream reaches a pure slot. Read through this section
+that is the *consumer's* fault — it relies on a slot the type does not carry,
+exactly what `wi374_expansion_test::bare_value_stays_unusable` already refuses
+— and `widen` is merely imprecise, a spot to make explicit.
+
+The competing reading calls `widen` the wrong *declaration*: an unwritten slot
+is a fresh variable per instantiation, so the body must produce a value good for
+every one. Note what that reading is and is not. kernel-language.md
+§"Expansion during unification" states the expansion at every sort application,
+a return included, and (WI-1059) states the body obligation it creates for a
+**parameter** — but it does not extend that obligation to a return. So the rival
+is an *extrapolation* from the parameter rule, not a competing written rule; the
+burden is on it to be written down.
+
+WI-1059 and WI-1061 enforced the parameter position, where both readings agree.
+The return stayed out because they pick different culprits and enforcing the
+extrapolation costs 40 tests across thirteen delivered tickets — including the
+WI-401/402/457/480/488/491 escape gate, whose mechanism *requires* a bare
 abstract-spec return to conform first. Until WI-1063 decides, the hole is
 reachable and pinned by `wi1061_unwritten_slot_positions_test`.
 

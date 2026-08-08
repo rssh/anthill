@@ -40779,20 +40779,33 @@ fn check_operation_bodies(
         // Stream[T = Int64] = s` fails at `widen.return`, `expected E = ?E` — but it costs 40
         // tests across thirteen delivered tickets (measured on THIS tree, with the arrow and
         // tuple arms above in place; an earlier count of 32/nine was taken before them and was
-        // also mis-tallied), because it contradicts a delivered reading of the same syntax:
-        // `docs/design/type-parameter-scoping.md` §5 says a bare return is ERASED ("the
-        // element/effect tie to `l` is GONE"), a wart to be fixed by writing the type, NOT a
-        // body error — and §4 records normalizing foreign bare refs in signatures as the
-        // still-open WI-374 scope. `wi374_expansion_test::foreign_bare_return_op_loads_and_
-        // narrows` pins `makeList() -> List = cons(1, nil)` as LOADING for exactly that
-        // reason, and the WI-401/402/457/480/491 escape gate is built on a bare abstract-spec
-        // return CONFORMING by provider upcast and only then being refused with its own
-        // diagnostic — materialize the return and that gate stops firing at all.
+        // also mis-tallied).
         //
-        // So the two docs read the same syntax two ways, and picking one is WI-1063's
-        // job. The PARAMETER walk above is unaffected: both readings agree that a
-        // parameter's unwritten slot is rigid in the body (WI-1059 measured it, and the
-        // nested half here costs the corpus and the suite nothing).
+        // AND IT IS AN EXTRAPOLATION, WHICH IS THE REAL REASON IT IS HELD BACK. Read the spec
+        // carefully rather than from memory: `docs/kernel-language.md` §"Expansion during
+        // unification" states the EXPANSION at every sort application, a return included, and
+        // (WI-1059) states the BODY OBLIGATION that expansion creates only for a PARAMETER —
+        // every example there is one, and "at a call it is flexible again, and binds from the
+        // argument" is about the argument side. It never extends the obligation to a return.
+        // `docs/design/type-parameter-scoping.md` §5 DOES speak to the return, and the other
+        // way: a bare return is ERASED ("the element/effect tie to `l` is GONE"), a wart to be
+        // fixed by writing the type, NOT a body error; §4 records normalizing foreign bare
+        // refs in signatures as the still-open WI-374 scope. So this is one reading STATED and
+        // one UNSTATED, not two rules colliding — the burden is on the universal reading.
+        //
+        // What the delivered tree already bets on the stated reading:
+        // `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows` pins `makeList() ->
+        // List = cons(1, nil)` as LOADING and says at its site that the return is deliberately
+        // not expanded; `bare_value_stays_unusable` refuses the CONSUMER of an erased value,
+        // which is where §5 puts the fault. And the WI-401/402/457/480/488/491 escape gate is
+        // built on a bare abstract-spec return CONFORMING by provider upcast and only then
+        // being refused with its own diagnostic — materialize the return and `abstracting_
+        // return_error` is never reached, so that whole diagnostic family silently disappears.
+        //
+        // Picking a reading, and writing it into BOTH documents, is WI-1063's job. The
+        // PARAMETER walk above is unaffected: both readings agree that a parameter's unwritten
+        // slot is rigid in the body (WI-1059 measured it, and the nested/arrow/tuple half here
+        // costs the corpus and the suite nothing).
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
             return_type,
