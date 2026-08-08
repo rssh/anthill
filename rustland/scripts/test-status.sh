@@ -28,6 +28,23 @@ fi
 real=$(readlink -f "${log}" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${log}")
 
 echo "log: ${real}"
+
+# Whether the run this log belongs to is still alive. `test.sh` writes
+# "<pid> <log>" to target/test-run.pid and clears it on exit, so a live pid
+# whose log is NOT this one means the caller is reading a finished run — the
+# state that used to read as a hang, back when a second run could claim
+# `latest` at startup and then die holding it.
+if [ -e target/test-run.pid ]; then
+  read -r live_pid live_log < target/test-run.pid || true
+  if [ -n "${live_pid:-}" ] && kill -0 "${live_pid}" 2>/dev/null; then
+    live_real=$(readlink -f "${live_log}" 2>/dev/null || echo "${live_log}")
+    if [ "${live_real}" = "${real}" ]; then
+      echo "     (live, pid ${live_pid})"
+    else
+      echo "     (NOT the live run — pid ${live_pid} is writing rustland/${live_log})"
+    fi
+  fi
+fi
 echo
 
 last_running=$(grep -n "Running " "${real}" | tail -1 || true)
