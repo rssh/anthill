@@ -40147,12 +40147,22 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// reaching here can fail this test today. It is kept as a total match rather than an
 /// assertion because a `Rigid`/`DeBruijn` entry would be a caller bug, not user input,
 /// and skolemizing one would be worse than leaving it alone.
-/// WI-1059 — materialize a declared PARAMETER type's UNWRITTEN sort parameters as fresh
-/// `Var::Rigid` skolems, for the duration of the operation's body check.
+/// WI-1059/WI-1061 — materialize a declared PARAMETER type's UNWRITTEN sort parameters as
+/// `Var::Rigid` skolems, for the duration of the operation's body check. WI-1059 covered a
+/// parameter's TOP LEVEL; WI-1061 covers the slots below it — nested inside a binding, inside
+/// a callback's RESULT, inside a TUPLE COMPONENT — which is why the walk recurses and why the
+/// filler is a parameter ([`UnwrittenFill`]) rather than a constant. The RETURN position is
+/// deliberately not here — see the block comment at the caller, and **WI-1062**.
+///
+/// THREE CHILDREN ARE EXCLUDED, each with its reason at its own site rather than here: an
+/// effect-ROW binding and an arrow's effects (a row, not a type), and a callback's own
+/// PARAMETER (the quantification faces the other way). Nothing else is: a carrier this walk
+/// does not descend into is a slot left silently flexible, which is the defect the whole
+/// function exists to prevent, so the `_` arm is the one to distrust when a leak turns up.
 ///
 /// THE THIRD FAMILY. [`rigidify_op_type_params`] skolemizes two: the operation's own `[T]`
 /// (WI-392) and its enclosing sort's (WI-942). A parameter of ANOTHER sort left unwritten
-/// in a parameter's TYPE — `Stream`'s `E` in `s: Stream[T = Int64]` — is in neither, and
+/// in a parameter's type — `Stream`'s `E` in `s: Stream[T = Int64]` — is in neither, and
 /// there is no variable to skolemize because the slot was never materialized at all: a
 /// partial application carries only the bindings it wrote, and a bare `Ref(S)` carries
 /// none. So this MINTS the slot and its skolem together.
@@ -40165,23 +40175,12 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// is untouched (it rebuilds `OpInfo.params` only; the KB's `OperationInfo` fact, which
 /// every call site reads, keeps its flexible slots).
 ///
-/// THE SKOLEM IS THE PROJECTION `s.E`, NOT A FRESH VAR — and this is the whole design, so
-/// it is worth saying why the obvious alternative is wrong. A fresh `Var::Rigid` per slot is
-/// sound but ANONYMOUS: nothing else can name it. The stdlib names these parameters
-/// constantly — `operation collect(s: Stream) -> List[T = s.T]` — and `s.T` is already a
-/// RIGID neutral (WI-400 ζ: "its own rigid type, equal only to an identical neutral, never
-/// to a concrete type"). Minting a fresh var instead desynchronizes the two: the body's `s`
-/// would carry `T = ?T₁` while the declared return still said `s.T`, and the pair no longer
-/// matches. MEASURED — the fresh-var cut cost 27 stdlib load errors, almost all of the shape
-/// `expected List[T = s.T], got List[T = ?T]`, and not one of them was a wrong program.
-///
-/// So the unwritten slot is filled with the name the language already gives it. That name is
-/// rigid by the mechanism already in place, which is why this needs no new rule in the
-/// subtype relation: `Stream[T = Int64, E = s.E]` against `Stream[T = Int64, E = {}]` is
-/// refused by the ζ arm, and the message names `s.E` — the row the body may not assume.
-/// [`refine_self_receiver_body_type`] builds the identical projection for the identical
-/// reason (a bare self-receiver return pinned to `l.T`); this is that pinning applied to the
-/// parameter instead of the result.
+/// WHICH skolem each position takes is [`UnwrittenFill`]'s, and the two arms are documented
+/// there. Either way the fill is rigid by a mechanism already in place, which is why this
+/// needs no new rule in the subtype relation: `Stream[T = Int64, E = s.E]` against
+/// `Stream[T = Int64, E = {}]` is refused by the WI-400 ζ arm, and a fresh `Var::Rigid` by
+/// plain unification. [`refine_self_receiver_body_type`] builds the identical projection for
+/// the identical reason (a bare self-receiver return pinned to `l.T`).
 ///
 /// ALL FOUR SPELLINGS OF ONE TYPE ARRIVE HERE ALIKE, which is what makes them agree (the
 /// WI-1056 measurement, whose four rows this ticket keeps in lockstep at the new verdict):
@@ -40191,15 +40190,6 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// the projection; `Stream[T = Int64]` and the bare `Stream` arrive missing the slot, and it
 /// is minted. A slot written CONCRETE, or written as the op's own rigid, is left alone.
 ///
-/// PARAMETER TYPES ONLY — **WI-1061**, not an unowned gap. Not the return type and not the
-/// declared effects, though [`rigidify_op_type_params`]'s substitution is applied to all
-/// three. The universal quantification reads the other way in a RESULT position (the body
-/// must PRODUCE a value good for every instantiation, not consume one) and a return type
-/// has no carrier VALUE to project off, so the filler there can only be a fresh anonymous
-/// rigid — the one this function measured at 27 stdlib errors in THIS position. The hole is
-/// real and driven: `widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s`
-/// loads.
-///
 /// SELF AND FOREIGN REFERENCES FILL THE SLOT DIFFERENTLY, and `docs/design/type-parameter-
 /// scoping.md` §3 is what decides which: "Within the sort's own definition, a bare self-sort
 /// reference participates in that tie — `append(xs: List, ys: List)` declared *inside*
@@ -40207,45 +40197,137 @@ fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_typ
 /// FOREIGN references "do not silently share a variable across a signature". So a self
 /// reference's unwritten slot is THIS instance's parameter — the enclosing sort's rigid,
 /// which WI-424 already minted — and only a foreign one is fresh-per-occurrence and takes
-/// the projection. MEASURED, and this split is why it is here: filling a self reference with
-/// a projection refused `Pair.compare(a: Pair, b: Pair)` at `expected a.A, got b.A`, which
-/// is the member tie read as its own negation.
+/// [`UnwrittenFill`]'s answer. MEASURED, and this split is why it is here: filling a self
+/// reference with a projection refused `Pair.compare(a: Pair, b: Pair)` at `expected a.A,
+/// got b.A`, which is the member tie read as its own negation. The self arm is DEPTH-BLIND on
+/// purpose: the tie is the SORT's, so a self reference nested in a binding takes the same
+/// rigid a top-level parameter does. DRIVEN, by backing exactly that out (`is_self &&
+/// !matches!(fill, Anonymous)`): the stdlib then reports 4 errors, all `expected List[T = ?T],
+/// got List[T = ?T] (these render alike but are not the same type)` — `List.insert`,
+/// `Stream.iterator` and two `match` rules, each holding one skolem for the enclosing sort's
+/// `T` and a second, unrelated one for the same sort named again.
 ///
-/// TOP LEVEL ONLY — **WI-1061** again, and for the same reason the projection is the right
-/// filler: a slot nested inside a binding (`s: List[T = Stream]` leaves `Stream`'s
-/// parameters unwritten too) has NO path that names it, so the only filler available there
-/// is an anonymous fresh rigid — and that reintroduces exactly the desynchronization
-/// measured above, since a return type spelling the same nested bare sort would mint a
-/// second, unrelated one. Driven: `feed(l: List[T = Stream[T = Int64]]) = takes_pure(l)`
-/// loads. Left as written.
+/// `None` when nothing was filled — the type is returned unrebuilt, which is what lets the
+/// recursion stay exact about whether a nested binding changed rather than re-minting an
+/// equal-but-distinct carrier for every signature in the corpus.
+///
+/// THE DECLARED EFFECTS ARE NOT A FURTHER POSITION, and this is measured rather than deferred
+/// on a hunch. Over the whole corpus the declared effect atoms are row variables (`E`,
+/// `EffP`), projections (`s.E`), `Modify[v]` value-in-type denotations and concrete labels —
+/// no parametric sort application with an unwritten slot. And when one is written on purpose,
+/// the effects check is already STRICT in the SAFE direction: `operation weak() -> Int64
+/// effects Box = raise_int()` where `raise_int` incurs `Box[T = Int64]` is refused today at
+/// `expected declared: [Box], got undeclared effect: Box[T = Int64]` —
+/// `views_structurally_equal` does not read a bare atom and a parameterized one as one
+/// effect, so the laundering this function exists to stop cannot be built there. That
+/// strictness is also why the recursion must not DESCEND into an effect-row binding; the gate
+/// for it is at the recursion site.
 fn rigidify_unwritten_sort_params(
     kb: &mut KnowledgeBase,
-    param_name: Symbol,
+    fill: UnwrittenFill,
     ty: &Value,
     parent_sort: Option<Symbol>,
     rigidify: &Substitution,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
-) -> Value {
+) -> Option<Value> {
     let (base, written) = match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => (s, Vec::new()),
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-        _ => return ty.clone(),
+        // WI-1061 (review) — A SORT APPLICATION IS NOT THE ONLY THING A PARAMETER TYPE CAN
+        // BE, and the first cut of this walk descended only through `Parameterized`
+        // bindings, so `f: (x: Int64) -> Stream[T = Int64]` and `p: (s: Stream[T = Int64],
+        // n: Int64)` kept their unwritten rows FLEXIBLE. Both are the WI-1059 hole verbatim,
+        // one carrier further in, and both were driven: `feed(f: (x: Int64) -> Stream[T =
+        // Int64]) = takes_pure(f(1))` with a `{Error}`-returning callback loaded clean, as
+        // did the tuple form. They are inside a PARAMETER — the position WI-1062's two
+        // readings agree about — so they belong here and not there.
+        //
+        // The `_` arm below is what let them through, which is why these two are written out
+        // rather than folded into it: a carrier this walk does not know is a slot it silently
+        // leaves flexible, and the whole function exists to stop silent leaks.
+        TypeExtractor::Arrow { param, result, effects, arity } => {
+            // THE RESULT ONLY. The two other children are each left alone for their own
+            // reason, and neither is a hedge:
+            //
+            // The EFFECTS child, for the reason the written-binding gate below states — a
+            // row's labels are compared by structural identity against what a body incurs,
+            // and materializing a label's own parameters makes two spellings of one effect
+            // unequal.
+            //
+            // The PARAMETER child because the VARIANCE flips there, and the first cut of this
+            // arm got it wrong. An unwritten slot in a callback's own parameter says the
+            // callback accepts EVERY instantiation — it is the caller of `f` that chooses, so
+            // the body may pass whatever it has. Rigidifying it says the opposite: that `f`
+            // accepts one fixed unknown, which the body must then match. DRIVEN — walking it
+            // failed 9 tests at `each(l: List[T = Cell], f: (a: Cell) -> Unit)` and
+            // `foldCell(xs: List[T = Cell], z: Cell, f: (a: Cell, t: Cell) -> Cell)`, all
+            // `expected Cell[V = ?V], got Cell[V = z.V]` or two skolems rendering alike:
+            // `f(h)` was refused for handing a perfectly good cell to a callback that had
+            // declared it takes any. A RESULT is the position that faces the body the same
+            // way a parameter of the operation does — the body CONSUMES what `f` returns —
+            // which is why it belongs here and the parameter does not.
+            let nr = rigidify_unwritten_sort_params(
+                kb,
+                UnwrittenFill::Anonymous,
+                &result,
+                parent_sort,
+                rigidify,
+                span,
+                owner,
+            )?;
+            let p = value_to_type_child(kb, &param);
+            let r = value_to_type_child(kb, &nr);
+            let e = value_to_type_child(kb, &effects);
+            // WI-791: the arrow's own ARITY rides across a rebuild — filling a type slot
+            // rewrites a parameter's TYPE and never the parameter COUNT. Rebuilt as a
+            // `Value::Node` unconditionally, which is the primary arrow form (see
+            // [`make_arrow_value`]: the representation note disclaims hash-consing for
+            // binders), so a ground arrow stays a Node spine over interned leaves.
+            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, span, owner)));
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+            let mut any = false;
+            for (label, v) in &fields {
+                match rigidify_unwritten_sort_params(
+                    kb,
+                    UnwrittenFill::Anonymous,
+                    v,
+                    parent_sort,
+                    rigidify,
+                    span,
+                    owner,
+                ) {
+                    Some(rewritten) => {
+                        out.push((*label, rewritten));
+                        any = true;
+                    }
+                    None => out.push((*label, v.clone())),
+                }
+            }
+            if !any {
+                return None;
+            }
+            // Labels and their ORDER are transplanted: a named tuple is an ORDERED PRODUCT
+            // whose source order is its identity (WI-788), so the rebuild must not re-slot.
+            return Some(named_tuple_value(kb, &out, span, owner));
+        }
+        _ => return None,
     };
     // Exactly "the parameters an unwritten slot would expand to a fresh var for" — the
     // same table the WI-1056 acceptance arm consults, so the two cannot disagree about
     // which slots a partial application is missing.
     let declared = sort_type_params_as_pairs(kb, base);
     if declared.is_empty() {
-        return ty.clone();
+        return None;
     }
     let is_self =
         parent_sort.is_some_and(|p| kb.canonical_sort_sym(p) == kb.canonical_sort_sym(base));
     let key_match = BindingKeyMatch::for_bases(kb, base, base);
-    let recv = kb.alloc(Term::Ref(param_name));
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(declared.len().max(written.len()));
     let mut consumed = vec![false; written.len()];
-    let mut minted = false;
+    let mut changed = false;
     for (param, canonical) in declared.iter() {
         let slot = binding_index_for_param(kb, &written, *param, key_match);
         if let Some(i) = slot {
@@ -40257,20 +40339,141 @@ fn rigidify_unwritten_sort_params(
             // a concrete type, the op's own `[E]` (already a rigid), the enclosing sort's
             // param — is what they meant, and stands.
             if !value_is_flex_var(kb, v) {
-                bindings.push((*k, v.clone()));
+                // WI-1061 — but what the author wrote may itself leave slots unwritten one
+                // level DOWN (`l: List[T = Stream]` writes `T` and leaves `Stream`'s own
+                // `T`/`E` open), and those are unwritten in exactly the §"Expansion during
+                // unification" sense. Recurse. Nothing NAMES a nested slot, so the fill
+                // there is [`UnwrittenFill::Anonymous`] whatever this level's was.
+                //
+                // NOT INTO AN EFFECT-ROW SLOT. `E = Error` in `Stream[T = Solution, E =
+                // Error]` looks structurally identical to a nested data type — a `SortRef`
+                // whose sort happens to declare a parameter — but it is a ROW, and its
+                // labels are compared by structural identity against the effects a body
+                // INCURS. Materializing `Error`'s own `T` there makes the two spellings of
+                // one label unequal, and the op is refused against its own declaration.
+                // DRIVEN, and it is what the recursion cost before this gate: the
+                // `anthill-todo` program's `collect_id_set` and `walk_solutions` failed at
+                // `expected declared: [Error], got undeclared effect: Error[T = ?T]`,
+                // taking 193 tests with them. `sort_param_is_effect_row` keys on the
+                // DECLARING sort's kind-anchor (WI-594/WI-320), which is the only thing
+                // that separates the two — the values are the same shape.
+                let short = short_name_of(kb.local_name_of(*param)).to_owned();
+                if sort_param_is_effect_row(kb, base, &short) {
+                    bindings.push((*k, v.clone()));
+                    continue;
+                }
+                let inner = rigidify_unwritten_sort_params(
+                    kb,
+                    UnwrittenFill::Anonymous,
+                    v,
+                    parent_sort,
+                    rigidify,
+                    span,
+                    owner,
+                );
+                match inner {
+                    Some(rewritten) => {
+                        bindings.push((*k, rewritten));
+                        changed = true;
+                    }
+                    None => bindings.push((*k, v.clone())),
+                }
                 continue;
             }
         }
-        let fill = if is_self {
+        let filled = if is_self {
             // THIS instance's parameter: the sort's canonical var run through the
             // rigidify substitution WI-424 built, so the slot holds the same skolem every
             // other mention of the parameter in this body already resolves to.
             Value::term(walk_type_deep(kb, rigidify, *canonical))
         } else {
+            fill.mint(kb, *param)
+        };
+        bindings.push((*param, filled));
+        changed = true;
+    }
+    if !changed {
+        return None;
+    }
+    // A written binding matching no declared parameter is CARRIED, not dropped — it is a
+    // malformed or cross-keyed type, and losing it here would silently change what the
+    // body is checked against. Whoever owns that diagnosis still sees it.
+    for (i, kv) in written.iter().enumerate() {
+        if !consumed[i] {
+            bindings.push(kv.clone());
+        }
+    }
+    let base_ref = kb.make_sort_ref(base);
+    Some(parameterized_value(kb, base_ref, &bindings, span, owner))
+}
+
+/// WI-1061 — WHERE in a signature an unwritten slot sits, which is the whole of what decides
+/// how it is FILLED. One enum rather than a `bool`, because the two arms are not more/less of
+/// one thing: one names the slot, the other cannot.
+#[derive(Clone, Copy)]
+enum UnwrittenFill {
+    /// The TOP LEVEL of a PARAMETER's declared type, carrying that parameter's name. The
+    /// slot takes the projection off the value that carries it — `s: Stream[T = Int64]` is
+    /// checked as `s: Stream[T = Int64, E = s.E]`.
+    ///
+    /// THE PROJECTION, NOT A FRESH VAR, and this is the WI-1059 design. A fresh rigid per
+    /// slot is sound but ANONYMOUS: nothing else can name it. The stdlib names these
+    /// parameters constantly — `operation collect(s: Stream) -> List[T = s.T]` — and `s.T`
+    /// is already a RIGID neutral (WI-400 ζ: "its own rigid type, equal only to an identical
+    /// neutral, never to a concrete type"). Minting a fresh var instead desynchronizes the
+    /// two: the body's `s` would carry `T = ?T₁` while the declared return still said `s.T`,
+    /// and the pair no longer matches. MEASURED — the fresh-var cut cost 27 stdlib load
+    /// errors, almost all of the shape `expected List[T = s.T], got List[T = ?T]`, and not
+    /// one of them was a wrong program.
+    Projection(Symbol),
+    /// A slot NESTED inside a written binding. A fresh anonymous `Var::Rigid`, one per slot.
+    ///
+    /// NOT A CHOICE — nothing can name a nested slot. `l: List[T = Stream]` writes `List`'s
+    /// `T` and leaves `Stream`'s own parameters open, and the language does not spell the
+    /// inner row: there is no `l.T.E`. So [`Projection`](Self::Projection) is simply
+    /// unavailable, and the anonymity that made it the wrong filler at top level is not a
+    /// cost that can be avoided here.
+    ///
+    /// THE DESYNC IT WAS FEARED TO CAUSE CANNOT ARISE, which is what makes this arm safe
+    /// where the same anonymity was wrong at top level. At top level the anonymity broke a
+    /// signature that had ALREADY NAMED the slot (`-> List[T = s.T]` reading the parameter's
+    /// own `T`), so two spellings of one thing stopped matching. A nested slot is named by
+    /// nothing anywhere in the signature — there is no second reading to desynchronize FROM —
+    /// and a SELF reference, the one nested thing that IS named elsewhere, never reaches this
+    /// arm.
+    ///
+    /// THE COST MEASUREMENT WI-1061 WAS OPENED FOR, and it has two halves that must be read
+    /// together. Over stdlib, host bindings (`anthill-stl`), `rustland/anthill-todo/anthill`,
+    /// `rustland/anthill-cpp-gen/anthill`, `examples/`, `anthill-todo/` and
+    /// `anthill-testcases/`, this arm costs ZERO — every tier loads with the same error count
+    /// and the same fact/rule totals as before the change, and the whole workspace suite is
+    /// green. But it is also reached ZERO times: counted at the mint, the corpus's only
+    /// nested unwritten slot is `MappedStream.splitFirst`'s, a SELF reference that takes the
+    /// sort's own rigid instead. So "the corpus loads clean" is evidence that this arm breaks
+    /// nothing, and NOT evidence that its filler is cheap — the corpus does not contain the
+    /// shape. What drives it is `wi1061_unwritten_slot_positions_test`; that file is the only
+    /// coverage this arm has.
+    ///
+    /// The enum keeps two arms although one call site supplies each, because the RETURN
+    /// position (WI-1062) is a third caller of this same walk under this same arm, and it was
+    /// built and measured before being held back — see the caller's block comment.
+    Anonymous,
+}
+
+impl UnwrittenFill {
+    /// Mint this position's filler for one unwritten parameter `param`.
+    fn mint(self, kb: &mut KnowledgeBase, param: Symbol) -> Value {
+        // Both arms name the result after the parameter's SHORT name (`E`, not
+        // `Stream.E`) — the projection because that is the member spelling a hand-written
+        // `s.E` produces, the rigid because a skolem's identity is its fresh `VarId` and the
+        // name is only what the diagnostic prints (`?E` beats `?_`).
+        let short = short_name_of(kb.local_name_of(param)).to_owned();
+        let member = kb.intern(&short);
+        match self {
             // Built byte-identically to the loader's `s.E` — `make_expr_carried(Ref(recv),
-            // intern(short))`, the SHORT member name — and keyed by the carrier's own
-            // `<sort>.<P>` symbol, so it is the same neutral a hand-written `s.E` produces
-            // and compares to one by path identity.
+            // intern(short))` — and keyed by the carrier's own `<sort>.<P>` symbol, so it is
+            // the same neutral a hand-written `s.E` produces and compares to one by path
+            // identity.
             //
             // BARE, INCLUDING FOR AN EFFECT-ROW PARAMETER — the single-label row `{s.E}` an
             // effect slot ultimately wants is wrapped where the receiver is CONSUMED
@@ -40283,26 +40486,22 @@ fn rigidify_unwritten_sort_params(
             // also what lets [`is_self_projection_of`] recognize a materialized receiver by
             // shape; a wrapped fill would silently stop matching there and disable the
             // WI-594 effect threading.
-            let short = short_name_of(kb.local_name_of(*param)).to_owned();
-            let member = kb.intern(&short);
-            Value::term(kb.make_expr_carried(recv, member))
-        };
-        bindings.push((*param, fill));
-        minted = true;
-    }
-    if !minted {
-        return ty.clone();
-    }
-    // A written binding matching no declared parameter is CARRIED, not dropped — it is a
-    // malformed or cross-keyed type, and losing it here would silently change what the
-    // body is checked against. Whoever owns that diagnosis still sees it.
-    for (i, kv) in written.iter().enumerate() {
-        if !consumed[i] {
-            bindings.push(kv.clone());
+            UnwrittenFill::Projection(recv_name) => {
+                let recv = kb.alloc(Term::Ref(recv_name));
+                Value::term(kb.make_expr_carried(recv, member))
+            }
+            // The same mint as [`rigidify_op_type_params`], which is the point: a slot the
+            // author left unwritten and a slot they declared as the op's own `[E]` are the
+            // same universally-quantified variable, so the body must see the same KIND of
+            // skolem for both. `wi1059_unwritten_param_rigid_test` pins that agreement from
+            // the other side (its `feed[E]` row and its `Stream[T = Int64]` row refuse
+            // alike, differing only in what the message prints).
+            UnwrittenFill::Anonymous => {
+                let fresh = kb.fresh_var(member);
+                Value::term(kb.alloc(Term::Var(Var::Rigid(fresh))))
+            }
         }
     }
-    let base_ref = kb.make_sort_ref(base);
-    parameterized_value(kb, base_ref, &bindings, span, owner)
 }
 
 /// Is this type value a still-FLEX logical variable — the carrier an explicit `?` in a type
@@ -40548,8 +40747,9 @@ fn check_operation_bodies(
             rigidify_subst = rigidify;
             (params, return_type, declared_effects)
         };
-        // WI-1059: the THIRD family of rigids — a parameter of ANOTHER sort left
-        // unwritten in a parameter's TYPE. Runs for EVERY op, including one that
+        // WI-1059/WI-1061: the THIRD family of rigids — a parameter of ANOTHER sort left
+        // unwritten in a parameter's TYPE, at its top level (WI-1059) or nested inside
+        // one of its bindings (WI-1061). Runs for EVERY op, including one that
         // declares no `[T]` and sits in no parametric sort (the two-family branch
         // above is skipped entirely for those, and `feed(s: Stream[T = Int64])` is
         // exactly that shape). AFTER the substitution, so a slot written as the op's
@@ -40558,11 +40758,40 @@ fn check_operation_bodies(
             .iter()
             .map(|(n, t)| {
                 let ty = rigidify_unwritten_sort_params(
-                    kb, *n, t, parent_of_op, &rigidify_subst, body_node.span, body_node.owner,
+                    kb,
+                    UnwrittenFill::Projection(*n),
+                    t,
+                    parent_of_op,
+                    &rigidify_subst,
+                    body_node.span,
+                    body_node.owner,
                 );
-                (*n, ty)
+                (*n, ty.unwrap_or_else(|| t.clone()))
             })
             .collect();
+        // NOT THE RETURN TYPE — **WI-1062** owns it, and the reason is a decision the
+        // language has not taken rather than a line missing here. WI-1061 built the walk over
+        // the return and MEASURED it; the whole of it is one more call to the SAME function
+        // just made above, with `UnwrittenFill::Anonymous` and `return_type`, written back
+        // over `OpInfo.return_type` (the only two readers are the conformance check via
+        // `effective_return` and the WI-314 boundary masking, and both are body-side). It
+        // works and it refuses the hole — `widen(s: Stream[T = Int64, E = {Error}]) ->
+        // Stream[T = Int64] = s` fails at `widen.return`, `expected E = ?E` — but it costs 32
+        // tests across nine delivered tickets, because it contradicts a delivered reading of
+        // the same syntax:
+        // `docs/design/type-parameter-scoping.md` §5 says a bare return is ERASED ("the
+        // element/effect tie to `l` is GONE"), a wart to be fixed by writing the type, NOT a
+        // body error — and §4 records normalizing foreign bare refs in signatures as the
+        // still-open WI-374 scope. `wi374_expansion_test::foreign_bare_return_op_loads_and_
+        // narrows` pins `makeList() -> List = cons(1, nil)` as LOADING for exactly that
+        // reason, and the WI-401/402/457/480/491 escape gate is built on a bare abstract-spec
+        // return CONFORMING by provider upcast and only then being refused with its own
+        // diagnostic — materialize the return and that gate stops firing at all.
+        //
+        // So the two docs read the same syntax two ways, and picking one is WI-1062's
+        // job. The PARAMETER walk above is unaffected: both readings agree that a
+        // parameter's unwritten slot is rigid in the body (WI-1059 measured it, and the
+        // nested half here costs the corpus and the suite nothing).
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
             return_type,
