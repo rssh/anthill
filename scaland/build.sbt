@@ -30,8 +30,27 @@ lazy val core = project
     scalacOptions += "-Wconf:id=E029:e",
     libraryDependencies ++= Seq(
       "com.lihaoyi" %% "fastparse" % "3.1.1",
-      "org.scalameta" %% "munit" % "1.0.0" % Test
-    )
+      "org.scalameta" %% "munit" % "1.0.0" % Test,
+      // WI-1020: the compiler that CHECKS Bootstrap's emitted Scala, invoked in-process
+      // through `dotc.Driver`. A resolved dependency rather than a `scala-cli` on PATH:
+      // it needs no network at test time, cannot be absent (so there is no skip-when-
+      // missing branch to hide a defect behind), and is pinned to `scala3Version` so the
+      // harness cannot silently drift from what the build targets.
+      "org.scala-lang" %% "scala3-compiler" % scala3Version % Test
+    ),
+    // WI-1020: the classpath the EMITTED code compiles against, handed to the harness as
+    // a resource. Not `System.getProperty("java.class.path")` — sbt runs tests unforked,
+    // so that property is the launcher's classpath and carries no scala3-library, and the
+    // harness would fail on `Any` rather than on the code under test.
+    // `dependencyClasspath` and not `fullClasspath`: emitted code needs the dependencies
+    // only, and `fullClasspath` includes this project's `products`, which resources feed —
+    // a cycle.
+    Test / resourceGenerators += Def.task {
+      val out = (Test / resourceManaged).value / "scala-compile-classpath.txt"
+      val cp = (Test / dependencyClasspath).value.map(_.data.getAbsolutePath)
+      IO.write(out, cp.mkString("\n"))
+      Seq(out)
+    }.taskValue
   )
 
 // KB-driven anthill → Scala codegen, per proposal 034 §anthill-scala-gen.

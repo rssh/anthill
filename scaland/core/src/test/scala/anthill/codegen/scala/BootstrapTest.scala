@@ -117,6 +117,60 @@ class BootstrapTest extends munit.FunSuite:
       s"Eq should inherit `eq` from PartialEq, not redeclare it:\n$eqSrc")
   }
 
+  test("WI-1020: the emitted eq closure COMPILES") {
+    // The first test in this suite to DRIVE the capability rather than describe it.
+    // `docs/scala-forward-mapping.md` §2.3 promises "the generated file compiles as-is";
+    // this is what checks it.
+    //
+    // SUBSUMES NOTHING ABOVE, and that is not a hedge — the two ask different questions.
+    // The string matches pin WHICH construct each declaration maps to (`trait Eq[T]
+    // extends PartialEq[T]`, ops on `PartialEq` and not on `Eq`); a compile cannot tell
+    // you the mapping is right, only that whatever was emitted is valid Scala. Neither
+    // implies the other, so both stay.
+    //
+    // WHAT IT CAUGHT ON ARRIVAL, and the reason this file was chosen first: `Eq` declares
+    // no operations, and the Algebra branch emitted `trait Eq[T] extends PartialEq[T]:`
+    // over a lone `// (no operations)` comment — `indented definitions expected, eof
+    // found`. Every assertion in the test above passed against that file.
+    //
+    // FAILS WHEN BACKED OUT: restore the `:`-plus-comment form in `renderMainSort` and
+    // this reports the compiler's own error; the test above stays green either way.
+    //
+    // The whole closure goes to one invocation because `Eq` and `NonEq` name `PartialEq`,
+    // which a sibling file declares. eq.anthill is self-contained — the three sorts
+    // reference only each other — so no other stdlib file is needed here.
+    val files = Bootstrap.generate(parseStdlib("anthill/prelude/eq.anthill"))
+    assertEquals(files.map(_.relPath).sorted, IndexedSeq(
+      "src/main/scala/anthill/prelude/Eq.scala",
+      "src/main/scala/anthill/prelude/NonEq.scala",
+      "src/main/scala/anthill/prelude/PartialEq.scala",
+    ), "the closure being compiled must be the whole file, not a subset that happens to work")
+    ScalaCompile.assertCompiles("the eq.anthill closure", files)
+  }
+
+  test("WI-1020: the harness compiles with the version scala_std declares") {
+    // What makes the compile above MEAN anything. The harness runs whatever
+    // `scala3-compiler % Test` resolved to; the emitted project declares whatever
+    // `scala_std` says. If those drift, "the closure compiles" is an answer to a
+    // question nobody asked — the output would be verified against a compiler no
+    // consumer of it uses.
+    //
+    // This is the coupling that a hardcoded default in the emitter used to hide: bump
+    // build.sbt alone and this fails naming both numbers, rather than the harness
+    // quietly checking the wrong dialect.
+    //
+    // KNOWN LIMIT, stated rather than left to be discovered: the harness can only ever
+    // exercise ONE compiler — the one on its test classpath. A caller configuring some
+    // other target is unverified, and this assertion is what confines the gap to that
+    // case.
+    val declared = ScalaProfile.languageVersion(stdlibKb) match
+      case LanguageVersion.Declared(v) => v
+      case other => fail(s"scala_std must declare a language_version; got $other")
+    assertEquals(dotty.tools.dotc.config.Properties.versionNumberString, declared,
+      "the compiler this harness runs and the version scala_std targets have diverged; " +
+      "move `scala3Version` in build.sbt and `language_version` in scala_std.anthill together")
+  }
+
   test("WI-170: snake_case operation names convert to camelCase") {
     // bigint.anthill exposes `to_bigint`, `to_int`, `to_float` ops —
     // verify they convert to camelCase per docs/scala-forward-mapping.md §5.

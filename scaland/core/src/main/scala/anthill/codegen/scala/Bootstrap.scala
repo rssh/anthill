@@ -266,9 +266,17 @@ object Bootstrap:
         sb ++= renderOpsTrait(sortName, tpStr, typeParams, ops, sym)
       case SortShape.Algebra =>
         // trait Sort[T] { abstract ops }
-        sb ++= s"trait $sortName$tpStr$ext:\n"
-        if ops.isEmpty then sb ++= "  // (no operations)\n"
-        else ops.foreach(op => sb ++= s"  ${OpGen.renderAbstract(op, typeParams, sym)}\n")
+        //
+        // A sort declaring NO operations takes no body at all — not a `:` with a comment
+        // under it. Scala's indentation syntax requires a block opened with `:` to
+        // contain at least one definition, so `trait Eq[T] extends PartialEq[T]:` over a
+        // lone comment is `indented definitions expected, eof found`. stdlib's `Eq` is
+        // exactly that shape (it adds only a law), and it shipped uncompilable behind a
+        // green substring test until WI-1020's harness compiled the output.
+        if ops.isEmpty then sb ++= s"trait $sortName$tpStr$ext\n"
+        else
+          sb ++= s"trait $sortName$tpStr$ext:\n"
+          ops.foreach(op => sb ++= s"  ${OpGen.renderAbstract(op, typeParams, sym)}\n")
     sb.toString
 
   /** The `case class` a SINGLE-CONSTRUCTOR sort maps to — the one declaration
