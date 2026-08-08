@@ -19,3 +19,7 @@ back-references).
 - [first-class-operations.md](first-class-operations.md) — a bare operation name
   as a first-class function value (`Value::OpRef`), `()` as uniform application;
   the operation half deferred from proposal 039 (term-level constants).
+- [bilateral-refutation.md](bilateral-refutation.md) — refutation as first-class
+  evidence, distinct from failure-to-prove; condenses `NonEq`, `Disproved`,
+  `⊥`-denials and the "undecided" third state into one `refutes` channel.
+  Stays Horn (dual index, not disjunctive heads).
