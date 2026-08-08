@@ -1001,17 +1001,30 @@ fn goal_value_args(
     Some(pos_args.get(..n)?.to_vec())
 }
 
-/// WI-1049 — WHY an operation's effect row blocks equational treatment. Both
-/// arms refuse; they differ in what is true of the operation, and therefore in
-/// what the reader should do about it.
+/// WI-1049 — WHY an operation's effect row blocks equational treatment.
 ///
-/// The distinction is not cosmetic. `Effectful` is a property of the OPERATION
-/// and no carrier can undo it. `Polymorphic` is a property of the DECLARATION
-/// SITE only — the row is a variable, so the same operation is pure at a pure
-/// carrier and effectful at an effectful one, and the refusal is for the
-/// instantiations that have not been written yet. The repair differs to match:
-/// an effectful op is simply not equational, while a polymorphic one has its
-/// equation declared somewhere the row is already concrete.
+/// THE VERDICT IS ONE, AND ITS NAME IS **POTENTIALLY EFFECTFUL**. Both arms
+/// refuse, and they are deliberately united under that one predicate: a row that
+/// is already an effect and a row that may *become* one are the same answer to
+/// the only question the gate can ask, because nothing at a declaration knows
+/// which instantiation will be written. Effect-polymorphism translates to effect
+/// — there may one day be effect-ELIMINATION rules that discharge the
+/// polymorphic case, but they are not known, and until they are, "may be an
+/// effect" and "is an effect" are one category.
+///
+/// The arms are therefore the REASON, not two verdicts — and the reason is what
+/// the diagnostic needs, because the repair differs. `Effectful` is a property of
+/// the OPERATION and no carrier can undo it. `Polymorphic` is a property of the
+/// DECLARATION SITE only, so its repair is to declare the equation somewhere the
+/// row is already concrete. Keeping them apart in the message is what stops it
+/// calling `insert` effectful when `insert` is not; collapsing them in the
+/// verdict is what stops the message promising an admissibility that does not
+/// exist.
+///
+/// The future this leaves open (post-release, not before — see WI-1050) is a mode
+/// that applies `[simp]` AFTER typing, where effects are eliminated and the row
+/// is ground. That is the only shape in which the polymorphic arm could earn a
+/// different verdict.
 #[derive(Debug, Clone)]
 pub enum EquationBlock {
     /// At least one row member is a concrete effect label (`External`,

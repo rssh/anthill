@@ -111,7 +111,34 @@ Three citations, three risk profiles, currently one gate:
   effectful macro under `[unfold]` rewrite an effectful call into the program).
 - bare law cited by `using` in a proof — no rewrite at all.
 
-## Q3 — is "effect-polymorphic" a third answer, not a shade of "effectful"?
+## Q3 — is "effect-polymorphic" a third answer? **DECIDED: no.**
+
+**Decision (2026-08-08): effect-polymorphic ⇒ potentially effectful. One
+verdict, two explanations.**
+
+Effect-polymorphism *translates to* effect. There may one day be
+effect-**elimination** rules that discharge the polymorphic case — but they are
+not known, and until they are, "may be an effect" and "is an effect" are one
+category for every consumer that must decline. The union is named **potentially
+effectful**, and that is what the gate refuses.
+
+What stays split is the **explanation**, because the repair differs and because
+the original defect was a *misdescription*: `Effectful` is a property of the
+operation that no carrier can undo, `Polymorphic` is a property of the
+declaration site only (repair: declare the equation where the row is already
+concrete). Keeping them apart in the message is what stops it calling `insert`
+effectful when `insert` is not; collapsing them in the verdict is what stops the
+message promising an admissibility that does not exist.
+
+**Deferred, explicitly: post-release.** A mode that applies `[simp]` *after*
+typing, where effects are eliminated and the row is ground, is the only shape in
+which the polymorphic arm could earn a different verdict. Not to be implemented
+before release. WI-1050 carries it.
+
+The rest of this section is the reasoning that led there, kept because the
+alternatives should not be re-derived from scratch.
+
+### why it was open
 
 WI-1049 taught the predicate to tell them apart (`EquationBlock::Effectful` vs
 `::Polymorphic`) and fixed the message, which used to call a row variable
@@ -159,12 +186,94 @@ Two constraints on any such move:
   repo forbids. Any relaxation needs a loud channel for "this redex declined,
   here is why".
 
-## Q5 — should a law be declarable where its row is already concrete?
+## Q4a — a worked example: `head(insert(xs, e))` cannot raise
+
+The best case for effect *elimination*, because the effect is already written as
+a **guarded** atom and the guard is refutable by construction:
+
+```anthill
+operation head(xs: List) -> xs.T effects { Error[EmptyStream] :- isEmpty(xs) }
+operation insert(c: List, elem: T) -> List = cons(head: elem, tail: c)
+```
+
+`insert` prepends a `cons`, so `isEmpty(insert(xs,e))` is **false**, so the
+guard is refuted, so the `Error` is **not in the row**. The semantics is already
+written down — `node_occurrence.rs`: a guarded effect atom is "present iff
+`guard` is not refuted at the …" (proposal 048 / WI-478).
+
+**Measured: it does not discharge today.**
+
+```
+operation probe(xs: List[T = Int64], e: Int64) -> Int64 = xs.insert(e).head()
+  -> error: type mismatch in probe.effects (op-effects):
+     expected declared: [], got undeclared effect: Error[T = EmptyStream]
+```
+
+And the reason is specific, not a missing mechanism. **WI-067 (delivered) is the
+two-tier discharge**: refute `σ(G)` from **Γ** — the flow-sensitive logical env —
+plus ground eval and the KB. Γ's producers are `if`-branch conditions, `match`
+arm facts and guards. `xs.insert(e).head()` has **no `if` and no `match`**, so Γ
+says nothing about the argument.
+
+What would close it is exactly the user's word for it — *abstract
+interpretation*: the argument is a **call**, and its body-derived equation
+(`insert(c,e) <=> cons(head: e, tail: c)`, WI-580) is what says the result is a
+`cons`. So the missing link is **Γ learning a fact from a callee's derived
+equation**, not a new refutation engine. That is a well-scoped question: can
+`refute_guard` reach WI-580's derived equation for the operation in argument
+position?
+
+**And it is the effect-elimination rule Q3 said we do not have.** Q3 deferred the
+polymorphic case because "effect-elimination rules … are not known". This is one,
+for the *guarded* case: refute the guard, drop the atom. It does not help the
+row-**variable** case (`effects E` has no guard to refute), so Q3's decision
+stands — but it marks where the boundary actually is.
+
+### a vocabulary question this raises
+
+Should the rule dictionary gain `has_effect` / `hasno_effect` as **predicates**?
+Guarded effects already condition an *effect* on a *predicate*
+(`Error[EmptyStream] :- isEmpty(s)`); the dual — conditioning a *rule* on the
+*absence of an effect* — has no spelling. With it, the law in Q1 could be written
+with its real precondition, and the proof obligation in Q2 would have a goal form
+to target:
+
+```
+hasno_effect(head(insert(?x, ?e)))          -- a goal a proof can discharge
+rule isEmpty(insert(?c,?x)) <=> false :- hasno_effect(insert(?c,?x))
+```
+
+Open: whether that is a genuine predicate over terms (needing the typer's row as
+a queryable value) or sugar for an obligation. Note it would give the row a
+*reified* form, which is the same thing Q7's "both sides carry the same row"
+needs — worth designing once.
+
+## Q5 — where may a law be WRITTEN?
+
+*(Retitled: the first version said "should a law be declarable where its row is
+already concrete", which was jargon. "Declarable" = where you are allowed to
+write it. "Row" = the effect row. "Concrete" = ground/known — `{}` or `{External}`
+— as opposed to a variable like `E` or a projection like `s.E`.)*
+
+The plain question: **the gate refuses the law on the spec, so where does it go?**
 
 This is what works today, and the WI-1049 message now points at it: declare the
-equation on a carrier whose own operations are pure. The gap is that inheriting a
-spec operation gives you no place to attach a carrier-specific law about it —
-`List` inherits `insert`/`isEmpty` and declares neither.
+equation on a carrier whose own operations are pure — i.e. where the row is
+already `{}` rather than a variable.
+
+Measured on `List`, and it is *nearly* there: `List` **does** declare its own
+`insert` (`operation insert(c: List, elem: T) -> List = cons(head: elem, tail: c)`,
+list.anthill:254 — pure, no effects clause), so that leg passes. What it does not
+declare is `isEmpty`; it imports `Stream.{isEmpty}`, whose row is `{s.E}` — the
+receiver's effect parameter, projected. So the law placed inside `List` is
+refused **once**, on `isEmpty` alone.
+
+**And the proof-time reading is the uncontroversial part.** When a rule is applied
+in a *proof*, after typing, the types in the rule are substituted and `{}` is read
+as no-effect — so at that point there is nothing polymorphic left and nothing to
+refuse. That is the same observation as Q2's proof arm and Q4's "check after
+substitution": the difficulty is never at *use*, it is that the gate fires at
+*declaration*, where the substitution has not happened.
 
 Adjacent, unsettled: proposal 044 records that a derived rule for an operation
 inherited via `requires` may mint a *distinct sort-local symbol* shadowing the

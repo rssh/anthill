@@ -38993,13 +38993,15 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 site: TypeError::here(),
                 span: kb.functor_span(f).map(|s| s.span),
                 context: TypeErrorContext::OperationEffects { op_name: f },
+                // ONE predicate, named once: POTENTIALLY EFFECTFUL. The two arms
+                // are the reason, not two verdicts — a row that is already an
+                // effect and a row that may become one are refused alike, because
+                // nothing here can tell which instantiation will be written
+                // (WI-1049 decision). The `actual` clause below says which, since
+                // that is what tells the author what to do.
                 expected: format!(
-                    "{label} `[simp]`/`[unfold]` rewrite not to mention {} operation `{}`",
-                    match block {
-                        super::body_specialize::EquationBlock::Effectful(_) => "effectful",
-                        super::body_specialize::EquationBlock::Polymorphic(_) =>
-                            "effect-polymorphic",
-                    },
+                    "{label} `[simp]`/`[unfold]` rewrite not to mention potentially \
+                     effectful operation `{}`",
                     kb.qualified_name_of(f),
                 ),
                 // WI-1049 — one arm per case, NOT a shared prefix plus a suffix.
@@ -39023,14 +39025,14 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     ),
                     super::body_specialize::EquationBlock::Polymorphic(ref row) => format!(
                         "operation `{}` is effect-POLYMORPHIC — its row {row} is a row \
-                         VARIABLE, not an effect, so the operation is pure at a pure carrier \
-                         and effectful at an effectful one. A directional rewrite DUPLICATES, \
-                         REORDERS, or DROPS the matched call, which no effect tolerates, and \
-                         the row is not known until a carrier binds it — while a declaration \
-                         here binds EVERY carrier. Declare the equation where the row is \
-                         already concrete (on a carrier whose own operations are pure) rather \
-                         than on the sort that leaves `{}` open. Proposal 054 §\"Consumers \
-                         that must decline it\".",
+                         VARIABLE, so the operation is pure at a pure carrier and effectful \
+                         at an effectful one, and a declaration here binds EVERY carrier. It \
+                         is therefore POTENTIALLY EFFECTFUL and refused alike: a directional \
+                         rewrite DUPLICATES, REORDERS, or DROPS the matched call, which no \
+                         effect tolerates. Declare the equation where the row is already \
+                         concrete (on a carrier whose own operations are pure) rather than on \
+                         the sort that leaves `{}` open. Proposal 054 §\"Consumers that must \
+                         decline it\".",
                         kb.qualified_name_of(f),
                         row.trim_matches(['{', '}']),
                     ),
