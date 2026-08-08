@@ -64,7 +64,7 @@ object TypeGen:
       // coherent answer may be that an effect parameter is erased from the emitted
       // type entirely and the argument dropped rather than rendered. That needs the
       // parse IR to mark effect parameters (it does not) and a use site to know a
-      // FOREIGN sort's parameter kinds (proposal 034 says it cannot) — WI-1061.
+      // FOREIGN sort's parameter kinds (proposal 034 says it cannot) — WI-1062.
       // Until then this is the refusal that keeps eight prelude files, and through
       // `Iterable` their dependents, out of the tree.
       throw BootstrapError(
@@ -200,7 +200,7 @@ object TypeGen:
     * the NAME each arity belongs to.
     *
     * `Map` NAMES A TYPE NOTHING EMITS TODAY, and that is deliberate rather than an
-    * oversight: map.anthill is in the refusal set (a written effect row, WI-1061),
+    * oversight: map.anthill is in the refusal set (a written effect row, WI-1062),
     * so a consumer's `Map[K = A, V = B]` reaches `_root_.anthill.prelude.Map` and
     * fails naming exactly the declaration that is missing. The alternative was
     * `scala.Map`, which compiles and is a different type with a different contract —

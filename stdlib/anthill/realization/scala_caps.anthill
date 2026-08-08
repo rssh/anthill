@@ -55,7 +55,7 @@ namespace anthill.realization.scala_caps
     -- the ARROW and the effect shape, not what an anthill sort's values are — so a
     -- profile switch that restored `Pair -> Tuple2` would reintroduce the defect in
     -- one step. `Stream` is the one entry caps might eventually differ on, since a
-    -- capture set is the closest thing Scala has to an effect row (WI-1061).
+    -- capture set is the closest thing Scala has to an effect row (WI-1062).
     type_map: [
       TypeMapping(anthill_type: "Int64",   host_type: "Long"),
       TypeMapping(anthill_type: "BigInt",  host_type: "BigInt"),

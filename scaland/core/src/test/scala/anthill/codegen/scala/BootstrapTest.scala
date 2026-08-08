@@ -523,7 +523,7 @@ class BootstrapTest extends munit.FunSuite:
     // A FIXTURE and not iterable.anthill: that file is still refused, for the
     // DIFFERENT reason recorded in the refusal set (a written effect ROW in a
     // type-argument slot, `Stream[Dst, {E, EffP}]`, which is the open question
-    // WI-1061 owns). A fixture keeps this assertion about the entry.
+    // WI-1062 owns). A fixture keeps this assertion about the entry.
     //
     // FAILS WHEN BACKED OUT, in one edit: set `preludeSorts`' `"Stream"` back to
     // the arity the `LazyList` entry claimed (1) and `generate` throws `takes 1
@@ -980,7 +980,7 @@ class BootstrapTest extends munit.FunSuite:
     // closure, which is the number that means something: unchanged at 11 errors.
     //
     // Compiling the whole closure is WI-1020's. It needs WI-1054 (`zero-val` is
-    // not a Scala identifier) and the effect-row question (WI-1061): `Iterable`
+    // not a Scala identifier) and the effect-row question (WI-1062): `Iterable`
     // and `Modifiable` are still refused, so their dependents cascade.
     // (DECLARATION, construct) and not the construct alone: eight of the thirteen
     // are now "effect row", so that half of the list stopped distinguishing them —

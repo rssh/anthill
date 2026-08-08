@@ -1087,6 +1087,9 @@ mod wi1043_bodyless_rule_body_test;
 #[path = "include/wi1056_rule_body_type_check_test.rs"]
 mod wi1056_rule_body_type_check_test;
 
+#[path = "include/wi1059_unwritten_param_rigid_test.rs"]
+mod wi1059_unwritten_param_rigid_test;
+
 #[path = "include/wi1049_effect_polymorphic_diagnostic_test.rs"]
 mod wi1049_effect_polymorphic_diagnostic_test;
 

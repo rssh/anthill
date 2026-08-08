@@ -248,31 +248,38 @@ fn constructor_is_checked(ns: &str, decl: &str, ctor: &str) {
     );
 }
 
-/// ONE type, FOUR spellings, ONE verdict — and the fourth is the only one this ticket
-/// had to change.
+/// ONE type, FOUR spellings, ONE verdict.
 ///
 /// `Box[T = Int64]` omits a declared parameter; `Box[T = Int64, U = ?]` writes the same
 /// wildcard out; `Box` omits both; `feed[U](b: Box[T = Int64, U = U])` names it as an
 /// operation type parameter. They denote the same thing, and kernel-language
-/// §"Expansion during unification" says so. THREE of them already conformed to
-/// `Box[T = Int64, U = Bool]`; only the partial one was refused, because a bare `Ref`
-/// never reaches `parameterized_compatible_view` and an explicit `?` is a value in the
-/// bindings list, while an OMITTED slot hit the `None` arm that rejected.
+/// §"Expansion during unification" says so. When this ticket landed, THREE of them
+/// conformed to `Box[T = Int64, U = Bool]` and only the partial one was refused — because
+/// a bare `Ref` never reaches `parameterized_compatible_view` and an explicit `?` is a
+/// value in the bindings list, while an OMITTED slot hit the `None` arm that rejected.
+/// WI-1056 made the fourth agree with the other three, at ACCEPT.
 ///
-/// THE EFFECT-ROW HALF IS THE SAME TEST, and it is here because a first cut REVERTED this
-/// fix over it. `feed(s: Stream[T = Int64])` against `takes_pure(s: Stream[T = Int64,
-/// E = {}])` does flip from refused to accepted when the arm lands, which read as a
-/// soundness regression — an effectful stream reaching a slot declared pure. It is not one:
-/// the identical acceptance is reachable without the fix by writing `E = ?` or the bare
-/// `Stream`, as the row below asserts. The control had measured "did this change THIS
-/// program's verdict" instead of "was that verdict already obtainable another way".
+/// **WI-1059 MOVED THE SHARED VERDICT TO REFUSE**, and this test now pins that — the
+/// agreement is the invariant, the verdict is not. An unwritten parameter is a fresh
+/// variable per instantiation, so the body is universally quantified over it and may not
+/// assume `U = Bool` (nor `E = {}`); the refusal belongs at `feed`'s own declaration. The
+/// author who means a value writes it — `a_written_empty_row_still_loads` in
+/// `wi1059_unwritten_param_rigid_test` is the positive half.
 ///
-/// Whether the permissive reading is right AT ALL is a separate, pre-existing question
-/// belonging to all four spellings — **WI-1059**, where the restrictive answer's cost is
-/// measured. This test pins only that they AGREE.
+/// THE EFFECT-ROW HALF IS THE SAME TEST, and it is here because a first cut of WI-1056
+/// REVERTED that fix over it: `feed(s: Stream[T = Int64])` against
+/// `takes_pure(s: Stream[T = Int64, E = {}])` flipped from refused to accepted when the arm
+/// landed, and read as a soundness regression. The reading was right and the CONTROL was
+/// wrong — the same acceptance was already reachable by writing `E = ?` or the bare
+/// `Stream`, so the arm was not what introduced it. WI-1059 closed all four together.
 ///
-/// CONTROL: back out the arm and the two `partial` rows fail while the other six pass —
-/// which is exactly the asymmetry, and exactly why the other six are here.
+/// NOT ASSERTED AS "each is refused" ONE BY ONE, which would pass under a checker that
+/// refuses everything: the loop collects each spelling's verdict and asserts they are
+/// EQUAL, and the positive rows live in `wi1059_unwritten_param_rigid_test` where a written
+/// binding must still load.
+///
+/// CONTROL: with WI-1059's `type_value_is_ground` line backed out, the two op-type-param
+/// rows flip to accept while the rest stay refused — the disagreement is the failure.
 #[test]
 fn all_four_spellings_of_one_type_conform_alike() {
     let boxed = |param: &str, op: &str| {
@@ -302,21 +309,40 @@ fn all_four_spellings_of_one_type_conform_alike() {
         )
     };
     // (spelling, operation header) — the op-type-param row needs its own `[U]` / `[E]`.
-    for (param, op) in [
+    let box_spellings = [
         ("Box[T = Int64, U = U]", "feed[U]"),   // explicit operation type parameter
         ("Box", "feed"),                         // bare: all parameters unwritten
         ("Box[T = Int64, U = ?]", "feed"),      // wildcard written out
-        ("Box[T = Int64]", "feed"),             // PARTIAL — the spelling this ticket fixed
-    ] {
-        crate::common::load_kb_with(&boxed(param, op));
-    }
-    for (param, op) in [
+        ("Box[T = Int64]", "feed"),             // PARTIAL — the spelling WI-1056 fixed
+    ];
+    let stream_spellings = [
         ("Stream[T = Int64, E = E]", "feed[E]"),
         ("Stream", "feed"),
         ("Stream[T = Int64, E = ?]", "feed"),
         ("Stream[T = Int64]", "feed"),
+    ];
+    let accepts = |src: &str| crate::common::try_load_kb_with(src).is_ok();
+    for (spellings, build) in [
+        (&box_spellings[..], &boxed as &dyn Fn(&str, &str) -> String),
+        (&stream_spellings[..], &streamed as &dyn Fn(&str, &str) -> String),
     ] {
-        crate::common::load_kb_with(&streamed(param, op));
+        let verdicts: Vec<(&str, bool)> =
+            spellings.iter().map(|(p, o)| (*p, accepts(&build(p, o)))).collect();
+        assert!(
+            verdicts.iter().all(|(_, v)| *v == verdicts[0].1),
+            "the four spellings of one type must reach ONE verdict, got {verdicts:?}",
+        );
+        // …and that ONE verdict is REFUSE. Asserted separately from the agreement above
+        // because agreement alone is satisfied by a regression in EITHER direction, and
+        // the accepting one is the pre-WI-1059 unsoundness this file used to pin: without
+        // this line the test stays green if the rule stops firing entirely. It is the Box
+        // (element-type) family's only refusal pin — the effect-row family is additionally
+        // driven by `wi1059_unwritten_param_rigid_test`.
+        assert!(
+            verdicts.iter().all(|(_, v)| !*v),
+            "the shared verdict must be REFUSE — a body may not assume a value for a \
+             parameter its signature leaves unwritten (WI-1059), got {verdicts:?}",
+        );
     }
 }
 

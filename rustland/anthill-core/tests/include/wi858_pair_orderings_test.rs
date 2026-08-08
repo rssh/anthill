@@ -498,21 +498,26 @@ fn a_pair_of_floats_loads_and_that_has_a_recorded_cost() {
     }
 }
 
-/// THE OTHER MEASURED LIMIT, pinned so it is not discovered twice: a NESTED pair whose
-/// FIRST component is a `Pair` and whose second is a primitive dies at eval, the second
-/// component's compare dispatching to `Pair.eq`.
+/// NESTED PAIRS, all three slot arrangements — the WI-871 matrix, now passing.
 ///
-/// PRE-EXISTING and needing none of this ticket's vocabulary — reproduced on a purely
-/// local two-parameter carrier with its own componentwise `eq` — but `Pair` gaining a
-/// componentwise body is what makes it reachable from the standard library.
-/// Characterized by driving: `A = <carrier>, B = <primitive>` fails; `A = <primitive>,
-/// B = <carrier>` and `A = B = <carrier>` both pass, so it is not "nesting" as such but
-/// the slot the FIRST component's requirement occupies. WI-871.
+/// Recorded here as a DEFECT until WI-1059: with the first component itself a `Pair` and
+/// the second a primitive, the second component's compare dispatched to `Pair.eq` and died
+/// matching a primitive against the entity pattern (`match_failed(scrutinee: 7)`). The
+/// other two arrangements always passed, so it was never "nesting" as such — it was the
+/// slot the FIRST component's requirement occupied once that requirement resolved to the
+/// provider itself.
 ///
-/// The passing arms are the control: without them a fix that made ALL pair equality
-/// fail would still satisfy the failing one.
+/// WI-1059 fixed it, and the mechanism is the one that ticket is about: `Pair.eq(a: Pair,
+/// b: Pair)` leaves both parameters' `A`/`B` unwritten, so the body used to be checked
+/// against a slot that satisfied any demand. With the unwritten slots materialized as the
+/// enclosing sort's own parameters (the member tie — `docs/design/type-parameter-scoping.md`
+/// §3), the two same-spec requirement reads are indexed at the bindings they actually have
+/// and the second slot stops being read from the first.
+///
+/// All three arms are asserted, and that is the control: a change that made pair equality
+/// fail everywhere would still satisfy the one arm this test was added for.
 #[test]
-fn a_nested_pair_in_the_first_component_is_a_recorded_defect() {
+fn nested_pair_equality_is_componentwise_in_every_slot() {
     let src = program(
         "wi858.nested",
         "  sort Driver\n    \
@@ -526,54 +531,71 @@ fn a_nested_pair_in_the_first_component_is_a_recorded_defect() {
          if PartialEq.eq(pair(fst: pair(fst: 1, snd: 2), snd: pair(fst: 3, snd: 4)),\n                      \
          pair(fst: pair(fst: 1, snd: 2), snd: pair(fst: 3, snd: 4))) then 1 else 0\n  end",
     );
-    // ONE interpreter for all three arms, which the trap ordering permits: a trapped
-    // call poisons later calls on a shared interpreter, so the two arms that SUCCEED
-    // run first and the trapping one last.
-    let mut interp = crate::common::interp_for(&src);
-    let ok = |i: &mut anthill_core::eval::Interpreter, entry: &str, why: &str| {
-        match i.call(entry, &[Value::Int(0)]) {
-            Ok(Value::Int(n)) => n,
-            other => panic!("{why}; got {other:?}"),
-        }
-    };
-    assert_eq!(ok(&mut interp, "wi858.nested.Driver.carrierOnRight", "carrier SECOND"), 1);
-    assert_eq!(ok(&mut interp, "wi858.nested.Driver.carrierBothSides", "carrier BOTH"), 1);
-    // Asserted STRUCTURALLY, not on the rendering: `EvalError`'s Display says only
-    // "raised error" and its Debug prints raw `Symbol(n)`s, so a substring test for
-    // `match_failed` would be vacuous either way.
-    let payload = match interp.call("wi858.nested.Driver.carrierOnLeft", &[Value::Int(0)]) {
-        Err(anthill_core::eval::EvalError::Raised { payload }) => payload,
-        Ok(v) => panic!(
-            "RECORDED DEFECT FIXED: a nested pair in the FIRST component now answers \
-             {v:?}. That is the wanted behaviour — delete this arm and fold the case \
-             into `pair_equality_is_componentwise`, and close WI-871."
-        ),
-        Err(other) => panic!(
-            "the recorded failure is a RAISE of `match_failed`; a different `EvalError` \
-             means the defect moved and the ticket needs re-measuring: {other:?}"
-        ),
-    };
-    let expected = interp
-        .kb()
-        .try_resolve_symbol("anthill.prelude.MatchFailed.match_failed")
-        .expect("the match-failure payload entity is in the prelude");
-    match &payload {
-        Value::Entity { functor, named, .. } => {
-            assert_eq!(
-                interp.kb().qualified_name_of(*functor),
-                interp.kb().qualified_name_of(expected),
-                "the recorded failure is the SECOND component's compare landing on \
-                 `Pair.eq`, which then fails to match a primitive against the entity \
-                 pattern — i.e. a `match_failed` raise",
-            );
-            assert!(
-                named.iter().any(|(_, v)| matches!(v, Value::Int(7))),
-                "…and the scrutinee it could not match is the second component, `7` — \
-                 without this the assertion would pass on any match failure anywhere: \
-                 {named:?}",
-            );
-        }
-        other => panic!("the raise must carry the `match_failed` entity; got {other:?}"),
+    for (entry, why) in [
+        ("carrierOnLeft", "carrier FIRST — the arm WI-871 recorded as failing"),
+        ("carrierOnRight", "carrier SECOND"),
+        ("carrierBothSides", "carrier BOTH"),
+    ] {
+        assert_eq!(
+            eval_int(&src, &format!("wi858.nested.Driver.{entry}"), why),
+            1,
+            "{why}",
+        );
+    }
+}
+
+/// The SAME matrix on a purely LOCAL two-parameter carrier — no prelude `Pair`, no 058
+/// vocabulary. WI-871 characterized the defect on both, so the fix is asserted on both:
+/// without this arm a repair specific to `anthill.prelude.Pair` would read as a fix of the
+/// general rule.
+#[test]
+fn nested_local_carrier_equality_is_componentwise_in_every_slot() {
+    let src = r#"
+namespace wi858.localnest
+  import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
+
+  sort Duo
+    sort A = ?
+    sort B = ?
+    requires PartialEq[A]
+    requires PartialEq[B]
+    entity duo(l: A, r: B)
+    provides PartialEq[Duo]
+    operation eq(x: Duo, y: Duo) -> Bool =
+      match x
+        case duo(xl, xr) ->
+          match y
+            case duo(yl, yr) ->
+              if PartialEq.eq(xl, yl) then PartialEq.eq(xr, yr) else false
+  end
+
+  sort Driver
+    operation carrierOnLeft(n: Int64) -> Int64 =
+      if PartialEq.eq(duo(l: duo(l: 1, r: 2), r: 7),
+                      duo(l: duo(l: 1, r: 2), r: 7)) then 1 else 0
+    operation carrierOnRight(n: Int64) -> Int64 =
+      if PartialEq.eq(duo(l: 7, r: duo(l: 1, r: 2)),
+                      duo(l: 7, r: duo(l: 1, r: 2))) then 1 else 0
+    operation carrierBothSides(n: Int64) -> Int64 =
+      if PartialEq.eq(duo(l: duo(l: 1, r: 2), r: duo(l: 3, r: 4)),
+                      duo(l: duo(l: 1, r: 2), r: duo(l: 3, r: 4))) then 1 else 0
+    operation bothPrimitive(n: Int64) -> Int64 =
+      if PartialEq.eq(duo(l: 1, r: 2), duo(l: 1, r: 2)) then 1 else 0
+  end
+end
+"#;
+    for (entry, why) in [
+        ("carrierOnLeft", "carrier FIRST — the cell WI-871 recorded as failing"),
+        ("carrierOnRight", "carrier SECOND"),
+        ("carrierBothSides", "carrier BOTH"),
+        ("bothPrimitive", "neither component is the carrier"),
+    ] {
+        assert_eq!(
+            eval_int(src, &format!("wi858.localnest.Driver.{entry}"), why),
+            1,
+            "{why}",
+        );
     }
 }
 

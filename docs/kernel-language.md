@@ -2010,14 +2010,26 @@ operation feed(s: Stream[T = Int64, E = {}]) -> Int64 = takes_pure(s)   -- accep
 
 Inside a body, then, an unwritten parameter is **rigid** — a skolem that unifies with nothing but itself — exactly as an operation's own `[T]` and its enclosing sort's parameters already are. At a *call* it is flexible again, and binds from the argument. Same variable, two positions, and confusing them is what the rule exists to prevent.
 
-**The loader does not enforce this today (WI-1059, measured).** An unwritten parameter of *another* sort is never rigidified, so inside the body it is flexible and satisfies any demand; each half then looks correct alone, and the pair composes into an unsound program:
+**How the slot is named (WI-1059).** The skolem an unwritten slot takes is the *projection off the value that carries it* — `s: Stream[T = Int64]` is checked as `s: Stream[T = Int64, E = s.E]` — and not a fresh anonymous variable. `s.E` is already rigid by §"path-dependent types" (a neutral equals only an identical neutral, never a concrete type), and it is the name a signature can already write: `operation collect(s: Stream) -> List[T = s.T]` says `s.T` in its own return, and the body must resolve the parameter to the *same* thing that return does. A *self*-sort reference is the exception, and §3 of `docs/design/type-parameter-scoping.md` is what decides it: within a sort's own definition a bare self reference participates in the parametricity tie, so `append(xs: List, ys: List)` declared inside `sort List` ties both to *this* sort's `T` rather than giving each its own projection.
+
+**Enforced in a parameter's type, at its top level (WI-1059 delivered; WI-1061 open).** The program below is refused at `feed`'s own declaration, naming the row it may not assume:
 
 ```anthill
-operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s)            -- loads (should be refused)
-operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)   -- loads: E binds to {Error}
+operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s)
+--                                              ^ refused: expected E = {}, got E = s.E
+operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)
 ```
 
-An effectful stream reaches an operation that declared it wanted none. Read the paragraphs above as the intended discipline and not as a statement about what loads.
+Note that a *bare* reference says strictly less than a partial one: `Stream` leaves `T` unwritten too, so `feed(s: Stream)` may no more hand its stream to an `Int64`-element slot than it may assume a row. The four spellings are one type only in the parameters they all leave unwritten.
+
+The other two positions are **stated here but not yet enforced** — read them as the intended discipline, not as what loads. Both are measured, and **WI-1061** owns them:
+
+```anthill
+operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s   -- loads; should be refused
+operation feed(l: List[T = Stream[T = Int64]]) -> Int64 = takes_pure(l)       -- loads; should be refused
+```
+
+The first leaves the row unwritten in the **return**, where the quantification flips (the body must *produce* a value good for every instantiation) and there is no carrier value to project off. The second leaves it unwritten **nested** inside a binding, where no path names the slot at all. Each therefore needs a filler this section's rule does not supply, which is why they are separate.
 
 ### 8.2 Entity Subtyping
 
