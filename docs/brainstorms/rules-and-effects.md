@@ -193,6 +193,137 @@ unconditionally true — it holds on the defined path. So the answer is not
 needs a **reading** (total? partial? effect-preserving?) before it needs a gate.
 Pick the reading first, and what to check follows.
 
+## Q7 — the monadic reading, and the reformulation it suggests
+
+Proposal **047, "Effects as monads, realized by Filinski monadic reflection"**,
+already puts this on a footing: *an effect **is** a monad*, with two channels
+(047 §, lines 100–101)
+
+```
+reflect : M a -> a            -- inject a monadic value into the direct-style computation
+reify   : (() -> a) -> M a    -- capture a direct-style computation as a monadic value
+```
+
+and "effect operation = `reflect`" (`throw(x) = reflect(Err x)`), "handler =
+`reify`/`reset`". So an effectful operation is a Kleisli arrow that the
+direct-style surface `reflect`s.
+
+Read that way, the three spellings of "our" law are three different statements:
+
+| | statement | valid when |
+|---|---|---|
+| value equation | `isEmpty(insert(c,x)) = false` | `M` is the **identity** monad — i.e. the row is `{}` |
+| partly preserving | `insert(c,x) >>= isEmpty  ==  insert(c,x) >> pure false` | any `M`, **but only if `isEmpty` itself is pure** — the RHS keeps `insert`'s effect and drops `isEmpty`'s |
+| fully preserving | `insert(c,x) >>= isEmpty  ==  insert(c,x) >>= \c' -> (isEmpty c' >> pure false)` | **any** `M` — both effects performed, in order, exactly as the LHS does |
+| direct-style (anthill's actual surface) | `isEmpty(insert(?c,?x)) <=> false` | ? — the bind is implicit, so which of the above is it? |
+
+(The middle row is not enough for *our* law: `Iterable.isEmpty` carries `{E}` too
+— it "costs one `splitFirst` step", iterable.anthill says so. A form that keeps
+`insert`'s effect and drops `isEmpty`'s is still dropping one. Only the last row
+is unconditionally sound, and it is unconditionally sound precisely because it
+performs every bind the LHS performs.)
+
+**So the current gate is not really about effects.** Demanding an empty row is
+demanding that the Kleisli category *collapse to* the value category — which is
+exactly when the first row of the table is sound. That is a coherent position; it
+was just never stated in these terms, which is why "an effectful operation is not
+equational" reads as a claim about operations rather than about which category
+the equation lives in.
+
+**And it suggests a sharper well-formedness rule than the current one.** Anthill's
+surface is direct-style: `xs.insert(1).isEmpty()` has no visible bind, so a
+written law is a Kleisli equation in disguise. The trouble with
+`isEmpty(insert(?c,?x)) <=> false` is then not that `insert` is effectful — it is
+that the **two sides do not carry the same effect row**: LHS `{Effect}`, RHS `{}`.
+The law is asserting the effect can be discarded, and *that* is what makes the
+rewrite drop the call.
+
+Candidate rule, to be argued rather than assumed:
+
+> `<=>` is well-formed only when both sides carry the **same effect row**.
+
+Check it against everything measured so far:
+
+- **pure carrier, own pure ops** — both rows `{}`. Accepted. ✓ (matches today)
+- **concretely-`External` op** — LHS `{External}`, RHS `{}`. Refused. ✓
+  (matches 054, and for the *right* reason: the RHS discards the row)
+- **effect-polymorphic spec** — LHS `{Effect}`, RHS `{}`. Refused. ✓ (matches
+  today, but the diagnostic becomes a **row mismatch**, which is explicable and
+  actionable, rather than a claim that `insert` is effectful — the WI-1049 defect)
+- **the sound spelling** — an RHS that carries the same row (the Kleisli form, or
+  whatever direct-style notation anthill grows for it) is admitted with **no
+  effect gate at all**, because nothing is dropped.
+
+It also lands where Q4 says it should: rows are computed **during typing**, which
+is where firing already happens.
+
+**The cost, measured rather than guessed: side-rows do not exist today.** The
+typer computes effect rows for operation *bodies* and for arrow types; nothing
+computes a row for the LHS/RHS of an equational rule. The observed diagnostic is
+`type mismatch in isEmpty.effects (op-effects)` — an **operation**-keyed check
+that walks the functors a rule mentions (`check_simp_effectful_ops`), which is
+why it can only ever name an operation and never a mismatch. So the candidate
+rule is not a re-wording of the present check; it needs a quantity the typer does
+not currently produce. That belongs in the comparison, on both sides of it: it is
+the reason the rule is expensive, and also the reason it would be *worth* it —
+side-rows are what make a "the two sides disagree" diagnostic possible at all.
+
+## Q8 — the surface cannot spell the sound law, and that may settle it
+
+Q7 ends with a "fully preserving" form that is unconditionally sound. Can it be
+written? **In the present surface, no — and the reason is structural, not a
+missing feature.**
+
+In direct style, `isEmpty(insert(c,x))` is not an application of `isEmpty` to a
+value. When `insert` is effectful it is
+
+```
+insert(c, x)  >>=  \c' -> isEmpty(c')
+```
+
+— the bind is **implicit in the nesting**. And an effect operation is exactly one
+that may *omit* that bind: `raise` never invokes the continuation
+(`Err v >>= f = Err v`), `Branch` may invoke it zero or many times. So the
+argument position of an application is a place where a continuation is
+implicitly created and may be implicitly discarded.
+
+Now the matcher. `simp-rewrite-design.md` §"Matcher ≠ typer": **"a `[simp]` rule
+LHS is a *functor-application* pattern."** Matching `isEmpty(insert(?c, ?x))`
+binds `?c` and `?x`. It does **not** bind the continuation — there is no pattern
+variable for "the rest of the computation", because in direct style the
+continuation is not a subterm, it is the *nesting itself*.
+
+Therefore the RHS can only be built from `?c`, `?x` and constants. The
+fully-preserving form needs to name `\c' -> …`; the surface gives it no name. **The
+only laws of this shape the syntax can express are exactly the ones that discard
+the bind.**
+
+That reframes 054's formation-time refusal. It is not merely the conservative
+choice among several sound ones — with this surface, the effect-dropping form is
+the *only* form expressible, so refusing it refuses the only thing that can be
+said. "The gate belongs at load-time tag validation" follows from the syntax, not
+just from caution.
+
+Consequences, and they are the useful part:
+
+- **WI-1050 stays sound but stays narrow.** Deciding on the substituted row can
+  only ever admit the case where the row grounds to `{}` — precisely the case
+  where there is no bind to preserve. That is consistent with everything above,
+  and it is the whole of what a row check can buy.
+- **The real request is a surface one.** "Let me state this law about an
+  effectful operation" is a request for a *sequencing form* — a way to write the
+  bind, or a matcher that binds the continuation — not for a weaker gate. That is
+  a much larger question than the gate, and 047's `reflect`/`reify` are where it
+  would start: they are the only place the monad is already spelled.
+- **054's three verbs are one property.** DROPS = bind invoked zero times
+  (`Error`, empty `Branch`); DUPLICATES = invoked more than once (`Branch`);
+  REORDERS = order-sensitive (state). So "duplicates, reorders, or drops" is not
+  a list of three hazards but one condition — *the bind is invoked exactly once,
+  in place* — and it is the same condition 054's own decline list needs for
+  memoization and CSE (§, "any future memoization or CSE joins the same decline
+  list"). One property, several consumers; worth naming once rather than
+  restating per consumer.
+
 ## References
 
 WI-1049 (the classification and message) · WI-1050 (check after effect
