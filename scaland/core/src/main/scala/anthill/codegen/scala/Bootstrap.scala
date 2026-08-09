@@ -55,10 +55,18 @@ object Bootstrap:
   /** Generate Scala files from one parsed `.anthill` file. The package
     * path and per-file output is determined by the file's top-level
     * namespace (or sort/entity name when no namespace is present).
+    *
+    * `types` is a PARAMETER and has no default (WI-1060), for the reason
+    * [[buildSbt]]'s `scalaVersion` has none: the scalar half of it is a decision
+    * `scala_std.anthill` makes and the emitter has no business making a second
+    * time. A default here would be that second answer, silently winning wherever a
+    * caller forgot to ask — which is exactly how the hardcoded table this replaced
+    * came to disagree with the fact for two releases. [[ScalaTypes.resolve]] is the
+    * one way to build it; Bootstrap still reads no KB (proposal 034).
     */
-  def generate(pf: ParsedFile): IndexedSeq[GeneratedFile] =
+  def generate(pf: ParsedFile, types: ScalaTypes): IndexedSeq[GeneratedFile] =
     val files = ArrayBuffer.empty[GeneratedFile]
-    val env = fileEnv(pf.symbols, pf.items)
+    val env = FileEnv(fileTypes(pf.symbols, pf.items, ""), types)
     pf.items.foreach {
       case Item.NamespaceItem(ns) => emitNamespace(pf.symbols, ns, "", env, Map.empty, files)
       case Item.SortWithBodyItem(s) => emitSort(pf.symbols, s, "", env, Map.empty, files)
@@ -68,26 +76,122 @@ object Bootstrap:
     }
     files.toIndexedSeq
 
+  /** What a set of files makes reachable by a BARE name: the types they emit into the
+    * auto-import package, and the names they declare there with no emission at all
+    * (WI-1060). [[ScalaTypes]]'s prelude half.
+    */
+  case class AutoImported(
+    types: Map[String, Placement.Known], declaredNotEmitted: Set[String]
+  )
+
+  /** Every type a set of files EMITS INTO `autoImportPackage`, by anthill leaf name,
+    * named as an outsider must write it (WI-1060).
+    *
+    * This is where [[ScalaTypes]]'s prelude half comes from, and the point is that it is
+    * the SAME walk `generate` places a file's own names with — so the parameters a
+    * consumer is checked against are the ones the declaring file actually emits, not a
+    * hand-copy of them. The table this replaced was that copy, with nothing
+    * cross-checking it and only three of its six entries pinned by a compile.
+    *
+    * `_root_`-ANCHORED, which qualification alone does not achieve: `anthill.prelude.Option`
+    * is a RELATIVE path, so a project emitting into `myco` alongside a `myco.anthill`
+    * namespace captures it. See [[ScalaTypes]].
+    *
+    * FILTERED BY PACKAGE, and it is the auto-import rule and not an optimization: what a
+    * bare mention reaches is `anthill.prelude`'s own members. `algebra.anthill` writes
+    * `namespace anthill.prelude.algebra` and `meta.anthill` writes `namespace
+    * anthill.prelude.Meta`, so an unfiltered walk enters `Ring`, `VectorSpace` and
+    * `Meta` — names anthill itself would not resolve without an explicit import,
+    * and a project declaring its own `Ring` in a sibling file would silently emit
+    * `_root_.anthill.prelude.algebra.Ring`. A nested namespace is simply skipped rather
+    * than refused: it is a legitimate declaration that this question does not reach.
+    *
+    * A LEAF DECLARED TWICE with two different emissions is a refusal rather than a
+    * last-wins: the caller passes a file set it claims is reachable by bare name, and two
+    * answers to one bare name means it is not.
+    *
+    * WHAT IT CANNOT SEE is whether `generate` would refuse the declaring FILE. Seven
+    * prelude files are refused today (the refusal-set test names them), and their sorts
+    * are in this table with an arity and a `_root_` name although the emitted tree will
+    * contain neither. Answering would mean emitting every file to build the table — and
+    * the closure compile catches it one step later, as a missing type rather than a
+    * wrong one. The entry is a promise about a file that must be in the emission set,
+    * not a claim that it already is.
+    */
+  def emittedTypes(
+    files: Iterable[ParsedFile], autoImportPackage: String = "anthill.prelude"
+  ): AutoImported =
+    files.foldLeft(AutoImported(Map.empty, Set.empty)) { (acc, pf) =>
+      val here = fileTypes(pf.symbols, pf.items, "")
+      val types = here.types.foldLeft(acc.types) { case (m, (leaf, t)) =>
+        if t.pkg != autoImportPackage then m
+        else
+          // Annotated: a Scala 3 enum-case constructor widens to the enum type without
+          // an expected type, and the map's value type is the CASE.
+          val known: Placement.Known = Placement.Known(t.qualified, t.kinds)
+          m.get(leaf).filter(_ != known).foreach(prev =>
+            // LOCATED, like every other refusal Bootstrap raises (WI-947): the caller's
+            // file set is 45 files on the real corpus, and a message naming neither is
+            // unactionable. The span is the SECOND declaration — the one that could not
+            // be added — because the first is already named by its emitted spelling.
+            throw BootstrapError(
+              s"`$leaf` is emitted twice by the file set and the two disagree: " +
+              s"${prev.scalaName} with ${prev.kinds.written} parameter(s), then " +
+              s"${known.scalaName} with ${known.kinds.written} — a bare mention cannot " +
+              "mean both",
+              t.span))
+          m + (leaf -> known)
+      }
+      AutoImported(types, acc.declaredNotEmitted ++ here.declaredNotEmitted.collect {
+        case (leaf, pkg) if pkg == autoImportPackage => leaf
+      })
+    }
+
+  /** One type a file EMITS: where it goes, what Scala calls it, how it is parameterized,
+    * and where it was written (which is what a cross-file refusal points at). */
+  private case class EmittedType(pkg: String, scalaName: String, kinds: ParamKinds,
+                                 span: Span):
+    /** The spelling an outsider must write. */
+    def qualified: String = if pkg.isEmpty then s"_root_.$scalaName" else s"_root_.$pkg.$scalaName"
+
   /** What Bootstrap knows about a whole parsed FILE, before any one declaration:
     * which types it EMITS (with their arity), and which names it declares and
     * emits nothing for. The second is not the complement of the first — it is the
     * set Bootstrap can point at and say "the emitted tree has no such type"
     * (WI-1055 B1).
     */
-  private case class FileEnv(types: Map[String, ParamKinds], declaredNotEmitted: Set[String]):
+  private case class FileTypes(
+    types: Map[String, EmittedType], declaredNotEmitted: Map[String, String]
+  ):
+    /** What [[TypeScope]] checks a written occurrence against, and emits BARE.
+      *
+      * The PACKAGE is dropped, which is right exactly when the file emits into ONE
+      * package — every corpus file does, and `place` is reached with the bare leaf
+      * spelled into whatever package the mentioning declaration goes to. A file
+      * writing two namespaces breaks it: `namespace a { sort Foo } namespace b { sort
+      * Bar { operation f(x: Foo) } }` emits a bare `Foo` into `package b`, where it does
+      * not resolve. `EmittedType.pkg` is what would close it — by filtering to the
+      * mentioning declaration's package and the packages ENCLOSING it, since Scala
+      * packages nest lexically — and that is a rule with its own case to make, not a
+      * line to add here. */
+    def kindsByLeaf: Map[String, ParamKinds] = types.view.mapValues(_.kinds).toMap
 
-    /** A [[TypeScope]] for one declaration, with the two file-wide fields filled
-      * in. A factory rather than three call sites spelling `fileTypes = env.types,
-      * declaredNotEmitted = env.declaredNotEmitted` — those two are the file's
-      * answer and never the declaration's, so a call site that could vary them
-      * would be a way for one emission to disagree with the rest of its file. */
+  /** One file's own names, plus the project-wide tables every file is rendered against. */
+  private case class FileEnv(decls: FileTypes, scalaTypes: ScalaTypes):
+
+    private val fileTypeKinds: Map[String, ParamKinds] = decls.kindsByLeaf
+
+    /** A [[TypeScope]] for one declaration, with the file-wide and project-wide fields
+      * filled in. A factory rather than three call sites spelling them out — those are
+      * the file's answer and never the declaration's, so a call site that could vary
+      * them would be a way for one emission to disagree with the rest of its file. */
     def scopeAt(
       decl: String, declSpan: Span, pkg: String, imports: Map[String, String],
       enclosing: Option[EnclosingSort] = None,
       params: Map[String, ParamBinding] = Map.empty
     ): TypeScope =
-      TypeScope(decl, declSpan, pkg, enclosing, params, types, imports,
-        declaredNotEmitted)
+      TypeScope(decl, declSpan, pkg, enclosing, params, fileTypeKinds, imports,
+        decls.declaredNotEmitted.keySet, scalaTypes)
 
   /** The name environment of one parsed file, in ONE walk.
     *
@@ -109,6 +213,18 @@ object Bootstrap:
     * the analogous choice ([[Placement.Ambient]]) was thirteen files. An abstract
     * sort nothing references therefore produces no output and no diagnostic.
     *
+    * IT TRACKS THE PACKAGE (WI-1060) because [[emittedTypes]] reads the same walk from
+    * OUTSIDE the file, where the bare leaf is not a spelling that reaches anything. The
+    * two package derivations — a nested namespace's, a dotted declaration's — are
+    * [[namespacePath]] and [[splitPath]], the same two `emitNamespace` and `emitSort`
+    * use, so the table names the package the emitter writes to and cannot drift from it.
+    * Where that package is itself wrong the table is wrong with it, and [[splitPath]]
+    * has one such shape: a dotted declaration whose prefix REPEATS its enclosing
+    * namespace (`namespace anthill.prelude { sort anthill.prelude.Concat … }`) is
+    * emitted into `anthill.prelude.anthill.prelude`. No corpus file writes it, and the
+    * auto-import filter keeps such an entry out of the cross-file table — but it is a
+    * fault in `splitPath`, not something this walk corrects.
+    *
     * COUPLED TO THE EMIT WALK BY HAND: the three arms here are the same three
     * `generate`/`emitNamespace` dispatch on, and the `case _` means `-Wconf:id=E029`
     * cannot catch them drifting. An `Item` kind that gains an emission without
@@ -116,18 +232,35 @@ object Bootstrap:
     * arity check — quietly losing the guarantee WI-1055 exists for, on exactly the
     * type it should cover.
     */
-  private def fileEnv(sym: SymbolTable, items: Iterable[Item]): FileEnv =
-    items.foldLeft(FileEnv(Map.empty, Set.empty)) {
+  private def fileTypes(
+    sym: SymbolTable, items: Iterable[Item], packagePath: String
+  ): FileTypes =
+    items.foldLeft(FileTypes(Map.empty, Map.empty)) {
       case (acc, Item.NamespaceItem(ns)) =>
-        val inner = fileEnv(sym, ns.items)
-        FileEnv(acc.types ++ inner.types,
+        // `++` LAST-WINS, and the same leaf declared in two namespaces of one file is
+        // therefore silently one of them. It is not the cross-file conflict
+        // [[emittedTypes]] refuses — there both entries claim the same bare mention,
+        // here they are two legitimately different packages — but the flat table
+        // cannot hold both, so `place` gets an arbitrary winner and checks a use site
+        // against the wrong arity. The fix is the same one `kindsByLeaf` names: key
+        // the file table by package. No corpus file writes two namespaces.
+        val inner = fileTypes(sym, ns.items, namespacePath(sym, ns, packagePath).childPath)
+        FileTypes(acc.types ++ inner.types,
           acc.declaredNotEmitted ++ inner.declaredNotEmitted)
       case (acc, Item.SortWithBodyItem(s)) if !s.isTypeParam =>
-        acc.copy(types = acc.types + (sym.name(s.name.last) -> paramKinds(sortTypeParams(sym, s))))
+        val (pkg, scalaName) = splitPath(sym, s.name, packagePath)
+        acc.copy(types = acc.types + (sym.name(s.name.last) ->
+          EmittedType(pkg, scalaName, paramKinds(sortTypeParams(sym, s)), s.name.span)))
       case (acc, Item.EntityItem(e)) =>
-        acc.copy(types = acc.types + (sym.name(e.name.last) -> ParamKinds.none))
+        val (pkg, scalaName) = splitPath(sym, e.name, packagePath)
+        acc.copy(types = acc.types + (sym.name(e.name.last) ->
+          EmittedType(pkg, scalaName, ParamKinds.none, e.name.span)))
       case (acc, Item.AbstractSortItem(s)) =>
-        acc.copy(declaredNotEmitted = acc.declaredNotEmitted + sym.name(s.name.last))
+        // The PACKAGE is tracked for the same reason the emitted types' is: read from
+        // outside the file, "which names are unreachable" is a question about one
+        // package, and a nested namespace's abstract sort is not in it.
+        acc.copy(declaredNotEmitted = acc.declaredNotEmitted +
+          (sym.name(s.name.last) -> splitPath(sym, s.name, packagePath)._1))
       case (acc, _) => acc
     }
 
@@ -249,18 +382,34 @@ object Bootstrap:
 
   // ── Namespace ───────────────────────────────────────────────────
 
+  /** Where one `namespace` header puts things: the package its own OPS trait is
+    * emitted into, its leaf name, and the package path its members inherit.
+    *
+    * Extracted (WI-1060) because [[fileTypes]] walks the same nesting to record where
+    * each emitted type lands, and a second copy of this arithmetic is how a derived
+    * table comes to name a package the emitter never writes to.
+    */
+  private case class NamespacePath(parentPkg: String, leaf: String):
+    def childPath: String = if parentPkg.isEmpty then leaf else s"$parentPkg.$leaf"
+
+  private def namespacePath(
+    sym: SymbolTable, ns: Namespace, packagePath: String
+  ): NamespacePath =
+    val segs = ns.name.segments.map(sym.name)
+    if segs.length == 1 then NamespacePath(packagePath, segs.head)
+    else
+      val parent = segs.dropRight(1).mkString(".")
+      NamespacePath(
+        if packagePath.isEmpty then parent else s"$packagePath.$parent", segs.last)
+
   private def emitNamespace(
     sym: SymbolTable, ns: Namespace, packagePath: String, env: FileEnv,
     outerImports: Map[String, String], out: ArrayBuffer[GeneratedFile]
   ): Unit =
-    val (nsParentPkg, nsLeaf) =
-      val segs = ns.name.segments.map(sym.name)
-      if segs.length == 1 then (packagePath, segs.head)
-      else
-        val parent = segs.dropRight(1).mkString(".")
-        val pkg = if packagePath.isEmpty then parent else s"$packagePath.$parent"
-        (pkg, segs.last)
-    val childPath = if nsParentPkg.isEmpty then nsLeaf else s"$nsParentPkg.$nsLeaf"
+    val here = namespacePath(sym, ns, packagePath)
+    val nsParentPkg = here.parentPkg
+    val nsLeaf = here.leaf
+    val childPath = here.childPath
     val imports = importedNames(sym, ns.imports, outerImports)
     ns.items.foreach {
       case Item.NamespaceItem(child) =>

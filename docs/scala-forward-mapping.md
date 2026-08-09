@@ -164,6 +164,60 @@ property (§4) does not reach: the *effect* shapes stay dependency-free, the pre
 refused — therefore fails naming exactly the missing declaration, rather than
 silently binding `scala.Map`.
 
+#### Where each half comes from (WI-1060)
+
+The two destinations have two different sources of truth, and neither is the
+emitter:
+
+| | source | resolved by |
+|---|---|---|
+| the scalars (`Int64 → _root_.scala.Long`, …) | the profile's `type_map` in `scala_std.anthill` | `ScalaProfile.typeMap(kb)` |
+| every other prelude sort (its Scala name *and* its parameters) | the prelude's own `.anthill` files | `Bootstrap.emittedTypes(files, autoImportPackage)` |
+
+The split is the claim each half can honestly make. `Int64 → Long` is a **profile
+decision** — `rust_std` says `i64`, `cpp_std` says `int64_t`, and a Scala.js profile
+could say something else again — so it belongs in the fact, and editing the fact
+changes generated code with no code change, which is what that file has always
+claimed of itself. That `List` takes one type parameter is **not** a decision any
+profile could take differently; it is what `list.anthill` declares, so it is read
+from `list.anthill`. `TypeMapping(anthill_type, host_type)` has no arity column and
+no host name to put in the one it has, so the second half could not have lived in
+the fact without growing the schema — and a schema that could say it would only be
+restating the declaration, with nothing keeping the two in step.
+
+Deriving also settles **membership**: every sort the emitted prelude contains is in
+the table, not a hand-picked subset, so `Eq`, `Iterable`, `FiniteCollection` and the
+rest are placed by their own declarations instead of falling through to the
+guess an unplaced name gets (qualified with the *declaring file's* package: right
+for a prelude file, wrong for a project consumer). The caller decides *which* files
+are reachable by bare name, and only declarations emitted into `anthill.prelude`
+**itself** enter the table: a nested `namespace anthill.prelude.algebra` is a package
+a bare mention does not reach, so its `Ring` is skipped rather than published. The
+same walk also records the names the prelude *declares* and emits nothing for — a
+namespace-level `sort Type = ?` — so those are refused from every file rather than
+only from the one that declares them.
+
+Three consequences worth stating. A profile that **drops** a scalar entry does not
+get a fallback: the name falls to the sort the prelude declares (`trait Int64`, which
+no value inhabits), because nothing in the emitter special-cases it. A profile entry
+naming a **parameterized** sort (`List → scala.List`, which `rust_std` still carries)
+is refused when the table is resolved, because such an entry would replace the
+declared arity with zero and refuse every written occurrence — blaming the use site
+for a bad fact. And a project declaring its **own** `Pair` in a sibling file still
+reaches the prelude table: an explicit `import` of another package shadows it (and is
+then refused, since the emitter writes no Scala `import`), but a sibling declaration
+with no import is invisible from one file's parse IR. Closing that needs a resolved
+project closure, not a lookup-order change.
+
+`rust_std`'s hardcoded `map_primitive_type` (`rustland/anthill-core/src/codegen/rust.rs`)
+is **explicitly out of scope here**: it is a different backend in a different
+language with its own tests, and it carries a defect this one did not (an unknown
+name passes through unchanged, so a typo emits as a plausible project type). Nor is
+it a copy of `rust_std.anthill`'s `type_map` — the two share six entries and each has
+entries the other lacks (the code has `BigInt`/`Term`/`Meta`; the fact has
+`List`/`Option`), so switching it to read the fact is a decision about five entries,
+not a deletion. Its own ticket.
+
 > The worked examples in the rest of this document write `Boolean`, `Double` and
 > `Option[X]` bare. They are schematics of the *shape* of an emission, not
 > transcripts: real output carries the `_root_.` anchoring above, so the emitted

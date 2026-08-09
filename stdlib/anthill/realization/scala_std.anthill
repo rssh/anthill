@@ -74,14 +74,33 @@ namespace anthill.realization.scala_std
     -- `Duration` and `Timestamp` went with them: primitives.anthill declares both
     -- as sorts WITH constructors and Bootstrap emits them, so a host entry would
     -- silently pick host-over-nominal for a sort that has its own values.
+    --
+    -- THIS TABLE IS THE ONE THE EMITTER USES (WI-1060). Until then scala-gen carried
+    -- its own copy and this one had no reader, so the header's claim above — codegen
+    -- reads this; changing it changes generated code — was false, and the two drifted:
+    -- the code said `Int64 -> Int` (32-bit, silently truncating every value above
+    -- 2^31-1) while this said `Int64 -> Int64`, a WI-068 rename artifact naming no
+    -- Scala type at all. `ScalaProfile.typeMap` is the reader.
+    --
+    -- `_root_`-ANCHORED AND FULLY QUALIFIED, and the anchor has to be HERE rather than
+    -- prepended by the reader, which could only do it by knowing each entry's package —
+    -- i.e. by carrying this table again. It is load-bearing rather than cosmetic:
+    -- `string.anthill` emits `trait String` into `anthill.prelude`, so a bare `String`
+    -- in a sibling emission binds THAT and not `java.lang.String`. MEASURED before the
+    -- anchor: `Duration(5, "m")` against the emitted `case class Duration(amount: Int,
+    -- unit: String)` gave `Found: ("m" : String), Required: anthill.prelude.String`
+    -- with string.anthill in the compilation, and compiled without it — an ALGEBRA
+    -- trait silently standing in for the carrier. Qualification alone is not enough
+    -- either: `scala.Long` is a RELATIVE path a project emitting into a package with
+    -- its own `scala` member would capture.
     type_map: [
-      TypeMapping(anthill_type: "Int64",   host_type: "Long"),
-      TypeMapping(anthill_type: "BigInt",  host_type: "BigInt"),
-      TypeMapping(anthill_type: "Float",   host_type: "Double"),
-      TypeMapping(anthill_type: "Bool",    host_type: "Boolean"),
-      TypeMapping(anthill_type: "String",  host_type: "String"),
-      TypeMapping(anthill_type: "Unit",    host_type: "Unit"),
-      TypeMapping(anthill_type: "Nothing", host_type: "Nothing")
+      TypeMapping(anthill_type: "Int64",   host_type: "_root_.scala.Long"),
+      TypeMapping(anthill_type: "BigInt",  host_type: "_root_.scala.math.BigInt"),
+      TypeMapping(anthill_type: "Float",   host_type: "_root_.scala.Double"),
+      TypeMapping(anthill_type: "Bool",    host_type: "_root_.scala.Boolean"),
+      TypeMapping(anthill_type: "String",  host_type: "_root_.java.lang.String"),
+      TypeMapping(anthill_type: "Unit",    host_type: "_root_.scala.Unit"),
+      TypeMapping(anthill_type: "Nothing", host_type: "_root_.scala.Nothing")
     ],
 
     -- Return abstract sorts via the trait's type parameter — Scala 3

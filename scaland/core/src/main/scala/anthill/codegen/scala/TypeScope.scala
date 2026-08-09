@@ -193,7 +193,11 @@ case class TypeScope(
   /** Anthill leaf name → the anthill package an `import` in scope brings it from. */
   importedFrom: Map[String, String],
   /** Names this file DECLARES and Bootstrap emits no Scala type for. */
-  declaredNotEmitted: Set[String]
+  declaredNotEmitted: Set[String],
+  /** The project-wide prelude tables: the profile's scalars and the types the
+    * auto-imported files emit (WI-1060). Resolved by the caller and passed into
+    * `Bootstrap.generate` — the emitter reads no KB (proposal 034). */
+  types: ScalaTypes
 ):
 
   def at(what: String, where: Span): TypeScope = copy(decl = what, declSpan = where)
@@ -221,8 +225,14 @@ case class TypeScope(
     * is refused when Bootstrap can see that declaration, and would be silently
     * collapsed here. No prelude file reaches a graded monad through an ambient
     * name; a project that does gets `Delay[A]` for `Delay[A, {}]` with no
-    * diagnostic. Giving Ambient a parameter table is the same job as WI-1060.
-    */
+    * diagnostic.
+    *
+    * WI-1060 SHRANK ITS REACH RATHER THAN CLOSING IT: every type the auto-imported
+    * files emit is now in [[ScalaTypes]]`.preludeSorts` with its declared parameter
+    * kinds, so a prelude name — delay.anthill's `Delay` included — is placed by its
+    * DECLARATION and never gets here. What is left is a name from a file the caller
+    * did not pass, which is the honest residue: nothing read it, so nothing knows
+    * its slots. */
   def isEffectArgument(sym: SymbolTable, te: TypeExpr): Boolean = te match
     case TypeExpr.EffectRow(_) | TypeExpr.EffectGuarded(_, _) => true
     case TypeExpr.Simple(n) => place(sym.name(n.last)).isInstanceOf[Placement.ErasedEffect]
@@ -243,7 +253,14 @@ case class TypeScope(
     * one-name-two-types defect the whole decision removes, and it lived inside the
     * five files declaring a scalar. `Unit` reaches this by the same route — its
     * declaration is an opaque `sort Unit = ?`, which [[Placement.Unplaceable]] would
-    * otherwise refuse. */
+    * otherwise refuse.
+    *
+    * THE PRELUDE TABLE SITS BELOW WHAT THIS FILE SAYS, including what it says
+    * NEGATIVELY: [[shadowsThePrelude]] runs first and its every answer is a refusal.
+    * That ordering is anthill's own — a local declaration and an explicit `import`
+    * both shadow the auto-import — and it stopped being a formality when WI-1060
+    * derived the table: six hand-picked names could rarely collide with an import,
+    * every prelude sort collides often. */
   def place(anthillLeaf: String): Placement =
     // WI-1062 adds no link: an erased effect parameter is a PARAMETER, so it
     // answers from the same first link every other one does. That it cannot be
@@ -254,37 +271,71 @@ case class TypeScope(
         case ParamBinding.Scala(name, memberArity) => Placement.TypeParam(name, memberArity)
         case ParamBinding.Effect => Placement.ErasedEffect(anthillLeaf)
       }
-      .orElse(TypeGen.hostScalar(anthillLeaf))
+      .orElse(types.hostScalar(anthillLeaf))
       .orElse(enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_)))
       .orElse(fileTypes.get(anthillLeaf)
         .map(ks => Placement.Known(Names.scalaTypeName(anthillLeaf), ks)))
-      .orElse(TypeGen.preludeSort(anthillLeaf))
-      .getOrElse(unreachable(anthillLeaf))
+      .orElse(shadowsThePrelude(anthillLeaf))
+      .orElse(types.preludeSort(anthillLeaf))
+      .orElse(types.preludeNotEmitted(anthillLeaf))
+      .getOrElse(ambient(anthillLeaf))
 
-  /** The name is not placed. Either Bootstrap can show a bare mention is wrong —
-    * and then it refuses — or it cannot, and the name rides out unverified. */
-  private def unreachable(anthillLeaf: String): Placement =
+  /** What THIS FILE says about the name, where that displaces the auto-imported
+    * prelude — and every such answer is a refusal.
+    *
+    * BEFORE the prelude table and not after it, which is anthill's own scoping rule:
+    * a local declaration and an explicit `import` both shadow the auto-import. Read
+    * the other way round the emission is silently wrong rather than merely refused —
+    * a project writing `import my.lib.{Numeric}` got `_root_.anthill.prelude.Numeric`,
+    * a different library's type, compiled green. That mattered little while the
+    * prelude table was six hand-picked names; WI-1060 derived it, so it is now every
+    * sort the prelude emits and the collision surface is ten times wider.
+    */
+  private def shadowsThePrelude(anthillLeaf: String): Option[Placement] =
     if declaredNotEmitted.contains(anthillLeaf) then
       // The file DECLARES it and the emitted tree has no such type: a
       // namespace-level `sort Type = ?` is an opaque handle with no Scala
       // declaration here (`Type` in sort.anthill is exactly this), and a bare
       // `Type` in a member signature therefore names nothing at all.
-      Placement.Unplaceable(
+      Some(Placement.Unplaceable(
         s"this file declares `$anthillLeaf` in a position Bootstrap emits no Scala " +
         "type for (an abstract sort has no declaration in the output), so the name " +
-        "is not in the emitted tree")
+        "is not in the emitted tree"))
     else
       importedFrom.get(anthillLeaf) match
-        case Some(from) if from != pkg =>
+        // AN IMPORT OF THE PRELUDE ITSELF IS NOT A SHADOW — it names the same
+        // declaration the auto-import would have found, and half the prelude writes
+        // one (`cell.anthill`'s `import anthill.prelude.{Unit, Modifiable, …}`). Only
+        // an import from ELSEWHERE displaces the table, and then it is unreachable.
+        case Some(from) if from != pkg && from != types.autoImportPackage =>
           // Provably wrong: the import says the name lives in ANOTHER package, and
           // Bootstrap emits no Scala `import`, so the bare mention cannot reach it.
           // `Term` / `NodeOccurrence` from `anthill.reflect` are this case, and
           // emitting the Scala import would only move the failure — the reflect
           // namespace is outside the generated closure.
-          Placement.Unplaceable(
+          Some(Placement.Unplaceable(
             s"`$anthillLeaf` is imported from `$from`, but this declaration is emitted " +
             s"into package `$pkg` and Bootstrap emits no Scala `import`, so a bare " +
-            "mention cannot reach it")
-        case _ =>
-          val scalaName = Names.scalaTypeName(anthillLeaf)
-          Placement.Ambient(if pkg.isEmpty then scalaName else s"$pkg.$scalaName")
+            "mention cannot reach it"))
+        case _ => None
+
+  /** Nothing Bootstrap can see places the name, and nothing it can see says the name
+    * is wrong: it rides out qualified with this declaration's own package. */
+  private def ambient(anthillLeaf: String): Placement =
+    val scalaName = Names.scalaTypeName(anthillLeaf)
+    Placement.Ambient(if pkg.isEmpty then scalaName else s"$pkg.$scalaName")
+
+  /** The host type for a scalar the RENDERER needs BY NAME — today only `Unit`, for
+    * the empty tuple, which has no written occurrence to place.
+    *
+    * Absent is a refusal and not a bare `Unit` fallback: a profile whose `type_map`
+    * drops the entry has broken a rendering path, and the fallback is how that would
+    * ship looking emitted. LOCATED like every other refusal, and on [[TypeScope]]
+    * rather than on [[ScalaTypes]] for that reason alone — the table has no
+    * declaration and no span, and an unlocated throw from here would also escape
+    * `generate`'s one documented failure channel. */
+  def requiredScalar(anthillLeaf: String, why: String): String =
+    types.hostScalars.getOrElse(anthillLeaf, throw BootstrapError(
+      s"$decl: the profile's type_map declares no `$anthillLeaf` entry, and $why " +
+      s"needs one; known scalars: ${types.hostScalars.keys.toVector.sorted.mkString(", ")}",
+      declSpan))

@@ -1767,6 +1767,41 @@ fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> String {
     }
 }
 
+/// Anthill prelude name -> Rust host type.
+///
+/// A SECOND, INDEPENDENT ANSWER to what `rust_std.anthill`'s `type_map` answers — not
+/// a copy of it, which is the first thing to know: the two overlap on six entries
+/// (`Int64`, `Float`, `Bool`, `String`, `Duration`, `Timestamp`) and each has entries
+/// the other lacks. The fact carries `List -> Vec` and `Option -> Option`; this
+/// carries `BigInt`, `Term` and `Meta`.
+///
+/// The scala backend had the same shape until WI-1060 moved it to the profile fact
+/// (`ScalaProfile.typeMap` reads the KB; `Bootstrap.generate` takes the resolved
+/// table as a parameter, so an edit to the fact changes generated code with no code
+/// change). That ticket DEFERRED this one explicitly rather than leaving it
+/// unexamined — different backend, different tests — so what follows is what a reader
+/// must settle before copying the scala fix across:
+///
+///  * READING THE FACT ALONE WOULD LOSE THREE ENTRIES. `BigInt`, `Term` and `Meta`
+///    are here and not in `rust_std.anthill`, and the `_ =>` arm makes the loss
+///    invisible: each would pass through unchanged and emit as a plausible
+///    project-defined type. Either the fact grows them or the deletion is deliberate.
+///  * READING THE FACT ALONE WOULD GAIN TWO. `List -> Vec` and `Option -> Option`
+///    are in the fact and not here, and WI-1021 settled (for scala) that those
+///    rewrites are wrong in principle — a prelude sort with anthill constructors is
+///    denoted by the type codegen EMITS for it, not by a host type that merely shares
+///    its spelling. Taking them on would reintroduce that defect rather than remove a
+///    copy. (WI-1060's scala side refuses such an entry outright: `List` declares a
+///    type parameter, and a host scalar has none.)
+///  * THE FALLBACK IS THE SHARPER PROBLEM. `_ => name.to_owned()` is the
+///    pass-through WI-1021 measured as the way an unresolvable name reaches the
+///    output looking like a project-defined type — in scala it made `field.anthill`
+///    compile green against `scala.math.Numeric`, a type from another library.
+///  * `Duration`/`Timestamp`/`Term`/`Meta` are host-over-nominal choices that
+///    `primitives.anthill` contradicts (it declares `Duration` and `Timestamp` as
+///    sorts WITH constructors), which is why the scala table dropped them. The first
+///    two are in the fact as well, so dropping them is a FACT edit; the last two are
+///    code-only and dropping them is not.
 fn map_primitive_type(name: &str) -> String {
     match name {
         "Int64" => "i64".to_owned(),

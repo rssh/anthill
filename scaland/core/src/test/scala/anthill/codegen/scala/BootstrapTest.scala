@@ -24,6 +24,39 @@ object StdlibFixture:
     assert(parseErrs.isEmpty, s"stdlib parse errors: $parseErrs")
     files
 
+  /** Every `.anthill` file under `anthill/prelude`, in path order, with its file name.
+    *
+    * THE DIRECTORY AND NOT `EmbeddedStdlib.stdlibPaths`, which is a smaller set — nine
+    * prelude files (cell, delay, relation, sortedset, time, …) are not in scaland's
+    * loadable list yet. This is the set a bare name reaches through anthill's
+    * auto-import, so it is the set [[ScalaTypes]] must place prelude names against: a
+    * consumer writing `Cell` still needs the type cell.anthill declares, whether or not
+    * the KB can load that file today.
+    *
+    * ONE LISTING AND ONE PARSE for the whole suite. The refusal-set test walks the same
+    * files, and while it listed and parsed them itself the two could disagree about
+    * which files are in the set — the table would be built from one and the emission
+    * asserted over the other. The directory stream is CLOSED: `Files.list` holds an open
+    * directory handle until it is.
+    */
+  lazy val preludeByName: IndexedSeq[(String, ParsedFile)] =
+    val stream = java.nio.file.Files.list(Paths.get(s"$dir/anthill/prelude"))
+    val paths =
+      try
+        stream.toArray.map(_.asInstanceOf[java.nio.file.Path]).toIndexedSeq
+          .filter(_.toString.endsWith(".anthill")).sortBy(_.toString)
+      finally stream.close()
+    paths.map { p =>
+      val name = p.getFileName.toString
+      val src = scala.io.Source.fromFile(p.toFile)
+      val text = try src.mkString finally src.close()
+      Parser.parse(text, s"anthill/prelude/$name") match
+        case Right(pf) => name -> pf
+        case Left(es)  => throw AssertionError(s"$p: ${es.head.render}")
+    }
+
+  lazy val preludeFiles: IndexedSeq[ParsedFile] = preludeByName.map(_._2)
+
   /** The stdlib plus any extra parsed files, loaded into one KB. The loader's verdict is
     * READ and not discarded — a KB that never finished loading would let every assertion
     * over it pass against a half-built index. */
@@ -54,6 +87,18 @@ class BootstrapTest extends munit.FunSuite:
   /** The plain stdlib KB, loaded once for the suite. */
   private lazy val stdlibKb: KnowledgeBase = StdlibFixture.kbWith()
 
+  /** The tables every emission below is rendered against (WI-1060): `scala_std`'s
+    * scalars read out of the KB, and the prelude's own parsed files for every other
+    * name. Resolved ONCE — it is the project's answer, not a per-test knob — and the
+    * suite emits through [[gen]] so no test can quietly render against a different one.
+    * The tests that DO vary it (the mutation tests below) call `Bootstrap.generate`
+    * directly, which is how they read as the exception they are. */
+  private lazy val scalaTypes: ScalaTypes =
+    ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles)
+
+  private def gen(pf: ParsedFile): IndexedSeq[GeneratedFile] =
+    Bootstrap.generate(pf, scalaTypes)
+
   private def parseStdlib(rel: String) =
     val src = scala.io.Source.fromFile(s"$stdlibDir/$rel")
     val text = try src.mkString finally src.close()
@@ -68,11 +113,11 @@ class BootstrapTest extends munit.FunSuite:
     * per-file and its output is cross-referential, so almost every compile
     * assertion here names the file under test plus the siblings it mentions. */
   private def preludeClosure(names: String*) =
-    names.toIndexedSeq.flatMap(n => Bootstrap.generate(parseStdlib(s"anthill/prelude/$n.anthill")))
+    names.toIndexedSeq.flatMap(n => gen(parseStdlib(s"anthill/prelude/$n.anthill")))
 
   test("WI-170: Bootstrap.generate on option.anthill emits Option enum") {
     val pf = parseStdlib("anthill/prelude/option.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     val mainFiles = files.filter(_.relPath.startsWith("src/main/scala/"))
     assert(mainFiles.nonEmpty, s"expected at least one main-source file, got: ${files.map(_.relPath)}")
     val optionFile = mainFiles.find(_.relPath.endsWith("/Option.scala"))
@@ -91,7 +136,7 @@ class BootstrapTest extends munit.FunSuite:
 
   test("WI-170: Bootstrap.generate on pair.anthill emits Pair enum") {
     val pf = parseStdlib("anthill/prelude/pair.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     val pairFile = files.find(_.relPath.endsWith("/Pair.scala"))
       .getOrElse(fail(s"expected Pair.scala in: ${files.map(_.relPath)}"))
     val src = pairFile.contents
@@ -111,7 +156,7 @@ class BootstrapTest extends munit.FunSuite:
 
   test("WI-170/WI-644: eq.anthill emits PartialEq with the abstract ops; Eq extends it (no new ops)") {
     val pf = parseStdlib("anthill/prelude/eq.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     // WI-644: the `eq`/`neq` OPERATIONS live in `PartialEq`; `Eq` just
     // `requires PartialEq[T]` (→ `extends PartialEq[T]`) and adds only the
     // reflexivity law — no new operation. So the abstract ops are emitted on
@@ -158,7 +203,7 @@ class BootstrapTest extends munit.FunSuite:
     // The whole closure goes to one invocation because `Eq` and `NonEq` name `PartialEq`,
     // which a sibling file declares. eq.anthill is self-contained — the three sorts
     // reference only each other — so no other stdlib file is needed here.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/eq.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/eq.anthill"))
     assertEquals(files.map(_.relPath).sorted, IndexedSeq(
       "src/main/scala/anthill/prelude/Eq.scala",
       "src/main/scala/anthill/prelude/NonEq.scala",
@@ -194,7 +239,7 @@ class BootstrapTest extends munit.FunSuite:
     // bigint.anthill exposes `to_bigint`, `to_int`, `to_float` ops —
     // verify they convert to camelCase per docs/scala-forward-mapping.md §5.
     val pf = parseStdlib("anthill/prelude/bigint.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     // proposal 038: BigInt is now a top-level `sort` (was `namespace`), so its
     // operations land in `BigInt.scala` (a trait with an inner BigIntOps), not
     // a standalone `BigIntOps.scala`.
@@ -222,7 +267,7 @@ class BootstrapTest extends munit.FunSuite:
     // the record collapse did not reach the sugar path it was already correct
     // on — the shared `renderCaseClass` must not have moved this output.
     val pf = parseStdlib("anthill/geometry.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     val eulerFile = files.find(_.relPath.endsWith("/EulerAngles.scala"))
       .getOrElse(fail(s"expected EulerAngles.scala in: ${files.map(_.relPath)}"))
     val src = eulerFile.contents
@@ -247,7 +292,7 @@ class BootstrapTest extends munit.FunSuite:
     // The two named CONTROL / REFUSED tests and every WI-170 test pass either
     // way BY DESIGN; the refusal has its own probe, recorded at its site.
     val pf = parseStdlib("anthill/geometry.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     val vec3 = files.find(_.relPath.endsWith("/Vec3.scala"))
       .getOrElse(fail(s"expected Vec3.scala in: ${files.map(_.relPath)}"))
     val src = vec3.contents
@@ -274,7 +319,7 @@ class BootstrapTest extends munit.FunSuite:
     // prelude, and gets the same one declaration. Two real fixtures, so the rule
     // is not fitted to one file.
     val pf = parseStdlib("anthill/prelude/totalfloat.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     val tf = files.find(_.relPath.endsWith("/TotalFloat.scala"))
       .getOrElse(fail(s"expected TotalFloat.scala in: ${files.map(_.relPath)}"))
     val src = tf.contents
@@ -292,12 +337,12 @@ class BootstrapTest extends munit.FunSuite:
     // and the long form an `enum Acct: case Acct(…)`. Asserted as byte equality
     // of the whole file rather than as two independent expectations, so the two
     // paths cannot drift apart again while both still "look right".
-    val sugar = Bootstrap.generate(parseSource(
+    val sugar = gen(parseSource(
       """namespace anthill.wi940
         |  entity Acct(id: Int64, balance: Float)
         |end
         |""".stripMargin, "sugar.anthill"))
-    val longForm = Bootstrap.generate(parseSource(
+    val longForm = gen(parseSource(
       """namespace anthill.wi940
         |  sort Acct
         |    entity Acct(id: Int64, balance: Float)
@@ -318,7 +363,7 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-940: an eponymous PARAMETRIC sort keeps its type parameters on the case class") {
     // `case class Box[T](value: T)`, not `case class Box(value: T)[T]` — the
     // record branch is the first one to place `tpStr` on a `case class`.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi940
         |  sort Box
         |    sort T = ?
@@ -340,7 +385,7 @@ class BootstrapTest extends munit.FunSuite:
     // passes both with and without the change BY DESIGN: its job is to say the
     // record branch did not widen into the sum branch. (The stdlib `Option` and
     // `Pair` tests above are the same control on real files.)
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi940
         |  sort Shape
         |    entity Circle(r: Float)
@@ -375,7 +420,7 @@ class BootstrapTest extends munit.FunSuite:
         |  end
         |end
         |""".stripMargin, "node.anthill")
-    val err = intercept[BootstrapError](Bootstrap.generate(pf))
+    val err = intercept[BootstrapError](gen(pf))
     assert(err.getMessage.contains("Node"), s"refusal must name the sort: ${err.getMessage}")
     assert(err.getMessage.contains("node.anthill:"),
       s"refusal must be located: ${err.getMessage}")
@@ -403,7 +448,7 @@ class BootstrapTest extends munit.FunSuite:
     // fail, since `Option`'s `optionPure[A]` loses its parameter too (A1). The two
     // string assertions name which arm each is, so a failure says WHICH half
     // regressed rather than only that the file stopped compiling.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/monad.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/monad.anthill"))
     val src = files.find(_.relPath.endsWith("/Monad.scala"))
       .getOrElse(fail(s"expected Monad.scala in: ${files.map(_.relPath)}")).contents
     assert(src.contains("trait Monad[M[_]]"),
@@ -425,7 +470,7 @@ class BootstrapTest extends munit.FunSuite:
     // `case Cons(head: T, tail: List[T])` names its own sort too. The string
     // assertion pins WHICH parameters are re-attached, which the compile cannot:
     // `Cell[Any]` would also compile.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/cell.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/cell.anthill"))
     val src = files.find(_.relPath.endsWith("/Cell.scala"))
       .getOrElse(fail(s"expected Cell.scala in: ${files.map(_.relPath)}")).contents
     assert(src.contains("def get(c: Cell[V]): V"),
@@ -446,10 +491,10 @@ class BootstrapTest extends munit.FunSuite:
     // the nominal-vs-host answer — so this now pins the ORDERING alone; the
     // consumer half has its own test below.
     //
-    // FAILS WHEN BACKED OUT: reorder `place` to consult `TypeGen.preludeSort` before
+    // FAILS WHEN BACKED OUT: reorder `place` to consult `types.preludeSort` before
     // `enclosing`, and a bare `Pair` no longer has parameters to re-attach — it is
     // a 0-argument write against a 2-parameter entry, so `generate` throws.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/pair.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/pair.anthill"))
     val src = files.find(_.relPath.endsWith("/Pair.scala"))
       .getOrElse(fail(s"expected Pair.scala in: ${files.map(_.relPath)}")).contents
     assert(!src.contains("Tuple2"),
@@ -509,13 +554,16 @@ class BootstrapTest extends munit.FunSuite:
     // consumer, and it performs no arity check on exactly the names WI-1055 B3
     // added one for. Re-pointing keeps both.
     //
-    // FAILS WHEN BACKED OUT, in one edit: drop the `_root_.anthill.prelude.` prefix
-    // in `TypeGen.preludeSort` and this assertion finds no such error — MEASURED,
+    // FAILS WHEN BACKED OUT, in one edit: drop the `_root_.` anchor and the package
+    // from `Bootstrap.EmittedType.qualified` — the one place a derived entry's spelling
+    // is built — and this assertion finds no such error. MEASURED (before WI-1060 the
+    // same edit was to `TypeGen.preludeSort`'s hardcoded strings, and the outcome was
+    // identical):
     // the bare emission reports `Not found: type Pair` instead (Scala 3 root-imports
     // no `Pair`, only `Tuple2`), so the file still fails to compile alone but for a
     // reason that says nothing about capture. `Option` is the one that silently
     // rebinds, and it is why the assertion names `Option` specifically.
-    val list = Bootstrap.generate(parseStdlib("anthill/prelude/list.anthill"))
+    val list = gen(parseStdlib("anthill/prelude/list.anthill"))
     val errs = ScalaCompile.errors(list)
     assert(errs.exists(_.message.contains("Option is not a member of anthill.prelude")),
       "compiling List.scala ALONE must fail on the missing sibling rather than " +
@@ -551,13 +599,14 @@ class BootstrapTest extends munit.FunSuite:
     // effect slot, so what erases the argument is unambiguously the callee's
     // declaration and nothing about the argument.
     //
-    // FAILS WHEN BACKED OUT, in one edit: set `preludeSorts`' `"Stream"` back to
-    // the one parameter the `LazyList` entry claimed and `generate` throws
-    // `declares 1 type parameter(s), but 2 were written` — the same refusal, now
-    // against the right type. Set it to two ORDINARY parameters (drop
-    // `ParamKind.Effect`) and the emission becomes `Stream[T, E]`, which is the
-    // WI-1062 half.
-    val files = Bootstrap.generate(parseSource(
+    // FAILS WHEN BACKED OUT, in one edit — and since WI-1060 the entry is DERIVED, so
+    // the edit is to what it is derived from: delete `effects E = ?` from
+    // stream.anthill and `Stream` has the one parameter the `LazyList` entry claimed,
+    // so `generate` throws `declares 1 type parameter(s), but 2 were written` — the
+    // same refusal, now against the right type. Make `Bootstrap.paramKinds` return
+    // `ParamKind.Type` for every declaration and the two parameters become ORDINARY,
+    // so the emission is `Stream[T, E]` — the WI-1062 half.
+    val files = gen(parseSource(
       """namespace anthill.wi1021
         |  sort Reader
         |    sort T = ?
@@ -602,16 +651,17 @@ class BootstrapTest extends munit.FunSuite:
     // it goes. That is the whole reason the rule is declaration-driven and not
     // "drop anything that looks like a row".
     //
-    // FAILS WHEN BACKED OUT: give `preludeSorts`' `"Stream"` two ORDINARY
-    // parameters and the emitted `Iterable.iterator` becomes `Stream[Element, E]`
+    // FAILS WHEN BACKED OUT: make `Bootstrap.paramKinds` return `ParamKind.Type` for
+    // every declaration — which gives the derived `Stream` entry two ORDINARY
+    // parameters — and the emitted `Iterable.iterator` becomes `Stream[Element, E]`
     // with `E` unbound — the first assertion fails and the compile below fails
     // again on `Not found: type E`. Drop `isEffectRow` at
     // `AnthillParser.effectsSortItem` and `trait Stream[T, E]` comes back, failing
     // the arity assertion.
-    val stream = Bootstrap.generate(parseStdlib("anthill/prelude/stream.anthill"))
+    val stream = gen(parseStdlib("anthill/prelude/stream.anthill"))
     assert(stream.head.contents.contains("trait Stream[T]:"),
       s"an effect parameter must not reach the emitted type:\n${stream.head.contents}")
-    val iterable = Bootstrap.generate(parseStdlib("anthill/prelude/iterable.anthill"))
+    val iterable = gen(parseStdlib("anthill/prelude/iterable.anthill"))
     val src = iterable.head.contents
     assert(src.contains("trait Iterable[C, Element]:"),
       s"Iterable's own `effects E = ?` must be erased too:\n$src")
@@ -634,26 +684,57 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-1062: where no declaration is in reach, the ARGUMENT says it is an effect") {
     // The other arm. `Placement.Ambient` is a name whose declaration lives in a
     // file Bootstrap has not read (per-file by design, proposal 034), so nothing
-    // says which of ITS slots erase — and `finite_collection.anthill`'s
-    // `requires Iterable[C = C, Element = Element, E = E]` still has to emit
-    // something. The argument decides there: `E` is a name THIS file declares
-    // `effects E = ?`, which is a locally provable fact about the argument and not
-    // a guess about the callee.
+    // says which of ITS slots erase — and a `requires Foo[C = C, Element = Element,
+    // E = E]` still has to emit something. The argument decides there: `E` is a name
+    // THIS file declares `effects E = ?`, which is a locally provable fact about the
+    // argument and not a guess about the callee.
     //
-    // DRIVEN BY A FIXTURE, and it is the prelude's own shape with nothing else on
-    // it: a sort with an `effects E = ?` parameter whose `requires` names the
-    // ambient `Iterable`. It COMPILES against the real emitted `Iterable`, which is
-    // the whole assertion — the emitted `extends` has to be the two-parameter one
-    // or the supertype is not the trait the sibling file declares.
+    // THE FIXTURE NAMES A SORT NOTHING DECLARES, and that is a WI-1060 edit worth
+    // stating rather than a fixture written obscurely. It used to name `Iterable`,
+    // whose declaration was out of reach only because Bootstrap is per-file; the
+    // prelude table is now derived from the prelude's own files, so `Iterable` is
+    // placed by iterable.anthill and its `effects E = ?` slot erases on the
+    // DECLARATION side — the arm above, not this one. Keeping `Iterable` here would
+    // have left this test passing while measuring the other rule, which is exactly
+    // the failure mode "assert the CONTROL too" names. `Ambient`'s honest residue is
+    // a file the caller never passed, so the fixture names one.
+    //
+    // COMPILED AGAINST A HAND-WRITTEN SIBLING, since by construction no emitted file
+    // declares `Extern` — that stub is what a file Bootstrap has not read looks like
+    // from here, and compiling against it is what makes the two-argument emission an
+    // assertion about a real supertype rather than about a string.
     //
     // FAILS WHEN BACKED OUT: make `named` pass an Ambient name's arguments through
-    // unerased and the emission becomes `extends anthill.prelude.Iterable[C, Element, E]`
+    // unerased and the emission becomes `extends anthill.prelude.Extern[C, Element, E]`
     // — the assertion fails and the compile reports `Too many type arguments for
-    // trait Iterable`.
-    val fixture = Bootstrap.generate(parseSource(
+    // trait Extern`.
+    val fixture = gen(parseSource(
       """namespace anthill.prelude
         |  sort Walkable
-        |    import anthill.prelude.Iterable
+        |    sort C = ?
+        |    sort Element = ?
+        |    effects E = ?
+        |    requires Extern[C = C, Element = Element, E = E]
+        |    operation walked(c: C) -> Element effects E
+        |  end
+        |end
+        |""".stripMargin, "walkable.anthill"))
+    val fsrc = fixture.head.contents
+    assert(fsrc.contains("trait Walkable[C, Element] extends " +
+      "anthill.prelude.Extern[C, Element]:"),
+      s"an ambient name's effect argument must be erased from the argument side:\n$fsrc")
+    ScalaCompile.assertCompiles("walkable.anthill against an unread sibling",
+      fixture :+ GeneratedFile("src/main/scala/anthill/prelude/Extern.scala",
+        "package anthill.prelude\n\ntrait Extern[C, Element]\n"))
+
+    // THE DECLARATION SIDE ON THE SAME SHAPE, so the two rules are seen to agree
+    // where both can run (WI-1062's rule is that the declaration answers first).
+    // Identical but for the name, and `Iterable` really does declare
+    // `sort C`, `sort Element`, `effects E` — so the erasure below is iterable.anthill's
+    // answer and the one above is the argument's.
+    val declared = gen(parseSource(
+      """namespace anthill.prelude
+        |  sort Walkable2
         |    sort C = ?
         |    sort Element = ?
         |    effects E = ?
@@ -661,13 +742,10 @@ class BootstrapTest extends munit.FunSuite:
         |    operation walked(c: C) -> Element effects E
         |  end
         |end
-        |""".stripMargin, "walkable.anthill"))
-    val fsrc = fixture.head.contents
-    assert(fsrc.contains("trait Walkable[C, Element] extends " +
-      "anthill.prelude.Iterable[C, Element]:"),
-      s"an ambient name's effect argument must be erased from the argument side:\n$fsrc")
-    ScalaCompile.assertCompiles("walkable.anthill against the emitted Iterable",
-      fixture ++ preludeClosure("iterable", "stream", "option", "pair", "list"))
+        |""".stripMargin, "walkable2.anthill")).head.contents
+    assert(declared.contains("trait Walkable2[C, Element] extends " +
+      "_root_.anthill.prelude.Iterable[C, Element]:"),
+      s"a placed name's effect slot must erase on the declaration side:\n$declared")
 
     // THE CORPUS INSTANCE, asserted on its emitted TEXT and not compiled, and the
     // reason is a DIFFERENT defect that this ticket does not own. Once these files
@@ -686,15 +764,15 @@ class BootstrapTest extends munit.FunSuite:
     // written with five arguments, of which `ES = E` is a sort effect parameter and
     // `EF = EffP` is an operation type parameter this signature only ever uses
     // inside a row — three survive, matching the three the emission declares.
-    val src = Bootstrap.generate(parseStdlib("anthill/prelude/finite_collection.anthill"))
+    val src = gen(parseStdlib("anthill/prelude/finite_collection.anthill"))
       .head.contents
     assert(src.contains("trait FiniteCollection[C, Element] extends " +
-      "anthill.prelude.Iterable[C, Element]:"),
+      "_root_.anthill.prelude.Iterable[C, Element]:"),
       s"the corpus instance must erase the same way as the fixture:\n$src")
     assert(src.contains("def map[Dst](c: C, f: (Element) => Dst): " +
-      "FiniteCollection[anthill.prelude.FiniteMappedStream[C, Element, Dst], Dst]"),
+      "FiniteCollection[_root_.anthill.prelude.FiniteMappedStream[C, Element, Dst], Dst]"),
       s"an operation's row-only type parameter must erase like a sort's:\n$src")
-    val fmapped = Bootstrap.generate(parseStdlib("anthill/prelude/finite_combinators.anthill"))
+    val fmapped = gen(parseStdlib("anthill/prelude/finite_combinators.anthill"))
       .head.contents
     assert(fmapped.contains("enum FiniteMappedStream[SrcC, Src, T]"),
       s"the three surviving arguments must be the three the declaration emits:\n$fmapped")
@@ -716,7 +794,7 @@ class BootstrapTest extends munit.FunSuite:
     // FAILS WHEN BACKED OUT: make `place` return `Placement.TypeParam("E", 0)`
     // for an effect parameter and this emits `def leak(c: C): E` with `E` bound to
     // nothing — the `intercept` finds no throw.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1062
         |  sort Leaky
         |    sort C = ?
@@ -743,7 +821,7 @@ class BootstrapTest extends munit.FunSuite:
     // declaration: on the name (`E` here would vanish), or on the argument's shape
     // (delay.anthill's `Delay[T = A, E = {}]`, which is refused rather than
     // collapsed — see the WI-1055 B2 arm).
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1062
         |  sort Graded
         |    sort T = ?
@@ -777,7 +855,7 @@ class BootstrapTest extends munit.FunSuite:
     // that would still catch it if someone "fixed" the expected string. MEASURED:
     // three other expectations move with it (the `Acct`, `Slot` and own-file
     // signatures), so the width is pinned in four places and the spelling in one.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1021
         |  entity Tick(n: Int64, on: Bool, tag: String, ratio: Float)
         |end
@@ -805,9 +883,9 @@ class BootstrapTest extends munit.FunSuite:
     // types in one tree, which is the defect this whole ticket removes, surviving
     // inside the five files that declare a scalar.
     //
-    // FAILS WHEN BACKED OUT: move `TypeGen.hostScalar` back below `enclosing` in
+    // FAILS WHEN BACKED OUT: move `types.hostScalar` back below `enclosing` in
     // `place` and every assertion here fails, naming `Int64` where `Long` belongs.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/int64.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/int64.anthill"))
     val src = files.head.contents
     assert(src.contains("trait Int64:"),
       s"the algebra trait is still emitted under its anthill name:\n$src")
@@ -834,7 +912,7 @@ class BootstrapTest extends munit.FunSuite:
     // FAILS WHEN BACKED OUT: emit a bare `case None` and the compile reports the
     // enum-parent error. The UNPARAMETERIZED control is the `Shape` fixture in the
     // WI-940 CONTROL test above, which keeps its bare `case Circle(...)`.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/option.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/option.anthill"))
     val src = files.find(_.relPath.endsWith("/Option.scala"))
       .getOrElse(fail(s"expected Option.scala in: ${files.map(_.relPath)}")).contents
     assert(src.contains("case None[T]() extends Option[T]"),
@@ -856,7 +934,7 @@ class BootstrapTest extends munit.FunSuite:
     // instead of `uncoveredParams` and the compile reports the enum-parent error
     // for both cases. The CONTROL below is the other direction — a case that DOES
     // cover its parameters is left alone.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1055
         |  sort Either
         |    sort L = ?
@@ -881,7 +959,7 @@ class BootstrapTest extends munit.FunSuite:
     // `docs/scala-forward-mapping.md` §2.3 shows. Passes with and without the
     // coverage check BY DESIGN — its job is to say the fix did not widen into every
     // case.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/list.anthill"))
+    val files = gen(parseStdlib("anthill/prelude/list.anthill"))
     val src = files.find(_.relPath.endsWith("/List.scala"))
       .getOrElse(fail(s"expected List.scala in: ${files.map(_.relPath)}")).contents
     assert(src.contains("  case Cons(head: T, tail: List[T])\n"),
@@ -895,7 +973,7 @@ class BootstrapTest extends munit.FunSuite:
     // case being nullary. `case Red[]() extends Colour[]` is not Scala, so this
     // passes both with and without the change BY DESIGN — its job is to say the
     // fix did not widen past the shape that needs it.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1055
         |  sort Colour
         |    entity Red
@@ -930,7 +1008,7 @@ class BootstrapTest extends munit.FunSuite:
     // and this file emits `case class MatchFailed(occurrence: NodeOccurrence, ...)`
     // with no refusal at all.
     val err = intercept[BootstrapError](
-      Bootstrap.generate(parseStdlib("anthill/prelude/effects.anthill")))
+      gen(parseStdlib("anthill/prelude/effects.anthill")))
     assert(err.getMessage.contains("NodeOccurrence"),
       s"refusal must name the type it could not place: ${err.getMessage}")
     assert(err.getMessage.contains("anthill.reflect"),
@@ -954,7 +1032,7 @@ class BootstrapTest extends munit.FunSuite:
     // FAILS WHEN BACKED OUT: drop the `declaredNotEmitted` arm and `present(label:
     // Type)` emits, naming a type nowhere in the closure.
     val err = intercept[BootstrapError](
-      Bootstrap.generate(parseStdlib("anthill/prelude/sort.anthill")))
+      gen(parseStdlib("anthill/prelude/sort.anthill")))
     assert(err.getMessage.contains("`Type`"),
       s"refusal must name the type: ${err.getMessage}")
     assert(err.getMessage.contains("EffectExpression"),
@@ -965,29 +1043,53 @@ class BootstrapTest extends munit.FunSuite:
 
   test("WI-1055 B1 CONTROL: an unplaced SAME-PACKAGE name is emitted QUALIFIED, not refused") {
     // The boundary of B1, and the reason it is not "refuse every name I cannot
-    // resolve". `sort Lattice { requires Eq[T] }` names a sort a SIBLING FILE
-    // declares in the same namespace — anthill's enclosing-namespace and
-    // auto-prelude lookups both land there, and so does Scala's package scope.
-    // Refusing these took thirteen prelude files out of the tree (measured) to
-    // catch nothing the closure compile does not already catch.
+    // resolve". A `requires Eq[T]` may name a sort a SIBLING FILE declares in the
+    // same namespace — anthill's enclosing-namespace and auto-prelude lookups both
+    // land there, and so does Scala's package scope. Refusing these took thirteen
+    // prelude files out of the tree (measured) to catch nothing the closure compile
+    // does not already catch.
     //
     // It is emitted QUALIFIED rather than bare, which is the part that is not a
     // hope: a bare mention also resolves against Scala's root imports, so an
     // ABSENT sibling does not fail, it CAPTURES. Measured — `field.anthill` emitted
     // a bare `Numeric`, compiled green, and meant `scala.math.Numeric`.
     //
+    // A FIXTURE SINCE WI-1060, and `field.anthill` is why the change was needed
+    // rather than cosmetic: `Numeric` is a PRELUDE sort, so the derived table now
+    // places it and the corpus file no longer takes this path at all (it emits
+    // `_root_.anthill.prelude.Numeric[T]`, checked against numeric.anthill's own
+    // parameter count — strictly better, and a different rule). What is left of
+    // Ambient is a name from a file the CALLER never passed: a project's own sibling.
+    // The fixture is that, in a package with no prelude standing behind it.
+    //
+    // THE REQUIREMENT IS NOT SPELLED `Numeric`, and the reason is the shadowing gap
+    // TypeGen states: `my.app`'s OWN `Numeric`, declared in a SIBLING FILE with no
+    // import, is still emitted `_root_.anthill.prelude.Numeric` (measured — it is what
+    // the first draft of this fixture did). `fileTypes` is per-file and the caller's
+    // auto-import set is the prelude, so nothing here knows the project declares one.
+    // The IMPORTED half of that gap is closed and has its own test below; this half
+    // needs a resolved project closure, not a `place` link.
+    //
     // FAILS WHEN BACKED OUT, in both directions: make `Ambient` a refusal and the
     // `generate` call throws; make it emit bare and the `contains` below fails
-    // while the file still "compiles" — against the wrong type.
-    val files = Bootstrap.generate(parseStdlib("anthill/prelude/field.anthill"))
-    val src = files.find(_.relPath.endsWith("/Field.scala"))
-      .getOrElse(fail(s"expected Field.scala in: ${files.map(_.relPath)}")).contents
-    assert(src.contains("extends anthill.prelude.Numeric[T]"),
+    // while the file still "compiles" — against `scala.math.Numeric`'s neighbours.
+    val files = gen(parseSource(
+      """namespace my.app
+        |  sort Field2
+        |    sort T = ?
+        |    requires AppNumeric[T]
+        |    operation div(a: T, b: T) -> T
+        |  end
+        |end
+        |""".stripMargin, "field2.anthill"))
+    val src = files.find(_.relPath.endsWith("/Field2.scala"))
+      .getOrElse(fail(s"expected Field2.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("extends my.app.AppNumeric[T]"),
       s"a sibling-file name must be emitted qualified, so it cannot capture:\n$src")
     val errs = ScalaCompile.errors(files)
-    assert(errs.exists(_.message.contains("Numeric is not a member of anthill.prelude")),
-      "compiling Field.scala ALONE must now fail on the missing sibling rather than " +
-      s"silently binding scala.math.Numeric; got: ${errs.map(_.render)}")
+    assert(errs.exists(_.message.contains("AppNumeric is not a member of my.app")),
+      "compiling Field2.scala ALONE must fail on the missing sibling rather than " +
+      s"binding whatever a bare mention would reach; got: ${errs.map(_.render)}")
   }
 
   test("WI-1055 B2: a type VARIABLE in a type position is refused") {
@@ -1009,7 +1111,7 @@ class BootstrapTest extends munit.FunSuite:
     //
     // FAILS WHEN BACKED OUT: restore `case TypeExpr.Variable(_, _) => "?"` and this
     // `intercept` finds no throw.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1055
         |  sort Holder
         |    operation get() -> Option[?A]
@@ -1043,7 +1145,7 @@ class BootstrapTest extends munit.FunSuite:
     // `M[A]` against a two-member `M[T, E]` — MEASURED, the refusal disappears from
     // the named list above.
     val err = intercept[BootstrapError](
-      Bootstrap.generate(parseStdlib("anthill/prelude/delay.anthill")))
+      gen(parseStdlib("anthill/prelude/delay.anthill")))
     assert(err.getMessage.contains("ORDINARY type-parameter slot"),
       s"refusal must say what defeated it: ${err.getMessage}")
     assert(err.getMessage.contains("proposal 047"),
@@ -1068,7 +1170,7 @@ class BootstrapTest extends munit.FunSuite:
     // thing wrong with the type for the test to be about the literal.
     //
     // FAILS WHEN BACKED OUT: restore `case TypeExpr.Denoted(_) => "Any"`.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1055
         |  sort Buf
         |    entity Buf(cells: Vector[Int64, 3])
@@ -1099,7 +1201,7 @@ class BootstrapTest extends munit.FunSuite:
     // FAILS WHEN BACKED OUT: drop the `args.length != kinds.written` guard in
     // `Placement.Known` and this emits `def swap(p: anthill.prelude.Pair): ...`,
     // which is `Missing type parameter`.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1021
         |  sort Flip
         |    operation swap(p: Pair) -> Pair
@@ -1130,7 +1232,7 @@ class BootstrapTest extends munit.FunSuite:
     // prelude's OWN emitted type, qualified. Deleting the `Option` entry (the
     // alternative WI-1021 refused) would emit `anthill.wi1055.Option` here, since
     // `Placement.Ambient` qualifies with the declaration's package.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1055
         |  entity Slot(v: Option[T = Int64])
         |end
@@ -1155,14 +1257,14 @@ class BootstrapTest extends munit.FunSuite:
     // emits again; delete the operation-level throw and the second `intercept`
     // finds no throw (the slot silently becomes a lowercase type parameter).
     val sortLevel = intercept[BootstrapError](
-      Bootstrap.generate(parseStdlib("anthill/prelude/sortedset.anthill")))
+      gen(parseStdlib("anthill/prelude/sortedset.anthill")))
     assert(sortLevel.getMessage.contains("`SortedSet`") &&
            sortLevel.getMessage.contains("`O`"),
       s"refusal must name the sort and the slot: ${sortLevel.getMessage}")
     assert(sortLevel.getMessage.contains("sortedset.anthill:"),
       s"refusal must be located: ${sortLevel.getMessage}")
 
-    val opLevel = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val opLevel = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1055
         |  sort Bag
         |    sort T = ?
@@ -1189,7 +1291,7 @@ class BootstrapTest extends munit.FunSuite:
     //
     // FAILS WHEN BACKED OUT: drop the `args.length != self.params.length` guard in
     // `Placement.Enclosing` and `Box[Int, Int]` is emitted against `Box[T]`.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1055
         |  sort Box
         |    sort T = ?
@@ -1234,7 +1336,7 @@ class BootstrapTest extends munit.FunSuite:
     // assertion passes either way BY DESIGN; it is the control that the arm did not
     // overreach, and the same reading is pinned on stdlib by the WI-170/WI-644 test
     // above (`trait Eq[T] extends PartialEq[T]`), which also stays green.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1064
         |  sort Walk
         |    sort C = ?
@@ -1294,7 +1396,7 @@ class BootstrapTest extends munit.FunSuite:
     // failing this assertion and then the compile (a `case class` is instantiable,
     // so an inherited `head` it does not define is `class Holder needs to be
     // abstract`).
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1064
         |  sort Walk
         |    sort C = ?
@@ -1326,7 +1428,7 @@ class BootstrapTest extends munit.FunSuite:
     // FAILS WHEN BACKED OUT: restore `ctors.flatMap(_.fields)` and this emits
     // `enum Wrap[SrcC, Src]: case Carried(...); case Bare[SrcC, Src](n: Long)` with
     // no refusal — `Bare` carries the requirement nowhere.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1064
         |  import anthill.prelude.{Int64}
         |  sort Walk
@@ -1356,7 +1458,7 @@ class BootstrapTest extends munit.FunSuite:
     //
     // FAILS WHEN BACKED OUT: restore `fieldTypes.contains(rendered)` (exact
     // equality) and this throws instead of emitting.
-    val files = Bootstrap.generate(parseSource(
+    val files = gen(parseSource(
       """namespace anthill.wi1064
         |  import anthill.prelude.{List}
         |  sort Walk
@@ -1390,7 +1492,7 @@ class BootstrapTest extends munit.FunSuite:
     //
     // FAILS WHEN BACKED OUT: delete the `checkDischarged` call and this `intercept`
     // finds no throw — the bound is silently gone from the emitted declaration.
-    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+    val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1064
         |  sort Ordering
         |    sort T = ?
@@ -1427,6 +1529,12 @@ class BootstrapTest extends munit.FunSuite:
     // actual claim about itself, which Bootstrap reads nothing of (`emitSort` has
     // no `ProvidesClauseItem` arm). The `extends` was built from the wrong line.
     //
+    // `_root_`-ANCHORED SINCE WI-1060, and only the spelling changed: `FiniteCollection`
+    // used to reach [[Placement.Ambient]], which qualifies with the DECLARING file's
+    // package and so happened to be right here; it is now placed by
+    // finite_collection.anthill's own declaration, which is also what checks the two
+    // arguments against the two that declaration emits.
+    //
     // FAILS WHEN BACKED OUT: the pre-WI-1064 emission is `enum
     // FiniteMappedStream[SrcC, Src, T] extends anthill.prelude.FiniteCollection[
     // SrcC, Src]:`, whose measured consequence was `class Fmapped needs to be
@@ -1434,9 +1542,9 @@ class BootstrapTest extends munit.FunSuite:
     val files = preludeClosure("finite_combinators")
     Seq(
       ("FiniteMappedStream", "enum FiniteMappedStream[SrcC, Src, T]:",
-        "case Fmapped(source: anthill.prelude.FiniteCollection[SrcC, Src],"),
+        "case Fmapped(source: _root_.anthill.prelude.FiniteCollection[SrcC, Src],"),
       ("FiniteFilteredStream", "enum FiniteFilteredStream[SrcC, T]:",
-        "case Ffiltered(source: anthill.prelude.FiniteCollection[SrcC, T],"),
+        "case Ffiltered(source: _root_.anthill.prelude.FiniteCollection[SrcC, T],"),
     ).foreach { case (sort, decl, field) =>
       val src = files.find(_.relPath.endsWith(s"/$sort.scala"))
         .getOrElse(fail(s"expected $sort.scala in: ${files.map(_.relPath)}")).contents
@@ -1545,19 +1653,18 @@ class BootstrapTest extends munit.FunSuite:
       "sort.anthill" -> ("sort `EffectExpression`", "emits no Scala type for"),
       "sortedset.anthill" -> ("sort `SortedSet`", "named requirement slot"),
     )
-    val preludeDir = java.nio.file.Paths.get(s"$stdlibDir/anthill/prelude")
-    val sources = java.nio.file.Files.list(preludeDir).toArray
-      .map(_.asInstanceOf[java.nio.file.Path]).toVector
-      .filter(_.toString.endsWith(".anthill")).sortBy(_.toString)
+    // THE SAME SET `scalaTypes` WAS BUILT FROM (WI-1060), and not a second listing of
+    // the same directory: the table places every name these files emit, so a walk that
+    // could differ from it would assert the emission of one set against the table of
+    // another.
+    val sources = StdlibFixture.preludeByName
     assert(sources.length >= 44, s"expected the measured prelude, got ${sources.length} files")
 
     val refused = scala.collection.mutable.Map.empty[String, String]
     var compiled = 0
-    sources.foreach { p =>
-      val name = p.getFileName.toString
-      val pf = parseStdlib(s"anthill/prelude/$name")
+    sources.foreach { case (name, pf) =>
       try
-        val files = Bootstrap.generate(pf)
+        val files = gen(pf)
         // unit.anthill declares no sort/entity, so it emits nothing and is neither
         // refused nor compiled — counted as neither rather than as a pass.
         if files.nonEmpty && ScalaCompile.errors(files).isEmpty then compiled += 1
@@ -1586,7 +1693,7 @@ class BootstrapTest extends munit.FunSuite:
       "anthill/prelude/option.anthill",
       "anthill/prelude/eq.anthill",
       "anthill/geometry.anthill",
-    ).flatMap(rel => Bootstrap.generate(parseStdlib(rel)))
+    ).flatMap(rel => gen(parseStdlib(rel)))
     files.foreach { f =>
       assert(!f.contents.contains("???"),
         s"`???` leaked into ${f.relPath}:\n${f.contents}")
@@ -1599,7 +1706,7 @@ class BootstrapTest extends munit.FunSuite:
     // proposal 034 §Bootstrap. Vacuous Prop.passed placeholders mask
     // broken implementations, so bootstrap drops Laws emission entirely.
     val pf = parseStdlib("anthill/prelude/eq.anthill")
-    val files = Bootstrap.generate(pf)
+    val files = gen(pf)
     val laws = files.filter(_.relPath.endsWith("Laws.scala"))
     assert(laws.isEmpty, s"bootstrap should not emit Laws files; got: ${laws.map(_.relPath)}")
   }
@@ -1610,8 +1717,8 @@ class BootstrapTest extends munit.FunSuite:
     // would silently overwrite the build.sbt with a missing scalacheck
     // dep. The fix: build.sbt is exposed as a separate API the caller
     // invokes once after merging all per-file outputs.
-    val a = Bootstrap.generate(parseStdlib("anthill/prelude/option.anthill"))
-    val b = Bootstrap.generate(parseStdlib("anthill/prelude/eq.anthill"))
+    val a = gen(parseStdlib("anthill/prelude/option.anthill"))
+    val b = gen(parseStdlib("anthill/prelude/eq.anthill"))
     // A version no profile would ever declare, so the assertion below can only pass by
     // `buildSbt` USING its parameter. Reintroducing a hardcoded default — the thing this
     // seam exists to prevent — fails here rather than emitting a plausible wrong number.
@@ -1734,4 +1841,525 @@ class BootstrapTest extends munit.FunSuite:
       ScalaProfile.languageVersion(stdlibKb, language = "scala", profile = "no-such"),
       LanguageVersion.NoSuchMapping,
       "a real language at an unknown profile is still no mapping")
+    assertEquals(
+      ScalaProfile.typeMap(stdlibKb, language = "cobol", profile = "std"),
+      HostTypeMap.NoSuchMapping,
+      "the type map answers the same question the same way")
+  }
+
+  // ── WI-1060: the emitter's type tables come from outside the emitter ──────
+
+  /** A sort whose every member is typed by the scalar under test, so a changed
+    * `type_map` entry has somewhere to show. Parameterized by profile-independent
+    * text so the mutation tests below emit the SAME anthill twice. */
+  private def scalarFixture = parseSource(
+    """namespace my.app
+      |  sort Adder
+      |    operation add(a: Int64, b: Int64) -> Int64
+      |  end
+      |end
+      |""".stripMargin, "adder.anthill")
+
+  test("WI-1060: the emitted host type is the PROFILE's, and an edit to the fact moves it") {
+    // THE TICKET'S ACCEPTANCE, and it is a mutation rather than an agreement check:
+    // "the table is read" is not observable — a table read and then ignored passes
+    // every assertion a stock emission can make. So the same anthill file is emitted
+    // twice against two profiles that differ in ONE entry, and the two outputs must
+    // differ in exactly that entry.
+    //
+    // FAILS WHEN BACKED OUT: reinstate a hardcoded `hostScalars` in the emitter and
+    // both emissions say `_root_.scala.Long`, so the first assertion fails; drop the
+    // `types` parameter from `generate` and it does not compile.
+    val kb = StdlibFixture.kbWith(parseSource(
+      """
+      namespace test.mutant_scalars
+        import anthill.realization.{LanguageMapping, TypeMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "scala",
+          profile: some("mutant"),
+          language_version: some("3.8.4"),
+          effect_map: [],
+          receiver_map: [],
+          type_map: [
+            TypeMapping(anthill_type: "Int64", host_type: "_root_.my.own.Fixnum")
+          ],
+          trait_return: ImplTrait
+        )
+      end
+      """, "mutant_scalars.anthill"))
+    val mutant = ScalaTypes.resolve(
+      kb, StdlibFixture.preludeFiles, language = "scala", profile = "mutant")
+
+    val moved = Bootstrap.generate(scalarFixture, mutant).head.contents
+    assert(moved.contains("def add(a: _root_.my.own.Fixnum, b: _root_.my.own.Fixnum): " +
+      "_root_.my.own.Fixnum"),
+      s"the emission must carry the profile's host type verbatim:\n$moved")
+
+    // THE CONTROL, and it is what makes the assertion above about the FACT rather
+    // than about the fixture: the same source under `scala_std` says `Long`.
+    val stock = gen(scalarFixture).head.contents
+    assert(stock.contains("def add(a: _root_.scala.Long, b: _root_.scala.Long): " +
+      "_root_.scala.Long"),
+      s"the stock profile must still say what scala_std declares:\n$stock")
+  }
+
+  test("WI-1060: a scalar the profile drops stops being a scalar") {
+    // The other half of "the fact decides", and the sharper one: `Int64` is a host
+    // carrier only because an entry says so. A profile with an EMPTY type_map leaves
+    // `int64.anthill`'s own `sort Int64` as the answer — the trait no value inhabits —
+    // which is a bad emission and exactly the point. Nothing in the emitter special-
+    // cases the name, so nothing in the emitter can keep the entry alive.
+    val kb = StdlibFixture.kbWith(parseSource(
+      """
+      namespace test.no_scalars
+        import anthill.realization.{LanguageMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "scala", profile: some("scalarless"),
+          language_version: none,
+          effect_map: [], receiver_map: [], type_map: [],
+          trait_return: ImplTrait
+        )
+      end
+      """, "no_scalars.anthill"))
+    val scalarless = ScalaTypes.resolve(
+      kb, StdlibFixture.preludeFiles, language = "scala", profile = "scalarless")
+    val src = Bootstrap.generate(scalarFixture, scalarless).head.contents
+    assert(src.contains("def add(a: _root_.anthill.prelude.Int64"),
+      s"with no entry, `Int64` must fall to the sort the prelude declares:\n$src")
+  }
+
+  test("WI-1060: both `language: \"scala\"` profiles declare the same scalars") {
+    // `scala_caps.anthill` says of its own table that it is not a caps-specific
+    // choice — capture-checking changes the ARROW and the effect shape, not what an
+    // anthill sort's values ARE — and until now nothing held it to that. A profile
+    // switch that restored `Pair -> Tuple2` in one of them reintroduces WI-1021's
+    // measured defect in one step, and only in that profile.
+    assertEquals(
+      ScalaProfile.typeMap(stdlibKb, profile = "caps"),
+      ScalaProfile.typeMap(stdlibKb, profile = "std"),
+      "the two scala profiles must agree on what an anthill scalar's values are")
+  }
+
+  test("WI-1060: a prelude sort's arity is the DECLARING file's, not a list in the emitter") {
+    // The design question the ticket left open — where the arity comes from, since
+    // `TypeMapping` has no column for it — answered by DERIVING it. What that buys
+    // over the hand-written table it replaced is asserted here in the only way it
+    // can be: the same consumer, placed against two file sets.
+    //
+    // The declaring file is a FIXTURE and not a prelude file, because the point is
+    // the derivation and not any particular sort. `Boxy` writes two parameters, so:
+    //   * with the declaration in the set, a two-argument use is placed and qualified
+    //     and a one-argument use is REFUSED naming the count;
+    //   * with it out of the set, neither happens — the name is Ambient, which
+    //     performs no arity check at all. That second half is the control: it is what
+    //     fails if the table is populated from something other than the file.
+    val declaring = parseSource(
+      """namespace anthill.prelude
+        |  sort Boxy
+        |    sort A = ?
+        |    sort B = ?
+        |    operation unbox(b: Boxy) -> A
+        |  end
+        |end
+        |""".stripMargin, "boxy.anthill")
+    def consumer(args: String) = parseSource(
+      s"""namespace my.app
+         |  sort User
+         |    sort X = ?
+         |    sort Y = ?
+         |    operation use(b: Boxy$args) -> X
+         |  end
+         |end
+         |""".stripMargin, "user.anthill")
+
+    val withDecl = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles :+ declaring)
+    val src = Bootstrap.generate(consumer("[A = X, B = Y]"), withDecl).head.contents
+    assert(src.contains("def use(b: _root_.anthill.prelude.Boxy[X, Y]): X"),
+      s"a derived entry must name the type the declaring file emits:\n$src")
+    val err = intercept[BootstrapError](Bootstrap.generate(consumer("[A = X]"), withDecl))
+    assert(err.getMessage.contains("declares 2 type parameter(s)"),
+      s"the arity checked must be the declaration's: ${err.getMessage}")
+
+    // CONTROL. Same consumer, same profile, declaration NOT in the set: no entry, so
+    // `Placement.Ambient` — a package-qualified guess with no arity check, and the
+    // one-argument form that was refused above now emits.
+    val ambient = Bootstrap.generate(consumer("[A = X]"), scalaTypes).head.contents
+    assert(ambient.contains("def use(b: my.app.Boxy[X]): X"),
+      s"without the declaration nothing checks the arity:\n$ambient")
+  }
+
+  test("WI-1060: two files emitting the same leaf differently is refused, not last-wins") {
+    // The derived table is keyed on the LEAF, because that is what a bare mention
+    // writes. Two files answering it differently means the caller's claim — "these
+    // are reachable by bare name" — is false for that name, and a fold that just
+    // overwrote would pick by file ORDER and emit the loser's arity everywhere.
+    //
+    // No corpus set has the shape (the 45 prelude files do not), so this arm is
+    // driven by a fixture or not at all.
+    def dup(file: String, params: String) = parseSource(
+      s"""namespace anthill.prelude
+         |  sort Twin
+         |$params
+         |  end
+         |end
+         |""".stripMargin, file)
+    val err = intercept[BootstrapError](Bootstrap.emittedTypes(IndexedSeq(
+      dup("one.anthill", "    sort A = ?"),
+      dup("two.anthill", "    sort A = ?\n    sort B = ?"))))
+    assert(err.getMessage.contains("`Twin` is emitted twice"),
+      s"the refusal must name the leaf: ${err.getMessage}")
+    // LOCATED, and that is not decoration: the real call passes 45 files, so a message
+    // naming the leaf alone leaves a reader grepping for it. The span is the SECOND
+    // declaration — the one that could not be added.
+    assert(err.getMessage.contains("two.anthill:"),
+      s"the refusal must name the file it could not add: ${err.getMessage}")
+    // CONTROL: the same declaration twice is not a conflict — a file set that lists a
+    // file twice, or two identical declarations, has one answer and it is that one.
+    assertEquals(
+      Bootstrap.emittedTypes(IndexedSeq(dup("one.anthill", "    sort A = ?"),
+                                        dup("two.anthill", "    sort A = ?"))).types.keySet,
+      Set("Twin"))
+  }
+
+  test("WI-1060: a malformed type_map is refused loudly, not read as a partial table") {
+    // The same discipline `language_version` has, for the same reason: an entry this
+    // reader cannot honour must not become an entry that is quietly absent, because
+    // an absent scalar is not an error downstream — it silently becomes the prelude's
+    // own `trait Int64` (the test two above measures exactly that fall-through).
+    def mapping(lang: String, entries: String) = parseSource(
+      s"""
+      namespace test.badmap_$lang
+        import anthill.realization.{LanguageMapping, TypeMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "$lang", profile: some("std"),
+          language_version: none,
+          effect_map: [], receiver_map: [],
+          type_map: $entries,
+          trait_return: ImplTrait
+        )
+      end
+      """, s"badmap_$lang.anthill")
+
+    val kb = StdlibFixture.kbWith(
+      mapping("dup", """[TypeMapping(anthill_type: "Int64", host_type: "A"),
+                        TypeMapping(anthill_type: "Int64", host_type: "B")]"""),
+      // WI-088's marshalled form: the host holds the value DIFFERENTLY and converts at
+      // the boundary. Read as a plain rename it emits code that type-checks and moves
+      // the wrong bytes, so it is refused rather than half-honoured.
+      mapping("marshalled", """[TypeMapping(anthill_type: "Vec3", host_type: "Array[Double]",
+                                lift: some("Vec3.fromArray"))]"""),
+      // A junk `lift` must not read as "no adapter": that is the one way a marshalled
+      // entry could still pass as a plain rename.
+      mapping("badlift", """[TypeMapping(anthill_type: "Int64", host_type: "Long", lift: 42)]"""),
+      // WI-089's FLAT keyed form, written where the nested one belongs. `key` selects a
+      // profile or a foreign-binding OVERLAY and `lang` selects a host language, and
+      // `realization.anthill` documents `none` for both as "legacy/nested entry" — so a
+      // written key can only DISAGREE with the LanguageMapping enclosing it. Read as a
+      // plain rename, `key: some("webots")` emits the webots-only host type everywhere.
+      mapping("overlay", """[TypeMapping(anthill_type: "Vec3", host_type: "const double *",
+                             key: some("webots"))]"""),
+      mapping("otherlang", """[TypeMapping(anthill_type: "Int64", host_type: "int64_t",
+                               lang: some("cpp"))]"""),
+      mapping("notalist", """TypeMapping(anthill_type: "Int64", host_type: "Long")"""),
+      mapping("notastring", """[TypeMapping(anthill_type: "Int64", host_type: 42)]"""))
+
+    def refusal(lang: String) = intercept[IllegalStateException](
+      ScalaProfile.typeMap(kb, language = lang, profile = "std")).getMessage
+    assert(refusal("dup").contains("two entries for `Int64`"), refusal("dup"))
+    assert(refusal("marshalled").contains("MARSHALLED"), refusal("marshalled"))
+    assert(refusal("badlift").contains("`lift` that is not an Option term"),
+      refusal("badlift"))
+    assert(refusal("overlay").contains("`key`-QUALIFIED entry (webots)"), refusal("overlay"))
+    assert(refusal("otherlang").contains("`lang`-QUALIFIED entry (cpp)"), refusal("otherlang"))
+    assert(refusal("notalist").contains("not a list literal"), refusal("notalist"))
+    assert(refusal("notastring").contains("no `host_type` string literal"),
+      refusal("notastring"))
+  }
+
+  test("WI-1060: a mapping with no type_map field at all is a distinct answer") {
+    // `FieldOmitted` and not an empty table, for the reason `language_version` keeps
+    // the same case: a profile that declares `type_map: []` has DECIDED to map no
+    // scalar (the scalarless test above emits from exactly that), and a fact that
+    // predates the field has decided nothing. Collapsing them would let schema drift
+    // read as a deliberate choice, and `ScalaTypes.resolve` throws on one and not the
+    // other.
+    val kb = StdlibFixture.kbWith(parseSource(
+      """
+      namespace test.nofield
+        import anthill.realization.{LanguageMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "fieldless", profile: some("std"),
+          language_version: none,
+          effect_map: [], receiver_map: [],
+          trait_return: ImplTrait
+        )
+      end
+      """, "nofield.anthill"))
+    assertEquals(
+      ScalaProfile.typeMap(kb, language = "fieldless", profile = "std"),
+      HostTypeMap.FieldOmitted,
+      "a fact that never writes type_map must not read as one that maps nothing")
+    assertEquals(
+      ScalaProfile.typeMap(kb, language = "scala", profile = "scalarless-check") match
+        case HostTypeMap.NoSuchMapping => "absent"
+        case other                     => other.toString,
+      "absent",
+      "and an unknown profile is still no mapping")
+  }
+
+  // ── WI-1060 review: what the DERIVED table made newly wrong ───────────────
+  //
+  // Deriving the prelude half answered the membership question — every sort the
+  // prelude emits is in the table now, not the six that happened to have a host
+  // entry — and that same widening turned three previously-narrow gaps into live
+  // ones. Each is driven below, with the CONTROL that says it is the derivation
+  // being measured and not the fixture.
+
+  test("WI-1060: an explicit import of ANOTHER package shadows the prelude table") {
+    // `place` consulted the prelude table before the import table, so a project
+    // writing `import my.lib.{Option}` was emitted `_root_.anthill.prelude.Option` —
+    // a different library's type, compiled green. Anthill's own scoping says the
+    // opposite: an explicit import shadows the auto-import, and Bootstrap emits no
+    // Scala `import`, so the name it names cannot be reached at all.
+    //
+    // WHY IT MATTERS MORE SINCE WI-1060: while the table was six hand-picked names,
+    // an import had to collide with one of `Int64`/`Pair`/`Option`/`List`/`Set`/`Map`
+    // to be captured. Derived, it is every prelude sort — `Eq`, `Numeric`, `Cell`,
+    // `Field`, `Ord`, `Time` — so the collision surface is ten times wider.
+    //
+    // FAILS WHEN BACKED OUT: move `shadowsThePrelude` back below `types.preludeSort`
+    // in `place` and this emits `_root_.anthill.prelude.Option[X]` with no refusal.
+    // MEASURED: this test alone fails — the corpus is unmoved, because no prelude file
+    // imports a prelude name from anywhere but `anthill.prelude`.
+    def holder(imports: String) = parseSource(
+      s"""namespace my.app
+         |$imports
+         |  sort Holder
+         |    sort X = ?
+         |    operation get(o: Option[T = X]) -> X
+         |  end
+         |end
+         |""".stripMargin, "holder.anthill")
+
+    val err = intercept[BootstrapError](gen(holder("  import my.lib.{Option}")))
+    assert(err.getMessage.contains("`Option` is imported from `my.lib`"),
+      s"the refusal must say which package the import names: ${err.getMessage}")
+    assert(err.getMessage.contains("holder.anthill:"),
+      s"the refusal must be located: ${err.getMessage}")
+
+    // CONTROL 1: no import, and the same occurrence reaches the prelude's own type.
+    // Without this the test above would pass against a `place` that refused every
+    // prelude name outright.
+    val ambient = gen(holder("")).head.contents
+    assert(ambient.contains("def get(o: _root_.anthill.prelude.Option[X]): X"),
+      s"an unimported prelude name must still reach the prelude's type:\n$ambient")
+
+    // CONTROL 2, and it is the arm that keeps the corpus emitting: an import OF THE
+    // PRELUDE is not a shadow. It names the same declaration the auto-import finds,
+    // and half the prelude writes one (`cell.anthill`'s `import anthill.prelude.{Unit,
+    // Modifiable, …}`). Refusing on `importedFrom` alone takes those files out of the
+    // tree — measured, the refusal set grows past its recorded seven.
+    val imported = gen(holder("  import anthill.prelude.{Option}")).head.contents
+    assert(imported.contains("def get(o: _root_.anthill.prelude.Option[X]): X"),
+      s"an import of the auto-imported package must not shadow it:\n$imported")
+  }
+
+  test("WI-1060: a NESTED namespace's sorts are not reachable by a bare name") {
+    // The derived table is what a bare mention reaches, and that is the auto-imported
+    // package's own members. `algebra.anthill` writes `namespace anthill.prelude.algebra`
+    // and `meta.anthill` writes `namespace anthill.prelude.Meta`, so an unfiltered walk
+    // enters `Ring`, `Trust` and `ProofResult` — names anthill itself will not resolve
+    // without an explicit import. A project declaring its own `Ring` would then emit
+    // `_root_.anthill.prelude.algebra.Ring`.
+    //
+    // ONE FIXTURE, TWO NAMESPACES, so the only thing that varies is the package the
+    // declaration is emitted into — and the consumer is written with the RIGHT arity,
+    // so what differs between the two runs is the NAME and not a refusal.
+    //
+    // FAILS WHEN BACKED OUT: drop the `t.pkg != autoImportPackage` filter in
+    // `emittedTypes` and the first assertion emits `_root_.anthill.prelude.algebra.Ringy[X]`.
+    // MEASURED: that is the ONLY test that changes — no corpus emission and no member of
+    // the refusal set moves, so this fixture is the whole of what holds the rule.
+    def declaring(ns: String) = parseSource(
+      s"""namespace $ns
+         |  sort Ringy
+         |    sort T = ?
+         |  end
+         |end
+         |""".stripMargin, "ringy.anthill")
+    val consumer = parseSource(
+      """namespace my.app
+        |  sort User
+        |    sort X = ?
+        |    operation use(r: Ringy[T = X]) -> X
+        |  end
+        |end
+        |""".stripMargin, "user.anthill")
+
+    val nested = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles :+ declaring("anthill.prelude.algebra"))
+    val src = Bootstrap.generate(consumer, nested).head.contents
+    assert(src.contains("def use(r: my.app.Ringy[X]): X"),
+      s"a nested namespace's sort must not be placed by a bare mention:\n$src")
+
+    // CONTROL: the SAME declaration in the auto-imported package itself IS in the
+    // table, and the same occurrence then names it. Without this arm the assertion
+    // above would pass against an `emittedTypes` that saw nothing in the file at all.
+    val direct = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles :+ declaring("anthill.prelude"))
+    val placed = Bootstrap.generate(consumer, direct).head.contents
+    assert(placed.contains("def use(r: _root_.anthill.prelude.Ringy[X]): X"),
+      s"the same sort in `anthill.prelude` must be placed by the table:\n$placed")
+  }
+
+  test("WI-1060: a name the prelude declares but emits NOTHING for is refused everywhere") {
+    // WI-1055 B1's cross-file half, which had no carrier until the derived table
+    // existed. `sort.anthill` writes `sort Type = ?` at namespace level — an opaque
+    // handle whose Scala spelling would be an `opaque type`, needing an enclosing
+    // object rather than a package — so Bootstrap emits nothing for it. INSIDE
+    // sort.anthill a bare `Type` was already refused (the file's own
+    // `declaredNotEmitted`); from any other file the same name fell to
+    // `Placement.Ambient` and emitted `my.app.Type`, a bare identifier naming nothing
+    // in the tree. That is the defect B1 was filed for, surviving one file over.
+    //
+    // WHAT IT COSTS, stated because it is a trade and not a free win: a project that
+    // declares its OWN `Type` in a sibling file is now refused, where before it
+    // emitted `my.app.Type` and compiled. Bootstrap sees the prelude and this file and
+    // nothing else, so it cannot tell that project apart from one that meant the
+    // prelude's. The same blindness in the other direction is silent — a project's own
+    // `Option` is emitted `_root_.anthill.prelude.Option` with no diagnostic — and a
+    // loud wrong answer is the one worth having.
+    //
+    // FAILS WHEN BACKED OUT: drop `AutoImported.declaredNotEmitted` (return only the
+    // types) and this emits `def label(t: my.app.Type): X` with no refusal.
+    val consumer = parseSource(
+      """namespace my.app
+        |  sort Labeller
+        |    sort X = ?
+        |    operation label(t: Type) -> X
+        |  end
+        |end
+        |""".stripMargin, "labeller.anthill")
+    val err = intercept[BootstrapError](gen(consumer))
+    assert(err.getMessage.contains("`Type`"),
+      s"the refusal must name the type: ${err.getMessage}")
+    assert(err.getMessage.contains("anthill.prelude"),
+      s"the refusal must say which auto-imported package declares it: ${err.getMessage}")
+    assert(err.getMessage.contains("operation `label`") &&
+           err.getMessage.contains("labeller.anthill:"),
+      s"the refusal must name the declaration and be located: ${err.getMessage}")
+
+    // CONTROL: a name NOTHING declares is still Ambient, not a refusal. Without this
+    // the assertion above would pass against a `place` that refused every unplaced
+    // name — which is the thirteen-file outcome B1's CONTROL exists to prevent.
+    val open = gen(parseSource(
+      """namespace my.app
+        |  sort Labeller2
+        |    sort X = ?
+        |    operation label(t: Typo) -> X
+        |  end
+        |end
+        |""".stripMargin, "labeller2.anthill")).head.contents
+    assert(open.contains("def label(t: my.app.Typo): X"),
+      s"an undeclared name must still ride out qualified:\n$open")
+  }
+
+  test("WI-1060: a type_map entry for a PARAMETERIZED sort is refused") {
+    // The check that replaced `TypeGen.preludeSorts`' deleted `require`, and it guards
+    // the mistake WI-1021 measured and reverted: `List -> scala.List`. `preludeSorts`
+    // is `autoImportedTypes -- hostScalars.keySet`, so such an entry DELETES list
+    // .anthill's declared arity and re-adds `List` as a 0-parameter host type — and
+    // every `List[T = X]` in the corpus is then refused with "`List` maps to Scala
+    // `_root_.scala.List` and declares 0 type parameter(s), but 1 were written", a
+    // message blaming the use site for a bad fact entry. rust_std.anthill carries
+    // exactly this entry today, so it is not a hypothetical shape.
+    //
+    // FAILS WHEN BACKED OUT: delete the `parameterizedScalars` check and `resolve`
+    // returns a table in which `List` is a 0-parameter host type, so the `intercept`
+    // finds nothing thrown. What the check buys is WHERE the fault is reported — at
+    // the fact that is wrong, rather than at every use site that is right.
+    val kb = StdlibFixture.kbWith(parseSource(
+      """
+      namespace test.list_scalar
+        import anthill.realization.{LanguageMapping, TypeMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "scala", profile: some("listy"),
+          language_version: none,
+          effect_map: [], receiver_map: [],
+          type_map: [TypeMapping(anthill_type: "List", host_type: "_root_.scala.List")],
+          trait_return: ImplTrait
+        )
+      end
+      """, "list_scalar.anthill"))
+    val err = intercept[IllegalArgumentException](ScalaTypes.resolve(
+      kb, StdlibFixture.preludeFiles, language = "scala", profile = "listy"))
+    assert(err.getMessage.contains("`List` -> `_root_.scala.List`"),
+      s"the refusal must name the entry: ${err.getMessage}")
+    assert(err.getMessage.contains("1 type parameter(s)"),
+      s"the refusal must say what the declaration writes: ${err.getMessage}")
+
+    // CONTROL: an entry for a sort that really has no parameters is accepted — the
+    // check is about ARITY and not about a scalar also being a declared sort, which
+    // every one of them is.
+    assert(ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles)
+      .hostScalar("Int64").nonEmpty,
+      "a 0-parameter sort must still be mappable as a host scalar")
+  }
+
+  test("WI-1060: a profile with no `Unit` entry refuses the empty tuple, located") {
+    // `TypeScope.requiredScalar` is the one path that reads a scalar BY NAME rather
+    // than by placing a written occurrence, and nothing drove it: the scalarless
+    // fixture below has no `()` in it, so deleting the throw and returning a bare
+    // "Unit" — the exact fallback its doc says it exists to prevent — left the suite
+    // green.
+    //
+    // FAILS WHEN BACKED OUT, in both directions: return `"Unit"` instead of throwing
+    // and the `intercept` fails; throw an unlocated `IllegalStateException` (where it
+    // lived before this review) and the located assertion fails — and the refusal-set
+    // test would stop recording it as a refusal at all, since it catches
+    // `BootstrapError` alone.
+    val unitFixture = parseSource(
+      """namespace my.app
+        |  sort Sink
+        |    operation drop(a: Int64) -> ()
+        |  end
+        |end
+        |""".stripMargin, "sink.anthill")
+    // The positive half first: with the entry present the empty tuple IS the profile's
+    // host type, spelled as the fact spells it.
+    val stock = gen(unitFixture).head.contents
+    assert(stock.contains("def drop(a: _root_.scala.Long): _root_.scala.Unit"),
+      s"the empty tuple must render through the profile's `Unit` entry:\n$stock")
+
+    val kb = StdlibFixture.kbWith(parseSource(
+      """
+      namespace test.unitless
+        import anthill.realization.{LanguageMapping, ImplTrait}
+        import anthill.prelude.Option.{some, none}
+
+        fact LanguageMapping(
+          language: "scala", profile: some("unitless"),
+          language_version: none,
+          effect_map: [], receiver_map: [], type_map: [],
+          trait_return: ImplTrait
+        )
+      end
+      """, "unitless.anthill"))
+    val unitless = ScalaTypes.resolve(
+      kb, StdlibFixture.preludeFiles, language = "scala", profile = "unitless")
+    val err = intercept[BootstrapError](Bootstrap.generate(unitFixture, unitless))
+    assert(err.getMessage.contains("declares no `Unit` entry"),
+      s"the refusal must name the missing entry: ${err.getMessage}")
+    assert(err.getMessage.contains("drop") && err.getMessage.contains("sink.anthill:"),
+      s"the refusal must name the declaration and be located: ${err.getMessage}")
   }
