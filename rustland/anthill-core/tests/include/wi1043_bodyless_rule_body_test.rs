@@ -16,7 +16,7 @@
 //! |---|---|---|---|---|
 //! | own member + provision | `[]` | `7` | → | `7` / unchanged |
 //! | witness sort alone | `[]` (qualified) / **refused** (dot) | `9` | → | `9` / unchanged |
-//! | instance fact alone | `[]` | `9` | → | `[]` — **WI-1057** |
+//! | instance fact alone | `[]` | `9` | → | `9` — closed by **WI-1057**, below |
 //! | own member + instance fact | `[]` | REFUSED | → | **REFUSED** / unchanged |
 //! | own member + witness | `[]` | REFUSED | → | **REFUSED** / unchanged |
 //! | own member, NO provision | `[]` | loads, `OperationBodyMissing` at the CALL | → | **REFUSED at load** |
@@ -74,7 +74,6 @@
 //! | `a_carrier_with_no_instance_is_refused_at_load` | **FAILS** (loads clean) | ok | ok | ok |
 //! | `the_walk_gate_is_exactly_the_two_halves` | ok | ok | ok | ok |
 //! | `a_tie_nested_in_an_eq_goal_is_reported_once` | **FAILS** (the qualified arm loads clean) | ok | ok | ok |
-//! | `a_fact_route_supplier_is_still_unreachable_from_a_rule_body` | ok | ok | ok | ok |
 //! | `wi282…::rule_body_dot_no_such_member_errors` | ok | ok | ok | **FAILS** |
 //! | `wi557…::rule_body_definite_precondition_violation_is_rejected` | ok | ok | ok | **FAILS** |
 //!
@@ -94,8 +93,57 @@
 //! whole `eq(?v, ?p.bogus)` atom to `type_check_node` under a tie-only error policy.
 //! MEASURED as two full-suite failures, which is how the recursion clause was found.
 //!
+//! ## WI-1057 — the fourth row, and why it needed a different mechanism
+//!
+//! The table above has four columns because WI-1043's four pieces all turn on the
+//! typer's PIN. Row 3 has no pin: `dispatch_spec_op_cached` does not read a WI-431
+//! instance fact's op-binding, so an implementation supplied only that way is
+//! discoverable BY VALUE, at eval. WI-1057 closed it with four more pieces, each
+//! keyed to one early return, and its two tests state their own controls at their
+//! sites (they are not columns here — reverting any WI-1043 piece leaves both alone):
+//!
+//! * **the goal shape** (`body_less_relation_arity`) admits a body-less spec op on the
+//!   SPELLED functor, since there is no pin to redirect to. Kept OFF
+//!   `functional_relation_arity`, which also gates WI-1040's dictionary weave.
+//! * **the reduction** (`reduce_op_value`) stops bailing on a body-less op and runs it
+//!   through the eval bridge instead.
+//! * **the host entry** (`invoke_op_with_requirements`) gains the value-directed
+//!   escape the in-body path had at its step 3b — the bridge calls the host entry, so
+//!   without this the rule body asked the one crossing that could not answer.
+//! * **the hook's guard** (`reduction_left_body_less_call`) keeps an UNDECIDED call
+//!   from being `unify`d with the result variable. This is the piece that makes the
+//!   naive widening safe, and it is deliberately NOT a clause in
+//!   `is_unreduced_op_call` — folding the two broke 5 `wi616_semantic_eq_test` cases,
+//!   because `Set.insert`/`Set.empty` are body-less spec ops that are symbolic ALGEBRA.
+//!
+//! WI-1057 ALSO lowered `BRIDGE_REENTRY_CAP` (32 → 16). Not housekeeping: the host
+//! entry sits on the eval↔SLD bridge path, and at 32 that recursion already consumed
+//! essentially ALL of libtest's default 2 MiB thread stack. Deepening each crossing
+//! did not fail a test — it ABORTED the whole `wi_tests` binary with a native stack
+//! overflow, reporting 2463 tests as nothing. See the constant's own doc.
+//!
+//! WI-1057's own back-out table — MEASURED, one revert each, five runs:
+//!
+//! | test | goal shape | reduction | host entry | hook guard | cap |
+//! |---|---|---|---|---|---|
+//! | `a_fact_route_supplier_answers_from_a_rule_body` | **FAILS** | **FAILS** | **FAILS** | ok | ok |
+//! | `an_unground_body_less_goal_binds_no_residual` | ok | ok | ok | **FAILS** | ok |
+//! | `wi625…::eval_undecidable_instance_fact_eq_is_loud_not_false` | ok | ok | ok | ok | **ABORTS** |
+//!
+//! Re-driven after this ticket's /code-review moved three of the five (the reduction
+//! behind `reduce_dispatched_goal_call`, the rule-less clause into
+//! `body_less_dispatchable`, the woven bypass under the same guard): same five cells.
+//!
+//! The first three columns are the three early returns between the goal and the
+//! implementation, so the headline test cannot separate them — each alone is fatal to
+//! it. The hook guard is the one piece it CANNOT see (there the bridge answers, so no
+//! undecided call ever reaches the guard), which is why the second test exists. Every
+//! WI-1043 column above leaves both of these alone, and these five leave every
+//! WI-1043 row alone.
+//!
 //! REFERENCE: WI-1027; WI-1026; WI-1035; WI-1012; WI-1010; WI-444; WI-450; WI-1056;
-//! WI-1057; `docs/design/058-implementation.md` §3.7, §14, §21.
+//! WI-1057; WI-431; WI-625; WI-842; WI-938; `docs/design/058-implementation.md` §3.7,
+//! §14, §21, §23.
 
 use anthill_core::kb::op_info::all_operation_params;
 use anthill_core::kb::typing::{
@@ -338,40 +386,71 @@ fn the_walk_gate_is_exactly_the_two_halves() {
     );
 }
 
-/// THE GAP THIS TICKET DID NOT CLOSE, pinned so that closing it has to come here —
-/// **WI-1057**.
+/// THE GAP THIS TICKET DID NOT CLOSE, and **WI-1057** did. Kept here, where WI-1043's
+/// own table pointed, rather than moved to a new file: it is one more row of the supply
+/// matrix this file measures, and the row it contradicts is three screens up.
 ///
-/// A body-less spec op supplied ONLY by a retroactive instance fact has no typer pin:
+/// A body-less spec op supplied ONLY by a retroactive instance fact has no typer pin —
 /// `dispatch_spec_op_cached` does not read instance-fact op-bindings (WI-431 inc 2), so
-/// the implementation is discoverable only BY VALUE, at eval. An operation body gets
-/// there; a rule body has two early returns in the way, and BOTH are on the spelled
-/// functor's missing body — the goal is not a functional relation, and `reduce_op_value`
-/// leaves an un-ground call.
+/// the implementation is discoverable only BY VALUE, at eval. WI-1043 gave every OTHER
+/// route its goal shape by reading that pin (`dispatched_relation_arity`); this route
+/// has no pin to read, so WI-1057 admits the shape on the spelled functor itself
+/// (`body_less_relation_arity`) and lets the eval bridge decide the supplier from the
+/// argument VALUES, exactly as the operation-body face does.
 ///
-/// Naively admitting the shape at the goal makes it WORSE, which is why this is a ticket
-/// and not an inline fix: DRIVEN, admitting a body-less op to the functional-relation
-/// view and bridging to eval bound `?r` to the UN-REDUCED call and reported it as a
-/// DEFINITE answer — a wrong answer where there was a missing one.
-///
-/// Both spellings agree on the gap, which is what says it is not spelling-keyed.
+/// Both spellings, which is what says the fix is not spelling-keyed.
 #[test]
-fn a_fact_route_supplier_is_still_unreachable_from_a_rule_body() {
+fn a_fact_route_supplier_answers_from_a_rule_body() {
     let ns = "test.wi1043.factonly";
     for (tail, spelling) in [(QUAL_RULE, "qualified"), (DOT_RULE, "dot")] {
-        let mut kb = crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, RIVAL_FACT, tail));
-        let answers = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
-        assert!(
-            answers.is_empty(),
-            "WI-1057: the {spelling} rule body cannot reach a fact-route supplier of a \
-             body-less spec op — if this now answers, the gap is closed and this file's \
-             table and WI-1057 must be updated; got {answers:?}",
+        assert_eq!(
+            answer(ns, &body_less(ns, NO_SUPPLIER_LEAF, RIVAL_FACT, tail)),
+            9,
+            "WI-1057: the {spelling} rule body must reach the fact-route supplier of a \
+             body-less spec op — `[]` in both spellings is what this closed",
         );
     }
     assert_eq!(
         probe(ns, &body_less(ns, NO_SUPPLIER_LEAF, RIVAL_FACT, QUAL_OP)),
         9,
-        "the operation-body face reaches it, which is what makes the rule-body silence a \
-         gap rather than the absence of an implementation",
+        "the operation-body face, which is the one the rule body has to agree with",
+    );
+}
+
+/// THE TRAP WI-1057 EXISTS TO AVOID, driven — and the reason the naive widening was
+/// measured and rejected before any code was written.
+///
+/// Admitting a body-less spec op to the functional-relation view is only half a fix.
+/// The other half is that its call may not REDUCE: with the carrier argument still
+/// unbound there is no value to dispatch on, the eval bridge's ground gate declines,
+/// and `reduce_op_value` hands back the ORIGINAL call. Routing `unify(?r, <that call>)`
+/// then BINDS `?r` to the call term and reports it as a definite answer — a wrong
+/// answer where there had merely been a missing one.
+///
+/// `reduction_left_body_less_call` is what stops it, and this drives that: the goal
+/// must answer NOTHING (the pre-WI-1057 outcome for this shape) rather than one
+/// solution binding `?r` to a `describe(...)` node. Answering nothing rather than
+/// DELAYING is the WI-938 hook's own standing open half, recorded at its site; this
+/// test pins only that no residual is bound.
+///
+/// CONTROL: drop `reduction_left_body_less_call` from the hook's `undecided` and this
+/// test fails with one solution, while
+/// `a_fact_route_supplier_answers_from_a_rule_body` still passes — there the bridge
+/// DOES answer, so the guard is never consulted. That asymmetry is the point: it is
+/// the only one of WI-1057's four pieces this test can see.
+#[test]
+fn an_unground_body_less_goal_binds_no_residual() {
+    let ns = "test.wi1043.unground";
+    // `?x` is never bound by any earlier goal, so the call reaching the goal shape has
+    // a free carrier argument — the one thing the WI-938 hook must not decide.
+    let unground_rule = "  rule answer(?r) :- Desc.describe(?x, ?r)\n";
+    let mut kb =
+        crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, RIVAL_FACT, unground_rule));
+    let answers = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
+    assert!(
+        answers.is_empty(),
+        "an un-ground body-less spec-op goal must not bind `?r` to the un-reduced call: \
+         got {answers:?}",
     );
 }
 

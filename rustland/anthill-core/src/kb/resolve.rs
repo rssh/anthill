@@ -37,7 +37,26 @@ use super::KnowledgeBase;
 /// recursion would overflow the native stack; this bounds it to a delay.
 /// Legitimate cross-bridge nesting is shallow (a bridged compare whose element
 /// compare bridges again), so this is generous headroom.
-const BRIDGE_REENTRY_CAP: usize = 32;
+///
+/// **WI-1057 — 32 → 16, because at 32 the bound did not achieve what the
+/// paragraph above says it is for.** MEASURED with `RUST_MIN_STACK` against
+/// `wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`,
+/// the circular-`eq` fixture that exists to EXHAUST this cap: at 32 the crossing
+/// chain needed just under 2 MiB of native stack — essentially ALL of libtest's
+/// default 2 MiB thread stack, with no margin. It was not bounding the recursion
+/// below the stack; it was landing on it. Adding WI-1057's value-directed escape to
+/// the host entry (`invoke_op_with_requirements`) deepened each crossing by ~30%, to
+/// ~2.6 MiB, and the whole `wi_tests` BINARY died — `fatal runtime error: stack
+/// overflow, aborting`, SIGABRT, 2463 tests reported as nothing at all.
+///
+/// 16 halves it: the same fixture now overflows at 1 MiB and passes at 1.5 MiB, so
+/// it clears the default with real margin. Still generous for the nesting the
+/// paragraph above describes — a `Set[Set[…]]` compare bridging once per element
+/// level would need sixteen levels of container nesting to reach it — and the full
+/// suite is green at 16, so nothing legitimate was within reach of even the lower
+/// bound. The three numbers to re-measure if this path grows again: 32/no-escape
+/// ∈ (1.5, 2.0] MiB, 32/escape ∈ (2.0, 2.6] MiB, 16/escape ∈ (1.0, 1.5] MiB.
+const BRIDGE_REENTRY_CAP: usize = 16;
 
 thread_local! {
     /// Current eval↔SLD bridge nesting depth on this thread (resolution and its
@@ -1378,7 +1397,12 @@ impl SearchStream {
                             };
                             let result = Value::Node(Rc::clone(&pos_args[n]));
                             let subst = self.stack.last().unwrap().subst.clone();
-                            let reduced = kb.reduce_operand(Value::Node(call_occ), &subst);
+                            // WI-1057 — `reduce_dispatched_goal_call`, not
+                            // `reduce_operand`: this frame BUILT the call and is
+                            // deciding it, which is the one context in which a
+                            // body-less spec op may be dispatched. See that method.
+                            let reduced =
+                                kb.reduce_dispatched_goal_call(Value::Node(call_occ), &subst);
                             // ONLY route once the body actually reduced. `unify` is
                             // structural and never dispatches (proposal 049's
                             // invariant), so handing it an unreduced call would bind
@@ -1398,7 +1422,44 @@ impl SearchStream {
                             // answer NOTHING for a woven call whose dictionary is not
                             // bound yet — a silent failure where the clause must
                             // DELAY and re-fire once a later goal binds the carrier.
-                            if !reqs.is_empty() || !kb.is_unreduced_op_call(&reduced) {
+                            // WI-1057 — the third way the reduction can come back
+                            // undecided, and the one WI-1057's own goal shape newly
+                            // admits: a BODY-LESS spec op whose eval bridge declined
+                            // (an un-ground argument, no supplier, or a supplier tie).
+                            // Its own predicate rather than a clause inside
+                            // `is_unreduced_op_call`, because that one also decides
+                            // `eq`'s domain, where a body-less spec op may be symbolic
+                            // ALGEBRA — measured, folding the two broke 5 wi616 cases.
+                            let undecided = kb.is_unreduced_op_call(&reduced)
+                                || kb.reduction_left_body_less_call(&reduced);
+                            // WI-1057 — the WOVEN bypass is narrowed by that same
+                            // predicate, so "never `unify` on an undecided call" is a
+                            // TOTAL invariant of this site rather than one with an
+                            // exception. WI-1040's reason for the bypass survives
+                            // intact: an unresolved call comes back as the
+                            // `Expr::ApplyWithin` it went in as, which
+                            // `reduction_left_body_less_call` does not match (it reads
+                            // `Expr::Apply` only), so a woven goal whose dictionary is
+                            // not bound yet still routes and still DELAYS. What the
+                            // clause removes is the other exit: once the dictionary
+                            // resolves, `reduce_op_value` continues on the impl MEMBER
+                            // as a plain `Apply`, and a body-less member the bridge
+                            // declined is a bare call that `unify_values` would NOT
+                            // delay on — `operand_is_unevaluated_call` reads bodied ops
+                            // and `ApplyWithin`, neither of which that is.
+                            //
+                            // NOT DRIVEN, and said so deliberately. Reaching it needs a
+                            // woven call — so a BODIED functor, since
+                            // `collect_covered_calls` weaves only what
+                            // `functional_relation_arity` admits — whose dictionary
+                            // selects a BODY-LESS member of a concrete provider, which
+                            // is what WI-818's backing check refuses. Both halves of
+                            // that argument are load-bearing; a change to either makes
+                            // this reachable, which is why the clause is here rather
+                            // than the argument alone.
+                            if (!reqs.is_empty() && !kb.reduction_left_body_less_call(&reduced))
+                                || !undecided
+                            {
                                 let unify_sym = kb.unify_functor();
                                 let unify_goal =
                                     kb.make_goal_value(unify_sym, vec![result, reduced]);
@@ -6297,7 +6358,18 @@ impl KnowledgeBase {
     /// leave a complex callee uninterpreted, NEVER loud, so a rule's validity
     /// never depends on its callee's body complexity (substitution transparency).
     /// The interpreter bridge for complex bodies is a deferred follow-up.
-    fn reduce_op_value(&mut self, v: Value, subst: &Substitution, depth: usize) -> Value {
+    ///
+    /// WI-1057 — `dispatch_body_less` is asked by ONE caller,
+    /// [`Self::reduce_dispatched_goal_call`], and it is the difference between
+    /// reducing an operand a rule WROTE and deciding a call the WI-938 hook BUILT.
+    /// See that method for why the shared operand pipeline must not ask for it.
+    fn reduce_op_value(
+        &mut self,
+        v: Value,
+        subst: &Substitution,
+        depth: usize,
+        dispatch_body_less: bool,
+    ) -> Value {
         const FOLD_DEPTH_CAP: usize = 64;
         let occ = match &v {
             Value::Node(o) => Rc::clone(o),
@@ -6327,7 +6399,7 @@ impl KnowledgeBase {
                 named_args: named_args.clone(),
                 type_args: type_args.clone(),
             });
-            return self.reduce_op_value(Value::Node(call), subst, depth);
+            return self.reduce_op_value(Value::Node(call), subst, depth, dispatch_body_less);
         }
         let functor = match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => *functor,
@@ -6356,9 +6428,21 @@ impl KnowledgeBase {
         if self.builtins.get(&op).is_some() {
             return v;
         }
+        // WI-1057 — a BODY-LESS op is no longer an unconditional bail. There is
+        // nothing to FOLD (that is what the `Option` below carries), but there may
+        // still be something to RUN: a body-less spec op supplied only by a WI-431
+        // instance fact has no typer pin, so `classified_apply_target` above found
+        // none and the implementation is discoverable BY VALUE — which is exactly
+        // what the eval bridge at the bottom of this function does. Restricted to a
+        // body-less SPEC op ([`Self::body_less_dispatchable`], which also owns the
+        // order its two legs must be asked in) so an entity constructor or an
+        // ordinary declared-but-unbacked operation keeps bailing here rather than
+        // paying for a scratch interpreter that can only report
+        // `OperationBodyMissing`.
         let body = match self.op_body_node(op) {
-            Some(b) => Rc::clone(b),
-            None => return v, // abstract op (no concrete body) → leave un-ground
+            Some(b) => Some(Rc::clone(b)),
+            None if dispatch_body_less && depth == 0 && self.body_less_dispatchable(op) => None,
+            None => return v, // abstract op, nothing to fold and nothing to dispatch
         };
         // Recursion guard: a self-recursive op never folds to a value — treat it
         // as complex and leave it un-ground rather than looping.
@@ -6402,6 +6486,18 @@ impl KnowledgeBase {
                 None => return v,
             }
         }
+        // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
+        // bridge below IS the whole reduction. It runs under the same gates the
+        // complex-body arm states — depth 0 only, and the bridge's own deep-ground
+        // check on every arg — and, exactly as there, a `None` leaves the ORIGINAL
+        // call `v`. That fall-back is what makes this safe rather than the naive
+        // widening the ticket measured: an un-answered call stays a call, and
+        // [`Self::reduction_left_body_less_call`] reports it as one, so the WI-938
+        // hook declines to `unify` on it instead of binding the result variable to
+        // the call term and calling that a definite answer.
+        let Some(body) = body else {
+            return self.bridge_op_to_eval(op, &params, &param_args, subst).unwrap_or(v);
+        };
         // Build the fold substitution: every op-body var named after a param maps
         // to its call arg. WI-487 mints a FRESH VarId per param occurrence (all
         // sharing the param Symbol), so bind every such VarId by Symbol — the
@@ -6413,7 +6509,7 @@ impl KnowledgeBase {
         // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
         // match / unfoldable op-call) ⇒ COMPLEX → return the ORIGINAL call.
         let reduced = self.reduce_dot_value(Value::Node(folded), subst);
-        let reduced = self.reduce_op_value(reduced, subst, depth + 1);
+        let reduced = self.reduce_op_value(reduced, subst, depth + 1, false);
         match reduced {
             // A COMPLEX body (`match`/`if`/`let`/recursion) the structural fold
             // can't collapse. WI-625 gap 1 — the SLD→eval dual of the eval→SLD eq
@@ -6700,7 +6796,32 @@ impl KnowledgeBase {
     /// caller delays on it via [`Self::is_unreduced_op_call`].
     fn reduce_operand(&mut self, v: Value, subst: &Substitution) -> Value {
         let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0)
+        self.reduce_op_value(v, subst, 0, false)
+    }
+
+    /// WI-1057 — [`Self::reduce_operand`] for the ONE site that is deciding a call
+    /// rather than reading an operand: the WI-938 functional-relation hook, which
+    /// built `f(a…)` itself out of the goal `f(a…, ?r)` and must know what it
+    /// evaluates to before it may `unify` the result column with it.
+    ///
+    /// **The difference is `dispatch_body_less`, and keeping it OFF the shared operand
+    /// pipeline is a correctness rule, not a cost tweak.** `reduce_operand` serves
+    /// `eq`/`cmp`/`arith`/`unify`, whose operands are terms a RULE WROTE — and a
+    /// body-less spec op there may be SYMBOLIC ALGEBRA rather than a computation.
+    /// `anthill.prelude.Set`'s `insert`/`empty` are exactly that: parametric parent,
+    /// no body, a real signature, and the terms the membership rules resolve over.
+    /// Dispatching them would reduce data, which is the same failure as the 5 wi616
+    /// regressions [`Self::is_unreduced_op_call`] records, reached through the other
+    /// door. It is also what keeps [`Self::body_less_dispatchable`]'s
+    /// `sort_is_parametric` leg (51 µs, O(|symbols|)) and a whole
+    /// `run_in_bridge_interp` off the per-operand path: this flag is read BEFORE
+    /// either, so an `eq` over a Set literal pays neither.
+    ///
+    /// The goal shape ([`Self::body_less_relation_arity`]) and this reduction are the
+    /// admitting and the deciding half of one decision, and they have one reader each.
+    fn reduce_dispatched_goal_call(&mut self, v: Value, subst: &Substitution) -> Value {
+        let v = self.reduce_dot_value(v, subst);
+        self.reduce_op_value(v, subst, 0, true)
     }
 
     /// WI-483: is `v` a residual (unfolded) method-op call operand — a
@@ -6712,6 +6833,20 @@ impl KnowledgeBase {
     /// BODIED ops only: this also gates [`Self::op_call_as_occ`], which UNFOLDS
     /// the callee's body to case-split, and a builtin has no body to unfold. The
     /// delay sites want the wider [`Self::operand_is_unevaluated_call`].
+    ///
+    /// **WI-1057 — BODY-LESS SPEC OPS ARE DELIBERATELY NOT HERE, AND THAT WAS
+    /// MEASURED.** "Has a body to fold" and "the reduction decided it" look like one
+    /// question and are not, so the obvious widening — a body-less spec op whose eval
+    /// bridge declined is as undecided as a complex body — was written and DRIVEN.
+    /// It broke 5 `wi616_semantic_eq_test` cases, each turning a definite FAILURE into
+    /// a residual success (`eq({1,2},{1,3})` and even the structural `{1,2} === {2,1}`
+    /// answered 1 where they must answer 0). The reason is that this predicate decides
+    /// the DOMAIN of `eq`/`cmp`, and `anthill.prelude.Set`'s `insert`/`empty` are
+    /// body-less spec ops that are SYMBOLIC ALGEBRA — data in all but declaration,
+    /// which the membership rules resolve over and which `eq` must keep comparing
+    /// structurally. Whether a call was DECIDED is the WI-938 hook's question about a
+    /// call it built itself, and it asks it there
+    /// ([`Self::reduction_left_body_less_call`]).
     fn is_unreduced_op_call(&self, v: &Value) -> bool {
         let Value::Node(occ) = v else { return false };
         match occ.as_expr() {
@@ -6781,6 +6916,42 @@ impl KnowledgeBase {
             _ => return false,
         };
         self.builtins.get(&functor).is_some()
+    }
+
+    /// WI-1057 — did [`Self::reduce_op_value`] hand back a BODY-LESS SPEC-OP CALL it
+    /// could not decide? The WI-938 hook's own question about the call the hook itself
+    /// built, and the second half of this ticket's fix.
+    ///
+    /// The hook may only rewrite `f(a…, ?r)` to `unify(?r, f(a…))` once the reduction
+    /// produced a VALUE: `unify` is structural and never dispatches, so handing it an
+    /// undecided call BINDS `?r` to the call term and reports a definite answer.
+    /// WI-1057's goal shape ([`Self::body_less_relation_arity`]) admits a body-less
+    /// spec op, whose reduction is the eval bridge — and the bridge declines whenever
+    /// an argument is not deeply ground, or no carrier supplies the op, or the
+    /// suppliers tie. Each of those leaves the ORIGINAL call, and each must fall
+    /// through to ordinary candidate selection (the pre-WI-1057 outcome, no answer)
+    /// rather than answer wrongly. DRIVEN by
+    /// `an_unground_body_less_goal_binds_no_residual`; without this the un-ground
+    /// fixture answers one solution binding `?r` to a `describe(…)` node.
+    ///
+    /// **Asked HERE and not folded into [`Self::is_unreduced_op_call`]** — see that
+    /// predicate's WI-1057 paragraph for the 5 measured failures folding it caused.
+    /// The two questions differ in their subject: this one is about a call the hook
+    /// CONSTRUCTED and tried to reduce; that one is about an operand a rule WROTE,
+    /// where a body-less spec op may legitimately be symbolic data.
+    ///
+    /// **What makes this cheap is the `op_record` probe inside
+    /// [`Self::body_less_dispatchable`], NOT the caller's `||` ordering.** An earlier
+    /// draft of this paragraph claimed the latter and had it backwards: `a || b` skips
+    /// `b` only when `a` is TRUE, so this predicate runs on precisely the common case —
+    /// a reduction that DID decide. It is affordable because a `reduced` that is not a
+    /// `Value::Node` `Apply` leaves in two lines, and one that is leaves at the
+    /// signature probe unless it is a real declared operation. Do not reorder on the
+    /// assumption that the first operand shields it.
+    fn reduction_left_body_less_call(&self, v: &Value) -> bool {
+        let Value::Node(occ) = v else { return false };
+        let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return false };
+        self.builtins.get(functor).is_none() && self.body_less_dispatchable(*functor)
     }
 
     /// WI-738: an operand that is an unevaluated CALL of EITHER kind — a bodied
@@ -6978,12 +7149,91 @@ impl KnowledgeBase {
             _ => None,
         };
         let Some(target) = pinned else {
-            return self.functional_relation_arity(f);
+            return self
+                .functional_relation_arity(f)
+                .or_else(|| self.body_less_relation_arity(f));
         };
         if self.rules_by_functor_iter(f).next().is_some() {
             return None;
         }
         self.functional_relation_arity(target)
+    }
+
+    /// WI-1057 — the functional-relation view of a BODY-LESS SPEC OP, the one supply
+    /// shape that reaches a goal with NO pin to read.
+    ///
+    /// [`Self::dispatched_relation_arity`] reads the typer's pin, and WI-1043 made
+    /// that enough for every route the typer resolves. A WI-431 instance fact is not
+    /// one of them: `dispatch_spec_op_cached` does not read instance-fact op-bindings
+    /// (WI-431 inc 2), so the implementation is discoverable BY VALUE alone and there
+    /// is no pin to consult. MEASURED before this: `rule answer(?r) :-
+    /// Desc.describe(leaf(), ?r)` answered `[]` in both spellings while `operation
+    /// probe() = Desc.describe(leaf())` answered the supplied `9`.
+    ///
+    /// **Kept OFF [`Self::functional_relation_arity`] deliberately**, though its
+    /// clauses are that function's minus the body. That function is also the gate
+    /// `collect_covered_calls` (WI-1040) uses to decide what a clause `require[X]`
+    /// may WEAVE, and its doc records the measurement: weaving a body-less spec op
+    /// takes `require[PartialEq[T]], eq(?x, ?y)` from ONE solution to ZERO, because
+    /// an `ApplyWithin` goal has no reader. Widening there would re-create that
+    /// exact regression, so the admission lives at the GOAL SHAPE, which is the only
+    /// reader that wants it.
+    ///
+    /// Every other clause is the sibling's, and each for the sibling's reason:
+    /// - **not a builtin** — `eq` and friends are body-less spec ops WITH builtin
+    ///   goal semantics; they are not this.
+    /// - **effect-free** — an effectful op is not a logical relation, and the eval
+    ///   bridge's empty effect registry would suspend on one anyway.
+    /// - **rule-LESS on the spelled functor** — precedence (design §3.3), carried by
+    ///   [`Self::body_less_dispatchable`] so the reduction obeys it too.
+    ///
+    /// What is NOT checked here is whether anything actually SUPPLIES the op for
+    /// these arguments — that needs the argument values, and it is decided one level
+    /// down by [`Self::reduce_op_value`]'s eval bridge, whose failure leaves the call
+    /// un-reduced so the hook declines to rewrite the goal. Admitting a goal shape
+    /// therefore costs a reduction attempt, never a wrong answer.
+    ///
+    /// **THE EXPENSIVE LEG IS LAST, AND THAT ORDERING IS LOAD-BEARING.**
+    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric`, whose
+    /// own doc measures it at 51 µs/call and O(|symbols|) and instructs every caller
+    /// to place it last. This runs on the PER-GOAL hot path, and the sibling's cheap
+    /// gate does not shield it: `functional_relation_arity` bails on exactly the
+    /// body-less functors that arrive here, which is nearly every goal. So the
+    /// operation-record probe does the shielding — a fact, an entity constructor or a
+    /// plain rule predicate has no signature and leaves at the second line — and
+    /// `body_less_dispatchable` re-checks it before its own scan for the same reason.
+    fn body_less_relation_arity(&self, f: Symbol) -> Option<usize> {
+        if self.builtins.get(&f).is_some() {
+            return None;
+        }
+        let sig = self.op_record(f).and_then(|r| r.signature.as_ref())?;
+        if !sig.effects.is_empty() {
+            return None;
+        }
+        self.body_less_dispatchable(f).then_some(sig.params.len())
+    }
+
+    /// WI-1057 — `op` is a BODY-LESS SPEC OP: nothing for [`Self::reduce_op_value`]
+    /// to FOLD, but a value-directed dispatch for its eval bridge to RUN.
+    ///
+    /// ONE OWNER for the check AND for the order it must be made in, because both
+    /// readers sit on hot paths and the expensive leg is easy to reach by accident.
+    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric`,
+    /// measured at 51 µs/call and O(|symbols|), whose doc tells every caller to place
+    /// it last. The operation-record probe is what makes that safe here: an ENTITY
+    /// CONSTRUCTOR is body-less too, so without the cheap leg first a caller that
+    /// walked constructors would pay the scan for a question whose answer is always no.
+    ///
+    /// **The rule-LESS clause lives HERE, not only at the goal shape** (design §3.3,
+    /// "rules win while both exist"). A body-less spec op whose clauses are written as
+    /// separate `rule`s — `Ord.lt`, and every `[simp]` law over `Set.insert` — resolves
+    /// through those clauses, and neither the goal shape nor the reduction may route
+    /// around them. Splitting the clause between the two readers is what would let a
+    /// later edit admit at one and not the other.
+    fn body_less_dispatchable(&self, op: Symbol) -> bool {
+        self.op_record(op).is_some_and(|r| r.signature.is_some())
+            && self.rules_by_functor_iter(op).next().is_none()
+            && super::typing::lookup_spec_op_dispatch(self, op).is_some()
     }
 
     /// WI-580 (design §3.3): abstract-interpretation fallback for a suspended

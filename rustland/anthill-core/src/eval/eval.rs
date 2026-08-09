@@ -983,7 +983,7 @@ impl Interpreter {
     /// value-directed dispatch the `anthill-core` suite performs (592, no divergence),
     /// so unifying on the stricter reader is a same-answer change here and closes the
     /// gap WI-837's doc recorded.
-    fn resolve_spec_op_target_by_value(
+    pub(super) fn resolve_spec_op_target_by_value(
         &self,
         spec_op: Symbol,
         arg_values: &[Value],
@@ -2001,7 +2001,7 @@ impl Interpreter {
     /// channel is exactly the case that must go loud where it is found. Raised as
     /// `EvalError::AmbiguousRequirement`, which the resolver bridge residualizes
     /// like any other non-`Internal` eval error.
-    fn requirements_for_value_directed_impl(
+    pub(super) fn requirements_for_value_directed_impl(
         &mut self,
         impl_target: Symbol,
         arg_values: &[Value],

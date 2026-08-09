@@ -889,20 +889,97 @@ impl Interpreter {
         args: &[Value],
         requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
-        let (body_term, params) = match self.cached_operation_body(sym) {
-            Some(b) => b,
-            // WI-625 (eval→SLD bridge): a host-invoked body-less carrier `eq` op
-            // (e.g. `Set.eq`/`Map.eq` resolved from a dictionary — gap 4) has no
-            // body to run, but the SLD resolver can prove it. The host-entry twin
-            // of the in-body dispatch bridge; anything else classifies through
-            // the shared [`Self::unrunnable_target_error`] (WI-818): a declared
-            // op is a loud `OperationBodyMissing`, a resolvable NON-operation (a
-            // sort, an entity, a rule label) is `UnknownOperation` — not a
-            // missing-body claim about something that never was an operation.
-            None => match self.eq_bridge_target(sym, args) {
-                Some(pred) => return self.prove_rule_predicate_value(pred, args),
-                None => return Err(self.unrunnable_target_error(sym)),
-            },
+        // WI-1057 — `sym` and `requirements` are REBOUND rather than passed to a
+        // recursive call. When the body-less arm below dispatches value-directed, the
+        // impl it picks is run by falling through to the frame push at the BOTTOM OF
+        // THIS SAME FUNCTION. Re-entering `invoke_op_with_requirements` reads
+        // identically and costs one more native frame per crossing on a path with no
+        // room for one: this entry is what `bridge_op_to_eval` calls, and the eval↔SLD
+        // ping-pong nests real Rust frames per crossing up to `BRIDGE_REENTRY_CAP`.
+        //
+        // THIS IS A MEASURED STACK BUDGET, not a style preference.
+        // `wi625…::eval_undecidable_instance_fact_eq_is_loud_not_false` is the
+        // circular-`eq` fixture that exhausts that cap, and it is this path's canary:
+        // at the old cap of 32 it already needed essentially all of libtest's default
+        // 2 MiB thread stack, the recursive spelling of this arm pushed it past 2.6
+        // MiB, and the whole `wi_tests` binary died with `fatal runtime error: stack
+        // overflow` — 2463 tests reported as nothing. The cap is now 16 (see
+        // `BRIDGE_REENTRY_CAP`, which records all three measurements). Nothing on this
+        // path may grow without re-measuring that test under `RUST_MIN_STACK`.
+        let mut requirements = requirements;
+        let (sym, body_term, params) = match self.cached_operation_body(sym) {
+            Some((body, params)) => (sym, body, params),
+            None => {
+                // WI-1057 — the VALUE-DIRECTED escape, matching the in-body dispatch
+                // fall-through (step 3b of `dispatch_resolved_operation`) in ORDER and
+                // in READER: `resolve_spec_op_target_by_value` is WI-842's collected
+                // supplier set, which refuses a tie rather than picking by route
+                // order, and the `!= sym` filter rejects the INHERITED SELF-ENTRY that
+                // a body-less spec op's own `sort_ops` row points back at.
+                //
+                // Without it the two faces disagreed about one call: an OPERATION BODY
+                // reached a WI-431 instance-fact supplier through step 3b, while this
+                // entry — the one the resolver's `bridge_op_to_eval` calls — answered
+                // `OperationBodyMissing`. That is why a RULE BODY could not reach a
+                // fact-route supplier: such a supplier writes no typer pin
+                // (`dispatch_spec_op_cached` does not read instance-fact op-bindings,
+                // WI-431 inc 2), so it is discoverable BY VALUE alone, and this was
+                // the one crossing that never looked.
+                let impl_target =
+                    self.resolve_spec_op_target_by_value(sym, args)?.filter(|t| *t != sym);
+                let runnable = match impl_target {
+                    Some(t) => {
+                        if let Some(builtin) = self.builtins.get(&t).cloned() {
+                            return (builtin)(self, args);
+                        }
+                        self.cached_operation_body(t).map(|(body, params)| (t, body, params))
+                    }
+                    None => None,
+                };
+                match runnable {
+                    Some((t, body, params)) => {
+                        // WI-822 leg 2, as at step 3b: the impl's OWN `requires` chain,
+                        // resolved at the runtime argument types.
+                        //
+                        // The incoming channel is DISCARDED here, and that is the one
+                        // place this site cannot copy step 3b. There, `requirements` is
+                        // the CALL's channel and is EMPTY for the abstract call that
+                        // reached value-direction — which is the case
+                        // `requirements_for_value_directed_impl` fills; it returns a
+                        // non-empty channel untouched, on the premise that a caller who
+                        // built one "knew the callee". At a HOST ENTRY that premise is
+                        // false: `call_op_sym` seeds `__req_self` for any op with a
+                        // parent sort, and `call_op_bridged` resolves the chain of the
+                        // SPEC op — both keyed to the sort we are dispatching AWAY from,
+                        // carrying none of the impl's own `__req_<spec>` names. Passing
+                        // it through would silence leg 2 at every host entry and enter a
+                        // conditional impl (`WrapDesc requires Desc[T = E]`) with a
+                        // channel its first dictionary read cannot satisfy.
+                        requirements = self.requirements_for_value_directed_impl(
+                            t,
+                            args,
+                            smallvec::SmallVec::new(),
+                        )?;
+                        (t, body, params)
+                    }
+                    // Nothing runnable came back — fall through to the classifiers
+                    // below, which is exactly what step 3b does.
+                    //
+                    // WI-625 (eval→SLD bridge): a host-invoked body-less carrier `eq`
+                    // op (e.g. `Set.eq`/`Map.eq` resolved from a dictionary — gap 4)
+                    // has no body to run, but the SLD resolver can prove it. The
+                    // host-entry twin of the in-body dispatch bridge; anything else
+                    // classifies through the shared [`Self::unrunnable_target_error`]
+                    // (WI-818): a declared op is a loud `OperationBodyMissing`, a
+                    // resolvable NON-operation (a sort, an entity, a rule label) is
+                    // `UnknownOperation` — not a missing-body claim about something
+                    // that never was an operation.
+                    None => match self.eq_bridge_target(sym, args) {
+                        Some(pred) => return self.prove_rule_predicate_value(pred, args),
+                        None => return Err(self.unrunnable_target_error(sym)),
+                    },
+                }
+            }
         };
         if args.len() != params.len() {
             return Err(EvalError::ArityMismatch {
