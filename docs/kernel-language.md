@@ -2034,16 +2034,21 @@ Depth means the parameter type's whole structure, not only its sort-application 
 
 The `effects` clause is likewise **not** a position for this rule. An effect atom is a row, a projection, a value-in-type denotation or a concrete label, and where a parametric sort is written there the effects check already refuses a body that incurs a *more* specific instance than the declaration names (`effects Box` against an incurred `Box[T = Int64]`) — strict in the safe direction, so the laundering this rule prevents cannot be built through it.
 
-**The RETURN position is undecided — WI-1063 owns it.** The program below still loads, and an effectful stream reaches a slot declared `E = {}`:
+**In a RETURN the quantifier flips to ∃ — the intended discipline, NOT yet what loads (WI-1063).** Read the quantifier off the arrow's polarity. A parameter's unwritten slot stands in *negative* position and is **universal**: the caller instantiates it, which is the same fact the paragraphs above state from the two ends — flexible at a call, rigid in the body. A return's unwritten slot stands in *positive* position and is **existential**: `-> Stream[T = Int64]` declares `∃E. Stream[T = Int64, E]`. So the two halves are
+
+- the **body packs** — it exhibits a witness, and that is all an existential asks. A body whose inferred type is *more specific* than the declared return is doing existential introduction, not making a mistake;
+- **each call opens** — it mints a **fresh** skolem per opening, so the result of `widen(s)` is `Stream[T = Int64, E = ρ]` with `ρ` rigid. Freshness per opening is load-bearing: two calls may legitimately return different rows.
 
 ```anthill
-operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s   -- loads
+operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s
+--                                                                        ^ correct: packs E := {Error}
 operation exploit(s: Stream[T = Int64, E = {Error}]) -> Int64 = takes_pure(widen(s))
+--                                                                        ^ WRONG: ρ is not {}
 ```
 
-Applying this section's rule there is implemented and measured, and it refuses `widen` at its own return. It is held back because **one reading is stated and the other is not**, and it is worth being exact about which is which. The paragraphs above state the *expansion* at every sort application — a return type included — but they state the *body obligation* it creates only for a **parameter**: every example is one, and "at a call it is flexible again, and binds from the argument" is about the argument side. Whether a return's unwritten slot binds the body the same way is simply not said here. `docs/design/type-parameter-scoping.md` §5 does say, and says the opposite: a bare return is **erased** — "the element/effect tie to `l` is GONE", a wart to be fixed by writing the type rather than a body error — and §4 records normalizing foreign bare refs in signatures as still-open WI-374 scope.
+Today **both** lines load, and an effectful stream reaches a slot that declared `E = {}`. Where the skolem is minted is the whole design: minting it in the *body check* instead demands the body be good for every instantiation — universal quantification in a positive position, the wrong quantifier — which refuses `widen` and costs 40 tests across thirteen delivered tickets.
 
-So `widen` is wrong only under a reading nobody has written down; `exploit` is wrong under the one that is written, because it relies on a slot the type does not carry — the same principle that already refuses `wi374_expansion_test::bare_value_stays_unusable`. Extending the parameter rule to the return is therefore a *proposal*, and it costs 40 tests across thirteen delivered tickets, including the WI-401/402/457/480/488/491 escape gate, whose whole mechanism is a bare abstract-spec return *conforming* by provider upcast and only then being refused. Deciding this — and writing the winner into **both** documents — is WI-1063, not an implementation detail.
+The language already implements this rule for the *carrier* of an existential return, explicitly spelled: `ensures Spec[C]` (§"path-dependent types", WI-402) has the body witness `C` while the caller sees only the spec. It is the **members** that are not opened — the same `openOne(m) -> C ensures KVStore[C]` whose witness binds `K = String` still satisfies a demand for `K = Int64`. So this is one gap in two spellings, not a bare-return quirk, and `docs/design/type-parameter-scoping.md` §5's informal "erased" is this existential said without the word.
 
 ### 8.2 Entity Subtyping
 

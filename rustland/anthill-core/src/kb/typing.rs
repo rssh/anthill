@@ -40781,31 +40781,45 @@ fn check_operation_bodies(
         // tuple arms above in place; an earlier count of 32/nine was taken before them and was
         // also mis-tallied).
         //
-        // AND IT IS AN EXTRAPOLATION, WHICH IS THE REAL REASON IT IS HELD BACK. Read the spec
-        // carefully rather than from memory: `docs/kernel-language.md` §"Expansion during
-        // unification" states the EXPANSION at every sort application, a return included, and
-        // (WI-1059) states the BODY OBLIGATION that expansion creates only for a PARAMETER —
-        // every example there is one, and "at a call it is flexible again, and binds from the
-        // argument" is about the argument side. It never extends the obligation to a return.
-        // `docs/design/type-parameter-scoping.md` §5 DOES speak to the return, and the other
-        // way: a bare return is ERASED ("the element/effect tie to `l` is GONE"), a wart to be
-        // fixed by writing the type, NOT a body error; §4 records normalizing foreign bare
-        // refs in signatures as the still-open WI-374 scope. So this is one reading STATED and
-        // one UNSTATED, not two rules colliding — the burden is on the universal reading.
+        // AND IT IS THE WRONG QUANTIFIER, which is the real reason it is held back — the cost
+        // is a symptom. Read the polarity off the arrow. A PARAMETER's unwritten slot is
+        // negative-position and UNIVERSAL: the caller instantiates it, which is why it is
+        // flexible at a call and rigid in the body (WI-1059, and the walk above). A RETURN's
+        // is positive-position and EXISTENTIAL: `-> Stream[T = Int64]` declares
+        // `∃E. Stream[T = Int64, E]`. The BODY PACKS a witness — so `widen` is CORRECT as
+        // written and must keep loading, and "the inferred type is more specific than the
+        // declared one" is existential introduction, not a defect. EACH CALL OPENS, minting a
+        // FRESH skolem per opening, so `widen(s) : Stream[T = Int64, E = ρ]` and the CONSUMER
+        // is what fails. Rigidifying here would demand the body be good for EVERY row —
+        // universal in a positive position — which is why its 40 failures are mostly correct
+        // programs refused for not being polymorphic where only a witness was asked.
         //
-        // What the delivered tree already bets on the stated reading:
+        // `docs/design/type-parameter-scoping.md` §5's informal "erased" ("the element/effect
+        // tie to `l` is GONE", a wart to fix by writing the type, NOT a body error) is that
+        // existential said without the word, and §4 records normalizing foreign bare refs in
+        // signatures as the still-open WI-374 scope. So the two documents were never in
+        // conflict; one names the quantifier and the other describes its effect.
+        //
+        // What the delivered tree already bets on the pack/open reading:
         // `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows` pins `makeList() ->
         // List = cons(1, nil)` as LOADING and says at its site that the return is deliberately
-        // not expanded; `bare_value_stays_unusable` refuses the CONSUMER of an erased value,
-        // which is where §5 puts the fault. And the WI-401/402/457/480/488/491 escape gate is
-        // built on a bare abstract-spec return CONFORMING by provider upcast and only then
-        // being refused with its own diagnostic — materialize the return and `abstracting_
-        // return_error` is never reached, so that whole diagnostic family silently disappears.
+        // not expanded — a body packing a witness; `bare_value_stays_unusable` refuses the
+        // CONSUMER of an erased value, which is the opening. And the WI-401/402/457/480/488/491
+        // escape gate is built on a bare abstract-spec return CONFORMING by provider upcast and
+        // only then being refused with its own diagnostic — materialize the return and
+        // `abstracting_return_error` is never reached, so that family silently disappears.
         //
-        // Picking a reading, and writing it into BOTH documents, is WI-1063's job. The
-        // PARAMETER walk above is unaffected: both readings agree that a parameter's unwritten
-        // slot is rigid in the body (WI-1059 measured it, and the nested/arrow/tuple half here
-        // costs the corpus and the suite nothing).
+        // SO WI-1063'S FIX DOES NOT BELONG HERE AT ALL. Opening happens at the USE: a fresh
+        // skolem per call, minted where a callee's declared return becomes the call's result
+        // type (`check_apply_iter`, the `proj_return_type` computation and the unify against
+        // `expected` below it). Nothing to copy from the WI-402 carrier, which needs no
+        // opening code — `strip_spec_carrier` DROPS the carrier so the declared return already
+        // IS the abstract spec, and `needs_mem(openOne(m))` then fails by ordinary subtyping.
+        // The carrier supplies the semantics, not an implementation.
+        //
+        // The PARAMETER walk above is unaffected either way: a parameter's unwritten slot is
+        // universal, and rigid in the body, under both readings (WI-1059 measured it, and the
+        // nested/arrow/tuple half here costs the corpus and the suite nothing).
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
             return_type,
