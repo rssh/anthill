@@ -22,29 +22,30 @@
 //! The walk works in the return: pass the return type through the same function and `widen`
 //! below is refused at `widen.return`, `expected E = ?E`. It costs **40 tests across thirteen
 //! delivered tickets** (WI-353/374/401/402/405/457/480/488/491/734/762/776/839, plus this
-//! file's own two pins, which flip by design) — and it is an EXTRAPOLATION, which is the
+//! file's own two pins, which flip by design) — and it is the WRONG QUANTIFIER, which is the
 //! reason it is held back rather than the cost alone.
 //!
-//! `docs/kernel-language.md` §"Expansion during unification" states the EXPANSION at every
-//! sort application, a return included, and (WI-1059) states the BODY OBLIGATION that
-//! expansion creates only for a PARAMETER — every example there is one, and "at a call it is
-//! flexible again, and binds from the argument" is about the argument side. It never extends
-//! the obligation to a return. `docs/design/type-parameter-scoping.md` §5 DOES speak to the
-//! return, and the other way: a bare return is ERASED ("the element/effect tie to `l` is
-//! GONE"), a wart to be fixed by writing the type and NOT a body error; §4 records normalizing
-//! foreign bare refs in signatures as still-open WI-374 scope. One reading STATED, one
-//! UNSTATED — not two rules colliding, and the burden is on the universal one.
+//! Read the polarity off the arrow. A PARAMETER's unwritten slot is negative-position and
+//! UNIVERSAL — the caller instantiates it, so it is flexible at a call and rigid in the body,
+//! which is what this file's other rows enforce. A RETURN's is positive-position and
+//! EXISTENTIAL: `-> Stream[T = Int64]` is `∃E. Stream[T = Int64, E]`. The body PACKS a
+//! witness, so `widen` below is CORRECT as written and must keep loading; each call OPENS,
+//! minting a fresh skolem, so the CONSUMER is what should fail. Rigidifying the return in the
+//! body check demands the body be good for every row — a universal in a positive position —
+//! which is why its 40 failures are mostly correct programs refused for not being polymorphic
+//! where only a witness was asked.
 //!
-//! Two delivered tests already bet on the stated reading:
+//! `docs/design/type-parameter-scoping.md` §5's "erased" is that existential said without the
+//! word, and two delivered tests already bet on it:
 //! `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows` pins `makeList() -> List =
-//! cons(1, nil)` as LOADING and says at its site that the return is deliberately not expanded;
-//! `bare_value_stays_unusable` refuses the CONSUMER of an erased value, which is where §5 puts
-//! the fault. And the WI-401/402/457/480/488/491 escape gate is built on a bare abstract-spec
-//! return CONFORMING by provider upcast and only then being refused with its own diagnostic —
-//! materialize the return and that gate stops firing at all, so its fixtures cannot simply be
-//! updated.
+//! cons(1, nil)` as LOADING (a body packing a witness), and `bare_value_stays_unusable`
+//! refuses the CONSUMER of an erased value (the opening). The WI-401/402/457/480/488/491
+//! escape gate is built on a bare abstract-spec return CONFORMING by provider upcast and only
+//! then being refused with its own diagnostic — materialize the return and that gate stops
+//! firing at all, so its fixtures cannot simply be updated.
 //!
-//! Picking a reading, and writing it into BOTH documents, is WI-1063's job.
+//! WI-1063 owns the fix, and it does not live where this ticket's walk lives: opening happens
+//! at the USE (a fresh skolem per call, in `check_apply_iter`), not in the body check.
 //!
 //! ## What fails when each piece is backed out — DRIVEN, one revert each
 //!

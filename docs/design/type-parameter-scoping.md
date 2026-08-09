@@ -163,28 +163,32 @@ result type**: a projection (`Stream[T = l.T]`), a written effect row
 bare returns (`iterator -> Stream`; `splitFirst`'s `B = Stream`) are exactly the
 spots to make explicit.
 
-**This section is the only one that states a reading of the RETURN, and
-WI-1063 owns whether it stands.** `widen(s: Stream[T = Int64, E = {Error}]) ->
-Stream[T = Int64] = s` composed with a consumer that demands `E = {}` loads
-today, and an effectful stream reaches a pure slot. Read through this section
-that is the *consumer's* fault — it relies on a slot the type does not carry,
-exactly what `wi374_expansion_test::bare_value_stays_unusable` already refuses
-— and `widen` is merely imprecise, a spot to make explicit.
+**"Erased" is an existential, and naming it that way settles the return
+(WI-1063).** What this section calls erasure — the tie is GONE, no consumer-side
+mechanism can recover it — is exactly `∃`. `iterator(l: List) -> Stream` declares
+`∃T,E. Stream[T, E]`: the body *packs* a witness, so the producer is not at
+fault and needs no rewriting; a consumer *opens* and gets a fresh skolem, which
+is why it "cannot be reconstructed downstream" and why
+`wi374_expansion_test::bare_value_stays_unusable` is right to refuse. The advice
+above — write it in the result type — remains the fix for an author who wants
+the tie, but it is a *readability* fix, not a soundness one.
 
-The competing reading calls `widen` the wrong *declaration*: an unwritten slot
-is a fresh variable per instantiation, so the body must produce a value good for
-every one. Note what that reading is and is not. kernel-language.md
-§"Expansion during unification" states the expansion at every sort application,
-a return included, and (WI-1059) states the body obligation it creates for a
-**parameter** — but it does not extend that obligation to a return. So the rival
-is an *extrapolation* from the parameter rule, not a competing written rule; the
-burden is on it to be written down.
+Read the quantifier off the arrow's polarity, and this section and
+kernel-language.md §"Expansion during unification" stop competing: a parameter's
+unwritten slot is negative-position and **universal** (§4's expansion, the caller
+instantiates); a return's is positive-position and **existential** (this section).
+One rule, two polarities.
 
-WI-1059 and WI-1061 enforced the parameter position, where both readings agree.
-The return stayed out because they pick different culprits and enforcing the
-extrapolation costs 40 tests across thirteen delivered tickets — including the
-WI-401/402/457/480/488/491 escape gate, whose mechanism *requires* a bare
-abstract-spec return to conform first. Until WI-1063 decides, the hole is
+Where the skolem is minted is the whole of it. At the **call**, fresh per opening
+— `widen(s : Stream[T = Int64, E = {Error}]) -> Stream[T = Int64]` keeps loading
+and its *consumer* is refused. Minting it in the **body check** instead demands
+the body hold for every instantiation, which is a universal in a positive
+position; that was built and measured and costs 40 tests across thirteen
+delivered tickets, including the WI-401/402/457/480/488/491 escape gate.
+
+The mechanism already exists for the *carrier* of an explicit existential
+(`ensures Spec[C]`, WI-402 — §5 of `path-dependent-types.md`); the **members**
+are not opened, in either spelling. Until WI-1063 closes that, the hole is
 reachable and pinned by `wi1061_unwritten_slot_positions_test`.
 
 ## 6. Structured and higher-kinded parameters
