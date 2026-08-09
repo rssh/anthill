@@ -20,7 +20,12 @@ object TypeGen:
     case TypeExpr.Simple(n) =>
       named(sym, n, IndexedSeq.empty, scope)
     case TypeExpr.Parameterized(n, bindings) =>
-      named(sym, n, bindings.map(b => render(sym, b.bound, scope)), scope)
+      // The arguments ride in UNRENDERED (WI-1062). An argument in an erased
+      // effect slot is dropped, and rendering it first would refuse on the very
+      // construct — a written row, an effect parameter's name — that erasure
+      // exists to remove. So the head is placed first, and only the surviving
+      // arguments are rendered.
+      named(sym, n, bindings.map(_.bound), scope)
     case TypeExpr.TupleType(fields) =>
       // The empty tuple goes through [[hostScalars]] rather than a literal "Unit":
       // one answer to "what is anthill's Unit in Scala", so the two cannot drift
@@ -54,58 +59,102 @@ object TypeGen:
         "has no Scala form; `Any` would compile and mean something else",
         scope.declSpan)
     case TypeExpr.EffectRow(_) | TypeExpr.EffectGuarded(_, _) =>
-      // WI-1055 B2. scala_std ERASES effects (§2.8), so a written effect row in a
-      // type-argument slot has nothing to erase TO: the slot still needs a type.
-      // `Any` was emitted here, which is a silent widening of whatever the row
-      // constrained.
+      // WI-1055 B2, ANSWERED BY WI-1062 for the case that made it eight prelude
+      // files — and this is what is LEFT of it.
       //
-      // THE OPEN QUESTION UNDER IT is not the row but the PARAMETER it fills:
-      // `Stream`'s second parameter IS an effect row (`effects E = ?`), so the
-      // coherent answer may be that an effect parameter is erased from the emitted
-      // type entirely and the argument dropped rather than rendered. That needs the
-      // parse IR to mark effect parameters (it does not) and a use site to know a
-      // FOREIGN sort's parameter kinds (proposal 034 says it cannot) — WI-1062.
-      // Until then this is the refusal that keeps eight prelude files, and through
-      // `Iterable` their dependents, out of the tree.
+      // The question was never what a row erases to; it is what the SLOT is. Where
+      // the slot is an effect PARAMETER (`Stream`'s `effects E = ?`), the parameter
+      // itself is erased from the emitted type (§2.8a) and the argument goes with
+      // the slot — dropped in `named` before it can reach here. Reaching here means
+      // the opposite: the declaration says this slot is an ordinary `sort X = ?`,
+      // so the row is a type-level VALUE, not an erasable annotation.
+      //
+      // delay.anthill IS THAT CASE and is why this arm survives rather than
+      // becoming unreachable. Its graded monad (proposal 047) holds the captured
+      // effect set in an ordinary parameter deliberately — `pure` returns
+      // `M[T = A, E = {}]` and `delay` returns `M[T = A, E = EffP]`, and those two
+      // are DIFFERENT types. Erasing `E` would make them one, which is the whole
+      // content of the grading. `Any` — what this emitted before WI-1055 — does the
+      // same collapse while compiling.
       throw BootstrapError(
-        s"${scope.decl}: a written effect row in a type-argument slot has no Scala " +
-        "form — scala_std erases effects (§2.8), but the argument slot still needs " +
-        "a type",
+        s"${scope.decl}: a written effect row stands in an ORDINARY type-parameter " +
+        "slot, so it is a type-level value and not an erasable effect annotation. " +
+        "scala_std erases effects (§2.8) and drops an effect PARAMETER with its " +
+        "argument (§2.8a), but this slot is declared `sort X = ?` — a graded monad's " +
+        "captured-effect index (proposal 047), which Scala has no term for and which " +
+        "erasure would collapse",
         scope.declSpan)
 
-  /** One written name, with its already-rendered arguments. */
+  /** One written name, with its arguments still unrendered.
+    *
+    * ERASURE HAPPENS HERE, and which END decides is the whole of WI-1062's rule
+    * (`docs/scala-forward-mapping.md` §2.8a). Where Bootstrap can see the target's
+    * DECLARATION — the enclosing sort, a type this file emits, a `preludeSorts`
+    * entry, a higher-kinded parameter's members — the declaration says which slots
+    * are `effects E = ?` and those arguments are dropped whatever was written in
+    * them, including a plain name (`Stream[Element, E]`) that nothing else marks.
+    * Where it cannot — an [[Placement.Ambient]] name, whose parameters live in a
+    * file Bootstrap has not read — the ARGUMENT decides, via
+    * [[TypeScope.isEffectArgument]].
+    *
+    * The two agree wherever both could run, and the declaration answering first is
+    * what makes delay.anthill's graded monad a refusal rather than a silent
+    * collapse: a row in an ordinary `sort E = ?` slot is a type-level value.
+    */
   private def named(
-    sym: SymbolTable, n: Name, args: IndexedSeq[String], scope: TypeScope
+    sym: SymbolTable, n: Name, args: IndexedSeq[TypeExpr], scope: TypeScope
   ): String =
     val leaf = sym.name(n.last)
+    def rendered(as: IndexedSeq[TypeExpr]): IndexedSeq[String] = as.map(render(sym, _, scope))
+    // The argument-side rule. Reached only where nothing declares the slots.
+    def erasedByArgument: IndexedSeq[TypeExpr] = args.filterNot(scope.isEffectArgument(sym, _))
     scope.place(leaf) match
-      // The two placements of UNKNOWN arity, and the only ones whose arguments
-      // pass through unchecked. A type parameter's kind is not carried here (a
-      // higher-kinded `M[A]` takes arguments, a proper `V` does not) and an ambient
-      // name's arity lives in a file Bootstrap has not read. Over-application is
-      // therefore left to the Scala compiler ("V does not take type parameters"),
-      // which is a clear diagnostic and a shape no stdlib file writes — unlike the
-      // map-entry mismatch below, whose point is that the ENTRY is wrong, not the
-      // use, and which no compiler message would attribute correctly.
-      case Placement.TypeParam(name) => name + brackets(args)
-      case Placement.Ambient(name) => name + brackets(args)
+      // The two placements whose argument COUNT passes through unchecked. A proper
+      // type parameter has no arity to check against (a higher-kinded `M[A]` takes
+      // arguments, a proper `V` does not) and an ambient name's lives in a file
+      // Bootstrap has not read. Over-application is therefore left to the Scala
+      // compiler ("V does not take type parameters"), which is a clear diagnostic
+      // and a shape no stdlib file writes — unlike the map-entry mismatch below,
+      // whose point is that the ENTRY is wrong, not the use, and which no compiler
+      // message would attribute correctly.
+      case Placement.TypeParam(name, memberArity) =>
+        // A higher-kinded parameter DOES declare its members, and none of them can
+        // be an effect slot (the binder grammar has no `effects` spelling), so a
+        // matching application erases NOTHING — which is what refuses
+        // delay.anthill's `M[T = A, E = {}]` rather than collapsing it. A proper
+        // parameter declares nothing (arity 0) and a bare mention writes nothing,
+        // so both take the argument rule, where they are no-ops.
+        //
+        // AN APPLICATION THAT DOES NOT MATCH falls to the argument rule too, and
+        // that is the one place a row could be dropped where a declaration says it
+        // should not. It takes an already-malformed application to reach — `M[A]`
+        // or `M[A, {}, X]` against `M[T, E]` — which the Scala compiler refuses
+        // whichever way this goes, and no corpus file writes one.
+        val keep = if memberArity == args.length then args else erasedByArgument
+        name + brackets(rendered(keep))
+      case Placement.Ambient(name) => name + brackets(rendered(erasedByArgument))
       case Placement.Enclosing(self) =>
         // WI-1055 A3: a BARE mention of the enclosing sort means "with my own
         // parameters" in anthill, and Scala has no bare spelling for that. This is
         // also what stops the sort's own name being rewritten through the prelude
         // map — pair.anthill's `operation fst(p: Pair) -> A` emitted `Tuple2`, a
         // DIFFERENT type from the `enum Pair[A, B]` three lines up (WI-1021).
+        //
+        // The bare form re-attaches what the sort EMITS (`self.params`, already
+        // effect-free); an explicit application is checked against what it WRITES
+        // (`self.kinds.written`), because that is what the anthill declaration says
+        // and what a sibling occurrence spells.
         if args.isEmpty then self.scalaName + brackets(self.params)
-        else if args.length != self.params.length then
+        else if args.length != self.kinds.written then
           throw BootstrapError(
-            s"${scope.decl}: `$leaf` is the enclosing sort, which is emitted with " +
-            s"${self.params.length} type parameter(s), but ${args.length} argument(s) " +
-            "were written. The parameters Bootstrap emits and the ones the " +
-            "declaration writes have diverged",
+            s"${scope.decl}: `$leaf` is the enclosing sort, which declares " +
+            s"${self.kinds.written} type parameter(s)${erasureNote(self.kinds)}, but " +
+            s"${args.length} argument(s) were written. The parameters Bootstrap emits " +
+            "and the ones the declaration writes have diverged",
             n.span)
-        else self.scalaName + brackets(args)
-      case Placement.Known(scalaName, arity) =>
-        if args.length != arity then
+        else self.scalaName + brackets(rendered(self.kinds.keepTypeArgs(args)))
+      case Placement.Known(scalaName, kinds) =>
+        if args.length != kinds.written then
           // WI-1055 B3. The written occurrence is PARTIAL — `Pair` where
           // `Pair[A, B]` is needed, which is what an operation's `p: Pair` is once
           // it is read from OUTSIDE the sort that declares it. In anthill the
@@ -120,13 +169,25 @@ object TypeGen:
           // see [[hostScalar]] / [[preludeSort]] — so every entry's arity is now that of the
           // type it names.
           throw BootstrapError(
-            s"${scope.decl}: `$leaf` maps to Scala `$scalaName`, which takes $arity " +
-            s"type argument(s), but ${args.length} were written. anthill leaves a " +
+            s"${scope.decl}: `$leaf` maps to Scala `$scalaName` and declares " +
+            s"${kinds.written} type parameter(s)${erasureNote(kinds)}, but " +
+            s"${args.length} were written. anthill leaves a " +
             "sort's parameters implicit where they are in scope and allows a PARTIAL " +
             "named binding; Scala has no bare type constructor in this position, so " +
             "there is no spelling to emit",
             n.span)
-        else scalaName + brackets(args)
+        else scalaName + brackets(rendered(kinds.keepTypeArgs(args)))
+      case Placement.ErasedEffect(name) =>
+        // WI-1062. The name denotes an effect ROW — a sort's `effects E = ?`
+        // parameter, or an operation type parameter its signature only ever uses in
+        // an effect position. An erased slot is dropped WITH its argument before
+        // anything renders it, so getting here means the row was written where the
+        // declaration says a type belongs.
+        throw BootstrapError(
+          s"${scope.decl}: `$name` is an effect row, not a type. scala_std erases " +
+          "effects (§2.8), so it has no Scala form; it is emittable only in a slot " +
+          "that erases with it, and this slot is declared to hold a type",
+          n.span)
       case Placement.Unplaceable(reason) =>
         // WI-1055 B1. The name would reach the output as a bare identifier naming
         // nothing in the emitted tree. This is how `Term`, `NodeOccurrence` and
@@ -136,6 +197,15 @@ object TypeGen:
 
   private def brackets(args: IndexedSeq[String]): String =
     if args.isEmpty then "" else args.mkString("[", ", ", "]")
+
+  /** The clause an arity refusal needs once erasure exists (WI-1062): a reader
+    * counting the parameters of the EMITTED Scala type would otherwise get a
+    * different number from the one the message states, and conclude the message
+    * was wrong. Empty when nothing erases, so the common refusal reads as before. */
+  private def erasureNote(kinds: ParamKinds): String =
+    val erased = kinds.written - kinds.emitted
+    if erased == 0 then ""
+    else s" (${kinds.emitted} emitted; $erased erased as effect row(s))"
 
   // ── Prelude names: host type or anthill type (WI-1021) ────────────────────
   //
@@ -259,14 +329,14 @@ object TypeGen:
     * two-types-for-one-name defect this whole ticket removes, surviving inside the
     * five files that declare a scalar. */
   def hostScalar(anthillLeaf: String): Option[Placement.Known] =
-    hostScalars.get(anthillLeaf).map(Placement.Known(_, arity = 0))
+    hostScalars.get(anthillLeaf).map(Placement.Known(_, ParamKinds.none))
 
   /** The prelude-sort half. Consulted BELOW the enclosing sort and the file's own
     * types — a file that declares the name emits it, and its own spelling is the
     * one to use. */
   def preludeSort(anthillLeaf: String): Option[Placement.Known] =
-    preludeSorts.get(anthillLeaf).map(arity =>
-      Placement.Known(s"_root_.anthill.prelude.${Names.scalaTypeName(anthillLeaf)}", arity))
+    preludeSorts.get(anthillLeaf).map(kinds =>
+      Placement.Known(s"_root_.anthill.prelude.${Names.scalaTypeName(anthillLeaf)}", kinds))
 
   /** The sorts whose values ARE host values. No arity column, because a scalar has
     * no parameters to have an arity of — the shape is what keeps a parameterized
@@ -302,20 +372,30 @@ object TypeGen:
     * Closing that means a table of every auto-imported prelude sort, which is the
     * read-it-from-the-profile job (WI-1060) and not a list to grow by hand here.
     *
-    * THE ARITIES ARE A HAND-COPY of what `Bootstrap.sortTypeParams` computes from
-    * the declaring file, and nothing cross-checks them — Bootstrap is per-file and
-    * never parses `set.anthill` while emitting a consumer. Give a sort here a new
-    * parameter and every consumer is refused with a message that reads as if the
-    * DECLARATION were wrong. WI-1060's profile-supplied table is where that stops
-    * being a copy. Only `Option`, `Pair` and `Stream` are pinned by a compile
-    * today. */
-  private val preludeSorts: Map[String, Int] = Map(
-    "List" -> 1,
-    "Option" -> 1,
-    "Pair" -> 2,
-    "Set" -> 1,
-    "Map" -> 2,
-    "Stream" -> 2,
+    * THE PARAMETERS ARE A HAND-COPY of what `Bootstrap.sortTypeParams` computes
+    * from the declaring file, and nothing cross-checks them — Bootstrap is per-file
+    * and never parses `set.anthill` while emitting a consumer. Give a sort here a
+    * new parameter and every consumer is refused with a message that reads as if
+    * the DECLARATION were wrong. WI-1060's profile-supplied table is where that
+    * stops being a copy. Only `Option`, `Pair` and `Stream` are pinned by a compile
+    * today.
+    *
+    * `Stream` IS THE ONE WITH A KIND TO COPY, and the copy is now two facts rather
+    * than one: `stream.anthill` writes `sort T = ?` then `effects E = ?`, so a use
+    * site writes two arguments and the emitted `trait Stream[T]` takes one
+    * (WI-1062). Recorded per parameter and not as a pair of counts, because the
+    * POSITION is what an argument list is dropped by — `Stream[Element, E]` loses
+    * its second argument, and a table saying only "2 in, 1 out" could not say
+    * which. Every other entry here is all-`Type`: `Set`/`Map`/`List`/`Option`/`Pair`
+    * declare no effect parameter (checked by reading their files, which is the same
+    * hand-copy this whole table is). */
+  private val preludeSorts: Map[String, ParamKinds] = Map(
+    "List" -> ParamKinds.allTypes(1),
+    "Option" -> ParamKinds.allTypes(1),
+    "Pair" -> ParamKinds.allTypes(2),
+    "Set" -> ParamKinds.allTypes(1),
+    "Map" -> ParamKinds.allTypes(2),
+    "Stream" -> ParamKinds(IndexedSeq(ParamKind.Type, ParamKind.Effect)),
   )
 
   // The two tables answer different questions and a name belongs to exactly one.

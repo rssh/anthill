@@ -74,7 +74,7 @@ object Bootstrap:
     * set Bootstrap can point at and say "the emitted tree has no such type"
     * (WI-1055 B1).
     */
-  private case class FileEnv(types: Map[String, Int], declaredNotEmitted: Set[String]):
+  private case class FileEnv(types: Map[String, ParamKinds], declaredNotEmitted: Set[String]):
 
     /** A [[TypeScope]] for one declaration, with the two file-wide fields filled
       * in. A factory rather than three call sites spelling `fileTypes = env.types,
@@ -84,9 +84,9 @@ object Bootstrap:
     def scopeAt(
       decl: String, declSpan: Span, pkg: String, imports: Map[String, String],
       enclosing: Option[EnclosingSort] = None,
-      typeParams: Map[String, String] = Map.empty
+      params: Map[String, ParamBinding] = Map.empty
     ): TypeScope =
-      TypeScope(decl, declSpan, pkg, enclosing, typeParams, types, imports,
+      TypeScope(decl, declSpan, pkg, enclosing, params, types, imports,
         declaredNotEmitted)
 
   /** The name environment of one parsed file, in ONE walk.
@@ -123,9 +123,9 @@ object Bootstrap:
         FileEnv(acc.types ++ inner.types,
           acc.declaredNotEmitted ++ inner.declaredNotEmitted)
       case (acc, Item.SortWithBodyItem(s)) if !s.isTypeParam =>
-        acc.copy(types = acc.types + (sym.name(s.name.last) -> sortTypeParams(sym, s).length))
+        acc.copy(types = acc.types + (sym.name(s.name.last) -> paramKinds(sortTypeParams(sym, s))))
       case (acc, Item.EntityItem(e)) =>
-        acc.copy(types = acc.types + (sym.name(e.name.last) -> 0))
+        acc.copy(types = acc.types + (sym.name(e.name.last) -> ParamKinds.none))
       case (acc, Item.AbstractSortItem(s)) =>
         acc.copy(declaredNotEmitted = acc.declaredNotEmitted + sym.name(s.name.last))
       case (acc, _) => acc
@@ -170,7 +170,8 @@ object Bootstrap:
         case _ => acc
     }
 
-  /** A sort's type parameters, in declaration order.
+  /** A sort's type parameters, in declaration order — ALL of them, effect
+    * parameters included.
     *
     * BOTH desugarings of a head parameter, which is WI-1055 A2: the parser turns
     * a SIMPLE parameter `V` into an `AbstractSort` (`sort V = ?`) and a
@@ -181,28 +182,50 @@ object Bootstrap:
     *
     * A nested `sort F { … }` that is NOT marked stays a concrete nested sort and
     * is not a parameter — the same distinction the loader draws.
+    *
+    * IT KEEPS THE ERASED ONES (WI-1062) rather than filtering them out here, and
+    * that is load-bearing: an `effects E = ?` parameter is absent from the emitted
+    * type but PRESENT in every written occurrence of the sort, so a use site is
+    * checked and erased against this list while the emission is built from
+    * `paramKinds(...).keepTypeArgs(...)`. Filtering at the source would leave
+    * nothing able to say that `Stream[Element, E]` is a correct two-argument
+    * application.
     */
   private def sortTypeParams(sym: SymbolTable, sort: SortWithBody): IndexedSeq[TypeParamDecl] =
     sort.items.collect {
       case Item.AbstractSortItem(s) =>
-        TypeParamDecl(sym.name(s.name.last), IndexedSeq.empty)
+        TypeParamDecl(sym.name(s.name.last), IndexedSeq.empty, isEffect = s.isEffectRow)
       case Item.SortWithBodyItem(s) if s.isTypeParam =>
         TypeParamDecl(sym.name(s.name.last), sortTypeParams(sym, s))
     }
+
+  private def paramKinds(params: IndexedSeq[TypeParamDecl]): ParamKinds =
+    ParamKinds(params.map(p => if p.isEffect then ParamKind.Effect else ParamKind.Type))
 
   /** One type parameter, as anthill wrote it and as Scala binds it.
     *
     * The BINDING form and the USE form differ for a higher-kinded parameter:
     * `M[T]` binds as `M[_]` and is used as `M`. Scala needs the kind at the
     * binder and forbids it at every mention.
+    *
+    * `isEffect` is the parse-IR mark `effects E = ?` carries (WI-1062). A
+    * higher-kinded parameter is never one: `sort S[M[T, E]]` writes its members
+    * with the binder grammar, which has no `effects` spelling — so `E` there is an
+    * ordinary `sort E = ?`, which is exactly what makes delay.anthill's graded
+    * monad refusable rather than silently erased.
     */
-  private case class TypeParamDecl(anthillName: String, members: IndexedSeq[TypeParamDecl]):
+  private case class TypeParamDecl(
+    anthillName: String, members: IndexedSeq[TypeParamDecl], isEffect: Boolean = false
+  ):
     val scalaName: String = Names.scalaTypeName(anthillName)
     /** `T`, `M[_]`, `F[_[_]]` — what goes between the sort's brackets. */
     def decl: String = scalaName + kindSuffix
     /** The same kind with the name erased, for a nested binder position. */
     private def anonymousKind: String = "_" + kindSuffix
     private def kindSuffix: String =
+      // No `emitted` filter, and that is the claim above rather than an omission:
+      // a member cannot be an effect parameter, because the binder grammar has no
+      // `effects` spelling to mark one with.
       if members.isEmpty then ""
       else members.map(_.anonymousKind).mkString("[", ", ", "]")
 
@@ -273,15 +296,26 @@ object Bootstrap:
     // Multi-segment top-level decl like `enum anthill.prelude.Option`:
     // treat the prefix as the package path and the last segment as the type.
     val (effectivePkg, sortName) = splitPath(sym, sort.name, packagePath)
-    val typeParams = sortTypeParams(sym, sort)
+    val written = sortTypeParams(sym, sort)
+    // WI-1062: the sort's own `effects E = ?` parameters are erased (§2.8a). They
+    // are dropped from every EMITTED list — the binders and the `EnclosingSort`
+    // arguments — and kept as `kinds`, which is what a written occurrence of this
+    // sort is checked and erased against. ONE reading of "which slots survive"
+    // (`keepTypeArgs`) serves both, so the binder list and a use site's argument
+    // list cannot drift out of positional sync.
+    val kinds = paramKinds(written)
+    val typeParams = kinds.keepTypeArgs(written)
     val tpStr =
       if typeParams.isEmpty then "" else typeParams.map(_.decl).mkString("[", ", ", "]")
     val scope = env.scopeAt(
       s"sort `${sym.name(sort.name.last)}`", sort.name.span, effectivePkg,
       importedNames(sym, sort.imports, outerImports),
       enclosing = Some(EnclosingSort(
-        sym.name(sort.name.last), sortName, typeParams.map(_.scalaName))),
-      typeParams = typeParams.map(p => p.anthillName -> p.scalaName).toMap)
+        sym.name(sort.name.last), sortName, written.map(_.scalaName), kinds)),
+      params = written.map(p =>
+        p.anthillName ->
+          (if p.isEffect then ParamBinding.Effect
+           else ParamBinding.Scala(p.scalaName, p.members.length))).toMap)
     val requires = sort.items.collect {
       case Item.RequiresDeclItem(r) =>
         // `sortedset.anthill` shipped the un-refused form: `SortedSet[T, O]` with

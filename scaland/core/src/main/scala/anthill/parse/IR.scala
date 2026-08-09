@@ -319,7 +319,30 @@ case class AbstractSort(
   definition: TypeExpr,
   descriptions: IndexedSeq[String],
   meta: Option[MetaBlock],
-  span: Span
+  span: Span,
+  /** WI-1062: set when this abstract sort came from `effects E = ?` rather than
+    * `sort E = ?` — the parameter holds an effect ROW, not a type.
+    *
+    * The two desugar to the same declaration ON PURPOSE (`effectsSortItem`),
+    * because the `requires EffectsRuntime` anchor that would distinguish them is
+    * inert without a typer. This flag is the provenance the desugar was otherwise
+    * throwing away: it says WHICH surface form was written, and nothing about what
+    * the declaration means. The loader ignores it — a backend that erases effects
+    * (`scala_std`, §2.8a) reads it to know which of a sort's own parameters it
+    * must drop. Same shape as [[SortWithBody.isTypeParam]], for the same reason:
+    * an `Item` kind of its own would have to be spelled "identical to
+    * `AbstractSortItem`" at every exhaustive match over `Item`.
+    *
+    * THE TWO IMPLEMENTATIONS MARK THIS DIFFERENTLY and nothing cross-checks them.
+    * rustland's marker is SEMANTIC — `convert_effects_sort_item` emits the
+    * `requires anthill.prelude.EffectsRuntime[Effects = E]` anchor alongside the
+    * abstract sort — where scaland drops the anchor and carries this flag. Neither
+    * can be derived from the other by reading one tree.
+    *
+    * NO DEFAULT, deliberately: a future desugar that mints an effect parameter
+    * would silently get `false` and its sort would emit a parameter that should
+    * have been erased. Spelled at all three construction sites instead. */
+  isEffectRow: Boolean
 )
 
 /** Sort or enum declaration kind. Enums are sorts whose subterms are

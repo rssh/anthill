@@ -36,6 +36,19 @@ object StdlibFixture:
 
 class BootstrapTest extends munit.FunSuite:
 
+  /** munit's default is 30s, and the refusal-set test crosses it (WI-1062).
+    *
+    * NOT A HANG, and worth saying so at the one place that would otherwise look
+    * like one: that test invokes `dotc` in process once per prelude file to see
+    * which ones compile standalone, so it costs 40-odd real compiler runs. It grew
+    * by six when WI-1062 moved six files out of the refusal set, and under a full
+    * `sbt test` the three subprojects compete for cores — measured at 32.6s there
+    * against 7s under `testOnly`, which is why it passed in isolation first.
+    * Raised rather than trimmed because the probe is the thing being asserted; a
+    * timeout large enough to be an outright hang detector still is one. */
+  override def munitTimeout: scala.concurrent.duration.Duration =
+    scala.concurrent.duration.Duration(180, "s")
+
   private val stdlibDir = StdlibFixture.dir
 
   /** The plain stdlib KB, loaded once for the suite. */
@@ -50,6 +63,12 @@ class BootstrapTest extends munit.FunSuite:
     Parser.parse(text, name) match
       case Right(pf) => pf
       case Left(es) => fail(s"$name parse failed: ${es.head.message}")
+
+  /** The emission of several prelude files as ONE compilation set. Bootstrap is
+    * per-file and its output is cross-referential, so almost every compile
+    * assertion here names the file under test plus the siblings it mentions. */
+  private def preludeClosure(names: String*) =
+    names.toIndexedSeq.flatMap(n => Bootstrap.generate(parseStdlib(s"anthill/prelude/$n.anthill")))
 
   test("WI-170: Bootstrap.generate on option.anthill emits Option enum") {
     val pf = parseStdlib("anthill/prelude/option.anthill")
@@ -463,8 +482,7 @@ class BootstrapTest extends munit.FunSuite:
     // that and the `Tuple2` assertion fails. The COMPILE does not: `Tuple2` is a
     // real Scala type and the emission stays well-formed, which is exactly why
     // this needed a decision and not a compiler.
-    val files = Seq("pair", "option", "list")
-      .flatMap(n => Bootstrap.generate(parseStdlib(s"anthill/prelude/$n.anthill")))
+    val files = preludeClosure("pair", "option", "list")
     val list = files.find(_.relPath.endsWith("/List.scala"))
       .getOrElse(fail(s"expected List.scala in: ${files.map(_.relPath)}")).contents
     assert(list.contains("def splitFirst(xs: List[T]): " +
@@ -506,8 +524,7 @@ class BootstrapTest extends munit.FunSuite:
     // missing name, it is the right one. Without this arm "does not compile alone"
     // could be satisfied by any breakage at all.
     ScalaCompile.assertCompiles("list + its siblings",
-      list ++ Seq("option", "pair").flatMap(n =>
-        Bootstrap.generate(parseStdlib(s"anthill/prelude/$n.anthill"))))
+      list ++ preludeClosure("option", "pair"))
   }
 
   test("WI-1021: an effect-carrying collection places against the prelude's own arity") {
@@ -517,19 +534,29 @@ class BootstrapTest extends munit.FunSuite:
     // `combinators.anthill` were out of the emitted tree entirely. There is no
     // same-arity Scala counterpart to find, because the effect row is a parameter
     // Scala's collection does not have; the answer is that `Stream` was never a host
-    // type. It now places against the two-parameter `trait Stream[T, E]` that
-    // stream.anthill itself emits.
+    // type. It now places against the `trait Stream` that stream.anthill itself
+    // emits.
     //
-    // A FIXTURE and not iterable.anthill: that file is still refused, for the
-    // DIFFERENT reason recorded in the refusal set (a written effect ROW in a
-    // type-argument slot, `Stream[Dst, {E, EffP}]`, which is the open question
-    // WI-1062 owns). A fixture keeps this assertion about the entry.
+    // THE ARITY THE ENTRY CLAIMS IS ANTHILL'S — two, `sort T = ?` and
+    // `effects E = ?` — and since WI-1062 that is no longer the emitted one: §2.8a
+    // erases the effect parameter, so a use site writes two arguments and gets
+    // `Stream[T]`. Both numbers are in the entry (`ParamKinds`), and per POSITION
+    // rather than as a pair of counts, because dropping an argument list needs to
+    // know WHICH slot went.
+    //
+    // A FIXTURE and not iterable.anthill, which was refused when this was written
+    // and now emits — see the WI-1062 tests below, where iterable.anthill itself
+    // drives the same claim. A fixture keeps THIS assertion about the table entry:
+    // `Reader` declares two ORDINARY parameters and hands the second to `Stream`'s
+    // effect slot, so what erases the argument is unambiguously the callee's
+    // declaration and nothing about the argument.
     //
     // FAILS WHEN BACKED OUT, in one edit: set `preludeSorts`' `"Stream"` back to
-    // the arity the `LazyList` entry claimed (1) and `generate` throws `takes 1
-    // type argument(s), but 2 were written` — the same refusal, now against the
-    // right type. Restoring the host NAME as well takes the shape change described
-    // on the consumer-site test above.
+    // the one parameter the `LazyList` entry claimed and `generate` throws
+    // `declares 1 type parameter(s), but 2 were written` — the same refusal, now
+    // against the right type. Set it to two ORDINARY parameters (drop
+    // `ParamKind.Effect`) and the emission becomes `Stream[T, E]`, which is the
+    // WI-1062 half.
     val files = Bootstrap.generate(parseSource(
       """namespace anthill.wi1021
         |  sort Reader
@@ -540,11 +567,197 @@ class BootstrapTest extends munit.FunSuite:
         |end
         |""".stripMargin, "reader.anthill"))
     val src = files.head.contents
-    assert(src.contains("def source(r: Reader[T, E]): _root_.anthill.prelude.Stream[T, E]"),
-      s"a written Stream occurrence must reach the prelude's own two-parameter Stream:\n$src")
+    assert(src.contains("def source(r: Reader[T, E]): _root_.anthill.prelude.Stream[T]"),
+      s"a written Stream occurrence must reach the prelude's own Stream, with its " +
+      s"effect argument erased:\n$src")
     ScalaCompile.assertCompiles("reader.anthill + stream.anthill",
-      files ++ Seq("stream", "option", "pair", "list").flatMap(n =>
-        Bootstrap.generate(parseStdlib(s"anthill/prelude/$n.anthill"))))
+      files ++ preludeClosure("stream", "option", "pair", "list"))
+  }
+
+  // ── WI-1062: an effect PARAMETER is erased, and its argument with it ────────
+  //
+  // THE DECISION, `docs/scala-forward-mapping.md` §2.8a. §2.8 already erased
+  // effects from a method's SHAPE and said nothing about a sort's effect
+  // PARAMETERS, which left `Stream[Element, E]` with an argument that had to
+  // become a Scala type and nothing to become. The answer is that the parameter
+  // goes too: `sort anthill.prelude.Stream` emits `trait Stream[T]`, and a written
+  // occurrence's second argument is dropped with the slot it filled.
+  //
+  // WHICH END DECIDES is the part that needed a ticket, and it is split: the
+  // DECLARATION where Bootstrap can see one, the ARGUMENT where it cannot. The two
+  // tests below drive one arm each, and the delay.anthill refusal (WI-1055 B2
+  // above) is what the split buys — a row in an ORDINARY parameter is a graded
+  // monad's index, not an erasable annotation.
+
+  test("WI-1062: an effect parameter is erased from the emitted sort, and so is its argument") {
+    // BOTH HALVES OF §2.8a IN ONE FILE, because they are one decision read from
+    // two sides: `stream.anthill` declares `sort T = ?` + `effects E = ?` and emits
+    // `trait Stream[T]`; `iterable.anthill` WRITES `Stream[Element, E]` and gets
+    // `Stream[Element]`. A test asserting only the declaration side would pass with
+    // every use site refused, which is the state this ticket found.
+    //
+    // THE ARGUMENT ERASED HERE IS A PLAIN NAME. `Stream[Element, E]` says nothing
+    // syntactic about `E` — it is an identifier in a type-argument slot, exactly
+    // like `Element` beside it — so nothing but `Stream`'s own declaration can say
+    // it goes. That is the whole reason the rule is declaration-driven and not
+    // "drop anything that looks like a row".
+    //
+    // FAILS WHEN BACKED OUT: give `preludeSorts`' `"Stream"` two ORDINARY
+    // parameters and the emitted `Iterable.iterator` becomes `Stream[Element, E]`
+    // with `E` unbound — the first assertion fails and the compile below fails
+    // again on `Not found: type E`. Drop `isEffectRow` at
+    // `AnthillParser.effectsSortItem` and `trait Stream[T, E]` comes back, failing
+    // the arity assertion.
+    val stream = Bootstrap.generate(parseStdlib("anthill/prelude/stream.anthill"))
+    assert(stream.head.contents.contains("trait Stream[T]:"),
+      s"an effect parameter must not reach the emitted type:\n${stream.head.contents}")
+    val iterable = Bootstrap.generate(parseStdlib("anthill/prelude/iterable.anthill"))
+    val src = iterable.head.contents
+    assert(src.contains("trait Iterable[C, Element]:"),
+      s"Iterable's own `effects E = ?` must be erased too:\n$src")
+    assert(src.contains("def iterator(c: C): _root_.anthill.prelude.Stream[Element]"),
+      s"the argument in the erased slot must go with it:\n$src")
+    // The row LITERAL form of the same slot, and the operation type parameter that
+    // only ever stands in a row: `map[Dst, EffP](…) -> Stream[Dst, {E, EffP}]`
+    // emits neither `EffP` nor the row.
+    assert(src.contains("def map[Dst](c: C, f: (Element) => Dst): " +
+      "_root_.anthill.prelude.Stream[Dst]"),
+      s"a row literal and a row-only operation parameter must both be erased:\n$src")
+    // DRIVES IT: the two files plus what they name must actually compile. This is
+    // the acceptance the ticket names — iterable.anthill and combinators.anthill
+    // were out of the tree entirely, and through `Iterable` so were their
+    // dependents.
+    ScalaCompile.assertCompiles("the iterable/combinators closure",
+      iterable ++ preludeClosure("stream", "combinators", "option", "pair", "list"))
+  }
+
+  test("WI-1062: where no declaration is in reach, the ARGUMENT says it is an effect") {
+    // The other arm. `Placement.Ambient` is a name whose declaration lives in a
+    // file Bootstrap has not read (per-file by design, proposal 034), so nothing
+    // says which of ITS slots erase — and `finite_collection.anthill`'s
+    // `requires Iterable[C = C, Element = Element, E = E]` still has to emit
+    // something. The argument decides there: `E` is a name THIS file declares
+    // `effects E = ?`, which is a locally provable fact about the argument and not
+    // a guess about the callee.
+    //
+    // DRIVEN BY A FIXTURE, and it is the prelude's own shape with nothing else on
+    // it: a sort with an `effects E = ?` parameter whose `requires` names the
+    // ambient `Iterable`. It COMPILES against the real emitted `Iterable`, which is
+    // the whole assertion — the emitted `extends` has to be the two-parameter one
+    // or the supertype is not the trait the sibling file declares.
+    //
+    // FAILS WHEN BACKED OUT: make `named` pass an Ambient name's arguments through
+    // unerased and the emission becomes `extends anthill.prelude.Iterable[C, Element, E]`
+    // — the assertion fails and the compile reports `Too many type arguments for
+    // trait Iterable`.
+    val fixture = Bootstrap.generate(parseSource(
+      """namespace anthill.prelude
+        |  sort Walkable
+        |    import anthill.prelude.Iterable
+        |    sort C = ?
+        |    sort Element = ?
+        |    effects E = ?
+        |    requires Iterable[C = C, Element = Element, E = E]
+        |    operation walked(c: C) -> Element effects E
+        |  end
+        |end
+        |""".stripMargin, "walkable.anthill"))
+    val fsrc = fixture.head.contents
+    assert(fsrc.contains("trait Walkable[C, Element] extends " +
+      "anthill.prelude.Iterable[C, Element]:"),
+      s"an ambient name's effect argument must be erased from the argument side:\n$fsrc")
+    ScalaCompile.assertCompiles("walkable.anthill against the emitted Iterable",
+      fixture ++ preludeClosure("iterable", "stream", "option", "pair", "list"))
+
+    // THE CORPUS INSTANCE, asserted on its emitted TEXT and not compiled, and the
+    // reason is a DIFFERENT defect that this ticket does not own. Once these files
+    // entered the tree, `requires` -> `extends` (§2.7) turned out to be unsound in
+    // two shapes neither of which is about effects: `FiniteCollection.map` REFINES
+    // `Iterable.map`'s return type (a `FiniteCollection`, not a `Stream`), which
+    // anthill allows through `provides` and Scala rejects as an override; and
+    // `FiniteMappedStream` is a DATA sort that `requires` an algebra, so its enum
+    // case inherits nine abstract members it cannot leave abstract. MEASURED as
+    // four RefChecks errors across FiniteCollection / FiniteMappedStream /
+    // FiniteFilteredStream, and owned by WI-1064 — see the closure numbers on the
+    // refusal-set test.
+    //
+    // What IS this ticket's, and is asserted: the arities. The nested
+    // `FiniteMappedStream[SrcC = C, Src = Element, T = Dst, ES = E, EF = EffP]` is
+    // written with five arguments, of which `ES = E` is a sort effect parameter and
+    // `EF = EffP` is an operation type parameter this signature only ever uses
+    // inside a row — three survive, matching the three the emission declares.
+    val src = Bootstrap.generate(parseStdlib("anthill/prelude/finite_collection.anthill"))
+      .head.contents
+    assert(src.contains("trait FiniteCollection[C, Element] extends " +
+      "anthill.prelude.Iterable[C, Element]:"),
+      s"the corpus instance must erase the same way as the fixture:\n$src")
+    assert(src.contains("def map[Dst](c: C, f: (Element) => Dst): " +
+      "FiniteCollection[anthill.prelude.FiniteMappedStream[C, Element, Dst], Dst]"),
+      s"an operation's row-only type parameter must erase like a sort's:\n$src")
+    val fmapped = Bootstrap.generate(parseStdlib("anthill/prelude/finite_combinators.anthill"))
+      .head.contents
+    assert(fmapped.contains("enum FiniteMappedStream[SrcC, Src, T]"),
+      s"the three surviving arguments must be the three the declaration emits:\n$fmapped")
+  }
+
+  test("WI-1062: an effect parameter written where a TYPE belongs is refused") {
+    // The third arm, and the only one that is a refusal rather than an erasure:
+    // an effect parameter's NAME reaching a slot that is not erased with it.
+    // `Placement.ErasedEffect` is what says so, and it is the answer `place`
+    // returns for the name — the same answer `isEffectArgument` reads to drop an
+    // argument, so this arm and the erasure are two consumers of one fact rather
+    // than two predicates that must agree.
+    //
+    // A FIXTURE, because no stdlib file writes the shape — every prelude
+    // occurrence of an effect parameter is inside a slot that erases. Without it
+    // the arm is unreachable in the suite and could be deleted with nothing
+    // failing, which is the standard the sibling B2 arms are held to.
+    //
+    // FAILS WHEN BACKED OUT: make `place` return `Placement.TypeParam("E", 0)`
+    // for an effect parameter and this emits `def leak(c: C): E` with `E` bound to
+    // nothing — the `intercept` finds no throw.
+    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+      """namespace anthill.wi1062
+        |  sort Leaky
+        |    sort C = ?
+        |    effects E = ?
+        |    operation leak(c: C) -> E
+        |  end
+        |end
+        |""".stripMargin, "leaky.anthill")))
+    assert(err.getMessage.contains("`E` is an effect row, not a type"),
+      s"refusal must say what defeated it: ${err.getMessage}")
+    assert(err.getMessage.contains("`leak`"),
+      s"refusal must name the declaration: ${err.getMessage}")
+    assert(err.getMessage.contains("leaky.anthill:"),
+      s"refusal must be located: ${err.getMessage}")
+  }
+
+  test("WI-1062 CONTROL: a sort with no effect parameter is emitted and applied unchanged") {
+    // The boundary. Erasure keys on the `effects E = ?` SPELLING, so a sort whose
+    // parameters are all `sort X = ?` must keep every one of them — including a
+    // parameter NAMED `E`, and including one holding an effect row as a value.
+    //
+    // Passes both with and without §2.8a BY DESIGN — that is what makes it the
+    // control. What it would catch is an erasure keyed on anything looser than the
+    // declaration: on the name (`E` here would vanish), or on the argument's shape
+    // (delay.anthill's `Delay[T = A, E = {}]`, which is refused rather than
+    // collapsed — see the WI-1055 B2 arm).
+    val files = Bootstrap.generate(parseSource(
+      """namespace anthill.wi1062
+        |  sort Graded
+        |    sort T = ?
+        |    sort E = ?
+        |    operation of(g: Graded) -> Graded[T = T, E = E]
+        |  end
+        |end
+        |""".stripMargin, "graded.anthill"))
+    val src = files.head.contents
+    assert(src.contains("trait Graded[T, E]:"),
+      s"an ordinary parameter named `E` is not an effect parameter:\n$src")
+    assert(src.contains("def of(g: Graded[T, E]): Graded[T, E]"),
+      s"nothing may be erased from a sort that declares no effect parameter:\n$src")
+    ScalaCompile.assertCompiles("graded.anthill", files)
   }
 
   test("WI-1021: a SCALAR maps to its host type, and to a 64-bit one") {
@@ -782,32 +995,59 @@ class BootstrapTest extends munit.FunSuite:
     // Scala type — so the emitted file did not even parse. What the variable
     // stands for is a typer question and scaland has no typer.
     //
-    // logical_stream.anthill is the stdlib instance; `operation empty` is the
-    // first declaration to reach one.
+    // A FIXTURE, and it was logical_stream.anthill until WI-1062. That file writes
+    // `LogicalStream[?A]` — one argument against a sort declaring two — so it is
+    // BOTH a bare variable and a partial application, and erasure made the arity
+    // check run first (arguments are placed before they are rendered, so an
+    // argument in an erased slot is never rendered at all). The stdlib instance
+    // therefore no longer reaches this arm FIRST, and a test that depends on which
+    // of two true diagnoses wins is measuring the wrong thing. Same reason the
+    // other two B2 arms are fixtures.
+    //
+    // ARITY-CORRECT ON PURPOSE: one argument against the one-parameter `Option`, so
+    // nothing but the variable can defeat it.
     //
     // FAILS WHEN BACKED OUT: restore `case TypeExpr.Variable(_, _) => "?"` and this
     // `intercept` finds no throw.
-    val err = intercept[BootstrapError](
-      Bootstrap.generate(parseStdlib("anthill/prelude/logical_stream.anthill")))
+    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+      """namespace anthill.wi1055
+        |  sort Holder
+        |    operation get() -> Option[?A]
+        |  end
+        |end
+        |""".stripMargin, "holder.anthill")))
     assert(err.getMessage.contains("type VARIABLE"),
       s"refusal must say what defeated it: ${err.getMessage}")
-    assert(err.getMessage.contains("`empty`"),
+    assert(err.getMessage.contains("`get`"),
       s"refusal must name the declaration: ${err.getMessage}")
-    assert(err.getMessage.contains("logical_stream.anthill:"),
+    assert(err.getMessage.contains("holder.anthill:"),
       s"refusal must be located: ${err.getMessage}")
   }
 
-  test("WI-1055 B2: a written EFFECT ROW in a type-argument slot is refused") {
-    // scala_std ERASES effects (§2.8), so a written row in a type-ARGUMENT slot has
-    // nothing to erase to — the slot still needs a type. `Any` was emitted, which
-    // compiles and is a silent widening of whatever the row constrained.
+  test("WI-1055 B2 / WI-1062: an effect row in an ORDINARY parameter slot is refused") {
+    // WHAT IS LEFT OF THE B2 EFFECT-ROW REFUSAL once §2.8a erases effect
+    // PARAMETERS. It used to fire on any written row and took eight prelude files
+    // with it; it now fires only where the DECLARATION says the slot holds a type,
+    // which is one file and one construct.
     //
-    // FAILS WHEN BACKED OUT: restore `case TypeExpr.EffectRow(_) => "Any"` and
-    // delay.anthill emits again, with `Any` where the row was.
+    // delay.anthill is that construct and is why the arm is not dead code. Its
+    // graded monad (proposal 047) declares `sort E = ?` — an ORDINARY parameter —
+    // and stores the captured effect set in it, so `pure`'s `M[T = A, E = {}]` and
+    // `delay`'s `M[T = A, E = EffP]` are DIFFERENT types. Erasing `E` would make
+    // them one, which is the entire content of the grading; `Any` (what this
+    // emitted before WI-1055) collapses them the same way while compiling.
+    //
+    // FAILS WHEN BACKED OUT, two ways: restore `case TypeExpr.EffectRow(_) => "Any"`
+    // and the `intercept` finds no throw; alternatively erase a written row
+    // wherever it stands instead of asking the declaration, and delay.anthill emits
+    // `M[A]` against a two-member `M[T, E]` — MEASURED, the refusal disappears from
+    // the named list above.
     val err = intercept[BootstrapError](
       Bootstrap.generate(parseStdlib("anthill/prelude/delay.anthill")))
-    assert(err.getMessage.contains("effect row"),
+    assert(err.getMessage.contains("ORDINARY type-parameter slot"),
       s"refusal must say what defeated it: ${err.getMessage}")
+    assert(err.getMessage.contains("proposal 047"),
+      s"refusal must name the construct it is protecting: ${err.getMessage}")
     assert(err.getMessage.contains("`pure`"),
       s"refusal must name the declaration: ${err.getMessage}")
     assert(err.getMessage.contains("delay.anthill:"),
@@ -820,11 +1060,18 @@ class BootstrapTest extends munit.FunSuite:
     // this arm needs a fixture — without it the case is unreachable in the suite
     // and could be deleted with nothing failing.
     //
+    // `Vector`, which nothing declares, and not `List`: WI-302's own example is
+    // `Vector[Int64, 3]`, and an unplaced name reaches `Placement.Ambient`, whose
+    // arguments pass through unchecked. Written against `List` the occurrence is
+    // two arguments to a one-parameter sort, so since WI-1062 the ARITY refusal
+    // fires first and this arm is never reached — the literal has to be the only
+    // thing wrong with the type for the test to be about the literal.
+    //
     // FAILS WHEN BACKED OUT: restore `case TypeExpr.Denoted(_) => "Any"`.
     val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
       """namespace anthill.wi1055
         |  sort Buf
-        |    entity Buf(cells: List[Int64, 3])
+        |    entity Buf(cells: Vector[Int64, 3])
         |  end
         |end
         |""".stripMargin, "buf.anthill")))
@@ -849,7 +1096,7 @@ class BootstrapTest extends munit.FunSuite:
     // fixture: without it the guard is unreachable in the suite and could be
     // deleted with nothing failing.
     //
-    // FAILS WHEN BACKED OUT: drop the `args.length != arity` guard in
+    // FAILS WHEN BACKED OUT: drop the `args.length != kinds.written` guard in
     // `Placement.Known` and this emits `def swap(p: anthill.prelude.Pair): ...`,
     // which is `Missing type parameter`.
     val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
@@ -861,8 +1108,13 @@ class BootstrapTest extends munit.FunSuite:
         |""".stripMargin, "flip.anthill")))
     assert(err.getMessage.contains("`Pair` maps to Scala `_root_.anthill.prelude.Pair`"),
       s"refusal must name both sides of the mapping: ${err.getMessage}")
-    assert(err.getMessage.contains("takes 2 type argument(s), but 0 were written"),
+    // The count is what ANTHILL declares, which since WI-1062 is not always what
+    // Scala takes. `Pair` erases nothing, so the two agree here and the message
+    // carries no erasure clause — the arm that says so is the `Stream` test below.
+    assert(err.getMessage.contains("declares 2 type parameter(s), but 0 were written"),
       s"refusal must state the arity conflict: ${err.getMessage}")
+    assert(!err.getMessage.contains("erased"),
+      s"a sort with no effect parameter must not mention erasure: ${err.getMessage}")
     assert(err.getMessage.contains("flip.anthill:"),
       s"refusal must be located: ${err.getMessage}")
   }
@@ -976,31 +1228,64 @@ class BootstrapTest extends munit.FunSuite:
     // `finite_stream` each named a prelude sibling that the type map used to
     // rewrite to a same-spelled Scala type (`Option`, `List`, `Tuple2`), so they
     // compiled alone against `scala.Option` and friends. Now they name
-    // `anthill.prelude.Option` and honestly need the sibling. Measured on the
-    // closure, which is the number that means something: unchanged at 11 errors.
+    // `anthill.prelude.Option` and honestly need the sibling.
     //
-    // Compiling the whole closure is WI-1020's. It needs WI-1054 (`zero-val` is
-    // not a Scala identifier) and the effect-row question (WI-1062): `Iterable`
-    // and `Modifiable` are still refused, so their dependents cascade.
-    // (DECLARATION, construct) and not the construct alone: eight of the thirteen
-    // are now "effect row", so that half of the list stopped distinguishing them —
-    // and WI-1021's measured finding is precisely that iterable.anthill's refusal
-    // MOVED, from `operation iterator` (an arity conflict) to `operation map` (the
-    // row). Pinning the declaration is what holds that; the message already carries
-    // it, so a refusal that relocated within a file fails here rather than passing
-    // as the same entry.
+    // RE-MEASURED AT WI-1062: still 17, and that is the metric being useless
+    // rather than the fix doing nothing. Six files left the refusal set and every
+    // one of them names a sibling (`Stream`, `Iterable`, `FiniteCollection`), so
+    // none of them can compile ALONE — they went from "refused" to "emitted and
+    // needs its siblings", which this counter cannot see. The closure is the number
+    // that moved: 11 errors -> 4.
+    //
+    // Compiling the whole closure is WI-1020's. What is left of it, MEASURED at
+    // WI-1062: FOUR errors, down from eleven. One is WI-1054 (`zero-val` is not a
+    // Scala identifier, `Numeric.scala`); the other three are `Modifiable`, which
+    // effects.anthill declares and is refused for an unrelated `anthill.reflect`
+    // import, cascading into `MutableCollection.scala`. The eight that went were
+    // all `Iterable is not a member of anthill.prelude` — the cascade WI-1062 was
+    // filed to remove — and `PersistentCollection.scala` is now clean.
+    //
+    // BOTH COUNTS UNDER-REPORT, and by construction: `dotc` ends the run at the
+    // phase that first reported an error, so nothing a LATER phase would say is in
+    // them. Peeling the failing files off and recompiling until it is clean gives
+    // the real shape, measured both ways:
+    //   before  11 -> 3 (Field, the Numeric cascade) -> clean, 33 files
+    //   after    4 -> 3 (the same)                   -> 4 -> clean, 39 files
+    // Six more files compile, and the new round is the one this ticket UNCOVERED
+    // rather than caused: `requires` -> `extends` (§2.7) is unsound for a refining
+    // override and for a data sort that requires an algebra, which only became
+    // observable once FiniteCollection / FiniteMappedStream / FiniteFilteredStream
+    // were in the tree at all. Nothing about effects — WI-1064, and recorded on
+    // the WI-1062 ambient test above.
+    //
+    // (DECLARATION, construct) and not the construct alone: WI-1021's measured
+    // finding was precisely that iterable.anthill's refusal MOVED within its file,
+    // from `operation iterator` (an arity conflict) to `operation map` (the row).
+    // Pinning the declaration is what holds that; the message already carries it,
+    // so a refusal that relocated within a file fails here rather than passing as
+    // the same entry.
+    //
+    // SIX FILES LEFT (WI-1062), from thirteen. `scala_std` erases an effect
+    // PARAMETER along with the argument written into it (§2.8a), so combinators /
+    // finite_collection / finite_combinators / iterable / map / mutable_stack now
+    // emit. TWO entries MOVED rather than left, and both are worth reading as
+    // findings:
+    //   * relation.anthill — its effect row is erased, and the file is still
+    //     refused one operation later on `NodeOccurrence`, an `anthill.reflect`
+    //     import. The row was never its only problem.
+    //   * logical_stream.anthill — the refusal moves from the type VARIABLE `?A`
+    //     to the ARITY of the occurrence carrying it. `LogicalStream[?A]` writes
+    //     one argument where the sort declares two, and erasure is what made that
+    //     check run first: arguments are now placed before they are rendered, so
+    //     the application's shape is judged before its parts. Both diagnoses are
+    //     true of the same line; the `?A` arm is driven by a fixture instead
+    //     (WI-1055 B2 above), for exactly the reason the other B2 arms are.
     val expectedRefusals = Map(
-      "combinators.anthill" -> ("operation `map`", "effect row"),
-      "delay.anthill" -> ("operation `pure`", "effect row"),
+      "delay.anthill" -> ("operation `pure`", "ORDINARY type-parameter slot"),
       "effects.anthill" -> ("sort `MatchFailed`", "imported from `anthill.reflect`"),
-      "finite_collection.anthill" -> ("operation `map`", "effect row"),
-      "finite_combinators.anthill" -> ("operation `iterator`", "effect row"),
-      "iterable.anthill" -> ("operation `map`", "effect row"),
-      "logical_stream.anthill" -> ("operation `empty`", "type VARIABLE"),
-      "map.anthill" -> ("operation `iterator`", "effect row"),
+      "logical_stream.anthill" -> ("operation `empty`", "declares 2 type parameter(s)"),
       "meta.anthill" -> ("entity `Meta`", "imported from `anthill.reflect`"),
-      "mutable_stack.anthill" -> ("operation `iterator`", "effect row"),
-      "relation.anthill" -> ("operation `union`", "effect row"),
+      "relation.anthill" -> ("operation `guarded_of`", "imported from `anthill.reflect`"),
       "sort.anthill" -> ("sort `EffectExpression`", "emits no Scala type for"),
       "sortedset.anthill" -> ("sort `SortedSet`", "named requirement slot"),
     )

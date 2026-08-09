@@ -381,6 +381,57 @@ The default `scala_std` profile (per `stdlib/anthill/realization/scala_std.anthi
 
 The `scala_cats_effect` and `scala_zio` profiles re-map `Modify` / `Error` / `Console` into their respective effect monads. These are alternative profiles, not the default.
 
+### 2.8a Effect Parameters → Erased, With Their Arguments
+
+§2.8 erases effects from a method's *shape*. A sort can also carry an effect row as
+a **parameter** — `stream.anthill` declares
+
+```
+sort anthill.prelude.Stream
+  sort T = ?
+  effects E = ?           -- effect row required to observe
+```
+
+and there is nothing for that parameter to erase *to*: `scala_std` has no term for a
+row, and a type-argument slot still needs a type. **The parameter goes too.** The
+emitted trait is `Stream[T]`, and a written `Stream[Element, E]` emits
+`Stream[Element]` — the argument is dropped with the slot it filled, whether it is a
+row literal (`{E, EffP}`, `{}`), a row variable (`E`), or a dependent access (`s.E`).
+
+The same rule applies to an **operation's** type parameters. An operation has no
+`effects` spelling in its parameter list — `operation map[S, Dst, EffS, EffP]` writes
+its row variables among its type variables — so a parameter the signature only ever
+uses in an effect position (inside a `{…}` row, an arrow's `@` annotation, or the
+`effects` clause) is a row variable and is erased from the emitted `def`.
+
+**Which end decides.** Codegen is per-file (proposal 034), so the parameter kinds of
+a *foreign* sort are not always in reach. Two rules, and they agree wherever both
+could run:
+
+- Where the **declaration** is visible — the enclosing sort, a type the file emits, a
+  prelude table entry, a higher-kinded parameter's members — the declaration says
+  which slots are `effects`, and the argument in one is dropped *whatever was
+  written there*. A plain `E` in `Stream[Element, E]` is an identifier like any
+  other; nothing but `Stream`'s own declaration can say it goes.
+- Where it is **not** — an unqualified name resolved in an enclosing namespace or
+  through the auto-imported prelude — the **argument** decides: a written row is a
+  row, and a name the declaration binds as an effect parameter denotes one. Both are
+  locally provable facts about the argument, not guesses about the callee.
+
+**A row in an ordinary parameter is refused, not erased.** The declaration answering
+first is what makes this possible. `delay.anthill`'s graded monad (proposal 047)
+holds its captured effect set in an ordinary `sort E = ?`, so `pure`'s `M[T = A, E = {}]`
+and `delay`'s `M[T = A, E = EffP]` are *different* types and erasing `E` would collapse
+them — that is the entire content of the grading. Reaching a written row through a
+slot the declaration calls a type is therefore a refusal. It is silently collapsed
+only where no declaration is in reach *and* a foreign sort grades on an ordinary
+parameter; no prelude file has that shape.
+
+**What erasure costs.** `Stream[Int64, {Console}]` and `Stream[Int64, {}]` are one
+Scala type. That is what "`scala_std` erases effects" already meant for method
+shapes; `scala_caps` is the profile where a row has a real counterpart (a capture
+set), and recovering the distinction is that profile's job, not this one's.
+
 ### 2.9 Rules (Laws) → ScalaCheck Properties
 
 Rules generate ScalaCheck property stubs that land in **`src/test/scala/<package-path>/<Sort>Laws.scala`** — strictly separated from the `src/main/scala/` definitions per the layout in §1.1. This matches Scala convention: laws are tests, tests live under `Test`, never inlined into the main source.

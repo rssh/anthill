@@ -1919,7 +1919,8 @@ private class AnthillParserImpl(
     P(name ~ (abstractSortRest | sortWithBodyRest)).map { case (n, rest) =>
       (vis, span) => rest match
         case Left((defn, meta)) =>
-          Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span))
+          Item.AbstractSortItem(
+            AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = false))
         case Right((imports, items, meta)) =>
           Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, span, SortDeclKind.Sort))
     }
@@ -1962,11 +1963,20 @@ private class AnthillParserImpl(
     * `requires EffectsRuntime` anchor: that anchor exists solely to give the
     * row variable a kind reachable at typing time, and scaland has no typer,
     * so it would be inert load. The mandatory `=` disambiguates from the
-    * operation-clause `effects E` (which never appears at body level). */
+    * operation-clause `effects E` (which never appears at body level).
+    *
+    * WI-1062: the ONE site that sets `AbstractSort.isEffectRow`. The desugar loses
+    * which surface form was written, and a backend that erases effects needs
+    * exactly that — `scala_std` drops an effect PARAMETER from the emitted type
+    * (docs/scala-forward-mapping.md §2.8a), and `sort E = ?` from `effects E = ?`
+    * is the only thing that tells it which. Kept as provenance on the desugared
+    * item rather than as a second item, so nothing downstream of the loader
+    * changes. */
   private def effectsSortItem[$: P]: P[Item] =
     P(located(visibility.? ~ keyword("effects") ~ name ~ "=" ~/ typeExpr ~ metaBlock.?)).map {
       case ((vis, n, defn, meta), span) =>
-        Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span))
+        Item.AbstractSortItem(
+          AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = true))
     }
 
   /** `enum NAME ... end` — same body shape as `sort NAME ... end` but the
@@ -2046,7 +2056,8 @@ private class AnthillParserImpl(
         // WI-989: `nameSpan`, not `span` — the `?` this synthesizes stands for the
         // parameter's own unspecified bound, so it points at the parameter's name.
         Item.AbstractSortItem(
-          AbstractSort(None, nm, freshAnonTypeVar(p.nameSpan), IndexedSeq.empty, None, p.span))
+          AbstractSort(None, nm, freshAnonTypeVar(p.nameSpan), IndexedSeq.empty, None, p.span,
+            isEffectRow = false))
 
   // Same shape as `operationDecl`: the dispatcher consumed the `rule` keyword, so it
   // is the one that can span from it (WI-947).
